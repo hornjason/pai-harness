@@ -19,7 +19,7 @@ interface Manifest {
 }
 
 function loadManifest(): Manifest {
-  const raw = readFileSync(join(HARNESS_ROOT, "migration-manifest.json"), "utf8");
+  const raw = readFileSync(join(HARNESS_ROOT, "reference", "migration-manifest.json"), "utf8");
   return JSON.parse(raw);
 }
 

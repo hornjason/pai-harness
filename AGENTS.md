@@ -44,6 +44,9 @@ All specs live in `specs/` with YAML frontmatter declaring `testable: true/false
 | harness-automation-matrix.md | true | Gate automation coverage matrix |
 | harness-v3-migration-plan.md | true | v3 migration plan (Bun gates + Zod) |
 | harness-v3-bash-deletion-plan.md | true | Bash deletion plan post-validation |
+| SPEC-TEMPLATE.md | false | Template for creating new specs |
+
+New specs: copy `specs/SPEC-TEMPLATE.md`, follow the SC patterns documented in it. Tests auto-generate from `- [ ] SC-N:` lines.
 
 ## Tests
 
