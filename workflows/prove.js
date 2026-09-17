@@ -355,24 +355,103 @@ Report verdict and criteriaResults.
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 4: VERDICT — Mechanical computation
+// PHASE 4: VERDICT — Mechanical computation + self-heal loop
 // ════════════════════════════════════════════════════════════
 
 phase('Verdict')
 
-const failCount = allCriteriaResults.filter(cr => cr.verdict === 'FAIL').length
-const passSkipCount = allCriteriaResults.filter(cr => cr.verdict === 'PASS' || cr.verdict === 'SKIP').length
+const MAX_SELF_HEAL_ATTEMPTS = 3
 
-let verdict
-if (allCriteriaResults.length === 0) {
-  verdict = 'INCONCLUSIVE'
-} else if (failCount > 0) {
-  verdict = 'UNPROVEN'
-} else {
-  verdict = 'PROVEN'
+function computeVerdict(criteriaResults) {
+  const fc = criteriaResults.filter(cr => cr.verdict === 'FAIL').length
+  const psc = criteriaResults.filter(cr => cr.verdict === 'PASS' || cr.verdict === 'SKIP').length
+  let v
+  if (criteriaResults.length === 0) {
+    v = 'INCONCLUSIVE'
+  } else if (fc > 0) {
+    v = 'UNPROVEN'
+  } else {
+    v = 'PROVEN'
+  }
+  return { verdict: v, failCount: fc, passSkipCount: psc }
 }
 
+let { verdict, failCount, passSkipCount } = computeVerdict(allCriteriaResults)
 log(`Verdict: ${verdict} — ${passSkipCount} PASS/SKIP, ${failCount} FAIL, ${allCriteriaResults.length} total`)
+
+// ── Self-heal loop: on UNPROVEN, spawn Marcus to fix, re-prove ──
+let selfHealIteration = 0
+
+while (verdict === 'UNPROVEN' && selfHealIteration < MAX_SELF_HEAL_ATTEMPTS) {
+  selfHealIteration++
+  log(`Self-heal iteration ${selfHealIteration}/${MAX_SELF_HEAL_ATTEMPTS} — spawning fix agent`)
+
+  const failedCriteria = allCriteriaResults.filter(cr => cr.verdict === 'FAIL')
+  const failSummary = failedCriteria.map(cr => `${cr.scId}: ${cr.evidence || 'FAIL'}`).join('\n')
+
+  // Spawn Marcus to fix the failures
+  await agent(`
+You are Marcus Webb, senior engineer. Prove found UNPROVEN criteria for issue #${ISSUE}.
+
+## Failed Criteria (iteration ${selfHealIteration}/${MAX_SELF_HEAL_ATTEMPTS})
+${failSummary}
+
+## Issue
+Title: ${issueData.issueTitle}
+Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
+
+## Instructions
+1. Read the failed criteria above.
+2. cd ${PROJECT_ROOT || '.'} and investigate why each criterion failed.
+3. Fix the code to address each failure.
+4. Run tests: bun test, tsc --noEmit.
+5. Commit and push the fix: git add -A && git commit -m "fix(#${ISSUE}): prove self-heal iteration ${selfHealIteration}" && git push
+
+Report what you fixed and evidence that each failed criterion is now addressed.
+  `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', agentType: 'Engineer' })
+
+  log(`Self-heal fix ${selfHealIteration} complete — re-validating`)
+
+  // Re-run B3 reproducer to check if fixes resolved the failures
+  const revalidateResult = await agent(`
+You are a prove reproducer for issue #${ISSUE} (self-heal re-validation, iteration ${selfHealIteration}).
+
+## Issue
+Title: ${issueData.issueTitle}
+Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
+
+## Success Criteria
+${(issueData.successCriteria || []).map((sc, i) => `${i + 1}. ${sc}`).join('\n') || 'Derive from issue body'}
+
+## Previously Failed Criteria
+${failSummary}
+
+## Fix Commit
+Run: cd ${PROJECT_ROOT || '.'} && git rev-parse --short HEAD
+
+## Instructions
+1. For CODE ACs: run evidence commands (grep, bun test, curl) against current code.
+2. For UI/OUTCOME ACs: output SKIP with reason "B3 limitation: no browser tools — requires Quinn".
+3. Focus on the previously failed criteria — verify the fix resolved them.
+
+Output your verdict, criteriaResults, reproduced, gaps.
+  `, { label: `self-heal-validate-${selfHealIteration}`, phase: 'Verdict', schema: REPRODUCER_SCHEMA })
+
+  if (revalidateResult?.criteriaResults) {
+    allCriteriaResults = revalidateResult.criteriaResults
+  }
+
+  const recomputed = computeVerdict(allCriteriaResults)
+  verdict = recomputed.verdict
+  failCount = recomputed.failCount
+  passSkipCount = recomputed.passSkipCount
+
+  log(`Self-heal iteration ${selfHealIteration} verdict: ${verdict} — ${passSkipCount} PASS/SKIP, ${failCount} FAIL`)
+}
+
+if (selfHealIteration >= MAX_SELF_HEAL_ATTEMPTS && verdict === 'UNPROVEN') {
+  log(`CIRCUIT BREAKER: prove self-heal exhausted ${MAX_SELF_HEAL_ATTEMPTS} iterations — still UNPROVEN`)
+}
 
 // ════════════════════════════════════════════════════════════
 // PHASE 5: OUTPUT — Write evidence, post comment, label, telemetry
@@ -476,5 +555,7 @@ return {
   criteriaResults: allCriteriaResults,
   reproduced: proveEvidence.reproduced,
   quinnVerdict: quinnResults?.verdict || null,
+  selfHealIterations: selfHealIteration,
+  circuitBroken: selfHealIteration >= MAX_SELF_HEAL_ATTEMPTS && verdict === 'UNPROVEN',
   workDir: WORK_DIR,
 }

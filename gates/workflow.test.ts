@@ -907,6 +907,50 @@ describe("ship checks", () => {
     expect(witnesses.length, "Witness directory exists but is empty").toBeGreaterThan(0);
   });
 
+  // 44. witness-ac-verdict: AC PASS verdicts must have corresponding witness chain entry (#521)
+  test("witness-ac-verdict: AC PASS verdicts have matching witness with valid HMAC", () => {
+    if (!isShipPlus()) return;
+    const slug = sf("slug");
+    if (!slug) return;
+    const witnessDir = join(process.env.HOME || "", ".pai-work", slug, "witnesses");
+    if (!existsSync(witnessDir)) {
+      // No witnesses = cannot verify AC verdicts were set by gate system
+      const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
+      if (passACs.length > 0) {
+        expect(
+          `${passACs.length} AC(s) have PASS verdict but no witness directory exists`,
+        ).toBe("witness directory required when ACs have PASS verdicts (#521 — prevents manual workflow-state.json edits)");
+      }
+      return;
+    }
+    const witnessFiles = readdirSync(witnessDir).filter(f => f.endsWith(".json"));
+    // Load all witness records
+    const witnesses: Array<{ gate: string; result: string; hmac: string; [k: string]: any }> = [];
+    for (const wf of witnessFiles) {
+      try {
+        const record = JSON.parse(readFileSync(join(witnessDir, wf), "utf-8"));
+        witnesses.push(record);
+      } catch { /* skip unparseable */ }
+    }
+    // Build set of gates that have PASS witnesses with HMAC
+    const passedGatesWithHmac = new Set(
+      witnesses
+        .filter(w => w.result === "PASS" && w.hmac && w.hmac.length > 0)
+        .map(w => w.gate),
+    );
+    // Each AC with PASS verdict must be backed by a gate witness
+    // The verify gate covers AC evidence checks; scope gate covers AC definition
+    // At minimum, a verify or ship gate PASS witness must exist
+    const requiredGates = ["verify", "ship"];
+    const missingGates = requiredGates.filter(g => !passedGatesWithHmac.has(g));
+    const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
+    if (passACs.length > 0 && missingGates.length > 0) {
+      expect(
+        `AC PASS verdicts present but missing witness for: ${missingGates.join(", ")}`,
+      ).toBe("PASS witnesses with valid HMAC required for verify + ship gates (#521 — manual edits detected)");
+    }
+  });
+
   // pre-registration: ACs must predate fix (ADR-009 A2)
   test("pre-registration: scope precedes ship", () => {
     if (!isShipPlus()) return;
