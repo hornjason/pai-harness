@@ -37,6 +37,10 @@ export async function assembleBrief(opts: {
   const verifyCommands = extractVerifyCommands(acs);
   const scopeOut: string[] = state.scopeOut || [];
 
+  const harness = loadProjectHarness(projectRoot);
+  const projectContextDocs = extractContextDocs(harness);
+  const hasAgents = existsSync(join(projectRoot, "AGENTS.md"));
+
   const sections: string[] = [];
 
   sections.push(buildContextSection(projectRoot));
@@ -54,10 +58,12 @@ export async function assembleBrief(opts: {
 
   const validated = validateBrief(brief);
 
+  const projectContextCount = projectContextDocs.length + (hasAgents ? 1 : 0);
+
   return {
     briefPath,
     acCount: acs.length,
-    contextFileCount: contextFiles.length,
+    contextFileCount: contextFiles.length + projectContextCount,
     validated,
   };
 }
@@ -87,6 +93,24 @@ function extractVerifyCommands(acs: any[]): string[] {
   return commands;
 }
 
+function loadProjectHarness(projectRoot: string): Record<string, any> | null {
+  const harnessPath = join(projectRoot, ".claude", "project-harness.json");
+  if (!existsSync(harnessPath)) return null;
+  try {
+    return JSON.parse(readFileSync(harnessPath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function extractContextDocs(harness: Record<string, any> | null): string[] {
+  if (!harness?.contextDocs) return [];
+  const docs = harness.contextDocs;
+  if (Array.isArray(docs)) return docs;
+  if (typeof docs === "object") return Object.values(docs) as string[];
+  return [];
+}
+
 function buildContextSection(projectRoot: string): string {
   const lines = [
     "## Context (read first, in order)",
@@ -94,9 +118,25 @@ function buildContextSection(projectRoot: string): string {
     `2. ${projectRoot}/MODEL.md (PRIMARY — system flow, three rules, troubleshooting map)`,
     `3. ${projectRoot}/PRINCIPLES.md (ONLY if MODEL.md doesn't exist)`,
     `4. ${projectRoot}/ARCHITECTURE.md (ONLY if MODEL.md doesn't exist)`,
-    `5. ~/.claude/PAI/USER/Engineering/MarcusContext.md`,
-    `6. ~/.claude/PAI/USER/Engineering/MarcusChecklist.md`,
   ];
+
+  let idx = 5;
+
+  // Include AGENTS.md from project repo when present
+  const agentsPath = join(projectRoot, "AGENTS.md");
+  if (existsSync(agentsPath)) {
+    lines.push(`${idx}. ${projectRoot}/AGENTS.md (agent role definitions)`);
+    idx++;
+  }
+
+  // Include contextDocs from project-harness.json
+  const harness = loadProjectHarness(projectRoot);
+  const contextDocs = extractContextDocs(harness);
+  for (const doc of contextDocs) {
+    lines.push(`${idx}. ${projectRoot}/${doc}`);
+    idx++;
+  }
+
   return lines.join("\n");
 }
 
