@@ -6,7 +6,7 @@ import { harnessRoot } from "../lib/paths";
 const HR = harnessRoot();
 const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
 const SPEC_MD = readFileSync(join(HR, "specs/HARNESS-SKILL-CHAIN.md"), "utf-8");
-const SKILL_MD = readFileSync(join(HR, "prompts/ship-skill.md"), "utf-8");
+const SKILL_MD = readFileSync(join(HR, "reference/prompts/ship-skill.md"), "utf-8");
 
 function sliceBetween(src: string, start: string, end: string): string {
   const s = src.indexOf(start);

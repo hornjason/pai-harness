@@ -29,6 +29,9 @@ Implementation quality framework for PAI (Personal AI Infrastructure). Provides 
 | [hooks/AutoVerifyGate.hook.ts](hooks/AutoVerifyGate.hook.ts) | Auto-triggers verify after Marcus | When changing verify flow |
 | [hooks/MergeGuard.hook.ts](hooks/MergeGuard.hook.ts) | Blocks merge without verify gate | When changing merge rules |
 | [config/ceremony-profiles.json](config/ceremony-profiles.json) | LIGHT/STANDARD/THOROUGH tiers | When changing ceremony levels |
+| [scripts/scaffold-project.ts](scripts/scaffold-project.ts) | Bootstrap any project to conformity | When onboarding a new project |
+| [lib/conformity.ts](lib/conformity.ts) | Exportable conformity test functions | When projects import tests |
+| [gates/self-heal.ts](gates/self-heal.ts) | Prove self-healing loop | When debugging prove iterations |
 
 ## Specs
 
@@ -40,10 +43,7 @@ All specs live in `specs/` with YAML frontmatter declaring `testable: true/false
 | HARNESS-SKILL-CHAIN.md | true | Phase ordering and skill chain contract |
 | HARNESS-SKILL-CONTRACT.md | true | Skill I/O contract definitions |
 | HARNESS-GATES.md | true | Gate definitions and enforcement config |
-| HARNESS-EXTRACTION-SPEC.md | true | Extraction success criteria and guard tests |
 | harness-automation-matrix.md | true | Gate automation coverage matrix |
-| harness-v3-migration-plan.md | true | v3 migration plan (Bun gates + Zod) |
-| harness-v3-bash-deletion-plan.md | true | Bash deletion plan post-validation |
 | SPEC-TEMPLATE.md | false | Template for creating new specs |
 
 New specs: copy `specs/SPEC-TEMPLATE.md`, follow the SC patterns documented in it. Tests auto-generate from `- [ ] SC-N:` lines.
@@ -73,9 +73,14 @@ Issues live on **hornjason/pai-config**; code lives here. The harness enforces a
 
 ```
 GOAL → DISCOVERY → SCOPE → BUILD → VERIFY → SHIP → PROVE
+                                ↑                    |
+                                └── self-heal ───────┘
 ```
 
 - **Gates** enforce quality mechanically at each transition
+- **Self-healing**: gates fail → classify error → fix → re-run (max 3 attempts per gate)
+- **Prove iteration**: UNPROVEN → spawn Marcus to fix → re-prove (circuit breaker at 3)
+- **Witness-verdict cross-validation**: AC verdicts must have matching witness chain entries
 - **Hooks** prevent premature closure (IssueCloseGuard) and unverified merges (MergeGuard)
 - **Ceremony profiles** (LIGHT/STANDARD/THOROUGH) control how much ceremony each gate demands
 - **workflow-state.json** is the spine — every phase reads/writes it

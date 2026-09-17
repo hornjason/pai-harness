@@ -177,19 +177,19 @@
       "source": "~/.claude/gates/ceremony-profiles.json",
       "dest": "config/ceremony-profiles.json",
       "migrated": true,
-      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
+      "note": "canonical copy — delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/gates/workflow-schema.json",
       "dest": "config/workflow-schema.json",
       "migrated": true,
-      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
+      "note": "canonical copy — delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/gates/spec-policies.json",
       "dest": "config/spec-policies.json",
       "migrated": true,
-      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
+      "note": "canonical copy — delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/scripts/sync-spec-tests.ts",
@@ -203,22 +203,22 @@
     },
     {
       "source": "~/.claude/scripts/batch-status.sh",
-      "dest": "scripts/batch-status.sh",
+      "dest": "reference/scripts/batch-status.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/scripts/chain-compat-check.sh",
-      "dest": "scripts/chain-compat-check.sh",
+      "dest": "reference/scripts/chain-compat-check.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/scripts/context-audit.sh",
-      "dest": "scripts/context-audit.sh",
+      "dest": "reference/scripts/context-audit.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/scripts/dead-export-check.sh",
-      "dest": "scripts/dead-export-check.sh",
+      "dest": "reference/scripts/dead-export-check.sh",
       "migrated": true
     },
     {
@@ -228,12 +228,12 @@
     },
     {
       "source": "~/.claude/scripts/generate-qc-tables.sh",
-      "dest": "scripts/generate-qc-tables.sh",
+      "dest": "reference/scripts/generate-qc-tables.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/scripts/harness-init.sh",
-      "dest": "scripts/harness-init.sh",
+      "dest": "reference/scripts/harness-init.sh",
       "migrated": true
     },
     {
@@ -243,7 +243,7 @@
     },
     {
       "source": "~/.claude/scripts/pai-054-baseline-check.sh",
-      "dest": "scripts/pai-054-baseline-check.sh",
+      "dest": "reference/scripts/pai-054-baseline-check.sh",
       "migrated": true
     },
     {
@@ -253,12 +253,12 @@
     },
     {
       "source": "~/.claude/scripts/skill-optimizer-friday.sh",
-      "dest": "scripts/skill-optimizer-friday.sh",
+      "dest": "reference/scripts/skill-optimizer-friday.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/scripts/skill-qc-test.sh",
-      "dest": "scripts/skill-qc-test.sh",
+      "dest": "reference/scripts/skill-qc-test.sh",
       "migrated": true
     },
     {
@@ -268,7 +268,7 @@
     },
     {
       "source": "~/.claude/scripts/skill-synthesize-tonight.sh",
-      "dest": "scripts/skill-synthesize-tonight.sh",
+      "dest": "reference/scripts/skill-synthesize-tonight.sh",
       "migrated": true
     },
     {
@@ -288,7 +288,7 @@
     },
     {
       "source": "~/.claude/scripts/setup-keychain-salt.sh",
-      "dest": "scripts/setup-keychain-salt.sh",
+      "dest": "reference/scripts/setup-keychain-salt.sh",
       "migrated": true
     },
     {
@@ -368,37 +368,37 @@
     },
     {
       "source": "~/.claude/skills/ship/SKILL.md",
-      "dest": "prompts/ship-skill.md",
+      "dest": "reference/prompts/ship-skill.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/TEMPLATES.md",
-      "dest": "prompts/ship-templates.md",
+      "dest": "reference/prompts/ship-templates.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/REFERENCE.md",
-      "dest": "prompts/ship-reference.md",
+      "dest": "reference/prompts/ship-reference.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/ITERATION.md",
-      "dest": "prompts/ship-iteration.md",
+      "dest": "reference/prompts/ship-iteration.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/PENDING-PATCHES.md",
-      "dest": "prompts/ship-pending-patches.md",
+      "dest": "reference/prompts/ship-pending-patches.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/convergence.md",
-      "dest": "prompts/ship-convergence.md",
+      "dest": "reference/prompts/ship-convergence.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/ship/escalation.md",
-      "dest": "prompts/ship-escalation.md",
+      "dest": "reference/prompts/ship-escalation.md",
       "migrated": true
     },
     {
@@ -435,23 +435,23 @@
       "source": "~/.claude/skills/ship/ceremony-profiles.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
+      "note": "duplicate of gates/ copy — delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/ship/workflow-schema.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
+      "note": "duplicate of gates/ copy — delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/ship/spec-policies.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
+      "note": "duplicate of gates/ copy — delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/prove/SKILL.md",
-      "dest": "prompts/prove-skill.md",
+      "dest": "reference/prompts/prove-skill.md",
       "migrated": true
     },
     {
@@ -461,17 +461,17 @@
     },
     {
       "source": "~/.claude/skills/prove/prove-smoke-test.sh",
-      "dest": "scripts/prove-smoke-test.sh",
+      "dest": "reference/scripts/prove-smoke-test.sh",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/goal/SKILL.md",
-      "dest": "prompts/goal-skill.md",
+      "dest": "reference/prompts/goal-skill.md",
       "migrated": true
     },
     {
       "source": "~/.claude/skills/council/SKILL.md",
-      "dest": "prompts/council-skill.md",
+      "dest": "reference/prompts/council-skill.md",
       "migrated": true
     },
     {
@@ -481,7 +481,7 @@
     },
     {
       "source": "~/.claude/PAI/specs/HARNESS-EXTRACTION-SPEC.md",
-      "dest": "specs/HARNESS-EXTRACTION-SPEC.md",
+      "dest": "reference/specs/HARNESS-EXTRACTION-SPEC.md",
       "migrated": true
     },
     {
@@ -501,12 +501,12 @@
     },
     {
       "source": "~/.claude/PAI/specs/harness-v3-bash-deletion-plan.md",
-      "dest": "specs/harness-v3-bash-deletion-plan.md",
+      "dest": "reference/specs/harness-v3-bash-deletion-plan.md",
       "migrated": true
     },
     {
       "source": "~/.claude/PAI/specs/harness-v3-migration-plan.md",
-      "dest": "specs/harness-v3-migration-plan.md",
+      "dest": "reference/specs/harness-v3-migration-plan.md",
       "migrated": true
     },
     {
@@ -521,32 +521,32 @@
     },
     {
       "source": "~/.claude/PAI/Testing/QUINN-STANDARD.md",
-      "dest": "prompts/quinn-standard.md",
+      "dest": "reference/prompts/quinn-standard.md",
       "migrated": true
     },
     {
       "source": "~/.claude/templates/harness-v3/agents/marcus.md",
-      "dest": "prompts/agent-marcus.md",
+      "dest": "reference/prompts/agent-marcus.md",
       "migrated": true
     },
     {
       "source": "~/.claude/templates/harness-v3/agents/quinn.md",
-      "dest": "prompts/agent-quinn.md",
+      "dest": "reference/prompts/agent-quinn.md",
       "migrated": true
     },
     {
       "source": "~/.claude/templates/harness-v3/agents/rook.md",
-      "dest": "prompts/agent-rook.md",
+      "dest": "reference/prompts/agent-rook.md",
       "migrated": true
     },
     {
       "source": "~/.claude/templates/harness-v3/agents/aditi.md",
-      "dest": "prompts/agent-aditi.md",
+      "dest": "reference/prompts/agent-aditi.md",
       "migrated": true
     },
     {
       "source": "~/.claude/templates/harness-v3/agents/serena.md",
-      "dest": "prompts/agent-serena.md",
+      "dest": "reference/prompts/agent-serena.md",
       "migrated": true
     }
   ]
