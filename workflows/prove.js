@@ -206,6 +206,24 @@ log(`Fix deployed: ${COMMIT_SHA.slice(0, 8)} on main`)
 // ════════════════════════════════════════════════════════════
 
 phase('Validate')
+
+// Ensure dev server is running for OUTCOME AC evidence collection
+if (PROJECT_ROOT) {
+  log('Checking dev server availability')
+  await agent(`
+Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/project-harness.json to get dev.apiBase and dev.start.
+
+1. Try: curl -sf $(dev.apiBase)/api/health -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
+2. If DEV_DOWN and dev.start exists:
+   - Run: cd ${PROJECT_ROOT} && $(dev.start) &
+   - Wait 10 seconds, then retry the health check
+   - Report: started (boolean), apiBase, command used
+3. If DEV_UP: report already running
+
+Report the dev server status.
+`, { label: 'ensure-dev-server', phase: 'Validate' })
+}
+
 log('Spawning B3 Prove Reproducer')
 
 // Read before-state context for the reproducer

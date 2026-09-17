@@ -197,7 +197,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir },
+        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -218,7 +218,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir },
+        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -238,7 +238,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir },
+        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -255,7 +255,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('QATester')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir },
+        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -272,7 +272,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Pentester')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir },
+        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
