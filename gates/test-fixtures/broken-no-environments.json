@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 2,
+  "issue": 9998,
+  "repo": "hornjason/asaCommandCenter",
+  "issueRepo": "hornjason/asaCommandCenter",
+  "projectRoot": "/Users/jhorn/Projects/DailyBriefDashboard",
+  "slug": "test-broken",
+  "phase": "DONE",
+  "issueGoal": "Test fixture with missing environments",
+  "sizing": { "predicted": "S", "ceremonyTier": "STANDARD" },
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "Fix applied to campaign quality gate",
+      "threshold": { "op": "contains", "value": "email-subject" },
+      "evidenceMethod": { "type": "grep", "command": "grep email-subject src/lib/campaign-quality.ts" },
+      "evidence": { "type": "command-output", "content": "email-subject" },
+      "verdict": "PASS"
+    },
+    {
+      "id": "AC-2",
+      "type": "CODE",
+      "statement": "Quality gate logs input mode",
+      "threshold": { "op": "contains", "value": "inputMode" },
+      "evidenceMethod": { "type": "grep", "command": "grep inputMode src/campaign-service.ts" },
+      "evidence": { "type": "command-output", "content": "inputMode" },
+      "verdict": "PASS"
+    },
+    {
+      "id": "AC-3",
+      "type": "CODE",
+      "statement": "Regression tests pass",
+      "threshold": { "op": ">=", "value": 1 },
+      "evidenceMethod": { "type": "grep", "command": "grep email-subject test/unit/campaign-quality-gate.test.ts" },
+      "evidence": { "type": "command-output", "content": "1" },
+      "verdict": "PASS"
+    },
+    {
+      "id": "AC-A1",
+      "type": "CODE",
+      "statement": "Other modes unaffected",
+      "threshold": { "op": ">=", "value": 1 },
+      "evidenceMethod": { "type": "grep", "command": "grep BLOCKED test/unit/campaign-quality-gate.test.ts" },
+      "evidence": { "type": "command-output", "content": "1" },
+      "verdict": "PASS"
+    }
+  ],
+  "gates": {
+    "scope": { "result": "PASS", "attempt": 1, "failures": [] },
+    "verify": { "result": "PASS", "attempt": 1, "failures": [] }
+  },
+  "environments": {},
+  "agents": {
+    "marcus": { "spawned": true, "verdict": "PASS" }
+  },
+  "buildCommit": "abc1234",
+  "changelog": [],
+  "bootstrappedFrom": "ship-workflow"
+}

@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "workflow-state",
+  "description": "Ship harness v2 — single state file per issue. All gates read/write this file. See gateContract for expected field values per gate check.",
+  "type": "object",
+  "required": ["schemaVersion", "issue", "repo", "slug", "phase"],
+  "properties": {
+    "schemaVersion": { "const": 2 },
+    "issue": { "type": "integer", "description": "GitHub issue number" },
+    "repo": { "type": "string", "description": "owner/repo" },
+    "issueRepo": { "type": "string", "description": "owner/repo for GitHub issues (if different from code repo)" },
+    "projectRoot": { "type": "string", "description": "Absolute path to the project root directory" },
+    "slug": { "type": "string", "description": "YYYYMMDD-HHMMSS_kebab-description" },
+    "phase": {
+      "enum": ["GOAL", "DISCOVERY", "SCOPE", "BUILD", "VERIFY", "SHIP", "DONE", "CIRCUIT_BREAK"],
+      "description": "Current phase in the single loop"
+    },
+
+    "issueGoal": {
+      "type": "string",
+      "description": "Verbatim Goal section from GitHub issue — never paraphrased by DA"
+    },
+
+    "sourceSpecs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "citedInDiscovery"],
+        "properties": {
+          "path": { "type": "string", "description": "File path or URL to the spec" },
+          "citedInDiscovery": { "type": "boolean", "description": "Was this spec actually read with file:line citations?" },
+          "specElements": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Key structural elements from the spec (e.g. '6 horizontal layers', '11 consumers')"
+          }
+        }
+      }
+    },
+
+    "sizing": {
+      "type": "object",
+      "properties": {
+        "predicted": { "enum": ["XS", "S", "M", "L"] },
+        "ceremonyTier": { "enum": ["LIGHT", "STANDARD", "THOROUGH"] },
+        "actualFiles": { "type": "integer" },
+        "actualMinutes": { "type": "integer" }
+      }
+    },
+
+    "acs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "statement"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^AC-[0-9]+$" },
+          "type": { "enum": ["CODE", "OUTCOME"] },
+          "statement": { "type": "string" },
+          "specElement": { "type": "string", "description": "Which spec element this AC traces to" },
+          "threshold": {
+            "type": "object",
+            "properties": {
+              "op": { "enum": ["==", ">=", "<=", ">", "<", "!=", "contains", "exists"] },
+              "value": {},
+              "unit": { "type": "string" }
+            }
+          },
+          "evidenceMethod": {
+            "type": "object",
+            "properties": {
+              "type": { "enum": ["GREP_CHECK", "FILE_EXISTS", "CURL_CHECK", "BUN_TEST", "SCREENSHOT", "PLAYWRIGHT", "COMMAND", "MANUAL"] },
+              "command": { "type": "string" }
+            }
+          },
+          "evidence": {
+            "type": ["object", "null"],
+            "properties": {
+              "type": { "enum": ["file-citation", "grep-output", "api-response", "screenshot", "test-output", "command-output", "manual-attestation"] },
+              "content": { "type": "string" },
+              "value": { "type": ["number", "null"], "description": "Structured numeric value for threshold comparison — avoids grep extraction ambiguity" },
+              "url": { "type": ["string", "null"] }
+            }
+          },
+          "contextFiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": { "type": "string", "description": "File path relative to project root" },
+                "lines": { "type": "string", "description": "Line range, e.g. '162-285'" },
+                "reason": { "type": "string", "description": "Why this file is relevant to the AC" }
+              },
+              "required": ["path"]
+            },
+            "description": "Source files relevant to this AC — used by brief-assembler to give Marcus context"
+          },
+          "verdict": { "enum": ["PENDING", "PASS", "FAIL"] }
+        }
+      }
+    },
+
+    "agents": {
+      "type": "object",
+      "default": {},
+      "properties": {
+        "marcus": {
+          "type": "object",
+          "properties": {
+            "spawned": { "type": "boolean" },
+            "verdict": { "enum": ["PASS", "FAIL", null] },
+            "branch": { "type": "string" },
+            "iterations": { "type": "integer" }
+          }
+        },
+        "quinn": {
+          "type": "object",
+          "properties": {
+            "spawned": { "type": "boolean" },
+            "verdict": { "enum": ["PASS", "FAIL", null] },
+            "comparedToSpec": { "type": "boolean" },
+            "screenshots": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "rook": {
+          "type": "object",
+          "properties": {
+            "spawned": { "type": "boolean" },
+            "verdict": { "enum": ["PASS", "FAIL", null] },
+            "findings": { "type": ["string", "null"], "description": "Rook security scan findings summary" }
+          }
+        }
+      }
+    },
+
+    "environments": {
+      "type": "object",
+      "default": {},
+      "properties": {
+        "local": {
+          "type": "object",
+          "properties": {
+            "api": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "apiSkipReason": { "type": "string", "description": "Justification for skipping local API validation" },
+            "ui": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "uiSkipReason": { "type": "string", "description": "Justification for skipping local UI validation" },
+            "tests": { "enum": ["PASS", "FAIL", "SKIP", null] }
+          }
+        },
+        "prod": {
+          "type": "object",
+          "properties": {
+            "rebuild": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "rebuildSkipReason": { "type": "string", "description": "Justification for skipping prod rebuild" },
+            "smoke": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "smokeSkipReason": { "type": "string", "description": "Justification for skipping prod smoke test" },
+            "quinn": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "quinnSkipReason": { "type": "string", "description": "Justification for skipping prod Quinn validation" },
+            "quinnSpot": { "enum": ["PASS", "FAIL", "SKIP", null] },
+            "quinnSpotSkipReason": { "type": "string", "description": "Justification for skipping prod Quinn spot check" }
+          }
+        }
+      }
+    },
+
+    "gates": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "type": "object",
+          "properties": {
+            "result": { "enum": ["PASS", "FAIL", null] },
+            "attempt": { "type": "integer" },
+            "failures": { "type": "array", "items": { "type": "object" } },
+            "ts": { "type": "string" }
+          }
+        },
+        "verify": {
+          "type": "object",
+          "properties": {
+            "result": { "enum": ["PASS", "FAIL", null] },
+            "attempt": { "type": "integer" },
+            "failures": { "type": "array", "items": { "type": "object" } },
+            "ts": { "type": "string" }
+          }
+        },
+        "ship": {
+          "type": "object",
+          "properties": {
+            "result": { "enum": ["PASS", "FAIL", null] },
+            "attempt": { "type": "integer" },
+            "failures": { "type": "array", "items": { "type": "object" } },
+            "ts": { "type": "string" }
+          }
+        }
+      }
+    },
+
+    "daDirectEdits": { "type": "integer", "default": 0, "description": "Count of DA direct Edit/Write calls on project source files (not PAI config)" },
+    "iterationCount": { "type": "integer", "default": 0 },
+    "startTs": { "type": "string", "format": "date-time" },
+    "updatedTs": { "type": "string", "format": "date-time" },
+
+    "phaseTimings": {
+      "type": "object",
+      "description": "Per-phase timing entries for bottleneck analysis. Each phase maps to an array of entries — convergence loop re-entries create new entries rather than overwriting.",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "enteredTs": { "type": "string", "format": "date-time" },
+            "exitedTs": { "type": "string", "format": "date-time" },
+            "iteration": { "type": "integer", "description": "Iteration number (1-based, for convergence loop re-entries)" },
+            "source": { "type": "string", "enum": ["gate-runner", "DA"], "description": "What wrote this timing entry" }
+          },
+          "required": ["enteredTs", "source"]
+        }
+      }
+    },
+
+    "gateContract": {
+      "type": "object",
+      "description": "Documents expected field paths and valid values for each gate check. DA reference — prevents setting fields to prose instead of enum values.",
+      "properties": {
+        "environments": {
+          "type": "object",
+          "description": "Expected values for environment validation fields",
+          "properties": {
+            "local.api": { "type": "string", "enum": ["PASS", "SKIP"], "description": "Set to PASS after API validation, SKIP with apiSkipReason" },
+            "local.ui": { "type": "string", "enum": ["PASS", "SKIP"], "description": "Set to PASS after UI validation, SKIP requires uiSkipReason field" },
+            "local.uiSkipReason": { "type": "string", "description": "Required when local.ui is SKIP" },
+            "local.tests": { "type": "string", "enum": ["PASS", "SKIP", "FAIL"], "description": "Set by Marcus after running tests. tests-pass reads this first." },
+            "prod.rebuild": { "type": "string", "enum": ["PASS", "SKIP"], "description": "SKIP requires rebuildSkipReason" },
+            "prod.smoke": { "type": "string", "enum": ["PASS", "SKIP"], "description": "SKIP requires smokeSkipReason" },
+            "prod.quinn": { "type": "string", "enum": ["PASS", "SKIP"], "description": "SKIP requires quinnSkipReason" }
+          }
+        },
+        "verdicts": {
+          "type": "object",
+          "description": "Valid verdict values for ACs and agents",
+          "properties": {
+            "ac.verdict": { "type": "string", "enum": ["PASS", "FAIL"], "description": "Each AC verdict must be exactly PASS or FAIL" },
+            "agent.verdict": { "type": "string", "enum": ["PASS", "FAIL", "SKIP"], "description": "Agent verdicts — SKIP requires skipReason" }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "description": "Valid evidence types",
+          "properties": {
+            "type": { "type": "string", "enum": ["file-citation", "grep-output", "api-response", "screenshot", "test-output", "command-output", "manual-attestation"] }
+          }
+        },
+        "baselines": {
+          "type": "object",
+          "description": "Baseline fields for repos with pre-existing issues",
+          "properties": {
+            "testBaseline": { "type": "integer", "description": "Pre-existing test failure count. tests-pass compares against this." },
+            "tscBaseline": { "type": "integer", "description": "Pre-existing TypeScript error count. tsc-pass compares against this." }
+          }
+        }
+      }
+    },
+
+    "changelog": {
+      "type": "array",
+      "description": "Append-only event log — never delete entries",
+      "items": {
+        "type": "object",
+        "required": ["ts", "event"],
+        "properties": {
+          "ts": { "type": "string", "format": "date-time" },
+          "event": { "type": "string" },
+          "detail": { "type": "string" },
+          "phase": { "type": "string" },
+          "actor": { "enum": ["da", "marcus", "quinn", "rook", "gate-runner"] }
+        }
+      }
+    }
+  }
+}

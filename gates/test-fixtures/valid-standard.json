@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 2,
+  "issue": 9999,
+  "repo": "hornjason/asaCommandCenter",
+  "issueRepo": "hornjason/asaCommandCenter",
+  "projectRoot": "/Users/jhorn/Projects/DailyBriefDashboard",
+  "slug": "test-canary",
+  "phase": "DONE",
+  "issueGoal": "Test canary issue for harness validation",
+  "sizing": { "predicted": "XS", "ceremonyTier": "LIGHT" },
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "Test file contains canary comment marker",
+      "threshold": { "op": "contains", "value": "CANARY_MARKER" },
+      "evidenceMethod": { "type": "grep", "command": "grep -c CANARY_MARKER test/unit/canary.test.ts" },
+      "evidence": { "type": "command-output", "content": "1" },
+      "verdict": "PASS"
+    },
+    {
+      "id": "AC-2",
+      "type": "CODE",
+      "statement": "Unit tests pass including canary test",
+      "threshold": { "op": ">=", "value": 1, "unit": "passing tests" },
+      "evidenceMethod": { "type": "BUN_TEST", "command": "bun test test/unit/canary.test.ts" },
+      "evidence": { "type": "command-output", "content": "1 pass, 0 fail" },
+      "verdict": "PASS"
+    }
+  ],
+  "gates": {
+    "scope": { "result": "PASS", "attempt": 1, "failures": [] },
+    "verify": { "result": "PASS", "attempt": 1, "failures": [] }
+  },
+  "environments": {
+    "local": {
+      "api": "200",
+      "ui": "200",
+      "tests": "24 pass, 0 fail"
+    },
+    "prod": {
+      "rebuild": "SKIP",
+      "smoke": "SKIP",
+      "quinn": "SKIP"
+    }
+  },
+  "agents": {
+    "marcus": { "spawned": true, "verdict": "PASS", "branch": "9999-fix", "commitSha": "abc1234" },
+    "quinn": { "spawned": false }
+  },
+  "buildCommit": "abc1234",
+  "changelog": [],
+  "bootstrappedFrom": "ship-workflow"
+}

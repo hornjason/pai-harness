@@ -1,0 +1,84 @@
+{
+  "version": "1.3",
+  "skill": "Ship",
+  "evaluator": "fast",
+  "criteria": [
+    {
+      "name": "template_first_no_retroactive",
+      "weight": 0.14,
+      "description": "TEMPLATES.md and BRIEF-TEMPLATES.md read BEFORE any artifact is written. GitHub issue comments, ACs, agent briefs, and completion reports use the template structure on FIRST write — not edited retroactively after a gate rejection. Zero gh issue edit / gh issue comment --edit calls to fix gate failures. If a gate script rejects content, the criterion fails — the content should have used the template from the start. This is the #1 time-wasting anti-pattern: writing freeform, failing the gate, then reverse-engineering markers into the content."
+    },
+    {
+      "name": "task_fully_complete",
+      "weight": 0.12,
+      "description": "All acceptance criteria satisfied with concrete evidence before claiming done. No partial delivery presented as complete. Every AC has a file:line reference, test result, curl output, or screenshot — not a prose assertion. If any AC cannot be evidenced, it is explicitly marked incomplete rather than glossed over. Langfuse data shows 93% of mid-range sessions are weak on task completion."
+    },
+    {
+      "name": "rule_adherence_autonomy",
+      "weight": 0.12,
+      "description": "After plan approval, executes autonomously with zero AskUserQuestion interruptions. No 'should I proceed?', 'want me to continue?', or option-presenting mid-execution. No pausing at phase boundaries. The only acceptable interruptions are circuit breakers, destructive actions on shared state, and the final completion report. Langfuse data shows 100% of mid-range sessions are weak on rule adherence — autonomy violations are the most common form."
+    },
+    {
+      "name": "all_five_steps_walked",
+      "weight": 0.10,
+      "description": "All five ship steps explicitly walked: SCOPE, BUILD, VERIFY, DURABILITY, CLOSE. No steps skipped or collapsed. Each step header mentioned by name with its actions listed. Skipping DURABILITY or CLOSE is the most common failure."
+    },
+    {
+      "name": "output_conciseness",
+      "weight": 0.08,
+      "description": "Responses use bullet fragments over full sentences. No restating the question. No trailing summaries after tool calls. No preamble. Data and decisions only. Status updates are one sentence. Completion reports use the template — no multi-paragraph narrative. Langfuse data shows 73% of mid-range sessions are weak on conciseness."
+    },
+    {
+      "name": "gate_passes_first_attempt",
+      "weight": 0.08,
+      "description": "Gate scripts (scope-gate.sh, verify-gate.sh, durability-gate.sh, close-gate.sh) pass on first invocation. No cycle of: run gate → fail → edit content → re-run gate. If a gate fails, the criterion fails regardless of whether it eventually passes. Measures whether the template was followed correctly the first time, not whether the agent can iterate until gates pass."
+    },
+    {
+      "name": "posted_to_github_issue",
+      "weight": 0.08,
+      "description": "ACs posted to GitHub issue via gh issue comment BEFORE BUILD. Sizing declaration posted. DISCOVERY comment posted. Findings posted. ATTEMPT comments posted on iteration. Completion Report posted at CLOSE. The GitHub issue is the system of record."
+    },
+    {
+      "name": "scope_acs_structured",
+      "weight": 0.06,
+      "description": "Acceptance criteria use the structured template with all required fields filled. CODE ACs have 7 fields, OUTCOME ACs have 10. No placeholder text. Template sourced from TEMPLATES.md, not written from memory."
+    },
+    {
+      "name": "agent_brief_from_template",
+      "weight": 0.06,
+      "description": "Agent brief written using BRIEF-TEMPLATES.md template — with Context, Task, Git protocol, Files to read, Scope do-not-touch, Skills available, Verify, Report sections. mode:bypassPermissions set. Never a freeform prompt."
+    },
+    {
+      "name": "tdd_red_green",
+      "weight": 0.04,
+      "description": "TDD invoked for code changes — regression test written first, observed failing (red), fix applied, test passes (green). Exempt only for config-only, pure doc, JSON data, UI copy changes."
+    },
+    {
+      "name": "batch_diagnostic_for_bugs",
+      "weight": 0.04,
+      "description": "For bugs: environment confirmed (port 7776 vs 7777), all logs + errors + source + state read in one pass. Single hypothesis formed. No read-hypothesis-read loops."
+    },
+    {
+      "name": "verify_evidence_per_ac",
+      "weight": 0.04,
+      "description": "Every AC has concrete evidence at VERIFY — screenshot, curl output, test result, file:line reference. Completion Report uses template from TEMPLATES.md. No freeform done claims."
+    },
+    {
+      "name": "gate_scripts_run",
+      "weight": 0.04,
+      "description": "Gate scripts explicitly invoked: scope-gate.sh before BUILD, verify-gate.sh before DURABILITY, durability-gate.sh before CLOSE, close-gate.sh before next issue."
+    }
+  ],
+  "benchmark_prompts": [
+    "Fix a bug where the morning brief email shows stale customer data from yesterday — the cron ran but the brief template reads from cache not fresh data",
+    "The accounts table CSV export silently drops accounts with special characters in the name — diagnose and fix",
+    "Fix the admin sidebar showing wrong pod count — it counts archived accounts that should be excluded",
+    "The campaign generator Playwright tests are flaky — Gemini response sometimes exceeds the 30s timeout",
+    "Customer health score widget shows wrong totals for multi-AE accounts — the aggregation query double-counts shared accounts",
+    "Signal scoring engine returns zero for customers with no tech stack data — should fall back to industry baseline instead of zero",
+    "Implement a new expansion motions section in the customer intelligence dashboard showing cross-sell opportunities",
+    "Add webhook notifications that fire when a customer renewal date is within 30 days — new API endpoint and UI toggle",
+    "Refactor signal scoring to use the new weighted formula from ADR-032 — touches scoring.ts, brief-generator.ts, and 3 consumers",
+    "The setup wizard connection test fails silently when Red Hat portal cookies expire — need visible error and re-auth prompt"
+  ]
+}

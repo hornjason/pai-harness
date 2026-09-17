@@ -1,0 +1,64 @@
+{
+  "description": "Enforcement rules for harness-automation-matrix.md — derived from Key Architectural Decisions",
+  "spec": "PAI/specs/harness-automation-matrix.md",
+
+  "pattern_rules": [
+    {
+      "id": "no-hardcoded-thresholds",
+      "decision": "#3",
+      "pattern": "(THRESHOLD|_CAP|_LIMIT|_MAX|_MIN)=[0-9]",
+      "scope": "changed",
+      "severity": "WARN",
+      "max_occurrences": 0,
+      "message": "Hardcoded threshold — move to config JSON (Decision #3: data-driven)"
+    },
+    {
+      "id": "no-duplicated-jq-update",
+      "decision": "#7",
+      "pattern": "jq_update\\(\\)",
+      "scope": "all-bash",
+      "severity": "WARN",
+      "max_occurrences": 1,
+      "message": "jq_update defined in multiple files — use scripts/lib/jq-update.sh (Decision #7: deep modules)"
+    },
+    {
+      "id": "no-behavioral-language-in-scripts",
+      "decision": "#8",
+      "pattern": "(DA should|remember to|must manually|don.t forget)",
+      "scope": "changed",
+      "severity": "WARN",
+      "max_occurrences": 0,
+      "message": "Behavioral language in code — use mechanical enforcement (Decision #8)"
+    },
+    {
+      "id": "no-hardcoded-telemetry-path",
+      "decision": "#7",
+      "pattern": "harness-telemetry\\.jsonl",
+      "scope": "changed",
+      "severity": "WARN",
+      "max_occurrences": 1,
+      "message": "Telemetry path hardcoded — use shared constant from paths lib (Decision #7)"
+    }
+  ],
+
+  "behavior_rules": [
+    {
+      "id": "bash-syntax-valid",
+      "command": "find scripts/ skills/ship/ -name '*.sh' -exec bash -n {} \\; 2>&1 | grep -c 'syntax error' || echo 0",
+      "expect": "0",
+      "message": "All bash scripts must parse without syntax errors"
+    },
+    {
+      "id": "no-empty-catches-hooks",
+      "command": "grep -rn 'catch {' hooks/*.ts 2>/dev/null | grep -cv 'console.error' || echo 0",
+      "expect": "0",
+      "message": "All catch blocks must have diagnostic output (D-005 tripwire)"
+    },
+    {
+      "id": "gate-salt-not-tracked",
+      "command": "git ls-files hooks/lib/.gate-salt 2>/dev/null | wc -l | tr -d ' '",
+      "expect": "0",
+      "message": "Gate salt must not be git-tracked (D-021)"
+    }
+  ]
+}

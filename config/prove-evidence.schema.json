@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Prove Evidence",
+  "description": "Output artifact from /prove skill",
+  "type": "object",
+  "required": ["contractVersion", "issueNumber", "verdict", "commitSHA", "capturedAt", "criteriaResults"],
+  "properties": {
+    "contractVersion": { "type": "string" },
+    "issueNumber": { "type": "integer" },
+    "verdict": { "type": "string", "enum": ["PROVEN", "UNPROVEN", "INCONCLUSIVE"] },
+    "commitSHA": { "type": "string" },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "beforeEvidence": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["text", "screenshot", "api", "none"] },
+        "path": { "type": ["string", "null"] },
+        "capturedAt": { "type": ["string", "null"] },
+        "description": { "type": "string" }
+      }
+    },
+    "afterEvidence": {
+      "type": "object",
+      "properties": {
+        "type": { "type": "string", "enum": ["text", "screenshot", "api"] },
+        "path": { "type": "string" },
+        "capturedAt": { "type": "string", "format": "date-time" },
+        "environment": { "type": "string", "enum": ["local", "prod"] },
+        "description": { "type": "string" }
+      }
+    },
+    "comparisonSummary": { "type": "string" },
+    "quinnVerdict": { "type": "string", "enum": ["PASS", "FAIL", "SKIP"] },
+    "reproduced": { "type": "boolean" },
+    "criteriaResults": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["scId", "verdict", "evidence"],
+        "properties": {
+          "scId": { "type": "string" },
+          "verdict": { "type": "string", "enum": ["PASS", "FAIL", "SKIP"] },
+          "evidence": { "type": "string" },
+          "evidencePath": { "type": ["string", "null"] },
+          "exitCode": { "type": ["integer", "null"] }
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ac", "status"],
+        "properties": {
+          "ac": { "type": "string" },
+          "status": { "type": "string" },
+          "detail": { "type": "string" },
+          "priority": { "type": ["string", "null"] },
+          "followUpIssue": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

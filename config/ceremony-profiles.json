@@ -1,0 +1,212 @@
+{
+  "$schema": "./ceremony-profiles-schema.json",
+  "description": "Ceremony tiers — evaluator depth determines which checks run. Gate-runner reads this file.",
+  "tierSelection": {
+    "description": "Mechanical tier selection — harness selects, not DA",
+    "rules": [
+      {
+        "tier": "LIGHT",
+        "when": "size in [XS] AND unknowns == 0 AND files <= 3 AND no cascade-glob match"
+      },
+      {
+        "tier": "STANDARD",
+        "when": "size in [S, M] OR (size == XS AND any rule above fails)"
+      },
+      {
+        "tier": "THOROUGH",
+        "when": "size in [L] OR unfamiliar domain OR cross-repo"
+      }
+    ]
+  },
+  "tiers": {
+    "LIGHT": {
+      "description": "Self-verify. DA checks own work. Computational sensors only.",
+      "evaluator": "self",
+      "gates": [
+        "ship"
+      ],
+      "skipScopeGate": true,
+      "agents": {
+        "marcus": "optional",
+        "quinn": false,
+        "rook": false
+      },
+      "githubComments": 2,
+      "stopMarkers": 0,
+      "maxIterations": 3,
+      "checks": {
+        "scope": [
+          "acs-exist",
+          "acs-have-type",
+          "acs-have-threshold",
+          "source-spec-cited"
+        ],
+        "verify": [
+          "all-acs-have-evidence",
+          "all-acs-pass",
+          "tests-pass",
+          "tsc-pass",
+          "code-committed"
+        ],
+        "ship": [
+          "all-gates-pass",
+          "branch-merged",
+          "code-pushed"
+        ]
+      }
+    },
+    "STANDARD": {
+      "description": "Separated verifier. Quinn validates independently.",
+      "evaluator": "separated",
+      "gates": [
+        "scope",
+        "verify",
+        "ship"
+      ],
+      "skipScopeGate": false,
+      "agents": {
+        "marcus": true,
+        "quinn": true,
+        "rook": false
+      },
+      "githubComments": 3,
+      "stopMarkers": 1,
+      "maxIterations": 5,
+      "checks": {
+        "scope": [
+          "acs-exist",
+          "acs-have-type",
+          "acs-have-threshold",
+          "acs-have-evidence-method",
+          "source-spec-cited",
+          "spec-elements-in-acs",
+          "sizing-declared",
+          "issue-goal-captured",
+          "skill-qc-goal",
+          "acs-no-skillmd-enforcement",
+          "acs-no-behavioral-language",
+          "ac-issue-alignment"
+        ],
+        "verify": [
+          "all-acs-have-evidence",
+          "all-acs-pass",
+          "evidence-type-valid",
+          "evidence-type-ratio",
+          "tests-pass",
+          "tsc-pass",
+          "code-committed",
+          "quinn-on-ui-change",
+          "local-api-validated",
+          "local-ui-validated",
+          "local-before-prod",
+          "container-has-fix",
+          "spec-drift",
+          "decision-id-valid",
+          "spec-decision-compliance",
+          "evidence-target-valid",
+          "skill-qc-ship",
+          "brief-ac-alignment"
+        ],
+        "ship": [
+          "all-gates-pass",
+          "branch-merged",
+          "code-pushed",
+          "prod-rebuild-pass",
+          "prod-smoke-pass",
+          "prod-quinn-pass",
+          "prod-quinn-spot"
+        ]
+      },
+      "batchMode": {
+        "description": "When batchMode is active, use reduced check set. Activated by ship skill for 3+ dependent issues.",
+        "skipScopeGate": true,
+        "checks": {
+          "scope": [
+            "acs-measurable",
+            "acs-no-skillmd-enforcement",
+            "acs-no-behavioral-language"
+          ],
+          "verify": [
+            "code-committed",
+            "tests-pass",
+            "tsc-pass",
+            "local-before-prod",
+            "container-has-fix"
+          ],
+          "ship": [
+            "branch-merged",
+            "code-pushed",
+            "prod-smoke-pass"
+          ]
+        }
+      }
+    },
+    "THOROUGH": {
+      "description": "Adversarial multi-agent. Quinn + Rook + challenge agent.",
+      "evaluator": "adversarial",
+      "gates": [
+        "scope",
+        "verify",
+        "ship"
+      ],
+      "skipScopeGate": false,
+      "agents": {
+        "marcus": true,
+        "quinn": true,
+        "rook": true
+      },
+      "githubComments": 5,
+      "stopMarkers": 3,
+      "maxIterations": 8,
+      "checks": {
+        "scope": [
+          "acs-exist",
+          "acs-have-type",
+          "acs-have-threshold",
+          "acs-have-evidence-method",
+          "source-spec-cited",
+          "spec-elements-in-acs",
+          "sizing-declared",
+          "issue-goal-captured",
+          "skill-qc-goal",
+          "acs-no-skillmd-enforcement",
+          "acs-no-behavioral-language",
+          "ac-issue-alignment"
+        ],
+        "verify": [
+          "all-acs-have-evidence",
+          "all-acs-pass",
+          "evidence-type-valid",
+          "evidence-type-ratio",
+          "evidence-method-executed",
+          "threshold-crosscheck",
+          "tests-pass",
+          "tsc-pass",
+          "code-committed",
+          "quinn-on-ui-change",
+          "local-api-validated",
+          "local-ui-validated",
+          "local-before-prod",
+          "container-has-fix",
+          "consumer-chain-verified",
+          "dead-exports",
+          "spec-drift",
+          "decision-id-valid",
+          "spec-decision-compliance",
+          "evidence-target-valid",
+          "skill-qc-ship",
+          "brief-ac-alignment"
+        ],
+        "ship": [
+          "all-gates-pass",
+          "branch-merged",
+          "code-pushed",
+          "prod-rebuild-pass",
+          "prod-smoke-pass",
+          "prod-quinn-pass",
+          "prod-quinn-spot"
+        ]
+      }
+    }
+  }
+}

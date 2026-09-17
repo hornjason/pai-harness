@@ -1,0 +1,24 @@
+{
+  "patterns": [
+    { "glob": "docs/adr/*.md", "requires": ["PRINCIPLES.md", "ARCHITECTURE.md"] },
+    { "glob": "src/modules/*.ts", "requires": ["ARCHITECTURE.md", "PROJECT-STATE.md"] },
+    { "glob": "src/*-routes.ts", "requires": ["PROJECT-STATE.md"] },
+    { "glob": "dashboard/src/pages/*.tsx", "requires": ["PROJECT-STATE.md"] },
+    { "glob": "dashboard/src/components/*.tsx", "requires": ["PROJECT-STATE.md"] },
+    { "glob": "src/lib/*.ts", "requires": ["ARCHITECTURE.md"] },
+    { "glob": "src/*.ts", "requires": ["ARCHITECTURE.md"] },
+    { "glob": "skills/**/*.md", "requires": ["skills/{skill}/SKILL.md"] },
+    { "glob": "PAI/**/*.md", "requires": ["PAI/BRIEF-TEMPLATES.md"] },
+    { "glob": "config-templates/**", "requires": ["PROJECT-STATE.md"] },
+    { "glob": "scripts/*.ts", "requires": ["ARCHITECTURE.md"] },
+    { "glob": "Makefile", "requires": ["PROJECT-STATE.md"] },
+    { "glob": "Dockerfile*", "requires": ["PROJECT-STATE.md", "ARCHITECTURE.md"] },
+    { "glob": "src/campaign-*.ts", "requires": ["docs/specs/consumers/campaign.md"] },
+    { "glob": "src/meeting-prep*.ts", "requires": ["docs/specs/consumers/meeting-prep.md"] },
+    { "glob": "src/account-plan*.ts", "requires": ["docs/specs/consumers/account-plan.md"] },
+    { "glob": "src/playbook*.ts", "requires": ["docs/specs/consumers/playbook.md"] },
+    { "glob": "src/value-positioning*.ts", "requires": ["docs/specs/consumers/value-positioning.md"] }
+  ],
+  "always_check": ["PROJECT-STATE.md", "MODEL.md"],
+  "comment": "Machine-readable version of Ship SKILL.md doc cascade matrix. Used by durability-gate.sh. Consumer-spec cascade rules added 2026-08-16 per ADR-045 audit."
+}

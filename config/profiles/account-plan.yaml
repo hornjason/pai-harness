@@ -1,0 +1,36 @@
+name: account-plan
+spec: docs/specs/account-plan-rhsc-spec.md
+project: /Users/jhorn/Projects/DailyBriefDashboard
+
+regenerate:
+  command: "curl -s -X POST http://localhost:7778/api/customers/{customer}/account-plan/generate-cy27"
+  poll:
+    command: "curl -s http://localhost:7778/api/customers/{customer}/account-plan/cy27"
+    check: "generatedAt"
+    interval: 15
+    timeout: 360
+  timeout: 360
+
+validate:
+  command: "bun scripts/validate-account-plan.ts {customer}"
+  parse:
+    pass: "PASS"
+    warn: "WARN"
+    fail: "FAIL"
+    summary: "SUMMARY"
+
+quality_checks:
+  - name: humanize
+    description: "Score narrative sections through Sapling MCP for AI detection"
+    tool: mcp__sapling__sapling_ai_detect
+    extract: "Customer View Q5 (Why Red Hat), Q6 (Risks), Account Intelligence Q1-Q3 narratives"
+    threshold: 0.5
+    per_item: true
+
+exit_criteria:
+  validate_pass: ">= 25"
+  validate_fail: "0"
+  humanize_all_below: 0.5
+
+variables:
+  customer: "a10-networks"

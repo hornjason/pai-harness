@@ -1,0 +1,94 @@
+name: campaign
+spec: docs/specs/consumers/campaign.md
+project: /Users/jhorn/Projects/DailyBriefDashboard
+
+regenerate:
+  local_dev:
+    command: "curl -s -X POST http://localhost:7778/api/customer/{customer}/campaigns/generate -H 'Content-Type: application/json' -d '{input_json}'"
+    copy: "cp data-dev/cache/campaigns/{customer}-*.json data/cache/campaigns/"
+    timeout: 300
+  container:
+    command: "curl -s -X POST http://localhost:7777/api/customer/{customer}/campaigns/generate -H 'Content-Type: application/json' -d '{input_json}'"
+    timeout: 300
+
+validate:
+  command: "bun scripts/validate-campaign.ts {customer}"
+  parse:
+    pass: "PASS"
+    warn: "WARN"
+    fail: "FAIL"
+    summary: "SUMMARY"
+
+quality_checks:
+  - name: sapling
+    description: "Score each email body through Sapling MCP for AI detection"
+    tool: mcp__sapling__sapling_ai_detect
+    extract: "Split campaign HTML on emoji 📧, extract email body from each block, strip HTML tags, preserve newlines"
+    threshold: 0.05
+    pass_rate: 0.75
+    per_item: true
+    note: "Sapling overall score is a binary document-level decision driven by opener style, not per-sentence. 75% of emails must pass (6/8). Sentence-level scores are 0% for all template-assembled text."
+
+  - name: no_orphaned_words
+    description: "No standalone product names or single words as sentences (< 20 chars)"
+    check: "grep"
+    pattern: "Standalone sentences under 20 chars that are just a product name with a period"
+    examples_fail: ["Terraform.", "Ansible.", "OpenShift.", "Kubernetes.", "A10 AI Gateway."]
+    threshold: 0
+
+  - name: no_truncated_openers
+    description: "Every opener (first sentence of each email) must be a complete sentence — no dangling prepositions, adjectives without nouns, or verbs without objects"
+    check: "manual"
+    examples_fail:
+      - "and consolidate."
+      - "through strategic."
+      - "makes this a timely."
+      - "that can address a."
+      - "contributing to."
+    threshold: 0
+
+  - name: no_prompt_metadata
+    description: "Zero prompt/template artifacts in email output"
+    check: "grep"
+    pattern: "Given Event:|Given:|Event:|Context:|Background:|Signal:|Observation:"
+    threshold: 0
+
+  - name: theme_bridge_coverage
+    description: "When emailSubject sets a campaign theme, all emails should use theme-relevant signal bridges — not generic fallbacks"
+    check: "manual"
+    generic_fallbacks:
+      - "self-managed automation keeps this on track."
+      - "This aligns with how organizations are using Red Hat infrastructure"
+    threshold: 0
+    note: "Every email should reference the campaign theme (e.g. SaaS tax) in its signal bridge"
+
+  - name: no_pronoun_leaks
+    description: "No third-person pronouns referring to the recipient — should be 'you/your', never 'he/she/him/her/they'"
+    check: "grep"
+    pattern: "\\bgives him\\b|\\bgives her\\b|\\bhe is\\b|\\bshe is\\b|\\bhis team\\b|\\bher team\\b"
+    threshold: 0
+
+exit_criteria:
+  validate_pass: ">= 20"
+  validate_fail: "0"
+  sapling_pass_rate: 0.75
+  sapling_per_email: 0.05
+  no_orphaned_words: 0
+  no_truncated_openers: 0
+  no_prompt_metadata: 0
+  theme_bridge_coverage: 0
+  no_pronoun_leaks: 0
+
+# Two-stage validation: local dev first, then container
+stages:
+  - name: local_dev
+    endpoint: "http://localhost:7778"
+    description: "Validate on local dev server first"
+  - name: container
+    endpoint: "http://localhost:7777"
+    description: "Once local dev passes, rebuild container and validate there"
+    requires: local_dev
+
+variables:
+  customer: "a10-networks"
+  input_json: '{"emailSubject": "SaaS Tax Impact on Enterprise Automation Strategy"}'

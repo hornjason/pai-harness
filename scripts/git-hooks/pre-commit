@@ -1,0 +1,76 @@
+#!/bin/bash
+# Dump current crontab before every commit so scripts/crontab.txt never drifts.
+
+CRONTAB_FILE="$(git rev-parse --show-toplevel)/scripts/crontab.txt"
+
+{
+  echo "# PAI Crontab — restore with: crontab ~/.claude/scripts/crontab.txt"
+  echo "# Last updated: $(date '+%Y-%m-%d')"
+  echo ""
+  crontab -l 2>/dev/null || true
+} > "$CRONTAB_FILE"
+
+git add "$CRONTAB_FILE"
+
+# ─── Secret Scanner ─────────────────────────────────────────────────
+# Scans staged diff content for leaked secrets. Blocks commit on match.
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+ALLOWLIST="$REPO_ROOT/.secret-scan-allowlist"
+
+# Build grep pattern for all 8 secret types
+SECRET_PATTERNS='(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}|AKIA[A-Z0-9]{16}|sk-[A-Za-z0-9]{48}|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----|sk-ant-[A-Za-z0-9\-]{90,})'
+
+# Get staged diff (added/copied/modified files only, exclude crontab.txt)
+STAGED_DIFF="$(git diff --cached --diff-filter=ACM -U0 -- . ':!scripts/crontab.txt')"
+
+if [ -n "$STAGED_DIFF" ]; then
+  MATCHES=""
+  CURRENT_FILE=""
+  IS_BINARY=false
+
+  while IFS= read -r line; do
+    # Track which file we're in
+    if [[ "$line" =~ ^diff\ --git\ a/(.+)\ b/ ]]; then
+      CURRENT_FILE="${BASH_REMATCH[1]}"
+      IS_BINARY=false
+      continue
+    fi
+
+    # Skip binary files
+    if [[ "$line" == "Binary files"* ]] || [[ "$line" == "GIT binary patch"* ]]; then
+      IS_BINARY=true
+      continue
+    fi
+    if [ "$IS_BINARY" = true ]; then
+      continue
+    fi
+
+    # Only check added lines (start with +, but not +++ header)
+    if [[ "$line" =~ ^\+[^+] ]] || [[ "$line" == "+" ]]; then
+      # Check against allowlist
+      if [ -n "$CURRENT_FILE" ] && [ -f "$ALLOWLIST" ]; then
+        if grep -qxF "$CURRENT_FILE" "$ALLOWLIST" 2>/dev/null; then
+          continue
+        fi
+      fi
+
+      # Scan for secret patterns
+      if echo "$line" | grep -qE "$SECRET_PATTERNS"; then
+        MATCHES="${MATCHES}[SECRET SCAN] BLOCKED: potential secret found in ${CURRENT_FILE}\n"
+      fi
+    fi
+  done <<< "$STAGED_DIFF"
+
+  if [ -n "$MATCHES" ]; then
+    echo ""
+    echo "════════════════════════════════════════════════════"
+    echo "  SECRET SCAN FAILED — commit blocked"
+    echo "════════════════════════════════════════════════════"
+    echo ""
+    echo -e "$MATCHES"
+    echo "To allowlist a file, add its path to .secret-scan-allowlist"
+    echo "════════════════════════════════════════════════════"
+    exit 1
+  fi
+fi

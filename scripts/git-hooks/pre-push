@@ -1,0 +1,271 @@
+#!/usr/bin/env bun
+/**
+ * Pre-push hook — blocks push to main when ship verify-gate hasn't passed.
+ * TypeScript port of the bash pre-push (ADR-008 #448).
+ *
+ * Uses findWorkflowForIssue() from hooks/lib/findWorkflow.ts for resolution.
+ * Resolution priority: projectRoot > issue number > mtime fallback.
+ */
+
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { join, dirname } from 'path';
+import { execSync } from 'child_process';
+import { harnessRoot } from '../../lib/paths';
+const _hr = harnessRoot();
+const { findWorkflowForIssue, extractIssueNumber } = await import(join(_hr, 'hooks/lib/findWorkflow'));
+const { verifyWitnessChain } = await import(join(_hr, 'gates/witness'));
+
+const BASE_DIR = process.env.PAI_DIR || join(process.env.HOME!, '.claude');
+const WORK_DIR = process.env.PAI_WORK_DIR || join(process.env.HOME!, '.pai-work');
+const SIGNALS_DIR = join(BASE_DIR, 'MEMORY/LEARNING/SIGNALS');
+
+const TTL_SECONDS = 14400; // 4 hours
+
+// ── Helpers ──────────────────────────────────────────────────────────
+
+function git(cmd: string): string {
+  try {
+    return execSync(`git ${cmd}`, { encoding: 'utf-8' }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function resolveSlugFromPath(absPath: string): string {
+  return absPath.replace(WORK_DIR + '/', '');
+}
+
+function nowISO(): string {
+  return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function writeSignal(prefix: string, data: Record<string, unknown>): void {
+  mkdirSync(SIGNALS_DIR, { recursive: true });
+  const file = join(SIGNALS_DIR, `${prefix}-${Math.floor(Date.now() / 1000)}.json`);
+  writeFileSync(file, JSON.stringify(data, null, 2) + '\n');
+}
+
+// ── Read stdin: determine if pushing to main ─────────────────────────
+
+const stdin = readFileSync(0, 'utf-8');
+const remote = process.argv[2] || '';
+const url = process.argv[3] || '';
+
+let pushingToMain = false;
+for (const line of stdin.split('\n')) {
+  const parts = line.trim().split(/\s+/);
+  const remoteRef = parts[2] || '';
+  if (remoteRef === 'refs/heads/main' || remoteRef === 'refs/heads/master') {
+    pushingToMain = true;
+  }
+}
+
+if (!pushingToMain) process.exit(0);
+
+// ── Commit-prefix fast-path ──────────────────────────────────────────
+
+const commitMsg = git('log --oneline -1 HEAD');
+if (/^[a-f0-9]+ (docs:|chore:|backup:|nightly:)/.test(commitMsg)) {
+  process.exit(0);
+}
+
+// ── Find active workflow via shared resolution ───────────────────────
+
+const repoRoot = git('rev-parse --show-toplevel');
+const issueNum = extractIssueNumber(commitMsg);
+
+// Active phases — exclude DONE and CIRCUIT_BREAK
+const activePhases = ['BUILD', 'VERIFY', 'SCOPE', 'SHIP'];
+
+const workflow = findWorkflowForIssue(issueNum, activePhases, undefined, repoRoot || undefined);
+
+// ── No active workflow → audit for orphans, allow push ───────────────
+
+if (!workflow) {
+  // Check for orphaned workflow-state.json (marker deletion bypass)
+  if (existsSync(WORK_DIR)) {
+    try {
+      const scanDirs = (base: string) => {
+        for (const d of readdirSync(base, { withFileTypes: true })) {
+          if (!d.isDirectory()) continue;
+          const wfPath = join(base, d.name, 'workflow-state.json');
+          if (!existsSync(wfPath)) continue;
+          try {
+            const data = JSON.parse(readFileSync(wfPath, 'utf-8'));
+            const phase = data.phase;
+            if (phase && phase !== 'DONE' && phase !== 'CIRCUIT_BREAK') {
+              const shipActive = join(base, d.name, '.ship-active');
+              if (!existsSync(shipActive)) {
+                writeSignal('marker-missing', {
+                  ts: nowISO(),
+                  type: 'marker_missing',
+                  phase,
+                  slug: resolveSlugFromPath(join(base, d.name)),
+                  issue: data.issue || 0,
+                  remote,
+                  url,
+                  user: process.env.USER || 'unknown',
+                });
+                console.error('⚠️  Ship marker missing for active issue — audit logged');
+              }
+            }
+          } catch {}
+        }
+      };
+      scanDirs(WORK_DIR);
+      // Scan nested (e.g., pai/361)
+      for (const d of readdirSync(WORK_DIR, { withFileTypes: true })) {
+        if (d.isDirectory()) scanDirs(join(WORK_DIR, d.name));
+      }
+    } catch {}
+  }
+  process.exit(0);
+}
+
+const wfDir = dirname(workflow.path);
+const wfData = workflow.data;
+const shipIssue: number = wfData.issue || 0;
+
+// ── HOTFIX override ─────────────────────────────────────────────────
+
+const hotfix = process.env.HOTFIX;
+if (hotfix) {
+  // Format validation — restrict to known categories
+  if (!/^(issue-\d+|docs|chore|backup|nightly)$/.test(hotfix)) {
+    console.error(`HOTFIX format invalid: '${hotfix}' (expected: issue-NNN, docs, chore, backup, nightly)`);
+    process.exit(1);
+  }
+
+  // Rate-limit warning — flag repeated overrides for same ref
+  if (existsSync(SIGNALS_DIR)) {
+    try {
+      const oneHourAgo = Date.now() - 3600000;
+      const recentCount = readdirSync(SIGNALS_DIR)
+        .filter(f => f.startsWith('hotfix-'))
+        .filter(f => {
+          const fPath = join(SIGNALS_DIR, f);
+          if (statSync(fPath).mtimeMs < oneHourAgo) return false;
+          try {
+            const content = JSON.parse(readFileSync(fPath, 'utf-8'));
+            return content.hotfix_ref === hotfix;
+          } catch { return false; }
+        }).length;
+      if (recentCount >= 2) {
+        console.error(`⚠️  WARN: ${recentCount} HOTFIX overrides for '${hotfix}' in last hour`);
+      }
+    } catch {}
+  }
+
+  writeSignal('hotfix', {
+    ts: nowISO(),
+    type: 'hotfix_override',
+    issue: shipIssue,
+    hotfix_ref: hotfix,
+    remote,
+    url,
+    user: process.env.USER || 'unknown',
+    hostname: execSync('hostname -s', { encoding: 'utf-8' }).trim(),
+  });
+  console.error(`⚠️  HOTFIX override — audit logged to ${SIGNALS_DIR}`);
+  process.exit(0);
+}
+
+// ── GATE_PASSED_PUSH bypass ──────────────────────────────────────────
+
+if (process.env.GATE_PASSED_PUSH) {
+  const gateSha = wfData.gates?.ship?.commitSha;
+  const headSha = git('rev-parse HEAD');
+  if (gateSha && gateSha === headSha) {
+    console.error(`  Gate-passed push — SHA verified (${gateSha})`);
+    process.exit(0);
+  }
+  console.error(gateSha
+    ? `  Gate SHA mismatch (${gateSha} vs ${headSha}) — running gates`
+    : '  Cannot verify gate SHA — running gates');
+}
+
+// ── Verify gate results from workflow-state ──────────────────────────
+// Pre-push is ADVISORY — IssueCloseGuard is the enforcement point.
+
+const headSha = git('rev-parse HEAD');
+let allPass = true;
+let missingGates: string[] = [];
+
+for (const gate of ['scope', 'verify', 'ship'] as const) {
+  const gateResult: string = wfData.gates?.[gate]?.result || '';
+  const gateSha: string = wfData.gates?.[gate]?.commitSha || '';
+
+  if (gateResult === 'PASS') {
+    if (gateSha && gateSha === headSha) {
+      console.error(`  ✓ ${gate} — PASS (SHA verified)`);
+    } else {
+      console.error(`  ⚠ ${gate} — PASS but SHA mismatch (${gateSha} vs ${headSha}) — WARN`);
+    }
+  } else if (!gateResult) {
+    console.error(`  ○ ${gate} — not run yet`);
+    missingGates.push(gate);
+    allPass = false;
+  } else {
+    console.error(`  ✗ ${gate} — ${gateResult}`);
+    allPass = false;
+  }
+}
+
+if (allPass) {
+  console.error('  All gates PASS — push allowed');
+} else if (missingGates.length > 0) {
+  // Active workflow but gates not run — BLOCK unless ship gate PASS
+  const shipGate = wfData.gates?.ship?.result;
+  if (shipGate !== 'PASS') {
+    console.error(`  BLOCKED: Active workflow exists but ship gate not PASS (missing: ${missingGates.join(', ')})`);
+    console.error('  Run gate checks or set HOTFIX=issue-NNN to override.');
+    process.exit(1);
+  }
+  console.error(`  ⚠️  WARN: Gates not run: ${missingGates.join(', ')} — push allowed (ship gate PASS)`);
+} else {
+  // Active workflow with failed gates — BLOCK
+  console.error('  BLOCKED: Gates not PASS — fix gate failures before pushing.');
+  console.error('  Set HOTFIX=issue-NNN to override.');
+  process.exit(1);
+}
+
+// ── Stale-PASS detection ─────────────────────────────────────────────
+
+const staleSha = wfData.gates?.ship?.commitSha || wfData.gates?.verify?.commitSha;
+if (staleSha && staleSha !== headSha) {
+  console.error(`⚠️  WARN: Gates passed at commit ${staleSha} but HEAD is now ${headSha}`);
+  console.error('  New commits since gate-run may not be validated.');
+}
+
+// ── Witness chain verification (#471) ───────────────────────────────
+// Ground-truth check: verify HMAC-signed witness files match gate results
+
+const wfSlug = resolveSlugFromPath(wfDir);
+try {
+  const chain = verifyWitnessChain(wfSlug, headSha);
+  if (chain.valid) {
+    console.error(`  ✓ Witness chain verified (${chain.witnesses.length} witnesses)`);
+  } else {
+    for (const err of chain.errors) {
+      console.error(`  ⚠ Witness: ${err}`);
+    }
+    // WARN, not BLOCK — witness chain is additive; workflow-state gates are primary
+    console.error('  ⚠️  WARN: Witness chain verification failed — audit logged');
+    writeSignal('witness-chain-fail', {
+      ts: nowISO(),
+      type: 'witness_chain_failure',
+      slug: wfSlug,
+      issue: shipIssue,
+      errors: chain.errors,
+      witnessCount: chain.witnesses.length,
+      remote,
+      url,
+      user: process.env.USER || 'unknown',
+    });
+  }
+} catch (e: any) {
+  // Witness module not available or salt missing — degrade gracefully
+  console.error(`  ○ Witness chain: ${e.message}`);
+}
+
+process.exit(0);

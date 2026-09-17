@@ -1,0 +1,36 @@
+{
+  "description": "Data-driven spec-alignment checks — Decision #3",
+  "forbiddenTargets": {
+    "patterns": ["SKILL\\.md"],
+    "scope": ["statement", "evidenceMethod.command"],
+    "message": "enforcement goes in scripts/hooks/gates, not SKILL.md (decision #4)"
+  },
+  "forbiddenLanguage": {
+    "patterns": ["DA should", "remember to", "must manually", "don.t forget", "should remember", "needs to remember"],
+    "scope": ["statement"],
+    "message": "use mechanical enforcement instead (decision #8)"
+  },
+  "implementationPatterns": {
+    "data-driven-enforcement": {
+      "decision": "#3",
+      "description": "Enforcement via JSON data, not inline code",
+      "antiPatterns": ["hardcoded.*(rule|check|gate)", "inline.*(validation|enforcement)"],
+      "scope": ["statement"],
+      "message": "enforcement should be data-driven — add patterns to JSON, not inline code (decision #3)"
+    },
+    "deep-modules-thin-consumers": {
+      "decision": "#7",
+      "description": "Shared logic in scripts/lib/, consumers call one function",
+      "antiPatterns": ["duplicate.*(logic|function|helper)", "copy.*(shared|lib|util)"],
+      "scope": ["statement"],
+      "message": "shared logic goes in scripts/lib/ — consumers import and call (decision #7)"
+    },
+    "warn-before-fail": {
+      "decision": "#9",
+      "description": "New checks start as WARN, promote to FAIL after precision data",
+      "antiPatterns": ["new.*(check|gate).*expect.*fail", "add.*expect.*throw.*new"],
+      "scope": ["statement", "evidenceMethod.command"],
+      "message": "new checks ship as WARN — promote to FAIL only with >80% precision over 10+ cycles (decision #9)"
+    }
+  }
+}

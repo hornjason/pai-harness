@@ -1,0 +1,28 @@
+{
+  "description": "Content validation policies per agent type. AgentBriefGuard reads this at runtime.",
+  "policies": {
+    "marcus": {
+      "requiredPatterns": [
+        {"name": "Goal", "pattern": "(?i)(goal|objective|what to implement)", "description": "Issue goal statement"},
+        {"name": "ACs", "pattern": "(?i)(acceptance criter|\\bAC-|\\bSC-|success criter)", "description": "Acceptance or success criteria"},
+        {"name": "Files", "pattern": "(?i)(files to|files changed|file.*read|file.*modify)", "description": "Specific files to read/modify"},
+        {"name": "Scope", "pattern": "(?i)(scope.*not|do not touch|out of scope|scope bound)", "description": "Scope boundaries"},
+        {"name": "Verify", "pattern": "(?i)(verify|verification|verify command|test command)", "description": "Verification commands"}
+      ],
+      "enforcement": "WARN"
+    },
+    "quinn": {
+      "requiredPatterns": [
+        {"name": "Environment", "pattern": "(?i)(port|localhost|url|environment|7776|5173)", "description": "Test environment details"},
+        {"name": "What to test", "pattern": "(?i)(test|verify|check|validate)", "description": "Test scope"}
+      ],
+      "enforcement": "WARN"
+    },
+    "rook": {
+      "requiredPatterns": [
+        {"name": "Files", "pattern": "(?i)(files|changed|scan|review)", "description": "Files to scan"}
+      ],
+      "enforcement": "WARN"
+    }
+  }
+}
