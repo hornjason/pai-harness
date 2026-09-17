@@ -352,11 +352,6 @@
       "migrated": true
     },
     {
-      "source": "~/.claude/test/unit/score-process-penalty.test.ts",
-      "dest": "test/unit/score-process-penalty.test.ts",
-      "migrated": true
-    },
-    {
       "source": "~/.claude/test/unit/skill-cooccurrence.test.ts",
       "dest": "test/unit/skill-cooccurrence.test.ts",
       "migrated": true

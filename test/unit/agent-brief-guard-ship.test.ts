@@ -197,7 +197,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
+        env: { ...process.env, PAI_DIR: tempDir, PAI_WORK_DIR: workDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -218,7 +218,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
+        env: { ...process.env, PAI_DIR: tempDir, PAI_WORK_DIR: workDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -238,7 +238,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
         stdin: Buffer.from(makePayload('Engineer')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
+        env: { ...process.env, PAI_DIR: tempDir, PAI_WORK_DIR: workDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -250,12 +250,15 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
       expect(stderr).toContain('no_ship_session');
     });
 
-    it('Quinn NOT affected — passes without .ship-active marker', async () => {
+    it('Quinn NOT affected — passes with active ship session', async () => {
+      const now = new Date().toISOString();
+      createShipMarker('65-engineer-guard', 65, now);
+
       const proc = Bun.spawn(['bun', 'run', hookPath], {
         stdin: Buffer.from(makePayload('QATester')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
+        env: { ...process.env, PAI_DIR: tempDir, PAI_WORK_DIR: workDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
@@ -267,12 +270,15 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
       expect(stderr).toContain('spawn validated');
     });
 
-    it('Rook NOT affected — passes without .ship-active marker', async () => {
+    it('Rook NOT affected — passes with active ship session', async () => {
+      const now = new Date().toISOString();
+      createShipMarker('65-engineer-guard', 65, now);
+
       const proc = Bun.spawn(['bun', 'run', hookPath], {
         stdin: Buffer.from(makePayload('Pentester')),
         stdout: 'pipe',
         stderr: 'pipe',
-        env: { ...process.env, PAI_DIR: tempDir, HOOK_EVENT: 'PreToolUse' },
+        env: { ...process.env, PAI_DIR: tempDir, PAI_WORK_DIR: workDir, HOOK_EVENT: 'PreToolUse' },
       });
 
       const stdout = await new Response(proc.stdout).text();
