@@ -2,20 +2,10 @@
   "project": "pai-harness",
   "repo": "hornjason/pai-harness",
   "issueRepo": "hornjason/pai-config",
-  "projectRoot": "/Users/jhorn/Projects/pai-harness",
-  "dev": {
-    "testCmd": "bun test",
-    "typeCheckCmd": "bunx tsc --noEmit",
-    "port": null
+  "contextDocs": {
+    "harness": "HARNESS.md",
+    "agents": "AGENTS.md"
   },
-  "prod": {
-    "rebuild": null,
-    "smoke": null,
-    "port": null
-  },
-  "contextDocs": [
-    "HARNESS.md"
-  ],
   "consumers": [],
   "pages": {}
 }

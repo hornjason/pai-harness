@@ -117,8 +117,9 @@ const ISSUE_REPO = parsedArgs.issueRepo || REPO
 const PROJECT_ROOT = parsedArgs.projectRoot
 const PHASE_TARGET = parsedArgs.phase || 'all'
 const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
-const HARNESS_ROOT = parsedArgs.harnessRoot || '/Users/jhorn/Projects/pai-harness'
-const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || '/Users/jhorn'
+if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
+const HARNESS_ROOT = parsedArgs.harnessRoot
+const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || process.env.HOME || ''
 const WORK_DIR = `${HOME}/.pai-work/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const MAX_REGRESSIONS = 2

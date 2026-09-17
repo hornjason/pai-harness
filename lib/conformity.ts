@@ -234,7 +234,6 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       const config = JSON.parse(readFileSync(p, "utf-8"));
       expect(config.project).toBeDefined();
       expect(config.repo).toBeDefined();
-      expect(config.dev?.testCmd).toBeDefined();
     });
 
     test("AGENTS.md/CLAUDE.md no duplication (if both exist)", () => {
