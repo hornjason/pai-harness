@@ -1,8 +1,11 @@
 {
   "name": "pai-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Ship harness — workflows, gates, specs, and guard tests for PAI development lifecycle",
+  "exports": {
+    "./lib/conformity": "./lib/conformity.ts"
+  },
   "scripts": {
     "test": "bun test",
     "test:structure": "bun test test/structure.test.ts",
