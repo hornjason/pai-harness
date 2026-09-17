@@ -303,5 +303,127 @@ describe("brief-assembler", () => {
 
       expect(result.validated).toBe(true);
     });
+
+    test("AC-1: includes AGENTS.md from projectRoot when present", async () => {
+      writeFileSync(
+        join(PROJECT_ROOT, "AGENTS.md"),
+        "# Agents\n\n## Marcus Webb\nSenior engineer\n\n## Quinn Torres\nQA lead\n",
+      );
+      createState();
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      expect(brief).toContain("AGENTS.md");
+      expect(brief).toContain("## Context");
+    });
+
+    test("AC-1: omits AGENTS.md reference when file does not exist", async () => {
+      createState();
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      expect(brief).not.toContain("AGENTS.md");
+    });
+
+    test("AC-2: includes contextDocs from project-harness.json (array form)", async () => {
+      writeFileSync(
+        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        JSON.stringify({
+          project: "TestProject",
+          contextDocs: ["HARNESS.md", "DESIGN.md"],
+        }),
+      );
+      createState();
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      expect(brief).toContain("HARNESS.md");
+      expect(brief).toContain("DESIGN.md");
+      expect(result.contextFileCount).toBeGreaterThanOrEqual(2);
+    });
+
+    test("AC-2: includes contextDocs from project-harness.json (object form)", async () => {
+      writeFileSync(
+        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        JSON.stringify({
+          project: "TestProject",
+          contextDocs: {
+            routing: "DOCS.md",
+            model: "MODEL.md",
+            architecture: "ARCHITECTURE.md",
+          },
+        }),
+      );
+      createState();
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      expect(brief).toContain("DOCS.md");
+      expect(brief).toContain("MODEL.md");
+      expect(brief).toContain("ARCHITECTURE.md");
+    });
+
+    test("AC-3: no hardcoded harness-owned template paths in context", async () => {
+      createState();
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      expect(brief).not.toContain("MarcusContext.md");
+      expect(brief).not.toContain("MarcusChecklist.md");
+    });
+
+    test("AC-4: produces >= 5 sections from structured data only", async () => {
+      writeFileSync(
+        join(PROJECT_ROOT, "AGENTS.md"),
+        "# Agents\n## Marcus Webb\nSenior engineer\n",
+      );
+      writeFileSync(
+        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        JSON.stringify({
+          project: "TestProject",
+          contextDocs: ["HARNESS.md"],
+        }),
+      );
+      createState({
+        governingSpec: { path: "/tmp/spec.md", detectedFrom: "test" },
+        scopeOut: ["src/secret.ts"],
+      });
+
+      const result = await assembleBrief({
+        slug: TEST_SLUG,
+        workDir: WORK_DIR,
+        projectRoot: PROJECT_ROOT,
+      });
+
+      const brief = readFileSync(result.briefPath, "utf-8");
+      const sectionHeaders = brief.match(/^## /gm) || [];
+      expect(sectionHeaders.length).toBeGreaterThanOrEqual(5);
+      expect(result.validated).toBe(true);
+    });
   });
 });
