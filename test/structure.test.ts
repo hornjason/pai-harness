@@ -65,6 +65,22 @@ describe("ST-2: Containment — harness files not in old locations", () => {
   }
 });
 
+describe("ST-2b: Containment — no harness-pattern files in old locations", () => {
+  const oldHarnessDirs = [
+    { dir: join(CLAUDE_DIR, "workflows"), ext: ".js" },
+    { dir: join(CLAUDE_DIR, "gates"), ext: ".ts" },
+    { dir: join(CLAUDE_DIR, "lib"), ext: ".ts" },
+  ];
+
+  for (const { dir, ext } of oldHarnessDirs) {
+    test(`no ${ext} files in ${dir.replace(HOME, "~")}`, () => {
+      if (!existsSync(dir)) return;
+      const files = readdirSync(dir).filter(f => f.endsWith(ext));
+      expect(files).toEqual([]);
+    });
+  }
+});
+
 describe("ST-3: Path purity — no hardcoded ~/.claude/ paths", () => {
   test("no hardcoded paths in .ts/.js files", () => {
     const dirs = ["workflows", "gates", "scripts", "lib"].map(d => join(HARNESS_ROOT, d));
