@@ -82,8 +82,18 @@ async function main() {
   if (!closeMatch) process.exit(0);
   const issueNum = closeMatch[1];
 
+  const repoMatch = command.match(/--repo\s+(\S+)/);
+  const repo = repoMatch?.[1] || 'hornjason/pai-config';
+
   const wf = findWorkflowState(issueNum);
   if (!wf) {
+    try {
+      const result = Bun.spawnSync(['gh', 'issue', 'view', issueNum, '--repo', repo, '--json', 'labels', '--jq', '.labels[].name']);
+      const labels = result.stdout.toString().trim();
+      if (labels.includes('p1-ship-next') || labels.includes('p2-this-week')) {
+        block(`Cannot close #${issueNum} — has ${labels.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
+      }
+    } catch {}
     console.log(`<system-reminder>\nWARNING: Closing #${issueNum} but no workflow-state.json found.\nIf this issue went through ship, gates may not have been run.\n</system-reminder>`);
     process.exit(0);
   }
