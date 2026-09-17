@@ -389,8 +389,8 @@ function addPaiHarnessDevDep(root: string): void {
     pkg.devDependencies = {};
   }
 
-  if (pkg.devDependencies["pai-harness"]) {
-    actions.push("SKIP: pai-harness devDep (already present)");
+  if (pkg.devDependencies["pai-harness"] || pkg.name === "pai-harness") {
+    actions.push("SKIP: pai-harness devDep (already present or self-reference)");
     return;
   }
 
