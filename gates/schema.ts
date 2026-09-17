@@ -121,11 +121,11 @@ export const EnvironmentLocalSchema = z.object({
 
 export const EnvironmentProdSchema = z.object({
   rebuild: z.enum(["PASS", "FAIL", "SKIP"]).nullable().optional(),
-  rebuildSkipReason: z.string().optional(),
+  rebuildSkipReason: z.string().nullable().optional(),
   smoke: z.enum(["PASS", "FAIL", "SKIP"]).nullable().optional(),
-  smokeSkipReason: z.string().optional(),
+  smokeSkipReason: z.string().nullable().optional(),
   quinn: z.enum(["PASS", "FAIL", "SKIP"]).nullable().optional(),
-  quinnSkipReason: z.string().optional(),
+  quinnSkipReason: z.string().nullable().optional(),
   quinnSpot: z.enum(["PASS", "FAIL", "SKIP"]).nullable().optional(),
   quinnSpotSkipReason: z.string().optional(),
 }).optional();
