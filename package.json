@@ -1,0 +1,17 @@
+{
+  "name": "pai-harness",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Ship harness — workflows, gates, specs, and guard tests for PAI development lifecycle",
+  "scripts": {
+    "test": "bun test",
+    "test:structure": "bun test test/structure.test.ts",
+    "test:external-deps": "bun test test/external-deps.test.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
