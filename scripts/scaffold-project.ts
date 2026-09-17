@@ -160,18 +160,145 @@ console.log(`\nTotal: ${actions.filter(a => a.startsWith("CREATED")).length} cre
 function generateAgentsMd(name: string, type: ProjectType): string {
   const typeLabel = type === "code" ? "Code" : type === "content" ? "Content" : "Infrastructure";
 
-  return `# ${name}
+  // Read package.json for description
+  const pkgPath = join(projectPath, "package.json");
+  let pkgDesc = "";
+  let pkgName = name;
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      pkgDesc = pkg.description || "";
+      pkgName = pkg.name || name;
+    } catch {}
+  }
+
+  // Read README.md first paragraph for identity
+  let readmeDesc = "";
+  const readmePath = join(projectPath, "README.md");
+  if (existsSync(readmePath)) {
+    try {
+      const readme = readFileSync(readmePath, "utf-8");
+      const paragraphs = readme.split(/\n\n+/).filter(p => !p.startsWith("#") && p.trim().length > 20);
+      if (paragraphs.length > 0) readmeDesc = paragraphs[0].replace(/\n/g, " ").trim();
+    } catch {}
+  }
+
+  const identity = readmeDesc || pkgDesc || `${typeLabel} project. <!-- TODO: Describe what this project is -->`;
+
+  // Detect git remote for repo URL
+  let repoUrl = "";
+  try {
+    const result = Bun.spawnSync(["git", "-C", projectPath, "remote", "get-url", "origin"]);
+    repoUrl = result.stdout.toString().trim().replace(/\.git$/, "").replace("git@github.com:", "https://github.com/");
+  } catch {}
+
+  // Scan key files
+  const keyFiles: Array<{ file: string; what: string; when: string }> = [
+    { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
+  ];
+  const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
+    { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
+    { pattern: "Makefile", what: "Build/deploy commands", when: "Building or deploying" },
+    { pattern: "tsconfig.json", what: "TypeScript configuration", when: "Changing TS settings" },
+    { pattern: "Containerfile", what: "Container build definition", when: "Modifying container" },
+    { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
+    { pattern: ".claude/project-harness.json", what: "Harness project config", when: "Shipping through harness" },
+  ];
+  for (const kf of keyFilePatterns) {
+    if (existsSync(join(projectPath, kf.pattern))) {
+      keyFiles.push({ file: kf.pattern, what: kf.what, when: kf.when });
+    }
+  }
+  // Scan for main source files
+  for (const srcDir of ["src", "lib", "gates", "workflows", "hooks"]) {
+    if (existsSync(join(projectPath, srcDir))) {
+      keyFiles.push({ file: `${srcDir}/`, what: `${srcDir.charAt(0).toUpperCase() + srcDir.slice(1)} directory`, when: `Working on ${srcDir}` });
+    }
+  }
+
+  const keyFilesTable = keyFiles.map(kf => `| ${kf.file} | ${kf.what} | ${kf.when} |`).join("\n");
+
+  // Scan specs
+  const specsDir = join(projectPath, "specs");
+  const specRows: string[] = [];
+  if (existsSync(specsDir)) {
+    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+      const content = readFileSync(join(specsDir, f), "utf-8");
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      let testable = "false";
+      let governs = f.replace(/\.md$/, "");
+      if (fmMatch) {
+        const tMatch = fmMatch[1].match(/testable:\s*(true|false)/);
+        if (tMatch) testable = tMatch[1];
+        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+        if (gMatch) governs = gMatch[1].trim();
+      }
+      specRows.push(`| ${f} | ${testable} | ${governs} |`);
+    }
+  }
+  const specsTable = specRows.length > 0
+    ? specRows.join("\n")
+    : "| (none yet — copy SPEC-TEMPLATE.md from pai-harness) | | |";
+
+  // Scan test files
+  const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
+  const testRows: string[] = [];
+  if (testDir) {
+    for (const f of readdirSync(join(projectPath, testDir)).filter(f => f.endsWith(".test.ts"))) {
+      const label = f.replace(".test.ts", "").replace(/-/g, " ");
+      testRows.push(`| ${label} | ${f} | Auto-detected |`);
+    }
+  }
+  const testsTable = testRows.length > 0
+    ? testRows.join("\n")
+    : "| scaffold conformity | scaffold-conformity.test.ts | Structure validation |";
+
+  // Detect test command
+  let testCmd = "bun test";
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (pkg.scripts?.test) testCmd = pkg.scripts.test;
+    } catch {}
+  }
+
+  // Scan reference/ files
+  const refDir = join(projectPath, "reference");
+  const refRows: string[] = [];
+  if (existsSync(refDir)) {
+    for (const f of readdirSync(refDir)) {
+      refRows.push(`| ${f} | Historical reference |`);
+    }
+  }
+  const refTable = refRows.length > 0
+    ? refRows.join("\n")
+    : "| (empty) | |";
+
+  // Detect workflow info
+  const repoLine = repoUrl ? `- **Repo:** ${repoUrl}` : "<!-- TODO: Add repo URL -->";
+
+  // Makefile targets for workflow section
+  let makeTargets = "";
+  if (existsSync(join(projectPath, "Makefile"))) {
+    try {
+      const makefile = readFileSync(join(projectPath, "Makefile"), "utf-8");
+      const targets = makefile.match(/^[\w-]+(?=:)/gm)?.filter(t => !t.startsWith(".") && !t.startsWith("_")).slice(0, 8);
+      if (targets?.length) makeTargets = `\n- **Key commands:** \`make ${targets.join("`, `make ")}\``;
+    } catch {}
+  }
+
+  return `# ${pkgName}
 
 ## Project Identity
 
-${typeLabel} project. <!-- TODO: Describe what this project is and who uses it. One paragraph. -->
+${identity}
+${repoLine}
 
 ## Key Files
 
 | File | What | When to Read |
 |------|------|--------------|
-| AGENTS.md | Project entry point | Always first |
-<!-- TODO: Add key files for this project -->
+${keyFilesTable}
 
 ## Specs
 
@@ -179,26 +306,28 @@ All specs live in \`specs/\` with YAML frontmatter declaring \`testable: true/fa
 
 | Spec | Testable | Governs |
 |------|----------|---------|
-<!-- TODO: Add specs as they are created -->
+${specsTable}
 
 ## Tests
 
 \`\`\`bash
-bun test
+${testCmd}
 \`\`\`
 
 | Category | File | What |
 |----------|------|------|
-| Scaffold conformity | scaffold-conformity.test.ts | Structure validation |
-<!-- TODO: Add test files as they are created -->
+${testsTable}
 
 ## Workflow
-
-<!-- TODO: Describe how work gets done in this project -->
+${repoLine}${makeTargets}
+- **Test:** \`${testCmd}\`
+- **Conformity:** Imported from pai-harness. \`bun update pai-harness && bun test\` to sync.
 
 ## Quick Reference
 
-<!-- TODO: Add critical rules condensed -->
+1. AGENTS.md is the single entry point — everything routes from here
+2. Specs in specs/ are source of truth — testable: true specs auto-generate tests
+3. \`bun test\` runs conformity + domain tests
 
 ## Reference Files
 
@@ -206,9 +335,10 @@ Historical and inactive docs live in \`reference/\`.
 
 | File | What |
 |------|------|
-<!-- TODO: Add reference files -->
+${refTable}
 `;
 }
+
 
 function generateConformityTest(): string {
   return `import { resolve } from "path";
