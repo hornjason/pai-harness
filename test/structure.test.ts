@@ -65,6 +65,19 @@ describe("ST-2: Containment — harness files not in old locations", () => {
   }
 });
 
+describe("ST-2c: Hook independence — no PAI imports", () => {
+  test("hooks have zero imports from ~/.pai/hooks/lib/", () => {
+    const hooksDir = join(HARNESS_ROOT, "hooks");
+    if (!existsSync(hooksDir)) return;
+    const result = execSync(
+      `grep -rn "from.*\\.pai/hooks\\|require.*\\.pai/hooks\\|from.*hooks/lib/paths\\|from.*hooks/lib/parseStdin\\|from.*hooks/lib/findWorkflow\\|from.*hooks/lib/agentDetection" ${hooksDir} --include='*.ts' 2>/dev/null || true`,
+      { encoding: "utf8" }
+    );
+    const lines = result.trim().split("\n").filter(l => l.length > 0);
+    expect(lines).toEqual([]);
+  });
+});
+
 describe("ST-2b: Containment — no harness-pattern files in old locations", () => {
   const oldHarnessDirs = [
     { dir: join(CLAUDE_DIR, "workflows"), ext: ".js" },
