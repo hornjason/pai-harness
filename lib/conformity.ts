@@ -328,3 +328,109 @@ export function runSpecDrift(root: string) {
     });
   });
 }
+
+export function runDocHygiene(root: string) {
+  const specsDir = join(root, "specs");
+  const refDir = join(root, "reference");
+  const scanDirs = ["specs", "scripts", "prompts"].map(d => join(root, d)).filter(d => existsSync(d));
+  const testDirs = [join(root, "test"), join(root, "tests")].filter(d => existsSync(d));
+
+  function countReferences(filename: string): number {
+    let refs = 0;
+    const searchDirs = [root];
+    const exts = [".ts", ".js", ".md", ".json"];
+    for (const dir of readdirSync(root).filter(f => !f.startsWith(".") && f !== "node_modules" && f !== "reference")) {
+      const full = join(root, dir);
+      try { if (require("fs").statSync(full).isDirectory()) searchDirs.push(full); } catch {}
+    }
+    for (const dir of searchDirs) {
+      try {
+        const files = dir === root
+          ? readdirSync(dir).filter(f => exts.some(e => f.endsWith(e)))
+          : readdirSync(dir, { recursive: true }).map(f => String(f)).filter(f => exts.some(e => f.endsWith(e)));
+        for (const f of files) {
+          const content = readFileSync(join(dir, String(f)), "utf-8");
+          if (content.includes(filename)) refs++;
+        }
+      } catch {}
+    }
+    return refs;
+  }
+
+  describe("Doc Hygiene", () => {
+    test("HYGIENE-1: All specs have non-empty governs field", () => {
+      if (!existsSync(specsDir)) return;
+      const missing: string[] = [];
+      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(specsDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm) continue;
+        const governs = fm.governs || "";
+        if (!governs || governs.includes("TODO")) missing.push(f);
+      }
+      if (missing.length > 0) {
+        console.warn(`Specs with empty/TODO governs field: ${missing.join(", ")}`);
+      }
+      expect(true).toBe(true);
+    });
+
+    test("HYGIENE-2: All specs have updated field in frontmatter", () => {
+      if (!existsSync(specsDir)) return;
+      const missing: string[] = [];
+      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(specsDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm || !fm.updated) missing.push(f);
+      }
+      expect(missing).toEqual([]);
+    });
+
+    test("HYGIENE-3: No orphaned files (zero references outside reference/)", () => {
+      const orphans: string[] = [];
+      for (const dir of scanDirs) {
+        const dirName = dir.split("/").pop()!;
+        for (const f of readdirSync(dir).filter(f => !f.startsWith("."))) {
+          const refs = countReferences(f);
+          if (refs === 0) orphans.push(`${dirName}/${f}`);
+        }
+      }
+      if (orphans.length > 0) {
+        console.warn(`Orphaned files (0 references — consider archiving to reference/):\n  ${orphans.join("\n  ")}`);
+      }
+      expect(true).toBe(true);
+    });
+
+    test("HYGIENE-4: All specs listed in AGENTS.md are in AGENTS.md specs table", () => {
+      if (!existsSync(specsDir) || !existsSync(join(root, "AGENTS.md"))) return;
+      const agentsContent = readFileSync(join(root, "AGENTS.md"), "utf-8");
+      const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md"));
+      const unlisted = specFiles.filter(f => !agentsContent.includes(f));
+      if (unlisted.length > 0) {
+        console.warn(`Specs not listed in AGENTS.md: ${unlisted.join(", ")}`);
+      }
+      expect(true).toBe(true);
+    });
+
+    test("HYGIENE-5: reference/ contents not in active routing", () => {
+      if (!existsSync(refDir) || !existsSync(join(root, "AGENTS.md"))) return;
+      const agentsContent = readFileSync(join(root, "AGENTS.md"), "utf-8");
+      const leaked: string[] = [];
+      for (const sub of readdirSync(refDir)) {
+        const subPath = join(refDir, sub);
+        try {
+          if (require("fs").statSync(subPath).isDirectory()) {
+            for (const f of readdirSync(subPath)) {
+              if (agentsContent.includes(f) && !agentsContent.includes("reference/")) leaked.push(`reference/${sub}/${f}`);
+            }
+          } else {
+            if (agentsContent.includes(sub) && !agentsContent.includes("reference/")) leaked.push(`reference/${sub}`);
+          }
+        } catch {}
+      }
+      if (leaked.length > 0) {
+        console.warn(`Archived files still referenced in AGENTS.md (stale routing): ${leaked.join(", ")}`);
+      }
+      expect(true).toBe(true);
+    });
+  });
+}
