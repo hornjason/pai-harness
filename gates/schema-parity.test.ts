@@ -1,6 +1,8 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { THRESHOLD_OPS, EVIDENCE_METHOD_TYPES } from "./schema";
+import { parseTestResults } from "./run-gate";
 
 const GATES_DIR = __dirname;
 const V2_SCHEMA_PATH = join(GATES_DIR, "..", "config", "workflow-schema.json");
@@ -141,5 +143,55 @@ describe("schema parity: v2 JSON Schema vs v3 Zod", () => {
     expect(v3Source).toContain("enteredTs");
     expect(v3Source).toContain("exitedTs");
     expect(v3Source).toContain("iteration");
+  });
+});
+
+describe("GI-1: gate failure detail includes Zod error paths", () => {
+  test("parseTestResults captures lines after (fail) as detail", () => {
+    const bunOutput = [
+      "(pass) schema validation > acs-exist: at least one AC",
+      "(fail) schema validation > workflow-state.json validates (includes threshold + behavioral superRefine)",
+      "  acs.0.threshold.op: Invalid enum value. Expected '==' | '>=' | '<=' | '>' | '<' | '!=' | 'contains' | 'exists', received 'equals'",
+      "  acs.1.statement: AC-2: statement too short (3 words, min 5)",
+      "(pass) scope checks > sizing-declared",
+    ].join("\n");
+    const results = parseTestResults(bunOutput);
+    const fail = results.find(r => r.result === "FAIL");
+    expect(fail).toBeTruthy();
+    expect(fail!.detail).toContain("Invalid enum value");
+    expect(fail!.detail).toContain("acs.0.threshold.op");
+    expect(fail!.detail).not.toBe("failed");
+  });
+
+  test("parseTestResults falls back to 'failed' when no detail lines follow (fail)", () => {
+    const bunOutput = [
+      "(fail) some-check",
+      "(pass) another-check",
+    ].join("\n");
+    const results = parseTestResults(bunOutput);
+    const fail = results.find(r => r.result === "FAIL");
+    expect(fail!.detail).toBe("failed");
+  });
+});
+
+describe("GI-5: DISCOVERY_SCHEMA enum parity with schema.ts", () => {
+  const shipSource = readFileSync(join(GATES_DIR, "..", "workflows", "ship.js"), "utf-8");
+
+  test("DISCOVERY_SCHEMA threshold.op has enum matching THRESHOLD_OPS", () => {
+    const opEnumMatch = shipSource.match(/op:\s*\{\s*type:\s*'string'\s*,\s*enum:\s*\[([^\]]+)\]/);
+    expect(opEnumMatch, "threshold.op must have enum constraint in DISCOVERY_SCHEMA").toBeTruthy();
+    const ops = opEnumMatch![1].split(",").map(s => s.trim().replace(/'/g, ""));
+    expect(ops.sort()).toEqual([...THRESHOLD_OPS].sort());
+  });
+
+  test("DISCOVERY_SCHEMA evidenceMethod.type has enum matching EVIDENCE_METHOD_TYPES", () => {
+    const discoveryBlock = shipSource.slice(
+      shipSource.indexOf("const DISCOVERY_SCHEMA"),
+      shipSource.indexOf("const DISCOVERY_SCHEMA") + 3000
+    );
+    const evidenceMethodMatch = discoveryBlock.match(/evidenceMethod:\s*\{[^}]*properties:\s*\{[^}]*type:\s*\{\s*type:\s*'string'\s*,\s*enum:\s*\[([^\]]+)\]/s);
+    expect(evidenceMethodMatch, "evidenceMethod.type must have enum constraint in DISCOVERY_SCHEMA").toBeTruthy();
+    const types = evidenceMethodMatch![1].split(",").map(s => s.trim().replace(/'/g, ""));
+    expect(types.sort()).toEqual([...EVIDENCE_METHOD_TYPES].sort());
   });
 });

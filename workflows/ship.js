@@ -41,8 +41,8 @@ const DISCOVERY_SCHEMA = {
           id: { type: 'string' },
           type: { type: 'string', enum: ['CODE', 'OUTCOME'] },
           statement: { type: 'string' },
-          threshold: { type: 'object', properties: { op: { type: 'string' }, value: {}, unit: { type: 'string' } }, required: ['op', 'value'] },
-          evidenceMethod: { type: 'object', properties: { type: { type: 'string' }, command: { type: 'string' } }, required: ['type'] },
+          threshold: { type: 'object', properties: { op: { type: 'string', enum: ['==', '>=', '<=', '>', '<', '!=', 'contains', 'exists'] }, value: {}, unit: { type: 'string' } }, required: ['op', 'value'] },
+          evidenceMethod: { type: 'object', properties: { type: { type: 'string', enum: ['GREP_CHECK', 'FILE_EXISTS', 'CURL_CHECK', 'BUN_TEST', 'SCREENSHOT', 'PLAYWRIGHT', 'COMMAND', 'MANUAL', 'grep', 'command', 'api', 'screenshot', 'manual'] }, command: { type: 'string' } }, required: ['type'] },
           specElement: { type: 'string' },
           contextFiles: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, lines: { type: 'string' }, reason: { type: 'string' } }, required: ['path', 'reason'] } },
         },
@@ -155,7 +155,9 @@ Failures: ${(result.failures || []).join('\n')}
 Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md. Read ${WORK_DIR}/workflow-state.json.
 Read ${PROJECT_ROOT}/.claude/project-harness.json for environment config.
 ${healContext}
-Use Write tool for workflow-state.json edits. Report what you fixed.
+Edit workflow-state.json ONLY via writeWorkflowState():
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+This validates via Zod at write time — you get immediate error feedback. Report what you fixed.
     `, { label: `${gateName}-heal-${attempt}`, phase: phaseName })
   }
 }
@@ -334,12 +336,14 @@ const skipScope = discovery.ceremonyTier === 'LIGHT'
 let scopeResult = { result: 'PASS' }
 if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
-For AC/threshold/sourceSpec failures: fix in workflow-state.json (use Write tool).
+For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
 For evidence-type-ratio: add non-grep evidence methods (BUN_TEST, COMMAND, PLAYWRIGHT) to ACs.
 For tests-pass: run cd ${PROJECT_ROOT} && bun test --isolate test/unit/ and write result to environments.local.tests in workflow-state.json.
 For local-api-validated: check if dev server is up (curl localhost:7778). If down, run cd ${PROJECT_ROOT} && make dev-all in background. Write environments.local.api.
 For local-ui-validated: check if UI is up (curl localhost:5173). Write environments.local.ui or set skipReason.
-Use Write tool for workflow-state.json edits.`)
+Edit workflow-state.json ONLY via writeWorkflowState():
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+This validates via Zod at write time — you get immediate error feedback.`)
   if (scopeResult?.result === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult.failures, workDir: WORK_DIR }
 }
 log(`Scope: ${scopeResult?.result || 'SKIPPED'}`)
@@ -409,46 +413,49 @@ if (discovery.ceremonyTier !== 'LIGHT') {
     log(`Quinn local dev — attempt ${validateAttempt}/3`)
 
     quinnLocalResult = await agent(`
-Read ~/.claude/PAI/Testing/QUINN-STANDARD.md first.
+Read ${HARNESS_ROOT}/prompts/quinn-ui-brief.md for your testing methodology.
+Read ${PROJECT_ROOT}/AGENTS.md for project context.
 
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
-## COMMIT VERIFICATION
-Run: cd ${PROJECT_ROOT} && git diff --name-only
-Confirm uncommitted changes exist (Marcus implemented but did not commit).
-Report the changed files.
+## Environment
+- **Dev UI:** http://localhost:5173
+- **Dev API:** http://localhost:7778
+- **Viewport:** 1280x720 (set via browser_resize FIRST)
+- **Test as:** Brand-new user — no prior session state
+- **Pages map:** Read ${PROJECT_ROOT}/.claude/project-harness.json for exact URL paths
 
-## Available Playwright MCP Tools (use these, NOT manual browser)
-- browser_navigate(url) — go to URL
-- browser_snapshot() — get accessibility tree (text, fast, preferred over screenshots for assertions)
-- browser_click(element) — click by ref from snapshot
-- browser_type(element, text) — type text into element
-- browser_take_screenshot() — capture PNG evidence (use AFTER verifying, not for assertions)
-- browser_verify_text_visible(text) — assert text on page
-- browser_verify_element_visible(selector) — assert element exists
+## Pre-conditions (GATE — stop if any fail)
+1. browser_resize(1280, 720)
+2. browser_navigate to target URL from project-harness.json pages map
+3. browser_snapshot() — verify page loaded (no error banners, data present)
+If pre-conditions fail → report FAIL immediately, do NOT proceed.
 
-## Target URLs
-Read ${PROJECT_ROOT}/.claude/project-harness.json and use the "pages" map for correct page paths.
-Dev UI base: http://localhost:5173
-Dev API base: http://localhost:7778
-The dev server has hot reload — Marcus's changes are already visible.
+## User Journey for #${ISSUE}
+Follow this structured test plan — each step maps to an AC:
 
-## Test Plan for #${ISSUE} on LOCAL DEV
-1. browser_navigate("http://localhost:5173" + page path from project-harness.json)
-2. browser_snapshot() — verify page loaded
-3. For each AC:
-   a. Perform the action (browser_click, browser_type, etc.)
-   b. browser_snapshot() or browser_verify_text_visible() to verify result
-   c. browser_take_screenshot() ONLY for evidence capture
-4. Report PASS/FAIL per AC with tool output as evidence
+${discovery.acs.map((ac, i) => `Step ${i + 1}: Verify ${ac.id}: ${ac.statement}
+  → ACTION: navigate/click/type as needed
+  → VERIFY: browser_snapshot() — check expected state
+  → SCREENSHOT: browser_take_screenshot() if state changed`).join('\n\n')}
 
-### ACs to Verify
-${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
+## Anti-checks (ALWAYS run after journey)
+- [ ] No "undefined" or "null" rendered as visible text
+- [ ] No stuck loading spinners
+- [ ] No error banners or toast messages
+- [ ] Interactive elements respond to clicks
 
-### Rules
-- Use browser_snapshot() for assertions (text, fast, cheap)
-- Use browser_take_screenshot() only for final evidence capture
-- Never guess URLs — use project-harness.json pages map
+Any anti-check failure = FAIL even if all ACs pass.
+
+## Screenshot Strategy
+- page-load.png — after navigation, before interaction
+- After each state-changing action
+- final-state.png — end of journey
+Do NOT screenshot after every browser_snapshot().
+
+## Verdict
+- PASS: all pre-conditions + all ACs + all anti-checks pass
+- FAIL: any failure — report which AC or anti-check failed with evidence
     `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {

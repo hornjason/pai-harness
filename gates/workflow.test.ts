@@ -57,9 +57,8 @@ describe("schema validation", () => {
     const result = WorkflowStateSchema.safeParse(raw);
     if (!result.success) {
       const issues = result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`);
-      expect(issues).toEqual([]);
+      expect(result.success, issues.join("\n")).toBe(true);
     }
-    expect(result.success).toBe(true);
   });
 });
 

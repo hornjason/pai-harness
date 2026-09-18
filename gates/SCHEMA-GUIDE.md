@@ -112,4 +112,10 @@ Valid `actor` enum (lowercase only): `da`, `marcus`, `quinn`, `rook`, `gate-runn
 
 ## Writing workflow-state.json
 
-Use the **Write tool**, not Bash `cat >` or `echo >`. Bash writes to workflow-state.json are blocked by a PAI hook.
+Use **writeWorkflowState()** via `bun -e`, not the Write tool or Bash `cat >` / `echo >`:
+
+```
+bun -e "import {writeWorkflowState} from './gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('WORK_DIR/workflow-state.json','utf8')); /* apply fix */; writeWorkflowState('WORK_DIR/workflow-state.json', s);"
+```
+
+This validates via Zod at write time with enum-specific error formatting. Invalid values produce immediate feedback (e.g., `acs.0.threshold.op: expected one of [==, >=, ...], got "equals"`) instead of opaque gate failures later.

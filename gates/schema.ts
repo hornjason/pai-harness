@@ -12,17 +12,17 @@ const GARBAGE_PATTERNS = [
   /^changes? (?:are )?(?:made|applied|done)$/i,
 ];
 
+export const THRESHOLD_OPS = ["==", ">=", "<=", ">", "<", "!=", "contains", "exists"] as const;
+export const EVIDENCE_METHOD_TYPES = ["GREP_CHECK", "FILE_EXISTS", "CURL_CHECK", "BUN_TEST", "SCREENSHOT", "PLAYWRIGHT", "COMMAND", "MANUAL", "grep", "command", "api", "screenshot", "manual"] as const;
+
 export const ThresholdSchema = z.object({
-  op: z.enum(["==", ">=", "<=", ">", "<", "!=", "contains", "exists"]),
+  op: z.enum(THRESHOLD_OPS),
   value: z.union([z.string(), z.number()]),
   unit: z.string().optional(),
 });
 
 export const EvidenceMethodSchema = z.object({
-  type: z.enum([
-    "GREP_CHECK", "FILE_EXISTS", "CURL_CHECK", "BUN_TEST", "SCREENSHOT", "PLAYWRIGHT", "COMMAND", "MANUAL",
-    "grep", "command", "api", "screenshot", "manual",
-  ]),
+  type: z.enum(EVIDENCE_METHOD_TYPES),
   command: z.string().optional(),
 });
 
