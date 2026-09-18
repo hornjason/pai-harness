@@ -160,7 +160,10 @@ function applyToAgentsMd(projectPath: string, candidates: Candidate[]): void {
   let content = readFileSync(agentsPath, "utf-8");
 
   const formatted = candidates
-    .map((c) => `- **${c.rule.slice(0, 60)}** — ${c.rule} (${c.source})`)
+    .map((c) => {
+      const short = c.rule.length > 60 ? c.rule.slice(0, 57) + "..." : c.rule;
+      return `- **${short}** (${c.source})`;
+    })
     .join("\n");
 
   const markerStart = "<!-- BEGIN AUTO-EXTRACTED -->";

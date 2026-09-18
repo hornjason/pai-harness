@@ -27,6 +27,7 @@ export const SIGNAL_PHRASE_PATTERNS = [
   /[.;]\s*(must not|never|must|always|required|shall).+?[.;\n]/gim,
   /\b(explicitly prefers?|not dependent on|single chokepoint|no new).+?[.;\n]/gim,
   /\b(intentional|by design|anti-pattern|permanently disabled|do not change|do not remove|do not regress)\b.+?[.;\n]/gim,
+  /\b(only on|only from|only when|only in|permanent[^l]|every \d+[hm]\b).+?[.;\n]/gim,
 ] as const;
 
 interface ParsedSC {
@@ -453,6 +454,25 @@ export function runDocHygiene(root: string) {
       if (leaked.length > 0) {
         console.warn(`Archived files still referenced in AGENTS.md (stale routing): ${leaked.join(", ")}`);
       }
+      expect(true).toBe(true);
+    });
+
+    test("HYGIENE-6: No unreviewed constraint candidates in changed docs", async () => {
+      const { extractConstraints } = await import("../scripts/extract-constraints");
+      const result = await extractConstraints(root, { apply: false });
+
+      if (result.staleness.length > 0) {
+        console.warn(
+          `Stale docs (past threshold): ${result.staleness.map((s) => `${s.file} (${s.daysSince}d, ${s.type} threshold=${s.threshold}d)`).join(", ")}`
+        );
+      }
+
+      if (result.candidates.length > 0) {
+        console.warn(
+          `${result.candidates.length} unreviewed constraint candidates found. Run \`bunx rungate extract-constraints ${root}\` to review.`
+        );
+      }
+
       expect(true).toBe(true);
     });
   });
