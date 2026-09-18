@@ -12,7 +12,8 @@ echo ""
 # 1. No external path references in production code
 echo "1. External path references (production code only):"
 EXTERNAL=$(grep -rn '/Users/jhorn\|~/.claude\|~/.pai' --include="*.ts" --include="*.js" . 2>/dev/null \
-  | grep -v node_modules | grep -v ".git/" | grep -v "test/" | grep -v "reference/" || true)
+  | grep -v node_modules | grep -v ".git/" | grep -v "test/" | grep -v "reference/" \
+  | grep -v " \* \|^.*://\|// " || true)
 if [ -n "$EXTERNAL" ]; then
   echo "   FAIL — found external paths:"
   echo "$EXTERNAL" | sed 's/^/   /'

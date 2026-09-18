@@ -10,7 +10,7 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 
-const PAI_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
+const RUNGATE_WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.RUNGATE_WORK_DIR || join(process.env.HOME!, '.rungate');
 
 interface WorkflowState {
   path: string;
@@ -19,7 +19,7 @@ interface WorkflowState {
 }
 
 export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?: string, projectRoot?: string): WorkflowState | null {
-  if (!existsSync(PAI_WORK_DIR)) return null;
+  if (!existsSync(RUNGATE_WORK_DIR)) return null;
 
   const validPhases = phases || ['BUILD', 'VERIFY', 'SCOPE', 'SHIP', 'DONE'];
   let candidates: { path: string; data: any; mtime: number; slug: string }[] = [];
@@ -36,15 +36,15 @@ export function findWorkflowForIssue(issueNum?: string, phases?: string[], repo?
   };
 
   try {
-    const dirs = readdirSync(PAI_WORK_DIR, { withFileTypes: true })
+    const dirs = readdirSync(RUNGATE_WORK_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
 
     for (const d of dirs) {
       // Level 1: direct children
-      collectWorkflow(join(PAI_WORK_DIR, d.name, 'workflow-state.json'), d.name);
+      collectWorkflow(join(RUNGATE_WORK_DIR, d.name, 'workflow-state.json'), d.name);
 
       // Level 2: nested subdirectories (e.g., pai/361)
-      const subDir = join(PAI_WORK_DIR, d.name);
+      const subDir = join(RUNGATE_WORK_DIR, d.name);
       try {
         const subDirs = readdirSync(subDir, { withFileTypes: true }).filter(sd => sd.isDirectory());
         for (const sd of subDirs) {

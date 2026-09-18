@@ -431,7 +431,7 @@ async function main() {
         // Engineer: hard BLOCK — template is mandatory
         const decision = {
           decision: 'block',
-          reason: `${agent.label} brief doesn't use template from BRIEF-TEMPLATES.md. Missing required markers: ${missingMarkers.join(', ')}. Read ~/.claude/PAI/BRIEF-TEMPLATES.md and use the ${agent.label} template.`,
+          reason: `${agent.label} brief doesn't use template from BRIEF-TEMPLATES.md. Missing required markers: ${missingMarkers.join(', ')}. Read BRIEF-TEMPLATES.md (in harness repo) and use the ${agent.label} template.`,
         };
         console.log(JSON.stringify(decision));
 
@@ -457,7 +457,7 @@ async function main() {
         );
         const advisory = [
           '<system-reminder>',
-          `ADVISORY: ${agent.label} brief is missing recommended template markers from BRIEF-TEMPLATES.md: ${missingMarkers.join(', ')}. Using the template improves agent output quality. Read ~/.claude/PAI/BRIEF-TEMPLATES.md for the ${agent.label} template.`,
+          `ADVISORY: ${agent.label} brief is missing recommended template markers from BRIEF-TEMPLATES.md: ${missingMarkers.join(', ')}. Using the template improves agent output quality. Read BRIEF-TEMPLATES.md (in harness repo) for the ${agent.label} template.`,
           '</system-reminder>',
         ].join('\n');
         console.log(advisory);
