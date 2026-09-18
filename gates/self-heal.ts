@@ -32,6 +32,10 @@ export async function runWithHeal(opts: {
     throw new Error(`workflow-state.json not found at ${sf}`);
   }
 
+  // Snapshot protected fields before gate execution for integrity check
+  const preState = JSON.parse(readFileSync(sf, "utf-8"));
+  const beforeSnapshot = snapshotProtectedFields(preState);
+
   if (!dryRun) {
     try {
       execFileSync("bun", [
@@ -46,6 +50,14 @@ export async function runWithHeal(opts: {
   }
 
   const state = JSON.parse(readFileSync(sf, "utf-8"));
+
+  // Integrity check: verify protected fields weren't tampered with outside gate system
+  const afterSnapshot = snapshotProtectedFields(state);
+  const integrity = checkIntegrity(beforeSnapshot, afterSnapshot);
+  if (integrity.violated) {
+    console.error(`[self-heal] Integrity violation detected: ${integrity.changes.join("; ")}`);
+  }
+
   const gateResult = state.gates?.[gate];
 
   if (!gateResult) {

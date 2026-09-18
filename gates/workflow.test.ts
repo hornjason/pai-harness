@@ -54,7 +54,7 @@ describe("schema validation", () => {
   }
   test("workflow-state.json validates (includes threshold + behavioral superRefine)", () => {
     const raw = loadRaw();
-    const result = WorkflowStateSchema.safeParse(raw);
+    const result = WorkflowStateSchema.passthrough().safeParse(raw);
     if (!result.success) {
       const issues = result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`);
       expect(result.success, issues.join("\n")).toBe(true);

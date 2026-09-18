@@ -551,20 +551,13 @@ Run these 3 checks and report results. Do NOT read or write any JSON files.
    - Report testFailCount and testTotalCount from the full suite (b) for reference
 `, { label: 'env-check-local', phase: 'Commit', schema: ENV_CHECK_SCHEMA })
 
-// Write commit + environment data to workflow-state.json (deterministic — exact values, no agent judgment)
+// Write commit + environment data to workflow-state.json via writeWorkflowState (Zod-validated)
 await agent(`
-Read ${WORK_DIR}/workflow-state.json. Update these fields using Write tool:
+Update workflow-state.json via writeWorkflowState():
 
-buildCommit: "${commitResult.commitSha}"
-agents: {"marcus": {"branch": "${commitResult.branch}", "commitSha": "${commitResult.commitSha}", "spawned": true, "verdict": "PASS"}, "quinn": {"spawned": ${discovery.ceremonyTier !== 'LIGHT'}, "verdict": "${discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'}"}}
-environments.local.api: "${envStatus?.apiStatus || 'SKIP'}"
-environments.local.ui: "${envStatus?.uiStatus || 'SKIP'}"
-${envStatus?.uiSkipReason ? `environments.local.uiSkipReason: "${envStatus.uiSkipReason}"` : ''}
-environments.local.tests: "${envStatus?.testsStatus || 'SKIP'}"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.buildCommit = '${commitResult.commitSha}'; s.agents = {marcus: {branch: '${commitResult.branch}', commitSha: '${commitResult.commitSha}', spawned: true, verdict: 'PASS'}, quinn: {spawned: ${discovery.ceremonyTier !== 'LIGHT'}, verdict: '${discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'}'}}; s.environments = s.environments || {}; s.environments.local = s.environments.local || {}; s.environments.local.api = '${envStatus?.apiStatus || 'SKIP'}'; s.environments.local.ui = '${envStatus?.uiStatus || 'SKIP'}'; ${envStatus?.uiSkipReason ? `s.environments.local.uiSkipReason = '${envStatus.uiSkipReason}';` : ''} s.environments.local.tests = '${envStatus?.testsStatus || 'SKIP'}'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-CRITICAL: environments.local.api, .ui, and .tests are ALREADY the correct enum values above — copy them EXACTLY as quoted strings. Do NOT replace them with objects, status codes, or test output.
-
-Write the COMPLETE updated JSON back. Do not omit existing fields.
+Run this command and report the output.
 `, { label: 'record-commit', phase: 'Commit' })
 
 // ════════════════════════════════════════════════════════════
@@ -676,16 +669,18 @@ phase('Ship')
 
 // Record container test evidence (SKIP with reason if no container available)
 await agent(`
-Read ${WORK_DIR}/workflow-state.json. Record container/prod environment evidence:
+Check test container status, then update workflow-state.json via writeWorkflowState():
 
 1. Check test container: curl -s -o /dev/null -w "%{http_code}" http://localhost:7776/api/aes 2>/dev/null
-2. If container is up (200): write environments.prod.rebuild="PASS", environments.prod.smoke="PASS"
-3. If container is down: write environments.prod.rebuild="SKIP" and environments.prod.rebuildSkipReason="test container not running", same for smoke (smokeSkipReason) and quinn (quinnSkipReason)
-4. Write environments.prod.quinn="SKIP" and environments.prod.quinnSkipReason="Quinn validated on local dev"
+2. Based on result, run this bun -e command (pick the version matching your result):
 
-CRITICAL: All environment values MUST be exactly "PASS", "FAIL", or "SKIP" (simple strings). Use separate *SkipReason fields for explanations. The Zod schema rejects objects or non-enum values.
+If container is up (200):
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'PASS'; s.environments.prod.smoke = 'PASS'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'Quinn validated on local dev'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-Write the COMPLETE updated JSON back using Write tool.
+If container is down:
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'test container not running'; s.environments.prod.smoke = 'SKIP'; s.environments.prod.smokeSkipReason = 'test container not running'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'test container not running'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+
+Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 
 // Create PR
@@ -711,8 +706,9 @@ PREOF
 
 log('Running ship gate')
 const shipResult = await runGateWithHeal('ship', 'Ship',
-  `Fix ceremony gaps in workflow-state.json using Write tool:
-- branch-merged: write code-pushed="PASS" if branch is pushed. The PR is open for Jason to review — branch-merged may WARN, that's OK.
+  `Fix ceremony gaps in workflow-state.json via writeWorkflowState():
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+- branch-merged: set code-pushed="PASS" if branch is pushed. The PR is open for Jason to review — branch-merged may WARN, that's OK.
 - Any missing environments fields: add with SKIP + skipReason.
 - code-committed: should already be PASS from commit phase.`)
 
