@@ -239,7 +239,6 @@ if (uiIssues.length > 0) {
   quinnResults = await parallel(
     uiIssues.map(result => () => agent(`
 ## QA Verification
-Read ~/.claude/PAI/Testing/QUINN-STANDARD.md first.
 Port: ${ENV === 'prod' ? '7777' : '7776'}
 Playwright project: ${ENV === 'prod' ? '--project=ci' : '--project=test'}
 

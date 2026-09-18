@@ -113,7 +113,7 @@ Quinn has Playwright MCP tools available directly. Use these instead of launchin
 ### Tool Selection Rules
 - **Assertions**: Use `browser_snapshot()` (text-based, fast, cheap) or `browser_verify_text_visible()`
 - **Evidence**: Use `browser_take_screenshot()` AFTER verifying with snapshot — screenshots are for proof, not for assertions
-- **URLs**: Read `project-harness.json` pages map for the correct page paths. Never guess URLs.
+- **URLs**: Read `rungate.json` pages map for the correct page paths. Never guess URLs.
 - **Sequence**: navigate → snapshot → interact → snapshot → screenshot (for evidence)
 
 ---

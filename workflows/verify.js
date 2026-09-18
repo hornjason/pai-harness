@@ -170,8 +170,6 @@ const agentResults = await parallel([
   () => hasUIChanges
     ? agent(`
 ## QA Verification
-Read ~/.claude/PAI/Testing/QUINN-STANDARD.md first.
-
 Environment: port ${PORT}, Playwright project ${ENV === 'prod' ? '--project=ci' : '--project=test'}
 
 Test as a BRAND NEW USER who has never seen this dashboard:
@@ -228,14 +226,6 @@ const verifyResult = {
   acCount: ACS.length,
   acPassed: evidence.filter(Boolean).filter(e => e.collected).length,
 }
-
-await agent(`
-Append this JSON line to ~/.claude/MEMORY/LEARNING/SIGNALS/workflow-results.jsonl:
-
-${JSON.stringify(verifyResult)}
-
-Use: echo '${JSON.stringify(verifyResult).replace(/'/g, "\\'")}' >> ~/.claude/MEMORY/LEARNING/SIGNALS/workflow-results.jsonl
-`, { label: 'log-result', phase: 'Agents', model: 'haiku' })
 
 return {
   status: allPassed ? 'ALL_PASSED' : 'SOME_FAILED',

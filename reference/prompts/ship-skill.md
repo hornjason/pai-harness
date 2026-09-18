@@ -41,11 +41,11 @@ GOAL → DISCOVERY → scope-gate ⛩→ BUILD → verify-gate ⛩→ ship-gate 
                                     └── iterate on failure ────┘
 ```
 
-**State file:** `$PAI_WORK_DIR/{slug}/workflow-state.json` — the single source of truth. All gates read it. All phases write to it. Schema: `skills/ship/workflow-schema.json`.
+**State file:** `$RUNGATE_WORK_DIR/{slug}/workflow-state.json` — the single source of truth. All gates read it. All phases write to it. Schema: `skills/ship/workflow-schema.json`.
 
 **Ceremony profiles:** `skills/ship/ceremony-profiles.json` — LIGHT/STANDARD/THOROUGH tiers. The harness selects the tier mechanically based on size + unknowns + file count.
 
-**Project config:** `.claude/project-harness.json` in each project repo — dev/prod environments, commands, consumers.
+**Project config:** `.claude/rungate.json` in each project repo — dev/prod environments, commands, consumers.
 
 **Gates:** `bun run gates/run-gate.ts --gate scope|verify|ship --slug {slug}`
 
@@ -62,8 +62,8 @@ The GitHub issue is read and the goal is extracted.
 
 **Initialize workflow-state.json:**
 ```bash
-mkdir -p "$PAI_WORK_DIR/{slug}"
-cat > "$PAI_WORK_DIR/{slug}/workflow-state.json" << EOF
+mkdir -p "$RUNGATE_WORK_DIR/{slug}"
+cat > "$RUNGATE_WORK_DIR/{slug}/workflow-state.json" << EOF
 {
   "schemaVersion": 2,
   "issue": NUM,
@@ -84,7 +84,7 @@ EOF
 
 ### Standalone Bootstrap (when no /goal ran)
 
-When `/ship N` is invoked and `$PAI_WORK_DIR/{slug}/workflow-state.json` does NOT exist:
+When `/ship N` is invoked and `$RUNGATE_WORK_DIR/{slug}/workflow-state.json` does NOT exist:
 
 1. The slug is resolved from the repo name (e.g., `pai-config` → `pai`, `asaCommandCenter` → `ddb`)
 2. The issue is read: `gh issue view N --json title,body,labels`
@@ -118,7 +118,7 @@ At skill entry, the runner checks for upstream artifacts in the slug directory:
 
 1. **GoalRecord check:**
    ```bash
-   GOAL_RECORD="$PAI_WORK_DIR/{slug}/goal-record.json"
+   GOAL_RECORD="$RUNGATE_WORK_DIR/{slug}/goal-record.json"
    if [[ -f "$GOAL_RECORD" ]]; then
      echo "INFO: Chain mode — GoalRecord found. Inheriting success criteria."
      # Read successCriteria from GoalRecord and use as AC source
@@ -134,11 +134,11 @@ At skill entry, the runner checks for upstream artifacts in the slug directory:
 
 **Project docs gate:** The project root is checked for a DOCS.md routing table. Only the pointed-to doc is loaded. Fallback: MODEL.md -> PRINCIPLES.md + ARCHITECTURE.md.
 
-**project-harness.json** is read from the project root — it provides dev/prod environments, test commands, consumers.
+**rungate.json** is read from the project root — it provides dev/prod environments, test commands, consumers.
 
-**Auto-scaffold:** If `.claude/project-harness.json` does not exist, `bun ~/.claude/scripts/scaffold-project-harness.ts "$PROJECT_ROOT"` runs automatically to generate a starter config. The generated config is reviewed and paths adjusted before proceeding.
+**Auto-scaffold:** If `.claude/rungate.json` does not exist, `bun ~/.claude/scripts/scaffold-rungate-config.ts "$PROJECT_ROOT"` runs automatically to generate a starter config. The generated config is reviewed and paths adjusted before proceeding.
 
-**issueRepo:** If `project-harness.json` has `issueRepo` different from `repo`, it is written to `issueRepo` in workflow-state.json. If not present, `repo` is copied to `issueRepo`.
+**issueRepo:** If `rungate.json` has `issueRepo` different from `repo`, it is written to `issueRepo` in workflow-state.json. If not present, `repo` is copied to `issueRepo`.
 
 **Source specs.** If the issue references visual specs (HTML, screenshots, Figma), design docs, or architecture files:
 1. **The DA reads the spec** and describes its structure in 3 sentences.
@@ -185,9 +185,9 @@ On PASS -> phase advances to BUILD automatically.
 **Context isolation rule:** The DA does NOT run implementation tools directly (Read source, Edit, Write, Bash for tests). All implementation goes through Marcus via Agent(). The DA may only: (1) generate the brief, (2) run gates, (3) read Marcus's report.
 
 **Brief generation:**
-The DA hand-writes the Marcus brief with: issueGoal verbatim, sourceSpecs paths, ACs with thresholds, dev/prod environments from project-harness.json, specific files to modify with line numbers, scope boundaries (what NOT to touch), and verify commands. Marcus is then spawned.
+The DA hand-writes the Marcus brief with: issueGoal verbatim, sourceSpecs paths, ACs with thresholds, dev/prod environments from rungate.json, specific files to modify with line numbers, scope boundaries (what NOT to touch), and verify commands. Marcus is then spawned.
 
-**Brief capture (ADR-009 C2):** Before spawning Marcus, the DA writes the brief text to `~/.pai-work/{slug}/marcus-brief.md`. The verify gate reads this file for brief-AC alignment validation.
+**Brief capture (ADR-009 C2):** Before spawning Marcus, the DA writes the brief text to `~/.rungate/{slug}/marcus-brief.md`. The verify gate reads this file for brief-AC alignment validation.
 
 **Marcus spawn rules:**
 - `.claude` repo -> `isolation: "worktree"`, `mode: "bypassPermissions"`
@@ -200,7 +200,7 @@ The DA hand-writes the Marcus brief with: issueGoal verbatim, sourceSpecs paths,
 3. **Simplify** — 3-agent code review
 4. **Fallow** — runs automatically on commit via hook
 
-**`make rebuild`** is run by the DA only — agents never run it. The command comes from project-harness.json `prod.rebuild`.
+**`make rebuild`** is run by the DA only — agents never run it. The command comes from rungate.json `prod.rebuild`.
 
 **Agent tracking:** `agents.marcus.spawned`, `agents.marcus.verdict`, `agents.marcus.branch` are written to JSON.
 
@@ -219,7 +219,7 @@ This replaces the manual "Phase 5: VERIFY" step — the gate call IS the verify 
 **Quinn and Rook are spawned in parallel** (STANDARD/THOROUGH tiers):
 Quinn/Rook briefs are written inline with: what to test, which URLs/ports, what to compare against (sourceSpec paths), pass/fail criteria. Both are launched simultaneously via parallel Agent() calls.
 
-**Quinn URL routing (#481):** The DA reads `project-harness.json` `pages` map and provides the exact URL as line 1 of Quinn's test plan (`Navigate to: {url}`). Quinn must never guess which page to test — the harness tells it.
+**Quinn URL routing (#481):** The DA reads `rungate.json` `pages` map and provides the exact URL as line 1 of Quinn's test plan (`Navigate to: {url}`). Quinn must never guess which page to test — the harness tells it.
 
 Quinn receives sourceSpec paths and compares built output against them. If structural mismatch -> FAIL regardless of AC results.
 
@@ -256,7 +256,7 @@ On PASS -> phase advances to DONE. The issue is closed.
 
 After ship-gate passes (phase = DONE), the ship evidence artifact is written:
 
-1. `~/.pai-work/{slug}/ship-evidence.json` is created with:
+1. `~/.rungate/{slug}/ship-evidence.json` is created with:
    ```json
    {
      "contractVersion": "1.0",
@@ -311,7 +311,7 @@ When verify-gate or ship-gate FAILs:
 
 ## Bug Protocol
 
-1. Batch diagnostic read — environment is confirmed (using project-harness.json ports), all logs + errors + source are read
+1. Batch diagnostic read — environment is confirmed (using rungate.json ports), all logs + errors + source are read
 2. Single hypothesis -> single change
 3. Regression test required
 4. Wrong hypothesis? -> batch-read with failed-fix context

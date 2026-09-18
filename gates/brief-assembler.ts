@@ -94,7 +94,7 @@ function extractVerifyCommands(acs: any[]): string[] {
 }
 
 function loadProjectHarness(projectRoot: string): Record<string, any> | null {
-  const harnessPath = join(projectRoot, ".claude", "project-harness.json");
+  const harnessPath = join(projectRoot, ".claude", "rungate.json");
   if (!existsSync(harnessPath)) return null;
   try {
     return JSON.parse(readFileSync(harnessPath, "utf-8"));
@@ -129,7 +129,7 @@ function buildContextSection(projectRoot: string): string {
     idx++;
   }
 
-  // Include contextDocs from project-harness.json
+  // Include contextDocs from rungate.json
   const harness = loadProjectHarness(projectRoot);
   const contextDocs = extractContextDocs(harness);
   for (const doc of contextDocs) {

@@ -133,17 +133,17 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
      "beforeState": {
        "type": "screenshot|api-response|data-snapshot",
        "capturedAt": "...",
-       "path": "~/.pai-work/{slug}/evidence/before.png"
+       "path": "~/.rungate/{slug}/evidence/before.png"
      },
      "afterLocal": {
        "type": "screenshot|api-response",
        "capturedAt": "...",
-       "path": "~/.pai-work/{slug}/evidence/after-local.png"
+       "path": "~/.rungate/{slug}/evidence/after-local.png"
      },
      "afterProd": {
        "type": "screenshot|api-response",
        "capturedAt": "...",
-       "path": "~/.pai-work/{slug}/evidence/after-prod.png"
+       "path": "~/.rungate/{slug}/evidence/after-prod.png"
      }
    }
    ```

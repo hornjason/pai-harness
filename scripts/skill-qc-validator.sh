@@ -25,7 +25,7 @@ if [[ -z "$SKILL" || -z "$ISSUE" || -z "$SLUG" ]]; then
   exit 1
 fi
 
-WORK_DIR="${PAI_WORK_DIR:-$HOME/.pai-work}/$SLUG"
+WORK_DIR="${RUNGATE_WORK_DIR:-$HOME/.rungate}/$SLUG"
 
 # Auto-detect repo from workflow-state.json if not explicitly provided
 if [[ "$REPO" == "hornjason/pai-config" && -f "$WORK_DIR/workflow-state.json" ]]; then

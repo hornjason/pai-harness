@@ -37,9 +37,9 @@ function exec(cmd: string, cwd?: string): { ok: boolean; output: string } {
 function loadProjectHarness(): any {
   const root = sf("projectRoot");
   if (!root) return null;
-  const path = join(root, ".claude", "project-harness.json");
-  if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf-8"));
+  const p = join(root, ".claude", "rungate.json");
+  if (!existsSync(p)) return null;
+  return JSON.parse(readFileSync(p, "utf-8"));
 }
 
 const isVerifyPlus = () => { const p = sf("phase"); return ["VERIFY", "SHIP", "DONE"].includes(p); };
@@ -184,11 +184,11 @@ describe("scope checks", () => {
     expect(existsSync(resolved), `Governing spec not found: ${resolved}`).toBe(true);
   });
 
-  // 14. harness-port-validation: project-harness.json ports match Makefile
+  // 14. harness-port-validation: rungate.json ports match Makefile
   test("harness-port-validation: dev/test/prod ports match Makefile", () => {
     const projectRoot = sf("projectRoot");
     if (!projectRoot) return;
-    const harnessPath = join(projectRoot, ".claude", "project-harness.json");
+    const harnessPath = join(projectRoot, ".claude", "rungate.json");
     const makefilePath = join(projectRoot, "Makefile");
     if (!existsSync(harnessPath) || !existsSync(makefilePath)) return;
     const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
@@ -506,7 +506,7 @@ describe("verify checks", () => {
     if (!isVerifyPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const briefPath = join(process.env.HOME || "", ".pai-work", slug, "marcus-brief.md");
+    const briefPath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "marcus-brief.md");
     if (!existsSync(briefPath)) {
       // Brief file must exist for STANDARD+ tiers when marcus was spawned
       const marcus = sf("agents")?.marcus;
@@ -542,7 +542,7 @@ describe("verify checks", () => {
   // 28. marcus-committed (GAP → PORTED)
   test("marcus-committed: no uncommitted Marcus changes", () => {
     if (!isVerifyPlus()) return;
-    const signalDir = join(process.env.HOME || "", ".pai-work", "signals");
+    const signalDir = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), "signals");
     const slug = sf("slug") || "";
     const signalFile = join(signalDir, `marcus-uncommitted-${slug.replace(/\//g, "-")}`);
     if (existsSync(signalFile)) {
@@ -564,7 +564,7 @@ describe("verify checks", () => {
     if (uiChanged.length === 0) return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.HOME || "", ".pai-work", slug, "prove-evidence.json");
+    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
     if (!existsSync(evidencePath)) return;
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     const afterType = evidence.afterEvidence?.type;
@@ -676,21 +676,19 @@ describe("B1/B2 agent results", () => {
   }
   // B2: Evidence Validator prompt file exists
   test("b2-prompt-exists: evidence-validator.md available", () => {
-    const projectPrompt = join(__dirname, "prompts", "evidence-validator.md");
-    const homePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "evidence-validator.md");
+    const promptPath = join(__dirname, "prompts", "evidence-validator.md");
     expect(
-      existsSync(projectPrompt) || existsSync(homePrompt),
-      "evidence-validator.md prompt not found in gates/prompts/ or ~/.claude/gates/prompts/",
+      existsSync(promptPath),
+      "evidence-validator.md prompt not found in gates/prompts/",
     ).toBe(true);
   });
 
   // B1: AC Adversary prompt file exists
   test("b1-prompt-exists: ac-adversary.md available", () => {
-    const projectPrompt = join(__dirname, "prompts", "ac-adversary.md");
-    const homePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
+    const promptPath = join(__dirname, "prompts", "ac-adversary.md");
     expect(
-      existsSync(projectPrompt) || existsSync(homePrompt),
-      "ac-adversary.md prompt not found in gates/prompts/ or ~/.claude/gates/prompts/",
+      existsSync(promptPath),
+      "ac-adversary.md prompt not found in gates/prompts/",
     ).toBe(true);
   });
 
@@ -896,7 +894,7 @@ describe("ship checks", () => {
     if (!isShipPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const witnessDir = join(process.env.HOME || "", ".pai-work", slug, "witnesses");
+    const witnessDir = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "witnesses");
     if (!existsSync(witnessDir)) {
       // WARN — witnesses are new, not all workflows have them yet
       console.warn("WARN: No witness directory found — witness chain not verified");
@@ -911,7 +909,7 @@ describe("ship checks", () => {
     if (!isShipPlus()) return;
     const slug = sf("slug");
     if (!slug) return;
-    const witnessDir = join(process.env.HOME || "", ".pai-work", slug, "witnesses");
+    const witnessDir = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "witnesses");
     if (!existsSync(witnessDir)) {
       // No witnesses = cannot verify AC verdicts were set by gate system
       const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
@@ -1036,7 +1034,7 @@ describe("prove checks", () => {
     if (currentGate !== "prove") return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.HOME || "", ".pai-work", slug, "prove-evidence.json");
+    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
     expect(existsSync(evidencePath), "prove-evidence.json must exist after prove gate runs (ADR-009 B3)").toBe(true);
   });
 
@@ -1046,7 +1044,7 @@ describe("prove checks", () => {
     if (currentGate !== "prove") return;
     const slug = sf("slug");
     if (!slug) return;
-    const evidencePath = join(process.env.HOME || "", ".pai-work", slug, "prove-evidence.json");
+    const evidencePath = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug, "prove-evidence.json");
     if (!existsSync(evidencePath)) return;
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     const VALID_VERDICTS = ["PROVEN", "UNPROVEN", "INCONCLUSIVE"];

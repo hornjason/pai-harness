@@ -18,7 +18,7 @@ Implementation quality framework for PAI (Personal AI Infrastructure). Provides 
 
 | File | What | When to Read |
 |------|------|--------------|
-| [.claude/project-harness.json](.claude/project-harness.json) | Project config | When shipping through harness |
+| [.claude/rungate.json](.claude/rungate.json) | Project config | When shipping through harness |
 | [gates/orchestrator.ts](gates/orchestrator.ts) | Gate runner + workflow state | When debugging gates |
 | [gates/schema.ts](gates/schema.ts) | Zod schemas for workflow-state.json | When adding fields |
 | [gates/brief-assembler.ts](gates/brief-assembler.ts) | Generates Marcus briefs from state | When changing brief format |
@@ -95,7 +95,7 @@ Workflow({ scriptPath: "~/Projects/rungate/workflows/ship.js" })
 ## Quick Reference
 
 1. Always use `scriptPath` for workflow invocation — `name` resolves to cached snapshots
-2. `project-harness.json` is the thin interface each project provides to the harness
+2. `rungate.json` is the thin interface each project provides to the harness
 3. Gates are the enforcement layer — behavioral rules alone don't work
 4. Specs self-describe via YAML frontmatter (`testable`, `status`, `doc-type`)
 

@@ -16,7 +16,7 @@ You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 Read the project AGENTS.md first for context.
 
 ## Environment
-- **URL:** {url from project-harness.json pages map}
+- **URL:** {url from rungate.json pages map}
 - **Viewport:** 1280x720 (set via browser_resize before testing)
 - **Dev server:** {dev or container URL}
 - **Test as:** Brand-new user — no prior session state assumed
@@ -97,7 +97,7 @@ Overall: PASS | FAIL
 
 | Variable | Source |
 |----------|--------|
-| {url} | project-harness.json `pages` map |
+| {url} | rungate.json `pages` map |
 | {dev or container URL} | Phase 5: localhost:5173, Phase 7: localhost:7776 |
 | {specific pre-condition} | DA fills from AC context |
 | {action from AC} | DA maps each AC to a user journey step |

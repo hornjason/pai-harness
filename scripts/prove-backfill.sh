@@ -5,7 +5,7 @@ set -euo pipefail
 
 DRY_RUN=false
 REPO="hornjason/pai-config"
-WORK_DIR="${PAI_WORK_DIR:-${HOME}/.pai-work}"
+WORK_DIR="${RUNGATE_WORK_DIR:-${HOME}/.rungate}"
 
 while [[ $# -gt 0 ]]; do
   case $1 in

@@ -29,7 +29,7 @@ The ship harness (workflows, gates, tests, specs, prompts, config) is scattered 
 - [ ] SC-3: Zero harness files in old scattered locations (containment test GREEN)
 - [ ] SC-4: Zero hardcoded `~/.claude/` paths in any workflow/gate file (path-purity test GREEN)
 - [ ] SC-5: All specs have `testable: true/false` frontmatter; auto-discovery working
-- [ ] SC-6: Zod schema validates DDB project-harness.json at gate load time
+- [ ] SC-6: Zod schema validates DDB rungate.json at gate load time
 - [ ] SC-7: #513 fixed — AC evidence uses AC-specific commands
 - [ ] SC-8: #514 fixed — phase advance blocked when ACs FAIL
 - [ ] SC-9: One STANDARD-tier DDB issue SHIP_PASSED + PROVE_PROVEN through rungate/ workflows
@@ -67,10 +67,10 @@ Migration strategy: symlink-based batch (not atomic cutover). Symlinks from old�
 |---|---|---|
 | D1: Spec frontmatter | MODIFY | `testable: true/false` required on every spec. Missing = FAIL. Drop check-types — parser determines claim types via regex. |
 | D2: Self-contained repo | MODIFY | Self-contained for development. One CONTEXT_ROUTING entry. HARNESS.md lists "External Dependencies" — CLAUDE.md rule names. Drift detector test. |
-| D3: HARNESS.md | KEEP | ~80 lines. 3 workflow entry points + project-harness.json schema + test command + spec index. No internal layout exposed. |
-| D4: project-harness.json | MODIFY | DROP harnessRoot (use HARNESS_ROOT env var). ADD Zod schema validation at scaffold/load/test. |
+| D3: HARNESS.md | KEEP | ~80 lines. 3 workflow entry points + rungate.json schema + test command + spec index. No internal layout exposed. |
+| D4: rungate.json | MODIFY | DROP harnessRoot (use HARNESS_ROOT env var). ADD Zod schema validation at scaffold/load/test. |
 
-**Repo boundary rule:** Harness repo owns execution machinery (phases, gates, specs, agent prompts). Does NOT own behavioral rules (CLAUDE.md), orchestration mode (Algorithm), project config (project-harness.json), or PAI-wide routing (DOCS.md).
+**Repo boundary rule:** Harness repo owns execution machinery (phases, gates, specs, agent prompts). Does NOT own behavioral rules (CLAUDE.md), orchestration mode (Algorithm), project config (rungate.json), or PAI-wide routing (DOCS.md).
 
 ## Execution Plan (AFK overnight 2026-09-16)
 
@@ -103,8 +103,8 @@ Migration strategy: symlink-based batch (not atomic cutover). Symlinks from old�
 
 ### Phase C — Schema + Validation (20 min)
 
-- [ ] C1: Create lib/project-harness-schema.ts (Zod) — required: project, repo, issueRepo, dev.start, dev.apiBase, dev.uiBase
-- [ ] C2: Validate DDB project-harness.json against schema
+- [ ] C1: Create lib/rungate-schema.ts (Zod) — required: project, repo, issueRepo, dev.start, dev.apiBase, dev.uiBase
+- [ ] C2: Validate DDB rungate.json against schema
 - [ ] C3: Wire validation into run-gate.ts load time (actionable error naming missing fields)
 - [ ] C4: Write schema-canary.test.ts (validates DDB config as regression canary)
 - [ ] GATE: run 12 invariants → GREEN
@@ -176,10 +176,10 @@ Canary issue must exercise (council-specified 9 requirements):
 ```
 rungate/
 ├── HARNESS.md         ← agent entry point (~80 lines, no internal layout)
-├── lib/               ← paths.ts, project-harness-schema.ts (FOUNDATION)
+├── lib/               ← paths.ts, rungate-schema.ts (FOUNDATION)
 ├── workflows/         ← ship.js, prove.js, council.js (EXECUTION — 3 entry points)
 ├── gates/             ← run-gate.ts, tests, schema, .gate-salt (ENFORCEMENT)
-├── scripts/           ← sync-spec-tests, scaffold-project-harness (TOOLING)
+├── scripts/           ← sync-spec-tests, scaffold-rungate-config (TOOLING)
 ├── hooks/             ← harness-lifecycle hooks only (~24, not all 52) (LIFECYCLE)
 ├── test/              ← spec-compliance, spec-discovery, structure, schema-canary, external-deps (VERIFICATION)
 ├── specs/             ← governing specs with testable frontmatter (TRUTH)
@@ -207,7 +207,7 @@ Glob scan `specs/*.md` filtered by YAML frontmatter `testable: true`. Every spec
 | spec-compliance-auto.test.ts | Auto-generated assertions from spec claims | Spec↔code drift |
 | spec-discovery.test.ts | Every spec has frontmatter, testable specs have claims | Silent test erosion |
 | structure.test.ts | File layout, containment, path-purity, manifest | Migration stragglers, path regression |
-| schema-canary.test.ts | project-harness.json validates against Zod schema | Config drift |
+| schema-canary.test.ts | rungate.json validates against Zod schema | Config drift |
 | external-deps.test.ts | HARNESS.md External Dependencies match CLAUDE.md rules | Cross-repo behavioral drift |
 | workflow.test.ts | Existing gate tests (code-committed, ports, config) | Gate regression |
 | e2e-smoke.test.ts | Existing structural checks (case/default counts) | Structural regression |
@@ -218,7 +218,7 @@ Glob scan `specs/*.md` filtered by YAML frontmatter `testable: true`. Every spec
 2. **Claim count regression** — manifest tracks per-spec claims; decrease without opt-out = FAIL
 3. **Cross-repo drift** — external-deps.test.ts catches CLAUDE.md rule changes that affect harness
 
-## project-harness.json Contract (council-validated Zod schema)
+## rungate.json Contract (council-validated Zod schema)
 
 **Required fields:** project, repo, issueRepo, dev.start, dev.apiBase, dev.uiBase
 **Optional fields:** dev.preStart, dev.testCmd, dev.typeCheck, test.start, test.apiBase, prod.rebuild, prod.apiBase, prod.uiBase, prod.smokeTest, pages, codeCommittedPaths, consumers, contextDocs

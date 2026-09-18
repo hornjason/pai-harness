@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from "fs";
 import { join, resolve } from "path";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
-const HOME = process.env.HOME || "/Users/jhorn";
+const HOME = process.env.HOME || "";
 const CLAUDE_MD = join(HOME, ".claude", "CLAUDE.md");
 const HARNESS_MD = join(HARNESS_ROOT, "HARNESS.md");
 

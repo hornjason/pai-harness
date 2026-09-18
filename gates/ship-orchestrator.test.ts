@@ -34,7 +34,7 @@ function readState(): any {
 }
 
 // Override WORK_DIR_BASE for tests via env
-process.env.SHIP_ORCH_WORK_DIR = TEST_BASE;
+process.env.RUNGATE_WORK_DIR = TEST_BASE;
 
 import {
   advancePhase,

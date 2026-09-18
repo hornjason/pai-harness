@@ -124,7 +124,7 @@ if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoo
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || process.env.HOME || ''
 const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
-const WORK_DIR = `${HOME}/.pai-work/${SLUG}`
+const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
 const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
 
 // ── Chain detection ──────────────────────────────────────────
@@ -212,7 +212,7 @@ phase('Validate')
 if (PROJECT_ROOT) {
   log('Checking dev server availability')
   await agent(`
-Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/project-harness.json to get dev.apiBase and dev.start.
+Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/rungate.json to get dev.apiBase and dev.start.
 
 1. Try: curl -sf $(dev.apiBase)/api/health -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
 2. If DEV_DOWN and dev.start exists:
@@ -235,7 +235,7 @@ Check for before-state evidence:
 3. Read the issue body for reproduction steps.
 
 Check project harness for API/UI bases:
-4. test -f ${PROJECT_ROOT}/.claude/project-harness.json && cat ${PROJECT_ROOT}/.claude/project-harness.json || echo "NO_HARNESS"
+4. test -f ${PROJECT_ROOT}/.claude/rungate.json && cat ${PROJECT_ROOT}/.claude/rungate.json || echo "NO_HARNESS"
 
 Report the before-state description, reproduction steps, apiBase, and uiBase.
 Return as a string summary.
@@ -299,8 +299,6 @@ Report the output.
     ).join('\n')
 
   quinnResults = await agent(`
-Read ~/.claude/PAI/Testing/QUINN-STANDARD.md first.
-
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## Issue #${ISSUE}: ${issueData.issueTitle}
@@ -315,7 +313,7 @@ Fix commit: ${COMMIT_SHA}
 - browser_verify_text_visible(text) — assert text on page
 
 ## Target URLs
-Read ${PROJECT_ROOT}/.claude/project-harness.json for page paths.
+Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 Prove container base: http://localhost:7776
 
 ## ACs to verify (UI/OUTCOME — skipped by B3)
@@ -324,7 +322,7 @@ ${quinnACs}
 ## Test Plan for #${ISSUE} on PROVE CONTAINER
 1. Verify fix deployed: cd ${PROJECT_ROOT} && git rev-parse --short HEAD should match ${COMMIT_SHA.slice(0, 8)}
 2. For each AC:
-   a. browser_navigate("http://localhost:7776" + page path from project-harness.json)
+   a. browser_navigate("http://localhost:7776" + page path from rungate.json)
    b. browser_snapshot() — verify page loaded
    c. Perform action (browser_click, browser_type, etc.)
    d. browser_snapshot() or browser_verify_text_visible() to verify

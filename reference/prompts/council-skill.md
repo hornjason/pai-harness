@@ -10,7 +10,7 @@ contract:
   input: "Topic string + optional context + optional governingSpec"
   gateIn: "None — /council is standalone"
   gateOut: "Synthesis with convergencePoints, recommendation, specAlignment, enforcementClassification"
-  artifact: "council-synthesis.json at ~/.pai-work/{slug}/"
+  artifact: "council-synthesis.json at ~/.rungate/{slug}/"
   outputSchema: "schemas/council-synthesis.schema.json"
   telemetry: "harness-telemetry.jsonl with skill=council"
   errorRecovery:
@@ -133,8 +133,8 @@ After synthesis is complete, the council produces a structured artifact:
 
 After any council session that produces decisions targeting a specific document:
 
-1. Save synthesis as `~/.pai-work/{slug}/council-synthesis.json`
-2. Run: `bash ~/.claude/scripts/decision-reconcile.sh ~/.pai-work/{slug}/council-synthesis.json --target <doc-path>`
+1. Save synthesis as `~/.rungate/{slug}/council-synthesis.json`
+2. Run: `bash ~/.claude/scripts/decision-reconcile.sh ~/.rungate/{slug}/council-synthesis.json --target <doc-path>`
 3. If MISSING count > 0: patch the document before presenting results
 4. Report: "N decisions, N captured, M dropped" — the count forces accountability
 

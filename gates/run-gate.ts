@@ -13,7 +13,7 @@ import {
 } from "./orchestrator";
 import { writeWitness } from "./witness";
 import { harnessRoot } from "../lib/paths";
-import { safeParseProjectHarness, type ProjectHarness } from "../lib/project-harness-schema";
+import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 
 export function parseTestResults(output: string): GateResult[] {
   const results: GateResult[] = [];
@@ -58,7 +58,7 @@ if (!gate || !["scope", "verify", "ship", "merge", "prove"].includes(gate)) {
   process.exit(1);
 }
 
-const WORK_DIR = join(process.env.HOME || "", ".pai-work", slug);
+const WORK_DIR = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"), slug);
 const SF = join(WORK_DIR, "workflow-state.json");
 const CEREMONY_PROFILE = existsSync(join(__dirname, "ceremony-profiles.json"))
   ? join(__dirname, "ceremony-profiles.json")
@@ -74,16 +74,16 @@ if (!issue) issue = state.issue || 0;
 if (!slug) slug = state.slug || "";
 const issueRepo = state.issueRepo || state.repo || "";
 
-// Validate project-harness.json against Zod schema (SC-6)
+// Validate rungate.json against Zod schema (SC-6)
 let validatedHarness: ProjectHarness | null = null;
 const projectHarnessPath = state.projectRoot
-  ? join(state.projectRoot, ".claude", "project-harness.json")
+  ? join(state.projectRoot, ".claude", "rungate.json")
   : "";
 if (projectHarnessPath && existsSync(projectHarnessPath)) {
   const rawHarness = JSON.parse(readFileSync(projectHarnessPath, "utf-8"));
   const result = safeParseProjectHarness(rawHarness);
   if (!result.success) {
-    console.warn(`WARN: project-harness.json schema validation failed:`);
+    console.warn(`WARN: rungate.json schema validation failed:`);
     for (const err of result.error.issues) {
       console.warn(`  - ${err.path.join(".")}: ${err.message}`);
     }
@@ -160,7 +160,7 @@ if (gate === "prove") {
     }
 
     const projectRoot = state.projectRoot || "";
-    const harnessPath = join(projectRoot, ".claude", "project-harness.json");
+    const harnessPath = join(projectRoot, ".claude", "rungate.json");
     let apiBase = "";
     let uiBase = "";
     let devStart = "";
@@ -367,7 +367,7 @@ if (gate === "scope" && fails === 0 && testExitCode === 0) {
 if (gate === "verify" && fails === 0 && testExitCode === 0) {
   const hasOutcomeACs = (state.acs || []).some((ac: any) => ac.type === "OUTCOME");
   if (hasOutcomeACs && state.projectRoot) {
-    const harnessPath = join(state.projectRoot, ".claude", "project-harness.json");
+    const harnessPath = join(state.projectRoot, ".claude", "rungate.json");
     if (existsSync(harnessPath)) {
       const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
       const apiBase = harness?.dev?.apiBase;

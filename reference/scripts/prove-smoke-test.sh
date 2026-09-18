@@ -81,7 +81,7 @@ mkdir -p "$TMPDIR_T7"
 echo '{"schemaVersion":2,"issue":999,"slug":"test","phase":"PROVE","issueGoal":"test","acs":[],"gates":{},"changelog":[],"sizing":{"ceremonyTier":"STANDARD"}}' > "$TMPDIR_T7/workflow-state.json"
 HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "abc123")
 echo "{\"contractVersion\":\"1.0\",\"issueNumber\":999,\"verdict\":\"PROVEN\",\"commitSHA\":\"$HEAD_SHA\",\"capturedAt\":\"2026-01-01T00:00:00Z\",\"criteriaResults\":[{\"scId\":\"SC-1\",\"verdict\":\"PASS\",\"evidence\":\"ok\"}],\"afterEvidence\":{\"environment\":\"local\"}}" > "$TMPDIR_T7/prove-evidence.json"
-if PAI_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
+if RUNGATE_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
   fail "gate accepted local evidence at STANDARD tier"
 else
   pass "gate rejected local evidence at STANDARD tier"
@@ -90,7 +90,7 @@ fi
 # 7b. Missing afterEvidence entirely → defaults to local → FAIL
 echo "7b. Missing afterEvidence → defaults to local → FAIL"
 echo "{\"contractVersion\":\"1.0\",\"issueNumber\":999,\"verdict\":\"PROVEN\",\"commitSHA\":\"$HEAD_SHA\",\"capturedAt\":\"2026-01-01T00:00:00Z\",\"criteriaResults\":[{\"scId\":\"SC-1\",\"verdict\":\"PASS\",\"evidence\":\"ok\"}]}" > "$TMPDIR_T7/prove-evidence.json"
-if PAI_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
+if RUNGATE_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
   fail "gate accepted missing afterEvidence at STANDARD tier"
 else
   pass "gate rejected missing afterEvidence at STANDARD tier"
@@ -100,7 +100,7 @@ fi
 echo "7c. LIGHT tier + local evidence → PASS (exempted)"
 echo '{"schemaVersion":2,"issue":999,"slug":"test","phase":"PROVE","issueGoal":"test","acs":[],"gates":{},"changelog":[],"sizing":{"ceremonyTier":"LIGHT"}}' > "$TMPDIR_T7/workflow-state.json"
 echo "{\"contractVersion\":\"1.0\",\"issueNumber\":999,\"verdict\":\"PROVEN\",\"commitSHA\":\"$HEAD_SHA\",\"capturedAt\":\"2026-01-01T00:00:00Z\",\"criteriaResults\":[{\"scId\":\"SC-1\",\"verdict\":\"PASS\",\"evidence\":\"ok\"}],\"afterEvidence\":{\"environment\":\"local\"}}" > "$TMPDIR_T7/prove-evidence.json"
-if PAI_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
+if RUNGATE_WORK_DIR="$TMPDIR_T7" bash "$SCRIPT_DIR/../ship/gate-runner.sh" --gate prove --issue 999 --slug . 2>/dev/null; then
   pass "gate accepts local evidence at LIGHT tier"
 else
   fail "gate rejected local evidence at LIGHT tier"

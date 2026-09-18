@@ -187,7 +187,7 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
 // ── Exported test runners ───────────────────────────────────
 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
-  const HOME = process.env.HOME || "/Users/jhorn";
+  const HOME = process.env.HOME || "";
   const defaultExtraSpecs = [join(HOME, ".claude", "PAI", "specs")];
   const allSCs = collectTestableSpecs(root, opts?.extraSpecDirs ?? defaultExtraSpecs);
 
@@ -236,8 +236,8 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       expect(missing).toEqual([]);
     });
 
-    test("project-harness.json has required fields (if exists)", () => {
-      const p = join(root, ".claude", "project-harness.json");
+    test("rungate.json has required fields (if exists)", () => {
+      const p = join(root, ".claude", "rungate.json");
       if (!existsSync(p)) return;
       const config = JSON.parse(readFileSync(p, "utf-8"));
       expect(config.project).toBeDefined();

@@ -198,7 +198,7 @@
     },
     {
       "source": "~/.claude/scripts/scaffold-project-harness.ts",
-      "dest": "scripts/scaffold-project-harness.ts",
+      "dest": "scripts/scaffold-rungate-config.ts",
       "migrated": true
     },
     {

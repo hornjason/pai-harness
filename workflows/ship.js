@@ -120,7 +120,7 @@ const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || process.env.HOME || ''
-const WORK_DIR = `${HOME}/.pai-work/${SLUG}`
+const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const MAX_REGRESSIONS = 2
 
@@ -153,7 +153,7 @@ Run the ${gateName} gate and classify any failures:
 ${gateName} gate failed. Category: ${result.category || 'unknown'}
 Failures: ${(result.failures || []).join('\n')}
 Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md. Read ${WORK_DIR}/workflow-state.json.
-Read ${PROJECT_ROOT}/.claude/project-harness.json for environment config.
+Read ${PROJECT_ROOT}/.claude/rungate.json for environment config.
 ${healContext}
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
@@ -204,7 +204,7 @@ Success criteria: ${goalData.successCriteria.map((sc, i) => `${i + 1}. ${sc}`).j
 
 ## Instructions
 1. Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md FIRST.
-2. Read ${PROJECT_ROOT}/.claude/project-harness.json and ${PROJECT_ROOT}/AGENTS.md.
+2. Read ${PROJECT_ROOT}/.claude/rungate.json and ${PROJECT_ROOT}/AGENTS.md.
 3. Check prior work: git log --oneline --all --grep="#${ISSUE}" in ${PROJECT_ROOT}.
 
 ## AC ANCHORING (CRITICAL — do not skip)
@@ -423,11 +423,11 @@ You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 - **Dev API:** http://localhost:7778
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
 - **Test as:** Brand-new user — no prior session state
-- **Pages map:** Read ${PROJECT_ROOT}/.claude/project-harness.json for exact URL paths
+- **Pages map:** Read ${PROJECT_ROOT}/.claude/rungate.json for exact URL paths
 
 ## Pre-conditions (GATE — stop if any fail)
 1. browser_resize(1280, 720)
-2. browser_navigate to target URL from project-harness.json pages map
+2. browser_navigate to target URL from rungate.json pages map
 3. browser_snapshot() — verify page loaded (no error banners, data present)
 If pre-conditions fail → report FAIL immediately, do NOT proceed.
 
@@ -616,8 +616,6 @@ Check if the rebuilt container is available:
 
   if (testHost) {
     await agent(`
-Read ~/.claude/PAI/Testing/QUINN-STANDARD.md first.
-
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
@@ -635,8 +633,8 @@ If mismatch, FAIL with "Container running wrong version — HEAD {actual} != bui
 - browser_verify_text_visible(text) — assert text on page
 
 ## Test Plan for #${ISSUE} on CONTAINER — http://${testHost}:7776
-Read ${PROJECT_ROOT}/.claude/project-harness.json for page paths.
-1. browser_navigate("http://${testHost}:7776" + page path from project-harness.json)
+Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
+1. browser_navigate("http://${testHost}:7776" + page path from rungate.json)
 2. browser_snapshot() — verify page loaded
 3. For each AC:
    a. Perform the action (browser_click, browser_type, etc.)

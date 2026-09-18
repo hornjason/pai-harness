@@ -1,3 +1,10 @@
+---
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-09-18
+---
+
 # Ship — Reference Material
 
 ## Size Definitions
@@ -198,7 +205,7 @@ Post this as a `gh issue comment` after completing DISCOVERY. Every fact must ci
 
 ## Checkpoint Format (MANDATORY for multi-step work)
 
-`$PAI_WORK_DIR/{slug}/CHECKPOINT.md` must include:
+`$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md` must include:
 ```
 **Project root:** [path]
 **Session:** [date]
@@ -216,7 +223,7 @@ Post this as a `gh issue comment` after completing DISCOVERY. Every fact must ci
 
 ## Stuck Detection Storage
 
-`$PAI_WORK_DIR/{slug}/stuck-detection.json` — updated at each iteration boundary, read at each iteration start:
+`$RUNGATE_WORK_DIR/{slug}/stuck-detection.json` — updated at each iteration boundary, read at each iteration start:
 ```json
 {
   "iteration_count": 0,

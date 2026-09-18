@@ -23,7 +23,7 @@ testable: true
   - [ ] SCs/ACs contain no vague words: exists, works, properly, correct, appropriate, should (without accompanying threshold number)
   - [ ] Issue has `## Scope Boundary` with In + Out items
   - [ ] Issue has `## Circuit Breakers` with iteration + cost limits
-  - [ ] Checkpoint written to `$PAI_WORK_DIR/{slug}/`
+  - [ ] Checkpoint written to `$RUNGATE_WORK_DIR/{slug}/`
 - **Strike threshold:** 3
 - **Escalated:** false
 - **Skip history (30d):** 0 skips
@@ -239,7 +239,7 @@ The DISCOVERY_SCHEMA (JSON Schema for Claude structured output) at `ship.js:44` 
 
 ### Workflow State Lifecycle
 
-The `~/.pai-work/` directory accumulates workflow state slugs with no archival mechanism. As of 2026-09-17: 1,065 slugs, 2 archived, 14 stuck in non-DONE phases, 1,001 with no workflow-state.json.
+The `~/.rungate/` directory accumulates workflow state slugs with no archival mechanism. As of 2026-09-17: 1,065 slugs, 2 archived, 14 stuck in non-DONE phases, 1,001 with no workflow-state.json.
 
 **Rule:** No background cleanup crons or daemons (unanimously rejected — race conditions with active workflows). Cleanup is lazy: `initWorkflow()` at `orchestrator.ts:467` logs a warning when overwriting non-DONE state. One-shot manual cleanup via Makefile target for accumulated slugs.
 

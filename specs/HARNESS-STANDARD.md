@@ -147,7 +147,7 @@ flowchart TD
   ## Related Issues
   - #N — [status] — [how it relates]
   ```
-- Checkpoint written to `$PAI_WORK_DIR/{slug}/CHECKPOINT.md`
+- Checkpoint written to `$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md`
 
 **Quality bar:** Every success criterion passes the garbage test ("Could garbage data pass this?"). If yes, tighten until no. Every AC with a numeric threshold must state its denominator ("download 80% of N items where N = [source]").
 
@@ -162,7 +162,7 @@ flowchart TD
 **Process (mechanical — same every time):**
 1. Read project docs in order: PRINCIPLES.md → ARCHITECTURE.md → PROJECT-STATE.md
 2. Read the GitHub issue + any linked specs/ADRs
-3. Read checkpoint if resuming (`$PAI_WORK_DIR/{slug}/CHECKPOINT.md`)
+3. Read checkpoint if resuming (`$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md`)
 4. Read `MEMORY/LEARNING/FAILURES/` for prior patterns matching this domain
 5. Check `gh issue list` for related open issues
 
@@ -321,7 +321,7 @@ Check DISCOVERY's answer to "Where does this run?":
 | Wall clock exceeded | Compare current time to start timestamp in checkpoint | CIRCUIT BREAK |
 | Making progress | At least 1 new AC passed since last iteration | Continue — loop back to DISCOVERY |
 
-**Stuck detection storage:** State persists in `$PAI_WORK_DIR/{slug}/stuck-detection.json`:
+**Stuck detection storage:** State persists in `$RUNGATE_WORK_DIR/{slug}/stuck-detection.json`:
 ```json
 {
   "iteration_count": 0,
@@ -390,7 +390,7 @@ When Goal Audit amends ACs: reset `stderr_hashes` and `tool_call_hashes` (old er
 5. Per-goal budget exhausted?
    └─ YES → STOP
            → Write convergence report to GitHub issue
-           → Write checkpoint to $PAI_WORK_DIR/{slug}/CHECKPOINT.md
+           → Write checkpoint to $RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md
            → Notify Jason with: what shipped, what didn't, why, options
 ```
 
@@ -424,7 +424,7 @@ When a circuit break leads to a fundamentally different approach (not just a ret
 **Process (fires on every issue close):**
 1. Signal capture → ratings.jsonl (SentimentScorer hook, automatic)
 2. Correction capture → if Jason corrected during session, feedback memory written
-3. Update checkpoint → `$PAI_WORK_DIR/{slug}/CHECKPOINT.md` marked complete
+3. Update checkpoint → `$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md` marked complete
 4. Doc cascade → `Skill("doc-hygiene")` — verifies ARCHITECTURE.md, PROJECT-STATE.md, PRINCIPLES.md, CONTEXT.md, ADRs all reflect what shipped. Not optional — stale docs cause the same failures as stale code. Falls back to Ship DURABILITY matrix if skill unavailable.
 5. Close GitHub issue with evidence summary via `gh issue close`
 6. BACKLOG.md → any follow-ups discovered during work get logged

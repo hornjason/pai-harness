@@ -13,7 +13,9 @@ export function paiRoot(): string {
 }
 
 export function workDir(slug: string): string {
-  return join(process.env.HOME || "", ".pai-work", slug);
+  if (slug.includes('..') || slug.startsWith('/')) throw new Error(`Invalid slug: ${slug}`);
+  const base = process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
+  return join(base, slug);
 }
 
 export function gateSaltPath(): string {

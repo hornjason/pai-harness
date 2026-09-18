@@ -158,7 +158,7 @@ if (projectType === "code") {
   generateCodeMap(projectPath);
 }
 
-// 8. Generate or audit project-harness.json (code projects only)
+// 8. Generate or audit rungate.json (code projects only)
 if (projectType === "code") {
   generateOrAuditProjectHarness(projectPath);
 }
@@ -251,7 +251,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     { pattern: "tsconfig.json", what: "TypeScript configuration", when: "Changing TS settings" },
     { pattern: "Containerfile", what: "Container build definition", when: "Modifying container" },
     { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
-    { pattern: ".claude/project-harness.json", what: "Harness project config", when: "Shipping through harness" },
+    { pattern: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" },
   ];
   for (const kf of keyFilePatterns) {
     if (existsSync(join(projectPath, kf.pattern))) {
@@ -336,9 +336,9 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     } catch {}
   }
 
-  // Load project-harness.json for environment info
+  // Load rungate.json for environment info
   const harness = (() => {
-    const p = join(projectPath, ".claude", "project-harness.json");
+    const p = join(projectPath, ".claude", "rungate.json");
     if (!existsSync(p)) return null;
     try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
   })();
@@ -374,7 +374,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     ? docRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
     : "| (no docs found) | |";
 
-  // Environment section from project-harness.json
+  // Environment section from rungate.json
   let envSection = "";
   if (harness) {
     const lines: string[] = ["## Environment\n"];
@@ -402,7 +402,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     envSection = lines.join("\n");
   }
 
-  // Consumers from project-harness.json
+  // Consumers from rungate.json
   const consumers = harness?.consumers || [];
   const consumerSection = consumers.length > 0
     ? `## Consumers (${consumers.length})\n\n${consumers.map((c: string) => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.`
@@ -638,7 +638,7 @@ If pre-conditions fail → report FAIL immediately, do NOT proceed.
 
 - browser_snapshot() for ALL assertions (text, fast, cheap)
 - browser_take_screenshot() ONLY for evidence after assertions pass
-- Never guess URLs — read .claude/project-harness.json pages map
+- Never guess URLs — read .claude/rungate.json pages map
 
 ## Anti-checks (ALWAYS run)
 
@@ -898,7 +898,7 @@ function refreshAgentsMd(root: string, type: ProjectType): void {
 }
 
 function generateOrAuditProjectHarness(root: string): void {
-  const harnessPath = join(root, ".claude", "project-harness.json");
+  const harnessPath = join(root, ".claude", "rungate.json");
 
   // Scan pages from App.tsx or pages/ directory
   const scannedPages: Record<string, string> = {};
@@ -976,18 +976,18 @@ function generateOrAuditProjectHarness(root: string): void {
     const scannedPaths = Object.keys(scannedPages);
     const missingPages = scannedPaths.filter(p => !declaredPages.some(d => existing.pages[d] === p || d === p));
     if (missingPages.length > 0) {
-      issues.push(`PAGES: ${missingPages.length} routes in code not in project-harness.json: ${missingPages.slice(0, 5).join(", ")}`);
+      issues.push(`PAGES: ${missingPages.length} routes in code not in rungate.json: ${missingPages.slice(0, 5).join(", ")}`);
     }
 
     if (issues.length > 0) {
-      console.log("\n  project-harness.json audit:");
+      console.log("\n  rungate.json audit:");
       for (const issue of issues) console.log(`    ⚠ ${issue}`);
-      actions.push(`AUDITED: project-harness.json (${issues.length} gaps)`);
+      actions.push(`AUDITED: rungate.json (${issues.length} gaps)`);
     } else {
-      actions.push("AUDITED: project-harness.json (aligned with code)");
+      actions.push("AUDITED: rungate.json (aligned with code)");
     }
   } else {
-    // Generate new project-harness.json
+    // Generate new rungate.json
     const config = {
       project: basename(root),
       repo,
@@ -1010,13 +1010,14 @@ function generateOrAuditProjectHarness(root: string): void {
 
     const dir = join(root, ".claude");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(harnessPath, JSON.stringify(config, null, 2) + "\n");
-    actions.push(`CREATED: .claude/project-harness.json (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
+    const targetPath = join(root, ".claude", "rungate.json");
+    writeFileSync(targetPath, JSON.stringify(config, null, 2) + "\n");
+    actions.push(`CREATED: .claude/rungate.json (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
   }
 }
 
 function loadHarnessConfig(root: string): any {
-  const p = join(root, ".claude", "project-harness.json");
+  const p = join(root, ".claude", "rungate.json");
   if (!existsSync(p)) return null;
   try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
 }

@@ -4,7 +4,7 @@ import { join, resolve } from "path";
 import { execSync } from "child_process";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
-const HOME = process.env.HOME || "/Users/jhorn";
+const HOME = process.env.HOME || "";
 const CLAUDE_DIR = join(HOME, ".claude");
 
 interface ManifestEntry {
@@ -53,7 +53,7 @@ describe("ST-2: Containment — harness files not in old locations", () => {
     "gates/ship-orchestrator.ts",
     "gates/brief-assembler.ts",
     "scripts/sync-spec-tests.ts",
-    "scripts/scaffold-project-harness.ts",
+    "scripts/scaffold-rungate-config.ts",
     "lib/paths.ts",
   ];
 
@@ -103,7 +103,7 @@ describe("ST-3: Path purity — no hardcoded ~/.claude/ paths", () => {
       return;
     }
     const result = execSync(
-      `grep -rn '/Users/jhorn/.claude' ${existingDirs.join(" ")} --include='*.ts' --include='*.js' 2>/dev/null || true`,
+      `grep -rn '${HOME}/.claude' ${existingDirs.join(" ")} --include='*.ts' --include='*.js' 2>/dev/null || true`,
       { encoding: "utf8" }
     );
     const lines = result.trim().split("\n").filter(l => l.length > 0);

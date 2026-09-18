@@ -92,7 +92,7 @@ const NO_RESEARCH = parsedArgs.noResearch || false
 const ISSUE = parsedArgs.issue || null
 const SLUG = parsedArgs.slug || null
 const GOVERNING_SPEC = parsedArgs.governingSpec || null
-const RESEARCH_DIR = SLUG ? `~/.pai-work/${SLUG}` : '~/.pai-work/council-research'
+const RESEARCH_DIR = SLUG ? `~/.rungate/${SLUG}` : '~/.rungate/council-research'
 
 const MEMBER_PROMPTS = {
   architect: 'You are Serena Blackwood, a senior systems architect. Focus on: scalability, modularity, data flow, separation of concerns, long-term maintainability. Challenge over-engineering and under-engineering equally.',
@@ -465,8 +465,8 @@ if (SLUG) {
     capturedAt: '(set-by-caller)',
     ...synthesis,
   }
-  await agent(`Write this JSON to ~/.pai-work/${SLUG}/council-synthesis.json (create directory with mkdir -p if needed):\n${JSON.stringify(synthEnvelope)}`, { label: 'write-synthesis', phase: 'Synthesis' })
-  log(`Council synthesis written to ~/.pai-work/${SLUG}/council-synthesis.json`)
+  await agent(`Write this JSON to ~/.rungate/${SLUG}/council-synthesis.json (create directory with mkdir -p if needed):\n${JSON.stringify(synthEnvelope)}`, { label: 'write-synthesis', phase: 'Synthesis' })
+  log(`Council synthesis written to ~/.rungate/${SLUG}/council-synthesis.json`)
 }
 
 return {

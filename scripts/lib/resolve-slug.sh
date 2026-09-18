@@ -3,10 +3,10 @@
 # No shebang, no set -euo — inherited from caller.
 
 # resolve_slug_from_path(abs_path) — converts work dir path to relative slug.
-# Example: /Users/jhorn/.pai-work/pai/361 -> pai/361
+# Example: /Users/jhorn/.rungate/pai/361 -> pai/361
 resolve_slug_from_path() {
   local abs_path="$1"
-  local work_dir="${PAI_WORK_DIR:-${HOME}/.pai-work}"
+  local work_dir="${RUNGATE_WORK_DIR:-${HOME}/.rungate}"
   echo "${abs_path#${work_dir}/}"
 }
 

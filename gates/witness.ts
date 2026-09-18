@@ -86,8 +86,9 @@ export function writeWitness(
   issue: number = 0,
   projectRoot?: string,
 ): string {
-  const workDir = join(process.env.HOME || "", ".pai-work", slug);
-  const witnessDir = join(workDir, "witnesses");
+  const base = process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
+  const wDir = join(base, slug);
+  const witnessDir = join(wDir, "witnesses");
   mkdirSync(witnessDir, { recursive: true });
 
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -166,8 +167,9 @@ export function verifyWitnessChain(
   slug: string,
   headSha?: string,
 ): { valid: boolean; errors: string[]; witnesses: WitnessRecord[] } {
-  const workDir = join(process.env.HOME || "", ".pai-work", slug);
-  const witnessDir = join(workDir, "witnesses");
+  const base = process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
+  const wDir = join(base, slug);
+  const witnessDir = join(wDir, "witnesses");
   const errors: string[] = [];
   const witnesses: WitnessRecord[] = [];
 

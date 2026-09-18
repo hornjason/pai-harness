@@ -6,7 +6,7 @@ import { execFileSync } from "child_process";
 export const MAX_ITERATIONS = 3;
 
 function workDirBase(): string {
-  return process.env.SHIP_ORCH_WORK_DIR || join(process.env.HOME || "", ".pai-work");
+  return process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate");
 }
 const GATES_DIR = __dirname;
 

@@ -60,7 +60,7 @@ function createState(overrides: Record<string, any> = {}): void {
 function setupProjectRoot(): void {
   mkdirSync(join(PROJECT_ROOT, ".claude"), { recursive: true });
   writeFileSync(
-    join(PROJECT_ROOT, ".claude", "project-harness.json"),
+    join(PROJECT_ROOT, ".claude", "rungate.json"),
     JSON.stringify({
       project: "TestProject",
       dev: { apiBase: "http://localhost:7778", start: "make dev-all" },
@@ -335,9 +335,9 @@ describe("brief-assembler", () => {
       expect(brief).not.toContain("AGENTS.md");
     });
 
-    test("AC-2: includes contextDocs from project-harness.json (array form)", async () => {
+    test("AC-2: includes contextDocs from rungate.json (array form)", async () => {
       writeFileSync(
-        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        join(PROJECT_ROOT, ".claude", "rungate.json"),
         JSON.stringify({
           project: "TestProject",
           contextDocs: ["HARNESS.md", "DESIGN.md"],
@@ -357,9 +357,9 @@ describe("brief-assembler", () => {
       expect(result.contextFileCount).toBeGreaterThanOrEqual(2);
     });
 
-    test("AC-2: includes contextDocs from project-harness.json (object form)", async () => {
+    test("AC-2: includes contextDocs from rungate.json (object form)", async () => {
       writeFileSync(
-        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        join(PROJECT_ROOT, ".claude", "rungate.json"),
         JSON.stringify({
           project: "TestProject",
           contextDocs: {
@@ -403,7 +403,7 @@ describe("brief-assembler", () => {
         "# Agents\n## Marcus Webb\nSenior engineer\n",
       );
       writeFileSync(
-        join(PROJECT_ROOT, ".claude", "project-harness.json"),
+        join(PROJECT_ROOT, ".claude", "rungate.json"),
         JSON.stringify({
           project: "TestProject",
           contextDocs: ["HARNESS.md"],

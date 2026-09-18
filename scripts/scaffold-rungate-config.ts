@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-// scaffold-project-harness.ts -- Generate starter .claude/project-harness.json
-// Usage: scaffold-project-harness.ts /path/to/project
+// scaffold-rungate-config.ts -- Generate starter .claude/rungate.json
+// Usage: scaffold-rungate-config.ts /path/to/project
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -8,11 +8,11 @@ import { execSync } from "child_process";
 
 const projectRoot = process.argv[2];
 if (!projectRoot) {
-  console.error("Usage: scaffold-project-harness.ts /path/to/project");
+  console.error("Usage: scaffold-rungate-config.ts /path/to/project");
   process.exit(1);
 }
 
-const target = join(projectRoot, ".claude", "project-harness.json");
+const target = join(projectRoot, ".claude", "rungate.json");
 
 if (existsSync(target)) {
   console.log(`EXISTS: ${target} — not overwriting`);

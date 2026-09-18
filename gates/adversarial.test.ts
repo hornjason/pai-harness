@@ -3,13 +3,14 @@ import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { writeWitness, verifyWitness, verifyWitnessChain } from "./witness";
 
-// HOME_DIR is set so join(HOME_DIR, ".pai-work", SLUG) resolves correctly
+// HOME_DIR is set so workDir resolves correctly via RUNGATE_WORK_DIR
 const HOME_DIR = `/tmp/adversarial-home-${process.pid}`;
 const SLUG = "adversarial-test";
-const WORK_DIR = join(HOME_DIR, ".pai-work", SLUG);
+const WORK_DIR = join(HOME_DIR, ".rungate", SLUG);
 const WITNESS_DIR = join(WORK_DIR, "witnesses");
 
 const origHome = process.env.HOME;
+const origRungateWorkDir = process.env.RUNGATE_WORK_DIR;
 
 beforeEach(() => {
   mkdirSync(WITNESS_DIR, { recursive: true });
@@ -21,10 +22,13 @@ beforeEach(() => {
     writeFileSync(saltDst, readFileSync(saltSrc));
   }
   process.env.HOME = HOME_DIR;
+  delete process.env.RUNGATE_WORK_DIR;
 });
 
 afterEach(() => {
   process.env.HOME = origHome;
+  if (origRungateWorkDir !== undefined) process.env.RUNGATE_WORK_DIR = origRungateWorkDir;
+  else delete process.env.RUNGATE_WORK_DIR;
   try { rmSync(HOME_DIR, { recursive: true, force: true }); } catch {}
 });
 

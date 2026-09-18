@@ -1,3 +1,10 @@
+---
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-09-18
+---
+
 # PAI Harness
 
 Agent entry point for the PAI ship/prove/council execution engine. This repo owns all execution machinery — phases, gates, specs, agent prompts, and guard tests.
@@ -5,7 +12,7 @@ Agent entry point for the PAI ship/prove/council execution engine. This repo own
 ## Workflow Entry Points
 
 ### `workflows/ship.js`
-- **Input:** GitHub issue number, project-harness.json config
+- **Input:** GitHub issue number, rungate.json config
 - **Output:** SHIP_PASSED or SHIP_FAILED with gate evidence chain
 - **Phases:** SCOPE → BUILD → VERIFY → CLOSE
 - **Invocation:** `Workflow({scriptPath: "<HARNESS_ROOT>/workflows/ship.js"})`
@@ -21,9 +28,9 @@ Agent entry point for the PAI ship/prove/council execution engine. This repo own
 - **Output:** Council transcript with convergence points and verdicts
 - **Invocation:** `Workflow({scriptPath: "<HARNESS_ROOT>/workflows/council.js"})`
 
-## project-harness.json Schema
+## rungate.json Schema
 
-Each project provides a `project-harness.json` validated by Zod at load time.
+Each project provides a `.claude/rungate.json` validated by Zod at load time.
 
 **Required fields:**
 - `project` — project slug (e.g., "daily-brief-dashboard")
@@ -78,4 +85,4 @@ These CLAUDE.md behavioral rules govern harness execution. The harness does not 
 ## Repo Boundary
 
 **Owns:** execution machinery (phases, gates, specs, agent prompts, config)
-**Does NOT own:** behavioral rules (CLAUDE.md), orchestration mode (Algorithm), project config (project-harness.json), PAI-wide routing (DOCS.md)
+**Does NOT own:** behavioral rules (CLAUDE.md), orchestration mode (Algorithm), project config (rungate.json), PAI-wide routing (DOCS.md)

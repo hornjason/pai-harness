@@ -139,8 +139,8 @@ echo "10. Regression — prove smoke tests"
 bash skills/prove/prove-smoke-test.sh >/dev/null 2>&1 && pass "prove-smoke-test.sh passes" || fail "prove-smoke-test.sh failed"
 
 echo "11. Batch status tests"
-SAVED_PAI_WORK_DIR="${PAI_WORK_DIR:-}"
-export PAI_WORK_DIR="$TMPDIR"
+SAVED_RUNGATE_WORK_DIR="${RUNGATE_WORK_DIR:-}"
+export RUNGATE_WORK_DIR="$TMPDIR"
 
 bash "$REPO_ROOT/scripts/batch-status.sh" init "test-batch" >/dev/null 2>&1 && \
   [[ -f "$TMPDIR/batch-test-batch/batch-status.json" ]] && pass "batch-status init creates file" || fail "batch-status init"
@@ -153,7 +153,7 @@ bash "$REPO_ROOT/scripts/batch-status.sh" update "test-batch" 123 "PROVE" "DONE"
 PHASE=$(python3 -c "import json; print(json.load(open('$TMPDIR/batch-test-batch/batch-status.json'))['issues'][0]['phase'])" 2>/dev/null || echo "?")
 [[ "$PHASE" == "PROVE" ]] && pass "batch-status atomic update" || fail "batch-status atomic update ($PHASE)"
 
-if [[ -n "$SAVED_PAI_WORK_DIR" ]]; then export PAI_WORK_DIR="$SAVED_PAI_WORK_DIR"; else unset PAI_WORK_DIR; fi
+if [[ -n "$SAVED_RUNGATE_WORK_DIR" ]]; then export RUNGATE_WORK_DIR="$SAVED_RUNGATE_WORK_DIR"; else unset RUNGATE_WORK_DIR; fi
 
 echo "12. Chain detection documentation tests"
 grep -q "Chain Detection" "$REPO_ROOT/skills/ship/SKILL.md" && pass "ship has Chain Detection section" || fail "ship missing Chain Detection"
@@ -225,21 +225,21 @@ echo "17. Skill runner tests"
 # Test pre-phase with goal skill
 mkdir -p "$TMPDIR/runner-test"
 echo '{"schemaVersion":2,"issue":999,"slug":"test","phase":"GOAL","issueGoal":"test","acs":[],"gates":{},"changelog":[]}' > "$TMPDIR/runner-test/workflow-state.json"
-PAI_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase pre --skill goal --issue 999 --slug runner-test >/dev/null 2>&1 && \
+RUNGATE_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase pre --skill goal --issue 999 --slug runner-test >/dev/null 2>&1 && \
   pass "runner pre-phase goal passes" || fail "runner pre-phase goal failed"
 
 # Test post-phase with valid artifact
 cat > "$TMPDIR/runner-test/goal-record.json" << 'FIXTURE'
 {"contractVersion":"1.0","id":"test","goalStatement":"test","successCriteria":[{"id":"SC-1","assertion":"test","evidenceType":"grep","threshold":{"op":"==","value":"0","unit":"matches"}}],"scopeBoundary":{"in":["test"],"out":["test"]},"artifactRef":{"type":"github-issue","locator":"hornjason/pai-config#999"}}
 FIXTURE
-PAI_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase post --skill goal --issue 999 --slug runner-test --artifact "$TMPDIR/runner-test/goal-record.json" >/dev/null 2>&1 && \
+RUNGATE_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase post --skill goal --issue 999 --slug runner-test --artifact "$TMPDIR/runner-test/goal-record.json" >/dev/null 2>&1 && \
   pass "runner post-phase goal passes" || fail "runner post-phase goal failed"
 
 # Test chain-state.json was created
 [[ -f "$TMPDIR/runner-test/chain-state.json" ]] && pass "runner creates chain-state.json" || fail "runner missing chain-state.json"
 
 # Test post-phase catches missing artifact (Assert)
-PAI_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase post --skill ship --issue 999 --slug runner-test 2>/dev/null && \
+RUNGATE_WORK_DIR="$TMPDIR" bash "$REPO_ROOT/scripts/skill-runner.sh" --phase post --skill ship --issue 999 --slug runner-test 2>/dev/null && \
   fail "runner should fail on missing ship artifact" || pass "runner Assert fails on missing artifact"
 
 echo "18. Runner Assert/Suggest classification"

@@ -262,7 +262,7 @@ Living document tracking every step in the ship cycle — what's mechanical, wha
 
 ## Key Architectural Decisions
 
-1. **Unified work dir:** All hooks read from PAI_WORK_DIR (~/.pai-work/). MEMORY/WORK is legacy. (#352)
+1. **Unified work dir:** All hooks read from RUNGATE_WORK_DIR (~/.rungate/). MEMORY/WORK is legacy. (#352)
 2. **Auto-chain on Write:** PostToolUse on Write detects artifact creation. (#352)
 3. **Data-driven enforcement:** skill-registry.json + enforcement-policies.json. Adding enforcement = adding JSON, not code. (#306)
 4. **SKILL.md is docs-only:** Skills run on runner + gates, not on instructions. (#349)

@@ -6,14 +6,14 @@
 #   bash batch-status.sh report <batch-id>
 set -euo pipefail
 
-PAI_WORK_DIR="${PAI_WORK_DIR:-$HOME/.pai-work}"
+RUNGATE_DIR="${RUNGATE_WORK_DIR:-$HOME/.rungate}"
 ACTION="${1:?Usage: batch-status.sh <init|update|report> ...}"
 BATCH_ID="${2:?Usage: batch-status.sh $ACTION <batch-id> ...}"
-STATUS_FILE="$PAI_WORK_DIR/batch-$BATCH_ID/batch-status.json"
+STATUS_FILE="$RUNGATE_DIR/batch-$BATCH_ID/batch-status.json"
 
 case "$ACTION" in
   init)
-    mkdir -p "$PAI_WORK_DIR/batch-$BATCH_ID"
+    mkdir -p "$RUNGATE_DIR/batch-$BATCH_ID"
     echo '{"batchId":"'"$BATCH_ID"'","startedAt":"'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'","issues":[]}' > "$STATUS_FILE"
     echo "PASS: Initialized batch $BATCH_ID at $STATUS_FILE"
     ;;

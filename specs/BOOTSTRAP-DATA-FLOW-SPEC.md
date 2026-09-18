@@ -12,21 +12,21 @@ testable: true
 
 ## Problem Statement
 
-Bootstrap generates files in the wrong order — AGENTS.md before CODE-MAP.md and project-harness.json exist. The ship workflow hardcodes 50 DDB-specific values instead of reading from project config. No spec defines what data each consumer needs or where it comes from. Result: scaffolding that looks right but doesn't flow right.
+Bootstrap generates files in the wrong order — AGENTS.md before CODE-MAP.md and rungate.json exist. The ship workflow hardcodes 50 DDB-specific values instead of reading from project config. No spec defines what data each consumer needs or where it comes from. Result: scaffolding that looks right but doesn't flow right.
 
 ## Core Principle
 
-**Data flows DOWN. Never sideways, never up.** Code is scanned once. Each downstream file reads from the file above it, never from raw code. The ship workflow reads from project-harness.json and prompt templates, never from hardcoded values.
+**Data flows DOWN. Never sideways, never up.** Code is scanned once. Each downstream file reads from the file above it, never from raw code. The ship workflow reads from rungate.json and prompt templates, never from hardcoded values.
 
 ## Design Decisions
 
 | Decision | What | Rationale |
 |---|---|---|
 | D-1 | CODE-MAP.md generates FIRST (from code scan) | All other files depend on it — routes, components, modules, consumers |
-| D-2 | project-harness.json generates SECOND (from CODE-MAP + Makefile + package.json) | Config file that every workflow reads — must have complete data |
-| D-3 | AGENTS.md generates THIRD (from project-harness + CODE-MAP ref + docs scan) | Routing table that agents read — needs environment, consumers, docs |
-| D-4 | .claude/agents/*.md generate FOURTH (from project-harness + AGENTS.md) | Agent context — needs ports, pages, consumers from upstream |
-| D-5 | Ship workflow reads project-harness.json at startup, fills prompt templates | Zero hardcoded values — all from config |
+| D-2 | rungate.json generates SECOND (from CODE-MAP + Makefile + package.json) | Config file that every workflow reads — must have complete data |
+| D-3 | AGENTS.md generates THIRD (from rungate + CODE-MAP ref + docs scan) | Routing table that agents read — needs environment, consumers, docs |
+| D-4 | .claude/agents/*.md generate FOURTH (from rungate + AGENTS.md) | Agent context — needs ports, pages, consumers from upstream |
+| D-5 | Ship workflow reads rungate.json at startup, fills prompt templates | Zero hardcoded values — all from config |
 | D-6 | Prompt templates in prompts/*.md with ${VAR} placeholders | Methodology is harness-owned, project data is config-driven |
 | D-7 | If a config field is null, the dependent step is SKIPPED — no agent spawned | Library projects (no container) skip container steps cleanly |
 
@@ -39,10 +39,10 @@ Bootstrap generates files in the wrong order — AGENTS.md before CODE-MAP.md an
 | React components | file scan of dashboard/src/components/ | CODE-MAP.md § React Components | Quinn (knows what to test) |
 | Page→component mappings | import scan of dashboard/src/pages/ | CODE-MAP.md § Page→Component Map | Quinn (knows which components on each page) |
 | Module import chains | import scan of src/ | CODE-MAP.md § Module Dependencies | Marcus (cascade impact analysis) |
-| Consumer modules | import scan of src/ | CODE-MAP.md § Consumer list | project-harness.json consumers field |
-| Package info | package.json | CODE-MAP.md § Summary + project-harness.json | AGENTS.md (project name, deps), workflows (test command) |
-| Makefile targets | Makefile | project-harness.json (dev/prod commands) | Workflows (rebuild, dev-all, test-up) |
-| App routes | App.tsx route definitions | project-harness.json pages map | Quinn (URL navigation), AGENTS.md (pages table) |
+| Consumer modules | import scan of src/ | CODE-MAP.md § Consumer list | rungate.json consumers field |
+| Package info | package.json | CODE-MAP.md § Summary + rungate.json | AGENTS.md (project name, deps), workflows (test command) |
+| Makefile targets | Makefile | rungate.json (dev/prod commands) | Workflows (rebuild, dev-all, test-up) |
+| App routes | App.tsx route definitions | rungate.json pages map | Quinn (URL navigation), AGENTS.md (pages table) |
 | Specs | specs/*.md frontmatter | AGENTS.md specs table | Conformity tests, gates |
 | Docs | docs/*.md | AGENTS.md doc routing table | Agent DISCOVERY, context loading |
 
@@ -51,11 +51,11 @@ Bootstrap generates files in the wrong order — AGENTS.md before CODE-MAP.md an
 ```
 Phase 1 — SCAN (produce raw data files)
   1.1  CODE-MAP.md      ← fallow + route + component + module + page scans
-  1.2  project-harness.json ← CODE-MAP consumers + Makefile + package.json + App.tsx routes
+  1.2  rungate.json ← CODE-MAP consumers + Makefile + package.json + App.tsx routes
 
 Phase 2 — GENERATE (produce agent-facing files from Phase 1 outputs)
-  2.1  AGENTS.md        ← project-harness.json (env, consumers, pages) + CODE-MAP (ref) + docs scan
-  2.2  .claude/agents/  ← project-harness.json (ports, pages) + AGENTS.md (identity, routing)
+  2.1  AGENTS.md        ← rungate.json (env, consumers, pages) + CODE-MAP (ref) + docs scan
+  2.2  .claude/agents/  ← rungate.json (ports, pages) + AGENTS.md (identity, routing)
 
 Phase 3 — SCAFFOLD (create structure, tests, deps)
   3.1  specs/           ← create dir, copy template if empty
@@ -84,7 +84,7 @@ Read by: AGENTS.md (references it), agents/marcus.md (Module Dependencies, Code 
 | Code Health | Circular deps, unused files | Marcus (tech debt awareness) |
 | Package Scripts | Available npm/bun scripts | Workflow commands |
 
-### project-harness.json
+### rungate.json
 
 Produced by: `scripts/scaffold-project.ts` → `generateOrAuditProjectHarness()`
 Read by: AGENTS.md, agents/*.md, ship.js, prove.js, verify.js, gates
@@ -126,9 +126,9 @@ Read by: All agents (explicitly — "Read AGENTS.md first"), copilot-instruction
 | Documentation Routing | docs/ scan (top 10 by relevance priority) + CODE-MAP first | Agent finds the right doc fast |
 | Specs | specs/ frontmatter scan | Agent knows governing specs |
 | Tests | test/ file scan | Agent knows test commands |
-| Environment | project-harness.json dev/prod sections | Agent knows ports, commands |
-| Pages | project-harness.json pages map | Agent knows URL paths |
-| Consumers | project-harness.json consumers | Agent knows cascade impact |
+| Environment | rungate.json dev/prod sections | Agent knows ports, commands |
+| Pages | rungate.json pages map | Agent knows URL paths |
+| Consumers | rungate.json consumers | Agent knows cascade impact |
 | Workflow | git remote + Makefile targets | Agent knows how to ship |
 | Quick Reference | Static (5 rules) | Orientation |
 | Reference Files | reference/ scan | Historical docs index |
@@ -149,7 +149,7 @@ Read by: Claude Code (auto-loaded as system prompt when agent is spawned via sub
 ### Ship Workflow Prompt Templates
 
 Produced by: Harness-owned templates in `prompts/`
-Filled by: Ship workflow reading project-harness.json at startup
+Filled by: Ship workflow reading rungate.json at startup
 
 | Template | Purpose | Variables From Config |
 |----------|---------|---------------------|
@@ -163,17 +163,17 @@ Filled by: Ship workflow reading project-harness.json at startup
 
 ## Success Criteria
 
-- [ ] SC-1: Bootstrap Phase 1 (CODE-MAP + project-harness) completes before Phase 2 (AGENTS.md + agents/)
-- [ ] SC-2: project-harness.json consumers field populated from CODE-MAP consumer scan, not hardcoded
-- [ ] SC-3: AGENTS.md environment section reads from project-harness.json (not hardcoded)
-- [ ] SC-4: Zero hardcoded ports/URLs in ship.js — all from project-harness.json fields
-- [ ] SC-5: Zero hardcoded commands in ship.js — all from project-harness.json fields
-- [ ] SC-6: Zero hardcoded project names in ship.js — all from args or project-harness.json
+- [ ] SC-1: Bootstrap Phase 1 (CODE-MAP + rungate) completes before Phase 2 (AGENTS.md + agents/)
+- [ ] SC-2: rungate.json consumers field populated from CODE-MAP consumer scan, not hardcoded
+- [ ] SC-3: AGENTS.md environment section reads from rungate.json (not hardcoded)
+- [ ] SC-4: Zero hardcoded ports/URLs in ship.js — all from rungate.json fields
+- [ ] SC-5: Zero hardcoded commands in ship.js — all from rungate.json fields
+- [ ] SC-6: Zero hardcoded project names in ship.js — all from args or rungate.json
 - [ ] SC-7: Container-rebuild agent NOT spawned when prod.rebuild is null
 - [ ] SC-8: All ship.js inline prompts >5 lines extracted to prompts/*.md templates
-- [ ] SC-9: project-harness-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
+- [ ] SC-9: rungate-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
 - [ ] SC-10: Schema fields dev.typeCheck, prod.smokeTest, contextDocs read by at least one workflow
-- [ ] SC-11: Re-running bootstrap on an existing project updates AGENTS.md with current CODE-MAP and project-harness data
+- [ ] SC-11: Re-running bootstrap on an existing project updates AGENTS.md with current CODE-MAP and rungate data
 - [ ] SC-A1: No workflow file imports or references values from a specific project (DDB, asaCommandCenter, etc.)
 
 ## Phase 1.5 — Knowledge Extraction (non-inferrable rules from docs)
@@ -250,13 +250,13 @@ When a field is null, the workflow step that uses it is SKIPPED — no agent spa
 - [ ] SC-12: Bootstrap scans docs for non-inferrable rule candidates using signal phrases
 - [ ] SC-13: Extracted candidates presented for user confirmation before writing to AGENTS.md
 - [ ] SC-14: Staleness uses git log date with per-type thresholds (ADR exempt, spec 90d, guide 180d)
-- [ ] SC-15: project-harness.json generation falls back from Makefile → package.json → null for each field
+- [ ] SC-15: rungate.json generation falls back from Makefile → package.json → null for each field
 - [ ] SC-16: Null config fields cause workflow steps to SKIP (not error, not spawn rogue agents)
 
 ## Cautions
 
 - Bootstrap Phase 1 depends on fallow being installed. If fallow fails, CODE-MAP.md should still generate from other scans (routes, components, dirs) — fallow sections empty, not entire file missing.
-- project-harness.json consumers field: auto-detection from CODE-MAP may miss consumers that are dynamically imported or configured at runtime. Manual override must be preserved on re-scan.
+- rungate.json consumers field: auto-detection from CODE-MAP may miss consumers that are dynamically imported or configured at runtime. Manual override must be preserved on re-scan.
 - Hard Constraints in AGENTS.md must survive regeneration — they're the one section that can't be auto-detected from code. **CRITICAL (council finding):** The preservation regex at scaffold-project.ts:224 silently drops constraints when Hard Constraints is the last section — the lookahead `(?=\n## )` fails, returns null, and `catch {}` at line 232 swallows the error. Must be fixed before building extract-constraints.
 - Prompt templates with ${VAR} placeholders: if a variable is undefined (field missing from config), the template should show a clear placeholder or instruction, not leave a raw ${VAR} string in the agent prompt.
 - `rejected-constraints.md` must use content-hash dedup so rejections survive line-number changes across doc edits. Prevents the same false positive from resurfacing on every re-scan.

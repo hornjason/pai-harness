@@ -8,7 +8,7 @@ VERBOSE=false
 [[ "${1:-}" == "--verbose" ]] && VERBOSE=true
 
 BASE_DIR="${HOME}/.claude"
-WORK_BASE="${PAI_WORK_DIR:-${HOME}/.pai-work}/smoke-test"
+WORK_BASE="${RUNGATE_WORK_DIR:-${HOME}/.rungate}/smoke-test"
 GATE_RUNNER="$BASE_DIR/skills/ship/gate-runner.sh"
 PASS_COUNT=0
 FAIL_COUNT=0

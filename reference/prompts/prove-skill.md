@@ -10,7 +10,7 @@ contract:
   input: "Issue number OR workflow-state.json path"
   gateIn: "Code merged to main (mergeCommitSha exists) OR standalone (no prior /ship required)"
   gateOut: "prove-evidence.json exists with verdict (PROVEN/UNPROVEN/INCONCLUSIVE)"
-  artifact: "prove-evidence.json + evidence files in ~/.pai-work/{slug}/evidence/"
+  artifact: "prove-evidence.json + evidence files in ~/.rungate/{slug}/evidence/"
   outputSchema: "skills/prove/prove-evidence.schema.json"
   telemetry: "harness-telemetry.jsonl with skill=prove"
   errorRecovery:
@@ -55,7 +55,7 @@ At skill entry, the runner checks for upstream artifacts in the slug directory:
 
 1. **GoalRecord check:**
    ```bash
-   GOAL_RECORD="$PAI_WORK_DIR/{slug}/goal-record.json"
+   GOAL_RECORD="$RUNGATE_WORK_DIR/{slug}/goal-record.json"
    if [[ -f "$GOAL_RECORD" ]]; then
      echo "INFO: Chain mode — GoalRecord found. Using structured SCs for criteriaResults."
      # Each SC from GoalRecord becomes a criteriaResult entry
@@ -66,7 +66,7 @@ At skill entry, the runner checks for upstream artifacts in the slug directory:
 
 2. **Ship evidence check:**
    ```bash
-   SHIP_EVIDENCE="$PAI_WORK_DIR/{slug}/ship-evidence.json"
+   SHIP_EVIDENCE="$RUNGATE_WORK_DIR/{slug}/ship-evidence.json"
    if [[ -f "$SHIP_EVIDENCE" ]]; then
      echo "INFO: Ship evidence found. Using mergeCommitSha for verification."
      # Read mergeCommitSha — verify it matches git rev-parse main
@@ -82,7 +82,7 @@ At skill entry, the runner checks for upstream artifacts in the slug directory:
 
 ### Step 1 — Load context
 
-1. workflow-state.json is read for the issue (from ~/.pai-work/ by issue number)
+1. workflow-state.json is read for the issue (from ~/.rungate/ by issue number)
 2. If not found: the GitHub issue is read directly (standalone mode)
 3. issueGoal, mergeCommitSha, beforeState, ACs are extracted
 4. Environment is determined: local dev (7776/5173) or prod (7776 isolated with prod data via make prove-up)
@@ -124,7 +124,7 @@ If beforeState doesn't exist (standalone mode):
 5. Quinn tests as a brand-new user
 
 **For both:**
-- Evidence is captured to `~/.pai-work/{slug}/evidence/after-{environment}.{ext}`
+- Evidence is captured to `~/.rungate/{slug}/evidence/after-{environment}.{ext}`
 - Evidence types: text (API response), screenshot (UI), data snapshot (JSON)
 
 ### Step 5 — Compare and verdict
@@ -138,7 +138,7 @@ If beforeState doesn't exist (standalone mode):
 
 ### Step 6 — Write evidence artifact
 
-`~/.pai-work/{slug}/prove-evidence.json` is written conforming to `prove-evidence.schema.json`:
+`~/.rungate/{slug}/prove-evidence.json` is written conforming to `prove-evidence.schema.json`:
 
 ```json
 {
@@ -225,7 +225,7 @@ In standalone mode (no goal-record.json), /prove does NOT close the issue — on
 
 After all verification steps complete, the prove evidence artifact is written:
 
-1. `~/.pai-work/{slug}/prove-evidence.json` is created with:
+1. `~/.rungate/{slug}/prove-evidence.json` is created with:
    ```json
    {
      "contractVersion": "1.0",

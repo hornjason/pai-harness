@@ -4,7 +4,7 @@ import { join } from "path";
 import { execSync } from "child_process";
 
 const TEST_BASE = "/tmp/harness-contract-tests";
-const PROJECT_ROOT = "/Users/jhorn/Projects/DailyBriefDashboard";
+const PROJECT_ROOT = join(process.env.HOME || "", "Projects/DailyBriefDashboard");
 const GATES_DIR = join(import.meta.dir, "..", "gates");
 
 function makeFixture(name: string, state: any): string {

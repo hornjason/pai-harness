@@ -54,7 +54,7 @@ The DA determines which mode applies, then follows that mode's process.
    - Per-issue: 5 iterations max
    - Per-goal: $20 cost ceiling, 5M token ceiling
 6. A GitHub issue is created via `gh issue create` using the template below
-7. A checkpoint is written to `$PAI_WORK_DIR/{slug}/CHECKPOINT.md`
+7. A checkpoint is written to `$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md`
 
 ### Mode 2: Goal, Issues Exist
 
@@ -132,7 +132,7 @@ Is this a structural/architectural decision?
 - **`adr`:** The ADR is written to `PAI/ADR/ADR-NNN-{slug}.md` using ADR template. A GitHub issue is created for Phase 1 implementation. GoalRecord `artifactRef.type` = "adr", `artifactRef.locator` = ADR file path.
 - **`prd`:** The PRD is created via `Skill("to-prd")`. Decomposition happens via `Skill("to-issues")`. GoalRecord `artifactRef.type` = "prd", `artifactRef.locator` = PRD issue number.
 - **`spec`:** The spec is written to `PAI/specs/{name}.md`. GoalRecord `artifactRef.type` = "spec", `artifactRef.locator` = spec file path.
-- **`research-brief`:** Research agent(s) are spawned. Output goes to `~/.pai-work/{slug}/research-output.json`. GoalRecord `artifactRef.type` = "research-brief", `artifactRef.locator` = output file path.
+- **`research-brief`:** Research agent(s) are spawned. Output goes to `~/.rungate/{slug}/research-output.json`. GoalRecord `artifactRef.type` = "research-brief", `artifactRef.locator` = output file path.
 
 ### Phase Note
 
@@ -172,7 +172,7 @@ The skill does not exit until ALL of the following are true. The gate enforces t
 - [ ] Circuit breakers are set (defaults or overrides)
 - [ ] Related issues searched and listed (even if none found — state "none found")
 - [ ] GitHub issue created or enriched
-- [ ] Checkpoint written to `$PAI_WORK_DIR/{slug}/CHECKPOINT.md`
+- [ ] Checkpoint written to `$RUNGATE_WORK_DIR/{slug}/CHECKPOINT.md`
 
 ## What This Skill Does NOT Do
 
@@ -191,7 +191,7 @@ After the issue is created, the current state of the bug/feature area is capture
 
 For LIGHT tier, `type: "none"` is acceptable. /prove reads beforeState for before/after comparison.
 
-**Test baseline (#483):** If project-harness.json has a `testCmd`, the DA runs it at goal time and captures pass/fail counts in `beforeState.testBaseline`:
+**Test baseline (#483):** If rungate.json has a `testCmd`, the DA runs it at goal time and captures pass/fail counts in `beforeState.testBaseline`:
 ```json
 "testBaseline": {
   "command": "bun test --isolate test/unit/",
@@ -206,7 +206,7 @@ Ship gate uses this to distinguish pre-existing failures from regressions — a 
 
 After the GitHub issue is created and before-state is captured, the GoalRecord artifact is written:
 
-1. `~/.pai-work/{slug}/goal-record.json` is created with:
+1. `~/.rungate/{slug}/goal-record.json` is created with:
    ```json
    {
      "contractVersion": "1.0",

@@ -4,14 +4,14 @@ import { join, resolve } from "path";
 import {
   parseProjectHarness,
   safeParseProjectHarness,
-} from "../lib/project-harness-schema";
+} from "../lib/rungate-schema";
 
 const HARNESS_ROOT = resolve(import.meta.dir, "..");
 const HOME = process.env.HOME || "";
 
 describe("schema-canary", () => {
-  test("DDB project-harness.json validates (if available)", () => {
-    const ddbPath = join(HOME, "Projects/DailyBriefDashboard/.claude/project-harness.json");
+  test("DDB rungate.json validates (if available)", () => {
+    const ddbPath = join(HOME, "Projects/DailyBriefDashboard/.claude/rungate.json");
     if (!existsSync(ddbPath)) return;
     const raw = JSON.parse(readFileSync(ddbPath, "utf-8"));
     const result = safeParseProjectHarness(raw);
