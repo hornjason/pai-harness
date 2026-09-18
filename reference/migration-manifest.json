@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
   "created": "2026-09-17",
-  "description": "Maps every harness file from scattered ~/.claude/ locations to pai-harness/ target structure",
+  "description": "Maps every harness file from scattered ~/.claude/ locations to rungate/ target structure",
   "files": [
     {
       "source": "~/.claude/workflows/ship.js",

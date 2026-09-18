@@ -2,7 +2,7 @@
 /**
  * generate-code-map.ts — Scan a codebase and produce CODE-MAP.md
  *
- * Usage: bun ~/Projects/pai-harness/scripts/generate-code-map.ts /path/to/project
+ * Usage: bun ~/Projects/rungate/scripts/generate-code-map.ts /path/to/project
  *
  * Combines fallow analysis + route scanning + directory structure into a
  * machine-generated architecture snapshot. Agents read this to understand
@@ -215,7 +215,7 @@ sections.push(`---
 doc-type: code-map
 status: generated
 updated: ${today}
-generator: pai-harness/scripts/generate-code-map.ts
+generator: rungate/scripts/generate-code-map.ts
 ---
 
 # Code Map — ${pkg.name}

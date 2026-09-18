@@ -2,7 +2,7 @@
  * Exportable conformity test functions.
  *
  * Projects import these and pass their root path:
- *   import { runScaffoldConformity, runSpecDiscovery, runSpecDrift } from "pai-harness/lib/conformity";
+ *   import { runScaffoldConformity, runSpecDiscovery, runSpecDrift } from "rungate/lib/conformity";
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
 import { describe, test, expect } from "bun:test";

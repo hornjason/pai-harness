@@ -233,7 +233,7 @@ describe("scaffold-project: conformity test file", () => {
 
     const content = readFileSync(testFile, "utf-8");
     expect(content).toContain("runScaffoldConformity");
-    expect(content).toContain("pai-harness");
+    expect(content).toContain("rungate");
   });
 });
 
@@ -280,14 +280,14 @@ describe("scaffold-project: package.json devDeps", () => {
     if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("adds pai-harness to package.json devDependencies when package.json exists", () => {
+  test("adds rungate to package.json devDependencies when package.json exists", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test", dependencies: {} }, null, 2));
     runScaffold(tmpDir);
 
     const pkg = JSON.parse(readFileSync(join(tmpDir, "package.json"), "utf-8"));
     expect(pkg.devDependencies).toBeDefined();
-    expect(pkg.devDependencies["pai-harness"]).toBeDefined();
+    expect(pkg.devDependencies["rungate"]).toBeDefined();
   });
 
   test("does not create package.json when it does not exist", () => {

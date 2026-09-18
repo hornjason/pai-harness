@@ -12,7 +12,7 @@ updated: 2026-09-17
 Implementation quality framework for PAI (Personal AI Infrastructure). Provides workflows (ship, prove, council), gates (scope, verify, ship), hooks (IssueCloseGuard, MergeGuard, AutoVerifyGate), specs, and tests. Built with Bun/TypeScript.
 
 - **Issues:** github.com/hornjason/pai-config (not this repo)
-- **Code:** github.com/hornjason/pai-harness
+- **Code:** github.com/hornjason/rungate
 
 ## Key Files
 
@@ -89,7 +89,7 @@ GOAL → DISCOVERY → SCOPE → BUILD → VERIFY → SHIP → PROVE
 Workflow invocation always uses `scriptPath`, never `name`:
 
 ```js
-Workflow({ scriptPath: "~/Projects/pai-harness/workflows/ship.js" })
+Workflow({ scriptPath: "~/Projects/rungate/workflows/ship.js" })
 ```
 
 ## Quick Reference

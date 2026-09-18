@@ -208,7 +208,7 @@ ${sizing.filesToModify.map(f => `- ${f}`).join('\n')}
       label: `build:${sizing.issueNumber}`,
       phase: 'Dispatch',
       agentType: 'Engineer',
-      ...((PROJECT_ROOT.includes('/.claude/') || PROJECT_ROOT.includes('/pai-harness/')) && !PROJECT_ROOT.includes('/Projects/') ? { isolation: 'worktree' } : {}),
+      ...((PROJECT_ROOT.includes('/.claude/') || PROJECT_ROOT.includes('/rungate/')) && !PROJECT_ROOT.includes('/Projects/') ? { isolation: 'worktree' } : {}),
       schema: BUILD_RESULT_SCHEMA,
     }))
   )

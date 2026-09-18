@@ -1,6 +1,6 @@
 {
-  "project": "pai-harness",
-  "repo": "hornjason/pai-harness",
+  "project": "rungate",
+  "repo": "hornjason/rungate",
   "issueRepo": "hornjason/pai-config",
   "contextDocs": {
     "harness": "HARNESS.md",

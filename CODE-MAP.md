@@ -2,12 +2,12 @@
 doc-type: code-map
 status: generated
 updated: 2026-09-17
-generator: pai-harness/scripts/generate-code-map.ts
+generator: rungate/scripts/generate-code-map.ts
 ---
 
-# Code Map — pai-harness
+# Code Map — rungate
 
-Auto-generated architecture snapshot. Re-run `bun generate-code-map.ts /Users/jhorn/Projects/pai-harness` to refresh.
+Auto-generated architecture snapshot. Re-run `bun generate-code-map.ts /Users/jhorn/Projects/rungate` to refresh.
 Stale after 14 days or 50+ commits since last scan.
 
 ## Summary

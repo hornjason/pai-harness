@@ -2,7 +2,7 @@
 /**
  * scaffold-project.ts — Bootstrap any project to scaffold conformity.
  *
- * Usage: bun ~/Projects/pai-harness/scripts/scaffold-project.ts /path/to/project
+ * Usage: bun ~/Projects/rungate/scripts/scaffold-project.ts /path/to/project
  *
  * Detects project type (code/content/infra), creates missing directories,
  * generates AGENTS.md stub, creates thin conformity test, adds frontmatter
@@ -166,7 +166,7 @@ if (projectType === "code") {
 // 9. Copy spec template if specs/ is empty (#529)
 copySpecTemplateIfEmpty(join(projectPath, "specs"));
 
-// 10. Add pai-harness to package.json devDeps (only if package.json exists)
+// 10. Add rungate to package.json devDeps (only if package.json exists)
 addPaiHarnessDevDep(projectPath);
 
 // ── Report ─────────────────────────────────────────────────────
@@ -287,7 +287,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
   }
   const specsTable = specRows.length > 0
     ? specRows.join("\n")
-    : "| (none yet — copy SPEC-TEMPLATE.md from pai-harness) | | |";
+    : "| (none yet — copy SPEC-TEMPLATE.md from rungate) | | |";
 
   // Scan test files
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
@@ -464,7 +464,7 @@ ${consumerSection}
 ## Workflow
 ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
-- **Conformity:** Imported from pai-harness. \`bun update pai-harness && bun test\` to sync.
+- **Conformity:** Imported from rungate. \`bun update rungate && bun test\` to sync.
 
 ## Quick Reference
 
@@ -487,7 +487,7 @@ ${refTable}
 
 function generateConformityTest(): string {
   return `import { resolve } from "path";
-import { runScaffoldConformity, runSpecDiscovery, runDocHygiene, runFallowCheck, runAgentFileValidation } from "pai-harness/lib/conformity";
+import { runScaffoldConformity, runSpecDiscovery, runDocHygiene, runFallowCheck, runAgentFileValidation } from "rungate/lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -537,13 +537,13 @@ function addPaiHarnessDevDep(root: string): void {
     pkg.devDependencies = {};
   }
 
-  if (pkg.devDependencies["pai-harness"] || pkg.name === "pai-harness") {
-    actions.push("SKIP: pai-harness devDep (already present or self-reference)");
+  if (pkg.devDependencies["rungate"] || pkg.name === "rungate") {
+    actions.push("SKIP: rungate devDep (already present or self-reference)");
     return;
   }
 
   const harnessRelative = require("path").relative(root, join(__dirname, ".."));
-  pkg.devDependencies["pai-harness"] = `file:${harnessRelative}`;
+  pkg.devDependencies["rungate"] = `file:${harnessRelative}`;
 
   // Add test script if missing
   if (!pkg.scripts) {
@@ -554,7 +554,7 @@ function addPaiHarnessDevDep(root: string): void {
   }
 
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-  actions.push("CREATED: pai-harness devDep in package.json");
+  actions.push("CREATED: rungate devDep in package.json");
 }
 
 function generateAgentBriefs(root: string): void {
@@ -616,7 +616,7 @@ ${identitySection}## Context (MANDATORY — read before testing)
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components are on each page (your test targets)
 3. **CODE-MAP.md § API Routes** — endpoint inventory for API-level checks
-4. **node_modules/pai-harness/prompts/quinn-ui-brief.md** — structured UI testing methodology
+4. **node_modules/rungate/prompts/quinn-ui-brief.md** — structured UI testing methodology
 
 ## Environment
 

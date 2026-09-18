@@ -126,13 +126,13 @@ describe("ST-4: Config dedup — each config file exists exactly once", () => {
   }
 });
 
-describe("ST-5: No skills/ directory in pai-harness", () => {
+describe("ST-5: No skills/ directory in rungate", () => {
   test("skills/ directory does not exist", () => {
     expect(existsSync(join(HARNESS_ROOT, "skills"))).toBe(false);
   });
 });
 
-describe("ST-6: No templates/ directory in pai-harness", () => {
+describe("ST-6: No templates/ directory in rungate", () => {
   test("templates/ directory does not exist", () => {
     expect(existsSync(join(HARNESS_ROOT, "templates"))).toBe(false);
   });

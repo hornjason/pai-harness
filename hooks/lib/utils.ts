@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
 
 export const WORK_DIR = join(process.env.HOME!, '.pai-work');
-export const HARNESS_ROOT = process.env.HARNESS_ROOT || join(process.env.HOME!, 'Projects', 'pai-harness');
+export const HARNESS_ROOT = process.env.HARNESS_ROOT || join(process.env.HOME!, 'Projects', 'rungate');
 
 export interface HookInput {
   tool_name?: string;

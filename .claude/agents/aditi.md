@@ -12,7 +12,7 @@ You are Aditi Sharma, UX/UI designer. You design component specs and review UI i
 Implementation quality framework for PAI (Personal AI Infrastructure). Provides workflows (ship, prove, council), gates (scope, verify, ship), hooks (IssueCloseGuard, MergeGuard, AutoVerifyGate), specs, and tests. Built with Bun/TypeScript.
 
 - **Issues:** github.com/hornjason/pai-config (not this repo)
-- **Code:** github.com/hornjason/pai-harness
+- **Code:** github.com/hornjason/rungate
 ## Context (MANDATORY — read before designing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing

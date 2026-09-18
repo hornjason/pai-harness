@@ -12,7 +12,7 @@ related-issues: [517, 281, 513, 514]
 
 # Harness Extraction Spec
 
-Extract all harness code from scattered locations into one self-contained git repo (`~/Projects/pai-harness/`), with mechanical tests that prevent drift forever.
+Extract all harness code from scattered locations into one self-contained git repo (`~/Projects/rungate/`), with mechanical tests that prevent drift forever.
 
 ## Problem Statement
 
@@ -24,15 +24,15 @@ The ship harness (workflows, gates, tests, specs, prompts, config) is scattered 
 
 ## Success Criteria (all 10 must be true)
 
-- [ ] SC-1: `~/Projects/pai-harness/` exists with all harness files in target structure
-- [ ] SC-2: `hornjason/pai-harness` public repo on GitHub with clean history
+- [ ] SC-1: `~/Projects/rungate/` exists with all harness files in target structure
+- [ ] SC-2: `hornjason/rungate` public repo on GitHub with clean history
 - [ ] SC-3: Zero harness files in old scattered locations (containment test GREEN)
 - [ ] SC-4: Zero hardcoded `~/.claude/` paths in any workflow/gate file (path-purity test GREEN)
 - [ ] SC-5: All specs have `testable: true/false` frontmatter; auto-discovery working
 - [ ] SC-6: Zod schema validates DDB project-harness.json at gate load time
 - [ ] SC-7: #513 fixed — AC evidence uses AC-specific commands
 - [ ] SC-8: #514 fixed — phase advance blocked when ACs FAIL
-- [ ] SC-9: One STANDARD-tier DDB issue SHIP_PASSED + PROVE_PROVEN through pai-harness/ workflows
+- [ ] SC-9: One STANDARD-tier DDB issue SHIP_PASSED + PROVE_PROVEN through rungate/ workflows
 - [ ] SC-10: Guard validation proven — intentional violations caught, then cleaned up
 
 ## Council Findings (2 councils, 2026-09-16)
@@ -80,7 +80,7 @@ Migration strategy: symlink-based batch (not atomic cutover). Symlinks from old�
 - Verify gate fails: iterate (circuit breaker at 6)
 - Spec frontmatter ambiguity: default `testable: false`
 - Test failure can't diagnose: log, file follow-up issue, continue
-- Merge/push: push to pai-harness repo; commit ~/.claude changes to main
+- Merge/push: push to rungate repo; commit ~/.claude changes to main
 - Something breaks mid-migration: iterate via convergence loop (rollback only if 3+ phases fail)
 
 ### Phase A — Spec Infrastructure (20 min)
@@ -111,8 +111,8 @@ Migration strategy: symlink-based batch (not atomic cutover). Symlinks from old�
 
 ### Phase D — Repo Structure + Guards (30 min)
 
-- [ ] D1: Create ~/Projects/pai-harness/ — git init, package.json, bunfig.toml
-- [ ] D2: `gh repo create hornjason/pai-harness --public`
+- [ ] D1: Create ~/Projects/rungate/ — git init, package.json, bunfig.toml
+- [ ] D2: `gh repo create hornjason/rungate --public`
 - [ ] D3: Write HARNESS.md (~80 lines: 3 entry points, schema summary, test cmd, spec index, External Dependencies section)
 - [ ] D4: Write migration-manifest.json (all files, migrated:false)
 - [ ] D5: Write test/structure.test.ts — containment + path-purity + manifest checks (all FAIL expected)
@@ -121,7 +121,7 @@ Migration strategy: symlink-based batch (not atomic cutover). Symlinks from old�
 
 ### Phase E — Move Files + Wire (45 min)
 
-- [ ] E1: Copy all files to pai-harness/ target structure
+- [ ] E1: Copy all files to rungate/ target structure
 - [ ] E2: Create symlinks: old paths → new locations
 - [ ] E3: Flip manifest entries → migrated:true
 - [ ] E3.5: Update 3 hook system-reminder strings (AutoVerifyGate:103, MergeGuard:113, IssueCloseGuard:450,530,548) → absolute HARNESS_ROOT paths
@@ -156,7 +156,7 @@ Canary issue must exercise (council-specified 9 requirements):
 9. Run run-gate.ts child process spawns from new HARNESS_ROOT cwd
 
 - [ ] G1: Create STANDARD-tier DDB issue meeting all 9 requirements
-- [ ] G2: Full /ship through pai-harness/ workflows
+- [ ] G2: Full /ship through rungate/ workflows
 - [ ] G3: Convergence loop on any failures (circuit breaker at 6)
 - [ ] G4: /prove the shipped issue
 - [ ] GATE: SHIP_PASSED + PROVE_PROVEN
@@ -167,14 +167,14 @@ Canary issue must exercise (council-specified 9 requirements):
 - [ ] H2: Add hardcoded path to workflow file → path-purity test FAIL
 - [ ] H3: Remove spec frontmatter from one spec → spec-discovery test FAIL
 - [ ] H4: Clean up intentional violations → all tests GREEN
-- [ ] H5: Push to hornjason/pai-harness public repo
+- [ ] H5: Push to hornjason/rungate public repo
 - [ ] H6: Update checkpoint file with final status
 - [ ] GATE: all 10 success criteria met
 
 ## Target Structure (council-validated)
 
 ```
-pai-harness/
+rungate/
 ├── HARNESS.md         ← agent entry point (~80 lines, no internal layout)
 ├── lib/               ← paths.ts, project-harness-schema.ts (FOUNDATION)
 ├── workflows/         ← ship.js, prove.js, council.js (EXECUTION — 3 entry points)
@@ -252,7 +252,7 @@ Glob scan `specs/*.md` filtered by YAML frontmatter `testable: true`. Every spec
 ## npm Packaging (DEFERRED)
 
 Only when git repo proves insufficient for multi-machine use.
-- Namespace: `pai-harness` (NOT `@agentgrit/harness` — false coupling per council)
+- Namespace: `rungate` (NOT `@agentgrit/harness` — false coupling per council)
 - CLI, provenance, separate npm publish
 
 ## Related Docs
