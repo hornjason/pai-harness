@@ -1,3 +1,2 @@
 [test]
 timeout = 30000
-exclude = ["test/contract.test.ts", "gates/ship-orchestrator.test.ts"]

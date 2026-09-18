@@ -91,6 +91,27 @@ export function validatePhaseTransition(from: string, to: string): boolean {
   return DIRECT_ADVANCE[from] === to;
 }
 
+type GateExecutor = (gate: GateName, slug: string, issue: number) => void;
+
+let _gateExecutor: GateExecutor | null = null;
+
+export function setGateExecutor(executor: GateExecutor | null): void {
+  _gateExecutor = executor;
+}
+
+function defaultGateExecutor(gate: GateName, slug: string, issue: number): void {
+  execFileSync(
+    "bun",
+    ["run", join(GATES_DIR, "run-gate.ts"), "--gate", gate, "--slug", slug, "--issue", String(issue)],
+    {
+      encoding: "utf-8",
+      timeout: 180000,
+      cwd: join(process.env.HOME || "", ".claude"),
+      env: { ...process.env, TEST_WORK_DIR: join(workDirBase(), slug) },
+    },
+  );
+}
+
 export async function runGate(slug: string, gate: GateName): Promise<AdvanceResult> {
   const state = readState(slug);
   const currentPhase = state.phase;
@@ -113,18 +134,10 @@ export async function runGate(slug: string, gate: GateName): Promise<AdvanceResu
   }
 
   const issue = state.issue || 0;
+  const executor = _gateExecutor || defaultGateExecutor;
 
   try {
-    execFileSync(
-      "bun",
-      ["run", join(GATES_DIR, "run-gate.ts"), "--gate", gate, "--slug", slug, "--issue", String(issue)],
-      {
-        encoding: "utf-8",
-        timeout: 180000,
-        cwd: join(process.env.HOME || "", ".claude"),
-        env: { ...process.env, TEST_WORK_DIR: join(workDirBase(), slug) },
-      },
-    );
+    executor(gate, slug, issue);
   } catch {
     // gate failure — result read from workflow-state.json below
   }

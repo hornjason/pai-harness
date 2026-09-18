@@ -40,6 +40,7 @@ import {
   advancePhase,
   currentState,
   runGate,
+  setGateExecutor,
   getIterationCount,
   isCircuitBroken,
   validatePhaseTransition,
@@ -47,7 +48,19 @@ import {
   MAX_ITERATIONS,
 } from "./ship-orchestrator";
 
+// Mock gate executor — writes FAIL result to workflow-state.json instead of spawning bun subprocess
+function mockGateExecutor(gate: string, slug: string, _issue: number): void {
+  const sf = join(TEST_BASE, slug, "workflow-state.json");
+  const state = JSON.parse(readFileSync(sf, "utf-8"));
+  state.gates = state.gates || {};
+  state.gates[gate] = { result: "FAIL", attempt: 1, failures: [{ check: "mock-gate", detail: "mock executor" }] };
+  writeFileSync(sf, JSON.stringify(state, null, 2));
+}
+
 describe("ship-orchestrator", () => {
+  // Use mock executor to prevent subprocess spawning
+  beforeEach(() => setGateExecutor(mockGateExecutor));
+  afterEach(() => setGateExecutor(null));
   beforeEach(() => {
     mkdirSync(WORK_DIR, { recursive: true });
   });
