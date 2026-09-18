@@ -170,7 +170,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
   });
 
   describe('Integration: hook blocks/allows Engineer spawns', () => {
-    const hookPath = join(process.env.HOME!, '.pai', 'hooks', 'AgentBriefGuard.hook.ts');
+    const hookPath = join(import.meta.dir, '..', '..', 'hooks', 'AgentBriefGuard.hook.ts');
 
     // Build a valid agent payload with correct template markers
     function makePayload(agentType: string, extras: Record<string, unknown> = {}) {

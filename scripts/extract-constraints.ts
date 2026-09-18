@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, relative } from "path";
 import { createHash } from "crypto";
-import { SIGNAL_PHRASE_PATTERNS } from "../lib/conformity";
+import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 
 // ── Types ────────────────────────────────────────────────────────
 
