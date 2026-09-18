@@ -30,7 +30,8 @@ Implementation quality framework for PAI (Personal AI Infrastructure). Provides 
 | [hooks/MergeGuard.hook.ts](hooks/MergeGuard.hook.ts) | Blocks merge without verify gate | When changing merge rules |
 | [config/ceremony-profiles.json](config/ceremony-profiles.json) | LIGHT/STANDARD/THOROUGH tiers | When changing ceremony levels |
 | [scripts/scaffold-project.ts](scripts/scaffold-project.ts) | Bootstrap any project to conformity | When onboarding a new project |
-| [lib/conformity.ts](lib/conformity.ts) | Exportable conformity test functions | When projects import tests |
+| [lib/conformity.ts](lib/conformity.ts) | Exportable conformity + fallow integration | When projects import tests |
+| [.fallowrc.json](.fallowrc.json) | Fallow static analysis config | When adding entry points or ignore patterns |
 | [gates/self-heal.ts](gates/self-heal.ts) | Prove self-healing loop | When debugging prove iterations |
 
 ## Specs
@@ -63,7 +64,7 @@ bun test
 | Spec compliance | spec-compliance.test.ts | Manual compliance checks |
 | Spec compliance (auto) | spec-compliance-auto.test.ts | Auto-generated compliance |
 | Schema canary | schema-canary.test.ts | Zod schema drift detection |
-| Scaffold conformity | scaffold-conformity.test.ts | REPO-SCAFFOLD-SPEC conformity |
+| Scaffold conformity | scaffold-conformity.test.ts | REPO-SCAFFOLD-SPEC + doc hygiene + fallow |
 | External deps | external-deps.test.ts | Cross-repo CLAUDE.md drift |
 | Contract | contract.test.ts | Skill contract validation |
 

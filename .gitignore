@@ -3,3 +3,4 @@ node_modules/
 *.log
 .pai-work/
 .gate-salt
+.fallow/

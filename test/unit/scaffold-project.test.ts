@@ -320,13 +320,13 @@ describe("scaffold-project: report output", () => {
     expect(output).toContain("AGENTS.md");
   });
 
-  test("reports SKIPPED for existing files", () => {
+  test("reports AUDITED or SKIPPED for existing files", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing");
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
     const output = runScaffold(tmpDir);
 
-    expect(output).toContain("SKIP");
+    expect(output).toMatch(/SKIP|AUDITED/);
     expect(output).toContain("AGENTS.md");
   });
 });

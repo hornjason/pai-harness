@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/schema.json",
+  "entry": [
+    "lib/conformity.ts",
+    "lib/paths.ts",
+    "gates/orchestrator.ts",
+    "gates/brief-assembler.ts",
+    "gates/schema.ts",
+    "gates/self-heal.ts",
+    "gates/run-gate.ts",
+    "gates/error-classifier.ts",
+    "gates/test-utils.ts",
+    "hooks/*.ts",
+    "scripts/*.ts",
+    "test/*.test.ts"
+  ],
+  "ignorePatterns": [
+    "workflows/**",
+    "reference/**",
+    "specs/**",
+    "prompts/**",
+    "config/**"
+  ],
+  "duplicates": {
+    "minOccurrences": 3
+  },
+  "rules": {}
+}

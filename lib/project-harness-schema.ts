@@ -23,7 +23,7 @@ const ProdSchema = z.object({
   smokeTest: z.string().optional(),
 });
 
-export const ProjectHarnessSchema = z.object({
+const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
   issueRepo: z.string(),

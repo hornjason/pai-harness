@@ -332,29 +332,45 @@ export function runSpecDrift(root: string) {
 export function runDocHygiene(root: string) {
   const specsDir = join(root, "specs");
   const refDir = join(root, "reference");
-  const scanDirs = ["specs", "scripts", "prompts"].map(d => join(root, d)).filter(d => existsSync(d));
+  // .claude/agents/ excluded — Claude Code reads those by name convention, not import
+  const scanPaths = ["specs", "scripts", "prompts"];
+  const scanDirs = scanPaths.map(d => join(root, d)).filter(d => existsSync(d));
   const testDirs = [join(root, "test"), join(root, "tests")].filter(d => existsSync(d));
 
-  function countReferences(filename: string): number {
-    let refs = 0;
-    const searchDirs = [root];
+  // Build reference index once — scan code/config/docs directories only (skip data/cache)
+  function buildReferenceIndex(): string {
     const exts = [".ts", ".js", ".md", ".json"];
-    for (const dir of readdirSync(root).filter(f => !f.startsWith(".") && f !== "node_modules" && f !== "reference")) {
-      const full = join(root, dir);
+    const skipDirs = new Set(["node_modules", "reference", ".git", "dist", "build", ".next",
+      "cache", "logs", "reports", "ctrf", "eval", "MEMORY"]);
+    const skipPrefixes = ["data-", "data/"];
+
+    const searchDirs: string[] = [root];
+    for (const entry of readdirSync(root)) {
+      if (entry.startsWith(".") || skipDirs.has(entry) || skipPrefixes.some(p => entry.startsWith(p))) continue;
+      const full = join(root, entry);
       try { if (require("fs").statSync(full).isDirectory()) searchDirs.push(full); } catch {}
     }
+    const dotClaude = join(root, ".claude");
+    if (existsSync(dotClaude)) searchDirs.push(dotClaude);
+
+    const chunks: string[] = [];
     for (const dir of searchDirs) {
       try {
         const files = dir === root
           ? readdirSync(dir).filter(f => exts.some(e => f.endsWith(e)))
           : readdirSync(dir, { recursive: true }).map(f => String(f)).filter(f => exts.some(e => f.endsWith(e)));
         for (const f of files) {
-          const content = readFileSync(join(dir, String(f)), "utf-8");
-          if (content.includes(filename)) refs++;
+          try { chunks.push(readFileSync(join(dir, String(f)), "utf-8")); } catch {}
         }
       } catch {}
     }
-    return refs;
+    return chunks.join("\n");
+  }
+
+  let _refIndex: string | null = null;
+  function getRefIndex(): string {
+    if (_refIndex === null) _refIndex = buildReferenceIndex();
+    return _refIndex;
   }
 
   describe("Doc Hygiene", () => {
@@ -386,12 +402,12 @@ export function runDocHygiene(root: string) {
     });
 
     test("HYGIENE-3: No orphaned files (zero references outside reference/)", () => {
+      const index = getRefIndex();
       const orphans: string[] = [];
       for (const dir of scanDirs) {
-        const dirName = dir.split("/").pop()!;
+        const relPath = dir.startsWith(root) ? dir.slice(root.length + 1) : dir.split("/").pop()!;
         for (const f of readdirSync(dir).filter(f => !f.startsWith("."))) {
-          const refs = countReferences(f);
-          if (refs === 0) orphans.push(`${dirName}/${f}`);
+          if (!index.includes(f)) orphans.push(`${relPath}/${f}`);
         }
       }
       if (orphans.length > 0) {
@@ -431,6 +447,159 @@ export function runDocHygiene(root: string) {
         console.warn(`Archived files still referenced in AGENTS.md (stale routing): ${leaked.join(", ")}`);
       }
       expect(true).toBe(true);
+    });
+  });
+}
+
+// ── Agent file validation ──────────────────────────────────
+
+export function runAgentFileValidation(root: string) {
+  const agentsDir = join(root, ".claude", "agents");
+
+  describe("Agent File Validation", () => {
+    test("AGENT-1: .claude/agents/ directory exists (code projects)", () => {
+      const isCode = existsSync(join(root, "src")) || existsSync(join(root, "lib")) ||
+        existsSync(join(root, "gates")) || existsSync(join(root, "Makefile"));
+      if (!isCode) return;
+      expect(existsSync(agentsDir)).toBe(true);
+    });
+
+    test("AGENT-2: All agent files have required frontmatter (name + description)", () => {
+      if (!existsSync(agentsDir)) return;
+      const invalid: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm || !fm.name) invalid.push(`${f}: missing 'name' field`);
+        else if (!fm.description) invalid.push(`${f}: missing 'description' field`);
+      }
+      if (invalid.length > 0) {
+        console.warn(`Invalid agent files (Claude Code will SKIP these silently):\n  ${invalid.join("\n  ")}`);
+      }
+      expect(invalid).toEqual([]);
+    });
+
+    test("AGENT-3: Agent file names are lowercase (Claude Code matching requirement)", () => {
+      if (!existsSync(agentsDir)) return;
+      const bad: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const basename = f.replace(/\.md$/, "");
+        if (basename !== basename.toLowerCase() || basename.includes(" ")) {
+          bad.push(f);
+        }
+      }
+      expect(bad).toEqual([]);
+    });
+
+    test("AGENT-4: Agent name field matches filename", () => {
+      if (!existsSync(agentsDir)) return;
+      const mismatched: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm?.name) continue;
+        const basename = f.replace(/\.md$/, "");
+        if (fm.name !== basename) {
+          mismatched.push(`${f}: name="${fm.name}" but filename="${basename}"`);
+        }
+      }
+      if (mismatched.length > 0) {
+        console.warn(`Agent name/filename mismatch (subagent_type won't match):\n  ${mismatched.join("\n  ")}`);
+      }
+      expect(mismatched).toEqual([]);
+    });
+
+    test("AGENT-5: Agent files reference AGENTS.md for context", () => {
+      if (!existsSync(agentsDir)) return;
+      const missing: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        if (!content.includes("AGENTS.md")) {
+          missing.push(f);
+        }
+      }
+      if (missing.length > 0) {
+        console.warn(`Agent files not referencing AGENTS.md (won't read project context):\n  ${missing.join("\n  ")}`);
+      }
+      expect(missing).toEqual([]);
+    });
+  });
+}
+
+// ── Fallow integration ─────────────────────────────────────
+
+interface FallowResult {
+  total_issues: number;
+  elapsed_ms: number;
+  summary: Record<string, number>;
+  unused_files: Array<{ path: string }>;
+  unused_exports: Array<{ path: string; export_name: string; line?: number }>;
+  unused_dependencies: Array<{ name: string }>;
+  circular_dependencies: Array<{ path: string; chain?: string[] }>;
+  workspace_diagnostics: Array<{ kind: string; message: string }>;
+}
+
+function runFallowCommand(root: string, args: string[]): FallowResult | null {
+  const result = Bun.spawnSync(["npx", "fallow", ...args, "--format", "json", "--quiet"], {
+    cwd: root,
+    env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    timeout: 30_000,
+  });
+  const stdout = result.stdout.toString().trim();
+  if (!stdout || stdout.startsWith("{\"error\"")) return null;
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+}
+
+export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolean; warnOnly?: boolean }) {
+  const fail = !opts?.warnOnly;
+  describe("Fallow: static analysis", () => {
+    test("FALLOW-1: No unused files", () => {
+      const result = runFallowCommand(root, ["dead-code", "--unused-files"]);
+      if (!result) {
+        console.warn("Fallow not available or failed to run — skipping");
+        return;
+      }
+      const unused = result.unused_files.map(f => f.path);
+      if (unused.length > 0) {
+        console.warn(`Unused files (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
+      }
+      if (fail) expect(unused).toEqual([]);
+    });
+
+    if (!opts?.skipUnusedExports) {
+      test("FALLOW-2: No unused exports", () => {
+        const result = runFallowCommand(root, ["dead-code", "--unused-exports"]);
+        if (!result) return;
+        const unused = result.unused_exports?.map(e => `${e.path}:${e.line ?? "?"} ${e.export_name}`) || [];
+        if (unused.length > 0) {
+          console.warn(`Unused exports (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
+        }
+        if (fail) expect(unused).toEqual([]);
+      });
+    }
+
+    test("FALLOW-3: No unused dependencies", () => {
+      const result = runFallowCommand(root, ["dead-code", "--unused-deps"]);
+      if (!result) return;
+      const unused = result.unused_dependencies?.map(d => d.name) || [];
+      if (unused.length > 0) {
+        console.warn(`Unused dependencies (${unused.length}):\n  ${unused.join("\n  ")}`);
+      }
+      if (fail) expect(unused).toEqual([]);
+    });
+
+    test("FALLOW-4: No circular dependencies", () => {
+      const result = runFallowCommand(root, ["dead-code"]);
+      if (!result) return;
+      const circles = result.circular_dependencies || [];
+      if (circles.length > 0) {
+        console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.files || c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
+      }
+      if (fail) expect(circles).toEqual([]);
     });
   });
 }
