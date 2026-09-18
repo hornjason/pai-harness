@@ -3,20 +3,10 @@ import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 
 import { harnessRoot } from "../lib/paths";
+import { parseFrontmatter } from "../lib/conformity";
 
 const HARNESS_ROOT = harnessRoot();
 const SPECS_DIR = join(HARNESS_ROOT, "specs");
-
-function parseFrontmatter(content: string): Record<string, string> | null {
-  const match = content.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-  const fields: Record<string, string> = {};
-  for (const line of match[1].split("\n")) {
-    const kv = line.match(/^(\w[\w-]*):\s*(.+)$/);
-    if (kv) fields[kv[1]] = kv[2].trim();
-  }
-  return fields;
-}
 
 const specFiles = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
 

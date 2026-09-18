@@ -221,7 +221,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
   if (existsSync(existingAgentsPath)) {
     try {
       const existing = readFileSync(existingAgentsPath, "utf-8");
-      const hcMatch = existing.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## )/);
+      const hcMatch = existing.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
       if (hcMatch) {
         const hcContent = hcMatch[1].trim();
         // Only preserve if it has actual content (not just the placeholder comment)
@@ -229,7 +229,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
           existingHardConstraints = hcContent;
         }
       }
-    } catch {}
+    } catch (e: unknown) { console.error('Hard Constraints preservation failed:', (e as Error).message); throw e; }
   }
 
   const identity = readmeDesc || pkgDesc || `${typeLabel} project. <!-- TODO: Describe what this project is -->`;
@@ -861,9 +861,12 @@ function refreshAgentsMd(root: string, type: ProjectType): void {
       const dateStr = result.stdout.toString().trim().split(" ")[0];
       if (dateStr) {
         const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
-        if (daysSince > 90) staleFiles.push(`${ref} (${Math.floor(daysSince)}d old)`);
+        const isAdr = ref.includes('docs/adr/') || /ADR/i.test(ref);
+        if (isAdr) continue;
+        const threshold = ref.startsWith('specs/') ? 90 : 180;
+        if (daysSince > threshold) staleFiles.push(`${ref} (${Math.floor(daysSince)}d old)`);
       }
-    } catch {}
+    } catch (e: unknown) { console.warn('Staleness check failed for', ref, (e as Error).message); }
   }
 
   // Check specs/ table matches actual specs

@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
+import { SIGNAL_PHRASE_PATTERNS } from "../lib/conformity";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-e2e-smoke";
@@ -32,13 +33,8 @@ function loadSpec(path: string, projectRoot?: string): string {
 
 function extractSpecRules(spec: string): string[] {
   const rules: string[] = [];
-  const patterns = [
-    /^[-*] .*(must not|never|must|always|required|shall|prefer|eliminate).+$/gim,
-    /[.;]\s*(must not|never|must|always|required|shall).+?[.;\n]/gim,
-    /\b(explicitly prefers?|not dependent on|single chokepoint|no new).+?[.;\n]/gim,
-  ];
-  for (const p of patterns) {
-    for (const m of spec.matchAll(p)) {
+  for (const p of SIGNAL_PHRASE_PATTERNS) {
+    for (const m of spec.matchAll(new RegExp(p.source, p.flags))) {
       rules.push(m[0].replace(/^[-*] /, "").trim().replace(/[.;]$/, ""));
     }
   }

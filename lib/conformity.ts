@@ -22,6 +22,13 @@ export function parseFrontmatter(content: string): Record<string, string> | null
   return fields;
 }
 
+export const SIGNAL_PHRASE_PATTERNS = [
+  /^[-*] .*(must not|never|must|always|required|shall|prefer|eliminate).+$/gim,
+  /[.;]\s*(must not|never|must|always|required|shall).+?[.;\n]/gim,
+  /\b(explicitly prefers?|not dependent on|single chokepoint|no new).+?[.;\n]/gim,
+  /\b(intentional|by design|anti-pattern|permanently disabled|do not change|do not remove|do not regress)\b.+?[.;\n]/gim,
+] as const;
+
 interface ParsedSC {
   id: string;
   statement: string;

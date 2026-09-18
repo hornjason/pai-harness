@@ -377,3 +377,40 @@ describe("scaffold-project: respects existing test/ directory name", () => {
     expect(existsSync(join(tmpDir, "tests"))).toBe(false);
   });
 });
+
+// ── Test 12: Hard Constraints last-section edge case ─────────
+
+describe("scaffold-project: hard constraints regex", () => {
+  test("Hard Constraints preserved when last section in AGENTS.md", () => {
+    const content = `## Identity\nTest project\n\n## Hard Constraints (non-inferrable)\n\n- **Rule one** — important\n- **Rule two** — also important\n`;
+    const hcMatch = content.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
+    expect(hcMatch).not.toBeNull();
+    expect(hcMatch![1]).toContain("Rule one");
+    expect(hcMatch![1]).toContain("Rule two");
+  });
+});
+
+// ── Test 13: Per-type staleness thresholds ────────────────────
+
+describe("scaffold-project: per-type staleness thresholds", () => {
+  function classifyStale(ref: string, daysSince: number): boolean {
+    const isAdr = ref.includes('docs/adr/') || /ADR/i.test(ref);
+    if (isAdr) return false;
+    const threshold = ref.startsWith('specs/') ? 90 : 180;
+    return daysSince > threshold;
+  }
+
+  test("ADR paths are never stale regardless of age", () => {
+    expect(classifyStale("docs/adr/ADR-001.md", 500)).toBe(false);
+  });
+
+  test("spec paths use 90-day threshold", () => {
+    expect(classifyStale("specs/BOOTSTRAP.md", 91)).toBe(true);
+    expect(classifyStale("specs/BOOTSTRAP.md", 89)).toBe(false);
+  });
+
+  test("other doc paths use 180-day threshold", () => {
+    expect(classifyStale("docs/GUIDE.md", 181)).toBe(true);
+    expect(classifyStale("docs/GUIDE.md", 179)).toBe(false);
+  });
+});
