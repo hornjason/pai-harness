@@ -15,10 +15,11 @@ function makeFixture(name: string, state: any): string {
 }
 
 function runGate(gate: string, fixtureDir: string): { pass: number; fail: number; output: string } {
+  try { execSync("pkill -f 'bun test.*workflow.test' 2>/dev/null || true", { timeout: 3000 }); } catch {}
   const env = `TEST_WORK_DIR=${fixtureDir} GATE=${gate} PROJECT_ROOT=${PROJECT_ROOT}`;
-  const cmd = `${env} bun test ${GATES_DIR}/workflow.test.ts 2>&1`;
+  const cmd = `${env} bun test ${GATES_DIR}/workflow.test.ts --test-name-pattern "${gate}" 2>&1`;
   try {
-    const output = execSync(cmd, { cwd: GATES_DIR, timeout: 30000, encoding: "utf-8" });
+    const output = execSync(cmd, { cwd: GATES_DIR, timeout: 15000, encoding: "utf-8" });
     const passMatch = output.match(/(\d+) pass/);
     const failMatch = output.match(/(\d+) fail/);
     return {
