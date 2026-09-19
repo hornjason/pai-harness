@@ -1,0 +1,28 @@
+# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
+name: Gates
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+      - run: bun install
+      - name: Conformity + spec drift
+        run: bun test test/scaffold-conformity.test.ts
+      - name: Secret scan
+        run: |
+          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|passwords*=)' 2>/dev/null; then
+            echo "::error::Potential secrets detected in staged files"
+            exit 1
+          fi

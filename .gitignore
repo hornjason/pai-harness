@@ -4,3 +4,14 @@ node_modules/
 .pai-work/
 .gate-salt
 .fallow/
+
+# Added by rungate scaffold
+dist/
+.env
+.env.*
+!.env.example
+.rungate/
+*.pem
+*.key
+credentials.json/
+service-account/

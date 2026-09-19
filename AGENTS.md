@@ -40,12 +40,13 @@ All specs live in `specs/` with YAML frontmatter declaring `testable: true/false
 
 | Spec | Testable | Governs |
 |------|----------|---------|
-| HARNESS-STANDARD.md | true | Agentic harness lifecycle and AFK rules |
-| HARNESS-SKILL-CHAIN.md | true | Phase ordering and skill chain contract |
-| HARNESS-SKILL-CONTRACT.md | true | Skill I/O contract definitions |
-| HARNESS-GATES.md | true | Gate definitions and enforcement config |
-| harness-automation-matrix.md | true | Gate automation coverage matrix |
-| SPEC-TEMPLATE.md | false | Template for creating new specs |
+| harness-automation-matrix.md | harness-automation-matrix | yes |
+| HARNESS-GATES.md | HARNESS-GATES | yes |
+| HARNESS-STANDARD.md | HARNESS-STANDARD | yes |
+| HARNESS-SKILL-CONTRACT.md | HARNESS-SKILL-CONTRACT | yes |
+| BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
+| HARNESS-SKILL-CHAIN.md | HARNESS-SKILL-CHAIN | yes |
+| BOOTSTRAP-DATA-FLOW-SPEC.md | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | yes |
 
 New specs: copy `specs/SPEC-TEMPLATE.md`, follow the SC patterns documented in it. Tests auto-generate from `- [ ] SC-N:` lines.
 
