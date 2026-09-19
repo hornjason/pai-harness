@@ -539,7 +539,8 @@ ${refSection}`;
 
 function generateConformityTest(): string {
   return `import { resolve } from "path";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runPackageValidation, runTsconfigValidation } from "rungate/lib/conformity";
+import { afterAll } from "bun:test";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runPackageValidation, runTsconfigValidation, writeFindingsReport } from "rungate/lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -551,6 +552,10 @@ runFallowCheck(ROOT, { warnOnly: true });
 runAgentFileValidation(ROOT);
 runPackageValidation(ROOT);
 runTsconfigValidation(ROOT);
+
+afterAll(() => {
+  writeFindingsReport(ROOT);
+});
 `;
 }
 
@@ -690,7 +695,7 @@ ${identitySection}## Core Principles
 - Commit secrets or credentials
 
 ## Methodology
-- Read \`node_modules/rungate/prompts/quinn-journey-decision-tree.md\` for UI testing methodology
+- Read \`node_modules/rungate/prompts/quinn-decision-tree.md\` for UI testing methodology
 
 ## Context (MANDATORY — read before testing)
 

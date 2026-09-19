@@ -814,6 +814,32 @@ export function runAgentFileValidation(root: string) {
       }
       expect(missing).toEqual([]);
     });
+
+    test("AGENT-6: All file paths referenced in briefs exist", () => {
+      if (!existsSync(agentsDir)) return;
+      const broken: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const refs = content.match(/node_modules\/[^\s`*)"']+/g) || [];
+        for (const ref of refs) {
+          const clean = ref.replace(/[`*)"']+$/, "");
+          if (!existsSync(join(root, clean))) {
+            broken.push(`${f} → ${clean}`);
+            addFinding({
+              ruleId: "AGENT-BROKEN-REF",
+              severity: "FAIL",
+              file: `.claude/agents/${f}`,
+              message: `Brief references "${clean}" but file does not exist`,
+              fixCommand: `Check prompts/ directory for correct filename — may be a typo or renamed file`,
+            });
+          }
+        }
+      }
+      if (broken.length > 0) {
+        console.error(`Broken references in agent briefs:\n  ${broken.join("\n  ")}`);
+      }
+      expect(broken).toEqual([]);
+    });
   });
 }
 
