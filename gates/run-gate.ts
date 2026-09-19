@@ -14,6 +14,19 @@ import {
 import { writeWitness } from "./witness";
 import { harnessRoot } from "../lib/paths";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
+import {
+  slugExists,
+  shouldRebuildContainer,
+  shouldRefreshScaffold,
+  worktreeBranchName,
+  checkPortCollision,
+  trackPreExistingFailures,
+  releaseLock,
+  detectFileSetOverlap,
+  sequentialMergeOrder,
+  shouldRunCIVerification,
+  requiresResearchEscalation,
+} from "./ship-orchestrator";
 
 export function parseTestResults(output: string): GateResult[] {
   const results: GateResult[] = [];
@@ -248,6 +261,40 @@ if (gate === "prove") {
   }
 }
 
+// Pre-flight: duplicate slug check (SC-44)
+if (gate === "scope") {
+  const existingSlug = slugExists(state.issue);
+  if (existingSlug && existingSlug !== state.slug) {
+    console.warn(`WARN: Issue #${state.issue} already has slug "${existingSlug}" — current slug is "${state.slug}"`);
+  }
+}
+
+// Pre-flight: container rebuild check (SC-7)
+if (gate === "scope") {
+  const canRebuild = shouldRebuildContainer(state.projectRoot || process.cwd());
+  if (!canRebuild) {
+    console.log("Container rebuild: SKIP (prod.rebuild is null)");
+  }
+}
+
+// Pre-flight: worktree branch naming (SC-136)
+if (gate === "scope" && state.worktree) {
+  const branch = worktreeBranchName(state.issue, state.slug);
+  console.log(`Worktree branch: ${branch}`);
+  if (state.worktree?.activePorts) {
+    const collision = checkPortCollision(state.worktree.basePort || 3000, state.worktree.offset || 0, state.worktree.activePorts);
+    if (collision) console.error(`WARN: Port collision detected for offset ${state.worktree.offset}`);
+  }
+}
+
+// Pre-flight: file-set overlap detection for parallel work (SC-69)
+if (gate === "scope" && state.parallelFiles && state.briefFiles) {
+  const overlap = detectFileSetOverlap(state.parallelFiles, state.briefFiles);
+  if (overlap.length > 0) {
+    console.error(`WARN: File overlap with parallel issue: ${overlap.join(", ")}`);
+  }
+}
+
 // Pre-flight: spec-compliance check (runs at scope gate — catches spec↔code drift)
 if (gate === "scope") {
   // Auto-regenerate spec tests from spec before checking (closed-loop sync)
@@ -278,7 +325,9 @@ if (gate === "scope") {
 
 // Type check (reads typeCheck from rungate.json — SC-10)
 if (gate === "scope" || gate === "verify") {
-  const typeCheckCmd = state.dev?.typeCheck || harness?.dev?.typeCheck;
+  const harnessPath = join(state.projectRoot || process.cwd(), ".claude", "rungate.json");
+  const harnessConfig = existsSync(harnessPath) ? JSON.parse(readFileSync(harnessPath, "utf-8")) : null;
+  const typeCheckCmd = state.dev?.typeCheck || harnessConfig?.dev?.typeCheck;
   if (typeCheckCmd) {
     try {
       execSync(typeCheckCmd, { encoding: "utf-8", timeout: 30000, cwd: state.projectRoot || process.cwd() });
@@ -313,6 +362,33 @@ if (gate === "verify" && state.foundIssues) {
 // Files changed outside brief scope = WARN (SC-134)
 if (gate === "verify" && state.filesChangedOutsideBrief?.length > 0) {
   console.error(`WARN: Files changed outside brief: ${state.filesChangedOutsideBrief.join(", ")}`);
+}
+
+// Track pre-existing failures at scope (SC-33)
+if (gate === "scope" && state.preExistingFailures?.length > 0) {
+  trackPreExistingFailures(state.slug, state.preExistingFailures);
+}
+
+// Post-verify: scaffold refresh check (SC-38)
+if (gate === "verify" && shouldRefreshScaffold(state.slug)) {
+  console.log("Post-verify: scaffold refresh recommended (verify gate PASS)");
+}
+
+// Research escalation check — iteration 2+ requires research before retry (SC-112)
+if (gate === "verify" && requiresResearchEscalation(state.slug)) {
+  console.log("Research escalation: iteration 2+ — research tool invocation required before next attempt");
+}
+
+// Post-ship: release lock and check merge queue (SC-47, SC-72)
+if (gate === "ship") {
+  releaseLock(state.slug);
+  if (state.mergeQueue) {
+    const ordered = sequentialMergeOrder(state.mergeQueue);
+    const next = ordered[0];
+    if (next && shouldRunCIVerification(next)) {
+      console.log(`Next in merge queue: ${next.slug} (CI verification required)`);
+    }
+  }
 }
 
 // Run tests

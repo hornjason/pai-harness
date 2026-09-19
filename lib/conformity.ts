@@ -810,7 +810,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
         console.warn("Fallow not available or failed to run — skipping");
         return;
       }
-      const unused = result.unused_files.map(f => f.path);
+      const unused = result.unused_files.map(f => f.path).filter(p => !p.includes("test/fixtures/") && !p.includes("reference/"));
       if (unused.length > 0) {
         console.warn(`Unused files (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
       }
@@ -821,7 +821,9 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
       test("FALLOW-2: No unused exports", () => {
         const result = runFallowCommand(root, ["dead-code", "--unused-exports"]);
         if (!result) return;
-        const unused = result.unused_exports?.map(e => `${e.path}:${e.line ?? "?"} ${e.export_name}`) || [];
+        const unused = (result.unused_exports || [])
+          .filter(e => !e.path.includes("test/fixtures/") && !e.path.includes("reference/"))
+          .map(e => `${e.path}:${e.line ?? "?"} ${e.export_name}`);
         if (unused.length > 0) {
           console.warn(`Unused exports (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
         }

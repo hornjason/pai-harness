@@ -34,6 +34,9 @@ beforeAll(() => {
   execSync(`rm -rf ${OUTPUT}`);
   mkdirSync(OUTPUT, { recursive: true });
   execSync(`cp -r ${FIXTURE}/. ${OUTPUT}/`);
+  // Init git repo so scaffold can create hooks and commits
+  execSync("git init", { cwd: OUTPUT, stdio: "pipe" });
+  execSync("git add -A && git commit -m 'init fixture'", { cwd: OUTPUT, stdio: "pipe" });
   try {
     execSync(`bun run ${SCAFFOLD} ${OUTPUT}`, {
       timeout: 60000,
