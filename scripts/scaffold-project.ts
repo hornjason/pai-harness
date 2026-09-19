@@ -9,7 +9,7 @@
  * to bare specs. NEVER overwrites existing files.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
-import { join, basename } from "path";
+import { join, basename, dirname } from "path";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -127,13 +127,14 @@ const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
 const testDirName = existingTestDir || "tests";
 safeDir(join(projectPath, testDirName), testDirName);
 
-// 2. Generate or refresh AGENTS.md
+// 2. Generate or refresh AGENTS.md (then update specs table from frontmatter)
 if (existsSync(join(projectPath, "AGENTS.md"))) {
   refreshAgentsMd(projectPath, projectType);
 } else {
   const agentsMd = generateAgentsMd(projectName, projectType);
   safeWrite(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md");
 }
+updateSpecsTable(join(projectPath, "AGENTS.md"));
 
 // 3. Create .github/copilot-instructions.md
 const copilotInstructions = `# Copilot Instructions
@@ -199,6 +200,40 @@ for (const action of actions) {
 console.log(`\nTotal: ${actions.filter(a => a.startsWith("CREATED")).length} created, ${actions.filter(a => a.startsWith("SKIP")).length} skipped`);
 
 // ── Generators ─────────────────────────────────────────────────
+
+function updateSpecsTable(agentsMdPath: string): void {
+  if (!existsSync(agentsMdPath)) return;
+  const specsDir = join(dirname(agentsMdPath), "specs");
+  if (!existsSync(specsDir)) return;
+
+  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+  if (specFiles.length === 0) return;
+
+  const specRows: string[] = [];
+  for (const f of specFiles) {
+    const content = readFileSync(join(specsDir, f), "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    let testable = "false";
+    let governs = f.replace(/\.md$/, "");
+    if (fmMatch) {
+      const tMatch = fmMatch[1].match(/testable:\s*(true|false)/);
+      if (tMatch) testable = tMatch[1];
+      const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+      if (gMatch) governs = gMatch[1].trim();
+    }
+    specRows.push(`| ${f} | ${governs} | ${testable === "true" ? "yes" : "no"} |`);
+  }
+
+  const existing = readFileSync(agentsMdPath, "utf-8");
+  const tablePattern = /(\|[^\n]*Spec[^\n]*\|\n\|[-| ]+\|\n)((?:\|[^\n]+\|\n)*)/;
+  const match = existing.match(tablePattern);
+  if (match) {
+    const newTable = match[1] + specRows.join("\n") + "\n";
+    const updated = existing.replace(tablePattern, newTable);
+    writeFileSync(agentsMdPath, updated);
+    actions.push("UPDATED: AGENTS.md specs table from frontmatter");
+  }
+}
 
 function generateAgentsMd(name: string, type: ProjectType): string {
   const typeLabel = type === "code" ? "Code" : type === "content" ? "Content" : "Infrastructure";
@@ -652,6 +687,36 @@ function generateAgentBriefs(root: string): void {
 
   const architecturalTruths = "";
 
+  // Read project prompts/*.md for content separation (SC-161)
+  const promptsDir = join(root, "prompts");
+  const agentKeywords: Record<string, string[]> = {
+    marcus: ["coding", "code", "standard", "implementation", "engineering", "convention", "principle"],
+    quinn: ["testing", "test", "qa", "quality", "coverage"],
+    rook: ["security", "auth", "secret", "vulnerability", "access"],
+    serena: ["architecture", "design-pattern", "system", "module", "structure"],
+    aditi: ["design", "ui", "ux", "component", "visual", "accessibility"],
+  };
+  const promptsByAgent: Record<string, string[]> = { marcus: [], quinn: [], rook: [], serena: [], aditi: [] };
+  if (existsSync(promptsDir)) {
+    const promptFiles = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
+    for (const f of promptFiles) {
+      const content = readFileSync(join(promptsDir, f), "utf-8");
+      const lower = f.toLowerCase();
+      let matched = false;
+      for (const [agent, keywords] of Object.entries(agentKeywords)) {
+        if (keywords.some(kw => lower.includes(kw))) {
+          promptsByAgent[agent].push(`<!-- source: prompts/${f} -->\n${content.trim()}`);
+          matched = true;
+        }
+      }
+      if (!matched) {
+        for (const agent of Object.keys(promptsByAgent)) {
+          promptsByAgent[agent].push(`<!-- source: prompts/${f} -->\n${content.trim()}`);
+        }
+      }
+    }
+  }
+
   // Pull directory structure for Marcus
   const srcDirs = ["src", "dashboard/src", "lib", "gates", "hooks"].filter(d => existsSync(join(root, d)));
   const dirList = srcDirs.length > 0 ? srcDirs.map(d => `- \`${d}/\``).join("\n") : "";
@@ -1009,8 +1074,13 @@ ${identitySection}## Core Principles
     ["quinn.md", quinnBrief], ["marcus.md", marcusBrief], ["rook.md", rookBrief],
     ["serena.md", serenaBrief], ["aditi.md", aditiBrief],
   ] as const) {
+    const agentName = name.replace(".md", "");
+    const prompts = promptsByAgent[agentName] || [];
+    const promptSection = prompts.length > 0
+      ? `\n## Project Standards\n\n${prompts.join("\n\n")}\n`
+      : "";
     const p = join(agentsDir, name);
-    writeFileSync(p, content);
+    writeFileSync(p, content + promptSection);
     actions.push(existsSync(p) ? `UPDATED: .claude/agents/${name}` : `CREATED: .claude/agents/${name}`);
   }
 }
@@ -1251,19 +1321,70 @@ function generateCodeMap(root: string): void {
     }
   }
 
-  // Run generate-code-map.ts
+  // Run generate-code-map.ts if available, otherwise generate inline
   const scriptPath = join(__dirname, "generate-code-map.ts");
-  if (!existsSync(scriptPath)) {
-    actions.push("SKIP: CODE-MAP.md (generate-code-map.ts not found)");
-    return;
+  if (existsSync(scriptPath)) {
+    const result = Bun.spawnSync(["bun", scriptPath, root], { timeout: 60_000 });
+    if (result.exitCode === 0) {
+      actions.push(existsSync(codeMapPath) ? "UPDATED: CODE-MAP.md" : "CREATED: CODE-MAP.md");
+    } else {
+      actions.push("WARN: CODE-MAP.md generation failed via script — trying inline");
+      generateCodeMapInline(root, codeMapPath);
+    }
+  } else {
+    generateCodeMapInline(root, codeMapPath);
+  }
+}
+
+function generateCodeMapInline(root: string, outPath: string): void {
+  const today = new Date().toISOString().split("T")[0];
+  const name = basename(root);
+  const skip = new Set(["node_modules", ".git", "reference", "dist", "build", ".next", ".fallow"]);
+  const dirs: Array<{ name: string; fileCount: number; types: string[] }> = [];
+  for (const entry of readdirSync(root)) {
+    if (entry.startsWith(".") && entry !== ".claude") continue;
+    if (skip.has(entry)) continue;
+    const full = join(root, entry);
+    try {
+      if (!statSync(full).isDirectory()) continue;
+      const files = readdirSync(full, { recursive: true }).map(String);
+      const exts = new Set(files.map(f => f.split(".").pop()).filter(Boolean));
+      dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
+    } catch {}
+  }
+  dirs.sort((a, b) => b.fileCount - a.fileCount);
+
+  let deps = 0, devDeps = 0;
+  const pkgPath = join(root, "package.json");
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      deps = Object.keys(pkg.dependencies || {}).length;
+      devDeps = Object.keys(pkg.devDependencies || {}).length;
+    } catch {}
   }
 
-  const result = Bun.spawnSync(["bun", scriptPath, root], { timeout: 60_000 });
-  if (result.exitCode === 0) {
-    actions.push(existsSync(codeMapPath) ? "UPDATED: CODE-MAP.md" : "CREATED: CODE-MAP.md");
-  } else {
-    actions.push("WARN: CODE-MAP.md generation failed");
+  const srcDir = join(root, "src");
+  const modules: Array<{ file: string; exports: string[] }> = [];
+  if (existsSync(srcDir)) {
+    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+      const content = readFileSync(join(srcDir, f), "utf-8");
+      const exports: string[] = [];
+      const exportPattern = /export\s+(?:function|const|class|type|interface)\s+(\w+)/g;
+      let m;
+      while ((m = exportPattern.exec(content)) !== null) exports.push(m[1]);
+      if (exports.length > 0) modules.push({ file: `src/${f}`, exports });
+    }
   }
+
+  let md = `---\ndoc-type: code-map\nstatus: generated\nupdated: ${today}\ngenerator: scaffold-project.ts\n---\n\n# Code Map — ${name}\n\nAuto-generated architecture snapshot.\n\n## Summary\n\n| Metric | Count |\n|--------|-------|\n| Source directories | ${dirs.length} |\n| Dependencies | ${deps} |\n| Dev dependencies | ${devDeps} |\n\n## Directory Structure\n\n| Directory | Files | Types |\n|-----------|-------|-------|\n${dirs.map(d => `| ${d.name}/ | ${d.fileCount} | ${d.types.join(", ")} |`).join("\n")}\n`;
+  if (modules.length > 0) {
+    md += `\n## Source Modules\n\n| File | Exports |\n|------|---------|\n`;
+    for (const mod of modules) md += `| ${mod.file} | ${mod.exports.join(", ")} |\n`;
+  }
+  md += "\n";
+  writeFileSync(outPath, md);
+  actions.push("CREATED: CODE-MAP.md (inline)");
 }
 
 function copySpecTemplateIfEmpty(specsDir: string): void {
