@@ -180,9 +180,29 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
     const candidates = aliases[dir] || [dir];
     return (root) => {
       const found = candidates.find(d => existsSync(join(root, d)));
+      if (!found) {
+        addFinding({
+          ruleId: "SCAFFOLD-DIR-EXISTS",
+          severity: "FAIL",
+          file: dir,
+          message: `Required directory "${dir}" not found`,
+          fixCommand: `mkdir -p ${dir}`,
+        });
+      }
       expect(found).toBeDefined();
       if (minMatch && found) {
-        expect(readdirSync(join(root, found)).length).toBeGreaterThanOrEqual(parseInt(minMatch[1]));
+        const count = readdirSync(join(root, found)).length;
+        const required = parseInt(minMatch[1]);
+        if (count < required) {
+          addFinding({
+            ruleId: "SCAFFOLD-DIR-COUNT",
+            severity: "FAIL",
+            file: found,
+            message: `${found}/ has ${count} files (requires ≥${required})`,
+            fixCommand: `Add files to ${found}/ — needs at least ${required}`,
+          });
+        }
+        expect(count).toBeGreaterThanOrEqual(required);
       }
     };
   }
@@ -222,12 +242,20 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
     const codeLimit = s.match(/code:\s*≤\s*(\d+)/i);
     return (root) => {
       const items = readdirSync(root).filter(f => !f.startsWith(".") && f !== "node_modules");
-      // Detect project type: if src/, lib/, gates/, or package.json with deps → code project
       const isCode = existsSync(join(root, "src")) || existsSync(join(root, "lib")) ||
         existsSync(join(root, "gates")) || existsSync(join(root, "Makefile"));
       const limit = isCode
         ? (codeLimit ? parseInt(codeLimit[1]) : 30)
         : (contentLimit ? parseInt(contentLimit[1]) : 10);
+      if (items.length > limit) {
+        addFinding({
+          ruleId: "SCAFFOLD-ROOT-CLEAN",
+          severity: "FAIL",
+          file: ".",
+          message: `Root has ${items.length} items (limit: ${limit}). Move non-essential files to subdirectories.`,
+          fixCommand: `Review root items and move docs to docs/, scripts to scripts/, specs to specs/`,
+        });
+      }
       expect(items.length).toBeLessThanOrEqual(limit);
     };
   }
@@ -299,12 +327,16 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
   describe("Scaffold: structural checks", () => {
     test("AGENTS.md has required standard sections", () => {
       if (!existsSync(join(root, "AGENTS.md"))) {
+        addFinding({ ruleId: "SCAFFOLD-AGENTS-MISSING", severity: "FAIL", file: "AGENTS.md", message: "AGENTS.md not found", fixCommand: "Run scaffold to generate AGENTS.md" });
         expect(existsSync(join(root, "AGENTS.md"))).toBe(true);
         return;
       }
       const content = readFileSync(join(root, "AGENTS.md"), "utf-8");
       const required = ["Project Identity", "Key Files", "Specs", "Tests", "Workflow"];
       const missing = required.filter(s => !content.toLowerCase().includes(s.toLowerCase()));
+      if (missing.length > 0) {
+        addFinding({ ruleId: "SCAFFOLD-AGENTS-SECTIONS", severity: "FAIL", file: "AGENTS.md", message: `Missing sections: ${missing.join(", ")}`, fixCommand: "Re-run scaffold to regenerate AGENTS.md" });
+      }
       expect(missing).toEqual([]);
     });
 
@@ -340,6 +372,9 @@ export function runSpecDiscovery(root: string) {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return !fm || !("testable" in fm);
       });
+      for (const f of missing) {
+        addFinding({ ruleId: "SPEC-FRONTMATTER", severity: "FAIL", file: `specs/${f}`, message: `Spec "${f}" missing testable field in frontmatter`, fixCommand: `Add "testable: true" or "testable: false" to frontmatter of specs/${f}` });
+      }
       expect(missing).toEqual([]);
     });
 
@@ -349,6 +384,15 @@ export function runSpecDiscovery(root: string) {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return fm?.testable === "true";
       });
+      if (testable.length === 0) {
+        addFinding({
+          ruleId: "SPEC-DISCOVERY-TESTABLE",
+          severity: "FAIL",
+          file: "specs/",
+          message: "No spec has testable: true. At least one spec must be testable.",
+          fixCommand: `Add "testable: true" to frontmatter of a spec in specs/`,
+        });
+      }
       expect(testable.length).toBeGreaterThan(0);
     });
   });
