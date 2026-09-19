@@ -50,6 +50,15 @@ All specs live in `specs/` with YAML frontmatter declaring `testable: true/false
 
 New specs: copy `specs/SPEC-TEMPLATE.md`, follow the SC patterns documented in it. Tests auto-generate from `- [ ] SC-N:` lines.
 
+### Governing Spec by Work Area
+
+| Work Area | Governing Spec | Test Files |
+|-----------|---------------|------------|
+| Scaffold, content quality, agent briefs | BOOTSTRAP-DATA-FLOW-SPEC.md | phase-0, phase-1, phase-1-5, phase-4 |
+| Gates, enforcement, verification | HARNESS-GATES.md | workflow.test.ts, e2e-smoke |
+| Ship/prove/council lifecycle | HARNESS-STANDARD.md | spec-compliance |
+| Skill contracts, chain handoff | HARNESS-SKILL-CONTRACT.md | contract.test.ts |
+
 ## Tests
 
 Run all tests:
@@ -68,6 +77,25 @@ bun test
 | Scaffold conformity | scaffold-conformity.test.ts | REPO-SCAFFOLD-SPEC + doc hygiene + fallow |
 | External deps | external-deps.test.ts | Cross-repo CLAUDE.md drift |
 | Contract | contract.test.ts | Skill contract validation |
+| SC coverage (meta) | meta-sc-coverage.test.ts | Every SC in spec has a test |
+| Phase 0 | phase-0.test.ts | Scaffold output — golden fixture |
+| Phase 1 | phase-1.test.ts | Knowledge extraction + doc hygiene |
+| Phase 1.5 | phase-1-5.test.ts | Context quality — external tools, budgets |
+| Phase 4 | phase-4.test.ts | Knowledge mining — coupling, extraction |
+| Anti-criteria | anti.test.ts | Must-NOT-happen checks |
+
+### Test Architecture
+
+**Adding a new SC:**
+1. Add `- [ ] SC-N:` line to the spec under the correct `### Phase` header
+2. Run `bun test test/meta-sc-coverage.test.ts` — it tells you the SC is untested
+3. Add the test in the phase test file the meta test routes to (e.g., Phase 1.5 → `phase-1-5.test.ts`)
+4. Update the spec-drift hash in the phase test's `SPEC_HASH` constant (`shasum -a 256 specs/BOOTSTRAP-DATA-FLOW-SPEC.md | cut -c1-16`)
+5. Run `bun test` — verify green
+
+**Golden fixture pattern:** Phase tests copy `test/fixtures/` to `/tmp/`, init git, run scaffold, then assert output matches SCs. See `phase-0.test.ts` for the canonical example.
+
+**Spec-drift guard:** Each phase test hashes the governing spec. If the spec changes, tests FAIL until the hash is updated — forces test updates when SCs change.
 
 ## Workflow
 
