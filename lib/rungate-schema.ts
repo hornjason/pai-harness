@@ -23,6 +23,16 @@ const ProdSchema = z.object({
   smokeTest: z.string().optional(),
 });
 
+const McpServerSchema = z.object({
+  name: z.string(),
+  tools: z.array(z.string()).optional(),
+});
+
+const ResearchToolSchema = z.object({
+  name: z.string(),
+  type: z.enum(["mcp", "cli", "api"]).optional(),
+});
+
 const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
@@ -34,6 +44,8 @@ const ProjectHarnessSchema = z.object({
   codeCommittedPaths: z.array(z.string()).optional(),
   consumers: z.array(z.string()).optional(),
   contextDocs: z.record(z.string().nullable()).optional(),
+  mcp: z.array(McpServerSchema).optional(),
+  research: z.array(ResearchToolSchema).optional(),
   schemaVersion: z.number().default(1),
 });
 

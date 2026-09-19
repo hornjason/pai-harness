@@ -935,10 +935,10 @@ describe("ship checks", () => {
         .filter(w => w.result === "PASS" && w.hmac && w.hmac.length > 0)
         .map(w => w.gate),
     );
-    // Each AC with PASS verdict must be backed by a gate witness
+    // Each AC with PASS verdict must be backed by a prior gate witness
     // The verify gate covers AC evidence checks; scope gate covers AC definition
-    // At minimum, a verify or ship gate PASS witness must exist
-    const requiredGates = ["verify", "ship"];
+    // Ship witness is written AFTER this test suite — requiring it here is circular
+    const requiredGates = ["scope", "verify"];
     const missingGates = requiredGates.filter(g => !passedGatesWithHmac.has(g));
     const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
     if (passACs.length > 0 && missingGates.length > 0) {

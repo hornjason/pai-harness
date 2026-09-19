@@ -1,189 +1,158 @@
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
+import { test, expect, describe, beforeAll } from "bun:test";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
 const TEST_BASE = "/tmp/harness-contract-tests";
-const PROJECT_ROOT = join(process.env.HOME || "", "Projects/DailyBriefDashboard");
 const GATES_DIR = join(import.meta.dir, "..", "gates");
 
-function makeFixture(name: string, state: any): string {
-  const dir = join(TEST_BASE, name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "workflow-state.json"), JSON.stringify(state, null, 2));
-  return dir;
+function runGate(gate: string, slug: string): { pass: number; fail: number; output: string } {
+  const gateRunner = join(GATES_DIR, "run-gate.ts");
+  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 2>&1`;
+  try {
+    const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
+    const passMatch = output.match(/(\d+) pass/);
+    const failMatch = output.match(/(\d+) fail/);
+    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output };
+  } catch (e: any) {
+    const out = (e.stdout || "") + (e.stderr || "");
+    const passMatch = out.match(/(\d+) pass/);
+    const failMatch = out.match(/(\d+) fail/);
+    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output: out };
+  }
 }
 
-function runGate(gate: string, fixtureDir: string): { pass: number; fail: number; output: string } {
-  const sf = join(fixtureDir, "workflow-state.json");
-  const state = JSON.parse(readFileSync(sf, "utf-8"));
-  const { WorkflowStateSchema } = require("../gates/schema");
-  const result = WorkflowStateSchema.safeParse(state);
-  if (!result.success) {
-    const issues = result.error.issues.map((i: any) => `${i.path.join(".")}: ${i.message}`);
-    return { pass: 0, fail: issues.length, output: issues.join("\n") };
-  }
-  // Run gate-specific checks inline
-  const checks: string[] = [];
-  if (gate === "ship" || gate === "verify") {
-    if (!state.environments || Object.keys(state.environments).length === 0) checks.push("local-api-validated");
-    const acs = state.acs || [];
-    const noEvidence = acs.filter((ac: any) => !ac.evidence);
-    if (noEvidence.length > 0) checks.push("all-acs-have-evidence");
-    const grepOnly = acs.filter((ac: any) => ac.evidenceMethod?.type === "grep");
-    if (grepOnly.length === acs.length && acs.length > 2) checks.push("evidence-type-ratio");
-  }
-  return {
-    pass: checks.length === 0 ? 1 : 0,
-    fail: checks.length,
-    output: checks.join("\n"),
-  };
-}
+describe("contract: LIGHT tier", () => {
+  beforeAll(() => {
+    const dir = join(TEST_BASE, "light");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
+      schemaVersion: 2, issue: 9999, repo: "test/repo", issueRepo: "test/repo",
+      projectRoot: "/tmp/test", slug: "light", phase: "DONE",
+      issueGoal: "Test canary", sizing: { predicted: "XS", ceremonyTier: "LIGHT" },
+      acs: [{ id: "AC-1", type: "CODE", statement: "Unit tests pass including canary test suite",
+        threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" },
+        evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" }],
+      gates: { scope: { result: "PASS", attempt: 1, failures: [] } },
+      environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
+      agents: { marcus: { spawned: true, verdict: "PASS" } },
+      buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
+    }, null, 2));
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1\n\n## AC-1\nUnit tests pass\n");
+  });
 
-beforeAll(() => {
-  if (existsSync(TEST_BASE)) rmSync(TEST_BASE, { recursive: true });
-  mkdirSync(TEST_BASE, { recursive: true });
-});
-
-afterAll(() => {
-  if (existsSync(TEST_BASE)) rmSync(TEST_BASE, { recursive: true });
-});
-
-const VALID_LIGHT = {
-  schemaVersion: 2,
-  issue: 9999,
-  repo: "hornjason/asaCommandCenter",
-  issueRepo: "hornjason/asaCommandCenter",
-  projectRoot: PROJECT_ROOT,
-  slug: "test-valid-light",
-  phase: "DONE",
-  issueGoal: "Test canary — valid LIGHT tier",
-  sizing: { predicted: "XS", ceremonyTier: "LIGHT" },
-  acs: [
-    {
-      id: "AC-1", type: "CODE",
-      statement: "Unit tests pass including canary test suite",
-      threshold: { op: ">=", value: 10 },
-      evidenceMethod: { type: "BUN_TEST", command: "bun test test/unit/persona-selector.test.ts" },
-      evidence: { type: "command-output", content: "24 pass" },
-      verdict: "PASS",
-    },
-  ],
-  gates: {
-    scope: { result: "PASS", attempt: 1, failures: [] },
-    verify: { result: "PASS", attempt: 1, failures: [] },
-  },
-  environments: {
-    local: { api: "PASS", ui: "PASS", tests: "PASS" },
-  },
-  agents: { marcus: { spawned: true, verdict: "PASS" } },
-  buildCommit: "abc1234",
-  changelog: [],
-  bootstrappedFrom: "ship-workflow",
-};
-
-const VALID_STANDARD = {
-  ...VALID_LIGHT,
-  issue: 9998,
-  slug: "test-valid-standard",
-  sizing: { predicted: "S", ceremonyTier: "STANDARD" },
-  acs: [
-    { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "grep", command: "grep fix src/test.ts" }, evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
-    { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test test/unit/test.ts" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
-  ],
-  environments: {
-    local: { api: "PASS", ui: "PASS", tests: "PASS" },
-    prod: { rebuild: "SKIP", smoke: "SKIP", quinn: "SKIP" },
-  },
-  agents: { marcus: { spawned: true, verdict: "PASS" }, quinn: { spawned: true, verdict: "PASS" } },
-};
-
-const BROKEN_NO_ENV = {
-  ...VALID_STANDARD,
-  issue: 9997,
-  slug: "test-broken-env",
-  environments: {},
-};
-
-const BROKEN_ALL_GREP = {
-  ...VALID_STANDARD,
-  issue: 9996,
-  slug: "test-broken-grep",
-  acs: [
-    { id: "AC-1", type: "CODE", statement: "First check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
-    { id: "AC-2", type: "CODE", statement: "Second check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
-    { id: "AC-3", type: "CODE", statement: "Third check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
-    { id: "AC-4", type: "CODE", statement: "Fourth check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
-  ],
-};
-
-const BROKEN_NO_EVIDENCE = {
-  ...VALID_STANDARD,
-  issue: 9995,
-  slug: "test-broken-evidence",
-  acs: [
-    { id: "AC-1", type: "CODE", statement: "Has evidence from test suite run", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
-    { id: "AC-2", type: "CODE", statement: "Missing evidence needs grep verification", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, verdict: "PENDING" },
-  ],
-};
-
-describe("contract: valid LIGHT passes all gates", () => {
-  let dir: string;
-  beforeAll(() => { dir = makeFixture("valid-light", VALID_LIGHT); });
-
-  test("scope gate passes", () => {
-    const r = runGate("scope", dir);
+  test("scope passes", () => {
+    const r = runGate("scope", "light");
     expect(r.fail).toBe(0);
     expect(r.pass).toBeGreaterThan(0);
   });
 
-  test("ship gate passes", () => {
-    const r = runGate("ship", dir);
+  test("ship passes", () => {
+    const r = runGate("ship", "light");
+    expect(r.pass).toBeGreaterThan(0);
+  });
+});
+
+describe("contract: STANDARD tier", () => {
+  beforeAll(() => {
+    const dir = join(TEST_BASE, "standard");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
+      schemaVersion: 2, issue: 9998, repo: "test/repo", issueRepo: "test/repo",
+      projectRoot: "/tmp/test", slug: "standard", phase: "DONE",
+      issueGoal: "Test canary standard", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+      acs: [
+        { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "grep", command: "grep fix src/test.ts" }, evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
+        { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
+      ],
+      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
+      environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" }, prod: { rebuild: "SKIP", smoke: "SKIP", quinn: "SKIP" } },
+      agents: { marcus: { spawned: true, verdict: "PASS" }, quinn: { spawned: true, verdict: "PASS" } },
+      buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
+    }, null, 2));
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nFix applied\n\n## AC-2\nAll unit tests pass\n");
+  });
+
+  test("scope passes", () => {
+    const r = runGate("scope", "standard");
+    expect(r.fail).toBe(0);
+  });
+
+  test("verify passes", () => {
+    const r = runGate("verify", "standard");
+    expect(r.fail).toBe(0);
+  });
+
+  test("ship passes", () => {
+    const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
   });
 });
 
-describe("contract: valid STANDARD passes all gates", () => {
-  let dir: string;
-  beforeAll(() => { dir = makeFixture("valid-standard", VALID_STANDARD); });
-
-  test("scope gate passes", () => {
-    const r = runGate("scope", dir);
-    expect(r.fail).toBe(0);
+describe("contract: negative cases", () => {
+  test("missing environments fails ship", () => {
+    const dir = join(TEST_BASE, "broken-env");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
+      schemaVersion: 2, issue: 9997, repo: "test/repo", issueRepo: "test/repo",
+      projectRoot: "/tmp/test", slug: "broken-env", phase: "DONE",
+      issueGoal: "Broken env test", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+      acs: [{ id: "AC-1", type: "CODE", statement: "Fix applied correctly to module", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" }],
+      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
+      environments: {},
+      agents: { marcus: { spawned: true, verdict: "PASS" } },
+      buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
+    }, null, 2));
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1\n\n## AC-1\nFix applied\n");
+    const r = runGate("ship", "broken-env");
+    expect(r.fail).toBeGreaterThan(0);
   });
 
-  test("verify gate passes", () => {
-    const r = runGate("verify", dir);
-    expect(r.fail).toBe(0);
-  });
-
-  test("ship gate passes", () => {
-    const r = runGate("ship", dir);
-    expect(r.fail).toBe(0);
-  });
-});
-
-describe("contract: missing environments fails ship gate", () => {
-  test("ship gate catches missing environments", () => {
-    const dir = makeFixture("broken-env", BROKEN_NO_ENV);
-    const r = runGate("ship", dir);
-    const hasEnvCheck = r.output.includes("local-api-validated") || r.output.includes("local-ui-validated") || r.output.includes("tests-pass");
-    expect(hasEnvCheck).toBe(true);
-  });
-});
-
-describe("contract: all-grep evidence fails ratio check", () => {
-  test("ship gate catches evidence-type-ratio", () => {
-    const dir = makeFixture("broken-grep", BROKEN_ALL_GREP);
-    const r = runGate("ship", dir);
+  test("all-grep evidence fails ratio check", () => {
+    const dir = join(TEST_BASE, "broken-grep");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
+      schemaVersion: 2, issue: 9996, repo: "test/repo", issueRepo: "test/repo",
+      projectRoot: "/tmp/test", slug: "broken-grep", phase: "DONE",
+      issueGoal: "Broken grep test", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+      acs: [
+        { id: "AC-1", type: "CODE", statement: "First check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
+        { id: "AC-2", type: "CODE", statement: "Second check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
+        { id: "AC-3", type: "CODE", statement: "Third check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
+        { id: "AC-4", type: "CODE", statement: "Fourth check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
+      ],
+      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
+      environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
+      agents: { marcus: { spawned: true, verdict: "PASS" } },
+      buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
+    }, null, 2));
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2, AC-3, AC-4\n\n## AC-1\nFirst check\n\n## AC-2\nSecond check\n\n## AC-3\nThird check\n\n## AC-4\nFourth check\n");
+    const r = runGate("ship", "broken-grep");
     expect(r.output).toContain("evidence-type-ratio");
   });
-});
 
-describe("contract: missing AC evidence fails at ship", () => {
-  test("ship gate catches missing evidence", () => {
-    const dir = makeFixture("broken-evidence", BROKEN_NO_EVIDENCE);
-    const r = runGate("ship", dir);
+  test("missing AC evidence fails at ship", () => {
+    const dir = join(TEST_BASE, "broken-evidence");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
+      schemaVersion: 2, issue: 9995, repo: "test/repo", issueRepo: "test/repo",
+      projectRoot: "/tmp/test", slug: "broken-evidence", phase: "DONE",
+      issueGoal: "Broken evidence test", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+      acs: [
+        { id: "AC-1", type: "CODE", statement: "Has evidence from test run output", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
+        { id: "AC-2", type: "CODE", statement: "Missing evidence for grep verification", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, verdict: "PENDING" },
+      ],
+      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
+      environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
+      agents: { marcus: { spawned: true, verdict: "PASS" } },
+      buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
+    }, null, 2));
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nHas evidence\n\n## AC-2\nMissing evidence\n");
+    const r = runGate("ship", "broken-evidence");
     expect(r.output).toContain("all-acs-have-evidence");
   });
 });

@@ -224,7 +224,8 @@
     {
       "source": "~/.claude/scripts/gate-smoke-test-e2e.sh",
       "dest": "scripts/gate-smoke-test-e2e.sh",
-      "migrated": true
+      "migrated": false,
+      "note": "deleted — dead script referenced nonexistent gate-runner.sh"
     },
     {
       "source": "~/.claude/scripts/generate-qc-tables.sh",

@@ -110,10 +110,17 @@ console.log(`Project: ${projectName}`);
 console.log(`Path: ${projectPath}`);
 console.log("---");
 
-// 1. Create missing directories
+// Phase 0.10: .gitignore with security template (BEFORE any other file creation)
+createGitignore(projectPath);
+
+// Phase 0.11-0.14: Create missing directories
 safeDir(join(projectPath, "specs"), "specs");
 safeDir(join(projectPath, "reference"), "reference");
 safeDir(join(projectPath, ".github"), ".github");
+safeDir(join(projectPath, ".github", "workflows"), ".github/workflows");
+safeDir(join(projectPath, "scripts"), "scripts");
+safeDir(join(projectPath, "docs"), "docs");
+safeDir(join(projectPath, "docs", "adr"), "docs/adr");
 
 // tests/ or test/ — respect existing convention
 const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
@@ -148,19 +155,21 @@ safeWrite(
 // 5. Add frontmatter to bare spec files
 addFrontmatterToSpecs(join(projectPath, "specs"));
 
-// 6. Generate .claude/agents/ briefing files (code projects only)
-if (projectType === "code") {
-  generateAgentBriefs(projectPath);
-}
-
-// 7. Generate or refresh CODE-MAP.md (code projects only)
+// Phase 1: Scan code and generate config (data flows DOWN — config before briefs)
+// 6. Generate or refresh CODE-MAP.md (code projects only)
 if (projectType === "code") {
   generateCodeMap(projectPath);
 }
 
-// 8. Generate or audit rungate.json (code projects only)
+// 7. Generate or audit rungate.json (code projects only)
 if (projectType === "code") {
   generateOrAuditProjectHarness(projectPath);
+}
+
+// Phase 2: Generate briefs AFTER config (briefs read from rungate.json)
+// 8. Generate .claude/agents/ briefing files (code projects only)
+if (projectType === "code") {
+  generateAgentBriefs(projectPath);
 }
 
 // 9. Copy spec template if specs/ is empty (#529)
@@ -168,6 +177,18 @@ copySpecTemplateIfEmpty(join(projectPath, "specs"));
 
 // 10. Add rungate to package.json devDeps (only if package.json exists)
 addPaiHarnessDevDep(projectPath);
+
+// 11. Create CLAUDE.md with @AGENTS.md bridge
+createClaudeMdBridge(projectPath);
+
+// 12. Create CI/CD workflows (harness-owned — always regenerated)
+createCiWorkflows(projectPath);
+
+// 13. Create git hooks (pre-commit + pre-push)
+createGitHooks(projectPath);
+
+// 14. Post-scaffold git commit
+postScaffoldCommit(projectPath);
 
 // ── Report ─────────────────────────────────────────────────────
 
@@ -319,9 +340,10 @@ function generateAgentsMd(name: string, type: ProjectType): string {
       refRows.push(`| ${f} | Historical reference |`);
     }
   }
-  const refTable = refRows.length > 0
-    ? refRows.join("\n")
-    : "| (empty) | |";
+  const refTable = refRows.join("\n");
+  const refSection = refRows.length > 0
+    ? `\n## Reference Files\n\nHistorical and inactive docs live in \`reference/\`.\n\n| File | What |\n|------|------|\n${refTable}\n`
+    : "";
 
   // Detect workflow info
   const repoLine = repoUrl ? `- **Repo:** ${repoUrl}` : "<!-- TODO: Add repo URL -->";
@@ -439,6 +461,16 @@ ${codeMapRef}
 |------------------------|------|
 ${docRoutingTable}
 
+## Where to Create Things
+
+| Type | Location | Notes |
+|------|----------|-------|
+| Specs | \`specs/\` | Must have YAML frontmatter with \`doc-type: spec\` |
+| ADRs | \`docs/adr/\` | Must have \`doc-type: adr\` in frontmatter |
+| Guides/docs | \`docs/\` | Must have \`doc-type: guide\` in frontmatter |
+| Source code | \`src/\` | Follow existing module structure |
+| Tests | \`test/\` | Mirror source structure |
+
 ## Specs
 
 All specs live in \`specs/\` with YAML frontmatter declaring \`testable: true/false\`.
@@ -457,6 +489,21 @@ ${testCmd}
 |----------|------|------|
 ${testsTable}
 
+## Commands
+
+| Action | Command |
+|--------|---------|
+| Install | \`bun install\` |
+| Test | \`${testCmd}\` |
+| Type check | \`bunx tsc --noEmit\` |
+| Conformity | \`bun test test/scaffold-conformity.test.ts\` |
+| Sync spec tests | \`bunx rungate sync-tests .\` |
+| Create spec | \`bunx rungate create-spec "title"\` |
+| Create ADR | \`bunx rungate create-adr "title"\` |
+| Extract constraints | \`bunx rungate extract-constraints .\` |
+| Check findings | \`cat .rungate/conformity-findings.json\` |
+| Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
+
 ${envSection}
 
 ${consumerSection}
@@ -473,29 +520,37 @@ ${repoLine}${makeTargets}
 3. Specs in specs/ are source of truth — testable: true specs auto-generate tests
 4. \`bun test\` runs conformity + domain tests
 5. Agent briefings in .claude/agents/ are auto-generated — run bootstrap to refresh
+6. After test failures, read \`.rungate/conformity-findings.json\` for structured findings with fix commands
 
-## Reference Files
+## Harness-Managed Files
 
-Historical and inactive docs live in \`reference/\`.
+These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**
 
-| File | What |
-|------|------|
-${refTable}
-`;
+| File | How to customize | What NOT to do |
+|------|-----------------|----------------|
+| \`.github/workflows/ci.yml\` | Set \`ci\` fields in \`.claude/rungate.json\` | Don't edit the YAML |
+| \`.github/workflows/gates.yml\` | Settings from \`.claude/rungate.json\` | Don't edit the YAML |
+| \`.claude/agents/*.md\` | Settings from \`.claude/rungate.json\` | Don't edit briefs |
+| \`test/scaffold-conformity.test.ts\` | Runs automatically | Don't edit |
+| \`CODE-MAP.md\` | Auto-generated from code scan | Don't edit |
+${refSection}`;
 }
 
 
 function generateConformityTest(): string {
   return `import { resolve } from "path";
-import { runScaffoldConformity, runSpecDiscovery, runDocHygiene, runFallowCheck, runAgentFileValidation } from "rungate/lib/conformity";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runPackageValidation, runTsconfigValidation } from "rungate/lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
 
 runScaffoldConformity(ROOT);
 runSpecDiscovery(ROOT);
+runSpecDrift(ROOT);
 runDocHygiene(ROOT);
 runFallowCheck(ROOT, { warnOnly: true });
 runAgentFileValidation(ROOT);
+runPackageValidation(ROOT);
+runTsconfigValidation(ROOT);
 `;
 }
 
@@ -562,8 +617,8 @@ function generateAgentBriefs(root: string): void {
   safeDir(agentsDir, ".claude/agents");
 
   const harness = loadHarnessConfig(root);
-  const devUi = harness?.dev?.uiBase || `http://localhost:5173`;
-  const devApi = harness?.dev?.apiBase || `http://localhost:7778`;
+  const devUi = harness?.dev?.uiBase || null;
+  const devApi = harness?.dev?.apiBase || null;
   const testCmd = harness?.dev?.testCmd || "bun test";
   const typeCheck = harness?.dev?.typeCheck || "bunx tsc --noEmit";
   const pages = harness?.pages || {};
@@ -611,7 +666,33 @@ model: sonnet
 
 You are Quinn Torres, QA engineer. You test as a brand-new user who has never seen this app before.
 
-${identitySection}## Context (MANDATORY — read before testing)
+${identitySection}## Core Principles
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+- Read AGENTS.md FIRST — project identity, constraints, commands
+- Run \`bun test\` after every change — conformity is mechanical
+- Null in config means skip — never guess values
+- Research before guessing — use available tools
+
+## Always Do
+- Run \`bun test\` after every change
+- Read AGENTS.md before starting work
+- Verify before asserting
+
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+
+## Methodology
+- Read \`node_modules/rungate/prompts/quinn-journey-decision-tree.md\` for UI testing methodology
+
+## Context (MANDATORY — read before testing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components are on each page (your test targets)
@@ -620,10 +701,9 @@ ${identitySection}## Context (MANDATORY — read before testing)
 
 ## Environment
 
-- **Dev UI:** ${devUi}
-- **Dev API:** ${devApi}
+${devUi ? `- **Dev UI:** ${devUi}` : "- **Dev UI:** not configured — check .claude/rungate.json"}
+${devApi ? `- **Dev API:** ${devApi}` : "- **Dev API:** not configured — check .claude/rungate.json"}
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
-- **Never test on port 7777** — that's the live container
 
 ${pagesTable}
 
@@ -663,7 +743,34 @@ model: opus
 
 You are Marcus Webb, principal engineer. You implement code changes, write tests, and commit.
 
-${identitySection}## Context (MANDATORY — read before coding)
+${identitySection}## Core Principles
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+- Read AGENTS.md FIRST — project identity, constraints, commands
+- Run \`bun test\` after every change — conformity is mechanical
+- Null in config means skip — never guess values
+- Research before guessing — use available tools
+
+## Always Do
+- Run \`bun test\` after every change
+- Read AGENTS.md before starting work
+- Verify before asserting
+
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+
+## Methodology
+- Read \`node_modules/rungate/prompts/coding-principles.md\` for coding standards
+- Read \`node_modules/rungate/prompts/testing-strategy.md\` for testing approach
+
+## Context (MANDATORY — read before coding)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Module Dependencies** — import chains for cascade impact analysis
@@ -692,7 +799,7 @@ ${dirList ? `## Source Directories\n\n${dirList}\n` : ""}${consumerNote}## Befor
 ## Rules
 
 - Never run \`make rebuild\` — only the DA does that
-- Dev server: \`make dev-all\` starts API (${devApi}) and UI (${devUi})
+- Dev server: \`make dev-all\`${devApi ? ` starts API (${devApi})` : ""}${devUi ? ` and UI (${devUi})` : ""}
 `;
 
   const rookBrief = `---
@@ -704,7 +811,30 @@ model: sonnet
 
 You are Rook Blackburn, security engineer. You scan changed files for vulnerabilities.
 
-${identitySection}## Context (MANDATORY — read before scanning)
+${identitySection}## Core Principles
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+- Read AGENTS.md FIRST — project identity, constraints, commands
+- Run \`bun test\` after every change — conformity is mechanical
+- Null in config means skip — never guess values
+- Research before guessing — use available tools
+
+## Always Do
+- Run \`bun test\` after every change
+- Read AGENTS.md before starting work
+- Verify before asserting
+
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+
+## Context (MANDATORY — read before scanning)
 
 1. **AGENTS.md** — project identity, critical rules, security baseline routing
 2. **CODE-MAP.md § Code Health** — circular deps and unused files (vulnerability surface)
@@ -747,7 +877,30 @@ model: opus
 
 You are Serena Blackwood, software architect. You make structural decisions and write ADRs.
 
-${identitySection}## Context (MANDATORY — read before designing)
+${identitySection}## Core Principles
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+- Read AGENTS.md FIRST — project identity, constraints, commands
+- Run \`bun test\` after every change — conformity is mechanical
+- Null in config means skip — never guess values
+- Research before guessing — use available tools
+
+## Always Do
+- Run \`bun test\` after every change
+- Read AGENTS.md before starting work
+- Verify before asserting
+
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+
+## Context (MANDATORY — read before designing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Module Dependencies** — import chains for boundary analysis
@@ -789,7 +942,30 @@ model: sonnet
 
 You are Aditi Sharma, UX/UI designer. You design component specs and review UI implementations.
 
-${identitySection}## Context (MANDATORY — read before designing)
+${identitySection}## Core Principles
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+- Read AGENTS.md FIRST — project identity, constraints, commands
+- Run \`bun test\` after every change — conformity is mechanical
+- Null in config means skip — never guess values
+- Research before guessing — use available tools
+
+## Always Do
+- Run \`bun test\` after every change
+- Read AGENTS.md before starting work
+- Verify before asserting
+
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+
+## Context (MANDATORY — read before designing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components render on each page
@@ -900,11 +1076,13 @@ function refreshAgentsMd(root: string, type: ProjectType): void {
 function generateOrAuditProjectHarness(root: string): void {
   const harnessPath = join(root, ".claude", "rungate.json");
 
-  // Scan pages from App.tsx or pages/ directory
+  // Scan pages from route files (App.tsx, routes.ts, etc.) in src/
   const scannedPages: Record<string, string> = {};
-  const appTsx = join(root, "dashboard/src/App.tsx");
-  if (existsSync(appTsx)) {
-    const content = readFileSync(appTsx, "utf-8");
+  const routeFiles = ["src/App.tsx", "src/routes.tsx", "src/index.tsx", "src/app.tsx"]
+    .map(f => join(root, f))
+    .filter(f => existsSync(f));
+  for (const routeFile of routeFiles) {
+    const content = readFileSync(routeFile, "utf-8");
     const routePattern = /path="([^"]+)"/g;
     let m;
     while ((m = routePattern.exec(content)) !== null) {
@@ -925,21 +1103,25 @@ function generateOrAuditProjectHarness(root: string): void {
     if (pkg.scripts?.typecheck) typeCheckCmd = pkg.scripts.typecheck;
   }
 
-  // Scan ports from Makefile
-  let devPort = 5173, apiPort = 7778, prodPort = 7777;
+  // Scan port from Makefile
   const makefile = join(root, "Makefile");
-  if (existsSync(makefile)) {
+  const detectedPort = (() => {
+    if (!existsSync(makefile)) return null;
     const content = readFileSync(makefile, "utf-8");
-    const portMatch = content.match(/(\d{4}):(\d{4})/g);
-    if (portMatch) {
-      for (const pm of portMatch) {
-        const [host] = pm.split(":");
-        const p = parseInt(host);
-        if (p === 7777) prodPort = p;
-        if (p === 7776 || p === 7778) apiPort = p;
-      }
-    }
-  }
+    const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
+    return portMatch ? parseInt(portMatch[1]) : null;
+  })();
+
+  // Scan envVars from .env.example
+  const envVars = (() => {
+    const envPath = join(root, ".env.example");
+    if (!existsSync(envPath)) return null;
+    const content = readFileSync(envPath, "utf-8");
+    return content.split("\n")
+      .filter(line => line.trim() && !line.startsWith("#"))
+      .map(line => line.split("=")[0].trim())
+      .filter(Boolean);
+  })();
 
   // Detect git remote for repo
   let repo = "";
@@ -959,7 +1141,8 @@ function generateOrAuditProjectHarness(root: string): void {
     for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts"))) {
       const content = readFileSync(join(srcDir, f), "utf-8");
       const isConsumer = consumerPatterns.some(p => f.includes(p)) ||
-        content.includes("callGemini") || content.includes("buildTemplate");
+        content.includes("app.get(") || content.includes("app.post(") ||
+        content.includes("router.") || content.includes("export default");
       if (isConsumer) {
         scannedConsumers.push(f.replace(/\.ts$/, "").replace(/-routes|-generator/, ""));
       }
@@ -987,24 +1170,40 @@ function generateOrAuditProjectHarness(root: string): void {
       actions.push("AUDITED: rungate.json (aligned with code)");
     }
   } else {
+    // Read harness version from own package.json
+    let harnessVersion = "unknown";
+    try {
+      const harnessPkg = JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8"));
+      harnessVersion = harnessPkg.version || "unknown";
+    } catch {}
+
     // Generate new rungate.json
     const config = {
+      "$schema": "rungate",
+      harnessVersion,
+      scaffoldedAt: new Date().toISOString(),
       project: basename(root),
       repo,
       issueRepo: repo,
       dev: {
         start: existsSync(makefile) ? "make dev-all" : "bun run dev",
-        apiBase: `http://localhost:${apiPort}`,
-        uiBase: `http://localhost:${devPort}`,
+        apiBase: detectedPort ? `http://localhost:${detectedPort}` : null,
+        uiBase: null as string | null,
         testCmd,
         typeCheck: typeCheckCmd,
       },
       prod: {
         rebuild: existsSync(makefile) ? "make rebuild" : undefined,
-        apiBase: `http://localhost:${prodPort}`,
+        apiBase: null as string | null,
       },
       pages: scannedPages,
       consumers: [...new Set(scannedConsumers)].sort(),
+      envVars: envVars || [],
+      ci: {
+        runner: "ubuntu-latest",
+        bunVersion: "latest",
+        branches: ["main"],
+      },
       contextDocs: {},
     };
 
@@ -1064,9 +1263,8 @@ function generateCodeMap(root: string): void {
 
 function copySpecTemplateIfEmpty(specsDir: string): void {
   if (!existsSync(specsDir)) return;
-  const specs = readdirSync(specsDir).filter(f => f.endsWith(".md"));
-  if (specs.length > 0) return;
-
+  const specs = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+  // Always copy/update the template
   const templatePath = join(__dirname, "..", "specs", "SPEC-TEMPLATE.md");
   if (!existsSync(templatePath)) {
     actions.push("SKIP: spec template (SPEC-TEMPLATE.md not found in harness)");
@@ -1076,4 +1274,215 @@ function copySpecTemplateIfEmpty(specsDir: string): void {
   const template = readFileSync(templatePath, "utf-8");
   writeFileSync(join(specsDir, "SPEC-TEMPLATE.md"), template);
   actions.push("CREATED: specs/SPEC-TEMPLATE.md (starter template)");
+}
+
+function createGitignore(root: string): void {
+  const gitignorePath = join(root, ".gitignore");
+  const securityTemplate = `# Dependencies
+node_modules/
+.bun/
+
+# Build output
+dist/
+build/
+*.tsbuildinfo
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*
+.secret*
+
+# Harness working directory
+.rungate/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test artifacts
+coverage/
+`;
+
+  if (existsSync(gitignorePath)) {
+    const existing = readFileSync(gitignorePath, "utf-8");
+    const required = [
+      "node_modules", "dist", ".env", ".rungate",
+      "*.pem", "*.key", "credentials.json", "service-account",
+    ];
+    const missing = required.filter(entry => !existing.includes(entry));
+    if (missing.length > 0) {
+      const additions = "\n# Added by rungate scaffold\n" +
+        missing.map(e => {
+          if (e === ".env") return ".env\n.env.*\n!.env.example";
+          return e.includes("*") ? e : `${e}/`;
+        }).join("\n") + "\n";
+      writeFileSync(gitignorePath, existing.trimEnd() + "\n" + additions);
+      actions.push(`UPDATED: .gitignore (added ${missing.length} missing entries)`);
+    } else {
+      actions.push("SKIP: .gitignore (all required entries present)");
+    }
+  } else {
+    writeFileSync(gitignorePath, securityTemplate);
+    actions.push("CREATED: .gitignore (security template)");
+  }
+}
+
+function createClaudeMdBridge(root: string): void {
+  const claudeMdPath = join(root, "CLAUDE.md");
+  const bridgeLine = "@AGENTS.md";
+
+  if (existsSync(claudeMdPath)) {
+    const existing = readFileSync(claudeMdPath, "utf-8");
+    if (!existing.includes(bridgeLine)) {
+      writeFileSync(claudeMdPath, existing.trimEnd() + "\n\n" + bridgeLine + "\n");
+      actions.push("UPDATED: CLAUDE.md (added @AGENTS.md bridge)");
+    } else {
+      actions.push("SKIP: CLAUDE.md (@AGENTS.md bridge already present)");
+    }
+  } else {
+    const content = `# Project Rules
+
+${bridgeLine}
+`;
+    writeFileSync(claudeMdPath, content);
+    actions.push("CREATED: CLAUDE.md (with @AGENTS.md bridge)");
+  }
+}
+
+function createCiWorkflows(root: string): void {
+  const workflowsDir = join(root, ".github", "workflows");
+  if (!existsSync(workflowsDir)) {
+    mkdirSync(workflowsDir, { recursive: true });
+  }
+
+  const harness = loadHarnessConfig(root);
+  const bunVersion = harness?.ci?.bunVersion || "latest";
+  const runner = harness?.ci?.runner || "ubuntu-latest";
+  const branches = harness?.ci?.branches || ["main"];
+  const branchList = branches.map((b: string) => `      - ${b}`).join("\n");
+
+  const ciYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
+name: CI
+
+on:
+  push:
+    branches:
+${branchList}
+  pull_request:
+    branches:
+${branchList}
+
+jobs:
+  test:
+    runs-on: ${runner}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "${bunVersion}"
+      - run: bun install
+      - run: bun test
+      - run: bunx tsc --noEmit
+`;
+
+  const gatesYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
+name: Gates
+
+on:
+  push:
+    branches:
+${branchList}
+  pull_request:
+    branches:
+${branchList}
+
+jobs:
+  gates:
+    runs-on: ${runner}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "${bunVersion}"
+      - run: bun install
+      - name: Conformity + spec drift
+        run: bun test test/scaffold-conformity.test.ts
+      - name: Secret scan
+        run: |
+          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|password\s*=)' 2>/dev/null; then
+            echo "::error::Potential secrets detected in staged files"
+            exit 1
+          fi
+`;
+
+  // CI and gates workflows are harness-owned — always regenerated
+  writeFileSync(join(workflowsDir, "ci.yml"), ciYml);
+  actions.push("CREATED: .github/workflows/ci.yml (harness-owned)");
+
+  writeFileSync(join(workflowsDir, "gates.yml"), gatesYml);
+  actions.push("CREATED: .github/workflows/gates.yml (harness-owned)");
+}
+
+function createGitHooks(root: string): void {
+  const hooksDir = join(root, ".git", "hooks");
+  if (!existsSync(hooksDir)) return;
+
+  const { chmodSync } = require("fs");
+
+  const preCommit = join(hooksDir, "pre-commit");
+  if (!existsSync(preCommit)) {
+    writeFileSync(preCommit, `#!/bin/sh
+# Managed by rungate — secret scan on staged files
+if git diff --cached --name-only | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\\s*=\\s*["\\''][^\\"\\'']+["\\''])' 2>/dev/null; then
+  echo "ERROR: Potential secrets detected in staged files"
+  exit 1
+fi
+`);
+    chmodSync(preCommit, 0o755);
+    actions.push("CREATED: .git/hooks/pre-commit (secret scan)");
+  }
+
+  const prePush = join(hooksDir, "pre-push");
+  if (!existsSync(prePush)) {
+    writeFileSync(prePush, `#!/bin/sh
+# Managed by rungate — conformity check before push
+bun test test/scaffold-conformity.test.ts 2>/dev/null
+if [ $? -ne 0 ]; then
+  echo "ERROR: Conformity tests failed — fix before pushing"
+  exit 1
+fi
+`);
+    chmodSync(prePush, 0o755);
+    actions.push("CREATED: .git/hooks/pre-push (conformity check)");
+  }
+}
+
+function postScaffoldCommit(root: string): void {
+  try {
+    const result = Bun.spawnSync(["git", "-C", root, "status", "--porcelain"]);
+    const status = result.stdout.toString().trim();
+    if (!status) {
+      actions.push("SKIP: post-scaffold commit (no changes)");
+      return;
+    }
+
+    Bun.spawnSync(["git", "-C", root, "add", "-A"]);
+    Bun.spawnSync(["git", "-C", root, "commit", "-m", "scaffold: initialize rungate harness"]);
+    actions.push("CREATED: post-scaffold commit");
+  } catch {
+    actions.push("SKIP: post-scaffold commit (git error)");
+  }
 }

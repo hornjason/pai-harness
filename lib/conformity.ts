@@ -24,6 +24,84 @@ export function parseFrontmatter(content: string): Record<string, string> | null
 
 export { SIGNAL_PHRASE_PATTERNS } from "./signal-phrases";
 
+// ── Structured findings (machine-readable for agents) ──────
+
+export interface ConformityFinding {
+  ruleId: string;
+  severity: "FAIL" | "WARN";
+  file: string;
+  message: string;
+  fixCommand?: string;
+}
+
+export interface ConstraintCandidate {
+  rule: string;
+  source: string;
+  hash: string;
+  status: "pending" | "applied" | "rejected";
+}
+
+export interface StalenessEntry {
+  file: string;
+  daysSince: number;
+  threshold: number;
+  type: string;
+}
+
+const _findings: ConformityFinding[] = [];
+const _candidates: ConstraintCandidate[] = [];
+const _staleness: StalenessEntry[] = [];
+
+export function addFinding(finding: ConformityFinding): void {
+  _findings.push(finding);
+}
+
+export function addCandidate(candidate: ConstraintCandidate): void {
+  _candidates.push(candidate);
+}
+
+export function addStaleness(entry: StalenessEntry): void {
+  _staleness.push(entry);
+}
+
+export function getFindings(): ConformityFinding[] {
+  return [..._findings];
+}
+
+export function getCandidates(): ConstraintCandidate[] {
+  return [..._candidates];
+}
+
+export function getStaleness(): StalenessEntry[] {
+  return [..._staleness];
+}
+
+export function clearFindings(): void {
+  _findings.length = 0;
+  _candidates.length = 0;
+  _staleness.length = 0;
+}
+
+export function writeFindingsReport(root: string): string {
+  const reportPath = join(root, ".rungate", "conformity-findings.json");
+  const dir = join(root, ".rungate");
+  if (!existsSync(dir)) {
+    require("fs").mkdirSync(dir, { recursive: true });
+  }
+  require("fs").writeFileSync(reportPath, JSON.stringify({
+    timestamp: new Date().toISOString(),
+    total: _findings.length + _candidates.length + _staleness.length,
+    failures: _findings.filter(f => f.severity === "FAIL").length,
+    warnings: _findings.filter(f => f.severity === "WARN").length,
+    candidateCount: _candidates.length,
+    staleCount: _staleness.length,
+    findings: _findings,
+    constraintCandidates: _candidates,
+    staleness: _staleness,
+  }, null, 2));
+  return reportPath;
+}
+
 interface ParsedSC {
   id: string;
   statement: string;
@@ -451,13 +529,128 @@ export function runDocHygiene(root: string) {
       expect(true).toBe(true);
     });
 
+    test("HYGIENE-10: All ADRs have doc-type: adr in frontmatter", () => {
+      const adrDir = join(root, "docs", "adr");
+      if (!existsSync(adrDir)) return;
+      const missing: string[] = [];
+      for (const f of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(adrDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm || fm["doc-type"] !== "adr") {
+          missing.push(f);
+          addFinding({
+            ruleId: "HYGIENE-10",
+            severity: "FAIL",
+            file: `docs/adr/${f}`,
+            message: `ADR "${f}" missing doc-type: adr in frontmatter`,
+            fixCommand: `Add "doc-type: adr" to frontmatter of docs/adr/${f}`,
+          });
+        }
+      }
+      if (missing.length > 0) {
+        console.error(`HYGIENE-10 FAIL: ADRs missing doc-type: ${missing.join(", ")}`);
+      }
+      expect(missing).toEqual([]);
+    });
+
+    test("HYGIENE-7: No spec files at root (must be in specs/)", () => {
+      const allowlist = new Set([
+        "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "CODE-MAP.md",
+        "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE.md",
+        "ARCHITECTURE.md", "PRINCIPLES.md", "MODEL.md", "PROJECT-STATE.md",
+      ]);
+      const misplaced: string[] = [];
+      for (const f of readdirSync(root).filter(f => f.endsWith(".md"))) {
+        if (allowlist.has(f)) continue;
+        const content = readFileSync(join(root, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (fm?.["doc-type"] === "spec") {
+          misplaced.push(f);
+          addFinding({
+            ruleId: "HYGIENE-7",
+            severity: "FAIL",
+            file: f,
+            message: `Spec "${f}" is at root — must be in specs/`,
+            fixCommand: `mv ${f} specs/${f}`,
+          });
+        }
+      }
+      if (misplaced.length > 0) {
+        console.error(`HYGIENE-7 FAIL: Specs at root: ${misplaced.join(", ")}. Move to specs/.`);
+      }
+      expect(misplaced).toEqual([]);
+    });
+
+    test("HYGIENE-8: No ADR files outside docs/adr/", () => {
+      const misplaced: string[] = [];
+      const checkDirs = [root, join(root, "docs"), join(root, "specs")];
+      for (const dir of checkDirs) {
+        if (!existsSync(dir)) continue;
+        for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+          const content = readFileSync(join(dir, f), "utf-8");
+          const fm = parseFrontmatter(content);
+          if (fm?.["doc-type"] === "adr") {
+            const relPath = dir === root ? f : `${dir.replace(root + "/", "")}/${f}`;
+            misplaced.push(relPath);
+            addFinding({
+              ruleId: "HYGIENE-8",
+              severity: "FAIL",
+              file: relPath,
+              message: `ADR "${relPath}" is outside docs/adr/ — must be in docs/adr/`,
+              fixCommand: `mv ${relPath} docs/adr/${f}`,
+            });
+          }
+        }
+      }
+      if (misplaced.length > 0) {
+        console.error(`HYGIENE-8 FAIL: ADRs outside docs/adr/: ${misplaced.join(", ")}. Move to docs/adr/.`);
+      }
+      expect(misplaced).toEqual([]);
+    });
+
+    test("HYGIENE-9: No doc files at root (except allowlisted)", () => {
+      const allowlist = new Set([
+        "AGENTS.md", "CLAUDE.md", "CLAUDE.local.md", "CODE-MAP.md",
+        "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "LICENSE.md",
+        "ARCHITECTURE.md", "PRINCIPLES.md", "MODEL.md", "PROJECT-STATE.md",
+      ]);
+      const misplaced: string[] = [];
+      for (const f of readdirSync(root).filter(f => f.endsWith(".md"))) {
+        if (allowlist.has(f)) continue;
+        const content = readFileSync(join(root, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (fm?.["doc-type"] === "guide" || fm?.["doc-type"] === "doc") {
+          misplaced.push(f);
+          addFinding({
+            ruleId: "HYGIENE-9",
+            severity: "FAIL",
+            file: f,
+            message: `Doc "${f}" is at root — must be in docs/`,
+            fixCommand: `mv ${f} docs/${f}`,
+          });
+        }
+      }
+      if (misplaced.length > 0) {
+        console.error(`HYGIENE-9 FAIL: Docs at root: ${misplaced.join(", ")}. Move to docs/.`);
+      }
+      expect(misplaced).toEqual([]);
+    });
+
     test("HYGIENE-6: No unreviewed constraint candidates in changed docs", async () => {
       const { extractConstraints } = await import("../scripts/extract-constraints");
       const result = await extractConstraints(root, { apply: false });
 
+      for (const s of result.staleness) {
+        addStaleness({ file: s.file, daysSince: s.daysSince, threshold: s.threshold, type: s.type });
+      }
+
+      for (const c of result.candidates) {
+        addCandidate({ rule: c.rule, source: c.source, hash: c.hash, status: "pending" });
+      }
+
       if (result.staleness.length > 0) {
         console.warn(
-          `Stale docs (past threshold): ${result.staleness.map((s) => `${s.file} (${s.daysSince}d, ${s.type} threshold=${s.threshold}d)`).join(", ")}`
+          `Stale docs (past threshold): ${result.staleness.map((s: any) => `${s.file} (${s.daysSince}d, ${s.type} threshold=${s.threshold}d)`).join(", ")}`
         );
       }
 
@@ -467,6 +660,39 @@ export function runDocHygiene(root: string) {
         );
       }
 
+      expect(true).toBe(true);
+    });
+
+    test("HYGIENE-REPORT: Write unified findings report", () => {
+      const findings = getFindings();
+      const candidates = getCandidates();
+      const staleness = getStaleness();
+      const totalItems = findings.length + candidates.length + staleness.length;
+
+      if (totalItems > 0) {
+        const reportPath = writeFindingsReport(root);
+        console.log(`\n📋 Findings written to ${reportPath}`);
+        if (findings.length > 0) {
+          console.log(`   Issues: ${findings.filter(f => f.severity === "FAIL").length} FAIL, ${findings.filter(f => f.severity === "WARN").length} WARN`);
+          for (const f of findings) {
+            console.log(`   ${f.severity}: ${f.file} — ${f.message}`);
+            if (f.fixCommand) console.log(`     Fix: ${f.fixCommand}`);
+          }
+        }
+        if (candidates.length > 0) {
+          console.log(`   Constraint candidates: ${candidates.length} pending review`);
+          for (const c of candidates) {
+            console.log(`     "${c.rule}" (${c.source})`);
+          }
+          console.log(`   → Run \`bunx rungate extract-constraints ${root}\` to apply or reject`);
+        }
+        if (staleness.length > 0) {
+          console.log(`   Stale docs: ${staleness.length}`);
+          for (const s of staleness) {
+            console.log(`     ${s.file} — ${s.daysSince}d old (${s.type} threshold: ${s.threshold}d)`);
+          }
+        }
+      }
       expect(true).toBe(true);
     });
   });
@@ -621,6 +847,111 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
         console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.files || c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
       }
       if (fail) expect(circles).toEqual([]);
+    });
+  });
+}
+
+export function runPackageValidation(root: string) {
+  describe("Package validation", () => {
+    test("PKG-1: package.json exists", () => {
+      expect(existsSync(join(root, "package.json"))).toBe(true);
+    });
+
+    test("PKG-2: required fields present", () => {
+      const pkgPath = join(root, "package.json");
+      if (!existsSync(pkgPath)) return;
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      expect(pkg.name).toBeDefined();
+      expect(pkg.type).toBe("module");
+      expect(pkg.scripts?.test).toBeDefined();
+    });
+
+    test("PKG-3: devDependencies.rungate present", () => {
+      const pkgPath = join(root, "package.json");
+      if (!existsSync(pkgPath)) return;
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      expect(pkg.devDependencies?.rungate).toBeDefined();
+    });
+  });
+}
+
+export function runTsconfigValidation(root: string) {
+  describe("TSConfig validation", () => {
+    test("TSC-1: tsconfig.json exists", () => {
+      expect(existsSync(join(root, "tsconfig.json"))).toBe(true);
+    });
+
+    test("TSC-2: strict mode enabled", () => {
+      const tscPath = join(root, "tsconfig.json");
+      if (!existsSync(tscPath)) return;
+      const tsconfig = JSON.parse(readFileSync(tscPath, "utf-8"));
+      if (!tsconfig.compilerOptions?.strict) {
+        console.warn("WARN: tsconfig.json strict mode not enabled");
+      }
+    });
+  });
+}
+
+export function runModuleDepthCheck(root: string) {
+  describe("Module depth analysis", () => {
+    test("DEPTH-1: no shallow modules (more exports than internal functions)", () => {
+      const srcDir = join(root, "src");
+      if (!existsSync(srcDir)) return;
+      const shallow: string[] = [];
+      for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts"))) {
+        const content = readFileSync(join(srcDir, f), "utf-8");
+        const exportCount = (content.match(/export\s+(function|const|class|type|interface)\s/g) || []).length;
+        const internalCount = (content.match(/(?<!export\s)(function|const)\s+[a-z]/g) || []).length;
+        if (exportCount > 0 && internalCount > 0 && exportCount > internalCount) {
+          shallow.push(`${f}: ${exportCount} exports, ${internalCount} internal`);
+        }
+      }
+      if (shallow.length > 0) {
+        console.warn(`WARN: Shallow modules:\n  ${shallow.join("\n  ")}`);
+      }
+    });
+
+    test("DEPTH-2: modules with >3 importers have contract tests", () => {
+      const srcDir = join(root, "src");
+      const testDir = join(root, "test");
+      if (!existsSync(srcDir)) return;
+      const importCounts: Record<string, number> = {};
+      for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts"))) {
+        const content = readFileSync(join(srcDir, f), "utf-8");
+        const imports = content.match(/from\s+["']\.\/([^"']+)["']/g) || [];
+        for (const imp of imports) {
+          const target = imp.match(/["']\.\/([^"']+)["']/)?.[1] || "";
+          importCounts[target] = (importCounts[target] || 0) + 1;
+        }
+      }
+      const highImport = Object.entries(importCounts).filter(([, c]) => c > 3);
+      if (highImport.length > 0 && existsSync(testDir)) {
+        const testFiles = readdirSync(testDir).filter(f => f.endsWith(".test.ts"));
+        for (const [mod, count] of highImport) {
+          const hasTest = testFiles.some(t => t.includes(mod.replace(/\.ts$/, "")));
+          if (!hasTest) {
+            console.warn(`WARN: ${mod} has ${count} importers but no contract test`);
+          }
+        }
+      }
+    });
+  });
+}
+
+export function runAbsenceValidation(root: string) {
+  describe("Absence validation", () => {
+    test("ABSENCE-1: anti-criteria use absence verification", () => {
+      const specsDir = join(root, "specs");
+      if (!existsSync(specsDir)) return;
+      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(specsDir, f), "utf-8");
+        const antiCriteria = content.match(/^- \[ \] SC-A\d+:.+$/gm) || [];
+        for (const ac of antiCriteria) {
+          if (!ac.match(/not|never|no |absence|must not/i)) {
+            console.warn(`WARN: Anti-criterion may not verify absence: ${ac.substring(0, 80)}`);
+          }
+        }
+      }
     });
   });
 }

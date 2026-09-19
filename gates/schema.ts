@@ -229,6 +229,37 @@ export const WorkflowStateSchema = z.object({
     capturedAt: z.string(),
     description: z.string().optional(),
   }).optional(),
+
+  issueType: z.enum(["feature", "bug-fix", "bug", "refactor", "chore"]).optional(),
+  rca: z.object({
+    rootCause: z.string().optional(),
+    prediction: z.string().optional(),
+    predictionVerified: z.boolean().optional(),
+  }).optional(),
+
+  blastRadius: z.object({
+    filesRead: z.number(),
+    filesChanged: z.number(),
+  }).optional(),
+
+  foundIssues: z.array(z.object({
+    description: z.string(),
+    disposition: z.enum(["fixed", "filed", "scoped-out"]).optional(),
+    issueNumber: z.number().optional(),
+  })).optional(),
+
+  filesChangedOutsideBrief: z.array(z.string()).optional(),
+
+  quinnJourneyPath: z.string().optional(),
+
+  conformityFindings: z.any().optional(),
+
+  preExistingFailures: z.array(z.string()).optional(),
+
+  proofOfFix: z.object({
+    commitSha: z.string(),
+    verified: z.boolean(),
+  }).optional(),
 });
 
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;

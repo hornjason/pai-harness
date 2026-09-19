@@ -209,19 +209,26 @@ console.log(`  Page mappings: ${pageMappings.length}`);
 
 // ── Build CODE-MAP.md ────────────────────────────────────────
 
+let headSha = "unknown";
+try {
+  const result = Bun.spawnSync(["git", "-C", projectPath, "rev-parse", "HEAD"]);
+  headSha = result.stdout.toString().trim().substring(0, 8);
+} catch {}
+
 const sections: string[] = [];
 
 sections.push(`---
 doc-type: code-map
 status: generated
 updated: ${today}
+scanned-at-sha: ${headSha}
 generator: rungate/scripts/generate-code-map.ts
 ---
 
 # Code Map — ${pkg.name}
 
 Auto-generated architecture snapshot. Re-run \`bun generate-code-map.ts ${projectPath}\` to refresh.
-Stale after 14 days or 50+ commits since last scan.`);
+Regenerate when src/ has commits since scanned-at-sha.`);
 
 // Summary
 sections.push(`## Summary

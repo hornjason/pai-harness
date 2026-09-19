@@ -202,6 +202,109 @@ export async function advancePhase(slug: string): Promise<AdvanceResult> {
   return { phase: nextPhase, gateResult: "SKIPPED" };
 }
 
+// ── Slug management ────────────────────────────────────────────────
+
+export function slugExists(issue: number): string | null {
+  const base = workDirBase();
+  if (!existsSync(base)) return null;
+  const { readdirSync } = require("fs");
+  for (const dir of readdirSync(base)) {
+    const sf = join(base, dir, "workflow-state.json");
+    if (existsSync(sf)) {
+      try {
+        const state = JSON.parse(readFileSync(sf, "utf-8"));
+        if (state.issue === issue) return dir;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+// ── Container rebuild (null check) ─────────────────────────────────
+
+export function shouldRebuildContainer(projectRoot: string): boolean {
+  const configPath = join(projectRoot, ".claude", "rungate.json");
+  if (!existsSync(configPath)) return false;
+  const config = JSON.parse(readFileSync(configPath, "utf-8"));
+  return config.prod?.rebuild != null;
+}
+
+// ── Post-verify scaffold refresh ───────────────────────────────────
+
+export function shouldRefreshScaffold(slug: string): boolean {
+  const state = readState(slug);
+  return state.phase === "SHIP" && state.gates?.verify?.result === "PASS";
+}
+
+// ── Worktree support ───────────────────────────────────────────────
+
+export function worktreeBranchName(issue: number, slug: string): string {
+  return `issue-${issue}-${slug}`;
+}
+
+export function checkPortCollision(basePort: number, offset: number, activePorts: number[]): boolean {
+  const targetPort = basePort + offset;
+  return activePorts.includes(targetPort);
+}
+
+// ── Pre-existing failure tracking ──────────────────────────────────
+
+export function trackPreExistingFailures(slug: string, failures: string[]): void {
+  const state = readState(slug);
+  state.preExistingFailures = state.preExistingFailures || [];
+  for (const f of failures) {
+    if (!state.preExistingFailures.includes(f)) {
+      state.preExistingFailures.push(f);
+    }
+  }
+  writeStateFile(slug, state);
+}
+
+// ── Lock management ────────────────────────────────────────────────
+
+export function releaseLock(slug: string): void {
+  const lockPath = join(workDirBase(), slug, ".lock");
+  if (existsSync(lockPath)) {
+    const { unlinkSync } = require("fs");
+    unlinkSync(lockPath);
+  }
+  const state = readState(slug);
+  state.changelog = state.changelog || [];
+  state.changelog.push({ ts: isoNow(), event: "lock-released", detail: "cleanup after test completion", actor: "gate-runner" });
+  writeStateFile(slug, state);
+}
+
+// ── File-set overlap detection ─────────────────────────────────────
+
+export function detectFileSetOverlap(filesA: string[], filesB: string[]): string[] {
+  const setA = new Set(filesA);
+  return filesB.filter(f => setA.has(f));
+}
+
+// ── Sequential merge protocol ──────────────────────────────────────
+
+export interface MergeQueueEntry {
+  slug: string;
+  issue: number;
+  branch: string;
+  readyAt: string;
+}
+
+export function sequentialMergeOrder(entries: MergeQueueEntry[]): MergeQueueEntry[] {
+  return entries.sort((a, b) => a.readyAt.localeCompare(b.readyAt));
+}
+
+export function shouldRunCIVerification(entry: MergeQueueEntry): boolean {
+  return true;
+}
+
+// ── Research escalation ────────────────────────────────────────────
+
+export function requiresResearchEscalation(slug: string): boolean {
+  const iteration = getIterationCount(slug);
+  return iteration >= 2;
+}
+
 // ── CLI ──────────────────────────────────────────────────────────────
 
 if (import.meta.main) {

@@ -121,9 +121,10 @@ describe("scaffold-project: AGENTS.md generation", () => {
       "Key Files",
       "Specs",
       "Tests",
+      "Commands",
       "Workflow",
       "Quick Reference",
-      "Reference Files",
+      "Harness-Managed Files",
     ];
     for (const section of requiredSections) {
       expect(content.toLowerCase()).toContain(section.toLowerCase());

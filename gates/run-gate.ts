@@ -207,7 +207,9 @@ if (gate === "prove") {
     const proveInputPath = join(WORK_DIR, "prove-input.json");
     writeFileSync(proveInputPath, JSON.stringify(proveInput, null, 2));
 
-    const provePromptPath = join(process.env.HOME || "", ".claude", "gates", "prompts", "prove-reproducer.md");
+    const proveProjectPrompt = join(__dirname, "prompts", "prove-reproducer.md");
+    const proveHomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "prove-reproducer.md");
+    const provePromptPath = existsSync(proveProjectPrompt) ? proveProjectPrompt : proveHomePrompt;
     if (existsSync(provePromptPath)) {
       console.log("B3: Spawning Prove Reproducer (Sonnet)...");
       let reproducerOutput = "";
@@ -274,6 +276,45 @@ if (gate === "scope") {
   }
 }
 
+// Type check (reads typeCheck from rungate.json — SC-10)
+if (gate === "scope" || gate === "verify") {
+  const typeCheckCmd = state.dev?.typeCheck || harness?.dev?.typeCheck;
+  if (typeCheckCmd) {
+    try {
+      execSync(typeCheckCmd, { encoding: "utf-8", timeout: 30000, cwd: state.projectRoot || process.cwd() });
+      console.log(`Type check PASS: ${typeCheckCmd}`);
+    } catch (e: any) {
+      console.error(`Type check FAIL: ${typeCheckCmd}`);
+      console.error((e.stdout || "").split("\n").slice(0, 10).join("\n"));
+    }
+  }
+}
+
+// Blast radius check — filesRead ≥ filesChanged (SC-59, SC-60)
+if (gate === "verify" && state.blastRadius) {
+  const { filesRead = 0, filesChanged = 0 } = state.blastRadius;
+  if (filesRead < filesChanged) {
+    console.error(`WARN: Blast radius — read ${filesRead} files but changed ${filesChanged} (read should be ≥ changed)`);
+  }
+  const readWriteRatio = filesRead / Math.max(filesChanged, 1);
+  if (readWriteRatio < 3) {
+    console.error(`WARN: Read/write ratio ${readWriteRatio.toFixed(1)} (target ≥ 3:1)`);
+  }
+}
+
+// Fix-on-find check — silently dropped issues = FAIL (SC-109)
+if (gate === "verify" && state.foundIssues) {
+  const dropped = (state.foundIssues || []).filter((i: any) => !i.disposition);
+  if (dropped.length > 0) {
+    console.error(`FAIL: ${dropped.length} found issues silently dropped — must be fixed, filed, or scoped out`);
+  }
+}
+
+// Files changed outside brief scope = WARN (SC-134)
+if (gate === "verify" && state.filesChangedOutsideBrief?.length > 0) {
+  console.error(`WARN: Files changed outside brief: ${state.filesChangedOutsideBrief.join(", ")}`);
+}
+
 // Run tests
 let testOutput: string;
 let testExitCode = 0;
@@ -320,6 +361,42 @@ if (results.length === 0) {
 
 console.log(`\nTest results: ${passes} pass, ${fails} fail, ${warns} warn`);
 
+// Read conformity findings from project (if bun test wrote them)
+const projectRoot = state.projectRoot || process.cwd();
+const findingsPath = join(projectRoot, ".rungate", "conformity-findings.json");
+if (existsSync(findingsPath)) {
+  try {
+    const findings = JSON.parse(readFileSync(findingsPath, "utf-8"));
+    if (findings.total > 0) {
+      console.log(`\n── CONFORMITY FINDINGS (${findingsPath}) ──`);
+      if (findings.findings?.length > 0) {
+        console.log(`  Issues: ${findings.failures} FAIL, ${findings.warnings} WARN`);
+        for (const f of findings.findings) {
+          console.log(`  ${f.severity}: ${f.file} — ${f.message}`);
+          if (f.fixCommand) console.log(`    Fix: ${f.fixCommand}`);
+        }
+      }
+      if (findings.constraintCandidates?.length > 0) {
+        console.log(`  Constraint candidates: ${findings.candidateCount} pending review`);
+        for (const c of findings.constraintCandidates) {
+          console.log(`    "${c.rule}" (${c.source})`);
+        }
+      }
+      if (findings.staleness?.length > 0) {
+        console.log(`  Stale docs: ${findings.staleCount}`);
+        for (const s of findings.staleness) {
+          console.log(`    ${s.file} — ${s.daysSince}d old (${s.type} threshold: ${s.threshold}d)`);
+        }
+      }
+      console.log(`──────────────────────────────────────────`);
+    }
+    // Store in workflow state for agents to read
+    if (!state.conformityFindings) {
+      state.conformityFindings = findings;
+    }
+  } catch {}
+}
+
 // Batch diagnosis output — enumerate ALL failures grouped by category (#485)
 if (fails > 0) {
   const failResults = results.filter(r => r.result === "FAIL");
@@ -340,10 +417,12 @@ let b2AgentResult: any = null;
 let b1VerifyAgentResult: any = null;
 
 // B1: AC Adversary — fire-and-forget at scope, checked at verify (ADR-009)
-if (gate === "scope" && fails === 0 && testExitCode === 0) {
+if (gate === "scope" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier !== "LIGHT") {
-    const promptPath = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
+    const b1ProjectPrompt = join(__dirname, "prompts", "ac-adversary.md");
+    const b1HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
+    const promptPath = existsSync(b1ProjectPrompt) ? b1ProjectPrompt : b1HomePrompt;
     if (!existsSync(promptPath)) {
       console.warn("WARN: ac-adversary.md prompt not found — adversary will not run");
     } else {
@@ -516,7 +595,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
 }
 
 // B2 Agent: Evidence Validator — LLM review of evidence quality (#1407, ADR-009)
-if (gate === "verify" && fails === 0 && testExitCode === 0) {
+if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier !== "LIGHT") {
     const b2ProjectPrompt = join(__dirname, "prompts", "evidence-validator.md");
@@ -577,7 +656,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
 }
 
 // B1 Agent: AC Adversary at verify — challenges evidence with full context (#1406, ADR-009)
-if (gate === "verify" && fails === 0 && testExitCode === 0) {
+if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier !== "LIGHT") {
     const b1ProjectPrompt = join(__dirname, "prompts", "ac-adversary.md");
@@ -650,6 +729,9 @@ if (gate === "verify" && (b2AgentResult || b1VerifyAgentResult)) {
   }
   if (b1VerifyAgentResult) {
     freshState.gates.verify.adversary = b1VerifyAgentResult;
+  }
+  if (state.conformityFindings) {
+    freshState.conformityFindings = state.conformityFindings;
   }
   writeFileSync(SF, JSON.stringify(freshState, null, 2));
 }

@@ -46,6 +46,9 @@ export async function assembleBrief(opts: {
   sections.push(buildContextSection(projectRoot));
   sections.push(buildSpecAlignment(state.governingSpec));
   sections.push(buildTaskSection(state.issueGoal, acs));
+  if (state.issueType === "bug-fix" || state.issueType === "bug") {
+    sections.push(buildRCASection(state.rca));
+  }
   sections.push(buildGitProtocol(state.issue));
   sections.push(buildFilesSection(contextFiles));
   sections.push(buildScopeSection(scopeOut));
@@ -229,6 +232,37 @@ function buildVerifySection(commands: string[]): string {
   }
 
   return lines.join("\n");
+}
+
+function buildRCASection(rca?: { rootCause?: string; prediction?: string; predictionVerified?: boolean }): string {
+  return [
+    "## Root Cause Analysis (bug-fix)",
+    `- **Root cause:** ${rca?.rootCause || "(investigate and fill)"}`,
+    `- **Prediction:** ${rca?.prediction || "(what will the fix change?)"}`,
+    `- **Prediction verified:** ${rca?.predictionVerified ?? "(verify after fix)"}`,
+  ].join("\n");
+}
+
+export interface JourneyStep {
+  action: string;
+  wait_for?: string;
+  assertion?: { type: string; target?: string; expected?: string };
+  on_fail?: string;
+}
+
+export const MAX_JOURNEY_STEPS = 8;
+
+export function validateJourneySteps(steps: JourneyStep[]): { valid: boolean; splitRequired: boolean } {
+  if (steps.length <= MAX_JOURNEY_STEPS) return { valid: true, splitRequired: false };
+  return { valid: false, splitRequired: true };
+}
+
+export function splitJourney(steps: JourneyStep[]): JourneyStep[][] {
+  const chunks: JourneyStep[][] = [];
+  for (let i = 0; i < steps.length; i += MAX_JOURNEY_STEPS) {
+    chunks.push(steps.slice(i, i + MAX_JOURNEY_STEPS));
+  }
+  return chunks;
 }
 
 function buildReportSection(): string {
