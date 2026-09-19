@@ -1,0 +1,7 @@
+{
+  "name": "phase15-fixture",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  }
+}
