@@ -63,6 +63,15 @@ describe("Anti-Criteria: must NOT happen", () => {
       }
     });
   });
+
+  // SC-A4: Generated briefs minimize inferable content
+  test.todo("SC-A4: generated briefs minimize inferable content");
+
+  // SC-A5: External tool findings never silently dropped
+  test.todo("SC-A5: external tool findings never silently dropped");
+
+  // SC-A6: Composite scoring never rewards inferable heading presence
+  test.todo("SC-A6: composite scoring excludes inferable headings");
 });
 
 function findTsFiles(root: string, dirs: string[]): string[] {

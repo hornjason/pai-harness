@@ -10,8 +10,10 @@ const TEST_PLAN_PATH = join(import.meta.dir, "..", "specs", "BOOTSTRAP-TEST-PLAN
 const PHASE_MAP: Record<string, string> = {
   "Phase 0": "phase-0",
   "Phase 1": "phase-1",
+  "Phase 1.5": "phase-1-5",
   "Phase 2": "phase-2",
   "Phase 3": "phase-3",
+  "Phase 4": "phase-4",
   "Anti-Criteria": "anti",
 };
 
@@ -22,7 +24,7 @@ function parseRouting(spec: string): Map<string, string> {
 
   for (const line of spec.split("\n")) {
     // Match phase subheaders: ### Phase 0 — Scaffold Output
-    const headerMatch = line.match(/^### (Phase \d+|Anti-Criteria)/);
+    const headerMatch = line.match(/^### (Phase \d+(?:\.\d+)?|Anti-Criteria)/);
     if (headerMatch) {
       const key = headerMatch[1];
       currentPhase = PHASE_MAP[key] || null;
@@ -51,7 +53,7 @@ describe("meta: SC coverage — every SC in the spec has a test", () => {
     const allSCs = [...new Set(scMatches.map(m => m[1]))];
 
     // Read all phase test files
-    const testFiles = ["phase-0.test.ts", "phase-1.test.ts", "phase-2.test.ts", "phase-3.test.ts", "anti.test.ts"]
+    const testFiles = ["phase-0.test.ts", "phase-1.test.ts", "phase-1-5.test.ts", "phase-2.test.ts", "phase-3.test.ts", "phase-4.test.ts", "anti.test.ts"]
       .map(f => join(import.meta.dir, f))
       .filter(f => existsSync(f));
 

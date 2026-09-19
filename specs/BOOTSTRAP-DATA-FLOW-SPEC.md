@@ -2299,6 +2299,66 @@ During extraction, docs are also classified:
 - [ ] SC-152: HYGIENE-8 detects ADR files outside docs/adr/ and produces FAIL with `mv` fix command
 - [ ] SC-153: HYGIENE-9 detects doc files at root (not in docs/, not allowlisted) and produces FAIL with `mv` fix command
 
+### Phase 1.5 — Context Quality
+
+- [ ] SC-161: Scaffold assembles agent briefs from prompts/*.md content files — no instruction text hardcoded in scaffold-project.ts
+- [ ] SC-162: Every prompts/*.md file referenced by a brief template exists and contains ≥10 lines of content
+- [ ] SC-163: Modifying a prompts/*.md file changes scaffold output on next run without editing scaffold source code
+
+- [ ] SC-164: Agent brief Environment URLs match rungate.json dev section — extends SC-3 to brief-level validation with fixCommand "Re-run scaffold"
+- [ ] SC-165: Quinn brief frontmatter includes tools: [Bash, Read, mcp__playwright__*]
+- [ ] SC-166: Agent brief environment values match rungate.json dev section — mismatch produces FAIL with fixCommand "Re-run scaffold" (brief-level extension of SC-3/SC-4)
+- [ ] SC-167: AGENTS.md Specs table governs and testable fields match actual spec frontmatter — cross-references AGENTS.md routing table against spec file metadata (distinct from SC-75 spec file validation)
+- [ ] SC-168: CODE-MAP.md exists for code projects and is under 3,000 tokens — over-budget produces WARN
+- [ ] SC-169: Git hooks exist at .git/hooks/ and have executable permission
+
+- [ ] SC-170: Tier 1 files containing content not produced by scaffold trigger WARN OWNERSHIP-TIER1-EXTRA with fixCommand to relocate (extends SC-104 with extra-content detection)
+- [ ] SC-173: Ownership tier assignment for every harness-touched file declared in lib/ownership-manifest.ts
+
+- [ ] SC-174: Conformity wraps ctxlint tokens/* rule — instruction files exceeding thresholds produce WARN
+- [ ] SC-175: Conformity wraps agentsmd claude-length-warn — CLAUDE.md beyond 200 lines produces WARN
+- [ ] SC-176: Hard Constraints >20 rules produces WARN citing instruction stacking collapse
+- [ ] SC-177: Budget findings include token count from ctxlint or ccinspect — RunGate does not implement own tokenizer
+
+- [ ] SC-178: Conformity runs ctxlint via Bun.spawnSync and pipes errors with CTXLINT-{ruleId} prefix
+- [ ] SC-179: Conformity runs agentsmd lint via Bun.spawnSync with AGENTSMD-{ruleId} prefix
+- [ ] SC-180: Conformity runs agnix via Bun.spawnSync with AGNIX-{ruleId} prefix
+- [ ] SC-181: Conformity runs RepoRails via Bun.spawnSync with REPORAILS-{ruleId} prefix
+- [ ] SC-182: agentsmd score stored in findings JSON scores.agentsmd field
+- [ ] SC-183: External tools optional — if not installed, WARN TOOL-NOT-INSTALLED-{name}
+- [ ] SC-184: External tool findings include fixCommand from tool's fixHint/suggestion/fix field
+- [ ] SC-230: Conformity runs ccinspect via Bun.spawnSync with CCINSPECT-{ruleId} prefix (56 rules: contradictions, scope/precedence, session analytics)
+
+- [ ] SC-185: Agent instruction files contain no TODO/FIXME — wrap agentsmd todo-rot
+- [ ] SC-186: No contradictory instructions across files — wrap ccinspect contradiction-keywords
+- [ ] SC-187: No secrets/credentials in agent instruction files — wrap ctxlint content-secrets
+- [ ] SC-188: All hooks in settings.json exist on disk — wrap ctxlint dead-hook
+- [ ] SC-189: No machine-specific absolute paths in instruction files — wrap agentsmd/agnix
+- [ ] SC-190: Total instruction count across always-loaded files under 150 (distinct from SC-17 line count and SC-139 word count — this counts discrete instructions)
+- [ ] SC-191: Agent briefs reference AGENTS.md — never duplicate Hard Constraints inline
+- [ ] SC-192: Conformity flags >70% token overlap between brief and AGENTS.md as SPRAWL-DUPLICATE
+- [ ] SC-193: AGENTS.md workflow section references .rungate/conformity-findings.json
+- [ ] SC-231: Generated content in scaffold output prefers positive framing — negative instructions ("never do X") without positive alternatives ("instead, do Y") produce WARN
+
+- [ ] SC-194: Generated content passes inferability test — discoverable content produces WARN INFERABLE-CONTENT
+- [ ] SC-195: Conformity cross-references instructions against CODE-MAP.md — nonexistent entities produce FAIL CODEBASE-GROUNDING
+
+- [ ] SC-196: Scaffold runs external tool checks after generating briefs before writing final output
+- [ ] SC-197: Post-generation quality check errors trigger regeneration — max 5 iterations
+- [ ] SC-198: Composite quality threshold configurable in rungate.json — weights budget over coverage (agentsmd coverage excluded per SC-A6)
+- [ ] SC-199: Final scores written to .rungate/scaffold-score.json
+- [ ] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
+
+- [ ] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
+- [ ] SC-202: New rules include provenance comment: source incident and date recurred
+- [ ] SC-232: Constraint extraction enforces second-occurrence rule — rules promoted to Hard Constraints only after recurring in 2+ incidents (Anthropic best practice)
+
+- [ ] SC-203: Postinstall checks .rungate-version stamp — re-scaffolds only when version changes
+- [ ] SC-204: GitHub Actions workflow detects rungate version change and runs scaffold --refresh
+
+- [ ] SC-233: Scaffold-generated content checked for contradiction against existing user-written content (Hard Constraints vs generated Environment, brief vs AGENTS.md routing) — distinct from sprawl-duplicate (SC-192)
+- [ ] SC-234: External tool versions recorded in .rungate/tool-versions.json on each run — version mismatch from previous run produces INFO
+
 ### Phase 2 — Gate Enforcement + Ship Behavior
 
 - [ ] SC-7: Container-rebuild agent NOT spawned when prod.rebuild is null
@@ -2343,7 +2403,7 @@ During extraction, docs are also classified:
 - [ ] SC-96: rungate.json `mcp` section declares MCP servers available to agents — scaffold includes in agent briefs
 - [ ] SC-102: Re-scaffold auto-fixes broken refs, unlisted specs, missing CODE-MAP ref, and pages drift — not just reports them
 - [ ] SC-103: Evidence-to-tier mapping implemented in gate — evidenceMethod.type maps to correct tier per mapping table
-- [ ] SC-104: File ownership model enforced — harness-owned files ARE regenerated, co-owned files are NOT overwritten
+- [ ] SC-104: File ownership model enforced — Tier 1 (harness-owned) always regenerated, Tier 2 (co-owned/hybrid) preserves user sections across re-scaffold, Tier 3 (user-owned) validated for structure only — scaffold never writes to them
 - [ ] SC-105: Scaffold is idempotent — running from scratch produces same result as re-scaffold (Core Principle 6)
 - [ ] SC-108: Quinn journey stored in slug directory (~/.rungate/{slug}/quinn-journey.yaml) — ephemeral, follows slug lifecycle
 - [ ] SC-109: Fix-on-find: silently dropped issues = FAIL at verify gate, not WARN
@@ -2371,11 +2431,48 @@ During extraction, docs are also classified:
 - [ ] SC-72: Parallel work: sequential merge with CI verification between each PR
 - [ ] SC-136: Worktree branches use deterministic naming: issue-{N}-{slug}
 
+### Phase 4 — Knowledge Mining
+
+- [ ] SC-205: rungate temporal-coupling command analyzes git co-change history → .rungate/temporal-couplings.json
+- [ ] SC-206: Temporal coupling JSON has fileA, fileB, coChanges, hasImportLink, auto-generated rule
+- [ ] SC-207: File pairs ≥10 co-changes with hasImportLink: false produce candidate rules routed to review queue (SC-201 flow) — not auto-inserted into briefs
+- [ ] SC-208: Scaffold reads temporal-couplings.json and includes only review-approved coupling rules (status=applied) in briefs
+
+- [ ] SC-209: rungate analyze-deps runs dependency-cruiser → .rungate/dependency-analysis.json
+- [ ] SC-210: Circular deps produce WARN — lists participating modules and hub module
+- [ ] SC-211: Orphan modules produce INFO with fixCommand
+- [ ] SC-212: Module boundary violations (data importing routes) produce WARN — graduates to FAIL after validation across projects
+
+- [ ] SC-213: rungate analyze-dead-code runs Knip → .rungate/dead-code.json filtered for entry points
+- [ ] SC-214: Knip entry points configurable in rungate.json analysis.entryPoints
+- [ ] SC-215: Unused backend files produce WARN DEAD-FILE
+- [ ] SC-216: Unresolved imports produce FAIL BROKEN-IMPORT (Knip-specific detection — distinct from fallow suite SC-24 which uses different heuristics)
+
+- [ ] SC-217: rungate analyze-hotspots computes hotspot score → .rungate/hotspots.json
+- [ ] SC-218: Top 5 hotspot files produce INFO — surfaced in briefs as "high-risk files"
+
+- [ ] SC-219: Tier 1 regex pre-filter uses signal-phrases.ts
+- [ ] SC-220: Tier 2 heuristic scorer assigns 0-5 using 5 checks (modal+action, actor subject, list item, imperative, code reference)
+- [ ] SC-221: Score ≥5 auto-promoted to high-confidence
+- [ ] SC-222: Score 3-4 sent to Tier 3 LLM classification
+- [ ] SC-223: Score ≤2 auto-filtered as noise
+- [ ] SC-224: Tier 3 LLM uses ≤200 tokens per candidate, total under $0.05
+- [ ] SC-225: Deduplicated cross-file — same rule appears once with all sources
+- [ ] SC-226: Top 20 candidates in findings JSON constraintCandidates array (extends SC-154), full list in .rungate/all-constraints.json
+
+- [ ] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
+- [ ] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
+- [ ] SC-229: Candidates unreviewed >90 days auto-transition to deferred
+
 ### Anti-Criteria
 
 - [ ] SC-A1: No workflow file imports or references values from a specific project (DDB, asaCommandCenter, etc.)
 - [ ] SC-A2: No hardcoded file paths in rungate.json generation (no `dashboard/src/App.tsx`, no `callGemini` patterns)
 - [ ] SC-A3: No references to "PAI" in lock files, work dirs, or runtime paths — all use "rungate" naming
+- [ ] SC-A4: Generated briefs minimize inferable content — any included inferable content requires source justification (convenience, performance, context reduction)
+- [ ] SC-A5: External tool findings never silently dropped — tool errors produce WARN, not silence
+- [ ] SC-A6: Composite scoring never rewards inferable heading presence (agentsmd coverage excluded from threshold)
+
 ## Evaluated Concerns
 
 Concerns raised during spec review, evaluated, and documented for future reference:
