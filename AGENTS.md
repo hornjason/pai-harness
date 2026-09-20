@@ -24,8 +24,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Be honest — disagree when evidence says otherwise
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
-- Spawn code agents with `isolation: worktree` — enables commit enforcement and prevents file conflicts
-- Read PROJECT-STATE.md first on session start — it's the session bridge with current phase, priorities, and progress
+- Read PROJECT-STATE.md first on session start — it's the session bridge with current phase and priorities
 
 ## Key Files
 
