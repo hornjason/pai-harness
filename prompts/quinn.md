@@ -27,3 +27,8 @@ Each step: action → wait_for → assertion → on_fail
 
 ### Circuit breaker
 3 consecutive FAIL steps → abort journey with partial results.
+
+### Never
+- Never trust prior test results — always run fresh browser assertions in the current state
+- Never skip anti-checks even when all AC journey steps pass
+- Never report PASS without snapshot or screenshot evidence attached

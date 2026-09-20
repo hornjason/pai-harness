@@ -45,33 +45,37 @@ Every file the harness touches has exactly one ownership type. This determines w
 | `.github/workflows/ci.yml` | Harness-owned | Always regenerated. Config (runner, bun version) from rungate.json |
 | `.github/workflows/gates.yml` | Harness-owned | Always regenerated. Config from rungate.json |
 | `tsconfig.json` | Co-owned (WARN) | WARN on missing recommended fields. Never modify |
-| `AGENTS.md` | Hybrid (preserve markers) | Regenerate all sections EXCEPT Hard Constraints between markers |
+| `AGENTS.md` | Harness-owned | Always regenerated. User rules go in CLAUDE.md, not AGENTS.md |
 | `.claude/rungate.json` | Hybrid (field-level merge) | Auto-detected fields regenerated from scan. Manual fields preserved. New fields added as null |
 | `.github/copilot-instructions.md` | Tool-bridge | Create if missing. Skip if exists |
 | `src/*.ts` | User-owned | Never touched |
 | `docs/*.md` | User-owned | Never touched |
 | `specs/*.md` (content) | User-owned | Never touched (frontmatter validated, not content) |
 | `docs/adr/*.md` | User-owned | Never touched (frontmatter validated, not content) |
-| `prompts/discovery-brief.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/marcus-implementation.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/quinn-ui-brief.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/rook-security-brief.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/serena-architecture-brief.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/aditi-design-brief.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/environment-check.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/container-rebuild.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/container-verify.md` | Harness-owned | Ships with harness package — not in project repo |
-| `prompts/ac-adversary.md` | Harness-owned | Ships with harness package — gate prompt |
-| `prompts/evidence-validator.md` | Harness-owned | Ships with harness package — gate prompt |
-| `prompts/prove-reproducer.md` | Harness-owned | Ships with harness package — gate prompt |
-| `prompts/rca-protocol.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/blast-radius-checklist.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/prevention-oriented-fix.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/regression-prevention-checklist.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/read-before-write-protocol.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/quinn-journey-decision-tree.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/evidence-hierarchy.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
-| `prompts/ac-format-guide.md` | Harness-owned | Ships with harness package — Layer 1 methodology |
+| `prompts/marcus.md` | Harness-owned | Agent methodology — scaffolded into marcus brief |
+| `prompts/quinn.md` | Harness-owned | Agent methodology — scaffolded into quinn brief |
+| `prompts/quinn-ui-brief.md` | Harness-owned | UI testing methodology — referenced by quinn brief |
+| `prompts/quinn-decision-tree.md` | Harness-owned | Journey decision tree — referenced by quinn brief |
+| `prompts/rook.md` | Harness-owned | Agent methodology — scaffolded into rook brief |
+| `prompts/serena.md` | Harness-owned | Agent methodology — scaffolded into serena brief |
+| `prompts/aditi.md` | Harness-owned | Agent methodology — scaffolded into aditi brief |
+| `prompts/discovery.md` | Harness-owned | Discovery phase methodology |
+| `prompts/environment.md` | Harness-owned | Environment detection checklist |
+| `prompts/container-rebuild.md` | Harness-owned | Container rebuild protocol |
+| `prompts/container-verify.md` | Harness-owned | Container verification protocol |
+| `prompts/ac-adversary.md` | Harness-owned | Gate prompt — AC garbage test |
+| `prompts/ac-format.md` | Harness-owned | AC format guide |
+| `prompts/evidence-validator.md` | Harness-owned | Gate prompt — evidence validation |
+| `prompts/evidence-hierarchy.md` | Harness-owned | Evidence tier definitions (S/A/B/C/D/F) |
+| `prompts/prove-reproducer.md` | Harness-owned | Prove gate reproducer methodology |
+| `prompts/rca.md` | Harness-owned | Root cause analysis protocol |
+| `prompts/blast-radius.md` | Harness-owned | Blast radius checklist |
+| `prompts/prevention.md` | Harness-owned | Prevention-oriented fix methodology |
+| `prompts/regression.md` | Harness-owned | Regression prevention checklist |
+| `prompts/read-before-write.md` | Harness-owned | Read-before-write protocol |
+| `prompts/coding-principles.md` | Harness-owned | Coding standards for all agents |
+| `prompts/testing-strategy.md` | Harness-owned | Testing methodology |
+| `prompts/escalation-decision-tree.md` | Harness-owned | When to research vs iterate |
 
 **Ownership types explained:**
 - **Harness-owned** — fully managed, user should not edit, always regenerated
@@ -2208,7 +2212,7 @@ During extraction, docs are also classified:
 - [ ] SC-5: Zero hardcoded commands in ship.js — all from rungate.json fields
 - [ ] SC-6: Zero hardcoded project names in ship.js — all from args or rungate.json
 - [ ] SC-8: All ship.js inline prompts >5 lines extracted to prompts/*.md templates
-- [ ] SC-11: Re-running bootstrap on an existing project updates AGENTS.md with current CODE-MAP and rungate data
+- [ ] SC-11: Re-running scaffold always regenerates AGENTS.md from scratch — no audit-only path, no preserved sections. User rules belong in CLAUDE.md
 - [ ] SC-15: rungate.json generation falls back from Makefile → package.json → null for each field
 - [ ] SC-16: Null config fields cause workflow steps to SKIP (not error, not spawn rogue agents)
 - [ ] SC-17: AGENTS.md is under 150 lines — scaffold WARNS if over
@@ -2277,6 +2281,10 @@ During extraction, docs are also classified:
 - [ ] SC-148: Conformity test WARNs when installed harness version differs from `harnessVersion` in rungate.json — signals re-scaffold needed
 - [ ] SC-159: AGENTS.md Commands table includes `Check findings | cat .rungate/conformity-findings.json` row
 - [ ] SC-160: AGENTS.md Quick Reference includes "After test failures, read `.rungate/conformity-findings.json` for structured findings with fix commands"
+- [ ] SC-251: AGENTS.md Documentation Routing auto-detects docs/ subdirectories and lists them with file counts
+- [ ] SC-252: AGENTS.md Where to Create Things lists all doc types (Specs, ADRs, Research, Council, Guides) with required frontmatter fields
+- [ ] SC-253: Re-scaffold on RunGate itself produces 0 warnings and correct AGENTS.md without hand editing
+- [ ] SC-254: Cross-tool user rules via tool-agnostic PROJECT-RULES.md referenced from AGENTS.md (future enhancement — CLAUDE.md for now)
 
 ### Phase 1 — Knowledge Extraction + Doc Hygiene
 
@@ -2358,6 +2366,9 @@ During extraction, docs are also classified:
 
 - [ ] SC-233: Scaffold-generated content checked for contradiction against existing user-written content (Hard Constraints vs generated Environment, brief vs AGENTS.md routing) — distinct from sprawl-duplicate (SC-192)
 - [ ] SC-234: External tool versions recorded in .rungate/tool-versions.json on each run — version mismatch from previous run produces INFO
+- [ ] SC-255: Agent briefs reference prompts/*.md via pointer section, not inline injection — brief body under 120 lines excluding frontmatter
+- [ ] SC-256: CODE-MAP.md includes function signatures and execution order for scripts/ files over 500 lines
+- [ ] SC-257: docs/research/ files have doc-type: research frontmatter with governs field
 
 ### Phase 2 — Gate Enforcement + Ship Behavior
 
@@ -2463,6 +2474,24 @@ During extraction, docs are also classified:
 - [ ] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
 - [ ] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
 - [ ] SC-229: Candidates unreviewed >90 days auto-transition to deferred
+
+### Phase 5 — Instruction Compliance
+
+- [ ] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json
+- [ ] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
+- [ ] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
+- [ ] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
+- [ ] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
+- [ ] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
+- [ ] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates
+- [ ] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
+- [ ] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
+- [ ] SC-245: Compliance surface is exactly 4 file types: prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md — NOT hooks, workflows, CODE-MAP, .gitignore, tests
+- [ ] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
+- [ ] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
+- [ ] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json
+- [ ] SC-249: Agent briefs load only when spawned with matching `agentType` — ship/prove workflows must use `agentType: 'marcus'` not `'Engineer'`, matching `.claude/agents/{name}.md` filename
+- [ ] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
 
 ### Anti-Criteria
 

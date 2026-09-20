@@ -127,13 +127,12 @@ const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
 const testDirName = existingTestDir || "tests";
 safeDir(join(projectPath, testDirName), testDirName);
 
-// 2. Generate or refresh AGENTS.md (then update specs table from frontmatter)
-if (existsSync(join(projectPath, "AGENTS.md"))) {
-  refreshAgentsMd(projectPath, projectType);
-} else {
-  const agentsMd = generateAgentsMd(projectName, projectType);
-  safeWrite(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md");
-}
+// 2. Always regenerate AGENTS.md (spec line 24: "Everything is regenerable")
+// Hard Constraints between markers are preserved (spec line 48: "Hybrid — preserve markers")
+// Then audit for broken refs and stale docs
+const agentsMd = generateAgentsMd(projectName, projectType);
+safeWrite(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md");
+refreshAgentsMd(projectPath, projectType);
 updateSpecsTable(join(projectPath, "AGENTS.md"));
 
 // 3. Create .github/copilot-instructions.md
@@ -153,8 +152,9 @@ safeWrite(
   `${testDirName}/scaffold-conformity.test.ts`
 );
 
-// 5. Add frontmatter to bare spec files
+// 5. Add frontmatter to bare spec files and ADRs
 addFrontmatterToSpecs(join(projectPath, "specs"));
+addFrontmatterToAdrs(join(projectPath, "docs", "adr"));
 
 // Phase 1: Scan code and generate config (data flows DOWN — config before briefs)
 // 6. Generate or refresh CODE-MAP.md (code projects only)
@@ -165,6 +165,11 @@ if (projectType === "code") {
 // 7. Generate or audit rungate.json (code projects only)
 if (projectType === "code") {
   generateOrAuditProjectHarness(projectPath);
+}
+
+// 7.5. Inject environment section into AGENTS.md from rungate.json (SC-3)
+if (projectType === "code") {
+  injectEnvironmentSection(projectPath);
 }
 
 // Phase 2: Generate briefs AFTER config (briefs read from rungate.json)
@@ -233,6 +238,46 @@ function updateSpecsTable(agentsMdPath: string): void {
     writeFileSync(agentsMdPath, updated);
     actions.push("UPDATED: AGENTS.md specs table from frontmatter");
   }
+}
+
+function injectEnvironmentSection(root: string): void {
+  const agentsMdPath = join(root, "AGENTS.md");
+  const harnessPath = join(root, ".claude", "rungate.json");
+  if (!existsSync(agentsMdPath) || !existsSync(harnessPath)) return;
+
+  let harness: any;
+  try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+
+  const lines: string[] = [];
+  if (harness.dev) {
+    lines.push("**Dev:**");
+    if (harness.dev.start) lines.push(`- Start: \`${harness.dev.start}\``);
+    if (harness.dev.apiBase) lines.push(`- API: ${harness.dev.apiBase}`);
+    if (harness.dev.uiBase) lines.push(`- UI: ${harness.dev.uiBase}`);
+    if (harness.dev.testCmd) lines.push(`- Test: \`${harness.dev.testCmd}\``);
+  }
+  if (harness.prod) {
+    const prodLines: string[] = [];
+    if (harness.prod.rebuild) prodLines.push(`- Deploy: \`${harness.prod.rebuild}\``);
+    if (harness.prod.apiBase) prodLines.push(`- API: ${harness.prod.apiBase}`);
+    if (prodLines.length > 0) {
+      lines.push("\n**Prod:**");
+      lines.push(...prodLines);
+    }
+  }
+  if (lines.length === 0) return;
+
+  const envSection = `## Environment\n\n${lines.join("\n")}`;
+  const existing = readFileSync(agentsMdPath, "utf-8");
+
+  // Insert before ## Workflow or append before last section
+  if (existing.includes("## Workflow")) {
+    const updated = existing.replace("## Workflow", `${envSection}\n\n## Workflow`);
+    writeFileSync(agentsMdPath, updated);
+  } else {
+    writeFileSync(agentsMdPath, existing + "\n\n" + envSection + "\n");
+  }
+  actions.push("UPDATED: AGENTS.md environment section from rungate.json");
 }
 
 function generateAgentsMd(name: string, type: ProjectType): string {
@@ -426,38 +471,23 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     if (allDocs.length > 10) {
       docRouting.push({ need: `... and ${allDocs.length - 10} more`, file: "docs/" });
     }
+    // Scan docs subdirectories (research/, adr/, council/, etc.)
+    const subDirs = readdirSync(docsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+    for (const sub of subDirs) {
+      const subPath = join(docsDir, sub);
+      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md"));
+      if (subFiles.length > 0) {
+        docRouting.push({ need: `${sub} (${subFiles.length} files)`, file: `docs/${sub}/` });
+      }
+    }
   }
   const docRoutingTable = docRouting.length > 0
     ? docRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
     : "| (no docs found) | |";
 
-  // Environment section from rungate.json
-  let envSection = "";
-  if (harness) {
-    const lines: string[] = ["## Environment\n"];
-    if (harness.dev) {
-      lines.push("**Dev:**");
-      if (harness.dev.start) lines.push(`- Start: \`${harness.dev.start}\``);
-      if (harness.dev.uiBase) lines.push(`- UI: ${harness.dev.uiBase}`);
-      if (harness.dev.apiBase) lines.push(`- API: ${harness.dev.apiBase}`);
-      if (harness.dev.testCmd) lines.push(`- Test: \`${harness.dev.testCmd}\``);
-    }
-    if (harness.prod) {
-      lines.push("\n**Prod:**");
-      if (harness.prod.rebuild) lines.push(`- Deploy: \`${harness.prod.rebuild}\``);
-      if (harness.prod.apiBase) lines.push(`- API: ${harness.prod.apiBase}`);
-      if (harness.prod.smokeTest) lines.push(`- Smoke: \`${harness.prod.smokeTest}\``);
-    }
-    if (harness.pages && Object.keys(harness.pages).length > 0) {
-      lines.push("\n**Pages:**\n");
-      lines.push("| Page | Path |");
-      lines.push("|------|------|");
-      for (const [path, label] of Object.entries(harness.pages)) {
-        lines.push(`| ${label} | ${path} |`);
-      }
-    }
-    envSection = lines.join("\n");
-  }
+  // Environment section injected post-creation by injectEnvironmentSection (SC-3)
 
   // Consumers from rungate.json
   const consumers = harness?.consumers || [];
@@ -498,13 +528,15 @@ ${docRoutingTable}
 
 ## Where to Create Things
 
-| Type | Location | Notes |
-|------|----------|-------|
-| Specs | \`specs/\` | Must have YAML frontmatter with \`doc-type: spec\` |
-| ADRs | \`docs/adr/\` | Must have \`doc-type: adr\` in frontmatter |
-| Guides/docs | \`docs/\` | Must have \`doc-type: guide\` in frontmatter |
-| Source code | \`src/\` | Follow existing module structure |
-| Tests | \`test/\` | Mirror source structure |
+| Type | Location | Frontmatter | Notes |
+|------|----------|-------------|-------|
+| Specs | \`specs/\` | \`doc-type: spec\`, \`testable\`, \`governs\` | SCs auto-generate tests |
+| ADRs | \`docs/adr/\` | \`doc-type: adr\`, \`status\`, \`created\` | Architecture decisions |
+| Research | \`docs/research/\` | \`doc-type: research\`, \`governs\` | Tool evaluations, competitive analysis, findings |
+| Council output | \`docs/council/\` | \`doc-type: council\` | Council synthesis, design debates |
+| Guides | \`docs/\` | \`doc-type: guide\` | Setup, onboarding, reference |
+| Source code | \`src/\` | — | Follow existing module structure |
+| Tests | \`test/\` | — | Mirror source structure |
 
 ## Specs
 
@@ -538,8 +570,6 @@ ${testsTable}
 | Extract constraints | \`bunx rungate extract-constraints .\` |
 | Check findings | \`cat .rungate/conformity-findings.json\` |
 | Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
-
-${envSection}
 
 ${consumerSection}
 
@@ -597,29 +627,60 @@ afterAll(() => {
 function addFrontmatterToSpecs(specsDir: string): void {
   if (!existsSync(specsDir)) return;
 
+  const today = new Date().toISOString().split("T")[0];
+
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(specsDir, file);
     const content = readFileSync(filePath, "utf-8");
 
-    // Skip files that already have frontmatter
-    if (content.startsWith("---\n")) {
-      continue;
+    if (!content.startsWith("---\n")) {
+      const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: specs/${file} (added frontmatter)`);
+    } else {
+      // Validate existing frontmatter has required fields
+      const fmEnd = content.indexOf("\n---", 4);
+      if (fmEnd === -1) continue;
+      const fm = content.substring(4, fmEnd);
+      const missing: string[] = [];
+      if (!fm.includes("testable:")) missing.push(`testable: false`);
+      if (!fm.includes("created:")) missing.push(`created: ${today}`);
+      if (!fm.includes("governs:")) missing.push(`governs: TODO`);
+      if (missing.length > 0) {
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+      }
     }
+  }
+}
 
-    const today = new Date().toISOString().split("T")[0];
-    const frontmatter = `---
-doc-type: spec
-status: draft
-owner: TODO
-created: ${today}
-updated: ${today}
-governs: TODO — describe what this spec governs
-testable: false
----
+function addFrontmatterToAdrs(adrDir: string): void {
+  if (!existsSync(adrDir)) return;
 
-`;
-    writeFileSync(filePath, frontmatter + content);
-    actions.push(`UPDATED: specs/${file} (added frontmatter)`);
+  const today = new Date().toISOString().split("T")[0];
+
+  for (const file of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
+    const filePath = join(adrDir, file);
+    const content = readFileSync(filePath, "utf-8");
+
+    if (!content.startsWith("---\n")) {
+      const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: docs/adr/${file} (added frontmatter)`);
+    } else {
+      const fmEnd = content.indexOf("\n---", 4);
+      if (fmEnd === -1) continue;
+      const fm = content.substring(4, fmEnd);
+      const missing: string[] = [];
+      if (!fm.includes("doc-type:")) missing.push(`doc-type: adr`);
+      if (!fm.includes("created:")) missing.push(`created: ${today}`);
+      if (missing.length > 0) {
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: docs/adr/${file} (added missing: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+      }
+    }
   }
 }
 
@@ -655,6 +716,11 @@ function addPaiHarnessDevDep(root: string): void {
 function generateAgentBriefs(root: string): void {
   const agentsDir = join(root, ".claude", "agents");
   safeDir(agentsDir, ".claude/agents");
+
+  // Self-scaffolding: prompts are at prompts/, not ${promptPrefix}/
+  const pkgPath = join(root, "package.json");
+  const isSelf = existsSync(pkgPath) && JSON.parse(readFileSync(pkgPath, "utf-8")).name === "rungate";
+  const promptPrefix = isSelf ? "prompts" : "node_modules/rungate/prompts";
 
   const harness = loadHarnessConfig(root);
   const devUi = harness?.dev?.uiBase || null;
@@ -760,14 +826,14 @@ ${identitySection}## Core Principles
 - Commit secrets or credentials
 
 ## Methodology
-- Read \`node_modules/rungate/prompts/quinn-decision-tree.md\` for UI testing methodology
+- Read \`${promptPrefix}/quinn-decision-tree.md\` for journey decision tree and UI testing methodology
 
 ## Context (MANDATORY — read before testing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components are on each page (your test targets)
 3. **CODE-MAP.md § API Routes** — endpoint inventory for API-level checks
-4. **node_modules/rungate/prompts/quinn-ui-brief.md** — structured UI testing methodology
+4. **${promptPrefix}/quinn-ui-brief.md** — structured UI testing methodology
 
 ## Environment
 
@@ -837,8 +903,8 @@ ${identitySection}## Core Principles
 - Commit secrets or credentials
 
 ## Methodology
-- Read \`node_modules/rungate/prompts/coding-principles.md\` for coding standards
-- Read \`node_modules/rungate/prompts/testing-strategy.md\` for testing approach
+- Read \`${promptPrefix}/coding-principles.md\` for coding standards
+- Read \`${promptPrefix}/testing-strategy.md\` for testing approach
 
 ## Context (MANDATORY — read before coding)
 
@@ -1181,10 +1247,18 @@ function generateOrAuditProjectHarness(root: string): void {
   // Scan port from Makefile
   const makefile = join(root, "Makefile");
   const detectedPort = (() => {
-    if (!existsSync(makefile)) return null;
-    const content = readFileSync(makefile, "utf-8");
-    const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
-    return portMatch ? parseInt(portMatch[1]) : null;
+    if (existsSync(makefile)) {
+      const content = readFileSync(makefile, "utf-8");
+      const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
+      if (portMatch) return parseInt(portMatch[1]);
+    }
+    const envExample = join(root, ".env.example");
+    if (existsSync(envExample)) {
+      const content = readFileSync(envExample, "utf-8");
+      const portMatch = content.match(/^PORT=(\d{4,5})/m);
+      if (portMatch) return parseInt(portMatch[1]);
+    }
+    return null;
   })();
 
   // Scan envVars from .env.example
@@ -1377,7 +1451,34 @@ function generateCodeMapInline(root: string, outPath: string): void {
     }
   }
 
+  // Detect API routes
+  const routes: Array<{ method: string; path: string; file: string }> = [];
+  if (existsSync(srcDir)) {
+    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+      const content = readFileSync(join(srcDir, f), "utf-8");
+      const routePatterns = [
+        /app\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
+        /router\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
+        /["'`]((?:GET|POST|PUT|DELETE|PATCH)\s+\/[^"'`]+)["'`]/g,
+      ];
+      for (const pattern of routePatterns) {
+        let rm;
+        while ((rm = pattern.exec(content)) !== null) {
+          if (rm[2]) routes.push({ method: rm[1].toUpperCase(), path: rm[2], file: `src/${f}` });
+          else if (rm[1]) {
+            const parts = rm[1].split(/\s+/);
+            if (parts.length === 2) routes.push({ method: parts[0], path: parts[1], file: `src/${f}` });
+          }
+        }
+      }
+    }
+  }
+
   let md = `---\ndoc-type: code-map\nstatus: generated\nupdated: ${today}\ngenerator: scaffold-project.ts\n---\n\n# Code Map — ${name}\n\nAuto-generated architecture snapshot.\n\n## Summary\n\n| Metric | Count |\n|--------|-------|\n| Source directories | ${dirs.length} |\n| Dependencies | ${deps} |\n| Dev dependencies | ${devDeps} |\n\n## Directory Structure\n\n| Directory | Files | Types |\n|-----------|-------|-------|\n${dirs.map(d => `| ${d.name}/ | ${d.fileCount} | ${d.types.join(", ")} |`).join("\n")}\n`;
+  if (routes.length > 0) {
+    md += `\n## API Routes\n\n| Method | Path | File |\n|--------|------|------|\n`;
+    for (const r of routes) md += `| ${r.method} | ${r.path} | ${r.file} |\n`;
+  }
   if (modules.length > 0) {
     md += `\n## Source Modules\n\n| File | Exports |\n|------|---------|\n`;
     for (const mod of modules) md += `| ${mod.file} | ${mod.exports.join(", ")} |\n`;

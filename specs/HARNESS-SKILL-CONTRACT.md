@@ -5,6 +5,7 @@ owner: jason
 created: 2026-09-03
 updated: 2026-09-03
 testable: true
+governs: TODO
 ---
 
 # Harness Skill Contract

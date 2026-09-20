@@ -407,7 +407,7 @@ Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
 5. Commit and push the fix: git add -A && git commit -m "fix(#${ISSUE}): prove self-heal iteration ${selfHealIteration}" && git push
 
 Report what you fixed and evidence that each failed criterion is now addressed.
-  `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', agentType: 'Engineer' })
+  `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', agentType: 'marcus' })
 
   log(`Self-heal fix ${selfHealIteration} complete — re-validating`)
 

@@ -89,10 +89,35 @@ test/fixtures/golden-project/
 │   └── api-spec.md           # Spec with testable: true, 2 SCs
 ├── docs/adr/
 │   └── ADR-001-framework.md  # ADR with status: accepted
-├── .env.example              # ENV_VAR_1=, ENV_VAR_2=, SECRET_KEY=
+├── prompts/                  # All 24 RunGate prompt templates (harness-owned)
+│   ├── ac-adversary.md       # Adversarial AC reviewer
+│   ├── ac-format.md          # AC format requirements
+│   ├── aditi.md              # Designer brief template
+│   ├── blast-radius.md       # Blast radius assessment
+│   ├── coding-principles.md  # Coding standards
+│   ├── container-rebuild.md  # Container rebuild protocol
+│   ├── container-verify.md   # Container verification
+│   ├── discovery.md          # Discovery phase protocol
+│   ├── environment.md        # Environment setup verification
+│   ├── escalation-decision-tree.md  # Escalation decision tree
+│   ├── evidence-hierarchy.md # Evidence tiers
+│   ├── evidence-validator.md # Evidence validation
+│   ├── marcus.md             # Engineer brief template
+│   ├── prevention.md         # Prevention-oriented fixes
+│   ├── prove-reproducer.md   # Prove reproducer protocol
+│   ├── quinn-decision-tree.md # Quinn decision tree
+│   ├── quinn-ui-brief.md     # Quinn UI testing methodology
+│   ├── quinn.md              # QA brief template
+│   ├── rca.md                # Root cause analysis
+│   ├── read-before-write.md  # Read-before-write protocol
+│   ├── regression.md         # Regression test requirements
+│   ├── rook.md               # Security reviewer brief template
+│   ├── serena.md             # Architect brief template
+│   └── testing-strategy.md   # Testing strategy
+├── .env.example              # PORT=3000, API_PORT=3000, DATABASE_URL=, SECRET_KEY=
 ├── package.json              # name: "golden-project", type: "module"
 ├── tsconfig.json             # strict: true
-├── Makefile                  # dev: bun run src/index.ts (port 3000)
+├── Makefile                  # dev: PORT=3000 bun run src/index.ts
 └── .git/                     # Initialized repo
 ```
 
@@ -100,12 +125,14 @@ test/fixtures/golden-project/
 
 - 3 routes → CODE-MAP must find them
 - 2+ modules with known exports → consumer scan must detect them
-- .env.example → envVars must populate
+- .env.example → envVars must populate (PORT, API_PORT, DATABASE_URL, SECRET_KEY)
 - Makefile with port → rungate.json must detect port 3000
 - Existing tests → test baseline must capture pass/fail count
 - Spec with SCs → spec-drift must hash it
 - ADR → doc hygiene must validate frontmatter
 - Utility module with 1 export → tests can check shallow module detection
+- All 24 RunGate prompts → scaffold injects into agent briefs as "Project Standards" section (SC-161), routes by keyword to relevant agents
+- Prompt compliance → all 24 prompt files graded by agnix + RepoRails, hill climbed to reduce HIGH findings
 
 ### Expected output files
 

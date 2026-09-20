@@ -27,3 +27,8 @@ filesRead >= filesChanged — you must read more than you change.
 ### Gate enforcement
 - Read-before-write ratio >= 3:1 (read tokens / write tokens)
 - Files changed outside brief's listed files = WARN
+
+### Never
+- Never change files not listed in the brief without explicit scope expansion approval
+- Never skip reading dependent files before modifying their imports — downstream breakage is the most common blast-radius failure
+- Never proceed when filesChanged > filesRead — stop and read more

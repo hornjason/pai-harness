@@ -26,3 +26,8 @@ Ship DISCOVERY phase — after reading docs, before coding.
 - Environment: ready / blocked
 - Baseline test results: N pass, N fail
 - Blockers: [list or "none"]
+
+### Never
+- Never skip environment verification and proceed directly to coding — a broken baseline wastes the entire session
+- Never assume dependencies are installed — run the checks and capture actual output
+- Never report "ready" with failing type checks or missing env vars

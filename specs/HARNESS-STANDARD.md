@@ -4,6 +4,8 @@ status: active
 owner: jason
 updated: 2026-08-06
 testable: true
+created: 2026-09-20
+governs: TODO
 ---
 
 # PAI Agentic Harness Standard

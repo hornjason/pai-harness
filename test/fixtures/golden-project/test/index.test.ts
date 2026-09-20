@@ -1,10 +1,6 @@
 import { expect, test } from "bun:test";
-import { greet, add } from "../src/index";
+import { VERSION } from "../src/index";
 
-test("greet returns greeting", () => {
-  expect(greet("world")).toBe("Hello, world!");
-});
-
-test("add returns sum", () => {
-  expect(add(2, 3)).toBe(5);
+test("VERSION is defined", () => {
+  expect(VERSION).toBe("1.0.0");
 });

@@ -4,6 +4,8 @@ status: active
 owner: jason
 updated: 2026-09-17
 testable: true
+created: 2026-09-20
+governs: TODO
 ---
 
 # Harness Gates

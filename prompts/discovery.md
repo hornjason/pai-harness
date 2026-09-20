@@ -25,3 +25,7 @@ DISCOVERY phase of ship cycle — before writing any code.
 - Key constraints discovered
 - Files that will be touched
 - Risks or unknowns to flag
+
+### Never
+- Never write code before completing the discovery read list — implementation without context produces scope violations
+- Never skip reading AGENTS.md — it contains project identity, constraints, and commands that govern all work

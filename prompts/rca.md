@@ -26,3 +26,8 @@ Marcus brief for bug-fix issues — required RCA section.
 3. Identify the exact line where behavior diverges from expected
 4. State root cause as "X happens because Y at file:line"
 5. Predict the fix outcome before implementing
+
+### Never
+- Never implement a fix without first reproducing the bug — an unreproduced bug means you're guessing at root cause
+- Never skip the prediction step — state what will happen after the fix before implementing it
+- Never fix at the symptom level when the root cause is upstream in the data flow

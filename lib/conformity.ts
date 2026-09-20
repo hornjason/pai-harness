@@ -163,7 +163,8 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
       expect(existsSync(join(root, target))).toBe(true);
       if (limitMatch) {
         const content = readFileSync(join(root, target), "utf-8");
-        expect(content.split("\n").length).toBeLessThanOrEqual(parseInt(limitMatch[1]));
+        const lineCount = content.trimEnd().split("\n").length;
+        expect(lineCount).toBeLessThanOrEqual(parseInt(limitMatch[1]));
       }
     };
   }

@@ -5,14 +5,22 @@ owner: jason
 updated: 2026-09-17
 ---
 
-# PAI Harness
+# RunGate
 
 ## Project Identity
 
-Implementation quality framework for PAI (Personal AI Infrastructure). Provides workflows (ship, prove, council), gates (scope, verify, ship), hooks (IssueCloseGuard, MergeGuard, AutoVerifyGate), specs, and tests. Built with Bun/TypeScript.
+Ship harness — conformity tests, scaffold, and agent briefs for AI-first development. Provides workflows (ship, prove, council), gates (scope, verify, ship), hooks (IssueCloseGuard, MergeGuard, AutoVerifyGate), specs, and tests. Built with Bun/TypeScript.
 
 - **Issues:** github.com/hornjason/pai-config (not this repo)
 - **Code:** github.com/hornjason/rungate
+- **Tech stack:** Bun, TypeScript, Zod
+- **Output format:** JSON (all gates, findings, scores write to `.rungate/*.json`)
+
+**FIRST ACTION — read this file fully before writing code, running commands, or creating files.** It contains the governing spec routing table, test architecture, and compliance system.
+
+### Conventions
+
+Strict TypeScript, Bun test runner, specs in `specs/` with YAML frontmatter. No secrets in agent files (SC-187). No absolute paths (SC-189). Rook scans every build cycle.
 
 ## Key Files
 
@@ -33,6 +41,18 @@ Implementation quality framework for PAI (Personal AI Infrastructure). Provides 
 | [lib/conformity.ts](lib/conformity.ts) | Exportable conformity + fallow integration | When projects import tests |
 | [.fallowrc.json](.fallowrc.json) | Fallow static analysis config | When adding entry points or ignore patterns |
 | [gates/self-heal.ts](gates/self-heal.ts) | Prove self-healing loop | When debugging prove iterations |
+| [docs/research/](docs/research/) | Research governing design decisions | Compliance, scaffold, architecture work |
+
+## Documentation Routing
+
+| I need to understand... | Read |
+|---|---|
+| Context budgets, inferability, three-tier architecture | `docs/research/context-management.md` |
+| Tool selection (agnix, RepoRails), compliance layers | `docs/research/quality-tools.md` |
+| Constraint filtering, sigmoid collapse at 16 rules | `docs/research/constraint-filtering.md` |
+| Knowledge mining, temporal coupling, flywheel | `docs/research/knowledge-mining.md` |
+| Competitive landscape, build-vs-wrap decisions | `docs/research/competitive-analysis.md` |
+| Council synthesis, design decisions | `~/.pai-work/{slug}/council-synthesis.json` |
 
 ## Specs
 
@@ -40,24 +60,27 @@ All specs live in `specs/` with YAML frontmatter declaring `testable: true/false
 
 | Spec | Testable | Governs |
 |------|----------|---------|
-| harness-automation-matrix.md | harness-automation-matrix | yes |
-| HARNESS-GATES.md | HARNESS-GATES | yes |
-| HARNESS-STANDARD.md | HARNESS-STANDARD | yes |
-| HARNESS-SKILL-CONTRACT.md | HARNESS-SKILL-CONTRACT | yes |
+| harness-automation-matrix.md | TODO | yes |
+| HARNESS-GATES.md | TODO | yes |
+| INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |
+| HARNESS-STANDARD.md | TODO | yes |
+| HARNESS-SKILL-CONTRACT.md | TODO | yes |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
-| HARNESS-SKILL-CHAIN.md | HARNESS-SKILL-CHAIN | yes |
+| HARNESS-SKILL-CHAIN.md | TODO | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | yes |
 
-New specs: copy `specs/SPEC-TEMPLATE.md`, follow the SC patterns documented in it. Tests auto-generate from `- [ ] SC-N:` lines.
+New specs: copy `specs/SPEC-TEMPLATE.md`. Tests auto-generate from `- [ ] SC-N:` lines.
 
 ### Governing Spec by Work Area
 
 | Work Area | Governing Spec | Test Files |
 |-----------|---------------|------------|
 | Scaffold, content quality, agent briefs | BOOTSTRAP-DATA-FLOW-SPEC.md | phase-0, phase-1, phase-1-5, phase-4 |
+| Instruction compliance, grading, hill climb | INSTRUCTION-COMPLIANCE-SPEC.md | instruction-compliance, phase-5 |
 | Gates, enforcement, verification | HARNESS-GATES.md | workflow.test.ts, e2e-smoke |
 | Ship/prove/council lifecycle | HARNESS-STANDARD.md | spec-compliance |
-| Skill contracts, chain handoff | HARNESS-SKILL-CONTRACT.md | contract.test.ts |
+| Skill contracts, chain, automation | HARNESS-SKILL-CONTRACT.md, HARNESS-SKILL-CHAIN.md, harness-automation-matrix.md | contract.test.ts, spec-compliance |
+| Test architecture, fixtures | BOOTSTRAP-TEST-PLAN.md | phase-0, meta-sc-coverage |
 
 ## Tests
 
@@ -92,11 +115,15 @@ bun test
 3. Add the test in the phase test file the meta test routes to (e.g., Phase 1.5 → `phase-1-5.test.ts`)
 4. Update the spec-drift hash in the phase test's `SPEC_HASH` constant (`shasum -a 256 specs/BOOTSTRAP-DATA-FLOW-SPEC.md | cut -c1-16`)
 
-**BEFORE COMMITTING — run `bun test` (full suite, not just your file). All tests must pass. New failures must be fixed before committing.**
+**BEFORE REPORTING DONE — run `bun test` (full suite, not just your file). All tests must pass. New failures must be fixed before reporting done.**
 
 **Golden fixture pattern:** Phase tests copy `test/fixtures/` to `/tmp/`, init git, run scaffold, then assert output matches SCs. See `phase-0.test.ts` for the canonical example.
 
 **Spec-drift guard:** Each phase test hashes the governing spec. If the spec changes, tests FAIL until the hash is updated — forces test updates when SCs change.
+
+## Instruction Compliance
+
+See `specs/INSTRUCTION-COMPLIANCE-SPEC.md` for the full compliance testing system — tools, layers, hill climb loop, auditor pattern, and iteration flow. Agent briefs only load when `agentType` matches `.claude/agents/{name}.md` filename (SC-249).
 
 ## Workflow
 
@@ -111,26 +138,13 @@ GOAL → DISCOVERY → SCOPE → BUILD → VERIFY → SHIP → PROVE
 - **Gates** enforce quality mechanically at each transition
 - **Self-healing**: gates fail → classify error → fix → re-run (max 3 attempts per gate)
 - **Prove iteration**: UNPROVEN → spawn Marcus to fix → re-prove (circuit breaker at 3)
-- **Witness-verdict cross-validation**: AC verdicts must have matching witness chain entries
 - **Hooks** prevent premature closure (IssueCloseGuard) and unverified merges (MergeGuard)
 - **Ceremony profiles** (LIGHT/STANDARD/THOROUGH) control how much ceremony each gate demands
 - **workflow-state.json** is the spine — every phase reads/writes it
 
-Workflow invocation always uses `scriptPath`, never `name`:
-
-```js
-Workflow({ scriptPath: "~/Projects/rungate/workflows/ship.js" })
-```
-
-## Quick Reference
-
-1. Always use `scriptPath` for workflow invocation — `name` resolves to cached snapshots
-2. `rungate.json` is the thin interface each project provides to the harness
-3. Gates are the enforcement layer — behavioral rules alone don't work
-4. Specs self-describe via YAML frontmatter (`testable`, `status`, `doc-type`)
+Workflow invocation: always `Workflow({ scriptPath: "~/Projects/rungate/workflows/{name}.js" })`, never `Workflow({ name })` (cached snapshots miss edits). Gates are the enforcement layer — behavioral rules alone don't work.
 
 ## Repo Boundary
 
-- **Owns:** execution machinery (workflows, gates, hooks, specs, config, tests)
-- **Does NOT own:** behavioral rules (CLAUDE.md), algorithm mode, project configs, PAI routing
-- **Reference:** See [HARNESS.md](HARNESS.md) for workflow schema details and external dependency list
+- **Owns:** workflows, gates, hooks, specs, config, tests
+- **Does NOT own:** CLAUDE.md rules, algorithm mode, project configs

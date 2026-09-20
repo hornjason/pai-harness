@@ -6,7 +6,7 @@ import { addFinding, addCandidate, addStaleness, getFindings, getCandidates, get
 import { extractConstraints } from "../scripts/extract-constraints";
 
 // Spec-drift guard
-const TEST_PLAN_HASH = "419d400dd23c9542";
+const TEST_PLAN_HASH = "67fed29fc240bd70";
 
 const OUTPUT = "/tmp/rungate-phase1-test";
 const HARNESS = join(import.meta.dir, "..");

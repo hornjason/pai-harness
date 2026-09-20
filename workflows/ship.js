@@ -385,7 +385,7 @@ Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
-  `, { label: 'marcus', phase: 'Implement', agentType: 'Engineer', schema: BUILD_RESULT_SCHEMA })
+  `, { label: 'marcus', phase: 'Implement', agentType: 'marcus', schema: BUILD_RESULT_SCHEMA })
 
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
@@ -456,7 +456,7 @@ Do NOT screenshot after every browser_snapshot().
 ## Verdict
 - PASS: all pre-conditions + all ACs + all anti-checks pass
 - FAIL: any failure — report which AC or anti-check failed with evidence
-    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', schema: GATE_RESULT_SCHEMA })
+    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', agentType: 'quinn', schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {
       log(`Quinn local: agent failed (network/API error) — attempt ${validateAttempt}/3`)
@@ -483,7 +483,7 @@ ${(quinnLocalResult?.failures || []).join('\n')}
 Read the failing AC details. Fix the code. Run unit tests again.
 Do NOT commit — Quinn will retest.
 Report what you fixed.
-    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', agentType: 'Engineer' })
+    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', agentType: 'marcus' })
   }
 } else {
   log('Quinn local: SKIPPED (LIGHT tier)')
@@ -644,7 +644,7 @@ Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 
 ### ACs to Verify
 ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
-    `, { label: 'quinn-container', phase: 'Verify', schema: GATE_RESULT_SCHEMA })
+    `, { label: 'quinn-container', phase: 'Verify', agentType: 'quinn', schema: GATE_RESULT_SCHEMA })
   } else {
     log('WARN: No test container available — skipping container Quinn')
   }
@@ -656,7 +656,7 @@ if (discovery.ceremonyTier === 'THOROUGH') {
   await agent(`
 Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
-  `, { label: 'rook', phase: 'Verify', agentType: 'Pentester', schema: GATE_RESULT_SCHEMA })
+  `, { label: 'rook', phase: 'Verify', agentType: 'rook', schema: GATE_RESULT_SCHEMA })
 }
 
 // ════════════════════════════════════════════════════════════

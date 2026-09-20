@@ -1,7 +1,7 @@
 .PHONY: dev test
 
 dev:
-	bun run src/index.ts
+	PORT=3000 bun run src/index.ts
 
 test:
 	bun test
