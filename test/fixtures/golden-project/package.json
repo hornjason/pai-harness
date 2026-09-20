@@ -1,0 +1,12 @@
+{
+  "name": "golden-fixture",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Test fixture for RunGate scaffold verification",
+  "scripts": {
+    "test": "bun test",
+    "dev": "bun run src/index.ts"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}
