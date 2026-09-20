@@ -5,11 +5,29 @@
 Ship harness — conformity tests, scaffold, and agent briefs for AI-first development
 - **Repo:** https://github.com/hornjason/pai-harness
 
-## Hard Constraints (non-inferrable — agents cannot discover these from code)
+## Rules
 
-<!-- Add project-specific rules that agents can't figure out from reading code.
-     Examples: intentional anti-patterns, safety boundaries, deploy restrictions.
-     Delete this comment after filling in. -->
+- Verify before asserting — try it, then report what actually happened
+- Never report PASS with known gaps — list every gap honestly
+- Never fake, shortcut, or game test results — if it fails, it fails
+- Run full test suite (`bun test`) before reporting done, not just your file
+- Show real tool output, not summaries — the raw data is the evidence
+- Read docs before writing code — the routing table below tells you where to look
+
+## Governing Spec Routing
+
+| Work area | Governing spec |
+|-----------|---------------|
+| TODO | `specs/harness-automation-matrix.md` |
+| TODO | `specs/HARNESS-GATES.md` |
+| Instruction compliance testing — grading, behavioral verification, and hill climbing template files | `specs/INSTRUCTION-COMPLIANCE-SPEC.md` |
+| TODO | `specs/HARNESS-STANDARD.md` |
+| TODO | `specs/HARNESS-SKILL-CONTRACT.md` |
+| Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | `specs/BOOTSTRAP-TEST-PLAN.md` |
+| TODO | `specs/HARNESS-SKILL-CHAIN.md` |
+| Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | `specs/BOOTSTRAP-DATA-FLOW-SPEC.md` |
+
+Read the governing spec BEFORE making changes in that area.
 
 ## Key Files
 

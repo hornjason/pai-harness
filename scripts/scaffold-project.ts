@@ -316,22 +316,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     } catch {}
   }
 
-  // Preserve existing Hard Constraints section if AGENTS.md already exists
-  let existingHardConstraints = "";
-  const existingAgentsPath = join(projectPath, "AGENTS.md");
-  if (existsSync(existingAgentsPath)) {
-    try {
-      const existing = readFileSync(existingAgentsPath, "utf-8");
-      const hcMatch = existing.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
-      if (hcMatch) {
-        const hcContent = hcMatch[1].trim();
-        // Only preserve if it has actual content (not just the placeholder comment)
-        if (hcContent && !hcContent.startsWith("<!-- Add project-specific")) {
-          existingHardConstraints = hcContent;
-        }
-      }
-    } catch (e: unknown) { console.error('Hard Constraints preservation failed:', (e as Error).message); throw e; }
-  }
+  // AGENTS.md is fully harness-owned — user rules go in CLAUDE.md
 
   const identity = readmeDesc || pkgDesc || `${typeLabel} project. <!-- TODO: Describe what this project is -->`;
 
@@ -500,6 +485,24 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     ? "| `CODE-MAP.md` | Auto-generated codebase map (routes, components, modules, health) | Understanding codebase structure |"
     : "";
 
+  // Build governing spec routing table from specs with governs: field
+  const governingSpecRows: string[] = [];
+  if (existsSync(specsDir)) {
+    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md")) {
+      const content = readFileSync(join(specsDir, f), "utf-8");
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      if (fmMatch) {
+        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+        if (gMatch) {
+          governingSpecRows.push(`| ${gMatch[1].trim()} | \`specs/${f}\` |`);
+        }
+      }
+    }
+  }
+  const governingSpecTable = governingSpecRows.length > 0
+    ? governingSpecRows.join("\n")
+    : "| (no specs with governs: field yet) | |";
+
   return `# ${pkgName}
 
 ## Project Identity
@@ -507,11 +510,22 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 ${identity}
 ${repoLine}
 
-## Hard Constraints (non-inferrable — agents cannot discover these from code)
+## Rules
 
-${existingHardConstraints || `<!-- Add project-specific rules that agents can't figure out from reading code.
-     Examples: intentional anti-patterns, safety boundaries, deploy restrictions.
-     Delete this comment after filling in. -->`}
+- Verify before asserting — try it, then report what actually happened
+- Never report PASS with known gaps — list every gap honestly
+- Never fake, shortcut, or game test results — if it fails, it fails
+- Run full test suite (\`${testCmd}\`) before reporting done, not just your file
+- Show real tool output, not summaries — the raw data is the evidence
+- Read docs before writing code — the routing table below tells you where to look
+
+## Governing Spec Routing
+
+| Work area | Governing spec |
+|-----------|---------------|
+${governingSpecTable}
+
+Read the governing spec BEFORE making changes in that area.
 
 ## Key Files
 
