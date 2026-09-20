@@ -5,7 +5,7 @@ owner: jason
 updated: 2026-08-06
 testable: true
 created: 2026-09-20
-governs: TODO
+governs: Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain
 ---
 
 # PAI Agentic Harness Standard

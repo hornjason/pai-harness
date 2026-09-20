@@ -320,6 +320,29 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   const identity = readmeDesc || pkgDesc || `${typeLabel} project. <!-- TODO: Describe what this project is -->`;
 
+  // Detect tech stack from package.json
+  const techStack: string[] = [];
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      // Detect runtime
+      if (pkg.scripts?.test?.includes("bun") || pkg.scripts?.dev?.includes("bun") || pkg.scripts?.start?.includes("bun")) {
+        techStack.push("Bun");
+      } else if (pkg.scripts?.test?.includes("node") || pkg.scripts?.dev?.includes("node")) {
+        techStack.push("Node.js");
+      }
+      // Detect TypeScript
+      if (existsSync(join(projectPath, "tsconfig.json")) || pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
+        techStack.push("TypeScript");
+      }
+      // Detect module system
+      if (pkg.type === "module") {
+        techStack.push("ESM");
+      }
+    } catch {}
+  }
+  const techLine = techStack.length > 0 ? `\n**Tech:** ${techStack.join(", ")}` : "";
+
   // Detect git remote for repo URL
   let repoUrl = "";
   try {
@@ -355,25 +378,32 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   // Scan specs
   const specsDir = join(projectPath, "specs");
-  const specRows: string[] = [];
+  const mergedSpecRows: string[] = [];
   if (existsSync(specsDir)) {
-    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+    const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+    for (const f of specFiles) {
       const content = readFileSync(join(specsDir, f), "utf-8");
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let testable = "false";
-      let governs = f.replace(/\.md$/, "");
+      let governs = "";
+      let testable = "TODO";
       if (fmMatch) {
-        const tMatch = fmMatch[1].match(/testable:\s*(true|false)/);
-        if (tMatch) testable = tMatch[1];
         const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch) governs = gMatch[1].trim();
+        if (gMatch && gMatch[1].trim() !== "TODO" && gMatch[1].trim().length > 5) {
+          governs = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
+        }
+        const tMatch = fmMatch[1].match(/testable:\s*(.+)/);
+        if (tMatch) testable = tMatch[1].trim();
       }
-      specRows.push(`| ${f} | ${testable} | ${governs} |`);
+      mergedSpecRows.push(`| ${f} | ${governs} | ${testable} |`);
     }
   }
-  const specsTable = specRows.length > 0
-    ? specRows.join("\n")
-    : "| (none yet — copy SPEC-TEMPLATE.md from rungate) | | |";
+  // Cap at 10 rows
+  let mergedSpecsTable: string;
+  if (mergedSpecRows.length > 10) {
+    mergedSpecsTable = mergedSpecRows.slice(0, 10).join("\n") + "\n| ... and " + (mergedSpecRows.length - 10) + " more | See specs/ | |";
+  } else {
+    mergedSpecsTable = mergedSpecRows.length > 0 ? mergedSpecRows.join("\n") : "| (no specs found) | | |";
+  }
 
   // Scan test files
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
@@ -485,47 +515,23 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     ? "| `CODE-MAP.md` | Auto-generated codebase map (routes, components, modules, health) | Understanding codebase structure |"
     : "";
 
-  // Build governing spec routing table — only specs with real governs: descriptions
-  const governingSpecRows: string[] = [];
-  if (existsSync(specsDir)) {
-    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md")) {
-      const content = readFileSync(join(specsDir, f), "utf-8");
-      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      if (fmMatch) {
-        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch && gMatch[1].trim() !== "TODO" && gMatch[1].trim().length > 5) {
-          governingSpecRows.push(`| ${gMatch[1].trim()} | \`specs/${f}\` |`);
-        }
-      }
-    }
-  }
-  const governingSpecTable = governingSpecRows.length > 0
-    ? governingSpecRows.join("\n")
-    : "| (no specs with governs: field yet) | |";
-
   return `# ${pkgName}
 
 ## Project Identity
 
-${identity}
+${identity}${techLine}
 ${repoLine}
 
 ## Rules
 
-- Verify before asserting — try it, then report what actually happened
+- Verify before asserting — try it first, report what actually happened
 - Never report PASS with known gaps — list every gap honestly
 - Never fake, shortcut, or game test results — if it fails, it fails
-- Run full test suite (\`${testCmd}\`) before reporting done, not just your file
-- Show real tool output, not summaries — the raw data is the evidence
-- Read docs before writing code — the routing table below tells you where to look
-
-## Governing Spec Routing
-
-| Work area | Governing spec |
-|-----------|---------------|
-${governingSpecTable}
-
-Read the governing spec BEFORE making changes in that area.
+- Fix all test failures before reporting done — run \`${testCmd}\` fully
+- Show real tool output, not summaries — raw data is the evidence
+- Read docs before writing code — routing table shows where
+- Be honest — disagree when evidence says otherwise
+- Fix the source, not the output — fix generator, not generated files
 
 ## Key Files
 
@@ -554,11 +560,11 @@ ${docRoutingTable}
 
 ## Specs
 
-All specs live in \`specs/\` with YAML frontmatter declaring \`testable: true/false\`.
+Read the governing spec BEFORE making changes in that area.
 
-| Spec | Testable | Governs |
-|------|----------|---------|
-${specsTable}
+| Spec | Governs | Testable |
+|------|---------|----------|
+${mergedSpecsTable}
 
 ## Tests
 
@@ -582,7 +588,7 @@ ${testsTable}
 | Create spec | \`bunx rungate create-spec "title"\` |
 | Create ADR | \`bunx rungate create-adr "title"\` |
 | Extract constraints | \`bunx rungate extract-constraints .\` |
-| Check findings | \`cat .rungate/conformity-findings.json\` |
+| Check findings | \`cat .rungate/conformity-findings.json\` — structured findings with fix commands |
 | Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
 
 ${consumerSection}

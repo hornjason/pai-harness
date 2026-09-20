@@ -4,7 +4,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 
 // Spec-drift guard: if governing spec changes, these tests are stale
-const SPEC_HASH = "987319422aa7b04b";
+const SPEC_HASH = "b631e55ace8dcb32";
 
 function checkSpecDrift() {
   const specPath = join(import.meta.dir, "..", "specs", "BOOTSTRAP-DATA-FLOW-SPEC.md");

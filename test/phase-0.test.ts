@@ -5,7 +5,7 @@ import { join } from "path";
 
 // Spec-drift guard: if either governing spec changes, these tests are stale
 const SPEC_HASHES = {
-  bootstrap: "987319422aa7b04b",
+  bootstrap: "b631e55ace8dcb32",
   testPlan: "67fed29fc240bd70",
 };
 
@@ -811,6 +811,44 @@ describe("Phase 0: Pre-flight + static files", () => {
       const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
       expect(content).toContain("conformity-findings.json");
       expect(content).toContain("fix commands");
+    });
+  });
+
+  // SC-265: Generated AGENTS.md Rules section contains "Fix all test failures before reporting done"
+  describe("SC-265: Rules contain test failure handling", () => {
+    test("Rules section has 'Fix all' instruction", () => {
+      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      expect(content).toContain("Fix all");
+    });
+
+    test("Rules section has 'before reporting done' instruction", () => {
+      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      expect(content).toContain("before reporting done");
+    });
+  });
+
+  // SC-266: Generated AGENTS.md includes tech stack scanned from package.json dependencies
+  describe("SC-266: tech stack from package.json", () => {
+    test("AGENTS.md contains Bun reference", () => {
+      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      expect(content).toContain("Bun");
+    });
+
+    test("AGENTS.md contains TypeScript reference", () => {
+      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      expect(content).toContain("TypeScript");
+    });
+  });
+
+  // SC-267: Generated AGENTS.md Rules name specific commands not generic verbs
+  describe("SC-267: Rules use specific commands", () => {
+    test("Rules contain backtick-wrapped bun test command", () => {
+      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      const rulesMatch = content.match(/## Rules\n([\s\S]*?)(?=\n## )/);
+      expect(rulesMatch).toBeDefined();
+      if (rulesMatch) {
+        expect(rulesMatch[1]).toContain("`bun test`");
+      }
     });
   });
 

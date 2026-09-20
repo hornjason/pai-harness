@@ -5,7 +5,7 @@ owner: jason
 updated: 2026-09-17
 testable: true
 created: 2026-09-20
-governs: TODO
+governs: Gate definitions — what checks run at each harness gate and their pass/fail criteria
 ---
 
 # Harness Gates

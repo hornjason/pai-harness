@@ -123,7 +123,6 @@ describe("scaffold-project: AGENTS.md generation", () => {
       "Tests",
       "Commands",
       "Workflow",
-      "Quick Reference",
       "Harness-Managed Files",
     ];
     for (const section of requiredSections) {
@@ -159,14 +158,15 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("never overwrites existing AGENTS.md", () => {
+  test("always regenerates AGENTS.md (SC-11 — harness-owned)", () => {
     tmpDir = createTempDir();
-    const existingContent = "# My Custom AGENTS.md\n\nThis should not be overwritten.";
+    const existingContent = "# My Custom AGENTS.md\n\nThis should be regenerated.";
     writeFileSync(join(tmpDir, "AGENTS.md"), existingContent);
     runScaffold(tmpDir);
 
     const content = readFileSync(join(tmpDir, "AGENTS.md"), "utf-8");
-    expect(content).toBe(existingContent);
+    expect(content).not.toBe(existingContent);
+    expect(content).toContain("## Rules");
   });
 
   test("never overwrites existing copilot-instructions.md", () => {

@@ -4,7 +4,7 @@ status: draft
 owner: [name]
 created: [YYYY-MM-DD]
 updated: [YYYY-MM-DD]
-governs: [what this spec governs — one line]
+governs: [intent — "I want to..." language, e.g. "Fix scaffold output, change what files get generated". This drives the AGENTS.md routing table. Write once, be specific.]
 testable: false
 ---
 

@@ -3,26 +3,19 @@
 ## Project Identity
 
 Ship harness — conformity tests, scaffold, and agent briefs for AI-first development
+**Tech:** Bun, ESM
 - **Repo:** https://github.com/hornjason/pai-harness
 
 ## Rules
 
-- Verify before asserting — try it, then report what actually happened
+- Verify before asserting — try it first, report what actually happened
 - Never report PASS with known gaps — list every gap honestly
 - Never fake, shortcut, or game test results — if it fails, it fails
-- Run full test suite (`bun test`) before reporting done, not just your file
-- Show real tool output, not summaries — the raw data is the evidence
-- Read docs before writing code — the routing table below tells you where to look
-
-## Governing Spec Routing
-
-| Work area | Governing spec |
-|-----------|---------------|
-| Instruction compliance testing — grading, behavioral verification, and hill climbing template files | `specs/INSTRUCTION-COMPLIANCE-SPEC.md` |
-| Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | `specs/BOOTSTRAP-TEST-PLAN.md` |
-| Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | `specs/BOOTSTRAP-DATA-FLOW-SPEC.md` |
-
-Read the governing spec BEFORE making changes in that area.
+- Fix all test failures before reporting done — run `bun test` fully
+- Show real tool output, not summaries — raw data is the evidence
+- Read docs before writing code — routing table shows where
+- Be honest — disagree when evidence says otherwise
+- Fix the source, not the output — fix generator, not generated files
 
 ## Key Files
 
@@ -58,17 +51,18 @@ Read the governing spec BEFORE making changes in that area.
 
 ## Specs
 
-All specs live in `specs/` with YAML frontmatter declaring `testable: true/false`.
+Read the governing spec BEFORE making changes in that area.
 
-| Spec | Testable | Governs |
-|------|----------|---------|
-| harness-automation-matrix.md | TODO | yes |
-| HARNESS-GATES.md | TODO | yes |
+| Spec | Governs | Testable |
+|------|---------|----------|
+| harness-automation-matrix.md | Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | yes |
+| HARNESS-GATES.md | Gate definitions — what checks run at each harness gate and their pass/fail criteria | yes |
+| AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |
-| HARNESS-STANDARD.md | TODO | yes |
-| HARNESS-SKILL-CONTRACT.md | TODO | yes |
+| HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | yes |
+| HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
-| HARNESS-SKILL-CHAIN.md | TODO | yes |
+| HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | yes |
 
 ## Tests
@@ -112,7 +106,7 @@ bun test
 | Create spec | `bunx rungate create-spec "title"` |
 | Create ADR | `bunx rungate create-adr "title"` |
 | Extract constraints | `bunx rungate extract-constraints .` |
-| Check findings | `cat .rungate/conformity-findings.json` |
+| Check findings | `cat .rungate/conformity-findings.json` — structured findings with fix commands |
 | Re-scaffold | `bun ~/Projects/rungate/scripts/scaffold-project.ts .` |
 
 

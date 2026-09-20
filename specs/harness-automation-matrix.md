@@ -7,7 +7,7 @@ updated: 2026-09-07
 tracks: "#353"
 council: "2026-09-07 — bash vs hooks vs workflows (D-001 through D-009)"
 testable: true
-governs: TODO
+governs: Automation strategy — bash scripts vs hooks vs workflows for harness enforcement
 ---
 
 # Harness v2 Automation Matrix
