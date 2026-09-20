@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { execSync } from "child_process";
 import { join } from "path";
 
-const SPEC_HASH = "b631e55ace8dcb32";
+const SPEC_HASH = "1dd7bd560bfe8b86";
 
 describe("Phase 5 — Instruction Compliance", () => {
   test("spec-drift: governing spec hasn't changed", () => {

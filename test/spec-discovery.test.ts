@@ -8,7 +8,21 @@ import { parseFrontmatter } from "../lib/conformity";
 const HARNESS_ROOT = harnessRoot();
 const SPECS_DIR = join(HARNESS_ROOT, "specs");
 
-const specFiles = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
+// Scan specs/*.md and specs/*/*.md (one level deep)
+const getAllSpecFiles = () => {
+  const specFiles: string[] = [];
+  for (const f of readdirSync(SPECS_DIR)) {
+    if (f.endsWith(".md")) {
+      specFiles.push(f);
+    } else if (readdirSync(SPECS_DIR, { withFileTypes: true }).find(d => d.name === f && d.isDirectory())) {
+      const subFiles = readdirSync(join(SPECS_DIR, f)).filter(sf => sf.endsWith(".md") && sf !== "INDEX.md");
+      specFiles.push(...subFiles.map(sf => `${f}/${sf}`));
+    }
+  }
+  return specFiles;
+};
+
+const specFiles = getAllSpecFiles();
 
 describe("spec-discovery: frontmatter enforcement", () => {
 
@@ -17,6 +31,8 @@ describe("spec-discovery: frontmatter enforcement", () => {
     for (const f of specFiles) {
       const content = readFileSync(join(SPECS_DIR, f), "utf-8");
       const fm = parseFrontmatter(content);
+      // Skip redirect files (status: split)
+      if (fm?.status === "split") continue;
       if (!fm || !("testable" in fm)) {
         missing.push(f);
       }

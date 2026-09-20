@@ -5,7 +5,7 @@ import { join } from "path";
 
 // Spec-drift guard: if either governing spec changes, these tests are stale
 const SPEC_HASHES = {
-  bootstrap: "b631e55ace8dcb32",
+  bootstrap: "1dd7bd560bfe8b86",
   testPlan: "67fed29fc240bd70",
 };
 

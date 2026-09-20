@@ -396,14 +396,33 @@ function generateAgentsMd(name: string, type: ProjectType): string {
       }
       mergedSpecRows.push(`| ${f} | ${governs} | ${testable} |`);
     }
+
+    // Also scan specs subdirectories (e.g., specs/bootstrap/)
+    const specSubDirs = readdirSync(specsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+    for (const sub of specSubDirs) {
+      const subPath = join(specsDir, sub);
+      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md") && f !== "INDEX.md");
+      if (subFiles.length > 0) {
+        const indexPath = join(subPath, "INDEX.md");
+        let groupGoverns = `${sub} (${subFiles.length} specs)`;
+        if (existsSync(indexPath)) {
+          const indexContent = readFileSync(indexPath, "utf-8");
+          const fmMatch = indexContent.match(/^---\n([\s\S]*?)\n---/);
+          if (fmMatch) {
+            const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+            if (gMatch && gMatch[1].trim().length > 5) {
+              groupGoverns = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
+            }
+          }
+        }
+        mergedSpecRows.push(`| ${sub}/ (${subFiles.length} specs) | ${groupGoverns} | yes |`);
+      }
+    }
   }
-  // Cap at 10 rows
-  let mergedSpecsTable: string;
-  if (mergedSpecRows.length > 10) {
-    mergedSpecsTable = mergedSpecRows.slice(0, 10).join("\n") + "\n| ... and " + (mergedSpecRows.length - 10) + " more | See specs/ | |";
-  } else {
-    mergedSpecsTable = mergedSpecRows.length > 0 ? mergedSpecRows.join("\n") : "| (no specs found) | | |";
-  }
+  // No artificial cap — 150-line AGENTS.md limit is the natural bound
+  const mergedSpecsTable = mergedSpecRows.length > 0 ? mergedSpecRows.join("\n") : "| (no specs found) | | |";
 
   // Scan test files
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
@@ -473,22 +492,30 @@ function generateAgentsMd(name: string, type: ProjectType): string {
       docRouting.push({ need: f.replace(/\.md$/, "").replace(/-/g, " "), file: f });
     }
   }
-  // docs/ directory — cap at 10 most relevant (prioritize by name patterns)
+  // Permanent routing categories — only show if directory exists (SC-283, SC-284, SC-285)
+  const permanentCategories = [
+    { dir: "docs/adr", label: "ADRs — architecture decisions" },
+    { dir: "docs/research", label: "Research — findings, evaluations, competitive analysis" },
+    { dir: "docs/council", label: "Council — synthesis, design debates" },
+    { dir: "reference", label: "Reference — historical and inactive docs" },
+  ];
+  for (const cat of permanentCategories) {
+    const catPath = join(projectPath, cat.dir);
+    if (existsSync(catPath)) {
+      const files = readdirSync(catPath).filter(f => f.endsWith(".md"));
+      docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
+    }
+    // Skip if directory doesn't exist — "(empty)" is placeholder content
+  }
+  // docs/ top-level files — no artificial cap, 150-line AGENTS.md limit is the bound
   if (existsSync(docsDir)) {
-    const priority = ["ARCHITECTURE", "DOMAIN", "TESTING", "SECURITY", "DATA", "SETUP", "INSTALL"];
-    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"))
-      .map(f => ({ name: f, label: f.replace(/\.md$/, "").replace(/-/g, " "), score: priority.findIndex(p => f.toUpperCase().includes(p)) }))
-      .sort((a, b) => (a.score === -1 ? 999 : a.score) - (b.score === -1 ? 999 : b.score));
-    const topDocs = allDocs.slice(0, 10);
-    for (const d of topDocs) {
-      docRouting.push({ need: d.label, file: `docs/${d.name}` });
+    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
+    for (const f of allDocs) {
+      docRouting.push({ need: f.replace(/\.md$/, "").replace(/-/g, " "), file: `docs/${f}` });
     }
-    if (allDocs.length > 10) {
-      docRouting.push({ need: `... and ${allDocs.length - 10} more`, file: "docs/" });
-    }
-    // Scan docs subdirectories (research/, adr/, council/, etc.)
+    // Additional subdirectories not in permanent categories
     const subDirs = readdirSync(docsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory())
+      .filter(d => d.isDirectory() && !permanentCategories.some(c => c.dir === `docs/${d.name}`))
       .map(d => d.name);
     for (const sub of subDirs) {
       const subPath = join(docsDir, sub);
