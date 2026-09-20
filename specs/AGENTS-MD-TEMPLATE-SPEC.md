@@ -26,6 +26,13 @@ The template was previously hardcoded in scaffold-project.ts, making it hard to 
 | D-4 | Scaffold fills variables from project scan | Scan logic stays in scaffold-project.ts, template is data |
 | D-5 | Under 16 rules — sigmoid collapse at 16 (arXiv 2608.02639) | Research-backed limit. Currently 8 rules |
 | D-6 | Rules come from real failure patterns, not theory | Every rule traces to a specific audit finding or correction |
+| D-7 | Governing Spec + Specs merged into single table | Council 2026-09-20: one table = one scan point, saves 8 lines, single sanitization path |
+| D-8 | Governs authored LLM-once-then-static | LLM generates on first pass, human reviews, scaffold reads deterministically forever after. No LLM at scaffold time |
+| D-9 | Content that doesn't match governs → new file | Prevents intent drift. Governs is a constraint, not just a description |
+| D-10 | Split files group under one routing entry | Split pieces share parent intent. One entry covers N files: "Bootstrap phases (5 specs) → specs/bootstrap/" |
+| D-11 | Routing table shows non-obvious mappings only | Agent can find specs/BOOTSTRAP-PHASE-0.md by name. Routing table is for non-inferrable connections only (ETH Zurich) |
+| D-12 | Split-spec directory name derived from filename, no LLM | `BOOTSTRAP-DATA-FLOW-SPEC.md` → `specs/bootstrap-data-flow/`. Deterministic. Human already named the file well |
+| D-13 | Routing table and create-table are the same list | Where to READ and where to WRITE should be mechanically linked. Same categories, two directions. One drifts = both drift |
 
 ## Three Content Types
 
@@ -117,7 +124,16 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-264: Fresh agent test — zero-context agent runs Phase 0 + Phase 1 using only scaffold output, navigability score tracked
 - [ ] SC-268: Spec template prompts intent-based governs: at creation time — scaffold reads it deterministically, no LLM at scaffold time
 - [ ] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
-- [ ] SC-270: Large specs with multiple intents split into single-intent files — each under 500 lines
+- [ ] SC-270: Large specs with multiple intents split into single-intent files — each under [500] lines
 - [ ] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
 - [ ] SC-272: Governing Spec Routing and Specs sections merged into single table (Spec | Governs | Testable)
-- [ ] SC-273: Merged specs table capped at 10 rows — catch-all specs/ row when exceeded
+- [ ] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Revisit after DailyBriefDashboard testing
+- [ ] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
+- [ ] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
+- [ ] SC-279: Writing constraint enforced: content that doesn't match governs intent triggers "create new file" guidance
+- [ ] SC-280: Split files sharing a common parent group under one routing entry (e.g. "Bootstrap phases (5 specs)" → specs/bootstrap/)
+- [ ] SC-281: Routing table filters to non-obvious mappings only — specs whose filename matches their intent are excluded from table
+- [ ] SC-282: split-spec derives directory name from source filename — no LLM needed (e.g. BOOTSTRAP-DATA-FLOW-SPEC.md → specs/bootstrap-data-flow/)
+- [ ] SC-283: Documentation Routing and Where to Create Things use the same category list — every create-target has a routing entry and vice versa
+- [ ] SC-284: Permanent routing categories always present in AGENTS.md: specs, docs/adr, docs/research, docs/council, docs/guides, reference — regardless of whether files exist yet
+- [ ] SC-285: Scaffold WARN when a Where to Create Things category has no corresponding docs/ subdirectory (e.g. council listed but docs/council/ doesn't exist)

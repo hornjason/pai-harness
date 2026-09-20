@@ -250,6 +250,16 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [ ] SC-248: Auditor after every agent
 - [ ] SC-249: Agent briefs load with matching agentType
 - [ ] SC-250: Five-layer measurement model
+- [ ] SC-286: resolveAndContain() utility validates all file paths in matchPattern — rejects [../, absolute paths, symlink escape]
+- [ ] SC-287: Unmatched SCs produce FAIL in strict mode (default), WARN only when frontmatter has `compliance: permissive`
+- [ ] SC-288: matchPattern supports content-contains — SC bracket-list values [x, y, z] become assertion targets
+- [ ] SC-289: matchPattern supports content-not-contains — SC with "must NOT" or "no" + bracket-list
+- [ ] SC-290: matchPattern supports count-threshold — SC with "under [N] lines" or "at most [N]" extracts number
+- [ ] SC-291: matchPattern supports json-field-equals — SC with "field X equals Y" checks JSON files
+- [ ] SC-292: matchPattern supports section-exists — SC with "has section [heading]" checks markdown
+- [ ] SC-293: SPEC-TEMPLATE.md documents all matchable SC patterns — updated in same commit as matchPattern changes
+- [ ] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
+- [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern, hand-written tests deleted
 
 ## Baseline (2026-09-20)
 

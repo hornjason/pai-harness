@@ -20,8 +20,8 @@ Living document tracking every step in the ship cycle — what's mechanical, wha
 
 | Step | Current | Issue | Status |
 |---|---|---|---|
-| Auto-chain: goal artifact → invoke /ship | PostToolUse on Write (AutoChainTrigger.hook.ts) | #352 | **DONE** |
-| Auto-chain: ship artifact → invoke /prove | PostToolUse on Write (AutoChainTrigger.hook.ts) | #352 | **DONE** |
+| Auto-chain: goal artifact → invoke /ship | Orchestrator-driven (see D-018) | #352 | **DONE** |
+| Auto-chain: ship artifact → invoke /prove | Orchestrator-driven (see D-018) | #352 | **DONE** |
 | Block /ship without goal-record | skill-runner.sh SUGGEST WARN | #350 | **DONE** |
 | Block Marcus spawn without /ship | AgentBriefGuard Bypass 3 fix | #328 | **DONE** |
 | Batch chain: /goal on umbrella cascades to children | skill-runner.sh goal pre-phase | #362 | **DONE** |
@@ -41,7 +41,7 @@ Living document tracking every step in the ship cycle — what's mechanical, wha
 |---|---|---|---|
 | Write Marcus brief | **DA writes** | — | BY DESIGN |
 | Validate brief (5 fields) | AgentBriefGuard template markers only | #345 | OPEN — council: brief-policies.json |
-| Marcus commits changes | MarcusCommitCheck.hook.ts + tripwire signal | #361 | **DONE** |
+| Marcus commits changes | GateEnforcement.hook.ts (commit verification) | #361 | **DONE** |
 | Merge worktree branch | **DA runs git merge** | — | DEFERRED |
 | Run verify gate after Marcus | AutoVerifyGate nudge | #360 | **DONE** (phase advancement) |
 
@@ -293,7 +293,7 @@ Living document tracking every step in the ship cycle — what's mechanical, wha
 | HIGH | Stdin JSON parsing | 27 hooks | `hooks/lib/parseStdin.ts` |
 | HIGH | Agent detection | 2+ | `hooks/lib/agentDetection.ts` |
 | HIGH | Path construction | 4+ | `hooks/lib/paths.ts` |
-| MEDIUM | Issue extraction | 1 outlier | Fix import in AutoChainTrigger |
+| MEDIUM | Issue extraction | 1 outlier | Handled in orchestrator (D-018) |
 | MEDIUM | Atomic write | 2 | `hooks/lib/atomicWrite.ts` |
 | MEDIUM | Signal write | 2+ | `hooks/lib/signals.ts` |
 | MEDIUM | Telemetry append | 3 | `scripts/lib/telemetry.sh` |

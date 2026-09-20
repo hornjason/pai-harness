@@ -18,7 +18,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## goal-gate
 - **Step:** GOAL (optional — only for L-sized work via harness)
 - **Fires after:** Skill("goal") completes
-- **Script:** `skills/ship/goal-gate.sh --issue NUM`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] Issue has `## Goal` section
   - [ ] Issue has `## Success Criteria` with SC- or AC- prefixed items
@@ -35,7 +35,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## scope-gate
 - **Step:** SCOPE (after sizing + ACs, before BUILD)
 - **Fires after:** Ship SCOPE completes
-- **Script:** `skills/ship/scope-gate.sh --issue NUM --slug SLUG`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] Issue has structured DISCOVERY comment with file:line citations (citation count > 0)
   - [ ] PRINCIPLES.md referenced in DISCOVERY comment (if project has one)
@@ -60,7 +60,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## verify-gate
 - **Step:** VERIFY (after evidence collected, before DURABILITY)
 - **Fires after:** Ship VERIFY completes
-- **Script:** `skills/ship/verify-gate.sh --issue NUM --slug SLUG`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] Every AC-N in issue has matching evidence in completion report
   - [ ] [OUTCOME] ACs have live evidence: screenshot URL, curl output block, or browser verification — not code review alone
@@ -81,7 +81,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## durability-gate
 - **Step:** DURABILITY (after VERIFY, before CLOSE)
 - **Fires after:** verify-gate passes
-- **Script:** `skills/ship/durability-gate.sh --issue NUM --slug SLUG`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] Doc cascade: git diff matched against doc-cascade-map.json
   - [ ] Structured findings: FAIL ACs have FINDING: comments posted
@@ -103,7 +103,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## close-gate
 - **Step:** CLOSE (after DURABILITY, before next issue)
 - **Fires after:** Ship CLOSE actions
-- **Script:** `skills/ship/close-gate.sh --issue NUM --slug SLUG`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] Issue has `## Completion Report` comment
   - [ ] doc-hygiene invoked this session (from signals.jsonl)
@@ -121,7 +121,7 @@ governs: Gate definitions — what checks run at each harness gate and their pas
 ## iteration-gate
 - **Step:** ITERATION (after VERIFY fails, before looping back)
 - **Fires at:** Every iteration boundary
-- **Script:** `skills/ship/iteration-gate.sh --issue NUM --slug SLUG`
+- **Implementation:** `gates/run-gate.ts` (TypeScript gate runner)
 - **Checks:**
   - [ ] ATTEMPT comment posted for this iteration (count > previous)
   - [ ] ATTEMPT has required fields: Approach, Files Changed, Result, Evidence, Why It Failed
