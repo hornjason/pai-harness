@@ -128,10 +128,10 @@ const testDirName = existingTestDir || "tests";
 safeDir(join(projectPath, testDirName), testDirName);
 
 // 2. Always regenerate AGENTS.md (spec line 24: "Everything is regenerable")
-// Hard Constraints between markers are preserved (spec line 48: "Hybrid — preserve markers")
-// Then audit for broken refs and stale docs
+// User rules go in CLAUDE.md, not AGENTS.md (harness-owned, always regenerated)
 const agentsMd = generateAgentsMd(projectName, projectType);
-safeWrite(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md");
+writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
+actions.push(existsSync(join(projectPath, "AGENTS.md")) ? "REGENERATED: AGENTS.md" : "CREATED: AGENTS.md");
 refreshAgentsMd(projectPath, projectType);
 updateSpecsTable(join(projectPath, "AGENTS.md"));
 
