@@ -91,7 +91,8 @@ bun test
 2. Run `bun test test/meta-sc-coverage.test.ts` — it tells you the SC is untested
 3. Add the test in the phase test file the meta test routes to (e.g., Phase 1.5 → `phase-1-5.test.ts`)
 4. Update the spec-drift hash in the phase test's `SPEC_HASH` constant (`shasum -a 256 specs/BOOTSTRAP-DATA-FLOW-SPEC.md | cut -c1-16`)
-5. Run `bun test` — verify green
+
+**BEFORE COMMITTING — run `bun test` (full suite, not just your file). All tests must pass. New failures must be fixed before committing.**
 
 **Golden fixture pattern:** Phase tests copy `test/fixtures/` to `/tmp/`, init git, run scaffold, then assert output matches SCs. See `phase-0.test.ts` for the canonical example.
 

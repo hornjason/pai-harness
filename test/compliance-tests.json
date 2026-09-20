@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "description": "Instruction compliance tests — verify agents follow template instructions",
+  "standardTask": "Add SC-235 to the project spec and implement a passing test: SC-235: Scaffold creates .claude/agents/ directory with at least one agent brief file containing a tools: frontmatter field",
+  "tests": [
+    {
+      "id": "COMP-1",
+      "instruction": "Read AGENTS.md before any other action",
+      "source": "prompts/marcus.md",
+      "priority": "critical",
+      "passCondition": "Agent's first 3 tool calls include Read(AGENTS.md) or Read(file containing @AGENTS.md)",
+      "checkMethod": "transcript scan: first 3 Read calls include AGENTS.md or CLAUDE.md with @AGENTS.md"
+    },
+    {
+      "id": "COMP-2",
+      "instruction": "Run bun test (full suite) before reporting done",
+      "source": "AGENTS.md line 94, prompts/marcus.md line 68",
+      "priority": "critical",
+      "passCondition": "Agent runs 'bun test' (not just a single test file) before final report",
+      "checkMethod": "transcript scan: Bash call with 'bun test' (no specific file) exists before last message"
+    },
+    {
+      "id": "COMP-3",
+      "instruction": "Use golden fixture pattern for phase tests",
+      "source": "AGENTS.md Test Architecture section",
+      "priority": "high",
+      "passCondition": "Test code copies fixture to /tmp, runs scaffold, asserts output",
+      "checkMethod": "transcript scan: Write/Edit to phase test file contains 'FIXTURE' or 'fixtures/' and 'beforeAll'"
+    },
+    {
+      "id": "COMP-4",
+      "instruction": "Update spec-drift hash after modifying spec",
+      "source": "AGENTS.md Test Architecture section",
+      "priority": "high",
+      "passCondition": "Agent runs shasum and updates SPEC_HASH constant",
+      "checkMethod": "transcript scan: Bash with 'shasum' AND Edit with 'SPEC_HASH' or 'bootstrap'"
+    },
+    {
+      "id": "COMP-5",
+      "instruction": "Find governing spec from routing table",
+      "source": "AGENTS.md Governing Spec by Work Area table",
+      "priority": "critical",
+      "passCondition": "Agent reads BOOTSTRAP-DATA-FLOW-SPEC.md within first 10 tool calls without grep/find searching for it",
+      "checkMethod": "transcript scan: Read(BOOTSTRAP-DATA-FLOW-SPEC) within first 10 calls, no preceding grep/find for spec name"
+    }
+  ]
+}
