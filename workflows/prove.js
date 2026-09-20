@@ -127,6 +127,16 @@ const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
 const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
 const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
 
+// ── Code agents always get worktree isolation ───────────────
+const CODE_AGENTS = new Set(['marcus', 'quinn', 'rook', 'serena', 'aditi'])
+
+function codeAgent(prompt, opts = {}) {
+  if (opts.agentType && CODE_AGENTS.has(opts.agentType)) {
+    opts.isolation = 'worktree'
+  }
+  return agent(prompt, opts)
+}
+
 // ── Chain detection ──────────────────────────────────────────
 
 const GOAL_RECORD_PATH = `${WORK_DIR}/goal-record.json`
@@ -389,7 +399,7 @@ while (verdict === 'UNPROVEN' && selfHealIteration < MAX_SELF_HEAL_ATTEMPTS) {
   const failSummary = failedCriteria.map(cr => `${cr.scId}: ${cr.evidence || 'FAIL'}`).join('\n')
 
   // Spawn Marcus to fix the failures
-  await agent(`
+  await codeAgent(`
 You are Marcus Webb, senior engineer. Prove found UNPROVEN criteria for issue #${ISSUE}.
 
 ## Failed Criteria (iteration ${selfHealIteration}/${MAX_SELF_HEAL_ATTEMPTS})

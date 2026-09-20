@@ -124,6 +124,16 @@ const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const MAX_REGRESSIONS = 2
 
+// ── Code agents always get worktree isolation ───────────────
+const CODE_AGENTS = new Set(['marcus', 'quinn', 'rook', 'serena', 'aditi'])
+
+function codeAgent(prompt, opts = {}) {
+  if (opts.agentType && CODE_AGENTS.has(opts.agentType)) {
+    opts.isolation = 'worktree'
+  }
+  return agent(prompt, opts)
+}
+
 // ── Helper: run gate with self-heal + error classification ──
 
 async function runGateWithHeal(gateName, phaseName, healContext) {
@@ -375,7 +385,7 @@ Assemble brief: bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} 
 Report the output.
   `, { label: 'assemble-brief', phase: 'Implement' })
 
-  const buildResult = await agent(`
+  const buildResult = await codeAgent(`
 You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
 Read every file in Context section first. Read "Files to modify" before changes.
@@ -412,7 +422,7 @@ if (discovery.ceremonyTier !== 'LIGHT') {
   for (let validateAttempt = 1; validateAttempt <= 3; validateAttempt++) {
     log(`Quinn local dev — attempt ${validateAttempt}/3`)
 
-    quinnLocalResult = await agent(`
+    quinnLocalResult = await codeAgent(`
 Read ${HARNESS_ROOT}/prompts/quinn-ui-brief.md for your testing methodology.
 Read ${PROJECT_ROOT}/AGENTS.md for project context.
 
@@ -475,7 +485,7 @@ Do NOT screenshot after every browser_snapshot().
     }
 
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
-    const fixResult = await agent(`
+    const fixResult = await codeAgent(`
 You are Marcus Webb, senior engineer.
 Quinn found issues on local dev for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
@@ -615,7 +625,7 @@ Check if the rebuilt container is available:
   log(`Container env: local=${envCheck?.localTest}, macMini=${envCheck?.macMini}, using=${testHost || 'NONE'}`)
 
   if (testHost) {
-    await agent(`
+    await codeAgent(`
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
@@ -653,7 +663,7 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 // Rook security review (THOROUGH only)
 if (discovery.ceremonyTier === 'THOROUGH') {
   log('Spawning Rook')
-  await agent(`
+  await codeAgent(`
 Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
   `, { label: 'rook', phase: 'Verify', agentType: 'rook', schema: GATE_RESULT_SCHEMA })
