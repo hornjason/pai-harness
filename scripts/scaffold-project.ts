@@ -559,6 +559,7 @@ ${repoLine}
 - Read docs before writing code — routing table shows where
 - Be honest — disagree when evidence says otherwise
 - Fix the source, not the output — fix generator, not generated files
+- Commit all changes before reporting done — uncommitted work is lost work
 
 ## Key Files
 

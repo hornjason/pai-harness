@@ -1,3 +1,10 @@
+---
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-09-20
+---
+
 # rungate
 
 ## Project Identity
@@ -16,6 +23,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Read docs before writing code — routing table shows where
 - Be honest — disagree when evidence says otherwise
 - Fix the source, not the output — fix generator, not generated files
+- Commit all changes before reporting done — uncommitted work is lost work
 
 ## Key Files
 
