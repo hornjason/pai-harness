@@ -552,15 +552,12 @@ ${repoLine}
 ## Rules
 
 - Verify before asserting — try it first, report what actually happened
-- Never report PASS with known gaps — list every gap honestly
-- Never fake, shortcut, or game test results — if it fails, it fails
-- Fix all test failures before reporting done — run \`${testCmd}\` fully
-- Show real tool output, not summaries — raw data is the evidence
+- Never fake results or hide failures — if it fails, report it honestly
+- Run full test suite (\`${testCmd}\`) and show real output — no summaries, no skipped files
 - Read docs before writing code — routing table shows where
-- Be honest — disagree when evidence says otherwise
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
-- Read PROJECT-STATE.md first on session start — it's the session bridge with current phase and priorities
+- Read PROJECT-STATE.md first on session start — it's the session bridge
 
 ## Key Files
 
