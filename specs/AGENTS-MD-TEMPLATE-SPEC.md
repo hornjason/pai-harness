@@ -150,3 +150,5 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-304: CommitEnforcement.hook.ts detects any code agent, not just Marcus
 - [ ] SC-305: All RunGate hook registrations use ${RUNGATE_HOOKS_DIR} variable, no hardcoded paths
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents
+- [ ] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
+- [ ] SC-308: PROJECT-STATE.md table rows auto-flip ⬜→✅ based on spec SC checkbox status
