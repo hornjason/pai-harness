@@ -18,13 +18,8 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 | Work area | Governing spec |
 |-----------|---------------|
-| TODO | `specs/harness-automation-matrix.md` |
-| TODO | `specs/HARNESS-GATES.md` |
 | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | `specs/INSTRUCTION-COMPLIANCE-SPEC.md` |
-| TODO | `specs/HARNESS-STANDARD.md` |
-| TODO | `specs/HARNESS-SKILL-CONTRACT.md` |
 | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | `specs/BOOTSTRAP-TEST-PLAN.md` |
-| TODO | `specs/HARNESS-SKILL-CHAIN.md` |
 | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | `specs/BOOTSTRAP-DATA-FLOW-SPEC.md` |
 
 Read the governing spec BEFORE making changes in that area.
@@ -126,15 +121,6 @@ bun test
 - **Repo:** https://github.com/hornjason/pai-harness
 - **Test:** `bun test`
 - **Conformity:** Imported from rungate. `bun update rungate && bun test` to sync.
-
-## Quick Reference
-
-1. AGENTS.md is the single entry point — everything routes from here
-2. CODE-MAP.md has the auto-generated codebase map — routes, components, modules, health
-3. Specs in specs/ are source of truth — testable: true specs auto-generate tests
-4. `bun test` runs conformity + domain tests
-5. Agent briefings in .claude/agents/ are auto-generated — run bootstrap to refresh
-6. After test failures, read `.rungate/conformity-findings.json` for structured findings with fix commands
 
 ## Harness-Managed Files
 

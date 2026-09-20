@@ -485,7 +485,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     ? "| `CODE-MAP.md` | Auto-generated codebase map (routes, components, modules, health) | Understanding codebase structure |"
     : "";
 
-  // Build governing spec routing table from specs with governs: field
+  // Build governing spec routing table — only specs with real governs: descriptions
   const governingSpecRows: string[] = [];
   if (existsSync(specsDir)) {
     for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md")) {
@@ -493,7 +493,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
       if (fmMatch) {
         const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch) {
+        if (gMatch && gMatch[1].trim() !== "TODO" && gMatch[1].trim().length > 5) {
           governingSpecRows.push(`| ${gMatch[1].trim()} | \`specs/${f}\` |`);
         }
       }
@@ -591,15 +591,6 @@ ${consumerSection}
 ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
 - **Conformity:** Imported from rungate. \`bun update rungate && bun test\` to sync.
-
-## Quick Reference
-
-1. AGENTS.md is the single entry point — everything routes from here
-2. CODE-MAP.md has the auto-generated codebase map — routes, components, modules, health
-3. Specs in specs/ are source of truth — testable: true specs auto-generate tests
-4. \`bun test\` runs conformity + domain tests
-5. Agent briefings in .claude/agents/ are auto-generated — run bootstrap to refresh
-6. After test failures, read \`.rungate/conformity-findings.json\` for structured findings with fix commands
 
 ## Harness-Managed Files
 
