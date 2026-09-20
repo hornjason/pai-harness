@@ -12,26 +12,32 @@ Living checklist aligned to the bootstrap workflow. Updated by DA as work comple
 **Current phase: Phase 1 — 10 routing SCs still open. Phase 1.5 matchers built but Phase 1 gates it.**
 
 **Next session priorities:**
-1. Review and commit 35+ uncommitted files from this session
-2. Always spawn Marcus with `isolation: "worktree"` — activates existing MarcusCommitCheck.hook.ts
-3. Finish Phase 1 routing SCs (SC-268, 269, 271, 277-279, 281, 283-285)
-4. Re-scaffold RunGate + fresh agent test after Phase 1 complete
-5. Build PROJECT-STATE.md auto-update hook (pre-commit, reads test results)
-6. Add worktree isolation + commit enforcement to AGENTS.md template — downstream consumers get these rules baked in via scaffold
+1. Finish Phase 1 routing SCs (SC-268, 269, 271, 277-279, 281, 283-285) — 10 open
+2. Re-scaffold RunGate + fresh agent test after Phase 1 complete
+3. Fix macOS file protection on prompts/*.md (xattr or chmod)
+4. Verify PROJECT-STATE.md auto-update is capturing everything needed
+5. Add PROJECT-STATE.md to scaffold output for downstream consumers (decision D-1)
 
-**Session 2026-09-20 summary:**
+**Session 2026-09-20 (continued) summary:**
+- Committed all 35+ uncommitted files in 6 logical batches (was blocking everything)
+- Built CommitEnforcement.hook.ts — broadened from Marcus-only to all code agents (8 tests)
+- Built scripts/update-project-state.ts + pre-commit hook — PROJECT-STATE.md auto-updates on commit
+- Added worktree isolation rule (rule 10) and commit rule (rule 9) to scaffold template
+- Migrated all 8 RunGate hook registrations from hardcoded paths to ${RUNGATE_HOOKS_DIR} variable
+- Added RUNGATE_DIR and RUNGATE_HOOKS_DIR env vars to ~/.claude/settings.json
+- Decision D-1: PROJECT-STATE.md is a scaffold artifact — travels to all downstream projects
+- Decision D-2: Pre-commit hook ships as part of scaffold output, not global
+- Building: full PROJECT-STATE sync system (SC status from tests, phase header flipping, session-end summaries)
+
+**Previous session (2026-09-20 morning):**
 - Global CLAUDE.md trimmed: 41 rules → 15 (research-backed, under sigmoid threshold)
-- Rule 7 updated: worktree isolation required for all code agents
-- Marcus brief updated: commit is mandatory final step
-- MarcusCommitCheck.hook.ts already exists — wasn't firing because no worktree isolation
 - Two councils ran (routing design + SC-driven testing) — saved to docs/council/
-- Bootstrap spec split into 6 files via split-spec command (mechanical, idempotent)
-- matchPattern extended with 5 new matchers + security fix (13 tests passing)
+- Bootstrap spec split into 6 files via split-spec command
+- matchPattern extended with 5 new matchers + security fix
 - Full spec audit: 85 discrepancies found and partially fixed (51 DDB items removed)
-- Orchestrator research: nobody runs long-lived stateful orchestrators — restart is the pattern
 - Fresh agent navigability: 25 tool calls → 2 tool calls (100% direct-hit)
 
-**Uncommitted files:** 35+ across scaffold, split-spec, specs, tests, docs, hooks
+**Uncommitted files:** None — working tree clean
 
 ---
 
