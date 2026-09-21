@@ -34,13 +34,15 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Self-attest evidence (tier F)
 - Skip ACs without rationale
 - Commit secrets or credentials
+- Spawn subagents for single-file tasks — do the work directly
+- Run `pwd` or `ls -la` for orientation — worktree CWD is always the project root
 
 ## Methodology
 - Read `prompts/quinn-decision-tree.md` for journey decision tree and UI testing methodology
 
-## Context (MANDATORY — read before testing)
+## Context (READ THIS FIRST)
 
-1. **AGENTS.md** — project identity, critical rules, documentation routing
+1. **AGENTS.md** — READ THIS FIRST — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components are on each page (your test targets)
 3. **CODE-MAP.md § API Routes** — endpoint inventory for API-level checks
 4. **prompts/quinn-ui-brief.md** — structured UI testing methodology

@@ -34,10 +34,12 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Self-attest evidence (tier F)
 - Skip ACs without rationale
 - Commit secrets or credentials
+- Spawn subagents for single-file tasks — do the work directly
+- Run `pwd` or `ls -la` for orientation — worktree CWD is always the project root
 
-## Context (MANDATORY — read before scanning)
+## Context (READ THIS FIRST)
 
-1. **AGENTS.md** — project identity, critical rules, security baseline routing
+1. **AGENTS.md** — READ THIS FIRST — project identity, critical rules, security baseline routing
 2. **CODE-MAP.md § Code Health** — circular deps and unused files (vulnerability surface)
 3. **CODE-MAP.md § Module Dependencies** — data flow chains for injection analysis
 

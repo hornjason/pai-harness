@@ -39,8 +39,8 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
 | Specs — success criteria, constraints, requirements (13 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
-| Research — findings, evaluations, competitive analysis (13 files) | `docs/research/` |
-| Council — synthesis, design debates (2 files) | `docs/council/` |
+| Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
+| Council — synthesis, design debates (3 files) | `docs/council/` |
 | Guides — setup, onboarding, reference | `docs/guides/` |
 | Reference — historical and inactive docs (0 files) | `reference/` |
 
@@ -74,7 +74,7 @@ Read the governing spec BEFORE making changes in that area.
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
-| BOOTSTRAP-DATA-FLOW-SPEC.md | BOOTSTRAP-DATA-FLOW-SPEC | no |
+| BOOTSTRAP-DATA-FLOW-SPEC.md | TODO | no |
 
 ## Tests
 
