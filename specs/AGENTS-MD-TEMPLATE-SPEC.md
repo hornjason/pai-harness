@@ -122,7 +122,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-261: Every universal rule has a failure citation in the config file
 - [ ] SC-262: Universal rules count under 16 (sigmoid collapse threshold)
 - [ ] SC-263: Re-scaffold on RunGate itself produces correct AGENTS.md with 0 warnings
-- [ ] SC-264: Fresh agent test — zero-context agent runs Phase 0 + Phase 1 using only scaffold output, navigability score tracked
+- [ ] SC-264: Fresh agent test — zero-context agent runs Phase 0 + Phase 1 using only scaffold output, navigability score tracked (behavioral)
 - [x] SC-268: Spec template prompts intent-based governs: at creation time — scaffold reads it deterministically, no LLM at scaffold time
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
 - [ ] SC-270: Large specs with multiple intents split into single-intent files — each under [500] lines
@@ -141,15 +141,15 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 
 ### PROJECT-STATE.md Automation
 - [ ] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
-- [ ] SC-297: Pre-commit hook calls update-project-state.ts and stages the result automatically
+- [ ] SC-297: .git/hooks/pre-commit contains [update-project-state]
 - [ ] SC-298: update-project-state.ts updates frontmatter date, test counts, and SC status from specs
 - [ ] SC-299: Phase headers auto-flip (✅/🔄/⬜) based on SC completion within each phase
 - [ ] SC-300: PROJECT-STATE.md capped at 150 lines — auto-update enforces the limit
 - [ ] SC-301: Session summaries archived to docs/session-log/{date}.md — max 3 files, oldest pruned
 - [ ] SC-302: Scaffold generates PROJECT-STATE.md for new projects (co-owned, additive on re-scaffold)
 - [ ] SC-303: Pre-commit hook blocks new .sh files — TypeScript only (--diff-filter=A)
-- [ ] SC-304: CommitEnforcement.hook.ts detects any code agent, not just Marcus
+- [ ] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [ ] SC-305: All RunGate hook registrations use ${RUNGATE_HOOKS_DIR} variable, no hardcoded paths
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
-- [ ] SC-308: PROJECT-STATE.md table rows auto-flip ⬜→✅ based on spec SC checkbox status
+- [ ] SC-308: scripts/update-project-state.ts contains [✅, ⬜, done]

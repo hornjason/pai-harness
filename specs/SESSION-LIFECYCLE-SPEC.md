@@ -60,7 +60,7 @@ Agent loads AGENTS.md (automatic)
 - [ ] SC-315: session-end appends session notes to project-state.json sessions array
 - [ ] SC-316: session-end commits all state files in one commit
 - [ ] SC-317: AGENTS.md Key Files table includes PROJECT-STATE.md as first-read after AGENTS.md
-- [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls
+- [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls (behavioral)
 - [ ] SC-319: Scaffold output includes session-end.ts for consumer projects
 - [ ] SC-320: PROJECT-STATE.md renders antipatterns section (what NOT to do)
 

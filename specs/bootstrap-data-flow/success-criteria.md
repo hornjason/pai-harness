@@ -139,9 +139,9 @@ testable: true
 - [ ] SC-176: Hard Constraints >20 rules produces WARN citing instruction stacking collapse
 - [ ] SC-177: Budget findings include token count from ctxlint or ccinspect — RunGate does not implement own tokenizer
 
-- [ ] SC-178: Conformity runs ctxlint via Bun.spawnSync and pipes errors with CTXLINT-{ruleId} prefix
-- [ ] SC-179: Conformity runs agentsmd lint via Bun.spawnSync with AGENTSMD-{ruleId} prefix
-- [ ] SC-180: Conformity runs agnix via Bun.spawnSync with AGNIX-{ruleId} prefix
+- [ ] SC-178: lib/conformity.ts contains [ctxlint, spawnSync]
+- [ ] SC-179: lib/conformity.ts contains [agentsmd, spawnSync]
+- [ ] SC-180: lib/conformity.ts contains [agnix, spawnSync]
 - [ ] SC-181: Conformity runs RepoRails via Bun.spawnSync with REPORAILS-{ruleId} prefix
 - [ ] SC-182: agentsmd score stored in findings JSON scores.agentsmd field
 - [ ] SC-183: External tools optional — if not installed, WARN TOOL-NOT-INSTALLED-{name}
@@ -288,19 +288,19 @@ testable: true
 
 ### Phase 5 — Instruction Compliance
 
-- [x] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json
+- [x] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json (behavioral)
 - [x] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
 - [x] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
 - [x] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
 - [x] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
 - [x] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
-- [x] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates
+- [x] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates (behavioral)
 - [x] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
 - [x] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
 - [x] SC-245: Compliance surface is exactly 4 file types: prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md — NOT hooks, workflows, CODE-MAP, .gitignore, tests
 - [x] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
 - [x] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
-- [x] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json
+- [x] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json (behavioral)
 - [x] SC-249: Agent briefs load only when spawned with matching `agentType` — ship/prove workflows must use `agentType: 'marcus'` not `'Engineer'`, matching `.claude/agents/{name}.md` filename
 - [x] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
 
