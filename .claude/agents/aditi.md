@@ -34,10 +34,12 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Self-attest evidence (tier F)
 - Skip ACs without rationale
 - Commit secrets or credentials
+- Spawn subagents for single-file tasks — do the work directly
+- Run `pwd` or `ls -la` for orientation — worktree CWD is always the project root
 
-## Context (MANDATORY — read before designing)
+## Context (READ THIS FIRST)
 
-1. **AGENTS.md** — project identity, critical rules, documentation routing
+1. **AGENTS.md** — READ THIS FIRST — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components render on each page
 3. **CODE-MAP.md § React Components** — full component inventory
 4. Read any visual specs or mockups referenced in the brief
