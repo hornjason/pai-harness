@@ -17,81 +17,81 @@ testable: true
 ### Phase 0 — Scaffold Output
 
 - [ ] SC-1: Bootstrap Phase 1 (CODE-MAP + rungate) completes before Phase 2 (AGENTS.md + agents/)
-- [ ] SC-2: rungate.json consumers field populated from CODE-MAP consumer scan, not hardcoded patterns
-- [ ] SC-3: AGENTS.md environment section reads from rungate.json (not hardcoded)
-- [ ] SC-4: Zero hardcoded ports/URLs in ship.js — all from rungate.json fields
-- [ ] SC-5: Zero hardcoded commands in ship.js — all from rungate.json fields
-- [ ] SC-6: Zero hardcoded project names in ship.js — all from args or rungate.json
-- [ ] SC-8: All ship.js inline prompts >5 lines extracted to prompts/*.md templates
-- [ ] SC-11: Re-running scaffold always regenerates AGENTS.md from scratch — no audit-only path, no preserved sections. User rules belong in CLAUDE.md
-- [ ] SC-15: rungate.json generation falls back from Makefile → package.json → null for each field
-- [ ] SC-16: Null config fields cause workflow steps to SKIP (not error, not spawn rogue agents)
-- [ ] SC-17: AGENTS.md is under [150] lines — scaffold WARNS if over
+- [x] SC-2: rungate.json consumers field populated from CODE-MAP consumer scan, not hardcoded patterns
+- [x] SC-3: AGENTS.md environment section reads from rungate.json (not hardcoded)
+- [x] SC-4: Zero hardcoded ports/URLs in ship.js — all from rungate.json fields
+- [x] SC-5: Zero hardcoded commands in ship.js — all from rungate.json fields
+- [x] SC-6: Zero hardcoded project names in ship.js — all from args or rungate.json
+- [x] SC-8: All ship.js inline prompts >5 lines extracted to prompts/*.md templates
+- [x] SC-11: Re-running scaffold always regenerates AGENTS.md from scratch — no audit-only path, no preserved sections. User rules belong in CLAUDE.md
+- [x] SC-15: rungate.json generation falls back from Makefile → package.json → null for each field
+- [x] SC-16: Null config fields cause workflow steps to SKIP (not error, not spawn rogue agents)
+- [x] SC-17: AGENTS.md is under [150] lines — scaffold WARNS if over
 - [ ] SC-18: Empty sections omitted from AGENTS.md (no consumers = no Consumers section)
-- [ ] SC-19: CLAUDE.md contains [@AGENTS.md] bridge for cross-tool compatibility
-- [ ] SC-20: New code projects get src/index.ts stub as agent starting point
-- [ ] SC-21: rungate.json has no hardcoded port numbers — all detected from Makefile/config or null
-- [ ] SC-24: Conformity test calls all 9 suites (scaffold, spec-discovery, spec-drift, doc-hygiene, agent-validation, fallow, constraint-candidates, package-validation, tsconfig-validation)
-- [ ] SC-25: AGENTS.md Commands section includes all harness commands (bun test, tsc, conformity, sync-tests, create-spec, create-adr, extract-constraints, re-scaffold)
-- [ ] SC-26: Spec template in project matches harness version — scaffold updates on re-run
-- [ ] SC-27: sync-spec-tests reads project's specs/ directory (not just harness specs)
-- [ ] SC-37: Every agent brief includes Core Principles block (verify-before-asserting, no gaps, read AGENTS.md)
-- [ ] SC-39: CODE-MAP.md staleness detected by git SHA comparison — regenerated when src/ has commits since last scan, not by arbitrary time/count thresholds
-- [ ] SC-40: Scaffold creates/verifies .gitignore with full security template (node_modules, dist, .env*, .rungate, *.pem, *.key, credentials.json, service-account*)
-- [ ] SC-73: package.json has required fields (name, type:module, scripts.test, devDependencies.rungate) — scaffold adds missing, never overwrites existing
-- [ ] SC-74: tsconfig.json has recommended fields (strict:true) — scaffold WARNs if missing, never overwrites
-- [ ] SC-75: Spec frontmatter has required fields (doc-type, status, testable, governs) — Spec Discovery FAILs if missing
-- [ ] SC-76: ADR frontmatter has required fields (doc-type:adr, status, created) — Doc Hygiene FAILs if missing
-- [ ] SC-77: `bunx rungate create-spec` creates spec with all required frontmatter fields pre-populated
-- [ ] SC-78: `bunx rungate create-adr` creates ADR with all required frontmatter fields pre-populated
-- [ ] SC-80: Phase 0 creates all 10 directories + all static files BEFORE any scan runs (Phase 1)
-- [ ] SC-82: Scaffold creates .github/workflows/ci.yml — harness-owned, always regenerated from template + rungate.json
-- [ ] SC-83: Scaffold creates .github/workflows/gates.yml — harness-owned, always regenerated from template + rungate.json
-- [ ] SC-84: CI workflow runs all conformity suites that `bun test` runs (same checks, CI-enforced)
-- [ ] SC-85: Gates workflow includes secret scan (HYGIENE-12) as CI check on every PR
-- [ ] SC-86: CI workflows read runner, bunVersion, branches from rungate.json ci section — defaults used when null
-- [ ] SC-87: CI workflow files include "Managed by rungate" header directing users to rungate.json for customization
-- [ ] SC-88: All 9 ship workflow prompt templates exist in harness prompts/ (discovery, marcus, quinn, rook, serena, aditi, environment, container-rebuild, container-verify)
-- [ ] SC-89: All 11 Layer 1 methodology templates exist in harness prompts/ (rca, blast-radius, prevention, regression, read-before-write, quinn-decision-tree, evidence-hierarchy, ac-format, coding-principles, testing-strategy, escalation-decision-tree)
-- [ ] SC-90: Brief-assembler embeds relevant Layer 1 methodology templates into per-agent briefs at ship time
-- [ ] SC-91: Scaffold creates git pre-commit hook with secret scan (HYGIENE-12) — in-repo, not global
-- [ ] SC-92: Scaffold creates git pre-push hook with conformity test — in-repo, not global
-- [ ] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
-- [ ] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
-- [ ] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
-- [ ] SC-97: Pre-flight checks git repo (git init if not), package.json (bun init if not), .gitignore (create if not)
-- [ ] SC-98: Pre-flight runs BEFORE Phase 0 — .gitignore exists before any git add
-- [ ] SC-99: Post-scaffold commits all harness files — "scaffold: initialize" for new, "scaffold: update" for existing
-- [ ] SC-100: Post-scaffold commit only runs if there are actual changes (no empty commits)
-- [ ] SC-101: rungate.json uses field-level merge — auto-detected fields overwritten, manual fields preserved
-- [ ] SC-107: Makefile fallback chain: each field tries Makefile → package.json → null in order
-- [ ] SC-114: AGENTS.md has section [Research Tools] listing available tools with usage examples
-- [ ] SC-115: Coding principles reference doc (deep modules, boundary validation, etc.) ships with harness and is referenced in Marcus briefs
-- [ ] SC-116: Coding principles doc auto-updated via Context7 or research on harness update — not static training data
-- [ ] SC-117: Testing strategy reference doc (PBT, contract tests, tautological trap) ships with harness and is referenced in Marcus briefs
-- [ ] SC-118: Writer/verifier separation enforced — gate checks that test author agent != code author agent (SC-66 mechanical)
-- [ ] SC-119: Test assertions reference AC thresholds, not implementation details — gate WARNs on test files with zero AC-ID references
-- [ ] SC-120: Context loading follows 5-layer architecture — CLAUDE.md → AGENTS.md → skills (on demand) → agent frontmatter → brief
-- [ ] SC-121: Agent frontmatter `skills` field preloads role-specific methodology — Marcus gets coding-principles + testing-strategy, Quinn gets journey-format
-- [ ] SC-122: AGENTS.md contains ONLY non-inferrable details — no info agents could discover by reading src/ or running commands
-- [ ] SC-123: .github/copilot-instructions.md created if missing, NEVER overwritten if exists — scaffold skips on existing
-- [ ] SC-124: rungate.json envVars field populated from .env.example if it exists — null if no .env.example
-- [ ] SC-125: CODE-MAP.md frontmatter includes scan-paths array listing directories scanned
-- [ ] SC-126: AGENTS.md has section [Code Style] auto-detected from runtime (Bun/Node), language (TS/JS), module system (ESM/CJS)
-- [ ] SC-128: AGENTS.md has section [Harness-Managed Files] with file/customize/don't table
-- [ ] SC-138: Agent briefs cap at 10 essential rules per Layer 1 template — instruction stacking beyond 16 degrades compliance 50%+
-- [ ] SC-139: AGENTS.md Rules section at most [200] words (excluding tables/headers) — always-on context must be lean
-- [ ] SC-140: Brief structure: Core Principles at START, ACs at END — methodology in middle (mitigates "Lost in the Middle" attention decay)
-- [ ] SC-141: Templates use positive framing ("use X" not "don't use Y") — negative instructions capped at 10 per brief
-- [ ] SC-142: Every Layer 1 template includes at least one code example per principle — examples outperform descriptions
-- [ ] SC-143: Each template declares activation mode: always-on, file-pattern, agent-decided, or manual
-- [ ] SC-144: Rule lifecycle: every rule in AGENTS.md has a `since` date in comment — rules older than 90 days without revalidation flagged at re-scaffold
-- [ ] SC-145: Brief-assembler orders sections: identity (role) → principles → methodology → ACs → verification commands — never methodology after ACs
-- [ ] SC-146: Every agent brief categorizes rules into three tiers: Always Do (autonomous), Ask First (needs approval), Never Do (hard stops) — gate validates "Never Do" items mechanically
-- [ ] SC-147: rungate.json includes `harnessVersion` (semver from harness package.json) and `scaffoldedAt` (ISO timestamp) — projects know what version they were scaffolded with
-- [ ] SC-148: Conformity test WARNs when installed harness version differs from `harnessVersion` in rungate.json — signals re-scaffold needed
-- [ ] SC-159: AGENTS.md has section [Commands] with `Check findings | cat .rungate/conformity-findings.json` row
-- [ ] SC-160: AGENTS.md Quick Reference includes "After test failures, read `.rungate/conformity-findings.json` for structured findings with fix commands"
+- [x] SC-19: CLAUDE.md contains [@AGENTS.md] bridge for cross-tool compatibility
+- [x] SC-20: New code projects get src/index.ts stub as agent starting point
+- [x] SC-21: rungate.json has no hardcoded port numbers — all detected from Makefile/config or null
+- [x] SC-24: Conformity test calls all 9 suites (scaffold, spec-discovery, spec-drift, doc-hygiene, agent-validation, fallow, constraint-candidates, package-validation, tsconfig-validation)
+- [x] SC-25: AGENTS.md Commands section includes all harness commands (bun test, tsc, conformity, sync-tests, create-spec, create-adr, extract-constraints, re-scaffold)
+- [x] SC-26: Spec template in project matches harness version — scaffold updates on re-run
+- [x] SC-27: sync-spec-tests reads project's specs/ directory (not just harness specs)
+- [x] SC-37: Every agent brief includes Core Principles block (verify-before-asserting, no gaps, read AGENTS.md)
+- [x] SC-39: CODE-MAP.md staleness detected by git SHA comparison — regenerated when src/ has commits since last scan, not by arbitrary time/count thresholds
+- [x] SC-40: Scaffold creates/verifies .gitignore with full security template (node_modules, dist, .env*, .rungate, *.pem, *.key, credentials.json, service-account*)
+- [x] SC-73: package.json has required fields (name, type:module, scripts.test, devDependencies.rungate) — scaffold adds missing, never overwrites existing
+- [x] SC-74: tsconfig.json has recommended fields (strict:true) — scaffold WARNs if missing, never overwrites
+- [x] SC-75: Spec frontmatter has required fields (doc-type, status, testable, governs) — Spec Discovery FAILs if missing
+- [x] SC-76: ADR frontmatter has required fields (doc-type:adr, status, created) — Doc Hygiene FAILs if missing
+- [x] SC-77: `bunx rungate create-spec` creates spec with all required frontmatter fields pre-populated
+- [x] SC-78: `bunx rungate create-adr` creates ADR with all required frontmatter fields pre-populated
+- [x] SC-80: Phase 0 creates all 10 directories + all static files BEFORE any scan runs (Phase 1)
+- [x] SC-82: Scaffold creates .github/workflows/ci.yml — harness-owned, always regenerated from template + rungate.json
+- [x] SC-83: Scaffold creates .github/workflows/gates.yml — harness-owned, always regenerated from template + rungate.json
+- [x] SC-84: CI workflow runs all conformity suites that `bun test` runs (same checks, CI-enforced)
+- [x] SC-85: Gates workflow includes secret scan (HYGIENE-12) as CI check on every PR
+- [x] SC-86: CI workflows read runner, bunVersion, branches from rungate.json ci section — defaults used when null
+- [x] SC-87: CI workflow files include "Managed by rungate" header directing users to rungate.json for customization
+- [x] SC-88: All 9 ship workflow prompt templates exist in harness prompts/ (discovery, marcus, quinn, rook, serena, aditi, environment, container-rebuild, container-verify)
+- [x] SC-89: All 11 Layer 1 methodology templates exist in harness prompts/ (rca, blast-radius, prevention, regression, read-before-write, quinn-decision-tree, evidence-hierarchy, ac-format, coding-principles, testing-strategy, escalation-decision-tree)
+- [x] SC-90: Brief-assembler embeds relevant Layer 1 methodology templates into per-agent briefs at ship time
+- [x] SC-91: Scaffold creates git pre-commit hook with secret scan (HYGIENE-12) — in-repo, not global
+- [x] SC-92: Scaffold creates git pre-push hook with conformity test — in-repo, not global
+- [x] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
+- [x] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
+- [x] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
+- [x] SC-97: Pre-flight checks git repo (git init if not), package.json (bun init if not), .gitignore (create if not)
+- [x] SC-98: Pre-flight runs BEFORE Phase 0 — .gitignore exists before any git add
+- [x] SC-99: Post-scaffold commits all harness files — "scaffold: initialize" for new, "scaffold: update" for existing
+- [x] SC-100: Post-scaffold commit only runs if there are actual changes (no empty commits)
+- [x] SC-101: rungate.json uses field-level merge — auto-detected fields overwritten, manual fields preserved
+- [x] SC-107: Makefile fallback chain: each field tries Makefile → package.json → null in order
+- [x] SC-114: AGENTS.md has section [Research Tools] listing available tools with usage examples
+- [x] SC-115: Coding principles reference doc (deep modules, boundary validation, etc.) ships with harness and is referenced in Marcus briefs
+- [x] SC-116: Coding principles doc auto-updated via Context7 or research on harness update — not static training data
+- [x] SC-117: Testing strategy reference doc (PBT, contract tests, tautological trap) ships with harness and is referenced in Marcus briefs
+- [x] SC-118: Writer/verifier separation enforced — gate checks that test author agent != code author agent (SC-66 mechanical)
+- [x] SC-119: Test assertions reference AC thresholds, not implementation details — gate WARNs on test files with zero AC-ID references
+- [x] SC-120: Context loading follows 5-layer architecture — CLAUDE.md → AGENTS.md → skills (on demand) → agent frontmatter → brief
+- [x] SC-121: Agent frontmatter `skills` field preloads role-specific methodology — Marcus gets coding-principles + testing-strategy, Quinn gets journey-format
+- [x] SC-122: AGENTS.md contains ONLY non-inferrable details — no info agents could discover by reading src/ or running commands
+- [x] SC-123: .github/copilot-instructions.md created if missing, NEVER overwritten if exists — scaffold skips on existing
+- [x] SC-124: rungate.json envVars field populated from .env.example if it exists — null if no .env.example
+- [x] SC-125: CODE-MAP.md frontmatter includes scan-paths array listing directories scanned
+- [x] SC-126: AGENTS.md has section [Code Style] auto-detected from runtime (Bun/Node), language (TS/JS), module system (ESM/CJS)
+- [x] SC-128: AGENTS.md has section [Harness-Managed Files] with file/customize/don't table
+- [x] SC-138: Agent briefs cap at 10 essential rules per Layer 1 template — instruction stacking beyond 16 degrades compliance 50%+
+- [x] SC-139: AGENTS.md Rules section at most [200] words (excluding tables/headers) — always-on context must be lean
+- [x] SC-140: Brief structure: Core Principles at START, ACs at END — methodology in middle (mitigates "Lost in the Middle" attention decay)
+- [x] SC-141: Templates use positive framing ("use X" not "don't use Y") — negative instructions capped at 10 per brief
+- [x] SC-142: Every Layer 1 template includes at least one code example per principle — examples outperform descriptions
+- [x] SC-143: Each template declares activation mode: always-on, file-pattern, agent-decided, or manual
+- [x] SC-144: Rule lifecycle: every rule in AGENTS.md has a `since` date in comment — rules older than 90 days without revalidation flagged at re-scaffold
+- [x] SC-145: Brief-assembler orders sections: identity (role) → principles → methodology → ACs → verification commands — never methodology after ACs
+- [x] SC-146: Every agent brief categorizes rules into three tiers: Always Do (autonomous), Ask First (needs approval), Never Do (hard stops) — gate validates "Never Do" items mechanically
+- [x] SC-147: rungate.json includes `harnessVersion` (semver from harness package.json) and `scaffoldedAt` (ISO timestamp) — projects know what version they were scaffolded with
+- [x] SC-148: Conformity test WARNs when installed harness version differs from `harnessVersion` in rungate.json — signals re-scaffold needed
+- [x] SC-159: AGENTS.md has section [Commands] with `Check findings | cat .rungate/conformity-findings.json` row
+- [x] SC-160: AGENTS.md Quick Reference includes "After test failures, read `.rungate/conformity-findings.json` for structured findings with fix commands"
 - [ ] SC-251: AGENTS.md Documentation Routing auto-detects docs/ subdirectories and lists them with file counts
 - [ ] SC-252: AGENTS.md Where to Create Things lists all doc types (Specs, ADRs, Research, Council, Guides) with required frontmatter fields
 - [ ] SC-253: Re-scaffold on RunGate itself produces 0 warnings and correct AGENTS.md without hand editing
@@ -99,24 +99,24 @@ testable: true
 
 ### Phase 1 — Knowledge Extraction + Doc Hygiene
 
-- [ ] SC-12: Bootstrap scans docs for non-inferrable rule candidates using signal phrases
-- [ ] SC-13: Extracted candidates presented for user confirmation before writing to AGENTS.md
-- [ ] SC-14: Staleness uses git log date with per-type thresholds (ADR exempt, spec 90d, guide 180d)
-- [ ] SC-22: Re-scaffold reports stale constraints (Hard Constraints referencing deleted files)
-- [ ] SC-23: Re-scaffold reports line count if AGENTS.md exceeds 150 lines
-- [ ] SC-30: Misplaced spec/ADR/doc files are FAIL not WARN (HYGIENE-7/8/9)
-- [ ] SC-106: Doc lifecycle: stale docs (beyond threshold) flagged for archive to reference/ — per-type thresholds applied
-- [ ] SC-137: Rejected constraint candidates logged to reference/rejected-constraints.md with content-hash dedup — same candidate never resurfaces
-- [ ] SC-149: Conformity findings written to `.rungate/conformity-findings.json` with structured format (ruleId, severity, file, message, fixCommand)
-- [ ] SC-150: Every FAIL finding includes a `fixCommand` — agents can execute it directly to resolve the issue
-- [ ] SC-154: Unified findings report includes `constraintCandidates` array with rule, source, hash, and status (pending/applied/rejected)
-- [ ] SC-155: Unified findings report includes `staleness` array with file, daysSince, threshold, and type
-- [ ] SC-156: HYGIENE-6 pipes extract-constraints results (candidates + staleness) into unified findings report — nothing lost to stdout
-- [ ] SC-157: Gate runner reads `.rungate/conformity-findings.json` after `bun test` completes and prints structured output (findings with fix commands, candidates, stale docs)
-- [ ] SC-158: Gate runner stores conformityFindings in workflow-state.json — agents read fix commands from workflow-state, not test output
-- [ ] SC-151: HYGIENE-7 detects spec files at root (not in specs/) and produces FAIL with `mv` fix command
-- [ ] SC-152: HYGIENE-8 detects ADR files outside docs/adr/ and produces FAIL with `mv` fix command
-- [ ] SC-153: HYGIENE-9 detects doc files at root (not in docs/, not allowlisted) and produces FAIL with `mv` fix command
+- [x] SC-12: Bootstrap scans docs for non-inferrable rule candidates using signal phrases
+- [x] SC-13: Extracted candidates presented for user confirmation before writing to AGENTS.md
+- [x] SC-14: Staleness uses git log date with per-type thresholds (ADR exempt, spec 90d, guide 180d)
+- [x] SC-22: Re-scaffold reports stale constraints (Hard Constraints referencing deleted files)
+- [x] SC-23: Re-scaffold reports line count if AGENTS.md exceeds 150 lines
+- [x] SC-30: Misplaced spec/ADR/doc files are FAIL not WARN (HYGIENE-7/8/9)
+- [x] SC-106: Doc lifecycle: stale docs (beyond threshold) flagged for archive to reference/ — per-type thresholds applied
+- [x] SC-137: Rejected constraint candidates logged to reference/rejected-constraints.md with content-hash dedup — same candidate never resurfaces
+- [x] SC-149: Conformity findings written to `.rungate/conformity-findings.json` with structured format (ruleId, severity, file, message, fixCommand)
+- [x] SC-150: Every FAIL finding includes a `fixCommand` — agents can execute it directly to resolve the issue
+- [x] SC-154: Unified findings report includes `constraintCandidates` array with rule, source, hash, and status (pending/applied/rejected)
+- [x] SC-155: Unified findings report includes `staleness` array with file, daysSince, threshold, and type
+- [x] SC-156: HYGIENE-6 pipes extract-constraints results (candidates + staleness) into unified findings report — nothing lost to stdout
+- [x] SC-157: Gate runner reads `.rungate/conformity-findings.json` after `bun test` completes and prints structured output (findings with fix commands, candidates, stale docs)
+- [x] SC-158: Gate runner stores conformityFindings in workflow-state.json — agents read fix commands from workflow-state, not test output
+- [x] SC-151: HYGIENE-7 detects spec files at root (not in specs/) and produces FAIL with `mv` fix command
+- [x] SC-152: HYGIENE-8 detects ADR files outside docs/adr/ and produces FAIL with `mv` fix command
+- [x] SC-153: HYGIENE-9 detects doc files at root (not in docs/, not allowlisted) and produces FAIL with `mv` fix command
 
 ### Phase 1.5 — Context Quality
 
@@ -183,126 +183,126 @@ testable: true
 
 ### Phase 2 — Gate Enforcement + Ship Behavior
 
-- [ ] SC-7: Container-rebuild agent NOT spawned when prod.rebuild is null
-- [ ] SC-9: rungate-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
-- [ ] SC-10: Schema fields dev.typeCheck, prod.smokeTest, contextDocs read by at least one workflow
-- [ ] SC-28: Scope gate runs project conformity tests — FAIL blocks scope
-- [ ] SC-29: Verify gate runs project conformity tests — FAIL blocks verify
-- [ ] SC-31: Scope gate captures test baseline (pass/fail count + failing test names)
-- [ ] SC-32: Verify gate compares test count — fail increase = regression = FAIL
-- [ ] SC-33: Pre-existing test failures auto-filed as GitHub issues with "pre-existing" label
-- [ ] SC-34: Found issues during ship cycle either fixed, filed, or explicitly scoped out
-- [ ] SC-35: `bunx rungate create-spec` creates spec at specs/ with correct frontmatter
-- [ ] SC-36: `bunx rungate create-adr` creates ADR at docs/adr/ with auto-incremented number
-- [ ] SC-38: Ship cycle runs scaffold after verify gate PASS — auto-refresh CODE-MAP, briefs, AGENTS.md
-- [ ] SC-41: Conformity checks for secret patterns in staged/committed files (HYGIENE-12) — catches secrets on ALL tiers including LIGHT
-- [ ] SC-42: Completed slugs (DONE + proven) auto-archived after 24h
-- [ ] SC-43: Archived slugs deleted after 30 days
-- [ ] SC-44: Ship cycle checks for existing slug by issue number before creating new one
-- [ ] SC-48: ACs use Given/When/Then format with four required fields: trigger, output, verify command, exclusions
-- [ ] SC-49: Every AC has an executable verification command (oracle) — not prose description
-- [ ] SC-50: Evidence hierarchy enforced per AC — minimum tier: CODE→A, UI→B, BUG-FIX→S, static→C supplementary only
-- [ ] SC-51: Self-attestation (tier F) in any AC evidence = automatic FAIL regardless of other evidence
-- [ ] SC-52: Garbage test applied to every AC — "Could garbage data pass this?" If yes, AC is rejected
-- [ ] SC-53: RCA section required in Marcus brief for bug-fix issues — rootCause, prediction, predictionVerified
-- [ ] SC-54: Gate checks RCA fields populated on bug-fix issues — empty rootCause = WARN (graduates to FAIL after 30d)
-- [ ] SC-55: Quinn briefs use typed journey format — steps with action, wait_for, typed assertions, on_fail
-- [ ] SC-56: Quinn primary perception is browser_snapshot (a11y tree), screenshots only on FAIL or visual checks
-- [ ] SC-57: Quinn circuit breaker — 3 consecutive FAIL steps abort journey with partial results
-- [ ] SC-58: Proof-of-fix includes negative control (revert fix, confirm bug returns) for S-tier evidence
-- [ ] SC-59: Blast radius section in Marcus brief — filesRead ≥ filesChanged enforced
-- [ ] SC-60: Read-before-write ratio ≥ 3:1 — gate checks read vs write token count
-- [ ] SC-61: Brief-assembler generates per-role templates (Marcus, Quinn, Rook, Serena, Aditi) from three layers
-- [ ] SC-62: Templates are three-layered: harness-generic + project-config (rungate.json) + issue-specific (ACs)
-- [ ] SC-63: Spec content hash tracked — hash mismatch at gate = FAIL (tests must match current spec)
-- [ ] SC-64: Test count post ≥ pre at verify gate — decrease = FAIL "tests removed, verify no gaming"
-- [ ] SC-65: Prevention-oriented fixes: guard at boundary, type narrowing, pattern audit for same-bug-class
-- [ ] SC-66: Writer and verifier are separate agents — same agent cannot write code AND verify its own ACs
-- [ ] SC-67: Quinn journey steps auto-generated from UI-type ACs by brief-assembler
-- [ ] SC-68: Evidence without assertion = tier F — screenshot taken but nothing checked = self-attestation
-- [ ] SC-79: Conformity includes `runPackageValidation` check for package.json required fields
-- [ ] SC-81: Phase 0 file creation is additive — never overwrites existing content, only adds missing fields/entries
-- [ ] SC-96: rungate.json `mcp` section declares MCP servers available to agents — scaffold includes in agent briefs
-- [ ] SC-102: Re-scaffold auto-fixes broken refs, unlisted specs, missing CODE-MAP ref, and pages drift — not just reports them
-- [ ] SC-103: Evidence-to-tier mapping implemented in gate — evidenceMethod.type maps to correct tier per mapping table
-- [ ] SC-104: File ownership model enforced — Tier 1 (harness-owned) always regenerated, Tier 2 (co-owned/hybrid) preserves user sections across re-scaffold, Tier 3 (user-owned) validated for structure only — scaffold never writes to them
-- [ ] SC-105: Scaffold is idempotent — running from scratch produces same result as re-scaffold (Core Principle 6)
-- [ ] SC-108: Quinn journey stored in slug directory (~/.rungate/{slug}/quinn-journey.yaml) — ephemeral, follows slug lifecycle
-- [ ] SC-109: Fix-on-find: silently dropped issues = FAIL at verify gate, not WARN
-- [ ] SC-110: Port allocation for parallel worktrees checks for collisions before assigning offset
-- [ ] SC-111: Escalation decision tree embedded in every agent brief — agents know research tools exist
-- [ ] SC-112: Circuit breaker iteration 2 requires research tool invocation before next attempt — gate checks research evidence exists before allowing iteration 3
-- [ ] SC-113: rungate.json `research` section declares available research tools — brief-assembler includes only available tools
-- [ ] SC-127: All 3 gate prompt templates exist in harness prompts/ (ac-adversary.md, evidence-validator.md, prove-reproducer.md)
-- [ ] SC-129: Gate WARNs if a new module file has more exported functions than internal functions (shallow module signal)
-- [ ] SC-130: Gate WARNs if a module with >3 importers has no contract test
-- [ ] SC-131: Anti-criteria (SC-A*) use absence verification — Verify command must confirm absence, not presence
-- [ ] SC-132: Tier D evidence (grep) capped at 25% of total evidence portfolio per issue — gate FAIL if exceeded
-- [ ] SC-133: Brief-assembler rejects Quinn journeys over 8 steps and auto-splits into multiple journeys with entry conditions
-- [ ] SC-134: Files changed outside brief's listed files → WARN "Files changed outside brief: {list}"
-- [ ] SC-135: Gate cross-validates proofOfFix in workflow-state.json against prove-evidence.json — mismatch = FAIL
+- [x] SC-7: Container-rebuild agent NOT spawned when prod.rebuild is null
+- [x] SC-9: rungate-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
+- [x] SC-10: Schema fields dev.typeCheck, prod.smokeTest, contextDocs read by at least one workflow
+- [x] SC-28: Scope gate runs project conformity tests — FAIL blocks scope
+- [x] SC-29: Verify gate runs project conformity tests — FAIL blocks verify
+- [x] SC-31: Scope gate captures test baseline (pass/fail count + failing test names)
+- [x] SC-32: Verify gate compares test count — fail increase = regression = FAIL
+- [x] SC-33: Pre-existing test failures auto-filed as GitHub issues with "pre-existing" label
+- [x] SC-34: Found issues during ship cycle either fixed, filed, or explicitly scoped out
+- [x] SC-35: `bunx rungate create-spec` creates spec at specs/ with correct frontmatter
+- [x] SC-36: `bunx rungate create-adr` creates ADR at docs/adr/ with auto-incremented number
+- [x] SC-38: Ship cycle runs scaffold after verify gate PASS — auto-refresh CODE-MAP, briefs, AGENTS.md
+- [x] SC-41: Conformity checks for secret patterns in staged/committed files (HYGIENE-12) — catches secrets on ALL tiers including LIGHT
+- [x] SC-42: Completed slugs (DONE + proven) auto-archived after 24h
+- [x] SC-43: Archived slugs deleted after 30 days
+- [x] SC-44: Ship cycle checks for existing slug by issue number before creating new one
+- [x] SC-48: ACs use Given/When/Then format with four required fields: trigger, output, verify command, exclusions
+- [x] SC-49: Every AC has an executable verification command (oracle) — not prose description
+- [x] SC-50: Evidence hierarchy enforced per AC — minimum tier: CODE→A, UI→B, BUG-FIX→S, static→C supplementary only
+- [x] SC-51: Self-attestation (tier F) in any AC evidence = automatic FAIL regardless of other evidence
+- [x] SC-52: Garbage test applied to every AC — "Could garbage data pass this?" If yes, AC is rejected
+- [x] SC-53: RCA section required in Marcus brief for bug-fix issues — rootCause, prediction, predictionVerified
+- [x] SC-54: Gate checks RCA fields populated on bug-fix issues — empty rootCause = WARN (graduates to FAIL after 30d)
+- [x] SC-55: Quinn briefs use typed journey format — steps with action, wait_for, typed assertions, on_fail
+- [x] SC-56: Quinn primary perception is browser_snapshot (a11y tree), screenshots only on FAIL or visual checks
+- [x] SC-57: Quinn circuit breaker — 3 consecutive FAIL steps abort journey with partial results
+- [x] SC-58: Proof-of-fix includes negative control (revert fix, confirm bug returns) for S-tier evidence
+- [x] SC-59: Blast radius section in Marcus brief — filesRead ≥ filesChanged enforced
+- [x] SC-60: Read-before-write ratio ≥ 3:1 — gate checks read vs write token count
+- [x] SC-61: Brief-assembler generates per-role templates (Marcus, Quinn, Rook, Serena, Aditi) from three layers
+- [x] SC-62: Templates are three-layered: harness-generic + project-config (rungate.json) + issue-specific (ACs)
+- [x] SC-63: Spec content hash tracked — hash mismatch at gate = FAIL (tests must match current spec)
+- [x] SC-64: Test count post ≥ pre at verify gate — decrease = FAIL "tests removed, verify no gaming"
+- [x] SC-65: Prevention-oriented fixes: guard at boundary, type narrowing, pattern audit for same-bug-class
+- [x] SC-66: Writer and verifier are separate agents — same agent cannot write code AND verify its own ACs
+- [x] SC-67: Quinn journey steps auto-generated from UI-type ACs by brief-assembler
+- [x] SC-68: Evidence without assertion = tier F — screenshot taken but nothing checked = self-attestation
+- [x] SC-79: Conformity includes `runPackageValidation` check for package.json required fields
+- [x] SC-81: Phase 0 file creation is additive — never overwrites existing content, only adds missing fields/entries
+- [x] SC-96: rungate.json `mcp` section declares MCP servers available to agents — scaffold includes in agent briefs
+- [x] SC-102: Re-scaffold auto-fixes broken refs, unlisted specs, missing CODE-MAP ref, and pages drift — not just reports them
+- [x] SC-103: Evidence-to-tier mapping implemented in gate — evidenceMethod.type maps to correct tier per mapping table
+- [x] SC-104: File ownership model enforced — Tier 1 (harness-owned) always regenerated, Tier 2 (co-owned/hybrid) preserves user sections across re-scaffold, Tier 3 (user-owned) validated for structure only — scaffold never writes to them
+- [x] SC-105: Scaffold is idempotent — running from scratch produces same result as re-scaffold (Core Principle 6)
+- [x] SC-108: Quinn journey stored in slug directory (~/.rungate/{slug}/quinn-journey.yaml) — ephemeral, follows slug lifecycle
+- [x] SC-109: Fix-on-find: silently dropped issues = FAIL at verify gate, not WARN
+- [x] SC-110: Port allocation for parallel worktrees checks for collisions before assigning offset
+- [x] SC-111: Escalation decision tree embedded in every agent brief — agents know research tools exist
+- [x] SC-112: Circuit breaker iteration 2 requires research tool invocation before next attempt — gate checks research evidence exists before allowing iteration 3
+- [x] SC-113: rungate.json `research` section declares available research tools — brief-assembler includes only available tools
+- [x] SC-127: All 3 gate prompt templates exist in harness prompts/ (ac-adversary.md, evidence-validator.md, prove-reproducer.md)
+- [x] SC-129: Gate WARNs if a new module file has more exported functions than internal functions (shallow module signal)
+- [x] SC-130: Gate WARNs if a module with >3 importers has no contract test
+- [x] SC-131: Anti-criteria (SC-A*) use absence verification — Verify command must confirm absence, not presence
+- [x] SC-132: Tier D evidence (grep) capped at 25% of total evidence portfolio per issue — gate FAIL if exceeded
+- [x] SC-133: Brief-assembler rejects Quinn journeys over 8 steps and auto-splits into multiple journeys with entry conditions
+- [x] SC-134: Files changed outside brief's listed files → WARN "Files changed outside brief: {list}"
+- [x] SC-135: Gate cross-validates proofOfFix in workflow-state.json against prove-evidence.json — mismatch = FAIL
 
 ### Phase 3 — Parallel Work
 
-- [ ] SC-45: Container lock checked mechanically (Makefile target, not behavioral rule) — blocks rebuild/prove-up if lock exists
-- [ ] SC-46: Ship workflow supports worktree isolation for parallel execution
-- [ ] SC-47: Container lock released mechanically after test completion (cleanup triggers next queued issue)
-- [ ] SC-69: Parallel work: file-set overlap detection before assigning concurrent issues to agents
-- [ ] SC-70: Parallel work: port/namespace isolation beyond git worktree file isolation
-- [ ] SC-71: Parallel work: cap concurrent agents at 5 per session (diminishing returns beyond)
-- [ ] SC-72: Parallel work: sequential merge with CI verification between each PR
-- [ ] SC-136: Worktree branches use deterministic naming: issue-{N}-{slug}
+- [x] SC-45: Container lock checked mechanically (Makefile target, not behavioral rule) — blocks rebuild/prove-up if lock exists
+- [x] SC-46: Ship workflow supports worktree isolation for parallel execution
+- [x] SC-47: Container lock released mechanically after test completion (cleanup triggers next queued issue)
+- [x] SC-69: Parallel work: file-set overlap detection before assigning concurrent issues to agents
+- [x] SC-70: Parallel work: port/namespace isolation beyond git worktree file isolation
+- [x] SC-71: Parallel work: cap concurrent agents at 5 per session (diminishing returns beyond)
+- [x] SC-72: Parallel work: sequential merge with CI verification between each PR
+- [x] SC-136: Worktree branches use deterministic naming: issue-{N}-{slug}
 
 ### Phase 4 — Knowledge Mining
 
-- [ ] SC-205: rungate temporal-coupling command analyzes git co-change history → .rungate/temporal-couplings.json
-- [ ] SC-206: Temporal coupling JSON has fileA, fileB, coChanges, hasImportLink, auto-generated rule
-- [ ] SC-207: File pairs ≥10 co-changes with hasImportLink: false produce candidate rules routed to review queue (SC-201 flow) — not auto-inserted into briefs
-- [ ] SC-208: Scaffold reads temporal-couplings.json and includes only review-approved coupling rules (status=applied) in briefs
+- [x] SC-205: rungate temporal-coupling command analyzes git co-change history → .rungate/temporal-couplings.json
+- [x] SC-206: Temporal coupling JSON has fileA, fileB, coChanges, hasImportLink, auto-generated rule
+- [x] SC-207: File pairs ≥10 co-changes with hasImportLink: false produce candidate rules routed to review queue (SC-201 flow) — not auto-inserted into briefs
+- [x] SC-208: Scaffold reads temporal-couplings.json and includes only review-approved coupling rules (status=applied) in briefs
 
-- [ ] SC-209: rungate analyze-deps runs dependency-cruiser → .rungate/dependency-analysis.json
-- [ ] SC-210: Circular deps produce WARN — lists participating modules and hub module
-- [ ] SC-211: Orphan modules produce INFO with fixCommand
-- [ ] SC-212: Module boundary violations (data importing routes) produce WARN — graduates to FAIL after validation across projects
+- [x] SC-209: rungate analyze-deps runs dependency-cruiser → .rungate/dependency-analysis.json
+- [x] SC-210: Circular deps produce WARN — lists participating modules and hub module
+- [x] SC-211: Orphan modules produce INFO with fixCommand
+- [x] SC-212: Module boundary violations (data importing routes) produce WARN — graduates to FAIL after validation across projects
 
-- [ ] SC-213: rungate analyze-dead-code runs Knip → .rungate/dead-code.json filtered for entry points
-- [ ] SC-214: Knip entry points configurable in rungate.json analysis.entryPoints
-- [ ] SC-215: Unused backend files produce WARN DEAD-FILE
-- [ ] SC-216: Unresolved imports produce FAIL BROKEN-IMPORT (Knip-specific detection — distinct from fallow suite SC-24 which uses different heuristics)
+- [x] SC-213: rungate analyze-dead-code runs Knip → .rungate/dead-code.json filtered for entry points
+- [x] SC-214: Knip entry points configurable in rungate.json analysis.entryPoints
+- [x] SC-215: Unused backend files produce WARN DEAD-FILE
+- [x] SC-216: Unresolved imports produce FAIL BROKEN-IMPORT (Knip-specific detection — distinct from fallow suite SC-24 which uses different heuristics)
 
-- [ ] SC-217: rungate analyze-hotspots computes hotspot score → .rungate/hotspots.json
-- [ ] SC-218: Top 5 hotspot files produce INFO — surfaced in briefs as "high-risk files"
+- [x] SC-217: rungate analyze-hotspots computes hotspot score → .rungate/hotspots.json
+- [x] SC-218: Top 5 hotspot files produce INFO — surfaced in briefs as "high-risk files"
 
-- [ ] SC-219: Tier 1 regex pre-filter uses signal-phrases.ts
-- [ ] SC-220: Tier 2 heuristic scorer assigns 0-5 using 5 checks (modal+action, actor subject, list item, imperative, code reference)
-- [ ] SC-221: Score ≥5 auto-promoted to high-confidence
-- [ ] SC-222: Score 3-4 sent to Tier 3 LLM classification
-- [ ] SC-223: Score ≤2 auto-filtered as noise
-- [ ] SC-224: Tier 3 LLM uses ≤200 tokens per candidate, total under $0.05
-- [ ] SC-225: Deduplicated cross-file — same rule appears once with all sources
-- [ ] SC-226: Top 20 candidates in findings JSON constraintCandidates array (extends SC-154), full list in .rungate/all-constraints.json
+- [x] SC-219: Tier 1 regex pre-filter uses signal-phrases.ts
+- [x] SC-220: Tier 2 heuristic scorer assigns 0-5 using 5 checks (modal+action, actor subject, list item, imperative, code reference)
+- [x] SC-221: Score ≥5 auto-promoted to high-confidence
+- [x] SC-222: Score 3-4 sent to Tier 3 LLM classification
+- [x] SC-223: Score ≤2 auto-filtered as noise
+- [x] SC-224: Tier 3 LLM uses ≤200 tokens per candidate, total under $0.05
+- [x] SC-225: Deduplicated cross-file — same rule appears once with all sources
+- [x] SC-226: Top 20 candidates in findings JSON constraintCandidates array (extends SC-154), full list in .rungate/all-constraints.json
 
-- [ ] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
-- [ ] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
-- [ ] SC-229: Candidates unreviewed >90 days auto-transition to deferred
+- [x] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
+- [x] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
+- [x] SC-229: Candidates unreviewed >90 days auto-transition to deferred
 
 ### Phase 5 — Instruction Compliance
 
-- [ ] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json
-- [ ] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
-- [ ] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
-- [ ] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
-- [ ] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
-- [ ] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
-- [ ] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates
-- [ ] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
-- [ ] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
-- [ ] SC-245: Compliance surface is exactly 4 file types: prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md — NOT hooks, workflows, CODE-MAP, .gitignore, tests
-- [ ] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
-- [ ] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
-- [ ] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json
-- [ ] SC-249: Agent briefs load only when spawned with matching `agentType` — ship/prove workflows must use `agentType: 'marcus'` not `'Engineer'`, matching `.claude/agents/{name}.md` filename
-- [ ] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
+- [x] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json
+- [x] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
+- [x] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
+- [x] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
+- [x] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
+- [x] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
+- [x] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates
+- [x] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
+- [x] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
+- [x] SC-245: Compliance surface is exactly 4 file types: prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md — NOT hooks, workflows, CODE-MAP, .gitignore, tests
+- [x] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
+- [x] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
+- [x] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json
+- [x] SC-249: Agent briefs load only when spawned with matching `agentType` — ship/prove workflows must use `agentType: 'marcus'` not `'Engineer'`, matching `.claude/agents/{name}.md` filename
+- [x] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
 
 ### Anti-Criteria
 

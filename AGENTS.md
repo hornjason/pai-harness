@@ -17,6 +17,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 - Verify before asserting — try it first, report what actually happened
 - Never fake results or hide failures — if it fails, report it honestly
+- Fix all test failures before reporting done — a green suite is the minimum bar
 - Run full test suite (`bun test`) and show real output — no summaries, no skipped files
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files

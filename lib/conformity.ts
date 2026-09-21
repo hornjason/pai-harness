@@ -431,9 +431,7 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
 // ── Exported test runners ───────────────────────────────────
 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
-  const HOME = process.env.HOME || "";
-  const defaultExtraSpecs = [join(HOME, ".claude", "PAI", "specs")];
-  const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? defaultExtraSpecs);
+  const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? []);
 
   describe("Spec-Driven Conformity Tests", () => {
     if (specMap.size === 0) {

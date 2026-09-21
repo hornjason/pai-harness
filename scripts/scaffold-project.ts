@@ -155,6 +155,9 @@ safeWrite(
 // 5. Add frontmatter to bare spec files and ADRs
 addFrontmatterToSpecs(join(projectPath, "specs"));
 addFrontmatterToAdrs(join(projectPath, "docs", "adr"));
+// SC-278, SC-279: Detect oversized specs and governs misalignment
+detectOversizedSpecs(join(projectPath, "specs"));
+checkGovernsAlignment(join(projectPath, "specs"));
 
 // Phase 1: Scan code and generate config (data flows DOWN — config before briefs)
 // 6. Generate or refresh CODE-MAP.md (code projects only)
@@ -481,41 +484,63 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   // Scan docs/ directory for documentation routing
   const docsDir = join(projectPath, "docs");
+  // SC-283: Unified category list — drives both routing table and "Where to Create"
+  const categories = [
+    { dir: "specs", label: "Specs — success criteria, constraints, requirements", frontmatter: "`doc-type: spec`, `testable`, `governs`", notes: "SCs auto-generate tests" },
+    { dir: "docs/adr", label: "ADRs — architecture decisions", frontmatter: "`doc-type: adr`, `status`, `created`", notes: "Architecture decisions" },
+    { dir: "docs/research", label: "Research — findings, evaluations, competitive analysis", frontmatter: "`doc-type: research`, `governs`", notes: "Tool evaluations, competitive analysis, findings" },
+    { dir: "docs/council", label: "Council — synthesis, design debates", frontmatter: "`doc-type: council`", notes: "Council synthesis, design debates" },
+    { dir: "docs/guides", label: "Guides — setup, onboarding, reference", frontmatter: "`doc-type: guide`", notes: "Setup, onboarding, reference" },
+    { dir: "reference", label: "Reference — historical and inactive docs", frontmatter: "—", notes: "Historical reference" },
+  ];
+
+  // SC-271: Intent-based descriptions for root-level docs
+  const rootDocIntents: Record<string, string> = {
+    "ARCHITECTURE.md": "System architecture and design principles",
+    "PRINCIPLES.md": "Core engineering principles and standards",
+    "CONTRIBUTING.md": "How to contribute — workflow, conventions, review process",
+    "MODEL.md": "Domain model and data relationships",
+    "PROJECT-STATE.md": "Current project state, priorities, and session history",
+  };
+
   const docRouting: Array<{ need: string; file: string }> = [];
-  // CODE-MAP first (auto-generated, always fresh)
   if (existsSync(join(projectPath, "CODE-MAP.md"))) {
     docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
   }
-  // Root-level docs (highest priority)
-  for (const f of ["ARCHITECTURE.md", "PRINCIPLES.md", "CONTRIBUTING.md", "MODEL.md", "PROJECT-STATE.md"]) {
+  // SC-271: Root-level docs with intent descriptions
+  for (const [f, intent] of Object.entries(rootDocIntents)) {
     if (existsSync(join(projectPath, f))) {
-      docRouting.push({ need: f.replace(/\.md$/, "").replace(/-/g, " "), file: f });
+      docRouting.push({ need: intent, file: f });
     }
   }
-  // Permanent routing categories — only show if directory exists (SC-283, SC-284, SC-285)
-  const permanentCategories = [
-    { dir: "docs/adr", label: "ADRs — architecture decisions" },
-    { dir: "docs/research", label: "Research — findings, evaluations, competitive analysis" },
-    { dir: "docs/council", label: "Council — synthesis, design debates" },
-    { dir: "reference", label: "Reference — historical and inactive docs" },
-  ];
-  for (const cat of permanentCategories) {
+  // SC-284: Permanent categories always present
+  for (const cat of categories) {
     const catPath = join(projectPath, cat.dir);
     if (existsSync(catPath)) {
       const files = readdirSync(catPath).filter(f => f.endsWith(".md"));
       docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
+    } else {
+      docRouting.push({ need: cat.label, file: `${cat.dir}/` });
+      // SC-285: WARN when category has no directory
+      actions.push(`WARN: ${cat.dir}/ listed in routing but directory does not exist`);
     }
-    // Skip if directory doesn't exist — "(empty)" is placeholder content
   }
-  // docs/ top-level files — no artificial cap, 150-line AGENTS.md limit is the bound
+  // SC-271: docs/ top-level files with intent from governs or descriptive name
   if (existsSync(docsDir)) {
     const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
     for (const f of allDocs) {
-      docRouting.push({ need: f.replace(/\.md$/, "").replace(/-/g, " "), file: `docs/${f}` });
+      const docPath = join(docsDir, f);
+      const content = readFileSync(docPath, "utf-8");
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      let need = f.replace(/\.md$/, "").replace(/-/g, " ");
+      if (fmMatch) {
+        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+        if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
+      }
+      docRouting.push({ need, file: `docs/${f}` });
     }
-    // Additional subdirectories not in permanent categories
     const subDirs = readdirSync(docsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && !permanentCategories.some(c => c.dir === `docs/${d.name}`))
+      .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
       .map(d => d.name);
     for (const sub of subDirs) {
       const subPath = join(docsDir, sub);
@@ -525,9 +550,21 @@ function generateAgentsMd(name: string, type: ProjectType): string {
       }
     }
   }
-  const docRoutingTable = docRouting.length > 0
-    ? docRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
+  // SC-281: Filter routing to non-obvious mappings — exclude entries where filename matches intent
+  const filteredRouting = docRouting.filter(d => {
+    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
+    const needLower = d.need.toLowerCase();
+    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
+  });
+  const docRoutingTable = filteredRouting.length > 0
+    ? filteredRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
     : "| (no docs found) | |";
+
+  // SC-283: Generate "Where to Create" table from same category list
+  const createRows = categories.map(c => `| ${c.label.split(" — ")[0]} | \`${c.dir}/\` | ${c.frontmatter} | ${c.notes} |`);
+  createRows.push(`| Source code | \`src/\` | — | Follow existing module structure |`);
+  createRows.push(`| Tests | \`test/\` | — | Mirror source structure |`);
+  const createTable = createRows.join("\n");
 
   // Environment section injected post-creation by injectEnvironmentSection (SC-3)
 
@@ -553,6 +590,7 @@ ${repoLine}
 
 - Verify before asserting — try it first, report what actually happened
 - Never fake results or hide failures — if it fails, report it honestly
+- Fix all test failures before reporting done — a green suite is the minimum bar
 - Run full test suite (\`${testCmd}\`) and show real output — no summaries, no skipped files
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
@@ -576,13 +614,7 @@ ${docRoutingTable}
 
 | Type | Location | Frontmatter | Notes |
 |------|----------|-------------|-------|
-| Specs | \`specs/\` | \`doc-type: spec\`, \`testable\`, \`governs\` | SCs auto-generate tests |
-| ADRs | \`docs/adr/\` | \`doc-type: adr\`, \`status\`, \`created\` | Architecture decisions |
-| Research | \`docs/research/\` | \`doc-type: research\`, \`governs\` | Tool evaluations, competitive analysis, findings |
-| Council output | \`docs/council/\` | \`doc-type: council\` | Council synthesis, design debates |
-| Guides | \`docs/\` | \`doc-type: guide\` | Setup, onboarding, reference |
-| Source code | \`src/\` | — | Follow existing module structure |
-| Tests | \`test/\` | — | Mirror source structure |
+${createTable}
 
 ## Specs
 
@@ -661,6 +693,36 @@ afterAll(() => {
 `;
 }
 
+// SC-278: Detect spec files over 500 lines and WARN
+function detectOversizedSpecs(specsDir: string): void {
+  if (!existsSync(specsDir)) return;
+  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: specsDir, absolute: false })) {
+    const content = readFileSync(join(specsDir, file), "utf-8");
+    const lineCount = content.split("\n").length;
+    if (lineCount > 500) {
+      actions.push(`WARN: specs/${file} is ${lineCount} lines (>500) — consider splitting with \`bun scripts/split-spec.ts specs/${file}\``);
+    }
+  }
+}
+
+// SC-279: Check that spec content aligns with its governs field
+function checkGovernsAlignment(specsDir: string): void {
+  if (!existsSync(specsDir)) return;
+  for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+    const content = readFileSync(join(specsDir, file), "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+    const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+    if (!gMatch || gMatch[1].trim().startsWith("TODO")) continue;
+    const governs = gMatch[1].trim().toLowerCase();
+    // Check if the file has multiple unrelated H2 sections that don't match governs
+    const h2s = content.match(/^## .+/gm) || [];
+    if (h2s.length > 8) {
+      actions.push(`WARN: specs/${file} has ${h2s.length} sections — may cover more than its governs ("${gMatch[1].trim().slice(0, 60)}"). Consider splitting.`);
+    }
+  }
+}
+
 function addFrontmatterToSpecs(specsDir: string): void {
   if (!existsSync(specsDir)) return;
 
@@ -687,6 +749,11 @@ function addFrontmatterToSpecs(specsDir: string): void {
         const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
         writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
         actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+      }
+      // SC-269: WARN for specs with missing or TODO governs
+      const governsMatch = fm.match(/governs:\s*(.+)/);
+      if (!governsMatch || governsMatch[1].trim() === "TODO" || governsMatch[1].trim().startsWith("TODO")) {
+        actions.push(`WARN: specs/${file} has no governs: field (or governs: TODO) — add a one-line description of what this spec governs`);
       }
     }
   }

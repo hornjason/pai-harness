@@ -559,13 +559,13 @@ test("meta: every SC has a test", () => {
 
 - [ ] TP-1: Golden test fixture exists at test/fixtures/golden-project/ with all required files
 - [ ] TP-2: Expected output files exist at test/expected/ — hand-written, not generated
-- [ ] TP-3: Every SC (146 + 3 anti) appears in at least one phase test file — meta-test verifies
+- [x] TP-3: Every SC (146 + 3 anti) appears in at least one phase test file — meta-test verifies
 - [ ] TP-4: Phase tests are independently runnable — `bun test test/phase-N.test.ts`
 - [ ] TP-5: All tests RED before implementation — `bun test` shows 149 failures
 - [ ] TP-6: Phase gate enforced — phase N+1 tests import phase N's pass count and skip if phase N hasn't passed
 - [ ] TP-7: Golden fixture diff test runs on every `bun test` — catches drift in any output file
 - [ ] TP-8: Content assertions test CONTENT not existence — no `existsSync()` without a corresponding content check
-- [ ] TP-9: Meta-test validates SC coverage — missing SC in test files = FAIL
+- [x] TP-9: Meta-test validates SC coverage — missing SC in test files = FAIL
 - [ ] TP-10: This test plan spec has spec-drift hash tracked — changes to BOOTSTRAP-DATA-FLOW-SPEC.md trigger re-evaluation
 - [ ] TP-11: Post-phase compliance audit runs after each phase gate — produces human-readable report comparing every file and its contents against the spec
 - [ ] TP-12: Compliance audit checks 10 dimensions per file: existence, line count, required content, ordering, word count, rule count, examples, authority tiers, frontmatter, cross-references

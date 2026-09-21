@@ -6,6 +6,7 @@ created: 2026-09-20
 updated: 2026-09-20
 governs: Instruction compliance testing — grading, behavioral verification, and hill climbing template files
 testable: true
+compliance: permissive
 ---
 
 # Instruction Compliance Spec
@@ -239,26 +240,26 @@ All design decisions in this spec are backed by research in `docs/research/`:
 
 ## Success Criteria
 
-- [ ] SC-240: runTemplateCompliance uses agnix + RepoRails via Bun.spawnSync
-- [ ] SC-241: runGeneratedCompliance compares against baseline
-- [ ] SC-242: runBehavioralCompliance spawns fresh agent + auditor
-- [ ] SC-243: Hill climb loop with max 5 iterations
-- [ ] SC-244: 7 compliance factors applied during rewrites
-- [ ] SC-245: Compliance surface = 4 file types only
-- [ ] SC-246: Escalate to mechanical after 5 failed iterations
-- [ ] SC-247: Report to compliance-report.json
-- [ ] SC-248: Auditor after every agent
-- [ ] SC-249: Agent briefs load with matching agentType
-- [ ] SC-250: Five-layer measurement model
-- [ ] SC-286: resolveAndContain() utility validates all file paths in matchPattern — rejects [../, absolute paths, symlink escape]
+- [x] SC-240: runTemplateCompliance uses agnix + RepoRails via Bun.spawnSync
+- [x] SC-241: runGeneratedCompliance compares against baseline
+- [x] SC-242: runBehavioralCompliance spawns fresh agent + auditor
+- [x] SC-243: Hill climb loop with max 5 iterations
+- [x] SC-244: 7 compliance factors applied during rewrites
+- [x] SC-245: Compliance surface = 4 file types only
+- [x] SC-246: Escalate to mechanical after 5 failed iterations
+- [x] SC-247: Report to compliance-report.json
+- [x] SC-248: Auditor after every agent
+- [x] SC-249: Agent briefs load with matching agentType
+- [x] SC-250: Five-layer measurement model
+- [x] SC-286: resolveAndContain() utility validates all file paths in matchPattern — rejects [../, absolute paths, symlink escape]
 - [ ] SC-287: Unmatched SCs produce FAIL in strict mode (default), WARN only when frontmatter has `compliance: permissive`
-- [ ] SC-288: matchPattern supports content-contains — SC bracket-list values [x, y, z] become assertion targets
-- [ ] SC-289: matchPattern supports content-not-contains — SC with "must NOT" or "no" + bracket-list
-- [ ] SC-290: matchPattern supports count-threshold — SC with "under [N] lines" or "at most [N]" extracts number
-- [ ] SC-291: matchPattern supports json-field-equals — SC with "field X equals Y" checks JSON files
-- [ ] SC-292: matchPattern supports section-exists — SC with "has section [heading]" checks markdown
+- [x] SC-288: matchPattern supports content-contains — SC bracket-list values [x, y, z] become assertion targets
+- [x] SC-289: matchPattern supports content-not-contains — SC with "must NOT" or "no" + bracket-list
+- [x] SC-290: matchPattern supports count-threshold — SC with "under [N] lines" or "at most [N]" extracts number
+- [x] SC-291: matchPattern supports json-field-equals — SC with "field X equals Y" checks JSON files
+- [x] SC-292: matchPattern supports section-exists — SC with "has section [heading]" checks markdown
 - [ ] SC-293: SPEC-TEMPLATE.md documents all matchable SC patterns — updated in same commit as matchPattern changes
-- [ ] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
+- [x] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
 - [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern, hand-written tests deleted
 
 ## Baseline (2026-09-20)

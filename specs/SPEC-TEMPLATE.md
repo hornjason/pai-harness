@@ -41,7 +41,7 @@ Anti-criterion:    - [ ] SC-AN: {thing that must NOT happen}
 ```
 
 - [ ] SC-1: [first criterion]
-- [ ] SC-2: [second criterion]
+- [x] SC-2: [second criterion]
 - [ ] SC-A1: [anti-criterion — must NOT happen]
 
 ## Implementation

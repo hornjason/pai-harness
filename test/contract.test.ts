@@ -47,7 +47,7 @@ describe("contract: LIGHT tier", { timeout: 30_000 }, () => {
     expect(r.pass).toBeGreaterThan(0);
   });
 
-  test("ship passes", () => {
+  test("ship passes", { timeout: 15_000 }, () => {
     const r = runGate("ship", "light");
     expect(r.pass).toBeGreaterThan(0);
   });
@@ -84,7 +84,7 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
     expect(r.fail).toBe(0);
   });
 
-  test("ship passes", () => {
+  test("ship passes", { timeout: 15_000 }, () => {
     const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
   });
