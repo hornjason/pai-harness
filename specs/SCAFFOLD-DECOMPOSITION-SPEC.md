@@ -56,7 +56,7 @@ lib/validators/
 
 ## Success Criteria
 
-- [ ] SC-358: `lib/scanner.ts` exists and returns typed `ProjectScan` interface
+- [ ] SC-358: Project scanning extracted to lib/scanner.ts with typed ProjectScan interface
 - [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories from project root
 - [ ] SC-360: AGENTS.md generator takes ProjectScan input, produces AGENTS.md content
 - [ ] SC-361: Agent brief generator reads template files and fills variables from ProjectScan

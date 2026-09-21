@@ -44,7 +44,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 ## Success Criteria
 
 - [ ] SC-367: AgentBriefGuard.hook.ts is under 50 lines — validation logic in `lib/brief-validator.ts`
-- [ ] SC-368: `lib/brief-validator.ts` exists and is independently testable
+- [ ] SC-368: Brief validation logic extracted to lib/brief-validator.ts with independent tests
 - [ ] SC-369: GateEnforcement.hook.ts is under 100 lines — enforcement logic in lib/
 - [ ] SC-370: Every hook file traces to at least one SC in a testable spec
 - [ ] SC-371: No hook file exceeds 150 lines
