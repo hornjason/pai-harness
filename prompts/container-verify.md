@@ -26,3 +26,8 @@ After container-rebuild completes — before declaring deploy success.
 - Container HEAD: {sha}
 - Health: {response}
 - Failures: [list or "none"]
+
+### Never
+- Never skip the health endpoint check — a running container is not the same as a healthy container
+- Never declare container verified without completing smoke tests on critical endpoints
+- Never report "verified" when the container HEAD doesn't match the expected commit SHA

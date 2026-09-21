@@ -24,3 +24,8 @@ After identifying root cause — before implementing the fix.
 ### Example
 Bad: `if (x) doThing(x)` — fixes one caller
 Good: `function doThing(x: NonNullable<T>)` — prevents all callers
+
+### Never
+- Never fix only the immediate instance without auditing sibling files for the same pattern
+- Never skip the regression test — a fix without a test that would have caught it is incomplete
+- Never add a guard without narrowing the type — runtime checks that the compiler can't enforce will recur

@@ -24,3 +24,8 @@ After implementing a fix — before marking AC complete.
 ### Gate enforcement
 - Test count post >= test count pre — decrease = FAIL
 - Zero test removals without explicit rationale
+
+### Never
+- Never delete existing tests to make a new fix pass — test removals require explicit rationale
+- Never skip the negative control (reverting the fix to confirm the test fails without it)
+- Never write a test that covers only the symptom — test the root cause

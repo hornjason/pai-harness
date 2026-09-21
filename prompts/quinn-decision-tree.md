@@ -29,3 +29,8 @@ Embedded in Quinn's brief — referenced during journey execution.
 ### Circuit breaker
 3 consecutive FAIL steps → abort journey, report partial results.
 Max 8 steps per journey — split longer flows.
+
+### Never
+- Never skip pre-conditions — if the page isn't loaded or shows errors, report FAIL immediately without testing ACs
+- Never report PASS without a11y snapshot or screenshot evidence backing the assertion
+- Never use screenshots as the primary assertion method — browser_snapshot (a11y tree) is always primary

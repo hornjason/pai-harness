@@ -93,6 +93,11 @@ Overall: PASS | FAIL
 {If FAIL: blocking issues listed}
 ```
 
+### Never
+- Never guess URLs — always use the pages map from rungate.json for target URLs
+- Never skip viewport setup (browser_resize) before testing — assertions against wrong viewport produce false passes
+- Never report PASS without attaching snapshot or screenshot evidence for each AC
+
 ## Interpolation Variables
 
 | Variable | Source |

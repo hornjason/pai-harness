@@ -28,3 +28,7 @@ Read-to-write ratio >= 3:1 (measured in tokens).
 
 ### Gate check
 `readTokens / writeTokens >= 3.0` — FAIL if under.
+
+### Never
+- Never write code before reading at least 3x the tokens you plan to write — the gate enforces this mechanically
+- Never skip reading dependency files that import the files you'll change — downstream breakage from unread dependents is the top failure mode
