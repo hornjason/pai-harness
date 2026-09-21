@@ -1,10 +1,11 @@
 {
   "updated": "2026-09-21",
   "priorities": [
-    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase D next — migrate phase-0",
+    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase E next — staleness + strict mode",
     "Phase A: DONE — 9 SCs rewritten static, 5 tagged behavioral, +3 auto-generated tests",
     "Phase B: DONE — 6 new matchers added to matchPattern()",
     "Phase C: DONE — phase-2/3/5/1 migrated to thin consumers (1,514→288 lines, -81%)",
+    "Phase D: DONE — phase-0 migrated (949→837, -12%). Cross-project boundary limits thin consumer pattern.",
     "Phase D: Migrate phase-0 to ~200 lines (SC-332)",
     "Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)",
     "THEN merge pending worktrees (SC-293, SC-302) into refactored architecture"

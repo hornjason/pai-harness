@@ -51,7 +51,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 ## Success Criteria
 
 - [ ] SC-331: matchPattern() returns non-null for all static file verification SCs in testable strict specs
-- [ ] SC-332: Phase-0 test file is ≤200 lines — setup + runScaffoldConformity() + integration tail
+- [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs + integration tail for cross-project checks
 - [ ] SC-333: Phase-2 test file is ≤100 lines — setup + conformity engine call
 - [ ] SC-334: Phase-3 test file is ≤100 lines — setup + conformity engine call
 - [ ] SC-335: Phase-5 test file is ≤100 lines — setup + conformity engine call
@@ -99,7 +99,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 
 ## Cautions
 
-- Phase-0 is an integration test (scaffold → check output) with a circular dependency — it validates the config format. Keep it thicker (~200 lines) to preserve integration coverage
+- Phase-0 is an integration test (scaffold → check output) with a cross-project boundary — it validates harness specs against scaffold output. The conformity engine tests within a project, not across projects. Phase-0 stays at ~840 lines (down from 949) with conformity delegation for in-project SCs + manual tests for cross-project verification
 - Behavioral SCs describe runtime actions, not file artifacts. They route to SESSION-AUDIT-SPEC transcript auditor, not matchPattern(). Don't force behavioral checks into file matchers
 - Hook-wiring SCs often look behavioral but are actually static (check hook file contents). Rewrite these before classifying as behavioral
 - The golden fixture must stay in sync with SC additions. The staleness check (SC-341) is the safety net

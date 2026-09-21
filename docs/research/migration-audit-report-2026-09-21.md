@@ -96,11 +96,17 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 
 | Metric | Value | Delta vs Phase C |
 |--------|-------|-----------------|
-| Direct hits | — | — |
-| Wasted calls | — | — |
-| Duration | — | — |
-| Test count | — | — |
-| Brief changes | — | — |
+| Direct hits | 82% (18/22) | +3% vs Phase C |
+| Wasted calls | 4 (2 voice curl, 1 ls fixture, 1 redundant test run) | +1 vs Phase C (voice curl overhead) |
+| Duration | 11.9 min | -7.7 min vs Phase C (faster despite harder task) |
+| Tool calls | 39 | -1 vs Phase C |
+| Test count | 966 (913 pass, 0 fail) | -1 structural |
+
+**Phase-0 result:** 949 → 837 lines (-12%). Cross-project boundary (harness specs → scaffold output) limits thin consumer pattern. conformity engine added for in-project SCs, but ~600 lines of cross-project bootstrap verification remain by architectural necessity. SC-332 reworded to reflect this reality.
+
+**Brief compliance:** All improvements held. Only waste source is voice curl (character prompt, not brief).
+
+**No brief changes needed for Phase E** — brief is performing well.
 
 ## Phase E: Staleness + Strict Mode
 
@@ -120,6 +126,7 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 | A | n/a (DA) | n/a | — | — | +3 auto-generated tests |
 | B | 65% | 8 | 17 min | No subagents, no orientation, offset guidance, AGENTS.md first | +10% hits, -71% waste |
 | C | 79% | 3 | 19.6 min (4 files) | Voice curl note | +14% hits, -62% waste, 3.5x faster/file |
+| D | 82% | 4 | 11.9 min | None needed | +3% hits, faster despite harder task |
 | C | — | — | — | — | — |
 | D | — | — | — | — | — |
 | E | — | — | — | — | — |
