@@ -425,6 +425,125 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
     };
   }
 
+  // SC-336: regex-match - X matches /pattern/
+  const regexMatchPattern = s.match(/^(\S+)\s+matches\s+\/(.+?)\/([gimsuvy]*)$/i);
+  if (regexMatchPattern) {
+    const file = regexMatchPattern[1].replace(/`/g, "");
+    const pattern = regexMatchPattern[2];
+    const flags = regexMatchPattern[3] || "";
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      const regex = new RegExp(pattern, flags);
+      expect(regex.test(content)).toBe(true);
+    };
+  }
+
+  // SC-337: source-contains - harness {file} contains [keywords]
+  // Note: This handles the explicit "harness {file}" pattern for clarity,
+  // though the existing content-contains matcher also works for source files
+  const sourceContainsMatch = s.match(/^(?:harness\s+)?(\S+)\s+contains?\s+\[([^\]]+)\]/i);
+  if (sourceContainsMatch) {
+    const file = sourceContainsMatch[1].replace(/`/g, "");
+    // Only match if it's a source file path (lib/, scripts/, hooks/, gates/) or has "harness" prefix
+    const isSourceFile = /^(lib|scripts|hooks|gates)\//.test(file) || s.toLowerCase().includes("harness");
+    if (isSourceFile) {
+      const items = sourceContainsMatch[2].split(",").map(i => i.trim());
+      return (root) => {
+        const path = join(root, file);
+        if (!existsSync(path)) {
+          expect(existsSync(path)).toBe(true);
+          return;
+        }
+        const content = readFileSync(path, "utf-8");
+        for (const item of items) {
+          expect(content).toContain(item);
+        }
+      };
+    }
+  }
+
+  // SC-338: json-has-field - {file}.json has field {name}
+  const jsonHasFieldMatch = s.match(/^(\S+?)(?:\.json)?\s+has\s+field\s+(\S+)/i);
+  if (jsonHasFieldMatch) {
+    const file = jsonHasFieldMatch[1].replace(/`/g, "");
+    const filePath = file.endsWith(".json") ? file : `${file}.json`;
+    const field = jsonHasFieldMatch[2];
+    return (root) => {
+      const path = join(root, filePath);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      const json = JSON.parse(content);
+      // Support nested fields like "config.name"
+      const fieldParts = field.split(".");
+      let value = json;
+      for (const part of fieldParts) {
+        value = value?.[part];
+      }
+      expect(value).toBeDefined();
+    };
+  }
+
+  // SC-339: scaffold-produces - scaffold output {file} exists
+  const scaffoldProducesMatch = s.match(/^scaffold\s+output\s+(\S+)\s+exists/i);
+  if (scaffoldProducesMatch) {
+    const file = scaffoldProducesMatch[1].replace(/`/g, "");
+    return (root) => {
+      // For now, this checks if the file exists in the root
+      // A more complete implementation would actually run scaffold and check output
+      const path = join(root, file);
+      expect(existsSync(path)).toBe(true);
+    };
+  }
+
+  // SC-340: frontmatter-field - {file} frontmatter has {field} = {value} OR {file} frontmatter has {field}
+  const frontmatterMatch = s.match(/^(\S+)\s+frontmatter\s+has\s+(\S+)(?:\s*=\s*(.+))?$/i);
+  if (frontmatterMatch) {
+    const file = frontmatterMatch[1].replace(/`/g, "");
+    const field = frontmatterMatch[2];
+    const expectedValue = frontmatterMatch[3]?.trim();
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      const fm = parseFrontmatter(content);
+      expect(fm).toBeDefined();
+      expect(fm?.[field]).toBeDefined();
+      if (expectedValue !== undefined) {
+        expect(fm?.[field]).toBe(expectedValue);
+      }
+    };
+  }
+
+  // file-line-range - {file} is between [N] and [M] lines
+  const lineRangeMatch = s.match(/^(\S+)\s+is\s+between\s+\[(\d+)\]\s+and\s+\[(\d+)\]\s+lines/i);
+  if (lineRangeMatch) {
+    const file = lineRangeMatch[1].replace(/`/g, "");
+    const min = parseInt(lineRangeMatch[2]);
+    const max = parseInt(lineRangeMatch[3]);
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      const lineCount = content.trimEnd().split("\n").length;
+      expect(lineCount).toBeGreaterThanOrEqual(min);
+      expect(lineCount).toBeLessThanOrEqual(max);
+    };
+  }
+
   return null;
 }
 
