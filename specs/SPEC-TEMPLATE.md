@@ -4,7 +4,7 @@ status: draft
 owner: [name]
 created: [YYYY-MM-DD]
 updated: [YYYY-MM-DD]
-governs: [what this spec governs — one line]
+governs: [intent — "I want to..." language, e.g. "Fix scaffold output, change what files get generated". This drives the AGENTS.md routing table. Write once, be specific.]
 testable: false
 ---
 
@@ -41,7 +41,7 @@ Anti-criterion:    - [ ] SC-AN: {thing that must NOT happen}
 ```
 
 - [ ] SC-1: [first criterion]
-- [ ] SC-2: [second criterion]
+- [x] SC-2: [second criterion]
 - [ ] SC-A1: [anti-criterion — must NOT happen]
 
 ## Implementation

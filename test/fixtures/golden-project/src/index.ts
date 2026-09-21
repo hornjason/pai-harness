@@ -1,9 +1,8 @@
-export function greet(name: string): string {
-  return `Hello, ${name}!`;
-}
+// API server — route definitions
+const app = { get: (_p: string, _h: Function) => {}, post: (_p: string, _h: Function) => {} };
 
-export function add(a: number, b: number): number {
-  return a + b;
-}
+app.get("/api/health", () => ({ status: "ok" }));
+app.get("/api/users", () => ({ users: [] }));
+app.post("/api/users", () => ({ created: true }));
 
 export const VERSION = "1.0.0";

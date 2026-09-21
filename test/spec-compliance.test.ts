@@ -268,16 +268,17 @@ describe("spec-sync: HARNESS-SKILL-CHAIN.md contains required claims", () => {
     expect(SPEC_MD).toContain("Layer 3");
   });
 
-  test("SS-2: Spec documents Quinn container before PR", () => {
-    expect(SPEC_MD).toContain("Quinn container PASS before PR");
+  test("SS-2: Spec documents Quinn local PASS before commit", () => {
+    expect(SPEC_MD).toContain("Quinn local PASS before commit");
   });
 
-  test("SS-3: Spec documents make test-rebuild for Layer 2", () => {
-    expect(SPEC_MD).toContain("make test-rebuild");
+  test("SS-3: Spec documents CI runs for Layer 2", () => {
+    expect(SPEC_MD).toContain("CI runs");
+    expect(SPEC_MD).toContain("Layer 2");
   });
 
-  test("SS-4: Spec documents make prove-up for Layer 3 (post-merge)", () => {
-    expect(SPEC_MD).toContain("make prove-up");
+  test("SS-4: Spec documents production-like environment for Layer 3 (post-merge)", () => {
+    expect(SPEC_MD).toContain("production-like environment");
     expect(SPEC_MD).toContain("post-merge");
   });
 

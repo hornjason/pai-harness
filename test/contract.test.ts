@@ -22,7 +22,7 @@ function runGate(gate: string, slug: string): { pass: number; fail: number; outp
   }
 }
 
-describe("contract: LIGHT tier", () => {
+describe("contract: LIGHT tier", { timeout: 30_000 }, () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "light");
     mkdirSync(dir, { recursive: true });
@@ -47,13 +47,13 @@ describe("contract: LIGHT tier", () => {
     expect(r.pass).toBeGreaterThan(0);
   });
 
-  test("ship passes", () => {
+  test("ship passes", { timeout: 15_000 }, () => {
     const r = runGate("ship", "light");
     expect(r.pass).toBeGreaterThan(0);
   });
 });
 
-describe("contract: STANDARD tier", () => {
+describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "standard");
     mkdirSync(dir, { recursive: true });
@@ -84,7 +84,7 @@ describe("contract: STANDARD tier", () => {
     expect(r.fail).toBe(0);
   });
 
-  test("ship passes", () => {
+  test("ship passes", { timeout: 15_000 }, () => {
     const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
   });

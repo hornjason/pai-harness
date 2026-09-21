@@ -123,7 +123,6 @@ describe("scaffold-project: AGENTS.md generation", () => {
       "Tests",
       "Commands",
       "Workflow",
-      "Quick Reference",
       "Harness-Managed Files",
     ];
     for (const section of requiredSections) {
@@ -159,14 +158,15 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("never overwrites existing AGENTS.md", () => {
+  test("always regenerates AGENTS.md (SC-11 — harness-owned)", () => {
     tmpDir = createTempDir();
-    const existingContent = "# My Custom AGENTS.md\n\nThis should not be overwritten.";
+    const existingContent = "# My Custom AGENTS.md\n\nThis should be regenerated.";
     writeFileSync(join(tmpDir, "AGENTS.md"), existingContent);
     runScaffold(tmpDir);
 
     const content = readFileSync(join(tmpDir, "AGENTS.md"), "utf-8");
-    expect(content).toBe(existingContent);
+    expect(content).not.toBe(existingContent);
+    expect(content).toContain("## Rules");
   });
 
   test("never overwrites existing copilot-instructions.md", () => {
@@ -260,15 +260,27 @@ describe("scaffold-project: spec frontmatter injection", () => {
     expect(content).toContain("doc-type: spec");
   });
 
-  test("does not modify spec files that already have frontmatter", () => {
+  test("does not modify spec files that already have complete frontmatter", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "specs"), { recursive: true });
-    const existing = "---\ndoc-type: spec\ntestable: true\n---\n# Already Good";
+    const existing = "---\ndoc-type: spec\ntestable: true\ncreated: 2026-01-01\ngoverns: test\n---\n# Already Good";
     writeFileSync(join(tmpDir, "specs", "good-spec.md"), existing);
     runScaffold(tmpDir);
 
     const content = readFileSync(join(tmpDir, "specs", "good-spec.md"), "utf-8");
     expect(content).toBe(existing);
+  });
+
+  test("adds missing required fields to existing frontmatter", () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "specs"), { recursive: true });
+    const partial = "---\ndoc-type: spec\n---\n# Partial";
+    writeFileSync(join(tmpDir, "specs", "partial-spec.md"), partial);
+    runScaffold(tmpDir);
+
+    const content = readFileSync(join(tmpDir, "specs", "partial-spec.md"), "utf-8");
+    expect(content).toContain("testable:");
+    expect(content).toContain("created:");
   });
 });
 

@@ -109,9 +109,13 @@ function loadProjectHarness(projectRoot: string): Record<string, any> | null {
 function extractContextDocs(harness: Record<string, any> | null): string[] {
   if (!harness?.contextDocs) return [];
   const docs = harness.contextDocs;
-  if (Array.isArray(docs)) return docs;
-  if (typeof docs === "object") return Object.values(docs) as string[];
-  return [];
+  const raw = Array.isArray(docs) ? docs : typeof docs === "object" ? Object.values(docs) as string[] : [];
+  return raw.filter((p): p is string =>
+    typeof p === "string" &&
+    !p.includes("..") &&
+    !p.startsWith("/") &&
+    p.length > 0
+  );
 }
 
 function buildContextSection(projectRoot: string): string {

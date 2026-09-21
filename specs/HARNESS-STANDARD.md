@@ -4,6 +4,8 @@ status: active
 owner: jason
 updated: 2026-08-06
 testable: true
+created: 2026-09-20
+governs: Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain
 ---
 
 # PAI Agentic Harness Standard
@@ -41,7 +43,7 @@ flowchart TD
     RESEARCH -->|No| PLANNING
     RESEARCH_STEP --> PLANNING
 
-    PLANNING["3. PLANNING<br/>XS/S: ACs → post to issue<br/>M: Skill: grill-with-docs → ACs<br/>L: grill → to-prd → council → to-issues<br/>Marcus brief from BRIEF-TEMPLATES.md"]
+    PLANNING["3. PLANNING<br/>XS/S: ACs → post to issue<br/>M: Skill: grill-with-docs → ACs<br/>L: grill → to-prd → council → to-issues<br/>Marcus brief from ~/.claude/PAI/BRIEF-TEMPLATES.md"]
     PLANNING --> EXECUTION
 
     EXECUTION["4. EXECUTION<br/>Skill: ship BUILD step<br/>├ Route: local · remote · container<br/>├ Skill: tdd (red-green-refactor)<br/>├ Marcus builds (worktree or direct)<br/>├ Skill: simplify · fallow · architecture check<br/>└ Deploy: project CLAUDE.md command"]
@@ -227,14 +229,14 @@ This artifact is durable — it survives context compaction and session boundari
 
 **Output:**
 - ACs posted to GitHub issue via `gh issue comment` (BEFORE execution starts)
-- Marcus brief prepared (from BRIEF-TEMPLATES.md)
+- Marcus brief prepared (from ~/.claude/PAI/BRIEF-TEMPLATES.md)
 - For L: sub-issues created, each with own ACs
 
 **Quality bar:** Every AC has a declared evidence type (code presence, grep absence, screenshot, API response, test pass). Every AC passes the garbage test.
 
 **Handoff to EXECUTION:** GitHub issue with ACs + Marcus brief.
 
-**Reference:** → Ship REFERENCE.md for AC templates, evidence types, issue templates, garbage test table. → BRIEF-TEMPLATES.md for Marcus brief format.
+**Reference:** → ~/.claude/skills/ship/SKILL.md for AC templates, evidence types, issue templates, garbage test table. → ~/.claude/PAI/BRIEF-TEMPLATES.md for Marcus brief format.
 
 ---
 
@@ -273,7 +275,7 @@ Check DISCOVERY's answer to "Where does this run?":
 
 **Handoff to VERIFICATION:** List of changed files + deploy confirmation.
 
-**Reference:** → Ship SKILL.md BUILD step. → BRIEF-TEMPLATES.md for Marcus brief.
+**Reference:** → Ship SKILL.md BUILD step. → ~/.claude/PAI/BRIEF-TEMPLATES.md for Marcus brief.
 
 ---
 
@@ -284,22 +286,22 @@ Check DISCOVERY's answer to "Where does this run?":
 **Process (mechanical — same every time):**
 0. **Baseline validity check.** For each SC with a Baseline Value, compare against the latest execution observation from structured findings on the issue. If drift exceeds 20%, SKIP AC evaluation and route to ITERATION Goal Audit gate. This prevents false PASS on wrong premises.
 0.5. **Issue re-read (inherited drift check).** After receiving agent output and before writing the completion report, re-read the GitHub issue body via `gh issue view NUM`. Compare agent output against the original AC text and thresholds on the issue — not conversation memory or the brief's paraphrase. Inherited drift accumulates when the DA evaluates against a stale mental model of the ACs instead of the canonical source. This step costs 5 seconds and prevents false PASS from drift.
-1. Every AC-N checked against evidence (→ Ship REFERENCE.md evidence types)
-2. Full test suite: `bun test --isolate test/unit/` AND `bun test test/integration/`
+1. Every AC-N checked against evidence (→ ~/.claude/skills/ship/SKILL.md evidence types)
+2. Full test suite: `bun test` (all tests in test/ directory)
 3. Tests pass on test env — read project CLAUDE.md for test port (e.g., 7776 for DailyBriefDashboard). Do not assume port.
-4. If UI change (any `.tsx` file modified) → spawn Quinn (QUINN-STANDARD.md)
+4. If UI change (any `.tsx` file modified) → spawn Quinn (~/.claude/PAI/Testing/QUINN-STANDARD.md)
 5. If M+ size → spawn Rook (security scan on changed files)
-6. If consumer change (read project PRINCIPLES.md consumer list; if any changed file is in consumer list → mandatory) → Consumer 4-layer verification (→ Ship REFERENCE.md)
+6. If consumer change (read project PRINCIPLES.md consumer list; if any changed file is in consumer list → mandatory) → Consumer 4-layer verification (→ ~/.claude/skills/ship/SKILL.md)
 7. Goal statement check (→ `project_application_mission.md`)
 8. Docs cascade check (→ Ship SKILL.md DURABILITY matrix)
 
-**Output:** PASS/FAIL per AC with evidence. Completion report (→ Ship REFERENCE.md template).
+**Output:** PASS/FAIL per AC with evidence. Completion report (→ ~/.claude/skills/ship/SKILL.md template).
 
 **Quality bar:** ALL ACs have evidence. ALL tests pass (zero tolerance). Quinn PASS if UI. Rook PASS if M+.
 
 **Handoff to ITERATION:** PASS → close issue, go to FEEDBACK. FAIL → enter ITERATION.
 
-**Reference:** → Ship SKILL.md VERIFY step. → Ship REFERENCE.md completion report template. → QUINN-STANDARD.md for Quinn protocol.
+**Reference:** → Ship SKILL.md VERIFY step. → ~/.claude/skills/ship/SKILL.md completion report template. → ~/.claude/PAI/Testing/QUINN-STANDARD.md for Quinn protocol.
 
 ---
 
@@ -348,7 +350,7 @@ Detection runs for ALL sizes (cost: under 10 seconds of grep against issue comme
 Response is size-gated:
 - **XS/S:** STOP. Notify DA: "SC-N baseline incorrect: assumed [X], measured [Y]. Source: [FINDING comment URL]." DA decides next step.
 - **M:** DA amends ACs on the GitHub issue (strikethrough old values, add new, document rationale via `gh issue comment`). Reset `stderr_hashes` and `tool_call_hashes` in stuck-detection.json. Re-enter at DISCOVERY.
-- **L:** Mandatory council review of the GOAL (not the approach) using Goal-Level Review brief template (→ BRIEF-TEMPLATES.md). Council decides: revise ACs, investigate assumption, or abort.
+- **L:** Mandatory council review of the GOAL (not the approach) using Goal-Level Review brief template (→ ~/.claude/PAI/BRIEF-TEMPLATES.md). Council decides: revise ACs, investigate assumption, or abort.
 
 **Meta-circuit-breaker:** Max 2 goal amendments per issue. Third trigger = STOP unconditionally + notify Jason. This counts council-revised goals — the council is not exempt. `goal_audit_count` tracks this.
 
@@ -385,7 +387,7 @@ When Goal Audit amends ACs: reset `stderr_hashes` and `tool_call_hashes` (old er
            → Umbrella closes via close-gate.sh decomposed path (D1-D4) when all children ship
 
 4. 1-2 attempts failed on same approach?
-   └─ YES → Escalate to specialist (→ CLAUDE.md Delegation Matrix for who handles what; → BRIEF-TEMPLATES.md for brief format)
+   └─ YES → Escalate to specialist (→ CLAUDE.md Delegation Matrix for who handles what; → ~/.claude/PAI/BRIEF-TEMPLATES.md for brief format)
 
 5. Per-goal budget exhausted?
    └─ YES → STOP

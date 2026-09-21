@@ -6,8 +6,9 @@
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
 import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join } from "path";
+import { deriveDirectoryName } from "../scripts/split-spec";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -20,6 +21,19 @@ export function parseFrontmatter(content: string): Record<string, string> | null
     if (kv) fields[kv[1]] = kv[2].trim();
   }
   return fields;
+}
+
+/**
+ * SC-286: Resolve and validate file paths - reject traversal and absolute paths
+ * Returns resolved path or null if path is unsafe
+ */
+export function resolveAndContain(root: string, target: string): string | null {
+  // Reject path traversal
+  if (target.includes("../")) return null;
+  // Reject absolute paths
+  if (target.startsWith("/")) return null;
+  // Allow normal relative paths (including those with dots in filenames like .rungate)
+  return join(root, target);
 }
 
 export { SIGNAL_PHRASE_PATTERNS } from "./signal-phrases";
@@ -118,8 +132,13 @@ function extractSCs(content: string, specFile: string): ParsedSC[] {
   return scs;
 }
 
-function collectTestableSpecs(root: string, extraSpecDirs?: string[]): ParsedSC[] {
-  const allSCs: ParsedSC[] = [];
+interface SpecMetadata {
+  scs: ParsedSC[];
+  compliance: "strict" | "permissive";
+}
+
+function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<string, SpecMetadata> {
+  const specMap = new Map<string, SpecMetadata>();
 
   const localSpecs = join(root, "specs");
   if (existsSync(localSpecs)) {
@@ -127,7 +146,11 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): ParsedSC[
       const content = readFileSync(join(localSpecs, f), "utf-8");
       const fm = parseFrontmatter(content);
       if (fm?.testable === "true") {
-        allSCs.push(...extractSCs(content, f));
+        const compliance = fm?.compliance === "permissive" ? "permissive" : "strict";
+        specMap.set(f, {
+          scs: extractSCs(content, f),
+          compliance
+        });
       }
     }
   }
@@ -140,18 +163,23 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): ParsedSC[
       if (fm?.testable !== "true") continue;
       const governs = fm?.governs || "";
       if (!governs.toLowerCase().includes("scaffold") && !governs.toLowerCase().includes("universal")) continue;
-      allSCs.push(...extractSCs(content, `${dir.split("/").pop()}/${f}`));
+      const compliance = fm?.compliance === "permissive" ? "permissive" : "strict";
+      const specFile = `${dir.split("/").pop()}/${f}`;
+      specMap.set(specFile, {
+        scs: extractSCs(content, specFile),
+        compliance
+      });
     }
   }
 
-  return allSCs;
+  return specMap;
 }
 
 // ── Pattern matchers ────────────────────────────────────────
 
 type AssertionFn = (root: string) => void;
 
-function matchPattern(sc: ParsedSC): AssertionFn | null {
+export function matchPattern(sc: ParsedSC): AssertionFn | null {
   const s = sc.statement;
 
   const existsMatch = s.match(/^(\S+)\s+exists?\b(?:\s+at\s+root)?/i);
@@ -163,7 +191,8 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
       expect(existsSync(join(root, target))).toBe(true);
       if (limitMatch) {
         const content = readFileSync(join(root, target), "utf-8");
-        expect(content.split("\n").length).toBeLessThanOrEqual(parseInt(limitMatch[1]));
+        const lineCount = content.trimEnd().split("\n").length;
+        expect(lineCount).toBeLessThanOrEqual(parseInt(limitMatch[1]));
       }
     };
   }
@@ -211,8 +240,22 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
     return (root) => {
       const specsDir = join(root, "specs");
       if (!existsSync(specsDir)) return;
-      const missing = readdirSync(specsDir).filter(f => f.endsWith(".md")).filter(f => {
+
+      // Scan specs/*.md and specs/*/*.md (one level deep)
+      const specFiles: string[] = [];
+      for (const f of readdirSync(specsDir)) {
+        if (f.endsWith(".md")) {
+          specFiles.push(f);
+        } else if (existsSync(join(specsDir, f)) && readdirSync(specsDir, { withFileTypes: true }).find(d => d.name === f && d.isDirectory())) {
+          const subFiles = readdirSync(join(specsDir, f)).filter(sf => sf.endsWith(".md") && sf !== "INDEX.md");
+          specFiles.push(...subFiles.map(sf => `${f}/${sf}`));
+        }
+      }
+
+      const missing = specFiles.filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
+        // Skip redirect files (status: split)
+        if (fm?.status === "split") return false;
         return !fm || !("testable" in fm);
       });
       expect(missing).toEqual([]);
@@ -281,44 +324,144 @@ function matchPattern(sc: ParsedSC): AssertionFn | null {
     };
   }
 
+  // SC-288: content-contains - file contains [item1, item2, ...]
+  const containsMatch = s.match(/^(\S+)\s+contains?\s+\[([^\]]+)\]/i);
+  if (containsMatch) {
+    const file = containsMatch[1].replace(/`/g, "");
+    const items = containsMatch[2].split(",").map(i => i.trim());
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      for (const item of items) {
+        expect(content).toContain(item);
+      }
+    };
+  }
+
+  // SC-289: content-not-contains - file must NOT contain [item1, ...]
+  const notContainsMatch = s.match(/^(\S+)\s+(?:must\s+NOT\s+contain|has\s+no)\s+\[([^\]]+)\]/i);
+  if (notContainsMatch) {
+    const file = notContainsMatch[1].replace(/`/g, "");
+    const items = notContainsMatch[2].split(",").map(i => i.trim());
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      for (const item of items) {
+        expect(content).not.toContain(item);
+      }
+    };
+  }
+
+  // SC-290: count-threshold - file/section is under [N] lines / at most [N] words
+  const countMatch = s.match(/^(.+?)\s+(?:is\s+under|at\s+most)\s+\[(\d+)\]\s+(lines?|words?)/i);
+  if (countMatch) {
+    const file = countMatch[1].replace(/`/g, "").trim();
+    const threshold = parseInt(countMatch[2]);
+    const unit = countMatch[3].toLowerCase();
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      if (unit.startsWith("line")) {
+        const lineCount = content.trimEnd().split("\n").length;
+        expect(lineCount).toBeLessThanOrEqual(threshold);
+      } else {
+        const wordCount = content.split(/\s+/).filter(w => w.length > 0).length;
+        expect(wordCount).toBeLessThanOrEqual(threshold);
+      }
+    };
+  }
+
+  // SC-291: json-field-equals - file.json field equals [value]
+  const jsonMatch = s.match(/^(\S+)\s+(\S+)\s+field\s+equals\s+\[([^\]]+)\]/i);
+  if (jsonMatch) {
+    const file = jsonMatch[1].replace(/`/g, "");
+    const field = jsonMatch[2];
+    const expectedValue = jsonMatch[3];
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      const json = JSON.parse(content);
+      // Support nested fields like "config.name"
+      const fieldParts = field.split(".");
+      let value = json;
+      for (const part of fieldParts) {
+        value = value?.[part];
+      }
+      expect(value).toBe(expectedValue);
+    };
+  }
+
+  // SC-292: section-exists - file has section [SectionName]
+  const sectionMatch = s.match(/^(\S+)\s+has\s+section\s+\[([^\]]+)\]/i);
+  if (sectionMatch) {
+    const file = sectionMatch[1].replace(/`/g, "");
+    const sectionName = sectionMatch[2];
+    return (root) => {
+      const path = join(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      // Match both # and ## headings
+      const hasSection = new RegExp(`^#+ ${sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "mi").test(content);
+      expect(hasSection).toBe(true);
+    };
+  }
+
   return null;
 }
 
 // ── Exported test runners ───────────────────────────────────
 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
-  const HOME = process.env.HOME || "";
-  const defaultExtraSpecs = [join(HOME, ".claude", "PAI", "specs")];
-  const allSCs = collectTestableSpecs(root, opts?.extraSpecDirs ?? defaultExtraSpecs);
+  const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? []);
 
   describe("Spec-Driven Conformity Tests", () => {
-    if (allSCs.length === 0) {
+    if (specMap.size === 0) {
       test("at least one testable spec with SCs exists", () => {
-        expect(allSCs.length).toBeGreaterThan(0);
+        expect(specMap.size).toBeGreaterThan(0);
       });
       return;
     }
 
-    const bySpec = new Map<string, ParsedSC[]>();
-    for (const sc of allSCs) {
-      const group = bySpec.get(sc.specFile) || [];
-      group.push(sc);
-      bySpec.set(sc.specFile, group);
-    }
-
-    for (const [specFile, scs] of bySpec) {
+    for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
         const unmatched: string[] = [];
-        for (const sc of scs) {
+        for (const sc of metadata.scs) {
           const assertion = matchPattern(sc);
           if (!assertion) { unmatched.push(`${sc.id}: ${sc.statement}`); continue; }
           test(`${sc.id}: ${sc.statement}`, () => { assertion(root); });
         }
         if (unmatched.length > 0) {
-          test(`WARN: ${unmatched.length} SCs have no pattern matcher`, () => {
-            console.warn(`Unmatched SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
-            expect(true).toBe(true);
-          });
+          // SC-287: strict mode (default) fails on unmatched, permissive mode warns
+          if (metadata.compliance === "permissive") {
+            test(`WARN: ${unmatched.length} SCs have no pattern matcher`, () => {
+              console.warn(`Unmatched SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
+              expect(true).toBe(true);
+            });
+          } else {
+            test(`FAIL: ${unmatched.length} SCs have no pattern matcher (strict mode)`, () => {
+              console.error(`Unmatched SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
+              expect(unmatched).toEqual([]);
+            });
+          }
         }
       });
     }
@@ -517,9 +660,23 @@ export function runDocHygiene(root: string) {
     test("HYGIENE-2: All specs have updated field in frontmatter", () => {
       if (!existsSync(specsDir)) return;
       const missing: string[] = [];
-      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+
+      // Scan specs/*.md and specs/*/*.md (one level deep)
+      const specFiles: string[] = [];
+      for (const f of readdirSync(specsDir)) {
+        if (f.endsWith(".md")) {
+          specFiles.push(f);
+        } else if (existsSync(join(specsDir, f)) && readdirSync(specsDir, { withFileTypes: true }).find(d => d.name === f && d.isDirectory())) {
+          const subFiles = readdirSync(join(specsDir, f)).filter(sf => sf.endsWith(".md") && sf !== "INDEX.md");
+          specFiles.push(...subFiles.map(sf => `${f}/${sf}`));
+        }
+      }
+
+      for (const f of specFiles) {
         const content = readFileSync(join(specsDir, f), "utf-8");
         const fm = parseFrontmatter(content);
+        // Skip redirect files (status: split)
+        if (fm?.status === "split") continue;
         if (!fm || !fm.updated) missing.push(f);
       }
       expect(missing).toEqual([]);
@@ -839,6 +996,56 @@ export function runAgentFileValidation(root: string) {
         console.error(`Broken references in agent briefs:\n  ${broken.join("\n  ")}`);
       }
       expect(broken).toEqual([]);
+    });
+  });
+}
+
+// ── SC-294: Directory validation ───────────────────────────
+
+export function runDirectoryValidation(root: string) {
+  const specsDir = join(root, "specs");
+
+  describe("Directory Validation (SC-294)", () => {
+    test("SC-294: Every specs/ subdirectory has a parent spec file", () => {
+      if (!existsSync(specsDir)) return;
+
+      const invalid: string[] = [];
+
+      // Find all subdirectories in specs/
+      const entries = readdirSync(specsDir);
+      const subdirs = entries.filter(entry => {
+        const fullPath = join(specsDir, entry);
+        try {
+          return statSync(fullPath).isDirectory();
+        } catch {
+          return false;
+        }
+      });
+
+      // For each subdirectory, check if there's a corresponding parent spec
+      for (const subdir of subdirs) {
+        // Find all .md files in specs/
+        const specFiles = entries.filter(f => f.endsWith(".md"));
+
+        // Check if any spec file derives to this directory name
+        let found = false;
+        for (const specFile of specFiles) {
+          const derived = deriveDirectoryName(specFile);
+          if (derived === subdir) {
+            found = true;
+            break;
+          }
+        }
+
+        if (!found) {
+          invalid.push(`${subdir}/: no parent spec derives to this directory name`);
+        }
+      }
+
+      if (invalid.length > 0) {
+        console.error(`Hand-created directories (SC-294 violation):\n  ${invalid.join("\n  ")}\n\nDirectories MUST be created by split-spec.ts, not manually.`);
+      }
+      expect(invalid).toEqual([]);
     });
   });
 }

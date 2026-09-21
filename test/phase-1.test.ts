@@ -1,15 +1,16 @@
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { existsSync, readFileSync, mkdirSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, rmSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { addFinding, addCandidate, addStaleness, getFindings, getCandidates, getStaleness, clearFindings, writeFindingsReport, parseFrontmatter } from "../lib/conformity";
 import { extractConstraints } from "../scripts/extract-constraints";
 
 // Spec-drift guard
-const TEST_PLAN_HASH = "419d400dd23c9542";
+const TEST_PLAN_HASH = "7fb0bb69a53a466d";
 
 const OUTPUT = "/tmp/rungate-phase1-test";
 const HARNESS = join(import.meta.dir, "..");
+const SCAFFOLD = join(HARNESS, "scripts", "scaffold-project.ts");
 
 function runConformitySubprocess(root: string, suiteFilter?: string): { pass: number; fail: number; output: string } {
   const tmpTest = join(root, "_conformity-check.test.ts");
@@ -612,6 +613,71 @@ describe("Phase 1: Knowledge extraction + doc hygiene", () => {
       // "Never deploy on Fridays" is in both docs/rules.md and rejected-constraints.md
       // The dedup mechanism should detect this overlap
       expect(typeof result.deduped.candidatesRemoved).toBe("number");
+    });
+  });
+
+  // SC-268: create-spec prompts for governs at creation time
+  describe("SC-268: create-spec governs prompt", () => {
+    test("create-spec script exists", () => {
+      expect(existsSync(join(HARNESS, "scripts/create-spec.ts"))).toBe(true);
+    });
+
+    test("create-spec generates spec with governs in frontmatter", () => {
+      const output = execSync(
+        `bun ${join(HARNESS, "scripts/create-spec.ts")} "Test Governs" "Widget rendering pipeline"`,
+        { encoding: "utf-8", cwd: HARNESS, timeout: 10000 }
+      );
+      expect(output).toContain("Created");
+      const specPath = join(HARNESS, "specs/TEST-GOVERNS-SPEC.md");
+      expect(existsSync(specPath)).toBe(true);
+      const content = readFileSync(specPath, "utf-8");
+      expect(content).toContain("governs: Widget rendering pipeline");
+      rmSync(specPath);
+    });
+
+    test("create-spec warns when governs is omitted", () => {
+      const output = execSync(
+        `bun ${join(HARNESS, "scripts/create-spec.ts")} "No Governs Test"`,
+        { encoding: "utf-8", cwd: HARNESS, timeout: 10000 }
+      );
+      expect(output).toContain("governs: is TODO");
+      const specPath = join(HARNESS, "specs/NO-GOVERNS-TEST-SPEC.md");
+      if (existsSync(specPath)) rmSync(specPath);
+    });
+  });
+
+  // SC-269: Every spec has governs — WARN if missing/TODO at scaffold time
+  describe("SC-269: governs WARN at scaffold", () => {
+    test("scaffold warns for specs with TODO governs", () => {
+      const specPath = join(OUTPUT, "specs/TEST-WARN-GOVERNS.md");
+      mkdirSync(join(OUTPUT, "specs"), { recursive: true });
+      writeFileSync(specPath, "---\ndoc-type: spec\ntestable: true\ngoverns: TODO\n---\n\n# Test\n");
+      try {
+        const output = execSync(`bun run ${SCAFFOLD} ${OUTPUT}`, {
+          encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"]
+        });
+        expect(output).toContain("WARN");
+        expect(output).toContain("governs");
+      } catch (e: any) {
+        const out = (e.stdout || "") + (e.stderr || "");
+        expect(out).toContain("WARN");
+      } finally {
+        if (existsSync(specPath)) rmSync(specPath);
+      }
+    });
+  });
+
+  // SC-284: Permanent routing categories always present in AGENTS.md
+  describe("SC-284: permanent routing categories", () => {
+    test("AGENTS.md has all permanent categories even without directories", () => {
+      const agentsPath = join(OUTPUT, "AGENTS.md");
+      if (!existsSync(agentsPath)) return;
+      const content = readFileSync(agentsPath, "utf-8");
+      expect(content).toContain("docs/adr/");
+      expect(content).toContain("docs/research/");
+      expect(content).toContain("docs/council/");
+      expect(content).toContain("docs/guides/");
+      expect(content).toContain("reference/");
     });
   });
 });

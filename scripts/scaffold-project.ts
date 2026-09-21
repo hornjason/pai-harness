@@ -127,13 +127,12 @@ const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
 const testDirName = existingTestDir || "tests";
 safeDir(join(projectPath, testDirName), testDirName);
 
-// 2. Generate or refresh AGENTS.md (then update specs table from frontmatter)
-if (existsSync(join(projectPath, "AGENTS.md"))) {
-  refreshAgentsMd(projectPath, projectType);
-} else {
-  const agentsMd = generateAgentsMd(projectName, projectType);
-  safeWrite(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md");
-}
+// 2. Always regenerate AGENTS.md (spec line 24: "Everything is regenerable")
+// User rules go in CLAUDE.md, not AGENTS.md (harness-owned, always regenerated)
+const agentsMd = generateAgentsMd(projectName, projectType);
+writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
+actions.push(existsSync(join(projectPath, "AGENTS.md")) ? "REGENERATED: AGENTS.md" : "CREATED: AGENTS.md");
+refreshAgentsMd(projectPath, projectType);
 updateSpecsTable(join(projectPath, "AGENTS.md"));
 
 // 3. Create .github/copilot-instructions.md
@@ -153,8 +152,12 @@ safeWrite(
   `${testDirName}/scaffold-conformity.test.ts`
 );
 
-// 5. Add frontmatter to bare spec files
+// 5. Add frontmatter to bare spec files and ADRs
 addFrontmatterToSpecs(join(projectPath, "specs"));
+addFrontmatterToAdrs(join(projectPath, "docs", "adr"));
+// SC-278, SC-279: Detect oversized specs and governs misalignment
+detectOversizedSpecs(join(projectPath, "specs"));
+checkGovernsAlignment(join(projectPath, "specs"));
 
 // Phase 1: Scan code and generate config (data flows DOWN — config before briefs)
 // 6. Generate or refresh CODE-MAP.md (code projects only)
@@ -165,6 +168,11 @@ if (projectType === "code") {
 // 7. Generate or audit rungate.json (code projects only)
 if (projectType === "code") {
   generateOrAuditProjectHarness(projectPath);
+}
+
+// 7.5. Inject environment section into AGENTS.md from rungate.json (SC-3)
+if (projectType === "code") {
+  injectEnvironmentSection(projectPath);
 }
 
 // Phase 2: Generate briefs AFTER config (briefs read from rungate.json)
@@ -235,6 +243,46 @@ function updateSpecsTable(agentsMdPath: string): void {
   }
 }
 
+function injectEnvironmentSection(root: string): void {
+  const agentsMdPath = join(root, "AGENTS.md");
+  const harnessPath = join(root, ".claude", "rungate.json");
+  if (!existsSync(agentsMdPath) || !existsSync(harnessPath)) return;
+
+  let harness: any;
+  try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+
+  const lines: string[] = [];
+  if (harness.dev) {
+    lines.push("**Dev:**");
+    if (harness.dev.start) lines.push(`- Start: \`${harness.dev.start}\``);
+    if (harness.dev.apiBase) lines.push(`- API: ${harness.dev.apiBase}`);
+    if (harness.dev.uiBase) lines.push(`- UI: ${harness.dev.uiBase}`);
+    if (harness.dev.testCmd) lines.push(`- Test: \`${harness.dev.testCmd}\``);
+  }
+  if (harness.prod) {
+    const prodLines: string[] = [];
+    if (harness.prod.rebuild) prodLines.push(`- Deploy: \`${harness.prod.rebuild}\``);
+    if (harness.prod.apiBase) prodLines.push(`- API: ${harness.prod.apiBase}`);
+    if (prodLines.length > 0) {
+      lines.push("\n**Prod:**");
+      lines.push(...prodLines);
+    }
+  }
+  if (lines.length === 0) return;
+
+  const envSection = `## Environment\n\n${lines.join("\n")}`;
+  const existing = readFileSync(agentsMdPath, "utf-8");
+
+  // Insert before ## Workflow or append before last section
+  if (existing.includes("## Workflow")) {
+    const updated = existing.replace("## Workflow", `${envSection}\n\n## Workflow`);
+    writeFileSync(agentsMdPath, updated);
+  } else {
+    writeFileSync(agentsMdPath, existing + "\n\n" + envSection + "\n");
+  }
+  actions.push("UPDATED: AGENTS.md environment section from rungate.json");
+}
+
 function generateAgentsMd(name: string, type: ProjectType): string {
   const typeLabel = type === "code" ? "Code" : type === "content" ? "Content" : "Infrastructure";
 
@@ -271,24 +319,32 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     } catch {}
   }
 
-  // Preserve existing Hard Constraints section if AGENTS.md already exists
-  let existingHardConstraints = "";
-  const existingAgentsPath = join(projectPath, "AGENTS.md");
-  if (existsSync(existingAgentsPath)) {
-    try {
-      const existing = readFileSync(existingAgentsPath, "utf-8");
-      const hcMatch = existing.match(/## Hard Constraints[^\n]*\n\n([\s\S]*?)(?=\n## |\s*$)/);
-      if (hcMatch) {
-        const hcContent = hcMatch[1].trim();
-        // Only preserve if it has actual content (not just the placeholder comment)
-        if (hcContent && !hcContent.startsWith("<!-- Add project-specific")) {
-          existingHardConstraints = hcContent;
-        }
-      }
-    } catch (e: unknown) { console.error('Hard Constraints preservation failed:', (e as Error).message); throw e; }
-  }
+  // AGENTS.md is fully harness-owned — user rules go in CLAUDE.md
 
   const identity = readmeDesc || pkgDesc || `${typeLabel} project. <!-- TODO: Describe what this project is -->`;
+
+  // Detect tech stack from package.json
+  const techStack: string[] = [];
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      // Detect runtime
+      if (pkg.scripts?.test?.includes("bun") || pkg.scripts?.dev?.includes("bun") || pkg.scripts?.start?.includes("bun")) {
+        techStack.push("Bun");
+      } else if (pkg.scripts?.test?.includes("node") || pkg.scripts?.dev?.includes("node")) {
+        techStack.push("Node.js");
+      }
+      // Detect TypeScript
+      if (existsSync(join(projectPath, "tsconfig.json")) || pkg.devDependencies?.typescript || pkg.dependencies?.typescript) {
+        techStack.push("TypeScript");
+      }
+      // Detect module system
+      if (pkg.type === "module") {
+        techStack.push("ESM");
+      }
+    } catch {}
+  }
+  const techLine = techStack.length > 0 ? `\n**Tech:** ${techStack.join(", ")}` : "";
 
   // Detect git remote for repo URL
   let repoUrl = "";
@@ -300,6 +356,9 @@ function generateAgentsMd(name: string, type: ProjectType): string {
   // Scan key files
   const keyFiles: Array<{ file: string; what: string; when: string }> = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
+    { file: "NEXT-SESSION.md", what: "Session handoff brief — priorities, blockers, what NOT to do", when: "Session start, before any work" },
+    { file: "PROJECT-STATE.md", what: "Live status dashboard (generated — don't edit)", when: "Session start, after NEXT-SESSION.md" },
+    { file: "project-state.json", what: "Source of truth for project status", when: "Editing state" },
   ];
   const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
     { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
@@ -325,25 +384,51 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   // Scan specs
   const specsDir = join(projectPath, "specs");
-  const specRows: string[] = [];
+  const mergedSpecRows: string[] = [];
   if (existsSync(specsDir)) {
-    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+    const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+    for (const f of specFiles) {
       const content = readFileSync(join(specsDir, f), "utf-8");
       const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-      let testable = "false";
-      let governs = f.replace(/\.md$/, "");
+      let governs = "";
+      let testable = "TODO";
       if (fmMatch) {
-        const tMatch = fmMatch[1].match(/testable:\s*(true|false)/);
-        if (tMatch) testable = tMatch[1];
         const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-        if (gMatch) governs = gMatch[1].trim();
+        if (gMatch && gMatch[1].trim() !== "TODO" && gMatch[1].trim().length > 5) {
+          governs = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
+        }
+        const tMatch = fmMatch[1].match(/testable:\s*(.+)/);
+        if (tMatch) testable = tMatch[1].trim();
       }
-      specRows.push(`| ${f} | ${testable} | ${governs} |`);
+      mergedSpecRows.push(`| ${f} | ${governs} | ${testable} |`);
+    }
+
+    // Also scan specs subdirectories (e.g., specs/bootstrap/)
+    const specSubDirs = readdirSync(specsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory())
+      .map(d => d.name);
+    for (const sub of specSubDirs) {
+      const subPath = join(specsDir, sub);
+      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md") && f !== "INDEX.md");
+      if (subFiles.length > 0) {
+        const indexPath = join(subPath, "INDEX.md");
+        let groupGoverns = `${sub} (${subFiles.length} specs)`;
+        if (existsSync(indexPath)) {
+          const indexContent = readFileSync(indexPath, "utf-8");
+          const fmMatch = indexContent.match(/^---\n([\s\S]*?)\n---/);
+          if (fmMatch) {
+            const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+            if (gMatch && gMatch[1].trim().length > 5) {
+              groupGoverns = gMatch[1].trim().replace(/\|/g, "—").slice(0, 120);
+            }
+          }
+        }
+        mergedSpecRows.push(`| ${sub}/ (${subFiles.length} specs) | ${groupGoverns} | yes |`);
+      }
     }
   }
-  const specsTable = specRows.length > 0
-    ? specRows.join("\n")
-    : "| (none yet — copy SPEC-TEMPLATE.md from rungate) | | |";
+  // No artificial cap — 150-line AGENTS.md limit is the natural bound
+  const mergedSpecsTable = mergedSpecRows.length > 0 ? mergedSpecRows.join("\n") : "| (no specs found) | | |";
 
   // Scan test files
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
@@ -402,62 +487,89 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   // Scan docs/ directory for documentation routing
   const docsDir = join(projectPath, "docs");
+  // SC-283: Unified category list — drives both routing table and "Where to Create"
+  const categories = [
+    { dir: "specs", label: "Specs — success criteria, constraints, requirements", frontmatter: "`doc-type: spec`, `testable`, `governs`", notes: "SCs auto-generate tests" },
+    { dir: "docs/adr", label: "ADRs — architecture decisions", frontmatter: "`doc-type: adr`, `status`, `created`", notes: "Architecture decisions" },
+    { dir: "docs/research", label: "Research — findings, evaluations, competitive analysis", frontmatter: "`doc-type: research`, `governs`", notes: "Tool evaluations, competitive analysis, findings" },
+    { dir: "docs/council", label: "Council — synthesis, design debates", frontmatter: "`doc-type: council`", notes: "Council synthesis, design debates" },
+    { dir: "docs/guides", label: "Guides — setup, onboarding, reference", frontmatter: "`doc-type: guide`", notes: "Setup, onboarding, reference" },
+    { dir: "reference", label: "Reference — historical and inactive docs", frontmatter: "—", notes: "Historical reference" },
+  ];
+
+  // SC-271: Intent-based descriptions for root-level docs
+  const rootDocIntents: Record<string, string> = {
+    "ARCHITECTURE.md": "System architecture and design principles",
+    "PRINCIPLES.md": "Core engineering principles and standards",
+    "CONTRIBUTING.md": "How to contribute — workflow, conventions, review process",
+    "MODEL.md": "Domain model and data relationships",
+    "PROJECT-STATE.md": "Current project state, priorities, and session history",
+  };
+
   const docRouting: Array<{ need: string; file: string }> = [];
-  // CODE-MAP first (auto-generated, always fresh)
   if (existsSync(join(projectPath, "CODE-MAP.md"))) {
     docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
   }
-  // Root-level docs (highest priority)
-  for (const f of ["ARCHITECTURE.md", "PRINCIPLES.md", "CONTRIBUTING.md", "MODEL.md", "PROJECT-STATE.md"]) {
+  // SC-271: Root-level docs with intent descriptions
+  for (const [f, intent] of Object.entries(rootDocIntents)) {
     if (existsSync(join(projectPath, f))) {
-      docRouting.push({ need: f.replace(/\.md$/, "").replace(/-/g, " "), file: f });
+      docRouting.push({ need: intent, file: f });
     }
   }
-  // docs/ directory — cap at 10 most relevant (prioritize by name patterns)
+  // SC-284: Permanent categories always present
+  for (const cat of categories) {
+    const catPath = join(projectPath, cat.dir);
+    if (existsSync(catPath)) {
+      const files = readdirSync(catPath).filter(f => f.endsWith(".md"));
+      docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
+    } else {
+      docRouting.push({ need: cat.label, file: `${cat.dir}/` });
+      // SC-285: WARN when category has no directory
+      actions.push(`WARN: ${cat.dir}/ listed in routing but directory does not exist`);
+    }
+  }
+  // SC-271: docs/ top-level files with intent from governs or descriptive name
   if (existsSync(docsDir)) {
-    const priority = ["ARCHITECTURE", "DOMAIN", "TESTING", "SECURITY", "DATA", "SETUP", "INSTALL"];
-    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"))
-      .map(f => ({ name: f, label: f.replace(/\.md$/, "").replace(/-/g, " "), score: priority.findIndex(p => f.toUpperCase().includes(p)) }))
-      .sort((a, b) => (a.score === -1 ? 999 : a.score) - (b.score === -1 ? 999 : b.score));
-    const topDocs = allDocs.slice(0, 10);
-    for (const d of topDocs) {
-      docRouting.push({ need: d.label, file: `docs/${d.name}` });
+    const allDocs = readdirSync(docsDir).filter(f => f.endsWith(".md"));
+    for (const f of allDocs) {
+      const docPath = join(docsDir, f);
+      const content = readFileSync(docPath, "utf-8");
+      const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+      let need = f.replace(/\.md$/, "").replace(/-/g, " ");
+      if (fmMatch) {
+        const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+        if (gMatch && gMatch[1].trim() !== "TODO") need = gMatch[1].trim();
+      }
+      docRouting.push({ need, file: `docs/${f}` });
     }
-    if (allDocs.length > 10) {
-      docRouting.push({ need: `... and ${allDocs.length - 10} more`, file: "docs/" });
-    }
-  }
-  const docRoutingTable = docRouting.length > 0
-    ? docRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
-    : "| (no docs found) | |";
-
-  // Environment section from rungate.json
-  let envSection = "";
-  if (harness) {
-    const lines: string[] = ["## Environment\n"];
-    if (harness.dev) {
-      lines.push("**Dev:**");
-      if (harness.dev.start) lines.push(`- Start: \`${harness.dev.start}\``);
-      if (harness.dev.uiBase) lines.push(`- UI: ${harness.dev.uiBase}`);
-      if (harness.dev.apiBase) lines.push(`- API: ${harness.dev.apiBase}`);
-      if (harness.dev.testCmd) lines.push(`- Test: \`${harness.dev.testCmd}\``);
-    }
-    if (harness.prod) {
-      lines.push("\n**Prod:**");
-      if (harness.prod.rebuild) lines.push(`- Deploy: \`${harness.prod.rebuild}\``);
-      if (harness.prod.apiBase) lines.push(`- API: ${harness.prod.apiBase}`);
-      if (harness.prod.smokeTest) lines.push(`- Smoke: \`${harness.prod.smokeTest}\``);
-    }
-    if (harness.pages && Object.keys(harness.pages).length > 0) {
-      lines.push("\n**Pages:**\n");
-      lines.push("| Page | Path |");
-      lines.push("|------|------|");
-      for (const [path, label] of Object.entries(harness.pages)) {
-        lines.push(`| ${label} | ${path} |`);
+    const subDirs = readdirSync(docsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && !categories.some(c => c.dir === `docs/${d.name}`))
+      .map(d => d.name);
+    for (const sub of subDirs) {
+      const subPath = join(docsDir, sub);
+      const subFiles = readdirSync(subPath).filter(f => f.endsWith(".md"));
+      if (subFiles.length > 0) {
+        docRouting.push({ need: `${sub} (${subFiles.length} files)`, file: `docs/${sub}/` });
       }
     }
-    envSection = lines.join("\n");
   }
+  // SC-281: Filter routing to non-obvious mappings — exclude entries where filename matches intent
+  const filteredRouting = docRouting.filter(d => {
+    const slug = d.file.replace(/\.md$/, "").replace(/.*\//, "").toLowerCase().replace(/-/g, " ");
+    const needLower = d.need.toLowerCase();
+    return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
+  });
+  const docRoutingTable = filteredRouting.length > 0
+    ? filteredRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
+    : "| (no docs found) | |";
+
+  // SC-283: Generate "Where to Create" table from same category list
+  const createRows = categories.map(c => `| ${c.label.split(" — ")[0]} | \`${c.dir}/\` | ${c.frontmatter} | ${c.notes} |`);
+  createRows.push(`| Source code | \`src/\` | — | Follow existing module structure |`);
+  createRows.push(`| Tests | \`test/\` | — | Mirror source structure |`);
+  const createTable = createRows.join("\n");
+
+  // Environment section injected post-creation by injectEnvironmentSection (SC-3)
 
   // Consumers from rungate.json
   const consumers = harness?.consumers || [];
@@ -474,14 +586,19 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
 ## Project Identity
 
-${identity}
+${identity}${techLine}
 ${repoLine}
 
-## Hard Constraints (non-inferrable — agents cannot discover these from code)
+## Rules
 
-${existingHardConstraints || `<!-- Add project-specific rules that agents can't figure out from reading code.
-     Examples: intentional anti-patterns, safety boundaries, deploy restrictions.
-     Delete this comment after filling in. -->`}
+- Verify before asserting — try it first, report what actually happened
+- Never fake results or hide failures — if it fails, report it honestly
+- Fix all test failures before reporting done — a green suite is the minimum bar
+- Run full test suite (\`${testCmd}\`) and show real output — no summaries, no skipped files
+- Read docs before writing code — routing table shows where
+- Fix the source, not the output — fix generator, not generated files
+- Commit all changes before reporting done — uncommitted work is lost work
+- Read NEXT-SESSION.md and PROJECT-STATE.md first on session start — they're the session bridge
 
 ## Key Files
 
@@ -498,21 +615,17 @@ ${docRoutingTable}
 
 ## Where to Create Things
 
-| Type | Location | Notes |
-|------|----------|-------|
-| Specs | \`specs/\` | Must have YAML frontmatter with \`doc-type: spec\` |
-| ADRs | \`docs/adr/\` | Must have \`doc-type: adr\` in frontmatter |
-| Guides/docs | \`docs/\` | Must have \`doc-type: guide\` in frontmatter |
-| Source code | \`src/\` | Follow existing module structure |
-| Tests | \`test/\` | Mirror source structure |
+| Type | Location | Frontmatter | Notes |
+|------|----------|-------------|-------|
+${createTable}
 
 ## Specs
 
-All specs live in \`specs/\` with YAML frontmatter declaring \`testable: true/false\`.
+Read the governing spec BEFORE making changes in that area.
 
-| Spec | Testable | Governs |
-|------|----------|---------|
-${specsTable}
+| Spec | Governs | Testable |
+|------|---------|----------|
+${mergedSpecsTable}
 
 ## Tests
 
@@ -536,10 +649,8 @@ ${testsTable}
 | Create spec | \`bunx rungate create-spec "title"\` |
 | Create ADR | \`bunx rungate create-adr "title"\` |
 | Extract constraints | \`bunx rungate extract-constraints .\` |
-| Check findings | \`cat .rungate/conformity-findings.json\` |
+| Check findings | \`cat .rungate/conformity-findings.json\` — structured findings with fix commands |
 | Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
-
-${envSection}
 
 ${consumerSection}
 
@@ -547,15 +658,6 @@ ${consumerSection}
 ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
 - **Conformity:** Imported from rungate. \`bun update rungate && bun test\` to sync.
-
-## Quick Reference
-
-1. AGENTS.md is the single entry point — everything routes from here
-2. CODE-MAP.md has the auto-generated codebase map — routes, components, modules, health
-3. Specs in specs/ are source of truth — testable: true specs auto-generate tests
-4. \`bun test\` runs conformity + domain tests
-5. Agent briefings in .claude/agents/ are auto-generated — run bootstrap to refresh
-6. After test failures, read \`.rungate/conformity-findings.json\` for structured findings with fix commands
 
 ## Harness-Managed Files
 
@@ -594,32 +696,98 @@ afterAll(() => {
 `;
 }
 
+// SC-278: Detect spec files over 500 lines and WARN
+function detectOversizedSpecs(specsDir: string): void {
+  if (!existsSync(specsDir)) return;
+  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: specsDir, absolute: false })) {
+    const content = readFileSync(join(specsDir, file), "utf-8");
+    const lineCount = content.split("\n").length;
+    if (lineCount > 500) {
+      actions.push(`WARN: specs/${file} is ${lineCount} lines (>500) — consider splitting with \`bun scripts/split-spec.ts specs/${file}\``);
+    }
+  }
+}
+
+// SC-279: Check that spec content aligns with its governs field
+function checkGovernsAlignment(specsDir: string): void {
+  if (!existsSync(specsDir)) return;
+  for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+    const content = readFileSync(join(specsDir, file), "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+    const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
+    if (!gMatch || gMatch[1].trim().startsWith("TODO")) continue;
+    const governs = gMatch[1].trim().toLowerCase();
+    // Check if the file has multiple unrelated H2 sections that don't match governs
+    const h2s = content.match(/^## .+/gm) || [];
+    if (h2s.length > 8) {
+      actions.push(`WARN: specs/${file} has ${h2s.length} sections — may cover more than its governs ("${gMatch[1].trim().slice(0, 60)}"). Consider splitting.`);
+    }
+  }
+}
+
 function addFrontmatterToSpecs(specsDir: string): void {
   if (!existsSync(specsDir)) return;
+
+  const today = new Date().toISOString().split("T")[0];
 
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(specsDir, file);
     const content = readFileSync(filePath, "utf-8");
 
-    // Skip files that already have frontmatter
-    if (content.startsWith("---\n")) {
-      continue;
+    if (!content.startsWith("---\n")) {
+      const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: specs/${file} (added frontmatter)`);
+    } else {
+      // Validate existing frontmatter has required fields
+      const fmEnd = content.indexOf("\n---", 4);
+      if (fmEnd === -1) continue;
+      const fm = content.substring(4, fmEnd);
+      const missing: string[] = [];
+      if (!fm.includes("testable:")) missing.push(`testable: false`);
+      if (!fm.includes("created:")) missing.push(`created: ${today}`);
+      if (!fm.includes("governs:")) missing.push(`governs: TODO`);
+      if (missing.length > 0) {
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+      }
+      // SC-269: WARN for specs with missing or TODO governs
+      const governsMatch = fm.match(/governs:\s*(.+)/);
+      if (!governsMatch || governsMatch[1].trim() === "TODO" || governsMatch[1].trim().startsWith("TODO")) {
+        actions.push(`WARN: specs/${file} has no governs: field (or governs: TODO) — add a one-line description of what this spec governs`);
+      }
     }
+  }
+}
 
-    const today = new Date().toISOString().split("T")[0];
-    const frontmatter = `---
-doc-type: spec
-status: draft
-owner: TODO
-created: ${today}
-updated: ${today}
-governs: TODO — describe what this spec governs
-testable: false
----
+function addFrontmatterToAdrs(adrDir: string): void {
+  if (!existsSync(adrDir)) return;
 
-`;
-    writeFileSync(filePath, frontmatter + content);
-    actions.push(`UPDATED: specs/${file} (added frontmatter)`);
+  const today = new Date().toISOString().split("T")[0];
+
+  for (const file of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
+    const filePath = join(adrDir, file);
+    const content = readFileSync(filePath, "utf-8");
+
+    if (!content.startsWith("---\n")) {
+      const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: docs/adr/${file} (added frontmatter)`);
+    } else {
+      const fmEnd = content.indexOf("\n---", 4);
+      if (fmEnd === -1) continue;
+      const fm = content.substring(4, fmEnd);
+      const missing: string[] = [];
+      if (!fm.includes("doc-type:")) missing.push(`doc-type: adr`);
+      if (!fm.includes("created:")) missing.push(`created: ${today}`);
+      if (missing.length > 0) {
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: docs/adr/${file} (added missing: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+      }
+    }
   }
 }
 
@@ -655,6 +823,11 @@ function addPaiHarnessDevDep(root: string): void {
 function generateAgentBriefs(root: string): void {
   const agentsDir = join(root, ".claude", "agents");
   safeDir(agentsDir, ".claude/agents");
+
+  // Self-scaffolding: prompts are at prompts/, not ${promptPrefix}/
+  const pkgPath = join(root, "package.json");
+  const isSelf = existsSync(pkgPath) && JSON.parse(readFileSync(pkgPath, "utf-8")).name === "rungate";
+  const promptPrefix = isSelf ? "prompts" : "node_modules/rungate/prompts";
 
   const harness = loadHarnessConfig(root);
   const devUi = harness?.dev?.uiBase || null;
@@ -760,14 +933,14 @@ ${identitySection}## Core Principles
 - Commit secrets or credentials
 
 ## Methodology
-- Read \`node_modules/rungate/prompts/quinn-decision-tree.md\` for UI testing methodology
+- Read \`${promptPrefix}/quinn-decision-tree.md\` for journey decision tree and UI testing methodology
 
 ## Context (MANDATORY — read before testing)
 
 1. **AGENTS.md** — project identity, critical rules, documentation routing
 2. **CODE-MAP.md § Page → Component Map** — which components are on each page (your test targets)
 3. **CODE-MAP.md § API Routes** — endpoint inventory for API-level checks
-4. **node_modules/rungate/prompts/quinn-ui-brief.md** — structured UI testing methodology
+4. **${promptPrefix}/quinn-ui-brief.md** — structured UI testing methodology
 
 ## Environment
 
@@ -837,8 +1010,8 @@ ${identitySection}## Core Principles
 - Commit secrets or credentials
 
 ## Methodology
-- Read \`node_modules/rungate/prompts/coding-principles.md\` for coding standards
-- Read \`node_modules/rungate/prompts/testing-strategy.md\` for testing approach
+- Read \`${promptPrefix}/coding-principles.md\` for coding standards
+- Read \`${promptPrefix}/testing-strategy.md\` for testing approach
 
 ## Context (MANDATORY — read before coding)
 
@@ -1181,10 +1354,18 @@ function generateOrAuditProjectHarness(root: string): void {
   // Scan port from Makefile
   const makefile = join(root, "Makefile");
   const detectedPort = (() => {
-    if (!existsSync(makefile)) return null;
-    const content = readFileSync(makefile, "utf-8");
-    const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
-    return portMatch ? parseInt(portMatch[1]) : null;
+    if (existsSync(makefile)) {
+      const content = readFileSync(makefile, "utf-8");
+      const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
+      if (portMatch) return parseInt(portMatch[1]);
+    }
+    const envExample = join(root, ".env.example");
+    if (existsSync(envExample)) {
+      const content = readFileSync(envExample, "utf-8");
+      const portMatch = content.match(/^PORT=(\d{4,5})/m);
+      if (portMatch) return parseInt(portMatch[1]);
+    }
+    return null;
   })();
 
   // Scan envVars from .env.example
@@ -1377,7 +1558,34 @@ function generateCodeMapInline(root: string, outPath: string): void {
     }
   }
 
+  // Detect API routes
+  const routes: Array<{ method: string; path: string; file: string }> = [];
+  if (existsSync(srcDir)) {
+    for (const f of readdirSync(srcDir).filter(f => f.endsWith(".ts") || f.endsWith(".js"))) {
+      const content = readFileSync(join(srcDir, f), "utf-8");
+      const routePatterns = [
+        /app\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
+        /router\.(get|post|put|delete|patch)\s*\(\s*["'`]([^"'`]+)["'`]/gi,
+        /["'`]((?:GET|POST|PUT|DELETE|PATCH)\s+\/[^"'`]+)["'`]/g,
+      ];
+      for (const pattern of routePatterns) {
+        let rm;
+        while ((rm = pattern.exec(content)) !== null) {
+          if (rm[2]) routes.push({ method: rm[1].toUpperCase(), path: rm[2], file: `src/${f}` });
+          else if (rm[1]) {
+            const parts = rm[1].split(/\s+/);
+            if (parts.length === 2) routes.push({ method: parts[0], path: parts[1], file: `src/${f}` });
+          }
+        }
+      }
+    }
+  }
+
   let md = `---\ndoc-type: code-map\nstatus: generated\nupdated: ${today}\ngenerator: scaffold-project.ts\n---\n\n# Code Map — ${name}\n\nAuto-generated architecture snapshot.\n\n## Summary\n\n| Metric | Count |\n|--------|-------|\n| Source directories | ${dirs.length} |\n| Dependencies | ${deps} |\n| Dev dependencies | ${devDeps} |\n\n## Directory Structure\n\n| Directory | Files | Types |\n|-----------|-------|-------|\n${dirs.map(d => `| ${d.name}/ | ${d.fileCount} | ${d.types.join(", ")} |`).join("\n")}\n`;
+  if (routes.length > 0) {
+    md += `\n## API Routes\n\n| Method | Path | File |\n|--------|------|------|\n`;
+    for (const r of routes) md += `| ${r.method} | ${r.path} | ${r.file} |\n`;
+  }
   if (modules.length > 0) {
     md += `\n## Source Modules\n\n| File | Exports |\n|------|---------|\n`;
     for (const mod of modules) md += `| ${mod.file} | ${mod.exports.join(", ")} |\n`;

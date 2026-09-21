@@ -2,6 +2,7 @@
 doc-type: adr
 status: accepted
 owner: jason
+created: 2026-09-20
 updated: 2026-09-20
 ---
 

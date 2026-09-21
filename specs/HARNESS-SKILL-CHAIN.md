@@ -5,6 +5,7 @@ owner: jason
 created: 2026-09-03
 updated: 2026-09-03
 testable: true
+governs: Skill chaining — how goal → ship → prove → close sequences connect and pass state
 ---
 
 # Harness Skill Chain Spec
@@ -79,37 +80,27 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
 **What happens (3-layer verification before PR):**
 
 **Layer 1 — Local Dev (fast feedback)**
-1. Marcus codes on local dev (make dev-all, :7778 API / :5173 UI)
-2. Unit tests pass (`bun test`), types check (`tsc --noEmit`)
-3. Quinn validates on local dev (:5173 UI, :7778 API)
-   - Tests as brand-new user, captures screenshots for UI bugs
+1. Marcus codes on local dev
+2. Unit tests pass (`bun test`), types check (`bunx tsc --noEmit`)
+3. Quinn validates locally (for UI tools: browser-based testing; for CLI tools: command execution and output verification)
+   - Tests as brand-new user, captures evidence for failures
    - If Quinn fails → back to Marcus → fix → Quinn retests (fast cycle)
-4. **GATE: Quinn local PASS before container build**
+4. **GATE: Quinn local PASS before commit**
 
-**Layer 2 — Container Verification (deployment correctness)**
-5. `make test-rebuild` → rebuilds container image from current code, starts on :7776 with seed data
-6. Quinn validates on container (:7776)
-   - Same tests as local dev, against containerized app
-   - Verifies deployment artifact matches dev behavior
-   - container-has-fix gate validates container has the commit SHA
+**Layer 2 — PR + Ship Gate**
+5. Commit → push → PR created via `gh pr create`
+6. CI runs (typecheck, test suite, harness gates)
 7. Rook security scan on changed files (STANDARD+ tiers)
-8. If Quinn/Rook fail → back to Marcus → fix → rebuild → retest
-9. **GATE: Quinn container PASS before PR is opened**
+8. Ship gate runs (verify-gate + durability-gate checks)
+9. **GATE: Ship gate PASS. PR ready for review.**
 
-**Layer 3 — PR + Ship Gate**
-10. Commit → push → PR created via `gh pr create`
-11. CI runs on Mac Mini (typecheck, build, container E2E, harness gates)
-12. Ship gate runs (verify-gate + ship-gate checks)
-13. **GATE: Ship gate PASS. PR ready for review.**
-
-**Gate:** verify-gate PASS + ship-gate PASS. Quinn passed on both local and container.
+**Gate:** verify-gate PASS + ship-gate PASS. Quinn passed locally.
 
 **Artifact:** PR with verified code, ready for Jason to review and merge.
 
 **Scorecard metrics:**
 - Iterations to pass verify-gate (iterationCount)
-- Quinn local verdict (quinn.local.verdict)
-- Quinn container verdict (quinn.container.verdict)
+- Quinn verdict (quinn.verdict)
 - Gate telemetry (gate-telemetry.jsonl)
 - Test/tsc results
 
@@ -119,14 +110,14 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
 
 **What happens:**
 1. Verify fix commit is on main (`git branch --contains {sha} main`)
-2. **Rebuild image + spin up isolated prove container** (`make prove-up`, port 7776)
-   - Rebuilds the container image (includes `build` dependency — ensures fix code is in the image)
-   - Rsyncs PROD data to data-test/, starts test container with ALLOW_RESET=true
-   - Container uses real prod data but is isolated from live container
-   - P11 (container-has-fix) FAILs if image was built before fix commit
-3. **Quinn validates on prove container** (port 7776, prod data)
-   - Capture after-state (prod). The prove container with rsynced prod data IS prod evidence.
-   - For UI bugs: navigate to affected page, verify fix with real customer data
+2. **Validate fix in production-like environment**
+   - For libraries: Verify published package version contains fix
+   - For CLI tools: Verify installed binary behaves correctly
+   - For applications: Verify deployment reflects fix
+3. **Quinn validates in target environment**
+   - Capture after-state (production evidence)
+   - For CLI tools: Execute commands with real data, verify output
+   - For libraries: Test integration with dependent projects
 4. **Before/after evidence artifact:**
    ```json
    {
@@ -148,9 +139,9 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
    }
    ```
 
-**Key difference from SHIP container test:** SHIP uses `make test-rebuild` (seed data — catches deployment bugs). PROVE uses `make prove-up` (prod data — catches data-shape bugs). Not redundant — different data, different failure classes.
+**Key difference from SHIP test:** SHIP uses test suite with controlled data. PROVE uses production or production-like environment with real data. Not redundant — different environments, different failure classes.
 
-**Gate:** Before/after evidence exists. Quinn passed on prove container with prod data. **Mechanically enforced (#294):** prove gate FAILs if STANDARD+ tier and `afterEvidence.environment !== "prod"`. LIGHT tier exempted (local-only sufficient). Prove container lifecycle: make prove-up (start) / make prove-down (auto on prove gate PASS).
+**Gate:** Before/after evidence exists. Quinn passed in production-like environment. **Mechanically enforced (#294):** prove gate FAILs if STANDARD+ tier and `afterEvidence.environment !== "prod"`. LIGHT tier exempted (local-only sufficient).
 
 **Artifact:** prove-evidence.json with before/after comparison + Quinn verdict.
 
@@ -165,10 +156,10 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
 **Trigger:** PROVE passed. Code is verified on prod container.
 
 **What happens:**
-1. `make release-dry-run` (optional confidence check)
-2. `make release-patch` → version bump → release-test → tag push
-3. Gate 4 runs on GitHub Actions (E2E on seeded server)
-4. Draft release → upload assets → verify → publish
+1. Version bump (patch/minor/major per semantic versioning)
+2. Release validation → tests pass → tag push
+3. CI release workflow runs (test suite, build verification)
+4. Package publish (npm, GitHub releases, or distribution channel)
 5. Post release proof to issue:
    ```
    ## Release Proof
@@ -180,7 +171,7 @@ INTAKE → DEFINE → SHIP → PROVE → RELEASE
    - Download: setup.sh verified 200 OK
    ```
 
-**Gate:** Release tag exists. Gate 4 passed. Asset URLs return 200.
+**Gate:** Release tag exists. CI release workflow passed. Published artifact is accessible.
 
 **Artifact:** Published GitHub release with proof comment on issue.
 
@@ -215,26 +206,26 @@ Currently WARN severity (2-week calibration). Manual: `bash scripts/skill-qc-val
 
 ```
 Layer 1: Local Dev (SHIP step 1-4) — fast feedback
-  make dev-all → :7778 (API) + :5173 (UI)
-  Marcus codes + tests. Quinn validates on dev server.
-  GATE: Quinn local PASS before container build.
+  bun test → All tests pass locally
+  Marcus codes + tests. Quinn validates functionality.
+  GATE: Quinn local PASS before commit.
 
-Layer 2: Test Container (SHIP step 5-9) — deployment correctness
-  make test-rebuild → :7776 (seed data, isolated)
-  container-has-fix gate (P11 FAIL if stale). Quinn re-validates.
-  GATE: Quinn container PASS before PR is opened.
+Layer 2: CI Pipeline (SHIP step 5-9) — integration verification
+  GitHub Actions CI runs on push
+  Full test suite, type checking, conformity tests
+  GATE: CI passes before PR merge.
 
-Layer 3: Prove Container (PROVE step 2-3) — prod data correctness
-  make prove-up → :7776 (rsynced PROD data, isolated from live)
-  Quinn validates with real customer data shapes.
-  Post-merge only. make prove-down auto-runs on PASS.
+Layer 3: Production Validation (PROVE step 2-3) — real environment
+  Verify fix in production or production-like environment
+  Quinn validates with real usage patterns and data.
+  Post-merge only.
 
 Layer 4: Release Pipeline (RELEASE step)
-  make release-dry-run → make release-patch → Gate 4
-  E2E on seeded server. Asset verification.
+  Version bump → tests → publish → verify accessibility
+  Package published to distribution channel (npm, etc.)
 ```
 
-**Industry alignment:** Google presubmit/postsubmit, Dagger "same pipeline everywhere", Vercel preview deployments. Layer 2 is pre-merge (shift left). Layer 3 is post-merge (prod data verification). Not redundant — different data, different failure classes.
+**Industry alignment:** Google presubmit/postsubmit, trunk-based development with CI gates. Layer 1 is local (fast). Layer 2 is pre-merge (shift left). Layer 3 is post-merge (production verification). Not redundant — different environments, different failure classes.
 
 ## Per-Skill Scorecard
 
@@ -277,10 +268,10 @@ Monthly audit: query telemetry, find skills with low success rates, council on i
 
 ## Related Specs
 
-- `~/.claude/PAI/HARNESS-STANDARD.md` — current harness loop
-- `~/.claude/PAI/HARNESS-GATES.md` — gate documentation
-- `~/Projects/DailyBriefDashboard/docs/CI-RELEASE-PIPELINE.md` — 3-layer validation + release flow
-- `~/.claude/skills/ship/SKILL.md` — ship skill v2
-- `~/.claude/skills/goal/SKILL.md` — goal skill
-- `~/.claude/skills/testing-and-qa-validation/SKILL.md` — QA workflow (15 steps)
-- `~/.claude/workflows/council.js` — council workflow with enforcement classification
+- `specs/HARNESS-STANDARD.md` — current harness loop (this project)
+- `specs/HARNESS-GATES.md` — gate documentation (this project)
+- `~/.claude/PAI/HARNESS-STANDARD.md` — PAI harness loop (global)
+- `~/.claude/skills/ship/SKILL.md` — ship skill v2 (global)
+- `~/.claude/skills/goal/SKILL.md` — goal skill (global)
+- `~/.claude/skills/testing-and-qa-validation/SKILL.md` — QA workflow (global)
+- `workflows/council.js` — council workflow (if exists in project)

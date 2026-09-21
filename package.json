@@ -15,7 +15,8 @@
   "exports": {
     "./lib/conformity": "./lib/conformity.ts",
     "./lib/rungate-schema": "./lib/rungate-schema.ts",
-    "./lib/signal-phrases": "./lib/signal-phrases.ts"
+    "./lib/signal-phrases": "./lib/signal-phrases.ts",
+    "./lib/compliance": "./lib/compliance.ts"
   },
   "scripts": {
     "test": "bun test",
