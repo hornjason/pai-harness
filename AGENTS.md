@@ -22,13 +22,16 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
-- Read PROJECT-STATE.md first on session start — it's the session bridge
+- Read NEXT-SESSION.md and PROJECT-STATE.md first on session start — they're the session bridge
 
 ## Key Files
 
 | File | What | When to Read |
 |------|------|--------------|
 | AGENTS.md | Project entry point | Always first |
+| NEXT-SESSION.md | Session handoff brief — priorities, blockers, what NOT to do | Session start, before any work |
+| PROJECT-STATE.md | Live status dashboard (generated — don't edit) | Session start, after NEXT-SESSION.md |
+| project-state.json | Source of truth for project status | When editing state |
 | package.json | Dependencies and scripts | Adding deps or scripts |
 | .claude/rungate.json | Harness project config | Shipping through harness |
 | lib/ | Lib directory | Working on lib |
