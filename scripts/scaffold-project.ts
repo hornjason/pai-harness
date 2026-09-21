@@ -356,6 +356,9 @@ function generateAgentsMd(name: string, type: ProjectType): string {
   // Scan key files
   const keyFiles: Array<{ file: string; what: string; when: string }> = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
+    { file: "NEXT-SESSION.md", what: "Session handoff brief — priorities, blockers, what NOT to do", when: "Session start, before any work" },
+    { file: "PROJECT-STATE.md", what: "Live status dashboard (generated — don't edit)", when: "Session start, after NEXT-SESSION.md" },
+    { file: "project-state.json", what: "Source of truth for project status", when: "Editing state" },
   ];
   const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
     { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
@@ -595,7 +598,7 @@ ${repoLine}
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
-- Read PROJECT-STATE.md first on session start — it's the session bridge
+- Read NEXT-SESSION.md and PROJECT-STATE.md first on session start — they're the session bridge
 
 ## Key Files
 
