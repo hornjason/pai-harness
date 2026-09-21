@@ -1,5 +1,8 @@
 ---
 status: split
+testable: false
+created: 2026-09-21
+governs: TODO
 ---
 
 This file has been split. See:

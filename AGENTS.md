@@ -1,10 +1,3 @@
----
-doc-type: reference
-status: active
-owner: jason
-updated: 2026-09-20
----
-
 # rungate
 
 ## Project Identity
@@ -19,16 +12,16 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Never fake results or hide failures — if it fails, report it honestly
 - Fix all test failures before reporting done — a green suite is the minimum bar
 - Run full test suite (`bun test`) and show real output — no summaries, no skipped files
+- Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
-- Commit all changes before reporting done — `git status` in final summary, uncommitted = not done
+- Commit all changes before reporting done — uncommitted work is lost work
 
 ## Key Files
 
 | File | What | When to Read |
 |------|------|--------------|
 | AGENTS.md | Project entry point | Always first |
-| NEXT-SESSION.md | Session handoff brief — priorities, blockers, what NOT to do | Session start, before any work |
-| PROJECT-STATE.md | Live status dashboard (generated — don't edit) | Session start, after NEXT-SESSION.md |
+| PROJECT-STATE.md | Live status + handoff (generated from project-state.json — don't edit directly) | Session start, always first after AGENTS.md |
 | project-state.json | Source of truth for project status | When editing state |
 | package.json | Dependencies and scripts | Adding deps or scripts |
 | .claude/rungate.json | Harness project config | Shipping through harness |
@@ -43,12 +36,13 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | I need to understand... | Read |
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
-| Research findings | `docs/research/` |
-| Test architecture, phases, golden fixture | `specs/BOOTSTRAP-TEST-PLAN.md` |
-| Conformity engine, matchers, config-driven testing | `specs/CONFIG-DRIVEN-TESTING-SPEC.md` |
-| Session audit, behavioral loops, compliance | `specs/SESSION-AUDIT-SPEC.md` |
-| Instruction compliance, hill climb, COMP tests | `specs/INSTRUCTION-COMPLIANCE-SPEC.md` |
-| Test files, structural tests, phase tests | `test/` directory — NOT `tests/`. Structural: `test/structure.test.ts`. Phase: `test/phase-N.test.ts` |
+| Current project state, priorities, and session history | `PROJECT-STATE.md` |
+| Specs — success criteria, constraints, requirements (13 files) | `specs/` |
+| ADRs — architecture decisions (0 files) | `docs/adr/` |
+| Research — findings, evaluations, competitive analysis (13 files) | `docs/research/` |
+| Council — synthesis, design debates (2 files) | `docs/council/` |
+| Guides — setup, onboarding, reference | `docs/guides/` |
+| Reference — historical and inactive docs (0 files) | `reference/` |
 
 ## Where to Create Things
 
@@ -57,8 +51,9 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Specs | `specs/` | `doc-type: spec`, `testable`, `governs` | SCs auto-generate tests |
 | ADRs | `docs/adr/` | `doc-type: adr`, `status`, `created` | Architecture decisions |
 | Research | `docs/research/` | `doc-type: research`, `governs` | Tool evaluations, competitive analysis, findings |
-| Council output | `docs/council/` | `doc-type: council` | Council synthesis, design debates |
-| Guides | `docs/` | `doc-type: guide` | Setup, onboarding, reference |
+| Council | `docs/council/` | `doc-type: council` | Council synthesis, design debates |
+| Guides | `docs/guides/` | `doc-type: guide` | Setup, onboarding, reference |
+| Reference | `reference/` | — | Historical reference |
 | Source code | `src/` | — | Follow existing module structure |
 | Tests | `test/` | — | Mirror source structure |
 
@@ -68,15 +63,18 @@ Read the governing spec BEFORE making changes in that area.
 
 | Spec | Governs | Testable |
 |------|---------|----------|
+| SESSION-LIFECYCLE-SPEC.md | Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation | yes |
 | harness-automation-matrix.md | Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | yes |
 | HARNESS-GATES.md | Gate definitions — what checks run at each harness gate and their pass/fail criteria | yes |
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |
+| SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | no |
+| CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | yes |
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | yes |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
-| BOOTSTRAP-DATA-FLOW-SPEC.md | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | yes |
+| BOOTSTRAP-DATA-FLOW-SPEC.md | BOOTSTRAP-DATA-FLOW-SPEC | no |
 
 ## Tests
 
@@ -86,6 +84,7 @@ bun test
 
 | Category | File | What |
 |----------|------|------|
+| update project state | update-project-state.test.ts | Auto-detected |
 | phase 3 | phase-3.test.ts | Auto-detected |
 | scaffold conformity | scaffold-conformity.test.ts | Auto-detected |
 | phase 2 | phase-2.test.ts | Auto-detected |
@@ -94,7 +93,9 @@ bun test
 | phase 0 | phase-0.test.ts | Auto-detected |
 | structure | structure.test.ts | Auto-detected |
 | phase 1 | phase-1.test.ts | Auto-detected |
+| commit enforcement | commit-enforcement.test.ts | Auto-detected |
 | phase 4 | phase-4.test.ts | Auto-detected |
+| split spec | split-spec.test.ts | Auto-detected |
 | spec compliance | spec-compliance.test.ts | Auto-detected |
 | phase 5 | phase-5.test.ts | Auto-detected |
 | contract | contract.test.ts | Auto-detected |

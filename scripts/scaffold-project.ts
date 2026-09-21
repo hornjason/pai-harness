@@ -356,9 +356,8 @@ function generateAgentsMd(name: string, type: ProjectType): string {
   // Scan key files
   const keyFiles: Array<{ file: string; what: string; when: string }> = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
-    { file: "NEXT-SESSION.md", what: "Session handoff brief — priorities, blockers, what NOT to do", when: "Session start, before any work" },
-    { file: "PROJECT-STATE.md", what: "Live status dashboard (generated — don't edit)", when: "Session start, after NEXT-SESSION.md" },
-    { file: "project-state.json", what: "Source of truth for project status", when: "Editing state" },
+    { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
+    { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
   const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
     { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
@@ -598,7 +597,6 @@ ${repoLine}
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
-- Read NEXT-SESSION.md and PROJECT-STATE.md first on session start — they're the session bridge
 
 ## Key Files
 
@@ -869,22 +867,35 @@ function generateAgentBriefs(root: string): void {
     serena: ["architecture", "design-pattern", "system", "module", "structure"],
     aditi: ["design", "ui", "ux", "component", "visual", "accessibility"],
   };
-  const promptsByAgent: Record<string, string[]> = { marcus: [], quinn: [], rook: [], serena: [], aditi: [] };
+  const promptsByAgent: Record<string, Array<{ file: string; when: string }>> = {
+    marcus: [], quinn: [], rook: [], serena: [], aditi: []
+  };
   if (existsSync(promptsDir)) {
     const promptFiles = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
     for (const f of promptFiles) {
       const content = readFileSync(join(promptsDir, f), "utf-8");
       const lower = f.toLowerCase();
+
+      // Extract "when to read" from first heading or frontmatter description
+      let whenToRead = f.replace(/\.md$/, "").replace(/-/g, " ");
+      const headingMatch = content.match(/^#\s+(.+)$/m);
+      const descMatch = content.match(/^description:\s*(.+)$/m);
+      if (descMatch) {
+        whenToRead = descMatch[1].trim();
+      } else if (headingMatch) {
+        whenToRead = headingMatch[1].trim();
+      }
+
       let matched = false;
       for (const [agent, keywords] of Object.entries(agentKeywords)) {
         if (keywords.some(kw => lower.includes(kw))) {
-          promptsByAgent[agent].push(`<!-- source: prompts/${f} -->\n${content.trim()}`);
+          promptsByAgent[agent].push({ file: `prompts/${f}`, when: whenToRead });
           matched = true;
         }
       }
       if (!matched) {
         for (const agent of Object.keys(promptsByAgent)) {
-          promptsByAgent[agent].push(`<!-- source: prompts/${f} -->\n${content.trim()}`);
+          promptsByAgent[agent].push({ file: `prompts/${f}`, when: whenToRead });
         }
       }
     }
@@ -1250,7 +1261,8 @@ ${identitySection}## Core Principles
     const agentName = name.replace(".md", "");
     const prompts = promptsByAgent[agentName] || [];
     const promptSection = prompts.length > 0
-      ? `\n## Project Standards\n\n${prompts.join("\n\n")}\n`
+      ? `\n## Reference (read when needed)\n\n| Prompt | When to Read |\n|--------|-------------|\n` +
+        prompts.map(p => `| ${p.file} | ${p.when} |`).join("\n") + "\n"
       : "";
     const p = join(agentsDir, name);
     writeFileSync(p, content + promptSection);
