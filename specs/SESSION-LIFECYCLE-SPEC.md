@@ -34,13 +34,8 @@ session-end.ts
   2. Check for stale worktrees → list pending merges
   3. Run sync-sc-status.ts → flip spec checkboxes
   4. Run update-project-state.ts → regenerate state
-  5. Generate/update NEXT-SESSION.md:
-     - Current phase and open SCs
-     - Priorities (from project-state.json)
-     - Blockers and decisions made this session
-     - Pending worktrees
-     - What NOT to do
-  6. Prompt for session notes → append to project-state.json sessions[]
+  5. Append session notes to project-state.json sessions[]
+  6. Add antipatterns to project-state.json if any identified
   7. Commit all state files
   8. Print summary
 ```
@@ -49,9 +44,8 @@ session-end.ts
 
 ```
 Agent loads AGENTS.md (automatic)
-  → Key Files table directs to NEXT-SESSION.md
-  → NEXT-SESSION.md gives priorities, blockers, don'ts
-  → PROJECT-STATE.md gives phase status and SC checklist
+  → Key Files table directs to PROJECT-STATE.md
+  → PROJECT-STATE.md gives priorities, blockers, phase status, SC checklist, antipatterns
   → Agent has full context without reading conversation history
 ```
 
@@ -62,13 +56,13 @@ Agent loads AGENTS.md (automatic)
 - [ ] SC-311: session-end checks for stale worktrees and lists them
 - [ ] SC-312: session-end runs sync-sc-status.ts automatically
 - [ ] SC-313: session-end runs update-project-state.ts automatically
-- [ ] SC-314: session-end generates NEXT-SESSION.md with current priorities and blockers
+- [ ] SC-314: session-end updates project-state.json with current priorities and antipatterns
 - [ ] SC-315: session-end appends session notes to project-state.json sessions array
 - [ ] SC-316: session-end commits all state files in one commit
-- [ ] SC-317: AGENTS.md Key Files table includes NEXT-SESSION.md
-- [ ] SC-318: Cold-start agent finds NEXT-SESSION.md within first 3 tool calls
+- [ ] SC-317: AGENTS.md Key Files table includes PROJECT-STATE.md as first-read after AGENTS.md
+- [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls
 - [ ] SC-319: Scaffold output includes session-end.ts for consumer projects
-- [ ] SC-320: NEXT-SESSION.md includes "What NOT to do" section
+- [ ] SC-320: PROJECT-STATE.md renders antipatterns section (what NOT to do)
 
 ## Blocked On
 

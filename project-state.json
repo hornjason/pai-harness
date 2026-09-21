@@ -1,14 +1,24 @@
 {
   "updated": "2026-09-21",
   "priorities": [
-    "CONFIG-DRIVEN TESTING: Expand matchers to 100% SC coverage, migrate phase tests to thin consumers (CONFIG-DRIVEN-TESTING-SPEC.md, SC-331 through SC-343)",
-    "Phase A: Audit unmatched SCs, implement 6 new matchers (regex-match, source-contains, json-has-field, scaffold-produces, frontmatter-field, file-line-range)",
-    "Phase B: Migrate phase-0 to thin consumer (949→≤100 lines)",
-    "Phase C: Migrate phase-2/3/5 to thin consumers via source-contains matcher",
-    "Phase D: Golden fixture staleness check + end-to-end verification",
+    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase A→E, currently starting Phase A",
+    "Phase A: Classify all SCs as static/behavioral, rewrite hook-wiring SCs (SC-345, SC-346, SC-347)",
+    "Phase B: Implement 6 new matchers in matchPattern() (SC-336–SC-340)",
+    "Phase C: Migrate phase-2/3/5/1 to thin consumers (SC-333–SC-335, SC-344)",
+    "Phase D: Migrate phase-0 to ~200 lines (SC-332)",
+    "Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)",
     "THEN merge pending worktrees (SC-293, SC-302) into refactored architecture"
   ],
-  "notes": "Phase 0+1 complete. Config-driven testing spec written (SC-331–SC-343). Session audit spec rewritten with 7-section report format and two feedback loops. Global CLAUDE.md tightened (118→91 lines, rules moved to top, Rule 6/7/8 strengthened). AGENTS.md routing expanded, rules deduplicated (8→6). Baseline audit: 55% direct hits, 28 wasted calls. 5 test failures fixed, 4 stale worktrees pruned. 2 worktrees remain (SC-293, SC-302) on hold. Suite: 961 pass, 0 fail.",
+  "notes": "Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds, 2026-09-21). Spec revised: dropped zero-fallthrough for behavioral SCs, added D-6 (behavioral routing to transcript auditor), flipped sequencing (phase-2/3/5 first, phase-0 last), added phase-1, 4 new SCs (SC-344–SC-347). NEXT-SESSION.md folded into PROJECT-STATE.md. SESSION-LIFECYCLE-SPEC updated (4 SCs reworded). Suite: 1014 pass, 0 fail.",
+  "antipatterns": [
+    "Do NOT write more hand-wired phase tests — migrating away from that pattern",
+    "Do NOT merge pending worktrees (SC-293, SC-302) before config-driven testing refactor lands",
+    "Do NOT start Phase 2 SCs — infrastructure needs to be right first",
+    "Do NOT edit PROJECT-STATE.md directly — edit project-state.json, markdown is generated"
+  ],
+  "pendingInvestigations": [
+    "Session audit scoping: auditor report covers full 16-day session (12,395 calls), not just post-/clear. Need --from-line or --after-clear flag in session-audit.ts (SESSION-AUDIT-SPEC SC-321)"
+  ],
   "phases": [
     {
       "name": "Phase 0 — Scaffold Output",

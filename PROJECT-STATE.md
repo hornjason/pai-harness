@@ -2,15 +2,16 @@
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**
 
-Phase 0+1 complete. Config-driven testing spec written (SC-331–SC-343). Session audit spec rewritten with 7-section report format and two feedback loops. Global CLAUDE.md tightened (118→91 lines, rules moved to top, Rule 6/7/8 strengthened). AGENTS.md routing expanded, rules deduplicated (8→6). Baseline audit: 55% direct hits, 28 wasted calls. 5 test failures fixed, 4 stale worktrees pruned. 2 worktrees remain (SC-293, SC-302) on hold. Suite: 961 pass, 0 fail.
+Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds, 2026-09-21). Spec revised: dropped zero-fallthrough for behavioral SCs, added D-6 (behavioral routing to transcript auditor), flipped sequencing (phase-2/3/5 first, phase-0 last), added phase-1, 4 new SCs (SC-344–SC-347). NEXT-SESSION.md folded into PROJECT-STATE.md. SESSION-LIFECYCLE-SPEC updated (4 SCs reworded). Suite: 1014 pass, 0 fail.
 
 **Next priorities:**
-1. CONFIG-DRIVEN TESTING: Expand matchers to 100% SC coverage, migrate phase tests to thin consumers (CONFIG-DRIVEN-TESTING-SPEC.md, SC-331 through SC-343)
-2. Phase A: Audit unmatched SCs, implement 6 new matchers (regex-match, source-contains, json-has-field, scaffold-produces, frontmatter-field, file-line-range)
-3. Phase B: Migrate phase-0 to thin consumer (949→≤100 lines)
-4. Phase C: Migrate phase-2/3/5 to thin consumers via source-contains matcher
-5. Phase D: Golden fixture staleness check + end-to-end verification
-6. THEN merge pending worktrees (SC-293, SC-302) into refactored architecture
+1. CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase A→E, currently starting Phase A
+2. Phase A: Classify all SCs as static/behavioral, rewrite hook-wiring SCs (SC-345, SC-346, SC-347)
+3. Phase B: Implement 6 new matchers in matchPattern() (SC-336–SC-340)
+4. Phase C: Migrate phase-2/3/5/1 to thin consumers (SC-333–SC-335, SC-344)
+5. Phase D: Migrate phase-0 to ~200 lines (SC-332)
+6. Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)
+7. THEN merge pending worktrees (SC-293, SC-302) into refactored architecture
 
 ## ✅ Phase 0 — Scaffold Output (COMPLETE)
 
