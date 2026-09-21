@@ -117,7 +117,7 @@ describe("ST-4: Config dedup — each config file exists exactly once", () => {
   for (const file of configFiles) {
     test(`${file} exists exactly once`, () => {
       const result = execSync(
-        `find ${HARNESS_ROOT} -name '${file}' -type f 2>/dev/null`,
+        `find ${HARNESS_ROOT} -path '*/.claude/worktrees' -prune -o -name '${file}' -type f -print 2>/dev/null`,
         { encoding: "utf8" }
       );
       const matches = result.trim().split("\n").filter(l => l.length > 0);

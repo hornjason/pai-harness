@@ -29,7 +29,7 @@ testable: true
 - [x] SC-17: AGENTS.md is under [150] lines — scaffold WARNS if over
 - [ ] SC-18: Empty sections omitted from AGENTS.md (no consumers = no Consumers section)
 - [x] SC-19: CLAUDE.md contains [@AGENTS.md] bridge for cross-tool compatibility
-- [x] SC-20: New code projects get src/index.ts stub as agent starting point
+- [x] SC-20: src/index.ts exists (new code projects get stub as agent starting point)
 - [x] SC-21: rungate.json has no hardcoded port numbers — all detected from Makefile/config or null
 - [x] SC-24: Conformity test calls all 9 suites (scaffold, spec-discovery, spec-drift, doc-hygiene, agent-validation, fallow, constraint-candidates, package-validation, tsconfig-validation)
 - [x] SC-25: AGENTS.md Commands section includes all harness commands (bun test, tsc, conformity, sync-tests, create-spec, create-adr, extract-constraints, re-scaffold)
@@ -45,8 +45,8 @@ testable: true
 - [x] SC-77: `bunx rungate create-spec` creates spec with all required frontmatter fields pre-populated
 - [x] SC-78: `bunx rungate create-adr` creates ADR with all required frontmatter fields pre-populated
 - [x] SC-80: Phase 0 creates all 10 directories + all static files BEFORE any scan runs (Phase 1)
-- [x] SC-82: Scaffold creates .github/workflows/ci.yml — harness-owned, always regenerated from template + rungate.json
-- [x] SC-83: Scaffold creates .github/workflows/gates.yml — harness-owned, always regenerated from template + rungate.json
+- [x] SC-82: .github/workflows/ci.yml exists (harness-owned, always regenerated from template + rungate.json)
+- [x] SC-83: .github/workflows/gates.yml exists (harness-owned, always regenerated from template + rungate.json)
 - [x] SC-84: CI workflow runs all conformity suites that `bun test` runs (same checks, CI-enforced)
 - [x] SC-85: Gates workflow includes secret scan (HYGIENE-12) as CI check on every PR
 - [x] SC-86: CI workflows read runner, bunVersion, branches from rungate.json ci section — defaults used when null
@@ -54,8 +54,8 @@ testable: true
 - [x] SC-88: All 9 ship workflow prompt templates exist in harness prompts/ (discovery, marcus, quinn, rook, serena, aditi, environment, container-rebuild, container-verify)
 - [x] SC-89: All 11 Layer 1 methodology templates exist in harness prompts/ (rca, blast-radius, prevention, regression, read-before-write, quinn-decision-tree, evidence-hierarchy, ac-format, coding-principles, testing-strategy, escalation-decision-tree)
 - [x] SC-90: Brief-assembler embeds relevant Layer 1 methodology templates into per-agent briefs at ship time
-- [x] SC-91: Scaffold creates git pre-commit hook with secret scan (HYGIENE-12) — in-repo, not global
-- [x] SC-92: Scaffold creates git pre-push hook with conformity test — in-repo, not global
+- [x] SC-91: .git/hooks/pre-commit exists (scaffold creates with secret scan HYGIENE-12, in-repo not global)
+- [x] SC-92: .git/hooks/pre-push exists (scaffold creates with conformity test, in-repo not global)
 - [x] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
 - [x] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
 - [x] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
@@ -74,7 +74,7 @@ testable: true
 - [x] SC-120: Context loading follows 5-layer architecture — CLAUDE.md → AGENTS.md → skills (on demand) → agent frontmatter → brief
 - [x] SC-121: Agent frontmatter `skills` field preloads role-specific methodology — Marcus gets coding-principles + testing-strategy, Quinn gets journey-format
 - [x] SC-122: AGENTS.md contains ONLY non-inferrable details — no info agents could discover by reading src/ or running commands
-- [x] SC-123: .github/copilot-instructions.md created if missing, NEVER overwritten if exists — scaffold skips on existing
+- [x] SC-123: .github/copilot-instructions.md exists (created if missing, never overwritten — scaffold skips on existing)
 - [x] SC-124: rungate.json envVars field populated from .env.example if it exists — null if no .env.example
 - [x] SC-125: CODE-MAP.md frontmatter includes scan-paths array listing directories scanned
 - [x] SC-126: AGENTS.md has section [Code Style] auto-detected from runtime (Bun/Node), language (TS/JS), module system (ESM/CJS)

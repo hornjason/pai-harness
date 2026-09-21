@@ -2,13 +2,15 @@
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**
 
-Phase 0+1 complete. Phase 1.5 has 3 SCs remaining but BLOCKED on architecture refactor. Audit found 70% of tests bypass the conformity engine — hand-wired phase tests should become thin consumers of the deep module.
+Phase 0+1 complete. Config-driven testing spec written (SC-331–SC-343). SC-295 reapplied to split files. 5 test failures fixed (ST-4 worktree noise, SC-321 draft spec). 4 stale worktrees pruned, SC-295 worktree removed after reapply. 2 worktrees remain (SC-293, SC-302) on hold.
 
 **Next priorities:**
-1. ARCHITECTURE REFACTOR: Migrate fat phase tests (2,657 lines) into conformity engine matchers — Serena scopes, Marcus executes
-2. Add fixture staleness check — SCs referencing files/patterns the golden fixture doesn't have = automatic red
-3. THEN merge pending worktrees (SC-293, SC-295, SC-302) into the refactored architecture
-4. Close Phase 1.5 (SC-293, SC-295) and Automation (SC-302) after refactor lands
+1. CONFIG-DRIVEN TESTING: Expand matchers to 100% SC coverage, migrate phase tests to thin consumers (CONFIG-DRIVEN-TESTING-SPEC.md, SC-331 through SC-343)
+2. Phase A: Audit unmatched SCs, implement 6 new matchers (regex-match, source-contains, json-has-field, scaffold-produces, frontmatter-field, file-line-range)
+3. Phase B: Migrate phase-0 to thin consumer (949→≤100 lines)
+4. Phase C: Migrate phase-2/3/5 to thin consumers via source-contains matcher
+5. Phase D: Golden fixture staleness check + end-to-end verification
+6. THEN merge pending worktrees (SC-293, SC-302) into refactored architecture
 
 ## ✅ Phase 0 — Scaffold Output (COMPLETE)
 

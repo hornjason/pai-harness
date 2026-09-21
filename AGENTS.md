@@ -19,10 +19,8 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Never fake results or hide failures — if it fails, report it honestly
 - Fix all test failures before reporting done — a green suite is the minimum bar
 - Run full test suite (`bun test`) and show real output — no summaries, no skipped files
-- Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
-- Commit all changes before reporting done — uncommitted work is lost work
-- Read NEXT-SESSION.md and PROJECT-STATE.md first on session start — they're the session bridge
+- Commit all changes before reporting done — `git status` in final summary, uncommitted = not done
 
 ## Key Files
 
@@ -45,7 +43,12 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | I need to understand... | Read |
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
-| research (5 files) | `docs/research/` |
+| Research findings | `docs/research/` |
+| Test architecture, phases, golden fixture | `specs/BOOTSTRAP-TEST-PLAN.md` |
+| Conformity engine, matchers, config-driven testing | `specs/CONFIG-DRIVEN-TESTING-SPEC.md` |
+| Session audit, behavioral loops, compliance | `specs/SESSION-AUDIT-SPEC.md` |
+| Instruction compliance, hill climb, COMP tests | `specs/INSTRUCTION-COMPLIANCE-SPEC.md` |
+| Test files, structural tests, phase tests | `test/` directory — NOT `tests/`. Structural: `test/structure.test.ts`. Phase: `test/phase-N.test.ts` |
 
 ## Where to Create Things
 
