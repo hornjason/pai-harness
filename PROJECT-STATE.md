@@ -2,7 +2,7 @@
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**
 
-Phase 0+1 complete. Config-driven testing spec written (SC-331–SC-343). SC-295 reapplied to split files. 5 test failures fixed (ST-4 worktree noise, SC-321 draft spec). 4 stale worktrees pruned, SC-295 worktree removed after reapply. 2 worktrees remain (SC-293, SC-302) on hold.
+Phase 0+1 complete. Config-driven testing spec written (SC-331–SC-343). Session audit spec rewritten with 7-section report format and two feedback loops. Global CLAUDE.md tightened (118→91 lines, rules moved to top, Rule 6/7/8 strengthened). AGENTS.md routing expanded, rules deduplicated (8→6). Baseline audit: 55% direct hits, 28 wasted calls. 5 test failures fixed, 4 stale worktrees pruned. 2 worktrees remain (SC-293, SC-302) on hold. Suite: 961 pass, 0 fail.
 
 **Next priorities:**
 1. CONFIG-DRIVEN TESTING: Expand matchers to 100% SC coverage, migrate phase tests to thin consumers (CONFIG-DRIVEN-TESTING-SPEC.md, SC-331 through SC-343)
