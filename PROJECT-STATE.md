@@ -2,114 +2,86 @@
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**
 
-CONFIG-DRIVEN-TESTING migration complete (Phases A-E). Council reviewed spec, revised with D-6 (behavioral routing). Phase A: classified 339 SCs (93% static, 5 behavioral). Phase B: 6 new matchers. Phase C: phase-2/3/5/1 migrated (1,514→288 lines, -81%). Phase D: phase-0 migrated (949→837, cross-project boundary limits further reduction). Phase E: staleness check + E2E verification. Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). Audit hill climb: 55%→65%→79%→82% direct hits. Suite: 969 tests, 916 pass, 0 fail.
+Config-driven testing migration complete (Phases A-E). 19 matchers in conformity engine. Phase tests migrated to thin consumers (2,463→1,125 lines). Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). All template improvements baked into scaffold template. Suite: 974 tests, 921 pass, 0 fail.
 
 **Next priorities:**
-1. CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): PHASES A-E COMPLETE
-2. Phase A: DONE — 9 SCs rewritten static, 5 tagged behavioral, +3 auto-generated tests
-3. Phase B: DONE — 6 new matchers added to matchPattern()
-4. Phase C: DONE — phase-2/3/5/1 migrated to thin consumers (1,514→288 lines, -81%)
-5. Phase D: DONE — phase-0 migrated (949→837, -12%). Cross-project boundary limits thin consumer pattern.
-6. Phase D: Migrate phase-0 to ~200 lines (SC-332)
-7. Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)
-8. THEN merge pending worktrees (SC-293, SC-302) into refactored architecture
+1. AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize agent brief templates to markdown files with ${VAR} placeholders
+2. SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec
+3. HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines). Can parallel with scaffold decomp
+4. GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates. Audit-first, then code
+5. Merge pending worktrees (SC-293, SC-302) — refactor has landed, safe to merge
+6. Close Phase 1.5 — SC-293 and SC-295 still open
 
-## ✅ Phase 0 — Scaffold Output (COMPLETE)
+## ⬜ Phase 0+1 — Scaffold + Knowledge Extraction (NOT STARTED)
 
-| Status | SC | What |
-|---|---|---|
-| ✅ | SC-1 | CODE-MAP.md exists |
-| ✅ | SC-2 | Consumers from scan |
-| ✅ | SC-3 | Environment section from rungate.json |
-| ✅ | SC-11 | Re-scaffold always regenerates AGENTS.md |
-| ✅ | SC-17 | AGENTS.md under 150 lines |
-| ✅ | SC-265 | Rules contain Fix all test failures |
-| ✅ | SC-266 | Tech stack from package.json |
-| ✅ | SC-267 | Rules name specific commands |
-| ✅ | SC-272 | Single merged specs table |
-| ✅ | SC-274 | contextDocs rejects path traversal |
-| ✅ | SC-275 | Governs field escaped, capped 120 chars |
-| ✅ | SC-273 | Table bounded by 150-line cap |
-
-## ✅ Phase 1 — Knowledge Extraction + Doc Hygiene (COMPLETE)
+## ⬜ Phase 1.5 — Context Quality (NOT STARTED)
 
 | Status | SC | What |
 |---|---|---|
-| ✅ | SC-270 | Split files under 500 lines |
-| ✅ | SC-280 | Split files group under one routing entry |
-| ✅ | SC-282 | Directory name from filename |
-| ✅ | SC-268 | Governs at spec creation time |
-| ✅ | SC-269 | Every spec has governs, WARN if TODO |
-| ✅ | SC-271 | Routing table uses intent language |
-| ✅ | SC-277 | LLM one-pass generates governs |
-| ✅ | SC-278 | split-spec auto-detects files over 500 lines |
-| ✅ | SC-279 | Content not matching governs → create new file |
-| ✅ | SC-281 | Routing filters to non-obvious mappings only |
-| ✅ | SC-283 | Routing and create tables use same categories |
-| ✅ | SC-284 | Permanent categories always in AGENTS.md |
-| ✅ | SC-285 | WARN when create-category has no directory |
-
-## 🔄 Phase 1.5 — Context Quality (IN PROGRESS)
-
-| Status | SC | What |
-|---|---|---|
-| ✅ | SC-286 | resolveAndContain() path validation |
-| ✅ | SC-287 | Strict/permissive mode |
-| ✅ | SC-288 | content-contains matcher |
-| ✅ | SC-289 | content-not-contains matcher |
-| ✅ | SC-290 | count-threshold matcher |
-| ✅ | SC-291 | json-field-equals matcher |
-| ✅ | SC-292 | section-exists matcher |
-| ✅ | SC-294 | Directory names validated |
 | ⬜ | SC-293 | SPEC-TEMPLATE updated with matchable patterns |
-| ⬜ | SC-295 | 10 of ~35 SCs enriched — 25 remaining |
+| ⬜ | SC-295 | SC enrichment — 25 remaining |
 
-## ⬜ Phase 2–5 (NOT STARTED)
+## ⬜ Config-Driven Testing (Architecture Refactor) (NOT STARTED)
 
-## 🔄 Automation (IN PROGRESS)
+## 🔄 Agent Brief Templates (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
-| ✅ | SC-296 | update-project-state.ts exists, --skip-tests under 2s |
-| ✅ | SC-297 | Pre-commit hook calls it and stages result |
-| ✅ | SC-298 | Updates date, test counts, SC status |
-| ✅ | SC-299 | Phase headers auto-flip |
-| ✅ | SC-300 | 150-line cap enforced |
-| ✅ | SC-301 | Session log archive, max 3 files |
-| ⬜ | SC-302 | Scaffold generates PROJECT-STATE.md for consumers |
-| ✅ | SC-303 | Pre-commit blocks new .sh files |
-| ✅ | SC-304 | CommitEnforcement detects all agents |
-| ✅ | SC-305 | Hook registrations use RUNGATE_HOOKS_DIR |
-| ✅ | SC-306 | codeAgent() wrapper in workflows |
-| ✅ | SC-307 | SC checkboxes auto-flip from test results |
-| ✅ | SC-308 | PROJECT-STATE tables auto-flip from spec status |
+| ⬜ | SC-348 | Templates in templates/agent-briefs/ |
+| ⬜ | SC-349 | Shared rules in _shared.md |
+| ⬜ | SC-350 | Scaffold reads template files |
+| ⬜ | SC-351 | All 8 required sections present |
+| ✅ | SC-352 | All briefs model: sonnet |
+| ✅ | SC-353 | Briefs under 120 lines each |
+| ⬜ | SC-354 | Edit template → re-scaffold updates brief |
+| ✅ | SC-355 | Shared rules in every brief |
+| ✅ | SC-356 | Prompt routing generated dynamically |
+| ⬜ | SC-357 | Template vars match project values |
+
+## ⬜ Scaffold Decomposition (NOT STARTED)
+
+| Status | SC | What |
+|---|---|---|
+| ⬜ | SC-358 | lib/scanner.ts with ProjectScan interface |
+| ⬜ | SC-359 | Scanner detects tech, specs, consumers, dirs |
+| ⬜ | SC-360 | AGENTS.md generator from ProjectScan |
+| ⬜ | SC-361 | Brief generator reads template files |
+| ⬜ | SC-362 | CODE-MAP generator from ProjectScan |
+| ⬜ | SC-363 | scaffold-project.ts under 200 lines |
+| ⬜ | SC-364 | Identical output before and after |
+| ⬜ | SC-365 | Scanner importable without generation |
+| ⬜ | SC-366 | Generators testable with mock data |
+
+## ⬜ Hook Architecture (NOT STARTED)
+
+| Status | SC | What |
+|---|---|---|
+| ⬜ | SC-367 | AgentBriefGuard under 50 lines |
+| ⬜ | SC-368 | lib/brief-validator.ts independently testable |
+| ⬜ | SC-369 | GateEnforcement under 100 lines |
+| ⬜ | SC-370 | Every hook traces to an SC |
+| ⬜ | SC-371 | No hook over 150 lines |
+| ⬜ | SC-372 | Hook logic in lib/ has unit tests |
+
+## ⬜ Gate Contracts (NOT STARTED)
+
+| Status | SC | What |
+|---|---|---|
+| ⬜ | SC-373 | Every gate has typed input/output |
+| ⬜ | SC-374 | Pass/fail criteria documented as SCs |
+| ⬜ | SC-375 | Gate chain order documented |
+| ⬜ | SC-376 | run-gate.ts under 400 lines |
+| ⬜ | SC-377 | Contracts testable by conformity engine |
+| ⬜ | SC-378 | No implicit state passing |
 
 ---
 
-**Session 2026-09-21:**
-- Rebuilt project-state system: JSON source of truth + one-way markdown render (497→97 lines)
-- Fixed all 12 pre-existing test failures → 0 fail, 959 pass
-- Completed Phase 0 (SC-273, SC-276) and Phase 1 (10 SCs: routing, governs, categories)
-- Built SC-307: sync-sc-status.ts auto-flips spec checkboxes from test results
-- Built create-spec.ts (SC-268), generate-governs.ts (SC-277), detectOversizedSpecs (SC-278)
-- Removed external spec scanning — RunGate self-contained
-- All hooks prefixed with bun, DocHygiene patched to skip .claude/agents/
-- AUDIT: 70% of tests (2,657 lines) are fat hand-wired phase tests bypassing conformity engine
-- DECISION: Architecture refactor before Phase 2 — migrate to config-driven testing
-- 3 worktrees pending merge (SC-293, SC-295, SC-302) — hold until refactor lands
-
-**Session 2026-09-20 afternoon:**
-- Committed 35+ uncommitted files in 6 logical batches
-- CommitEnforcement.hook.ts — broadened to all code agents (8 tests)
-- update-project-state.ts rewrite with SC sync
-- codeAgent() wrapper — mechanical worktree isolation
-- 13 new SCs (SC-296–308)
-- D-1: PROJECT-STATE.md is scaffold artifact
-- D-2: Pre-commit hook ships as scaffold output
-
-**Session 2026-09-20 morning:**
-- Global CLAUDE.md trimmed: 41→15 rules
-- Bootstrap spec split into 6 files
-- matchPattern extended with 5 new matchers
-- Fresh agent navigability: 25→2 tool calls
+**Session 2026-09-21 session 3:**
+- Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds), revised spec
+- Executed Phases A-E: SC classification, 6 matchers, test migration, staleness check
+- Scaffold fixed: prompt inlining → routing tables (briefs -88%)
+- Audit hill climb: 55%→82% direct hits, 28→3 wasted calls
+- Template improvements baked into scaffold template (model:sonnet, no subagents, AGENTS.md first)
+- Post-migration audit: 3 foundational specs written (scaffold decomp, hooks, gates)
+- AGENT-BRIEF-TEMPLATE-SPEC written (externalize templates from TypeScript)
 

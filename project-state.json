@@ -1,204 +1,29 @@
 {
   "updated": "2026-09-21",
   "priorities": [
-    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): PHASES A-E COMPLETE",
-    "Phase A: DONE — 9 SCs rewritten static, 5 tagged behavioral, +3 auto-generated tests",
-    "Phase B: DONE — 6 new matchers added to matchPattern()",
-    "Phase C: DONE — phase-2/3/5/1 migrated to thin consumers (1,514→288 lines, -81%)",
-    "Phase D: DONE — phase-0 migrated (949→837, -12%). Cross-project boundary limits thin consumer pattern.",
-    "Phase D: Migrate phase-0 to ~200 lines (SC-332)",
-    "Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)",
-    "THEN merge pending worktrees (SC-293, SC-302) into refactored architecture"
+    "AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize agent brief templates to markdown files with ${VAR} placeholders",
+    "SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec",
+    "HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines). Can parallel with scaffold decomp",
+    "GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates. Audit-first, then code",
+    "Merge pending worktrees (SC-293, SC-302) — refactor has landed, safe to merge",
+    "Close Phase 1.5 — SC-293 and SC-295 still open"
   ],
-  "notes": "CONFIG-DRIVEN-TESTING migration complete (Phases A-E). Council reviewed spec, revised with D-6 (behavioral routing). Phase A: classified 339 SCs (93% static, 5 behavioral). Phase B: 6 new matchers. Phase C: phase-2/3/5/1 migrated (1,514→288 lines, -81%). Phase D: phase-0 migrated (949→837, cross-project boundary limits further reduction). Phase E: staleness check + E2E verification. Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). Audit hill climb: 55%→65%→79%→82% direct hits. Suite: 969 tests, 916 pass, 0 fail.",
+  "notes": "Config-driven testing migration complete (Phases A-E). 19 matchers in conformity engine. Phase tests migrated to thin consumers (2,463→1,125 lines). Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). All template improvements baked into scaffold template. Suite: 974 tests, 921 pass, 0 fail.",
   "antipatterns": [
-    "Do NOT write more hand-wired phase tests — migrating away from that pattern",
-    "Do NOT merge pending worktrees (SC-293, SC-302) before config-driven testing refactor lands",
-    "Do NOT start Phase 2 SCs — infrastructure needs to be right first",
-    "Do NOT edit PROJECT-STATE.md directly — edit project-state.json, markdown is generated"
-  ],
-  "pendingInvestigations": [
-    "Session audit scoping: auditor report covers full 16-day session (12,395 calls), not just post-/clear. Need --from-line or --after-clear flag in session-audit.ts (SESSION-AUDIT-SPEC SC-321)"
+    "Do NOT write hand-wired phase tests — use conformity engine",
+    "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
+    "Do NOT hardcode template strings in scaffold — externalize to template files",
+    "Do NOT put deep logic in hooks — extract to lib/, hook is thin trigger"
   ],
   "phases": [
     {
-      "name": "Phase 0 — Scaffold Output",
-      "scs": [
-        {
-          "id": "SC-1",
-          "what": "CODE-MAP.md exists",
-          "done": true
-        },
-        {
-          "id": "SC-2",
-          "what": "Consumers from scan",
-          "done": true
-        },
-        {
-          "id": "SC-3",
-          "what": "Environment section from rungate.json",
-          "done": true
-        },
-        {
-          "id": "SC-11",
-          "what": "Re-scaffold always regenerates AGENTS.md",
-          "done": true
-        },
-        {
-          "id": "SC-17",
-          "what": "AGENTS.md under 150 lines",
-          "done": true
-        },
-        {
-          "id": "SC-265",
-          "what": "Rules contain Fix all test failures",
-          "done": true
-        },
-        {
-          "id": "SC-266",
-          "what": "Tech stack from package.json",
-          "done": true
-        },
-        {
-          "id": "SC-267",
-          "what": "Rules name specific commands",
-          "done": true
-        },
-        {
-          "id": "SC-272",
-          "what": "Single merged specs table",
-          "done": true
-        },
-        {
-          "id": "SC-274",
-          "what": "contextDocs rejects path traversal",
-          "done": true
-        },
-        {
-          "id": "SC-275",
-          "what": "Governs field escaped, capped 120 chars",
-          "done": true
-        },
-        {
-          "id": "SC-273",
-          "what": "Table bounded by 150-line cap",
-          "done": true
-        }
-      ]
-    },
-    {
-      "name": "Phase 1 — Knowledge Extraction + Doc Hygiene",
-      "scs": [
-        {
-          "id": "SC-270",
-          "what": "Split files under 500 lines",
-          "done": true
-        },
-        {
-          "id": "SC-280",
-          "what": "Split files group under one routing entry",
-          "done": true
-        },
-        {
-          "id": "SC-282",
-          "what": "Directory name from filename",
-          "done": true
-        },
-        {
-          "id": "SC-268",
-          "what": "Governs at spec creation time",
-          "done": true
-        },
-        {
-          "id": "SC-269",
-          "what": "Every spec has governs, WARN if TODO",
-          "done": true
-        },
-        {
-          "id": "SC-271",
-          "what": "Routing table uses intent language",
-          "done": true
-        },
-        {
-          "id": "SC-277",
-          "what": "LLM one-pass generates governs",
-          "done": true
-        },
-        {
-          "id": "SC-278",
-          "what": "split-spec auto-detects files over 500 lines",
-          "done": true
-        },
-        {
-          "id": "SC-279",
-          "what": "Content not matching governs → create new file",
-          "done": true
-        },
-        {
-          "id": "SC-281",
-          "what": "Routing filters to non-obvious mappings only",
-          "done": true
-        },
-        {
-          "id": "SC-283",
-          "what": "Routing and create tables use same categories",
-          "done": true
-        },
-        {
-          "id": "SC-284",
-          "what": "Permanent categories always in AGENTS.md",
-          "done": true
-        },
-        {
-          "id": "SC-285",
-          "what": "WARN when create-category has no directory",
-          "done": true
-        }
-      ]
+      "name": "Phase 0+1 — Scaffold + Knowledge Extraction",
+      "scs": [],
+      "note": "COMPLETE — 25 SCs, all done"
     },
     {
       "name": "Phase 1.5 — Context Quality",
       "scs": [
-        {
-          "id": "SC-286",
-          "what": "resolveAndContain() path validation",
-          "done": true
-        },
-        {
-          "id": "SC-287",
-          "what": "Strict/permissive mode",
-          "done": true
-        },
-        {
-          "id": "SC-288",
-          "what": "content-contains matcher",
-          "done": true
-        },
-        {
-          "id": "SC-289",
-          "what": "content-not-contains matcher",
-          "done": true
-        },
-        {
-          "id": "SC-290",
-          "what": "count-threshold matcher",
-          "done": true
-        },
-        {
-          "id": "SC-291",
-          "what": "json-field-equals matcher",
-          "done": true
-        },
-        {
-          "id": "SC-292",
-          "what": "section-exists matcher",
-          "done": true
-        },
-        {
-          "id": "SC-294",
-          "what": "Directory names validated",
-          "done": true
-        },
         {
           "id": "SC-293",
           "what": "SPEC-TEMPLATE updated with matchable patterns",
@@ -206,121 +31,204 @@
         },
         {
           "id": "SC-295",
-          "what": "10 of ~35 SCs enriched — 25 remaining",
+          "what": "SC enrichment — 25 remaining",
+          "done": false
+        }
+      ],
+      "note": "2 open SCs, pending worktree merge"
+    },
+    {
+      "name": "Config-Driven Testing (Architecture Refactor)",
+      "scs": [],
+      "note": "COMPLETE — SC-331 through SC-347, Phases A-E done"
+    },
+    {
+      "name": "Agent Brief Templates",
+      "scs": [
+        {
+          "id": "SC-348",
+          "what": "Templates in templates/agent-briefs/",
+          "done": false
+        },
+        {
+          "id": "SC-349",
+          "what": "Shared rules in _shared.md",
+          "done": false
+        },
+        {
+          "id": "SC-350",
+          "what": "Scaffold reads template files",
+          "done": false
+        },
+        {
+          "id": "SC-351",
+          "what": "All 8 required sections present",
+          "done": false
+        },
+        {
+          "id": "SC-352",
+          "what": "All briefs model: sonnet",
+          "done": true
+        },
+        {
+          "id": "SC-353",
+          "what": "Briefs under 120 lines each",
+          "done": true
+        },
+        {
+          "id": "SC-354",
+          "what": "Edit template → re-scaffold updates brief",
+          "done": false
+        },
+        {
+          "id": "SC-355",
+          "what": "Shared rules in every brief",
+          "done": true
+        },
+        {
+          "id": "SC-356",
+          "what": "Prompt routing generated dynamically",
+          "done": true
+        },
+        {
+          "id": "SC-357",
+          "what": "Template vars match project values",
           "done": false
         }
       ]
     },
     {
-      "name": "Phase 2–5",
-      "scs": []
-    },
-    {
-      "name": "Automation",
+      "name": "Scaffold Decomposition",
       "scs": [
         {
-          "id": "SC-296",
-          "what": "update-project-state.ts exists, --skip-tests under 2s",
-          "done": true
-        },
-        {
-          "id": "SC-297",
-          "what": "Pre-commit hook calls it and stages result",
-          "done": true
-        },
-        {
-          "id": "SC-298",
-          "what": "Updates date, test counts, SC status",
-          "done": true
-        },
-        {
-          "id": "SC-299",
-          "what": "Phase headers auto-flip",
-          "done": true
-        },
-        {
-          "id": "SC-300",
-          "what": "150-line cap enforced",
-          "done": true
-        },
-        {
-          "id": "SC-301",
-          "what": "Session log archive, max 3 files",
-          "done": true
-        },
-        {
-          "id": "SC-302",
-          "what": "Scaffold generates PROJECT-STATE.md for consumers",
+          "id": "SC-358",
+          "what": "lib/scanner.ts with ProjectScan interface",
           "done": false
         },
         {
-          "id": "SC-303",
-          "what": "Pre-commit blocks new .sh files",
-          "done": true
+          "id": "SC-359",
+          "what": "Scanner detects tech, specs, consumers, dirs",
+          "done": false
         },
         {
-          "id": "SC-304",
-          "what": "CommitEnforcement detects all agents",
-          "done": true
+          "id": "SC-360",
+          "what": "AGENTS.md generator from ProjectScan",
+          "done": false
         },
         {
-          "id": "SC-305",
-          "what": "Hook registrations use RUNGATE_HOOKS_DIR",
-          "done": true
+          "id": "SC-361",
+          "what": "Brief generator reads template files",
+          "done": false
         },
         {
-          "id": "SC-306",
-          "what": "codeAgent() wrapper in workflows",
-          "done": true
+          "id": "SC-362",
+          "what": "CODE-MAP generator from ProjectScan",
+          "done": false
         },
         {
-          "id": "SC-307",
-          "what": "SC checkboxes auto-flip from test results",
-          "done": true
+          "id": "SC-363",
+          "what": "scaffold-project.ts under 200 lines",
+          "done": false
         },
         {
-          "id": "SC-308",
-          "what": "PROJECT-STATE tables auto-flip from spec status",
-          "done": true
+          "id": "SC-364",
+          "what": "Identical output before and after",
+          "done": false
+        },
+        {
+          "id": "SC-365",
+          "what": "Scanner importable without generation",
+          "done": false
+        },
+        {
+          "id": "SC-366",
+          "what": "Generators testable with mock data",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Hook Architecture",
+      "scs": [
+        {
+          "id": "SC-367",
+          "what": "AgentBriefGuard under 50 lines",
+          "done": false
+        },
+        {
+          "id": "SC-368",
+          "what": "lib/brief-validator.ts independently testable",
+          "done": false
+        },
+        {
+          "id": "SC-369",
+          "what": "GateEnforcement under 100 lines",
+          "done": false
+        },
+        {
+          "id": "SC-370",
+          "what": "Every hook traces to an SC",
+          "done": false
+        },
+        {
+          "id": "SC-371",
+          "what": "No hook over 150 lines",
+          "done": false
+        },
+        {
+          "id": "SC-372",
+          "what": "Hook logic in lib/ has unit tests",
+          "done": false
+        }
+      ]
+    },
+    {
+      "name": "Gate Contracts",
+      "scs": [
+        {
+          "id": "SC-373",
+          "what": "Every gate has typed input/output",
+          "done": false
+        },
+        {
+          "id": "SC-374",
+          "what": "Pass/fail criteria documented as SCs",
+          "done": false
+        },
+        {
+          "id": "SC-375",
+          "what": "Gate chain order documented",
+          "done": false
+        },
+        {
+          "id": "SC-376",
+          "what": "run-gate.ts under 400 lines",
+          "done": false
+        },
+        {
+          "id": "SC-377",
+          "what": "Contracts testable by conformity engine",
+          "done": false
+        },
+        {
+          "id": "SC-378",
+          "what": "No implicit state passing",
+          "done": false
         }
       ]
     }
   ],
   "sessions": [
     {
-      "date": "2026-09-21",
+      "date": "2026-09-21 session 3",
       "items": [
-        "Rebuilt project-state system: JSON source of truth + one-way markdown render (497→97 lines)",
-        "Fixed all 12 pre-existing test failures → 0 fail, 959 pass",
-        "Completed Phase 0 (SC-273, SC-276) and Phase 1 (10 SCs: routing, governs, categories)",
-        "Built SC-307: sync-sc-status.ts auto-flips spec checkboxes from test results",
-        "Built create-spec.ts (SC-268), generate-governs.ts (SC-277), detectOversizedSpecs (SC-278)",
-        "Removed external spec scanning — RunGate self-contained",
-        "All hooks prefixed with bun, DocHygiene patched to skip .claude/agents/",
-        "AUDIT: 70% of tests (2,657 lines) are fat hand-wired phase tests bypassing conformity engine",
-        "DECISION: Architecture refactor before Phase 2 — migrate to config-driven testing",
-        "3 worktrees pending merge (SC-293, SC-295, SC-302) — hold until refactor lands"
-      ]
-    },
-    {
-      "date": "2026-09-20 afternoon",
-      "items": [
-        "Committed 35+ uncommitted files in 6 logical batches",
-        "CommitEnforcement.hook.ts — broadened to all code agents (8 tests)",
-        "update-project-state.ts rewrite with SC sync",
-        "codeAgent() wrapper — mechanical worktree isolation",
-        "13 new SCs (SC-296–308)",
-        "D-1: PROJECT-STATE.md is scaffold artifact",
-        "D-2: Pre-commit hook ships as scaffold output"
-      ]
-    },
-    {
-      "date": "2026-09-20 morning",
-      "items": [
-        "Global CLAUDE.md trimmed: 41→15 rules",
-        "Bootstrap spec split into 6 files",
-        "matchPattern extended with 5 new matchers",
-        "Fresh agent navigability: 25→2 tool calls"
+        "Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds), revised spec",
+        "Executed Phases A-E: SC classification, 6 matchers, test migration, staleness check",
+        "Scaffold fixed: prompt inlining → routing tables (briefs -88%)",
+        "Audit hill climb: 55%→82% direct hits, 28→3 wasted calls",
+        "Template improvements baked into scaffold template (model:sonnet, no subagents, AGENTS.md first)",
+        "Post-migration audit: 3 foundational specs written (scaffold decomp, hooks, gates)",
+        "AGENT-BRIEF-TEMPLATE-SPEC written (externalize templates from TypeScript)"
       ]
     }
   ]
