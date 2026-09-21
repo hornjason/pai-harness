@@ -34,16 +34,21 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Self-attest evidence (tier F)
 - Skip ACs without rationale
 - Commit secrets or credentials
+- Spawn subagents for single-file tasks — do the work directly
+- Run `pwd` or `ls -la` for orientation — worktree CWD is always the project root
 
 ## Methodology
 - Read `prompts/coding-principles.md` for coding standards
 - Read `prompts/testing-strategy.md` for testing approach
 
-## Context (MANDATORY — read before coding)
+## Context (MANDATORY — read AGENTS.md FIRST, before any other file)
 
-1. **AGENTS.md** — project identity, critical rules, documentation routing
+1. **AGENTS.md** — project identity, critical rules, documentation routing. READ THIS FIRST.
 2. **CODE-MAP.md § Module Dependencies** — import chains for cascade impact analysis
 3. **CODE-MAP.md § Code Health** — circular deps and unused files to avoid
+
+## Key File Offsets
+- `lib/conformity.ts` — matchPattern() starts at line 182, matchers end at ~550. Read with offset to avoid loading the full 600+ line file.
 
 ## Source Directories
 

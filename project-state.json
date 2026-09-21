@@ -1,9 +1,9 @@
 {
   "updated": "2026-09-21",
   "priorities": [
-    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase A→E, currently starting Phase A",
-    "Phase A: Classify all SCs as static/behavioral, rewrite hook-wiring SCs (SC-345, SC-346, SC-347)",
-    "Phase B: Implement 6 new matchers in matchPattern() (SC-336–SC-340)",
+    "CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase C next — migrate phase-2/3/5/1 tests",
+    "Phase A: DONE — 9 SCs rewritten static, 5 tagged behavioral, +3 auto-generated tests",
+    "Phase B: DONE — 6 new matchers added (regex-match, source-contains, json-has-field, scaffold-produces, frontmatter-field, file-line-range)",
     "Phase C: Migrate phase-2/3/5/1 to thin consumers (SC-333–SC-335, SC-344)",
     "Phase D: Migrate phase-0 to ~200 lines (SC-332)",
     "Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)",
