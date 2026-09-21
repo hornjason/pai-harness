@@ -68,6 +68,8 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 - [ ] SC-355: Shared rules appear in every generated agent brief
 - [ ] SC-356: Prompt routing table generated dynamically, not from template
 - [ ] SC-357: Template variables filled from project scan match actual project values
+- [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold
+- [ ] SC-386: Consumers can override keyword routing in their rungate.json
 
 ## Implementation
 

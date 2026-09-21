@@ -27,6 +27,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 | D-4 | Fixture staleness is a test failure, not a silent gap | SCs referencing files the golden fixture doesn't produce = red test. No silent coverage gaps |
 | D-5 | matchPattern() fallthrough is a test failure in strict mode (deferred) | Requires behavioral SCs to be classified and excluded first. Enable after D-6 lands |
 | D-6 | Behavioral SCs route to transcript auditor, not file matchers | Runtime behavior ("session-end checks for X") verified by SESSION-AUDIT-SPEC tooling, not matchPattern(). Rewrite hook-wiring SCs as static checks where the artifact exists |
+| D-7 | Matcher registry config is single source of truth for all patterns | One config drives matchPattern(), SPEC-TEMPLATE, create-spec, audit tools, and consumer extensions. No manual sync between code and documentation |
 
 ## Target State
 
@@ -67,6 +68,12 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-345: Every SC in testable specs classified as static or behavioral
 - [ ] SC-346: Behavioral SCs have `verification: behavioral` tag and route to SESSION-AUDIT-SPEC
 - [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists
+- [ ] SC-379: Matcher registry config exists listing all patterns with name, syntax, example, and notes
+- [ ] SC-380: matchPattern() reads matcher config to dispatch — no hardcoded pattern branches
+- [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config
+- [ ] SC-382: create-spec.ts shows available patterns from matcher config when creating specs
+- [ ] SC-383: `rungate audit-sc-patterns` reads matcher config, classifies every SC as matched/unmatched/behavioral
+- [ ] SC-384: Consumers can extend matcher config with custom matchers for their domain
 
 ## Implementation
 
@@ -96,6 +103,14 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 1. Add fixture staleness check (SC-341)
 2. End-to-end verification: add a test SC, run suite, confirm auto-test (SC-342)
 3. Enable D-5 (strict mode) after behavioral SCs are excluded
+
+### Phase F: Config-Driven Matcher Registry
+1. Define matcher config format (SC-379) — JSON file listing all patterns with name, syntax, example, notes
+2. Refactor matchPattern() to read from config (SC-380) — dispatch by config, not hardcoded branches
+3. Auto-generate SPEC-TEMPLATE pattern reference from config (SC-381)
+4. Wire create-spec.ts to show patterns from config (SC-382)
+5. Build `rungate audit-sc-patterns` CLI command (SC-383)
+6. Document consumer extension point for custom matchers (SC-384)
 
 ## Cautions
 

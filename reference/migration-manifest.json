@@ -410,27 +410,32 @@
     {
       "source": "~/.claude/skills/ship/consumer-cascade-map.json",
       "dest": "config/consumer-cascade-map.json",
-      "migrated": true
+      "migrated": false,
+      "note": "Removed — dashboard project file, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/doc-cascade-map.json",
       "dest": "config/doc-cascade-map.json",
-      "migrated": true
+      "migrated": false,
+      "note": "Removed — dashboard project file, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/eval.json",
       "dest": "config/eval.json",
-      "migrated": true
+      "migrated": false,
+      "note": "Removed — dashboard eval scenarios, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/profiles/account-plan.yaml",
       "dest": "config/profiles/account-plan.yaml",
-      "migrated": true
+      "migrated": false,
+      "note": "Removed — dashboard profile, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/profiles/campaign.yaml",
       "dest": "config/profiles/campaign.yaml",
-      "migrated": true
+      "migrated": false,
+      "note": "Removed — dashboard profile, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/ceremony-profiles.json",

@@ -37,7 +37,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
-| Specs — success criteria, constraints, requirements (13 files) | `specs/` |
+| Specs — success criteria, constraints, requirements (17 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
 | Council — synthesis, design debates (3 files) | `docs/council/` |
@@ -73,7 +73,11 @@ Read the governing spec BEFORE making changes in that area.
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | yes |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content assertions | yes |
+| GATE-CONTRACTS-SPEC.md | Gate contracts — what gates exist, their inputs/outputs, pass/fail criteria, and how they chain | yes |
+| HOOK-ARCHITECTURE-SPEC.md | Hook architecture — hooks as thin triggers delegating to lib/ modules, not deep logic in hook files | yes |
+| AGENT-BRIEF-TEMPLATE-SPEC.md | Agent brief templates — externalized markdown templates with variable substitution, not hardcoded TypeScript strings | yes |
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
+| SCAFFOLD-DECOMPOSITION-SPEC.md | Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focused modules | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | TODO | no |
 
 ## Tests
