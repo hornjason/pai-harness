@@ -55,6 +55,17 @@ When you add an SC today:
 
 959 pass, 0 fail, 8 skip, 45 todo.
 
+### Pending: Session Audit Scoping
+
+The auditor report at `docs/research/auditor-report-2026-09-21.md` covers the **full 16-day session** (12,395 tool calls), not just the post-/clear segment. Jason wanted it scoped to only the work after the last `/clear`. The JSONL transcript doesn't have a clean `/clear` marker — need to find a reliable way to identify the boundary (timestamp, line number, or `"type":"mode"` entries) and re-run the audit on just that slice.
+
+This is also the motivation for building `session-audit.ts` (SESSION-AUDIT-SPEC SC-321) — the script should accept `--from-line` or `--after-clear` flags to scope the analysis window.
+
+### New Specs Created This Session
+
+- **SESSION-LIFECYCLE-SPEC** (`specs/SESSION-LIFECYCLE-SPEC.md`) — 12 SCs (SC-309 through SC-320) for mechanical session start/end rituals
+- **SESSION-AUDIT-SPEC** (`specs/SESSION-AUDIT-SPEC.md`) — 10 SCs (SC-321 through SC-330) for transcript-based behavioral audit using agnix + RepoRails + auditor agent
+
 ### What NOT To Do
 
 - Do NOT write more hand-wired phase tests — that's the pattern we're migrating away from
