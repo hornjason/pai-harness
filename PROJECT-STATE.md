@@ -5,10 +5,10 @@
 Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds, 2026-09-21). Spec revised: dropped zero-fallthrough for behavioral SCs, added D-6 (behavioral routing to transcript auditor), flipped sequencing (phase-2/3/5 first, phase-0 last), added phase-1, 4 new SCs (SC-344–SC-347). NEXT-SESSION.md folded into PROJECT-STATE.md. SESSION-LIFECYCLE-SPEC updated (4 SCs reworded). Suite: 1014 pass, 0 fail.
 
 **Next priorities:**
-1. CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase C next — migrate phase-2/3/5/1 tests
+1. CONFIG-DRIVEN TESTING MIGRATION (SC-331–SC-347): Phase D next — migrate phase-0
 2. Phase A: DONE — 9 SCs rewritten static, 5 tagged behavioral, +3 auto-generated tests
-3. Phase B: DONE — 6 new matchers added (regex-match, source-contains, json-has-field, scaffold-produces, frontmatter-field, file-line-range)
-4. Phase C: Migrate phase-2/3/5/1 to thin consumers (SC-333–SC-335, SC-344)
+3. Phase B: DONE — 6 new matchers added to matchPattern()
+4. Phase C: DONE — phase-2/3/5/1 migrated to thin consumers (1,514→288 lines, -81%)
 5. Phase D: Migrate phase-0 to ~200 lines (SC-332)
 6. Phase E: Fixture staleness check + enable strict mode (SC-341, SC-342, SC-331)
 7. THEN merge pending worktrees (SC-293, SC-302) into refactored architecture

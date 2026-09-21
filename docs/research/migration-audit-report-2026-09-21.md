@@ -70,11 +70,27 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 
 | Metric | Value | Delta vs Phase B |
 |--------|-------|-----------------|
-| Direct hits | — | — |
-| Wasted calls | — | — |
-| Duration | — | — |
-| Test count | — | — |
-| Brief changes | — | — |
+| Direct hits | 79% (15/19) | +14% vs Phase B |
+| Wasted calls | 3 | -5 vs Phase B (-62%) |
+| Duration | 19.6 min (4 files) | 4.9 min/file vs 17 min/file (3.5x faster per file) |
+| Tool calls | 40 | -2 vs Phase B |
+| Test count | 967 (914 pass, 0 fail) | -50 structural (hand-wired → auto-generated), 0 coverage loss |
+
+**Line reductions:**
+- phase-3: 99 → 5 (-95%)
+- phase-5: 112 → 78 (-30%)
+- phase-2: 620 → 5 (-99%)
+- phase-1: 683 → 200 (-71%)
+- Total: 1,514 → 288 (-81%)
+
+**All 4 Phase B brief improvements followed:**
+- No subagents ✅ (was biggest waste in Phase B)
+- No pwd/ls-la ✅
+- AGENTS.md first ✅
+- Offset reads of conformity.ts (2 reads vs 5 in Phase B) ✅
+
+**Brief changes applied for Phase D:**
+1. Note about voice curl failures (agent character overhead — 2 wasted calls)
 
 ## Phase D: Phase-0 Migration
 
@@ -103,6 +119,7 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 | Baseline | 55% | 28 | — | Scaffold fix: routing tables replace inlined prompts | — |
 | A | n/a (DA) | n/a | — | — | +3 auto-generated tests |
 | B | 65% | 8 | 17 min | No subagents, no orientation, offset guidance, AGENTS.md first | +10% hits, -71% waste |
+| C | 79% | 3 | 19.6 min (4 files) | Voice curl note | +14% hits, -62% waste, 3.5x faster/file |
 | C | — | — | — | — | — |
 | D | — | — | — | — | — |
 | E | — | — | — | — | — |
