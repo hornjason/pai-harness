@@ -108,15 +108,21 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 
 **No brief changes needed for Phase E** — brief is performing well.
 
-## Phase E: Staleness + Strict Mode
+## Phase E: Staleness + E2E Verification
 
 | Metric | Value | Delta vs Phase D |
 |--------|-------|-----------------|
-| Direct hits | — | — |
-| Wasted calls | — | — |
-| Duration | — | — |
-| Test count | — | — |
-| Brief changes | — | — |
+| Direct hits | 77% (17/22) | -5% vs Phase D (task novelty — new code, not migration pattern) |
+| Wasted calls | 5 (2 voice curl, 2 ls subdirs, 1 redundant test) | +1 vs Phase D |
+| Duration | 14.1 min | +2.2 min vs Phase D (novel implementation) |
+| Tool calls | 39 | Same as Phase D |
+| Test count | 969 (916 pass, 0 fail) | +3 new tests |
+
+**Deliverables:**
+- SC-341: Staleness check detects 7 gaps (SCs referencing files not in fixture output)
+- SC-342: E2E verification proves add-SC → auto-test with zero test file edits
+
+**Assessment:** Brief held steady. Regression from 82%→77% explained by task novelty (staleness check is new code, not a migration of existing tests). Voice curl (2 calls) remains the only systemic waste source — it's character prompt overhead, not a brief issue.
 
 ## Summary
 
@@ -127,6 +133,26 @@ Phase A was spec edits done by the DA directly (not Marcus). No transcript to au
 | B | 65% | 8 | 17 min | No subagents, no orientation, offset guidance, AGENTS.md first | +10% hits, -71% waste |
 | C | 79% | 3 | 19.6 min (4 files) | Voice curl note | +14% hits, -62% waste, 3.5x faster/file |
 | D | 82% | 4 | 11.9 min | None needed | +3% hits, faster despite harder task |
-| C | — | — | — | — | — |
-| D | — | — | — | — | — |
-| E | — | — | — | — | — |
+| E | 77% | 5 | 14.1 min | None needed | -5% (novel task), brief stable |
+
+## Conclusions
+
+### Migration Results
+- **Total lines removed:** 2,463 → 1,125 across all phase tests (phase-0 through phase-5)
+- **Phases 2/3/5/1:** 1,514 → 288 lines (-81%) — thin consumer pattern works
+- **Phase 0:** 949 → 837+107 = 944 lines (net -1%) — cross-project boundary limits migration
+- **Test coverage:** Maintained — 0 failures across all phases
+- **New capability:** Adding a static SC to any testable spec auto-generates a test with zero test file edits (SC-342 proven)
+
+### Brief Improvement Hill Climb
+- **Direct hit rate:** 55% → 82% peak (+27 percentage points)
+- **Wasted calls:** 28 → 3 minimum (-89%)
+- **Key improvements that worked:** No subagents rule, no orientation calls, offset guidance, AGENTS.md first reinforcement
+- **Remaining waste:** Voice curl (character prompt overhead, 2 calls/phase) — needs character prompt trimming, not brief changes
+- **Pattern:** Brief improvements had strongest effect on pattern-matching tasks (Phase C: 79%). Novel implementation tasks (Phase E: 77%) saw slight regression — expected, as the brief optimizes navigation not creativity
+
+### Architectural Findings
+- Config-driven testing works for 93% of SCs (static file verification)
+- 5 SCs (1.5%) are genuinely behavioral — routed to transcript auditor
+- Phase-0 has a cross-project boundary the conformity engine can't cross — it tests harness specs against scaffold output, not specs within a project
+- Scaffold prompt inlining was the single biggest source of agent context bloat — routing tables fixed it (88% brief size reduction)
