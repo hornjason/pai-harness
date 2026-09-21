@@ -2,12 +2,13 @@
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**
 
-Phase 0 and Phase 1 complete. Phase 1.5 has 2 SCs remaining.
+Phase 0+1 complete. Phase 1.5 has 3 SCs remaining but BLOCKED on architecture refactor. Audit found 70% of tests bypass the conformity engine — hand-wired phase tests should become thin consumers of the deep module.
 
 **Next priorities:**
-1. Close Phase 1.5 — SC-293 (spec template patterns) and SC-295 (SC enrichment)
-2. Re-scaffold RunGate + fresh agent test after Phase 1.5 complete
-3. Add PROJECT-STATE.md to scaffold output for downstream consumers (D-1)
+1. ARCHITECTURE REFACTOR: Migrate fat phase tests (2,657 lines) into conformity engine matchers — Serena scopes, Marcus executes
+2. Add fixture staleness check — SCs referencing files/patterns the golden fixture doesn't have = automatic red
+3. THEN merge pending worktrees (SC-293, SC-295, SC-302) into the refactored architecture
+4. Close Phase 1.5 (SC-293, SC-295) and Automation (SC-302) after refactor lands
 
 ## ✅ Phase 0 — Scaffold Output (COMPLETE)
 
@@ -80,6 +81,18 @@ Phase 0 and Phase 1 complete. Phase 1.5 has 2 SCs remaining.
 | ✅ | SC-308 | PROJECT-STATE tables auto-flip from spec status |
 
 ---
+
+**Session 2026-09-21:**
+- Rebuilt project-state system: JSON source of truth + one-way markdown render (497→97 lines)
+- Fixed all 12 pre-existing test failures → 0 fail, 959 pass
+- Completed Phase 0 (SC-273, SC-276) and Phase 1 (10 SCs: routing, governs, categories)
+- Built SC-307: sync-sc-status.ts auto-flips spec checkboxes from test results
+- Built create-spec.ts (SC-268), generate-governs.ts (SC-277), detectOversizedSpecs (SC-278)
+- Removed external spec scanning — RunGate self-contained
+- All hooks prefixed with bun, DocHygiene patched to skip .claude/agents/
+- AUDIT: 70% of tests (2,657 lines) are fat hand-wired phase tests bypassing conformity engine
+- DECISION: Architecture refactor before Phase 2 — migrate to config-driven testing
+- 3 worktrees pending merge (SC-293, SC-295, SC-302) — hold until refactor lands
 
 **Session 2026-09-20 afternoon:**
 - Committed 35+ uncommitted files in 6 logical batches
