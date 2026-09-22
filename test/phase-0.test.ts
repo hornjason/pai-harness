@@ -683,13 +683,13 @@ describe("Phase 0: Pre-flight + static files", () => {
 
   // SC-140: Brief structure — Core Principles at START (relationship check)
   describe("SC-140: brief ordering", () => {
-    test("Core Principles appears before methodology", () => {
+    test("Core Principles appears before methodology sections", () => {
       const content = readFileSync(join(OUTPUT, ".claude/agents/marcus.md"), "utf-8");
       const principlesIdx = content.indexOf("## Core Principles");
-      const methodologyIdx = content.indexOf("## Methodology");
+      const alwaysDoIdx = content.indexOf("## Always Do");
       expect(principlesIdx).toBeGreaterThan(-1);
-      expect(methodologyIdx).toBeGreaterThan(-1);
-      expect(principlesIdx).toBeLessThan(methodologyIdx);
+      expect(alwaysDoIdx).toBeGreaterThan(-1);
+      expect(principlesIdx).toBeLessThan(alwaysDoIdx);
     });
   });
 
@@ -708,13 +708,13 @@ describe("Phase 0: Pre-flight + static files", () => {
 
   // SC-145: Brief assembly order (relationship check)
   describe("SC-145: brief assembly order", () => {
-    test("identity before principles before methodology", () => {
+    test("identity before principles before methodology sections", () => {
       const content = readFileSync(join(OUTPUT, ".claude/agents/marcus.md"), "utf-8");
       const nameIdx = content.indexOf("name: marcus");
       const principlesIdx = content.indexOf("## Core Principles");
-      const methodologyIdx = content.indexOf("## Methodology");
+      const alwaysDoIdx = content.indexOf("## Always Do");
       expect(nameIdx).toBeLessThan(principlesIdx);
-      expect(principlesIdx).toBeLessThan(methodologyIdx);
+      expect(principlesIdx).toBeLessThan(alwaysDoIdx);
     });
   });
 

@@ -132,9 +132,13 @@ describe("ST-5: No skills/ directory in rungate", () => {
   });
 });
 
-describe("ST-6: No templates/ directory in rungate", () => {
-  test("templates/ directory does not exist", () => {
-    expect(existsSync(join(HARNESS_ROOT, "templates"))).toBe(false);
+describe("ST-6: templates/ directory exists for agent brief templates", () => {
+  test("templates/ directory exists", () => {
+    expect(existsSync(join(HARNESS_ROOT, "templates"))).toBe(true);
+  });
+
+  test("templates/agent-briefs/ directory exists", () => {
+    expect(existsSync(join(HARNESS_ROOT, "templates", "agent-briefs"))).toBe(true);
   });
 });
 
