@@ -9,14 +9,21 @@ updated: 2026-09-22
 
 @AGENTS.md
 
-## Rules (6 — RunGate project-specific)
+## MANDATORY GATE — do these steps IN ORDER before any implementation
 
-1. **All implementation goes through the harness** — Skill("harness") for any implementing, fixing, shipping. Never raw Agent() calls. Never ad-hoc prompts. The harness IS the quality loop. No exceptions.
-2. **Delegate by name through briefedAgent()** — Marcus codes, Quinn tests, Rook scans, Serena architects, Aditi designs. DA must NOT Edit/Write files in lib/, test/, scripts/, gates/, hooks/. All agents launch through briefedAgent(), never raw Agent().
-3. **Read governing spec before any work** — check the Specs table in AGENTS.md. Read the governing spec for the area you are changing. No spec found = ask Jason.
-4. **Clean suite before new work** — run bun test before starting any implementation. 0 fail required. Fix failures first. Broken tests mask regressions.
-5. **PROJECT-STATE.md at milestones** — update after every merge, SC completion, or milestone. Test: if I restart right now, does it tell the next session everything?
-6. **SCs without tests are wishes** — add the test in the same session you add the SC.
+STOP. Do NOT read source code, edit files, or write code until all 4 steps are done:
+
+1. Run `bun test` — confirm 0 failures. If any fail, fix them first.
+2. Find the governing spec in the Specs table in AGENTS.md. Read it.
+3. Invoke `Skill("harness")` — it orchestrates the implementation. You do not implement directly.
+4. The harness delegates to named agents: Marcus codes, Quinn tests, Rook scans. You must NOT use Edit/Write on files in lib/, test/, scripts/, gates/, hooks/.
+
+If you skip any step, the session is invalid.
+
+## Rules
+
+- **PROJECT-STATE.md at milestones** — update after every merge, SC, or milestone.
+- **SCs without tests are wishes** — add the test in the same session you add the SC.
 
 ## Project-Specific References
 
