@@ -2,42 +2,38 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 6 — AFK ship workflow + brief audit + eval system design.
+Session 7 — Three-tier rule enforcement architecture.
 
-**Shipped:**
-- #562 DA-COMPLIANCE-SPEC: eval criteria, audit-transcript with FOLLOWED/IGNORED, da-compliance skill (1,384 lines, 18 tests)
-- #538 Template extraction: verified already landed, closed
-- #558 Brief Compliance: directive-extractor, transcript-checker, hill-climb, worktree-isolation (1,645 lines, 48 tests)
-- ship.js fixed: import()→agent context extraction, object schema, pages:{}→LIGHT override, commit from worktree path
-- All 6 agent briefs audited and fixed: shared boilerplate cleaned, Quinn CLI mode, Aditi CLI skip, Marcus TDD workflow
-- TDD sequence checker (checkTDD) with 5 tests
-- test-rules.ts CLI: auto-extracts 37 rules from all files Marcus loads, classifies as mechanical/sequence/judge
-- Project settings.json added for permission-free AFK runs
+**Shipped this session:**
+- Three-tier rule enforcement: identity (brief), reinforcement (task prompt), mechanical (harness structure)
+- lib/rule-registry.ts: extracts rules from briefs, classifies by tier from frontmatter config
+- Config-driven: tiers field in brief frontmatter maps sections to reinforcement/mechanical, identity is default
+- ship.js briefedAgent(): dynamically extracts reinforcement rules via agent call, injects at top of task prompt
+- Scaffold agentMeta: carries tiers through to generated briefs (survives re-scaffold)
+- Marcus tiers: reinforcement=[Testing Rules], mechanical=[Workflow], identity=24 rules
+- Quinn tiers: reinforcement=[Project Type Detection, CLI Testing Mode], identity=rest
+- docs/research/three-tier-enforcement.md: full writeup with Mermaid diagram
+- specs/AGENT-BRIEF-TEMPLATE-SPEC.md: SC-423 through SC-428 for tier enforcement
 
-**Key findings from workflow audit (#562 — 34 min, 20 agents):**
-- Marcus: 11:32 (35%) — efficient, 5/5 brief compliance, 1,590 lines produced. NOT doing TDD.
-- Quinn Local: 9:04 (27%) — 75% waste, ran full test suite 3x instead of targeted
-- Quinn Container: 3:16 (10%) — 100% waste, navigated wrong app, checked wrong commit
-- Discovery: 2:34 — sized M/STANDARD, should be LIGHT for CLI project. 38 calls (brief says max 25)
-- Root cause: briefs are web-app-centric, no project-type awareness, Quinn has no CLI mode
+**Validation results:**
+- Marcus compliance: 3/8 → 8/8 process rules followed after reinforcement tier
+- Context reads: 3/6 → 6/6 files after reinforcement
+- TDD: TEST_AFTER → test-first after position fix (line 460 → line 8)
+- Research confirmed: Instruction Stacking Collapse (arXiv 2608.02639), Lost-in-the-Middle (Liu 2023)
 
-**Brief fixes applied:**
-- _shared.md: removed 'bun test after every change' (Marcus-only), removed duplicates, removed Ask First (Marcus-only)
-- marcus.md: consolidated bun test to 'exactly twice', TDD as numbered workflow steps, removed contradictions
-- quinn.md: added Project Type Detection gate — CLI mode (bun test + grep) vs UI mode (Playwright)
-- discovery.md: removed 'run bun test' (read-only role), added pages:{} ceremony tier check
-- aditi.md: added CLI skip detection
-- Test suite: 1,079 tests, 0 fail (up from 955)
+**Architecture:**
+- Brief is single source of truth (rules + tier classification in frontmatter)
+- Rule registry is deep module (one interface, multiple consumers: ship.js, evals, audit)
+- No hardcoded rules in ship.js — dynamic extraction
+- Add a rule to a brief section → everything downstream adjusts automatically
 
-**Eval system design (from Anthropic article + our research):**
-- Three-phase approach: Phase 1 (rule quality — test each rule in isolation), Phase 2 (rule position — test rules together), Phase 3 (integration — full ship workflow)
-- Rules auto-extracted from all files each agent loads (37 for Marcus across 3 files)
-- Three check types: mechanical (tool call counting), sequence (TDD ordering), judge (LLM rubric for prose principles)
-- Canary tasks per rule for isolated testing
-- Hill climb loop: reword failed rules, re-test until pass
-- Key anti-pattern from Anthropic: don't grade path, grade outcome — EXCEPT when process IS the requirement (TDD)
+**Next:**
+- Quinn solo validation (running)
+- Layer 3 mechanical enforcement: split Marcus into test-only + implement-only spawns
+- Eval integration: post-PROVE phase grades transcript, feeds findings back to templates
+- Hill climb loop: eval watches behavior → tightens briefs → re-eval
 
-**Test suite: 1,079 pass, 0 fail across 53 files**
+**Test suite: 1,089 pass, 0 fail across 54 files**
 
 **Next priorities:**
 1. P0: RULE-LEVEL EVAL SYSTEM — extract rules from all files each agent loads, test each rule individually with canary tasks, hill climb wording until each passes. Phase 1 of 3-phase eval strategy.
