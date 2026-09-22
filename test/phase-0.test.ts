@@ -461,11 +461,13 @@ describe("Phase 0: Pre-flight + static files", () => {
         expect(content).toContain("## Core Principles");
         expect(content).toContain("Verify before asserting");
       });
-      test(`${agent}.md has three-tier authority`, () => {
+      test(`${agent}.md has authority sections`, () => {
         const content = readFileSync(join(OUTPUT, `.claude/agents/${agent}.md`), "utf-8");
         expect(content).toContain("## Always Do");
-        expect(content).toContain("## Ask First");
         expect(content).toContain("## Never Do");
+        if (agent === "marcus") {
+          expect(content).toContain("## Ask First");
+        }
       });
     }
   });

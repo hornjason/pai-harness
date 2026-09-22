@@ -2,17 +2,50 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes — fixed with briefedAgent() that reads briefs from config. (2) Discovery agent had no brief, did 51 calls — created discovery.md, dropped to 22 calls. (3) Marcus scored F(27%) on directive compliance — hill climbed to B(80%) in 5 iterations by parsing brief Context section and generating explicit Read steps in prompt. (4) Key insight: explicit numbered Read steps in prompt >> 'read Context section' >> brief-only. (5) Ship workflow worktree bug: Quinn can't see Marcus's worktree changes. (6) Built transcript auditor + test-brief CLI for mechanical compliance checking. (7) Cross-referenced agnix/RepoRails with transcript auditor — tools grade text quality, auditor grades behavior, cross-reference shows which instructions fail and why (position, not wording). (8) Published 9 issues (#550-#558) for Phase F/G/H + brief compliance.
+Session 6 — AFK ship workflow + brief audit + eval system design.
+
+**Shipped:**
+- #562 DA-COMPLIANCE-SPEC: eval criteria, audit-transcript with FOLLOWED/IGNORED, da-compliance skill (1,384 lines, 18 tests)
+- #538 Template extraction: verified already landed, closed
+- #558 Brief Compliance: directive-extractor, transcript-checker, hill-climb, worktree-isolation (1,645 lines, 48 tests)
+- ship.js fixed: import()→agent context extraction, object schema, pages:{}→LIGHT override, commit from worktree path
+- All 6 agent briefs audited and fixed: shared boilerplate cleaned, Quinn CLI mode, Aditi CLI skip, Marcus TDD workflow
+- TDD sequence checker (checkTDD) with 5 tests
+- test-rules.ts CLI: auto-extracts 37 rules from all files Marcus loads, classifies as mechanical/sequence/judge
+- Project settings.json added for permission-free AFK runs
+
+**Key findings from workflow audit (#562 — 34 min, 20 agents):**
+- Marcus: 11:32 (35%) — efficient, 5/5 brief compliance, 1,590 lines produced. NOT doing TDD.
+- Quinn Local: 9:04 (27%) — 75% waste, ran full test suite 3x instead of targeted
+- Quinn Container: 3:16 (10%) — 100% waste, navigated wrong app, checked wrong commit
+- Discovery: 2:34 — sized M/STANDARD, should be LIGHT for CLI project. 38 calls (brief says max 25)
+- Root cause: briefs are web-app-centric, no project-type awareness, Quinn has no CLI mode
+
+**Brief fixes applied:**
+- _shared.md: removed 'bun test after every change' (Marcus-only), removed duplicates, removed Ask First (Marcus-only)
+- marcus.md: consolidated bun test to 'exactly twice', TDD as numbered workflow steps, removed contradictions
+- quinn.md: added Project Type Detection gate — CLI mode (bun test + grep) vs UI mode (Playwright)
+- discovery.md: removed 'run bun test' (read-only role), added pages:{} ceremony tier check
+- aditi.md: added CLI skip detection
+- Test suite: 1,079 tests, 0 fail (up from 955)
+
+**Eval system design (from Anthropic article + our research):**
+- Three-phase approach: Phase 1 (rule quality — test each rule in isolation), Phase 2 (rule position — test rules together), Phase 3 (integration — full ship workflow)
+- Rules auto-extracted from all files each agent loads (37 for Marcus across 3 files)
+- Three check types: mechanical (tool call counting), sequence (TDD ordering), judge (LLM rubric for prose principles)
+- Canary tasks per rule for isolated testing
+- Hill climb loop: reword failed rules, re-test until pass
+- Key anti-pattern from Anthropic: don't grade path, grade outcome — EXCEPT when process IS the requirement (TDD)
+
+**Test suite: 1,079 pass, 0 fail across 53 files**
 
 **Next priorities:**
-1. P0: DA-COMPLIANCE-SPEC — formalize eval criteria, wire into audit-transcript, build /da-compliance skill (SC-416–SC-422). Do this BEFORE shipping other issues so we can grade the runs.
-2. P0: Verify #538 template extraction landed cleanly — v2 agent reported complete but needs verification on main
-3. P1: BRIEF COMPLIANCE (#558, SC-400–SC-409): test-brief CLI, compliance pre-flight gate, behavioral canary tests
-4. P1: Build /da-compliance skill — audit DA session transcripts against rules, scoring dashboard
-5. P2: CONFIG-DRIVEN-TESTING Phase F+G+H (#550–#557, SC-379–SC-399): Matcher registry, create-sc CLI, audit-specs --fix
-6. P3: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
-7. P4: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
-8. P5: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+1. P0: RULE-LEVEL EVAL SYSTEM — extract rules from all files each agent loads, test each rule individually with canary tasks, hill climb wording until each passes. Phase 1 of 3-phase eval strategy.
+2. P0: Fix ship.js Commit phase — commit from marcusWorktreePath not PROJECT_ROOT (worktree bug still causing empty commits)
+3. P1: CONFIG-DRIVEN-TESTING Phase F+G+H (#550–#557, SC-379–SC-399): Matcher registry, create-sc CLI, audit-specs --fix
+4. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
+5. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
+6. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

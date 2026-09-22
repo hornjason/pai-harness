@@ -9,7 +9,7 @@ import { readFileSync } from "fs";
 import { basename } from "path";
 import type { Directive } from "./directive-extractor.js";
 
-export type ComplianceVerdict = "FOLLOWED" | "IGNORED" | "VIOLATED" | "N/A";
+type ComplianceVerdict = "FOLLOWED" | "IGNORED" | "VIOLATED" | "N/A";
 
 export interface ComplianceResult {
   directive: Directive;
@@ -161,6 +161,72 @@ export function checkCompliance(directives: Directive[], transcriptContent: stri
         return { directive: d, status: "N/A" as const, evidence: "Unknown directive type" };
     }
   });
+}
+
+// ── Behavioral pattern checks ───────────────────────────
+
+export interface SequenceEvent {
+  type: "WRITE_TEST" | "WRITE_SOURCE" | "TEST_RUN";
+  file?: string;
+  cmd?: string;
+}
+
+export interface TDDResult {
+  testFirst: boolean;
+  redPhase: boolean;
+  greenPhase: boolean;
+  sequence: SequenceEvent[];
+  verdict: "TDD" | "TEST_AFTER" | "NO_TESTS" | "NO_SOURCE";
+  evidence: string;
+}
+
+export function checkTDD(transcriptContent: string): TDDResult {
+  const calls = parseToolCalls(transcriptContent);
+  const sequence: SequenceEvent[] = [];
+
+  for (const call of calls) {
+    if (call.name === "Write" || call.name === "Edit") {
+      const path = call.input?.file_path || call.input?.path || "";
+      const file = basename(path);
+      const isTest = path.includes("test/") || path.includes(".test.");
+      const isSource = path.includes("lib/") || path.includes("scripts/") || path.includes("src/");
+      if (isTest) sequence.push({ type: "WRITE_TEST", file });
+      else if (isSource) sequence.push({ type: "WRITE_SOURCE", file });
+    }
+    if (call.name === "Bash") {
+      const cmd = call.input?.command || "";
+      if (cmd.includes("bun test")) {
+        sequence.push({ type: "TEST_RUN", cmd: cmd.slice(0, 60) });
+      }
+    }
+  }
+
+  const firstTest = sequence.findIndex((s) => s.type === "WRITE_TEST");
+  const firstSource = sequence.findIndex((s) => s.type === "WRITE_SOURCE");
+
+  if (firstTest === -1) return { testFirst: false, redPhase: false, greenPhase: false, sequence, verdict: "NO_TESTS", evidence: "No test files written" };
+  if (firstSource === -1) return { testFirst: true, redPhase: false, greenPhase: false, sequence, verdict: "NO_SOURCE", evidence: "No source files written" };
+
+  const testFirst = firstTest < firstSource;
+
+  let redPhase = false;
+  let greenPhase = false;
+  let state: "init" | "wrote_test" | "ran_after_test" | "wrote_source" | "ran_after_source" = "init";
+  for (const s of sequence) {
+    if (s.type === "WRITE_TEST") state = "wrote_test";
+    if (s.type === "TEST_RUN" && state === "wrote_test") { redPhase = true; state = "ran_after_test"; }
+    if (s.type === "WRITE_SOURCE" && (state === "ran_after_test" || state === "wrote_test")) state = "wrote_source";
+    if (s.type === "TEST_RUN" && state === "wrote_source") { greenPhase = true; state = "ran_after_source"; }
+  }
+
+  const verdict = testFirst && redPhase && greenPhase ? "TDD" : "TEST_AFTER";
+  const parts: string[] = [];
+  if (!testFirst) parts.push(`source written at step ${firstSource + 1} before test at step ${firstTest + 1}`);
+  if (!redPhase) parts.push("no test run after writing test (missing red phase)");
+  if (!greenPhase) parts.push("no test run after writing source (missing green phase)");
+  const evidence = verdict === "TDD" ? "test-first → red → green pattern confirmed" : parts.join("; ");
+
+  return { testFirst, redPhase, greenPhase, sequence, verdict, evidence };
 }
 
 // ── Scoring ──────────────────────────────────────────────

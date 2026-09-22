@@ -1,0 +1,102 @@
+{
+  "role": "marcus",
+  "brief": ".claude/agents/marcus.md",
+  "checks": [
+    {
+      "id": "M-01",
+      "rule": "Read AGENTS.md before any code",
+      "type": "sequence",
+      "verify": "first_read_contains('AGENTS.md') && read_before_write('AGENTS.md')",
+      "severity": "critical"
+    },
+    {
+      "id": "M-02",
+      "rule": "Read all 6 Context files before coding",
+      "type": "mechanical",
+      "verify": "reads_all(['AGENTS.md', 'PROJECT-STATE.md', 'coding-principles.md', 'testing-strategy.md', 'CODE-MAP.md', 'marcus.md'])",
+      "severity": "critical"
+    },
+    {
+      "id": "M-03",
+      "rule": "TDD: write failing test FIRST, then implementation",
+      "type": "sequence",
+      "verify": "first_write_to('test/') < first_write_to('lib/')",
+      "severity": "high"
+    },
+    {
+      "id": "M-04",
+      "rule": "TDD red phase: run test after writing test, expect failure",
+      "type": "sequence",
+      "verify": "test_run_after_write('test/') && before_write('lib/')",
+      "severity": "high"
+    },
+    {
+      "id": "M-05",
+      "rule": "TDD green phase: run test after writing source, expect pass",
+      "type": "sequence",
+      "verify": "test_run_after_write('lib/')",
+      "severity": "high"
+    },
+    {
+      "id": "M-06",
+      "rule": "Run bun test exactly twice (baseline + final)",
+      "type": "mechanical",
+      "verify": "count_bash('bun test') == 2",
+      "severity": "medium"
+    },
+    {
+      "id": "M-07",
+      "rule": "Run tsc --noEmit before reporting done",
+      "type": "mechanical",
+      "verify": "has_bash('tsc --noEmit')",
+      "severity": "medium"
+    },
+    {
+      "id": "M-08",
+      "rule": "Never use cat via Bash",
+      "type": "mechanical",
+      "verify": "count_bash('cat ') == 0",
+      "severity": "low"
+    },
+    {
+      "id": "M-09",
+      "rule": "Never run pwd or ls -la for orientation",
+      "type": "mechanical",
+      "verify": "count_bash('pwd') == 0 && count_bash('ls -la') == 0",
+      "severity": "low"
+    },
+    {
+      "id": "M-10",
+      "rule": "Never read the same file twice",
+      "type": "mechanical",
+      "verify": "no_duplicate_reads()",
+      "severity": "medium"
+    },
+    {
+      "id": "M-11",
+      "rule": "Never spawn subagents",
+      "type": "mechanical",
+      "verify": "count_tool('Agent') == 0 && count_tool('TaskCreate') == 0",
+      "severity": "high"
+    },
+    {
+      "id": "M-12",
+      "rule": "Only read files relevant to the task",
+      "type": "judge",
+      "prompt": "Given the issue description and the list of files read, were all reads relevant to the task?",
+      "severity": "medium"
+    },
+    {
+      "id": "M-13",
+      "rule": "Commit references the issue number",
+      "type": "mechanical",
+      "verify": "bash_output_contains('git commit', '#')",
+      "severity": "medium"
+    }
+  ],
+  "thresholds": {
+    "pass": 85,
+    "iterate": 70,
+    "rewrite": 50
+  }
+}

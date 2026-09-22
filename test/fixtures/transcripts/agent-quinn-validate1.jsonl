@@ -1,4 +1,6 @@
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/AGENTS.md"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/.claude/rungate.json"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/CODE-MAP.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/PROJECT-STATE.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/prompts/quinn-decision-tree.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/prompts/quinn-ui-brief.md"}}]}}
