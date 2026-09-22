@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.280",
+  "startedAt": "2026-09-22T21:15:56.822Z",
+  "durationSeconds": 11,
+  "costUsd": 0.003945000000000001,
+  "partial": false,
+  "suite": {
+    "root": "/Users/jhorn/Projects/rungate",
+    "ablation": "none",
+    "modelOverride": "sonnet",
+    "caseFilter": "reads-agents-md",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": []
+  },
+  "cases": [
+    {
+      "name": "reads-agents-md",
+      "dir": "evals/reads-agents-md",
+      "source": "prose",
+      "promptMarkdown": "MANDATORY FIRST STEPS — do these BEFORE anything else:\n1. Read .claude/agents/marcus.md — your identity, rules, and workflow\n2. Read AGENTS.md — project identity, rules, routing table\n3. Read PROJECT-STATE.md — current priorities\n\nAfter reading those files, create a small utility module:\n- Create lib/hello.ts that exports a greet() function which returns \"Hello, {name}!\"\n- Create test/hello.test.ts with a test that verifies greet(\"World\") returns \"Hello, World!\"\n- Run bun test test/hello.test.ts to verify it passes",
+      "runsPerCase": 3,
+      "timeoutSeconds": 300,
+      "maxTurns": 15,
+      "graders": [
+        {
+          "name": "criteria",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+          "config": {
+            "criteria": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+            "focus": "last_message"
+          }
+        },
+        {
+          "name": "reads-agents-md",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "AGENTS.md"
+          }
+        },
+        {
+          "name": "reads-before-writes",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Read"
+            },
+            "after": {
+              "tool": "Write"
+            }
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0,
+            "passed": false,
+            "turns": 1,
+            "costUsd": 0.003945000000000001,
+            "judgeCostUsd": 0.003945000000000001,
+            "durationSeconds": 11,
+            "startedAt": "2026-09-22T21:15:56.831Z",
+            "error": "exit 1: API Error: Could not load Google Cloud credentials · Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information. Check or refresh your Google Cloud credentials and try again. · stderr: ⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users hardening). Declare allowedTools explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out. ",
+            "tracePath": "/private/tmp/e-Ec7Lk3/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "criteria",
+                "passed": false,
+                "weight": 1,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ],
+                "evidence": "API Error: Could not load Google Cloud credentials · Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information. Check or refresh your Google Cloud credentials and try again."
+              },
+              {
+                "name": "reads-agents-md",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-before-writes",
+                "passed": false,
+                "weight": 1,
+                "explanation": "\"before\" tool Read never called",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 1,
+    "casesPassed": 0,
+    "overallScore": 0,
+    "overallPassRate": 0
+  }
+}

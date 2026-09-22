@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.280",
+  "startedAt": "2026-09-22T21:20:01.176Z",
+  "durationSeconds": 44,
+  "costUsd": 0.15948195,
+  "partial": false,
+  "suite": {
+    "root": "/Users/jhorn/Projects/rungate",
+    "ablation": "none",
+    "modelOverride": "sonnet",
+    "caseFilter": "reads-agents-md",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": []
+  },
+  "cases": [
+    {
+      "name": "reads-agents-md",
+      "dir": "evals/reads-agents-md",
+      "source": "prose",
+      "promptMarkdown": "MANDATORY FIRST STEPS — do these BEFORE anything else:\n1. Read .claude/agents/marcus.md — your identity, rules, and workflow\n2. Read AGENTS.md — project identity, rules, routing table\n3. Read PROJECT-STATE.md — current priorities\n\nAfter reading those files, create a small utility module:\n- Create lib/hello.ts that exports a greet() function which returns \"Hello, {name}!\"\n- Create test/hello.test.ts with a test that verifies greet(\"World\") returns \"Hello, World!\"\n- Run bun test test/hello.test.ts to verify it passes",
+      "runsPerCase": 3,
+      "timeoutSeconds": 300,
+      "maxTurns": 15,
+      "graders": [
+        {
+          "name": "criteria",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+          "config": {
+            "criteria": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+            "focus": "last_message"
+          }
+        },
+        {
+          "name": "reads-agents-md",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "AGENTS.md"
+          }
+        },
+        {
+          "name": "reads-before-writes",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Read"
+            },
+            "after": {
+              "tool": "Write"
+            }
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0.6666666666666666,
+            "passed": false,
+            "turns": 11,
+            "costUsd": 0.15948195,
+            "judgeCostUsd": 0.00486,
+            "durationSeconds": 44,
+            "startedAt": "2026-09-22T21:20:01.187Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-hjTHGi/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "criteria",
+                "passed": false,
+                "weight": 1,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ],
+                "evidence": "**Note:** The required files (.claude/agents/marcus.md, AGENTS.md, PROJECT-STATE.md) don't exist in this directory yet.\n\nI've created the utility module:\n- **lib/hello.ts** - exports `greet()` function that returns \"Hello, {name}!\"\n- **test/hello.test.ts** - test verifying `greet(\"World\")` returns \"Hello, World!\"\n\nTest passed successfully (1 pass, 0 fail)."
+              },
+              {
+                "name": "reads-agents-md",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Read called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-before-writes",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Read@0 precedes Write@7",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0.6666666666666666,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 1,
+    "casesPassed": 0,
+    "overallScore": 0.6666666666666666,
+    "overallPassRate": 0
+  }
+}

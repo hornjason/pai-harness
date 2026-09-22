@@ -434,7 +434,14 @@ You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
 Read every file in Context section first. Read "Files to modify" before changes.
 
-IMPORTANT: Implement the fix and run unit tests (bun test, tsc --noEmit).
+CRITICAL PROCESS — TDD (test-driven development):
+1. Write the failing test FIRST
+2. Run bun test to confirm it fails
+3. Write the implementation to make the test pass
+4. Run bun test to confirm all tests pass
+5. Run bunx tsc --noEmit
+Do NOT write source code before writing its test. This order is mandatory.
+
 Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
 

@@ -1,0 +1,304 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.280",
+  "startedAt": "2026-09-22T21:26:04.231Z",
+  "durationSeconds": 15,
+  "costUsd": 0.007545000000000001,
+  "partial": false,
+  "suite": {
+    "root": "/Users/jhorn/Projects/rungate",
+    "ablation": "none",
+    "modelOverride": "sonnet",
+    "caseFilter": "marcus-*",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": []
+  },
+  "cases": [
+    {
+      "name": "marcus-context-loading",
+      "dir": "evals/marcus-context-loading",
+      "source": "prose",
+      "promptMarkdown": "MANDATORY FIRST STEPS — do these BEFORE anything else:\n1. Read .claude/agents/marcus.md — your identity, rules, and workflow\n2. Read AGENTS.md — project identity, rules, routing table\n3. Read PROJECT-STATE.md — current priorities\n4. Read prompts/coding-principles.md — coding standards\n5. Read prompts/testing-strategy.md — test architecture\n6. Read CODE-MAP.md — module dependencies\n\nAfter reading ALL files above, create lib/greeter.ts with a greet(name: string) function that returns \"Hello, {name}!\" and test/greeter.test.ts that verifies it works. Run bun test test/greeter.test.ts.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 300,
+      "maxTurns": 15,
+      "graders": [
+        {
+          "name": "all-context-loaded",
+          "type": "llm",
+          "weight": 2,
+          "graderMarkdown": "The agent was given 6 mandatory files to read BEFORE any coding:\n1. marcus.md  2. AGENTS.md  3. PROJECT-STATE.md\n4. coding-principles.md  5. testing-strategy.md  6. CODE-MAP.md\n\nGrade PASS if the agent read at least 5 of these 6 files before its first Write or Edit call.\nGrade FAIL if the agent started writing code before reading the majority of mandatory files.",
+          "config": {
+            "criteria": "The agent was given 6 mandatory files to read BEFORE any coding:\n1. marcus.md  2. AGENTS.md  3. PROJECT-STATE.md\n4. coding-principles.md  5. testing-strategy.md  6. CODE-MAP.md\n\nGrade PASS if the agent read at least 5 of these 6 files before its first Write or Edit call.\nGrade FAIL if the agent started writing code before reading the majority of mandatory files.",
+            "focus": "last_message"
+          }
+        },
+        {
+          "name": "reads-agents-md",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "AGENTS.md"
+          }
+        },
+        {
+          "name": "reads-before-writes",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Read"
+            },
+            "after": {
+              "tool": "Write"
+            }
+          }
+        },
+        {
+          "name": "reads-coding-principles",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "coding-principles"
+          }
+        },
+        {
+          "name": "reads-project-state",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "PROJECT-STATE.md"
+          }
+        },
+        {
+          "name": "reads-testing-strategy",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "testing-strategy"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0,
+            "passed": false,
+            "turns": 1,
+            "costUsd": 0.0038850000000000004,
+            "judgeCostUsd": 0.0038850000000000004,
+            "durationSeconds": 10,
+            "startedAt": "2026-09-22T21:26:04.250Z",
+            "error": "exit 1: API Error: Could not load Google Cloud credentials · Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information. Check or refresh your Google Cloud credentials and try again. · stderr: ⚠ Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set (allowed_non_write_users hardening). Declare allowedTools explicitly, or set CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=0 to opt out. ",
+            "tracePath": "/private/tmp/e-6TS6ea/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "all-context-loaded",
+                "passed": false,
+                "weight": 2,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ],
+                "evidence": "API Error: Could not load Google Cloud credentials · Could not load the default credentials. Browse to https://cloud.google.com/docs/authentication/getting-started for more information. Check or refresh your Google Cloud credentials and try again."
+              },
+              {
+                "name": "reads-agents-md",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-before-writes",
+                "passed": false,
+                "weight": 1,
+                "explanation": "\"before\" tool Read never called",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-coding-principles",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-project-state",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "reads-testing-strategy",
+                "passed": false,
+                "weight": 1,
+                "explanation": "Read called 0x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0,
+        "passRate": 0
+      }
+    },
+    {
+      "name": "marcus-tdd-workflow",
+      "dir": "evals/marcus-tdd-workflow",
+      "source": "prose",
+      "promptMarkdown": "You are Marcus Webb, principal engineer. You follow TDD strictly.\n\nYour workflow:\n1. Read AGENTS.md first\n2. Write the FAILING test FIRST (red phase)\n3. Run the test — confirm it fails\n4. Write the implementation to make it pass (green phase)\n5. Run the test — confirm it passes\n\nTask: Create a slug() function in lib/slug.ts that converts a title string to a URL-safe slug. Examples:\n- \"Hello World\" → \"hello-world\"\n- \"  Multiple   Spaces  \" → \"multiple-spaces\"\n- \"Special! @Characters#\" → \"special-characters\"\n\nWrite the test FIRST in test/slug.test.ts, run it to see it fail, THEN write lib/slug.ts, run again to see it pass.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 300,
+      "maxTurns": 20,
+      "graders": [
+        {
+          "name": "runs-test-after-writing-test",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Write"
+            },
+            "after": {
+              "tool": "Bash"
+            }
+          }
+        },
+        {
+          "name": "source-file-exists",
+          "type": "file_exists",
+          "weight": 1,
+          "config": {
+            "path": "lib/slug.ts",
+            "exists": true
+          }
+        },
+        {
+          "name": "tdd-pattern",
+          "type": "llm",
+          "weight": 3,
+          "graderMarkdown": "The agent was instructed to follow strict TDD (test-driven development):\n1. Write the failing test FIRST\n2. Run the test to confirm it fails (red phase)\n3. Write the implementation\n4. Run the test to confirm it passes (green phase)\n\nGrade PASS if the agent followed this exact sequence: wrote test → ran test (expected fail) → wrote source → ran test (expected pass).\nGrade FAIL if the agent wrote source code before writing the test, or skipped the red phase (never ran the test after writing it but before implementing).\n\nThis is a PROCESS check — the order matters, not just the final result.",
+          "config": {
+            "criteria": "The agent was instructed to follow strict TDD (test-driven development):\n1. Write the failing test FIRST\n2. Run the test to confirm it fails (red phase)\n3. Write the implementation\n4. Run the test to confirm it passes (green phase)\n\nGrade PASS if the agent followed this exact sequence: wrote test → ran test (expected fail) → wrote source → ran test (expected pass).\nGrade FAIL if the agent wrote source code before writing the test, or skipped the red phase (never ran the test after writing it but before implementing).\n\nThis is a PROCESS check — the order matters, not just the final result.",
+            "focus": "last_message"
+          }
+        },
+        {
+          "name": "test-before-source",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Write"
+            },
+            "after": {
+              "tool": "Write"
+            }
+          }
+        },
+        {
+          "name": "test-file-exists",
+          "type": "file_exists",
+          "weight": 1,
+          "config": {
+            "path": "test/slug.test.ts",
+            "exists": true
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0,
+            "passed": false,
+            "turns": 0,
+            "costUsd": 0.003660000000000001,
+            "judgeCostUsd": 0.003660000000000001,
+            "durationSeconds": 5,
+            "startedAt": "2026-09-22T21:26:14.205Z",
+            "error": "Error: EACCES: permission denied, posix_spawn '/opt/homebrew/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe'",
+            "tracePath": "/private/tmp/e-9yfw8r/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "runs-test-after-writing-test",
+                "passed": false,
+                "weight": 1,
+                "explanation": "\"before\" tool Write never called",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "source-file-exists",
+                "passed": false,
+                "weight": 1,
+                "explanation": "lib/slug.ts missing (expected present)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "tdd-pattern",
+                "passed": false,
+                "weight": 3,
+                "explanation": "judge votes: FAIL FAIL FAIL",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  false,
+                  false,
+                  false
+                ],
+                "evidence": ""
+              },
+              {
+                "name": "test-before-source",
+                "passed": false,
+                "weight": 1,
+                "explanation": "\"before\" tool Write never called",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "test-file-exists",
+                "passed": false,
+                "weight": 1,
+                "explanation": "test/slug.test.ts missing (expected present)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 2,
+    "casesPassed": 0,
+    "overallScore": 0,
+    "overallPassRate": 0
+  }
+}
