@@ -84,6 +84,63 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 2. Add model: sonnet enforcement
 3. Add 120-line cap check
 
+## Three-Tier Rule Enforcement
+
+Rules in agent briefs are classified into three tiers. The tier determines WHERE a rule is enforced — not whether it exists (it always lives in the brief).
+
+```mermaid
+flowchart TD
+    Template["Template<br/>(templates/agent-briefs/{role}.md)"]
+    Template -->|scaffold| Brief["Brief<br/>(.claude/agents/{role}.md)"]
+    Brief --> FM["Frontmatter<br/>tiers: reinforcement, mechanical"]
+
+    FM --> Registry["Rule Registry<br/>(lib/rule-registry.ts)"]
+
+    Registry --> T1["Tier 1: Identity<br/>Constraints survive burial"]
+    Registry --> T2["Tier 2: Reinforcement<br/>Process rules need proximity"]
+    Registry --> T3["Tier 3: Mechanical<br/>Harness enforces sequence"]
+
+    T1 -->|"agent reads brief"| Agent["Agent Context"]
+    T2 -->|"briefedAgent() injects<br/>at top of task prompt"| Agent
+    T3 -->|"ship.js controls<br/>spawn sequence"| Agent
+
+    Brief -->|"bun import"| Evals["Eval Suite<br/>getRulesForTier()"]
+    Brief -->|"bun import"| Audit["Transcript Audit<br/>checkCompliance()"]
+    Brief -->|"agent call"| ShipJS["ship.js<br/>loadReinforcementRules()"]
+```
+
+### Tier Definitions
+
+| Tier | Where Enforced | What Goes Here | Why |
+|------|---------------|----------------|-----|
+| **Identity** | Brief (agent reads it) | Constraints, "never do X", coding philosophy | Constraints are checked against, not sequenced — survive any context position |
+| **Reinforcement** | Task prompt (ship.js injects) | Process rules: "run X before/after", test discipline | Process rules collapse when buried under 600+ lines (arXiv 2608.02639) |
+| **Mechanical** | Harness structure (code) | Critical sequences: TDD, test-before-commit | Agent physically can't skip — harness owns the sequence |
+
+### Configuration
+
+The `tiers` field in brief frontmatter maps section names to tiers:
+
+```yaml
+---
+name: marcus
+tiers:
+  reinforcement: ['Testing Rules']
+  mechanical: ['Workflow']
+---
+```
+
+Sections not listed default to `identity`. The field is set in `agentMeta` in scaffold-project.ts and flows through to generated briefs.
+
+### Success Criteria (Three-Tier)
+
+- [ ] SC-423: Brief frontmatter includes `tiers` field mapping sections to reinforcement/mechanical
+- [ ] SC-424: `lib/rule-registry.ts` exports `getRulesForTier(role, tier)` returning classified rules
+- [ ] SC-425: `briefedAgent()` in ship.js injects reinforcement-tier rules at top of task prompt
+- [ ] SC-426: Reinforcement rules extracted dynamically from brief, not hardcoded in ship.js
+- [ ] SC-427: Scaffold `agentMeta` carries `tiers` through to generated brief frontmatter
+- [ ] SC-428: Briefs without `tiers` field default all rules to identity tier
+
 ## Cautions
 
 - Template files are scaffold INPUTS, not outputs — don't regenerate them on re-scaffold
