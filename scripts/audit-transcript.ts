@@ -1,17 +1,23 @@
 #!/usr/bin/env bun
-import { readFileSync, readdirSync, statSync } from "fs";
+import { readFileSync, readdirSync } from "fs";
 import { join, basename, resolve } from "path";
+import {
+  type ToolCall,
+  type TranscriptData,
+  type CriterionResult,
+  type Role,
+  type Verdict,
+  evaluateCriteria,
+  ROLES,
+} from "../lib/eval-criteria.js";
 
-interface ToolCall {
-  name: string;
-  input: Record<string, any>;
-  order: number;
-}
+export { type ToolCall, type CriterionResult, type Role, type Verdict };
 
-interface AgentAudit {
+export interface AgentAudit {
   agentId: string;
   label: string;
   phase: string;
+  role: Role;
   toolCalls: ToolCall[];
   reads: string[];
   duplicateReads: Record<string, number>;
@@ -20,19 +26,12 @@ interface AgentAudit {
   writes: string[];
   totalCalls: number;
   firstThreeReads: string[];
-  rules: RuleResult[];
+  rules: CriterionResult[];
   score: number;
   grade: string;
 }
 
-interface RuleResult {
-  rule: string;
-  pass: boolean;
-  detail: string;
-  weight: number;
-}
-
-function parseTranscript(filePath: string): ToolCall[] {
+export function parseTranscript(filePath: string): ToolCall[] {
   const content = readFileSync(filePath, "utf-8");
   const calls: ToolCall[] = [];
   let order = 0;
@@ -55,19 +54,73 @@ function parseTranscript(filePath: string): ToolCall[] {
   return calls;
 }
 
-function extractMeta(filePath: string): { label: string; phase: string } {
+function extractMeta(filePath: string): { label: string; phase: string; role: Role } {
   const metaPath = filePath.replace(".jsonl", ".meta.json");
   try {
     const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-    return { label: meta.description || "unknown", phase: meta.workflowPhase || "unknown" };
+    const role = inferRole(meta.agentType || meta.description || "");
+    return {
+      label: meta.description || "unknown",
+      phase: meta.workflowPhase || "unknown",
+      role,
+    };
   } catch {
-    return { label: "unknown", phase: "unknown" };
+    return { label: "unknown", phase: "unknown", role: "marcus" };
   }
 }
 
-function auditAgent(filePath: string): AgentAudit {
+function inferRole(hint: string): Role {
+  const lower = hint.toLowerCase();
+  if (lower.includes("da") || lower.includes("orchestrat")) return "da";
+  if (lower.includes("quinn") || lower.includes("valid") || lower.includes("qa")) return "quinn";
+  return "marcus";
+}
+
+function buildTranscriptData(
+  calls: ToolCall[],
+  reads: string[],
+  bashes: string[],
+  edits: string[],
+  writes: string[],
+  duplicateReads: Record<string, number>,
+  firstThreeReads: string[]
+): TranscriptData {
+  return { calls, reads, bashes, edits, writes, duplicateReads, firstThreeReads };
+}
+
+function applyUtilityExemptions(results: CriterionResult[], totalCalls: number): CriterionResult[] {
+  if (totalCalls > 3) return results;
+  return results.map((r) => {
+    if (r.id === "SHARED-01" || r.id === "SHARED-04") {
+      return { ...r, verdict: "FOLLOWED" as Verdict, evidence: "Exempt (utility agent, <= 3 calls)" };
+    }
+    return r;
+  });
+}
+
+/**
+ * Grade a transcript using role-specific evaluation criteria.
+ * Central grading entry point used by both audit-transcript and da-compliance.
+ */
+export function gradeByRole(
+  role: Role,
+  calls: ToolCall[],
+  reads: string[],
+  bashes: string[],
+  edits: string[],
+  writes: string[],
+  duplicateReads: Record<string, number>,
+  firstThreeReads: string[]
+): CriterionResult[] {
+  const data = buildTranscriptData(calls, reads, bashes, edits, writes, duplicateReads, firstThreeReads);
+  const results = evaluateCriteria(role, data);
+  return applyUtilityExemptions(results, calls.length);
+}
+
+export function auditAgent(filePath: string, roleOverride?: Role): AgentAudit {
   const agentId = basename(filePath).replace("agent-", "").replace(".jsonl", "");
-  const { label, phase } = extractMeta(filePath);
+  const { label, phase, role: inferredRole } = extractMeta(filePath);
+  const role = roleOverride ?? inferredRole;
   const toolCalls = parseTranscript(filePath);
 
   const reads: string[] = [];
@@ -102,9 +155,9 @@ function auditAgent(filePath: string): AgentAudit {
   }
 
   const firstThreeReads = reads.slice(0, 3).map((r) => basename(r));
-  const rules = gradeRules(toolCalls, reads, bashes, edits, writes, duplicateReads, firstThreeReads);
+  const rules = gradeByRole(role, toolCalls, reads, bashes, edits, writes, duplicateReads, firstThreeReads);
   const maxScore = rules.reduce((s, r) => s + r.weight, 0);
-  const score = rules.reduce((s, r) => s + (r.pass ? r.weight : 0), 0);
+  const score = rules.reduce((s, r) => s + (r.verdict === "FOLLOWED" ? r.weight : 0), 0);
   const pct = maxScore > 0 ? Math.round((score / maxScore) * 100) : 0;
   const grade = pct >= 90 ? "A" : pct >= 75 ? "B" : pct >= 60 ? "C" : pct >= 40 ? "D" : "F";
 
@@ -112,6 +165,7 @@ function auditAgent(filePath: string): AgentAudit {
     agentId,
     label,
     phase,
+    role,
     toolCalls,
     reads,
     duplicateReads,
@@ -126,156 +180,7 @@ function auditAgent(filePath: string): AgentAudit {
   };
 }
 
-function gradeRules(
-  calls: ToolCall[],
-  reads: string[],
-  bashes: string[],
-  edits: string[],
-  writes: string[],
-  duplicateReads: Record<string, number>,
-  firstThreeReads: string[]
-): RuleResult[] {
-  const results: RuleResult[] = [];
-
-  // R1: Read AGENTS.md in first 5 tool calls
-  const first5 = calls.slice(0, 5);
-  const agentsMdEarly = first5.some(
-    (c) => c.name === "Read" && (c.input.file_path || "").endsWith("AGENTS.md")
-  );
-  results.push({
-    rule: "Read AGENTS.md in first 5 calls",
-    pass: agentsMdEarly,
-    detail: agentsMdEarly
-      ? `AGENTS.md read at position ${calls.findIndex((c) => c.name === "Read" && (c.input.file_path || "").endsWith("AGENTS.md")) + 1}`
-      : `First reads: ${firstThreeReads.join(", ")}`,
-    weight: 20,
-  });
-
-  // R2: No duplicate file reads (same full path)
-  const dupCount = Object.keys(duplicateReads).length;
-  results.push({
-    rule: "No duplicate file reads",
-    pass: dupCount === 0,
-    detail:
-      dupCount === 0
-        ? "All reads unique"
-        : `${dupCount} files read multiple times: ${Object.entries(duplicateReads)
-            .map(([p, c]) => `${basename(p)} (${c}x)`)
-            .join(", ")}`,
-    weight: 15,
-  });
-
-  // R3: Total tool calls under 30 (efficient agents stay focused)
-  const totalCalls = calls.length;
-  results.push({
-    rule: "Total tool calls ≤ 30",
-    pass: totalCalls <= 30,
-    detail: `${totalCalls} calls`,
-    weight: 10,
-  });
-
-  // R4: Grep-to-read ratio — too many greps means fishing
-  const grepBashes = bashes.filter((b) => b.includes("grep"));
-  const grepRatio = reads.length > 0 ? grepBashes.length / reads.length : 0;
-  results.push({
-    rule: "Grep:Read ratio ≤ 2:1",
-    pass: grepRatio <= 2,
-    detail: `${grepBashes.length} greps, ${reads.length} reads (ratio: ${grepRatio.toFixed(1)})`,
-    weight: 10,
-  });
-
-  // R5: No `cat` or `head` via Bash (should use Read tool)
-  const catBashes = bashes.filter((b) => /\bcat\b/.test(b) && !b.includes("<<"));
-  results.push({
-    rule: "No cat/head via Bash (use Read)",
-    pass: catBashes.length === 0,
-    detail: catBashes.length === 0 ? "Clean" : `${catBashes.length} cat commands found`,
-    weight: 5,
-  });
-
-  // R6: Read PROJECT-STATE.md or project-state.json early (first 10 calls)
-  const first10 = calls.slice(0, 10);
-  const projectStateEarly = first10.some(
-    (c) =>
-      c.name === "Read" &&
-      ((c.input.file_path || "").includes("PROJECT-STATE") ||
-        (c.input.file_path || "").includes("project-state.json"))
-  );
-  results.push({
-    rule: "Read PROJECT-STATE early (first 10 calls)",
-    pass: projectStateEarly,
-    detail: projectStateEarly ? "Project state read early" : "PROJECT-STATE not read in first 10 calls",
-    weight: 10,
-  });
-
-  // R7: No repeated bun test runs
-  const bunTestRuns = bashes.filter((b) => /\bbun test\b/.test(b) && !b.includes("grep"));
-  results.push({
-    rule: "≤ 1 full bun test run",
-    pass: bunTestRuns.length <= 1,
-    detail: `${bunTestRuns.length} bun test runs`,
-    weight: 10,
-  });
-
-  // R8: Read governing spec before edits
-  const firstEdit = calls.findIndex((c) => c.name === "Edit" || c.name === "Write");
-  if (firstEdit >= 0) {
-    const specReadBefore = calls
-      .slice(0, firstEdit)
-      .some((c) => c.name === "Read" && (c.input.file_path || "").includes("specs/"));
-    results.push({
-      rule: "Read governing spec before first edit",
-      pass: specReadBefore,
-      detail: specReadBefore ? "Spec read before edits" : "No spec read before first edit",
-      weight: 15,
-    });
-  }
-
-  // R9: Grep before Read (not reading whole files blindly)
-  const readWithoutGrep = reads.filter((r) => {
-    const readIdx = calls.findIndex((c) => c.name === "Read" && c.input.file_path === r);
-    const fn = basename(r);
-    if (["AGENTS.md", "PROJECT-STATE.md", "CLAUDE.md", "rungate.json", "SCHEMA-GUIDE.md"].includes(fn))
-      return false;
-    const priorGrep = calls
-      .slice(0, readIdx)
-      .some((c) => c.name === "Bash" && (c.input.command || "").includes(basename(r)));
-    return !priorGrep;
-  });
-  const blindReadRatio = reads.length > 0 ? readWithoutGrep.length / reads.length : 0;
-  results.push({
-    rule: "Grep before Read for non-key files",
-    pass: blindReadRatio <= 0.5,
-    detail: `${readWithoutGrep.length}/${reads.length} reads without prior grep (${Math.round(blindReadRatio * 100)}%)`,
-    weight: 5,
-  });
-
-  // R10: Code agents read prompts/ methodology files before writing code
-  if (edits.length > 0 || writes.length > 0) {
-    const promptReads = reads.filter((r) => r.includes("prompts/"));
-    results.push({
-      rule: "Read prompts/ before writing code",
-      pass: promptReads.length > 0,
-      detail:
-        promptReads.length > 0
-          ? `${promptReads.length} prompt(s) read: ${promptReads.map((r) => basename(r)).join(", ")}`
-          : "No prompts/ files read — coding-principles.md, testing-strategy.md etc. skipped",
-      weight: 15,
-    });
-  }
-
-  // R11: Utility agents (≤3 calls) exempt from AGENTS.md/PROJECT-STATE rules
-  if (totalCalls <= 3) {
-    const agentsIdx = results.findIndex((r) => r.rule === "Read AGENTS.md in first 5 calls");
-    if (agentsIdx >= 0) { results[agentsIdx].pass = true; results[agentsIdx].detail = "Exempt (utility agent, ≤3 calls)"; }
-    const projIdx = results.findIndex((r) => r.rule === "Read PROJECT-STATE early (first 10 calls)");
-    if (projIdx >= 0) { results[projIdx].pass = true; results[projIdx].detail = "Exempt (utility agent, ≤3 calls)"; }
-  }
-
-  return results;
-}
-
-function formatReport(audits: AgentAudit[]): string {
+export function formatReport(audits: AgentAudit[]): string {
   const lines: string[] = [];
   lines.push("# Workflow Transcript Audit Report");
   lines.push(`\nAudited: ${audits.length} agents`);
@@ -285,24 +190,26 @@ function formatReport(audits: AgentAudit[]): string {
   lines.push(`\n## Summary: ${avgScore}% average (${audits.map((a) => a.grade).join(", ")})`);
 
   for (const audit of audits) {
-    lines.push(`\n### ${audit.label} (${audit.phase}) — ${audit.grade} (${audit.score}%)`);
+    lines.push(`\n### ${audit.label} [${audit.role}] (${audit.phase}) — ${audit.grade} (${audit.score}%)`);
     lines.push(`- Tool calls: ${audit.totalCalls} (${audit.reads.length} reads, ${audit.bashes.length} bash, ${audit.edits.length} edits)`);
 
     if (Object.keys(audit.duplicateReads).length > 0) {
       lines.push(`- **Duplicate reads:** ${Object.entries(audit.duplicateReads).map(([p, c]) => `${basename(p)} (${c}x)`).join(", ")}`);
     }
 
-    lines.push(`- First reads: ${audit.firstThreeReads.join(" → ")}`);
+    lines.push(`- First reads: ${audit.firstThreeReads.join(" -> ")}`);
     lines.push("");
-    lines.push("| Rule | Pass | Detail |");
-    lines.push("|------|------|--------|");
+    lines.push("| ID | Rule | Verdict | Evidence |");
+    lines.push("|----|------|---------|----------|");
     for (const r of audit.rules) {
-      lines.push(`| ${r.rule} | ${r.pass ? "✅" : "❌"} | ${r.detail} |`);
+      lines.push(`| ${r.id} | ${r.rule} | ${r.verdict} | ${r.evidence} |`);
     }
   }
 
   lines.push("\n## Recommendations");
-  const allFails = audits.flatMap((a) => a.rules.filter((r) => !r.pass).map((r) => ({ ...r, agent: a.label })));
+  const allFails = audits.flatMap((a) =>
+    a.rules.filter((r) => r.verdict === "IGNORED").map((r) => ({ ...r, agent: a.label }))
+  );
   const failCounts: Record<string, number> = {};
   for (const f of allFails) {
     failCounts[f.rule] = (failCounts[f.rule] || 0) + 1;
@@ -315,26 +222,38 @@ function formatReport(audits: AgentAudit[]): string {
 }
 
 // ── CLI ──────────────────────────────────────────────────
-const dir = process.argv[2];
-if (!dir) {
-  console.error("Usage: bun scripts/audit-transcript.ts <transcript-dir>");
-  console.error("  transcript-dir: path to workflow transcript directory containing agent-*.jsonl files");
-  process.exit(1);
+if (import.meta.main) {
+  const args = process.argv.slice(2);
+  const roleFlag = args.find((a) => a.startsWith("--role="));
+  const roleOverride = roleFlag ? (roleFlag.split("=")[1] as Role) : undefined;
+  const dir = args.find((a) => !a.startsWith("--"));
+
+  if (!dir) {
+    console.error("Usage: bun scripts/audit-transcript.ts [--role=da|marcus|quinn] <transcript-dir>");
+    console.error("  transcript-dir: path to workflow transcript directory containing agent-*.jsonl files");
+    console.error("  --role=ROLE: override role detection for all agents");
+    process.exit(1);
+  }
+
+  if (roleOverride && !ROLES.includes(roleOverride)) {
+    console.error(`Invalid role: ${roleOverride}. Must be one of: ${ROLES.join(", ")}`);
+    process.exit(1);
+  }
+
+  const resolvedDir = resolve(dir);
+  const files = readdirSync(resolvedDir).filter((f) => f.startsWith("agent-") && f.endsWith(".jsonl"));
+
+  if (files.length === 0) {
+    console.error(`No agent-*.jsonl files found in ${resolvedDir}`);
+    process.exit(1);
+  }
+
+  const audits = files.map((f) => auditAgent(join(resolvedDir, f), roleOverride));
+  const report = formatReport(audits);
+
+  console.log(report);
+
+  const outPath = join(resolvedDir, "audit-report.md");
+  Bun.write(outPath, report);
+  console.error(`\nReport written to: ${outPath}`);
 }
-
-const resolvedDir = resolve(dir);
-const files = readdirSync(resolvedDir).filter((f) => f.startsWith("agent-") && f.endsWith(".jsonl"));
-
-if (files.length === 0) {
-  console.error(`No agent-*.jsonl files found in ${resolvedDir}`);
-  process.exit(1);
-}
-
-const audits = files.map((f) => auditAgent(join(resolvedDir, f)));
-const report = formatReport(audits);
-
-console.log(report);
-
-const outPath = join(resolvedDir, "audit-report.md");
-Bun.write(outPath, report);
-console.error(`\nReport written to: ${outPath}`);

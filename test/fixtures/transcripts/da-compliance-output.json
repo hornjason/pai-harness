@@ -1,0 +1,206 @@
+{
+  "date": "2026-09-22",
+  "directory": "/Users/jhorn/Projects/rungate/.claude/worktrees/wf_a6828cce-497-8/test/fixtures/transcripts",
+  "sessionsAudited": 3,
+  "overallScore": 96,
+  "overallGrade": "A",
+  "perRole": {
+    "marcus": {
+      "sessions": 1,
+      "avgScore": 96,
+      "grade": "A"
+    },
+    "da": {
+      "sessions": 1,
+      "avgScore": 92,
+      "grade": "A"
+    },
+    "quinn": {
+      "sessions": 1,
+      "avgScore": 100,
+      "grade": "A"
+    }
+  },
+  "perCriterion": [
+    {
+      "id": "SHARED-01",
+      "rule": "Read AGENTS.md in first 5 calls",
+      "source": "AGENTS.md § Rules",
+      "followed": 3,
+      "ignored": 0,
+      "total": 3,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "SHARED-02",
+      "rule": "No duplicate file reads",
+      "source": "marcus.md § Never Do",
+      "followed": 3,
+      "ignored": 0,
+      "total": 3,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "SHARED-03",
+      "rule": "No cat/head via Bash (use Read)",
+      "source": "marcus.md § Never Do",
+      "followed": 3,
+      "ignored": 0,
+      "total": 3,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "SHARED-04",
+      "rule": "Read PROJECT-STATE early (first 10 calls)",
+      "source": "AGENTS.md § Key Files",
+      "followed": 3,
+      "ignored": 0,
+      "total": 3,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-01",
+      "rule": "Total tool calls <= 30",
+      "source": "marcus.md § Additional Never Do",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-02",
+      "rule": "Grep:Read ratio <= 2:1",
+      "source": "prompts/coding-principles.md",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-03",
+      "rule": "<= 1 full bun test run",
+      "source": "marcus.md § Additional Never Do",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-04",
+      "rule": "Read governing spec before first edit",
+      "source": "marcus.md § Before writing code",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-05",
+      "rule": "Read prompts/ before writing code",
+      "source": "marcus.md § Context (MANDATORY)",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "M-06",
+      "rule": "Grep before Read for non-key files",
+      "source": "memory: Grep Before Read",
+      "followed": 0,
+      "ignored": 1,
+      "total": 1,
+      "complianceRate": "0%"
+    },
+    {
+      "id": "DA-01",
+      "rule": "Invoke harness skill before implementation",
+      "source": "CLAUDE.md § MANDATORY GATE step 3",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "DA-02",
+      "rule": "Run bun test before implementation",
+      "source": "CLAUDE.md § MANDATORY GATE step 1",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "DA-03",
+      "rule": "Read governing spec before implementation",
+      "source": "CLAUDE.md § MANDATORY GATE step 2",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "DA-04",
+      "rule": "Delegate to named agents (no direct Edit/Write on lib/test/scripts/gates/hooks)",
+      "source": "CLAUDE.md § MANDATORY GATE step 4",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "DA-05",
+      "rule": "Update PROJECT-STATE at milestones",
+      "source": "CLAUDE.md § Rules",
+      "followed": 0,
+      "ignored": 1,
+      "total": 1,
+      "complianceRate": "0%"
+    },
+    {
+      "id": "Q-01",
+      "rule": "Run full test suite (bun test)",
+      "source": "quinn.md § Core Principles",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "Q-02",
+      "rule": "Run type check (tsc --noEmit)",
+      "source": "quinn.md § Before reporting done",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "Q-03",
+      "rule": "Verify AC evidence is not self-attested",
+      "source": "quinn.md § Never Do",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "Q-04",
+      "rule": "No direct code edits (validation only)",
+      "source": "quinn.md § Core Principles",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    },
+    {
+      "id": "Q-05",
+      "rule": "Total tool calls <= 30",
+      "source": "quinn.md § Efficiency",
+      "followed": 1,
+      "ignored": 0,
+      "total": 1,
+      "complianceRate": "100%"
+    }
+  ]
+}
