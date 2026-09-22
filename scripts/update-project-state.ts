@@ -42,7 +42,9 @@ function scanSpecSCStatus(): Record<string, boolean> {
 }
 
 function phaseEmoji(phase: Phase): string {
-  if (phase.scs.length === 0) return "⬜";
+  if (phase.scs.length === 0) {
+    return phase.note?.toLowerCase().includes("complete") ? "✅" : "⬜";
+  }
   const done = phase.scs.filter(sc => sc.done).length;
   if (done === phase.scs.length) return "✅";
   if (done > 0) return "🔄";

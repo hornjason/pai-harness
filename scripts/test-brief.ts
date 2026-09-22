@@ -52,12 +52,22 @@ function extractDirectives(briefContent: string): Directive[] {
       continue;
     }
 
-    // Read X patterns
+    // Read X patterns — matches "Read `file`", "Read file.md", numbered items with file refs
     const readMatch = line.match(/(?:Read|read)\s+[`"]?([^\s`"]+(?:\.(?:md|ts|json|yml|yaml))?)[`"]?/);
     if (readMatch && !line.startsWith("//") && !line.startsWith("#")) {
       const target = readMatch[1].replace(/[`"]/g, "");
       if (target.includes("/") || target.includes(".")) {
-        directives.push({ text: line.trim().replace(/^-\s*/, ""), type: "read", line: lineNum, section: currentSection, target });
+        directives.push({ text: line.trim().replace(/^[-\d.]\s*/, ""), type: "read", line: lineNum, section: currentSection, target });
+      }
+    }
+
+    // Context section numbered items with file refs — "1. **AGENTS.md** — MANDATORY"
+    if (currentSection.toLowerCase().includes("context") && /^\d+\./.test(line.trim())) {
+      const fileMatch = line.match(/\*\*([^\s*]+(?:\.(?:md|ts|json)))\*\*/);
+      const pathMatch = line.match(/[`]([^\s`]+(?:\.(?:md|ts|json)))[`]/);
+      const target = fileMatch?.[1] || pathMatch?.[1];
+      if (target) {
+        directives.push({ text: line.trim().replace(/^\d+\.\s*/, ""), type: "read", line: lineNum, section: currentSection, target });
       }
     }
 
@@ -246,7 +256,7 @@ if (transcriptDir) {
       label = meta.description || file;
     } catch {}
 
-    if (label !== role && !label.includes(role)) continue;
+    if (label.toLowerCase() !== role.toLowerCase() && !label.toLowerCase().includes(role.toLowerCase())) continue;
 
     const results = checkCompliance(directives, join(transcriptDir, file));
     console.log(formatReport(role, directives, results, rrCount));

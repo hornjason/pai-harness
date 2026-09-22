@@ -139,7 +139,12 @@ function briefedAgent(prompt, opts = {}) {
       : `${PROJECT_ROOT}/.claude/agents/${role}.md`
     if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
     else opts.isolation = 'worktree'
-    const briefPrefix = `FIRST: Read ${briefPath} — it contains your identity, rules, and workflow. Follow it.\n\n`
+    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:
+1. Read ${briefPath} — your identity, rules, and workflow
+2. Read EVERY file listed in your brief's "Context" section — all of them, in order
+3. Do NOT skip any file in the Context list — each one is there for a reason
+
+Do NOT start the task until you have read your brief AND every file it lists in Context. Now here is your task:\n\n`
     return agent(briefPrefix + prompt, opts)
   }
   return agent(prompt, opts)
