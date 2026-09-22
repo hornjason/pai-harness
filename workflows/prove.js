@@ -130,7 +130,21 @@ const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
 // ── Agent brief loader (config-driven) ────────────────────
 const ROLES = parsedArgs.roles || {}
 
-function briefedAgent(prompt, opts = {}) {
+// SC-406: Parse brief Context section at prompt-build time → explicit Read steps
+const CONTEXT_CACHE = {}
+async function loadContextPaths(role, briefPath) {
+  if (CONTEXT_CACHE[role]) return CONTEXT_CACHE[role]
+  try {
+    const { parseContextPaths } = await import(`${HARNESS_ROOT}/lib/brief-context-parser.ts`)
+    const { readFileSync } = await import('fs')
+    CONTEXT_CACHE[role] = parseContextPaths(readFileSync(briefPath, 'utf-8'))
+  } catch {
+    CONTEXT_CACHE[role] = []
+  }
+  return CONTEXT_CACHE[role]
+}
+
+async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
   delete opts.role
   if (role) {
@@ -140,12 +154,12 @@ function briefedAgent(prompt, opts = {}) {
       : `${PROJECT_ROOT}/.claude/agents/${role}.md`
     if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
     else opts.isolation = 'worktree'
-    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:
-1. Read ${briefPath} — your identity, rules, and workflow
-2. Read EVERY file listed in your brief's "Context" section — all of them, in order
-3. Do NOT skip any file in the Context list — each one is there for a reason
 
-Do NOT start the task until you have read your brief AND every file it lists in Context. Now here is your task:\n\n`
+    const contextPaths = await loadContextPaths(role, briefPath)
+    const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
+    contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
+
+    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above. Now here is your task:\n\n`
     return agent(briefPrefix + prompt, opts)
   }
   return agent(prompt, opts)
