@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Phase 1.5 — Context Quality — 2 SCs open**
+**Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
 Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes — fixed with briefedAgent() that reads briefs from config. (2) Discovery agent had no brief, did 51 calls — created discovery.md, dropped to 22 calls. (3) Marcus scored F(27%) on directive compliance — hill climbed to B(80%) in 5 iterations by parsing brief Context section and generating explicit Read steps in prompt. (4) Key insight: explicit numbered Read steps in prompt >> 'read Context section' >> brief-only. (5) Ship workflow worktree bug: Quinn can't see Marcus's worktree changes. (6) Built transcript auditor + test-brief CLI for mechanical compliance checking. (7) Cross-referenced agnix/RepoRails with transcript auditor — tools grade text quality, auditor grades behavior, cross-reference shows which instructions fail and why (position, not wording). (8) Published 9 issues (#550-#558) for Phase F/G/H + brief compliance.
 
@@ -16,11 +16,11 @@ Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
-## ⬜ Phase 1.5 — Context Quality (NOT STARTED)
+## 🔄 Phase 1.5 — Context Quality (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-293 | SPEC-TEMPLATE updated with matchable patterns |
+| ✅ | SC-293 | SPEC-TEMPLATE updated with matchable patterns |
 | ⬜ | SC-295 | SC enrichment — 25 remaining |
 
 ## ✅ Config-Driven Testing — Phases A-E (COMPLETE)

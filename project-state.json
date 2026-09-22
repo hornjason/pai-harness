@@ -32,7 +32,7 @@
         {
           "id": "SC-293",
           "what": "SPEC-TEMPLATE updated with matchable patterns",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-295",
@@ -40,7 +40,7 @@
           "done": false
         }
       ],
-      "note": "2 open SCs, pending worktree merge"
+      "note": "SC-293 merged (content was already on main). SC-295 still open — 125 unmatched SCs total (includes newer specs). SC-302 merged into main."
     },
     {
       "name": "Config-Driven Testing — Phases A-E",

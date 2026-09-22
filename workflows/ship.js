@@ -96,6 +96,7 @@ const BUILD_RESULT_SCHEMA = {
     filesChanged: { type: 'array', items: { type: 'string' } },
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
+    worktreePath: { type: 'string' },
   },
   required: ['success'],
 }
@@ -129,22 +130,39 @@ const MAX_REGRESSIONS = 2
 // Roles from args.roles (passed by skill from rungate.json) or convention fallback.
 const ROLES = parsedArgs.roles || {}
 
-function briefedAgent(prompt, opts = {}) {
+// SC-406: Parse brief Context section at prompt-build time → explicit Read steps
+const CONTEXT_CACHE = {}
+async function loadContextPaths(role, briefPath) {
+  if (CONTEXT_CACHE[role]) return CONTEXT_CACHE[role]
+  try {
+    const { parseContextPaths } = await import(`${HARNESS_ROOT}/lib/brief-context-parser.ts`)
+    const { readFileSync } = await import('fs')
+    CONTEXT_CACHE[role] = parseContextPaths(readFileSync(briefPath, 'utf-8'))
+  } catch {
+    CONTEXT_CACHE[role] = []
+  }
+  return CONTEXT_CACHE[role]
+}
+
+async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
+  const callerSetIsolation = 'isolation' in opts
   delete opts.role
   if (role) {
     const roleConfig = ROLES[role]
     const briefPath = roleConfig?.brief
       ? `${PROJECT_ROOT}/${roleConfig.brief}`
       : `${PROJECT_ROOT}/.claude/agents/${role}.md`
-    if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
-    else opts.isolation = 'worktree'
-    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:
-1. Read ${briefPath} — your identity, rules, and workflow
-2. Read EVERY file listed in your brief's "Context" section — all of them, in order
-3. Do NOT skip any file in the Context list — each one is there for a reason
+    if (!callerSetIsolation) {
+      if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
+      else opts.isolation = 'worktree'
+    }
 
-Do NOT start the task until you have read your brief AND every file it lists in Context. Now here is your task:\n\n`
+    const contextPaths = await loadContextPaths(role, briefPath)
+    const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
+    contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
+
+    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above. Now here is your task:\n\n`
     return agent(briefPrefix + prompt, opts)
   }
   return agent(prompt, opts)
@@ -411,6 +429,7 @@ Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
+Also report worktreePath: your current working directory (run pwd and include the result).
   `, { label: 'marcus', phase: 'Implement', role: 'marcus', schema: BUILD_RESULT_SCHEMA })
 
   if (!buildResult || !buildResult.success) {
@@ -425,6 +444,9 @@ let implementResult = await runImplement()
 if (!implementResult.success) {
   return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
 }
+
+// Capture Marcus's worktree path so Quinn and fix iterations validate the same code
+const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_ROOT
 
 // ════════════════════════════════════════════════════════════
 // PHASE 5: VALIDATE (Quinn local dev — fast feedback before commit)
@@ -443,6 +465,11 @@ Read ${HARNESS_ROOT}/prompts/quinn-ui-brief.md for your testing methodology.
 Read ${PROJECT_ROOT}/AGENTS.md for project context.
 
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
+
+## Working Directory
+IMPORTANT: Validate against Marcus's worktree at: ${marcusWorktreePath}
+Run all file checks, tests, and validations from that directory (cd ${marcusWorktreePath}).
+This is where Marcus made the code changes — do NOT validate against the main branch.
 
 ## Environment
 - **Dev UI:** http://localhost:5173
@@ -482,7 +509,7 @@ Do NOT screenshot after every browser_snapshot().
 ## Verdict
 - PASS: all pre-conditions + all ACs + all anti-checks pass
 - FAIL: any failure — report which AC or anti-check failed with evidence
-    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: 'quinn', schema: GATE_RESULT_SCHEMA })
+    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: 'quinn', isolation: undefined, schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {
       log(`Quinn local: agent failed (network/API error) — attempt ${validateAttempt}/3`)
@@ -503,13 +530,16 @@ Do NOT screenshot after every browser_snapshot().
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
     const fixResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
+IMPORTANT: Work in the worktree at: ${marcusWorktreePath}
+cd ${marcusWorktreePath} before making any changes.
+
 Quinn found issues on local dev for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
 
 Read the failing AC details. Fix the code. Run unit tests again.
 Do NOT commit — Quinn will retest.
 Report what you fixed.
-    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: 'marcus' })
+    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: 'marcus', isolation: undefined })
   }
 } else {
   log('Quinn local: SKIPPED (LIGHT tier)')
