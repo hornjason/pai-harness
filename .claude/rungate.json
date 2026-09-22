@@ -6,6 +6,14 @@
     "harness": "HARNESS.md",
     "agents": "AGENTS.md"
   },
+  "roles": {
+    "discovery": { "brief": ".claude/agents/discovery.md" },
+    "marcus": { "brief": ".claude/agents/marcus.md", "isolation": "worktree" },
+    "quinn": { "brief": ".claude/agents/quinn.md", "isolation": "worktree" },
+    "rook": { "brief": ".claude/agents/rook.md", "isolation": "worktree" },
+    "serena": { "brief": ".claude/agents/serena.md", "isolation": "worktree" },
+    "aditi": { "brief": ".claude/agents/aditi.md", "isolation": "worktree" }
+  },
   "consumers": [],
   "pages": {}
 }

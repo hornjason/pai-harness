@@ -81,20 +81,16 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/ac-format.md | AC Format Requirements |
-| prompts/evidence-validator.md | evidence validator |
 | prompts/prevention.md | Prevention-Oriented Fixes |
 | prompts/environment.md | Environment Setup Verification |
 | prompts/ac-adversary.md | ac adversary |
 | prompts/serena.md | Serena — Architect Brief |
 | prompts/container-verify.md | Container Verification |
 | prompts/escalation-decision-tree.md | Escalation Decision Tree |
-| prompts/evidence-hierarchy.md | Evidence Hierarchy |
 | prompts/blast-radius.md | Blast Radius Assessment |
 | prompts/coding-principles.md | Coding Principles |
 | prompts/aditi.md | Aditi — Designer Brief |
 | prompts/regression.md | Regression Test Requirements |
-| prompts/discovery.md | Discovery |
 | prompts/rook.md | Rook — Security Reviewer Brief |
 | prompts/marcus.md | Marcus — Engineer Brief |
 | prompts/rca.md | Root Cause Analysis |

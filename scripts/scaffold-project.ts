@@ -866,9 +866,10 @@ function generateAgentBriefs(root: string): void {
     rook: ["security", "auth", "secret", "vulnerability", "access"],
     serena: ["architecture", "design-pattern", "system", "module", "structure"],
     aditi: ["design", "ui", "ux", "component", "visual", "accessibility"],
+    discovery: ["discovery", "ac-format", "evidence", "scope", "sizing"],
   };
   const promptsByAgent: Record<string, Array<{ file: string; when: string }>> = {
-    marcus: [], quinn: [], rook: [], serena: [], aditi: []
+    marcus: [], quinn: [], rook: [], serena: [], aditi: [], discovery: []
   };
   if (existsSync(promptsDir)) {
     const promptFiles = readdirSync(promptsDir).filter(f => f.endsWith(".md"));
@@ -1263,19 +1264,50 @@ ${identitySection}## Core Principles
 - Never run builds or tests
 `;
 
+  // Load shared rules partial for template variable substitution
+  const harnessTemplatesDir = join(__dirname, "..", "templates", "agent-briefs");
+  const sharedRulesPath = join(harnessTemplatesDir, "_shared.md");
+  const sharedRules = existsSync(sharedRulesPath) ? readFileSync(sharedRulesPath, "utf-8").trim() : "";
+
+  // Load template-based briefs from templates/agent-briefs/
+  function loadBriefTemplate(name: string): string | null {
+    const templatePath = join(harnessTemplatesDir, name);
+    if (!existsSync(templatePath)) return null;
+    let content = readFileSync(templatePath, "utf-8");
+    content = content.replace(/\$\{PROJECT_IDENTITY\}/g, identitySection);
+    content = content.replace(/\$\{SHARED_RULES\}/g, sharedRules);
+    content = content.replace(/\$\{SOURCE_DIRS\}/g, dirList);
+    content = content.replace(/\$\{CONSUMERS\}/g, consumerNote);
+    return content;
+  }
+
+  // Build brief list: template file wins over hardcoded, hardcoded is fallback
+  const hardcodedBriefs: Record<string, string> = {
+    "quinn.md": quinnBrief,
+    "marcus.md": marcusBrief,
+    "rook.md": rookBrief,
+    "serena.md": serenaBrief,
+    "aditi.md": aditiBrief,
+  };
+
+  // Discover all template files (includes any new agents added via templates/)
+  const templateFiles = existsSync(harnessTemplatesDir)
+    ? readdirSync(harnessTemplatesDir).filter(f => f.endsWith(".md") && !f.startsWith("_"))
+    : [];
+  const allBriefNames = new Set([...Object.keys(hardcodedBriefs), ...templateFiles]);
+
   // Agent briefs always regenerate — they're harness-owned templates, not user-customized
-  for (const [name, content] of [
-    ["quinn.md", quinnBrief], ["marcus.md", marcusBrief], ["rook.md", rookBrief],
-    ["serena.md", serenaBrief], ["aditi.md", aditiBrief],
-  ] as const) {
+  for (const name of allBriefNames) {
     const agentName = name.replace(".md", "");
+    const briefContent = loadBriefTemplate(name) || hardcodedBriefs[name] || null;
+    if (!briefContent) continue;
     const prompts = promptsByAgent[agentName] || [];
     const promptSection = prompts.length > 0
       ? `\n## Reference (read when needed)\n\n| Prompt | When to Read |\n|--------|-------------|\n` +
         prompts.map(p => `| ${p.file} | ${p.when} |`).join("\n") + "\n"
       : "";
     const p = join(agentsDir, name);
-    writeFileSync(p, content + promptSection);
+    writeFileSync(p, briefContent + promptSection);
     actions.push(existsSync(p) ? `UPDATED: .claude/agents/${name}` : `CREATED: .claude/agents/${name}`);
   }
 }

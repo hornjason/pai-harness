@@ -37,7 +37,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
-| Specs — success criteria, constraints, requirements (17 files) | `specs/` |
+| Specs — success criteria, constraints, requirements (18 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
 | Council — synthesis, design debates (3 files) | `docs/council/` |
@@ -65,6 +65,7 @@ Read the governing spec BEFORE making changes in that area.
 |------|---------|----------|
 | SESSION-LIFECYCLE-SPEC.md | Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation | yes |
 | harness-automation-matrix.md | Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | yes |
+| PROJECT-STATE.md | PROJECT-STATE | no |
 | HARNESS-GATES.md | Gate definitions — what checks run at each harness gate and their pass/fail criteria | yes |
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |

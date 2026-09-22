@@ -63,15 +63,15 @@ describe("Phase 5 — Instruction Compliance (custom checks)", () => {
     expect(mismatched).toEqual([]);
   });
 
-  test("SC-249: ship.js uses matching agentType for all spawns", () => {
+  test("SC-249: ship.js uses config-driven roles for all agent spawns", () => {
     const { readFileSync } = require("fs");
     const shipPath = join(ROOT, "workflows", "ship.js");
     const content = readFileSync(shipPath, "utf-8");
-    expect(content).not.toContain("agentType: 'Engineer'");
-    expect(content).not.toContain("agentType: 'Pentester'");
-    expect(content).toContain("agentType: 'marcus'");
-    expect(content).toContain("agentType: 'quinn'");
-    expect(content).toContain("agentType: 'rook'");
+    expect(content).not.toContain("agentType:");
+    expect(content).toContain("role: 'marcus'");
+    expect(content).toContain("role: 'quinn'");
+    expect(content).toContain("role: 'rook'");
+    expect(content).toContain("briefedAgent(");
   });
 
   test.todo("SC-250: five-layer measurement model implemented");

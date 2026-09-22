@@ -1,3 +1,13 @@
+---
+doc-type: spec
+status: draft
+owner: TODO
+created: 2026-09-22
+updated: 2026-09-22
+governs: TODO — describe what this spec governs
+testable: false
+---
+
 # Project State
 
 **Current phase: Phase 1.5 — Context Quality — 2 SCs open**

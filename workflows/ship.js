@@ -119,17 +119,28 @@ const PHASE_TARGET = parsedArgs.phase || 'all'
 const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
-const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || process.env.HOME || ''
-const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
+const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
+const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const MAX_REGRESSIONS = 2
 
-// ── Code agents always get worktree isolation ───────────────
-const CODE_AGENTS = new Set(['marcus', 'quinn', 'rook', 'serena', 'aditi'])
+// ── Agent brief loader (config-driven) ────────────────────
+// Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
+// Roles from args.roles (passed by skill from rungate.json) or convention fallback.
+const ROLES = parsedArgs.roles || {}
 
-function codeAgent(prompt, opts = {}) {
-  if (opts.agentType && CODE_AGENTS.has(opts.agentType)) {
-    opts.isolation = 'worktree'
+function briefedAgent(prompt, opts = {}) {
+  const role = opts.role
+  delete opts.role
+  if (role) {
+    const roleConfig = ROLES[role]
+    const briefPath = roleConfig?.brief
+      ? `${PROJECT_ROOT}/${roleConfig.brief}`
+      : `${PROJECT_ROOT}/.claude/agents/${role}.md`
+    if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
+    else opts.isolation = 'worktree'
+    const briefPrefix = `FIRST: Read ${briefPath} — it contains your identity, rules, and workflow. Follow it.\n\n`
+    return agent(briefPrefix + prompt, opts)
   }
   return agent(prompt, opts)
 }
@@ -204,7 +215,7 @@ async function runDiscovery(context) {
   phase('Discovery')
   log(`DISCOVERY${context ? ' (regression: ' + context + ')' : ''}`)
 
-  discovery = await agent(`
+  discovery = await briefedAgent(`
 You are performing DISCOVERY for ship issue #${ISSUE}.${context ? '\n\nREGRESSION CONTEXT: ' + context : ''}
 
 ## Issue
@@ -241,7 +252,7 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 9. Set sourceSpecs with citedInDiscovery:true, specElements[]. One AC per specElement minimum.
 
 Project root: ${PROJECT_ROOT}
-  `, { label: `discovery${regressionCount > 0 ? '-r' + regressionCount : ''}`, phase: 'Discovery', schema: DISCOVERY_SCHEMA })
+  `, { label: `discovery${regressionCount > 0 ? '-r' + regressionCount : ''}`, phase: 'Discovery', role: 'discovery', schema: DISCOVERY_SCHEMA })
 
   if (!discovery) return false
 
@@ -385,7 +396,7 @@ Assemble brief: bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} 
 Report the output.
   `, { label: 'assemble-brief', phase: 'Implement' })
 
-  const buildResult = await codeAgent(`
+  const buildResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
 Read every file in Context section first. Read "Files to modify" before changes.
@@ -395,7 +406,7 @@ Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
-  `, { label: 'marcus', phase: 'Implement', agentType: 'marcus', schema: BUILD_RESULT_SCHEMA })
+  `, { label: 'marcus', phase: 'Implement', role: 'marcus', schema: BUILD_RESULT_SCHEMA })
 
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
@@ -422,7 +433,7 @@ if (discovery.ceremonyTier !== 'LIGHT') {
   for (let validateAttempt = 1; validateAttempt <= 3; validateAttempt++) {
     log(`Quinn local dev — attempt ${validateAttempt}/3`)
 
-    quinnLocalResult = await codeAgent(`
+    quinnLocalResult = await briefedAgent(`
 Read ${HARNESS_ROOT}/prompts/quinn-ui-brief.md for your testing methodology.
 Read ${PROJECT_ROOT}/AGENTS.md for project context.
 
@@ -466,7 +477,7 @@ Do NOT screenshot after every browser_snapshot().
 ## Verdict
 - PASS: all pre-conditions + all ACs + all anti-checks pass
 - FAIL: any failure — report which AC or anti-check failed with evidence
-    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', agentType: 'quinn', schema: GATE_RESULT_SCHEMA })
+    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: 'quinn', schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {
       log(`Quinn local: agent failed (network/API error) — attempt ${validateAttempt}/3`)
@@ -485,7 +496,7 @@ Do NOT screenshot after every browser_snapshot().
     }
 
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
-    const fixResult = await codeAgent(`
+    const fixResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
 Quinn found issues on local dev for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
@@ -493,7 +504,7 @@ ${(quinnLocalResult?.failures || []).join('\n')}
 Read the failing AC details. Fix the code. Run unit tests again.
 Do NOT commit — Quinn will retest.
 Report what you fixed.
-    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', agentType: 'marcus' })
+    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: 'marcus' })
   }
 } else {
   log('Quinn local: SKIPPED (LIGHT tier)')
@@ -625,7 +636,7 @@ Check if the rebuilt container is available:
   log(`Container env: local=${envCheck?.localTest}, macMini=${envCheck?.macMini}, using=${testHost || 'NONE'}`)
 
   if (testHost) {
-    await codeAgent(`
+    await briefedAgent(`
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
@@ -654,7 +665,7 @@ Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 
 ### ACs to Verify
 ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
-    `, { label: 'quinn-container', phase: 'Verify', agentType: 'quinn', schema: GATE_RESULT_SCHEMA })
+    `, { label: 'quinn-container', phase: 'Verify', role: 'quinn', schema: GATE_RESULT_SCHEMA })
   } else {
     log('WARN: No test container available — skipping container Quinn')
   }
@@ -663,10 +674,10 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 // Rook security review (THOROUGH only)
 if (discovery.ceremonyTier === 'THOROUGH') {
   log('Spawning Rook')
-  await codeAgent(`
+  await briefedAgent(`
 Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
-  `, { label: 'rook', phase: 'Verify', agentType: 'rook', schema: GATE_RESULT_SCHEMA })
+  `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
 }
 
 // ════════════════════════════════════════════════════════════

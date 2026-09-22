@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-21",
+  "updated": "2026-09-22",
   "priorities": [
     "AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize agent brief templates to markdown files with ${VAR} placeholders",
     "SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec",
@@ -8,7 +8,7 @@
     "Merge pending worktrees (SC-293, SC-302) — refactor has landed, safe to merge",
     "Close Phase 1.5 — SC-293 and SC-295 still open"
   ],
-  "notes": "Config-driven testing migration complete (Phases A-E). 19 matchers in conformity engine. Phase tests migrated to thin consumers (2,463→1,125 lines). Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). All template improvements baked into scaffold template. Suite: 974 tests, 921 pass, 0 fail.",
+  "notes": "Config-driven testing migration complete (Phases A-E). 19 matchers in conformity engine. Phase tests migrated to thin consumers (2,463→1,125 lines). Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). All template improvements baked into scaffold template. Suite: 984 tests, 931 pass, 0 fail. Ship workflow dogfood: fixed process.env crash, fixed agentType crash (workflows can't resolve project-local agents), added config-driven role→brief mapping in rungate.json, built transcript auditor (scripts/audit-transcript.ts), created discovery.md agent brief.",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
@@ -219,6 +219,17 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-09-22 session 4",
+      "items": [
+        "Ship workflow dogfood: 3 bugs found (process.env, agentType, unnamed discovery)",
+        "Config-driven roles: rungate.json roles{} maps role→brief+isolation",
+        "Transcript auditor: scripts/audit-transcript.ts grades agent behavior",
+        "Discovery agent: created .claude/agents/discovery.md brief",
+        "ship.js/prove.js: codeAgent→briefedAgent, reads briefs from config not agentType",
+        "Ship skill updated to pass roles from rungate.json"
+      ]
+    },
     {
       "date": "2026-09-21 session 3",
       "items": [

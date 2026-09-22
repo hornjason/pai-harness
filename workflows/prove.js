@@ -122,17 +122,26 @@ const ISSUE_REPO = parsedArgs.issueRepo || REPO
 const PROJECT_ROOT = parsedArgs.projectRoot || ''
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
-const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || process.env.HOME || ''
+const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
 const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
-const WORK_DIR = `${process.env.RUNGATE_WORK_DIR || `${HOME}/.rungate`}/${SLUG}`
+const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 const PROVE_PROMPT = `${HARNESS_ROOT}/gates/prompts/prove-reproducer.md`
 
-// ── Code agents always get worktree isolation ───────────────
-const CODE_AGENTS = new Set(['marcus', 'quinn', 'rook', 'serena', 'aditi'])
+// ── Agent brief loader (config-driven) ────────────────────
+const ROLES = parsedArgs.roles || {}
 
-function codeAgent(prompt, opts = {}) {
-  if (opts.agentType && CODE_AGENTS.has(opts.agentType)) {
-    opts.isolation = 'worktree'
+function briefedAgent(prompt, opts = {}) {
+  const role = opts.role
+  delete opts.role
+  if (role) {
+    const roleConfig = ROLES[role]
+    const briefPath = roleConfig?.brief
+      ? `${PROJECT_ROOT}/${roleConfig.brief}`
+      : `${PROJECT_ROOT}/.claude/agents/${role}.md`
+    if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
+    else opts.isolation = 'worktree'
+    const briefPrefix = `FIRST: Read ${briefPath} — it contains your identity, rules, and workflow. Follow it.\n\n`
+    return agent(briefPrefix + prompt, opts)
   }
   return agent(prompt, opts)
 }
@@ -399,7 +408,7 @@ while (verdict === 'UNPROVEN' && selfHealIteration < MAX_SELF_HEAL_ATTEMPTS) {
   const failSummary = failedCriteria.map(cr => `${cr.scId}: ${cr.evidence || 'FAIL'}`).join('\n')
 
   // Spawn Marcus to fix the failures
-  await codeAgent(`
+  await briefedAgent(`
 You are Marcus Webb, senior engineer. Prove found UNPROVEN criteria for issue #${ISSUE}.
 
 ## Failed Criteria (iteration ${selfHealIteration}/${MAX_SELF_HEAL_ATTEMPTS})
@@ -417,7 +426,7 @@ Body (first 2000 chars): ${(issueData.issueBody || '').slice(0, 2000)}
 5. Commit and push the fix: git add -A && git commit -m "fix(#${ISSUE}): prove self-heal iteration ${selfHealIteration}" && git push
 
 Report what you fixed and evidence that each failed criterion is now addressed.
-  `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', agentType: 'marcus' })
+  `, { label: `self-heal-fix-${selfHealIteration}`, phase: 'Verdict', role: 'marcus' })
 
   log(`Self-heal fix ${selfHealIteration} complete — re-validating`)
 
