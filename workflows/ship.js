@@ -143,6 +143,23 @@ If there is no Context section or no paths, return {"paths": []}.
   return CONTEXT_CACHE[role]
 }
 
+// Reinforcement-tier extraction: reads brief frontmatter `tiers.reinforcement` sections,
+// extracts process rules, injects at top of task prompt. Config-driven from the brief itself.
+// Ref: Instruction Stacking Collapse (arXiv 2608.02639), Lost-in-the-Middle (Liu 2023)
+const REINFORCEMENT_CACHE = {}
+async function loadReinforcementRules(role, briefPath) {
+  if (REINFORCEMENT_CACHE[role]) return REINFORCEMENT_CACHE[role]
+  const result = await agent(`
+Read ${briefPath}. Look at the YAML frontmatter for a "tiers" field with "reinforcement" and/or "mechanical" arrays listing section names.
+Find all bullet points and numbered items under the sections listed in "reinforcement".
+Return them as a JSON object: {"rules": ["rule text 1", "rule text 2", ...]}.
+If there is no "tiers" field or no reinforcement sections, return {"rules": []}.
+Only return the rule TEXT — strip leading dashes, numbers, and whitespace.
+  `, { label: `reinforce-${role}`, schema: { type: 'object', properties: { rules: { type: 'array', items: { type: 'string' } } }, required: ['rules'] } })
+  REINFORCEMENT_CACHE[role] = (result && result.rules) || []
+  return REINFORCEMENT_CACHE[role]
+}
+
 async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
   const callerSetIsolation = 'isolation' in opts
@@ -161,8 +178,15 @@ async function briefedAgent(prompt, opts = {}) {
     const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
     contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
 
-    const briefPrefix = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above. Now here is your task:\n\n`
-    return agent(briefPrefix + prompt, opts)
+    let fullPrompt = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above.\n\n`
+
+    const reinforcement = await loadReinforcementRules(role, briefPath)
+    if (reinforcement.length) {
+      fullPrompt += `CRITICAL PROCESS RULES (follow in every task):\n${reinforcement.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`
+    }
+
+    fullPrompt += prompt
+    return agent(fullPrompt, opts)
   }
   return agent(prompt, opts)
 }

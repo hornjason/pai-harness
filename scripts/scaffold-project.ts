@@ -926,10 +926,10 @@ function generateAgentBriefs(root: string): void {
   sharedRules = sharedRules.replace(/^---[\s\S]*?---\n*/, "");
 
   // Agent metadata for frontmatter generation (hooks may overwrite template frontmatter)
-  const agentMeta: Record<string, { description: string; tools: string; model: string }> = {
+  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
     discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet" },
-    marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet" },
-    quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet" },
+    marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
+    quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
     rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
     serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
     aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet" },
@@ -957,7 +957,15 @@ function generateAgentBriefs(root: string): void {
     const agentName = name.replace(".md", "");
     const meta = agentMeta[agentName];
     if (meta) {
-      content = `---\nname: ${agentName}\ndescription: ${meta.description}\ntools: ${meta.tools}\nmodel: ${meta.model}\n---\n\n${content}`;
+      let fm = `---\nname: ${agentName}\ndescription: ${meta.description}\ntools: ${meta.tools}\nmodel: ${meta.model}`;
+      if (meta.tiers) {
+        fm += `\ntiers:`;
+        for (const [tier, sections] of Object.entries(meta.tiers)) {
+          fm += `\n  ${tier}: [${sections.map(s => `'${s}'`).join(', ')}]`;
+        }
+      }
+      fm += `\n---\n\n`;
+      content = fm + content;
     }
     return content;
   }
