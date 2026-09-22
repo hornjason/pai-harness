@@ -184,6 +184,9 @@ if (projectType === "code") {
 // 9. Copy spec template if specs/ is empty (#529)
 copySpecTemplateIfEmpty(join(projectPath, "specs"));
 
+// 9.5. Generate PROJECT-STATE files for the consumer project (SC-302)
+generateProjectState(projectPath);
+
 // 10. Add rungate to package.json devDeps (only if package.json exists)
 addPaiHarnessDevDep(projectPath);
 
@@ -597,6 +600,7 @@ ${repoLine}
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
+- Read PROJECT-STATE.md first on session start — it's the session bridge
 
 ## Key Files
 
@@ -1749,6 +1753,102 @@ coverage/
   }
 }
 
+function generateProjectState(root: string): void {
+  const specsDir = join(root, "specs");
+  if (!existsSync(specsDir)) {
+    actions.push("SKIP: PROJECT-STATE.md (no specs directory)");
+    return;
+  }
+
+  const today = new Date().toISOString().split("T")[0];
+
+  // Scan specs for SCs
+  interface SC { id: string; what: string; done: boolean; }
+  const scs: SC[] = [];
+
+  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: specsDir, absolute: true })) {
+    if (file.endsWith("SPEC-TEMPLATE.md")) continue;
+    const content = readFileSync(file, "utf-8");
+    for (const line of content.split("\n")) {
+      const doneMatch = line.match(/^- \[x\] (SC-\d+):\s*(.+)/i);
+      if (doneMatch) {
+        scs.push({ id: doneMatch[1].toUpperCase(), what: doneMatch[2].trim(), done: true });
+        continue;
+      }
+      const openMatch = line.match(/^- \[ \] (SC-\d+):\s*(.+)/i);
+      if (openMatch) {
+        scs.push({ id: openMatch[1].toUpperCase(), what: openMatch[2].trim(), done: false });
+      }
+    }
+  }
+
+  if (scs.length === 0) {
+    actions.push("SKIP: PROJECT-STATE.md (no SCs found in specs)");
+    return;
+  }
+
+  // Sort SCs by ID
+  scs.sort((a, b) => {
+    const aNum = parseInt(a.id.replace("SC-", ""));
+    const bNum = parseInt(b.id.replace("SC-", ""));
+    return aNum - bNum;
+  });
+
+  // Create project-state.json
+  const projectName = basename(root);
+  const state = {
+    updated: today,
+    priorities: [
+      "Review and update priorities in project-state.json"
+    ],
+    notes: `${scs.length} SCs discovered from specs. Organize into phases as project evolves.`,
+    phases: [
+      {
+        name: "Initial Implementation",
+        scs: scs
+      }
+    ],
+    sessions: []
+  };
+
+  // Render PROJECT-STATE.md
+  const openCount = scs.filter(sc => !sc.done).length;
+  const currentLabel = openCount > 0
+    ? `Initial Implementation — ${openCount} SCs open`
+    : "All SCs complete";
+
+  const lines: string[] = [];
+  lines.push("# Project State");
+  lines.push("");
+  lines.push(`**Current phase: ${currentLabel}**`);
+  lines.push("");
+  lines.push(state.notes);
+  lines.push("");
+
+  if (state.priorities.length > 0) {
+    lines.push("**Next priorities:**");
+    state.priorities.forEach((p, i) => lines.push(`${i + 1}. ${p}`));
+    lines.push("");
+  }
+
+  lines.push(`## ${openCount === 0 ? "✅" : openCount < scs.length ? "🔄" : "⬜"} Initial Implementation (${openCount === 0 ? "COMPLETE" : openCount < scs.length ? "IN PROGRESS" : "NOT STARTED"})`);
+  lines.push("");
+  if (scs.length > 0) {
+    lines.push("| Status | SC | What |");
+    lines.push("|---|---|---|");
+    for (const sc of scs) {
+      lines.push(`| ${sc.done ? "✅" : "⬜"} | ${sc.id} | ${sc.what} |`);
+    }
+    lines.push("");
+  }
+
+  const stateJson = join(root, "project-state.json");
+  const stateMd = join(root, "PROJECT-STATE.md");
+
+  safeWrite(stateJson, JSON.stringify(state, null, 2) + "\n", "project-state.json");
+  safeWrite(stateMd, lines.join("\n") + "\n", "PROJECT-STATE.md");
+}
+
 function createClaudeMdBridge(root: string): void {
   const claudeMdPath = join(root, "CLAUDE.md");
   const bridgeLine = "@AGENTS.md";
@@ -1854,14 +1954,20 @@ function createGitHooks(root: string): void {
   const preCommit = join(hooksDir, "pre-commit");
   if (!existsSync(preCommit)) {
     writeFileSync(preCommit, `#!/bin/sh
-# Managed by rungate — secret scan on staged files
+# Managed by rungate — secret scan + PROJECT-STATE update
 if git diff --cached --name-only | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\\s*=\\s*["\\''][^\\"\\'']+["\\''])' 2>/dev/null; then
   echo "ERROR: Potential secrets detected in staged files"
   exit 1
 fi
+
+# Update PROJECT-STATE if it exists
+if [ -f "project-state.json" ]; then
+  bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null
+  git add PROJECT-STATE.md project-state.json 2>/dev/null
+fi
 `);
     chmodSync(preCommit, 0o755);
-    actions.push("CREATED: .git/hooks/pre-commit (secret scan)");
+    actions.push("CREATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)");
   }
 
   const prePush = join(hooksDir, "pre-push");
