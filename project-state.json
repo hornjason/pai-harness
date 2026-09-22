@@ -18,7 +18,9 @@
     "Do NOT put deep logic in hooks — extract to lib/, hook is thin trigger",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
     "Do NOT tell agents 'read your Context section' — parse it and generate explicit Read steps",
-    "Do NOT write freeform SC text — use create-sc CLI (once built) or matchable patterns from SPEC-TEMPLATE"
+    "Do NOT write freeform SC text — use create-sc CLI (once built) or matchable patterns from SPEC-TEMPLATE",
+    "Do NOT rely on CLAUDE.md for procedural enforcement — use hooks or /ship",
+    "Do NOT let context drift — refresh rules mid-session via Bash cat of CLAUDE.md + AGENTS.md"
   ],
   "phases": [
     {
