@@ -38,7 +38,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
-| Specs — success criteria, constraints, requirements (19 files) | `specs/` |
+| Specs — success criteria, constraints, requirements (20 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
 | Council — synthesis, design debates (3 files) | `docs/council/` |
@@ -82,6 +82,7 @@ Read the governing spec BEFORE making changes in that area.
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
 | SCAFFOLD-DECOMPOSITION-SPEC.md | Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focused modules | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | TODO | no |
+| DA-COMPLIANCE-SPEC.md | DA compliance evaluation — role-specific audit criteria, transcript grading, and compliance dashboard | no |
 
 ## Tests
 
@@ -96,11 +97,15 @@ bun test
 | scaffold conformity | scaffold-conformity.test.ts | Auto-detected |
 | phase 2 | phase-2.test.ts | Auto-detected |
 | spec discovery | spec-discovery.test.ts | Auto-detected |
+| test brief roles | test-brief-roles.test.ts | Auto-detected |
 | schema canary | schema-canary.test.ts | Auto-detected |
+| directive extractor | directive-extractor.test.ts | Auto-detected |
 | phase 0 | phase-0.test.ts | Auto-detected |
 | structure | structure.test.ts | Auto-detected |
 | phase 1 | phase-1.test.ts | Auto-detected |
+| hill climb | hill-climb.test.ts | Auto-detected |
 | brief context parser | brief-context-parser.test.ts | Auto-detected |
+| transcript checker | transcript-checker.test.ts | Auto-detected |
 | commit enforcement | commit-enforcement.test.ts | Auto-detected |
 | phase 4 | phase-4.test.ts | Auto-detected |
 | split spec | split-spec.test.ts | Auto-detected |
@@ -108,6 +113,7 @@ bun test
 | phase 5 | phase-5.test.ts | Auto-detected |
 | contract | contract.test.ts | Auto-detected |
 | external deps | external-deps.test.ts | Auto-detected |
+| audit transcript | audit-transcript.test.ts | Auto-detected |
 | anti | anti.test.ts | Auto-detected |
 | instruction compliance | instruction-compliance.test.ts | Auto-detected |
 | meta sc coverage | meta-sc-coverage.test.ts | Auto-detected |

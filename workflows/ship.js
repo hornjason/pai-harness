@@ -314,6 +314,17 @@ Report the command output only.
 
 if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
+// ── Project-type detection: override ceremony tier for CLI/library projects ──
+const projectConfig = parsedArgs.roles || {}
+const pagesConfig = parsedArgs.pages || {}
+const hasUI = Object.keys(pagesConfig).length > 0
+const hasContainer = discovery.filesToModify?.some(f => f.includes('Makefile') || f.includes('Dockerfile') || f.includes('docker'))
+
+if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
+  log(`PROJECT TYPE: CLI/library (pages:{} empty) — overriding ${discovery.ceremonyTier} → LIGHT (no Quinn, no container)`)
+  discovery.ceremonyTier = 'LIGHT'
+}
+
 // ── Prior-work short circuit ────────────────────────────────
 if (discovery.priorWork) {
   const metCount = discovery.priorWork.acStatus.filter(a => a.status === 'MET').length
@@ -551,14 +562,15 @@ Report what you fixed.
 phase('Commit')
 log('Quinn local passed — committing code')
 
+const commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
+
 const commitResult = await agent(`
 Commit and push the fix for issue #${ISSUE}:
-1. cd ${PROJECT_ROOT}
-2. git checkout -b ${ISSUE}-fix 2>/dev/null || git checkout ${ISSUE}-fix
-3. git add -A
-4. git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
-5. git push -u origin ${ISSUE}-fix
-6. Report: branch name, commit SHA (git rev-parse --short HEAD)
+1. cd ${commitDir}
+2. git add -A
+3. git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
+4. git push -u origin HEAD
+5. Report: branch name (git branch --show-current), commit SHA (git rev-parse --short HEAD)
 `, { label: 'commit', phase: 'Commit', schema: {
   type: 'object',
   properties: {

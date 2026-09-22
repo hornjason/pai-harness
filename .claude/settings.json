@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Read(/Users/jhorn/Projects/rungate/.claude/**)",
+      "Bash(bun *)",
+      "Bash(bun test *)",
+      "Bash(bunx *)",
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(make *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(mkdir *)",
+      "Bash(curl *)"
+    ]
+  }
+}

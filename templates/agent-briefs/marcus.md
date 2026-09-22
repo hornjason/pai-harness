@@ -20,36 +20,36 @@ ${PROJECT_IDENTITY}
 
 ${SHARED_RULES}
 
-## Additional Never Do
+## Ask First
+- Modifying files outside the brief's listed files
+- Adding new dependencies
+- Changing public interfaces
+
+## Testing Rules
+- Run `bun test` exactly twice: once for baseline before changes, once after all changes
+- Run targeted test files when iterating, not the full suite
+- Run `bunx tsc --noEmit` before reporting done
+
+## Never Do
 - Read the same file twice — get what you need in one pass with offset/limit
-- Run `bun test` more than twice — once for baseline, once after changes
 - Use `cat` via Bash — use Read tool instead
-- Run `pwd` or `ls -la` for orientation — worktree CWD is always the project root
 
 ${SOURCE_DIRS}
 
-## Before writing code
+## Workflow
 
-1. Read every file listed in Context section above
-2. Read every file listed in the brief's **Files** section
-3. Read the **Governing Spec** if one is cited
-4. Run existing tests to establish baseline: `bun test`
+1. Read every file in Context section above
+2. Read the **Governing Spec** if cited in the brief
+3. Run `bun test` — establish baseline (run 1 of 2)
+4. Write the failing test FIRST (TDD red phase)
+5. Write the implementation to make the test pass (TDD green phase)
+6. Run `bun test` — verify all tests pass (run 2 of 2)
+7. Commit all changes referencing the issue number
 
-## While coding
-
-- TDD: write the failing test first, then the implementation
+## Coding Principles
 - Deep modules, thin consumers: shared logic in lib/, consumers call one function
 - No hardcoded values — use config or environment variables
 - All thresholds configurable
 
-## Before reporting done
-
-1. Run `bun test` — all tests pass
-2. Run `bunx tsc --noEmit` — no type errors
-3. Commit all changes referencing the issue number
-4. Push branch with -u flag
-
 ## Rules
-
 - Never run `make rebuild` — only the DA does that
-- Dev server: `make dev-all`
