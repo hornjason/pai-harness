@@ -5,14 +5,14 @@
 Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes — fixed with briefedAgent() that reads briefs from config. (2) Discovery agent had no brief, did 51 calls — created discovery.md, dropped to 22 calls. (3) Marcus scored F(27%) on directive compliance — hill climbed to B(80%) in 5 iterations by parsing brief Context section and generating explicit Read steps in prompt. (4) Key insight: explicit numbered Read steps in prompt >> 'read Context section' >> brief-only. (5) Ship workflow worktree bug: Quinn can't see Marcus's worktree changes. (6) Built transcript auditor + test-brief CLI for mechanical compliance checking. (7) Cross-referenced agnix/RepoRails with transcript auditor — tools grade text quality, auditor grades behavior, cross-reference shows which instructions fail and why (position, not wording). (8) Published 9 issues (#550-#558) for Phase F/G/H + brief compliance.
 
 **Next priorities:**
-1. P0: Wire briefedAgent() Context parser (SC-406) — parse brief Context section at prompt-build time, generate explicit Read steps. Hill climb proved this: F(27%)→B(80%). Without this, agents don't read the right files. No issue yet — create one
-2. P0: Fix ship workflow worktree bug — Quinn validates main, can't see Marcus's worktree. Marcus's changes invisible until commit. Ship #550 failed here. No issue yet — create one
-3. P1: BRIEF COMPLIANCE (#558, SC-400–SC-409): test-brief CLI, compliance pre-flight gate in ship workflow, behavioral canary tests, standard tasks per role
-4. P2: CONFIG-DRIVEN-TESTING Phase F+G+H (#550–#557, SC-379–SC-399): Matcher registry config, create-sc CLI, audit-specs --fix, flip all specs to strict. Blocks new spec work
-5. P3: AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize remaining 4 agent brief templates (discovery+marcus done, quinn/rook/serena/aditi remaining)
-6. P4: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec
-7. P5: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines). Can parallel with scaffold decomp
-8. P6: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates. Audit-first, then code
+1. P0: Build DA enforcement hooks for consumer projects — PreToolUse file-scope gate + Agent() delegation check. Council consensus: hooks as mechanical floor, /ship for workflow, CLAUDE.md behavioral only.
+2. P0: Verify #538 template extraction landed cleanly — v2 agent reported complete but needs verification on main
+3. P1: BRIEF COMPLIANCE (#558, SC-400–SC-409): test-brief CLI, compliance pre-flight gate, behavioral canary tests
+4. P1: Build /da-compliance skill — audit DA session transcripts against rules, scoring dashboard
+5. P2: CONFIG-DRIVEN-TESTING Phase F+G+H (#550–#557, SC-379–SC-399): Matcher registry, create-sc CLI, audit-specs --fix
+6. P3: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
+7. P4: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
+8. P5: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -53,7 +53,7 @@ Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes
 | ⬜ | SC-395 | Consumers get identical create-spec validation |
 | ⬜ | SC-398 | All RunGate specs at compliance: strict |
 
-## ⬜ Brief Compliance (#558) (NOT STARTED)
+## 🔄 Brief Compliance (#558) (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
@@ -63,7 +63,7 @@ Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes
 | ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
 | ⬜ | SC-404 | Hill climb mode: 5 iterations max |
 | ⬜ | SC-405 | All 6 briefs score ≥80% before shipping |
-| ⬜ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
+| ✅ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
 | ⬜ | SC-407 | Compliance pre-flight gate in ship workflow |
 | ⬜ | SC-408 | Standard tasks per role defined in config |
 | ⬜ | SC-409 | Behavioral canary: read ≠ followed verification |
@@ -120,6 +120,19 @@ Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes
 | ⬜ | SC-378 | No implicit state passing |
 
 ---
+
+**Session 2026-09-22 session 5:**
+- Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned
+- Merged #560 worktree fix (70ed812), #559 briefedAgent parser (0671786), combined (86181db)
+- Fixed 3 pre-existing test failures ST-6, SC-140, SC-145 (d821e53) — suite green 955/0
+- Created issues #559, #560, #561. Wrote PARALLEL-AGENT-COORDINATION-SPEC (SC-410–415)
+- DA self-audit: F(40%), 12/20 rules violated. Hill climb 4 iterations: CLAUDE.md procedural rules proven ineffective
+- Key finding: behavioral rules work in CLAUDE.md, procedural rules do NOT — model prioritizes task over system context
+- Council (4 members, 2 rounds): hooks as enforcement floor, /ship for workflow, CLAUDE.md behavioral only
+- Rewrote global CLAUDE.md: 91→33 lines, 7 behavioral rules. Procedural rules dropped.
+- Rewrote project CLAUDE.md: 6 project-specific rules as guidance
+- Decision: RunGate exempt from harness enforcement (bootstrap problem)
+- Mid-session rule refresh via Bash cat works — Read tool blocks unchanged files
 
 **Session 2026-09-22 session 4:**
 - Ship workflow dogfood: 3 bugs found (process.env, agentType, unnamed discovery)
