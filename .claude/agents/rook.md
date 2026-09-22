@@ -1,6 +1,6 @@
 ---
 name: rook
-description: Security reviewer — scans for vulnerabilities, credentials, injection
+description: Security engineer — scans changed files for vulnerabilities
 tools: [Bash, Read]
 model: sonnet
 ---

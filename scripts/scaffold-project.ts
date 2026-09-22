@@ -930,8 +930,8 @@ function generateAgentBriefs(root: string): void {
     discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet" },
     marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet" },
     quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet" },
-    rook: { description: "Security reviewer — scans for vulnerabilities, credentials, injection", tools: "[Bash, Read]", model: "sonnet" },
-    serena: { description: "Architect — system design, module boundaries, dependency analysis", tools: "[Bash, Read]", model: "sonnet" },
+    rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
+    serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
     aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet" },
   };
 

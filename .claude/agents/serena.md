@@ -1,6 +1,6 @@
 ---
 name: serena
-description: Architect — system design, module boundaries, dependency analysis
+description: Software architect — structural decisions, ADRs, module boundary review
 tools: [Bash, Read]
 model: sonnet
 ---
