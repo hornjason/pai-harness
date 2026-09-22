@@ -1,8 +1,10 @@
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/AGENTS.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/PROJECT-STATE.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/prompts/coding-principles.md"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/prompts/testing-strategy.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/specs/CONFIG-DRIVEN-TESTING-SPEC.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"grep -r matchPattern lib/"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/lib/conformity.ts"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/project/lib/conformity.ts","old_string":"old","new_string":"new"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"bun test"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"bunx tsc --noEmit"}}]}}

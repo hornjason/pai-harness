@@ -7,12 +7,35 @@
     "agents": "AGENTS.md"
   },
   "roles": {
-    "discovery": { "brief": ".claude/agents/discovery.md" },
-    "marcus": { "brief": ".claude/agents/marcus.md", "isolation": "worktree" },
-    "quinn": { "brief": ".claude/agents/quinn.md", "isolation": "worktree" },
-    "rook": { "brief": ".claude/agents/rook.md", "isolation": "worktree" },
-    "serena": { "brief": ".claude/agents/serena.md", "isolation": "worktree" },
-    "aditi": { "brief": ".claude/agents/aditi.md", "isolation": "worktree" }
+    "discovery": {
+      "brief": ".claude/agents/discovery.md",
+      "standardTask": "Scan the codebase and identify all specs, their SCs, and current test coverage"
+    },
+    "marcus": {
+      "brief": ".claude/agents/marcus.md",
+      "isolation": "worktree",
+      "standardTask": "Add config/test.json with {name: test} and write a unit test for it"
+    },
+    "quinn": {
+      "brief": ".claude/agents/quinn.md",
+      "isolation": "worktree",
+      "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence"
+    },
+    "rook": {
+      "brief": ".claude/agents/rook.md",
+      "isolation": "worktree",
+      "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection"
+    },
+    "serena": {
+      "brief": ".claude/agents/serena.md",
+      "isolation": "worktree",
+      "standardTask": "Review the scaffold-project.ts architecture and propose decomposition into modules"
+    },
+    "aditi": {
+      "brief": ".claude/agents/aditi.md",
+      "isolation": "worktree",
+      "standardTask": "Design the CLI output format for test-brief compliance report with accessibility"
+    }
   },
   "consumers": [],
   "pages": {}
