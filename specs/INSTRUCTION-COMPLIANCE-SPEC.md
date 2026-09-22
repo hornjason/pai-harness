@@ -261,6 +261,12 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [ ] SC-293: SPEC-TEMPLATE.md documents all matchable SC patterns — updated in same commit as matchPattern changes
 - [x] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
 - [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern, hand-written tests deleted
+- [ ] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score
+- [ ] SC-401: Directive extractor parses brief for actionable instructions (Read X, Run Y, Never Z) — no manual directive list
+- [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive
+- [ ] SC-403: Cross-reference report shows directive text, file position, RepoRails score, and transcript compliance side by side
+- [ ] SC-404: Hill climb mode runs test-brief up to 5 iterations — tweaks brief between runs using 7 compliance factors, stops when target score reached
+- [ ] SC-405: All 6 agent briefs score ≥80% directive compliance on standard task before shipping through harness
 
 ## Baseline (2026-09-20)
 

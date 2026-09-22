@@ -28,6 +28,9 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 | D-5 | matchPattern() fallthrough is a test failure in strict mode (deferred) | Requires behavioral SCs to be classified and excluded first. Enable after D-6 lands |
 | D-6 | Behavioral SCs route to transcript auditor, not file matchers | Runtime behavior ("session-end checks for X") verified by SESSION-AUDIT-SPEC tooling, not matchPattern(). Rewrite hook-wiring SCs as static checks where the artifact exists |
 | D-7 | Matcher registry config is single source of truth for all patterns | One config drives matchPattern(), SPEC-TEMPLATE, create-spec, audit tools, and consumer extensions. No manual sync between code and documentation |
+| D-8 | SCs are structured data, not freeform prose | Agents are the primary spec authors. A CLI tool (`rungate create-sc`) accepts pattern + params and generates the SC text. The tool carries the knowledge — agents don't need pattern docs in context. Guaranteed matchable by construction |
+| D-9 | `rungate audit-specs --fix` migrates legacy SCs | Existing specs (RunGate and consumers) have freeform SCs written before enforcement. The audit tool classifies each SC, proposes a matchable rewrite, and applies it in-place. Human confirms ambiguous cases |
+| D-10 | Permissive → strict is a per-spec gate, not a global switch | Each spec flips to `compliance: strict` only after audit-specs reports 100% matched. Prevents partial migration from breaking the suite |
 
 ## Target State
 
@@ -37,6 +40,9 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 4. Behavioral SCs are classified and routed to SESSION-AUDIT-SPEC transcript auditor
 5. Golden fixture has a staleness check — SCs referencing files the fixture doesn't cover are red
 6. Hook-wiring SCs rewritten as static checks where the artifact exists (e.g., "hook file contains [script-name]")
+7. SCs are created via `rungate create-sc` CLI — agents pick a pattern + params, tool generates matchable SC text. No freeform prose
+8. Legacy specs migrated via `rungate audit-specs --fix` — all existing SCs converted to matchable patterns or tagged behavioral
+9. All testable specs at `compliance: strict` — zero unmatched SCs anywhere
 
 ## New Matchers Required
 
@@ -71,9 +77,16 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-379: Matcher registry config exists listing all patterns with name, syntax, example, and notes
 - [ ] SC-380: matchPattern() reads matcher config to dispatch — no hardcoded pattern branches
 - [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config
-- [ ] SC-382: create-spec.ts shows available patterns from matcher config when creating specs
-- [ ] SC-383: `rungate audit-sc-patterns` reads matcher config, classifies every SC as matched/unmatched/behavioral
+- [ ] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite
+- [ ] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
 - [ ] SC-384: Consumers can extend matcher config with custom matchers for their domain
+- [ ] SC-393: `rungate audit-specs --fix` rewrites unmatched SCs in-place to matchable patterns — flags ambiguous cases for human review
+- [ ] SC-394: Scaffold runs `rungate audit-specs` post-generation — every generated spec has 100% matchable SCs
+- [ ] SC-395: Consumers running `bunx rungate create-spec` get SC validation identical to RunGate's own — same matchers, same enforcement
+- [ ] SC-396: `rungate create-sc` CLI accepts `--pattern` and `--params` — generates SC text from structured input, no freeform prose
+- [ ] SC-397: `rungate create-sc --list` shows all available patterns with syntax and examples from matcher registry config
+- [ ] SC-398: All RunGate specs at `compliance: strict` after audit-specs --fix migration — zero unmatched SCs
+- [ ] SC-399: AGENTS.md Commands table includes `rungate create-sc` — one-line instruction, no pattern docs needed in agent context
 
 ## Implementation
 
@@ -108,9 +121,25 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 1. Define matcher config format (SC-379) — JSON file listing all patterns with name, syntax, example, notes
 2. Refactor matchPattern() to read from config (SC-380) — dispatch by config, not hardcoded branches
 3. Auto-generate SPEC-TEMPLATE pattern reference from config (SC-381)
-4. Wire create-spec.ts to show patterns from config (SC-382)
-5. Build `rungate audit-sc-patterns` CLI command (SC-383)
+4. Wire create-spec.ts to validate SCs at write time (SC-382) — block save if unmatched
+5. Build `rungate audit-specs` CLI command with `--fix` auto-rewrite (SC-383, SC-393)
 6. Document consumer extension point for custom matchers (SC-384)
+
+### Phase G: Structured SC Authoring (FOUNDATIONAL — before other specs ship)
+1. Build `rungate create-sc` CLI — pattern + params input, SC text output (SC-396)
+2. `--list` shows patterns from matcher registry (SC-397)
+3. Wire into create-spec.ts — SC creation goes through create-sc, not freeform text (SC-382)
+4. Add to AGENTS.md Commands table (SC-399)
+5. Verify: agent creating a spec never writes raw SC text
+
+### Phase H: Legacy Migration
+1. Build `rungate audit-specs` — classify all SCs as matched/unmatched/behavioral (SC-383)
+2. Add `--fix` mode — propose and apply matchable rewrites, flag ambiguous for review (SC-393)
+3. Run `--fix` on all RunGate specs — convert remaining unmatched SCs
+4. Wire scaffold to run audit-specs post-generation (SC-394)
+5. Ensure consumers get identical tooling via `bunx rungate` (SC-395)
+6. Flip each spec to `compliance: strict` as it reaches 100% matched (SC-398)
+7. Verify: zero unmatched SCs in any testable RunGate spec
 
 ## Cautions
 

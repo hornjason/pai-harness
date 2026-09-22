@@ -5,12 +5,12 @@
 Config-driven testing migration complete (Phases A-E). 19 matchers in conformity engine. Phase tests migrated to thin consumers (2,463→1,125 lines). Scaffold fixed: prompt inlining→routing tables (briefs 3,936→483 lines). All template improvements baked into scaffold template. Suite: 984 tests, 931 pass, 0 fail. Ship workflow dogfood: fixed process.env crash, fixed agentType crash (workflows can't resolve project-local agents), added config-driven role→brief mapping in rungate.json, built transcript auditor (scripts/audit-transcript.ts), created discovery.md agent brief.
 
 **Next priorities:**
-1. AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize agent brief templates to markdown files with ${VAR} placeholders
-2. SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec
-3. HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines). Can parallel with scaffold decomp
-4. GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates. Audit-first, then code
-5. Merge pending worktrees (SC-293, SC-302) — refactor has landed, safe to merge
-6. Close Phase 1.5 — SC-293 and SC-295 still open
+1. CONFIG-DRIVEN-TESTING Phase F+G+H (SC-379–SC-399): FOUNDATIONAL — structured SC authoring, audit-specs --fix, legacy migration, flip to strict. Must land before other specs ship or SCs will be unenforceable
+2. AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357): Externalize agent brief templates to markdown files with ${VAR} placeholders
+3. SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). Depends on template spec
+4. HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines). Can parallel with scaffold decomp
+5. GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates. Audit-first, then code
+6. Merge pending worktrees (SC-293, SC-302) — refactor has landed, safe to merge
 
 ## ⬜ Phase 0+1 — Scaffold + Knowledge Extraction (NOT STARTED)
 

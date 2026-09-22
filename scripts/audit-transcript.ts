@@ -250,6 +250,28 @@ function gradeRules(
     weight: 5,
   });
 
+  // R10: Code agents read prompts/ methodology files before writing code
+  if (edits.length > 0 || writes.length > 0) {
+    const promptReads = reads.filter((r) => r.includes("prompts/"));
+    results.push({
+      rule: "Read prompts/ before writing code",
+      pass: promptReads.length > 0,
+      detail:
+        promptReads.length > 0
+          ? `${promptReads.length} prompt(s) read: ${promptReads.map((r) => basename(r)).join(", ")}`
+          : "No prompts/ files read — coding-principles.md, testing-strategy.md etc. skipped",
+      weight: 15,
+    });
+  }
+
+  // R11: Utility agents (≤3 calls) exempt from AGENTS.md/PROJECT-STATE rules
+  if (totalCalls <= 3) {
+    const agentsIdx = results.findIndex((r) => r.rule === "Read AGENTS.md in first 5 calls");
+    if (agentsIdx >= 0) { results[agentsIdx].pass = true; results[agentsIdx].detail = "Exempt (utility agent, ≤3 calls)"; }
+    const projIdx = results.findIndex((r) => r.rule === "Read PROJECT-STATE early (first 10 calls)");
+    if (projIdx >= 0) { results[projIdx].pass = true; results[projIdx].detail = "Exempt (utility agent, ≤3 calls)"; }
+  }
+
   return results;
 }
 
