@@ -5,7 +5,7 @@
 Session 4 dogfood findings: (1) Workflows can't resolve project-local agentTypes — fixed with briefedAgent() that reads briefs from config. (2) Discovery agent had no brief, did 51 calls — created discovery.md, dropped to 22 calls. (3) Marcus scored F(27%) on directive compliance — hill climbed to B(80%) in 5 iterations by parsing brief Context section and generating explicit Read steps in prompt. (4) Key insight: explicit numbered Read steps in prompt >> 'read Context section' >> brief-only. (5) Ship workflow worktree bug: Quinn can't see Marcus's worktree changes. (6) Built transcript auditor + test-brief CLI for mechanical compliance checking. (7) Cross-referenced agnix/RepoRails with transcript auditor — tools grade text quality, auditor grades behavior, cross-reference shows which instructions fail and why (position, not wording). (8) Published 9 issues (#550-#558) for Phase F/G/H + brief compliance.
 
 **Next priorities:**
-1. P0: Build DA enforcement hooks for consumer projects — PreToolUse file-scope gate + Agent() delegation check. Council consensus: hooks as mechanical floor, /ship for workflow, CLAUDE.md behavioral only.
+1. P0: DA-COMPLIANCE-SPEC — formalize eval criteria, wire into audit-transcript, build /da-compliance skill (SC-416–SC-422). Do this BEFORE shipping other issues so we can grade the runs.
 2. P0: Verify #538 template extraction landed cleanly — v2 agent reported complete but needs verification on main
 3. P1: BRIEF COMPLIANCE (#558, SC-400–SC-409): test-brief CLI, compliance pre-flight gate, behavioral canary tests
 4. P1: Build /da-compliance skill — audit DA session transcripts against rules, scoring dashboard

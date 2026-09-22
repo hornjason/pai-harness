@@ -1,7 +1,7 @@
 {
   "updated": "2026-09-22",
   "priorities": [
-    "P0: Build DA enforcement hooks for consumer projects — PreToolUse file-scope gate + Agent() delegation check. Council consensus: hooks as mechanical floor, /ship for workflow, CLAUDE.md behavioral only.",
+    "P0: DA-COMPLIANCE-SPEC — formalize eval criteria, wire into audit-transcript, build /da-compliance skill (SC-416–SC-422). Do this BEFORE shipping other issues so we can grade the runs.",
     "P0: Verify #538 template extraction landed cleanly — v2 agent reported complete but needs verification on main",
     "P1: BRIEF COMPLIANCE (#558, SC-400–SC-409): test-brief CLI, compliance pre-flight gate, behavioral canary tests",
     "P1: Build /da-compliance skill — audit DA session transcripts against rules, scoring dashboard",
