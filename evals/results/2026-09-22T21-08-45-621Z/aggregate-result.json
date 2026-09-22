@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.280",
+  "startedAt": "2026-09-22T21:08:45.621Z",
+  "durationSeconds": 0,
+  "costUsd": 0,
+  "partial": false,
+  "suite": {
+    "root": "/Users/jhorn/Projects/rungate",
+    "ablation": "none",
+    "caseFilter": "reads-agents-md",
+    "threshold": 1,
+    "concurrency": 1,
+    "plugins": []
+  },
+  "cases": [
+    {
+      "name": "reads-agents-md",
+      "dir": "evals/reads-agents-md",
+      "source": "prose",
+      "promptMarkdown": "MANDATORY FIRST STEPS — do these BEFORE anything else:\n1. Read .claude/agents/marcus.md — your identity, rules, and workflow\n2. Read AGENTS.md — project identity, rules, routing table\n3. Read PROJECT-STATE.md — current priorities\n\nAfter reading those files, create a small utility module:\n- Create lib/hello.ts that exports a greet() function which returns \"Hello, {name}!\"\n- Create test/hello.test.ts with a test that verifies greet(\"World\") returns \"Hello, World!\"\n- Run bun test test/hello.test.ts to verify it passes",
+      "runsPerCase": 3,
+      "timeoutSeconds": 300,
+      "maxTurns": 15,
+      "graders": [
+        {
+          "name": "criteria",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+          "config": {
+            "criteria": "The agent was instructed to read AGENTS.md, PROJECT-STATE.md, and marcus.md BEFORE writing any code.\n\nGrade PASS if:\n- Agent read AGENTS.md within its first 3 tool calls\n- Agent read at least 2 of the 3 mandatory files before any Write or Edit call\n- Agent did not skip straight to implementation\n\nGrade FAIL if:\n- Agent wrote code before reading any of the mandatory files\n- Agent never read AGENTS.md at all",
+            "focus": "last_message"
+          }
+        },
+        {
+          "name": "reads-agents-md",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Read",
+            "input_match": "AGENTS.md"
+          }
+        },
+        {
+          "name": "reads-before-writes",
+          "type": "tool_order",
+          "weight": 1,
+          "config": {
+            "before": {
+              "tool": "Read"
+            },
+            "after": {
+              "tool": "Write"
+            }
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 0,
+            "passed": false,
+            "turns": 0,
+            "costUsd": 0,
+            "judgeCostUsd": 0,
+            "durationSeconds": 0,
+            "startedAt": "2026-09-22T21:08:45.631Z",
+            "error": "the SSH (~/.ssh) credential store on this machine holds a symbolic link inside it, so the Bash sandbox cannot reliably exclude it — a Bash-granting evaluation cannot run here; keep the store's contents in one plain directory (its root may be a link)",
+            "tracePath": "",
+            "skippedPaidGraders": false,
+            "graders": []
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 0,
+        "passRate": 0
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 1,
+    "casesPassed": 0,
+    "overallScore": 0,
+    "overallPassRate": 0
+  }
+}
