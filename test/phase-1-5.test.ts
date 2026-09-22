@@ -163,3 +163,35 @@ describe("SC-294: directory name validation", () => {
     expect(true).toBe(true);
   });
 });
+
+// ── SC-379: matcher-registry pattern count matches matchPattern branches ──
+
+describe("SC-379: matcher-registry pattern count matches matchPattern source", () => {
+  test("matcher-registry.json pattern count matches matchPattern branch count in source", () => {
+    const registryPath = join(import.meta.dir, "..", "config", "matcher-registry.json");
+    const raw = JSON.parse(readFileSync(registryPath, "utf-8"));
+    const registryCount = raw.patterns.length;
+
+    // Count distinct matcher branches in conformity.ts by looking for return (root) => patterns
+    // Each matcher returns a function of (root) => void or returns null
+    const conformityPath = join(import.meta.dir, "..", "lib", "conformity.ts");
+    const source = readFileSync(conformityPath, "utf-8");
+
+    // Count unique matcher block starts — each pattern ends with "return (root) =>" or "return () =>"
+    // The function has exactly one return null at the end (fallthrough) and one return per pattern
+    const returnPatterns = source.match(/return \(root\) =>|return \(\) =>/g) || [];
+    const sourcePatternCount = returnPatterns.length;
+
+    expect(registryCount).toBe(sourcePatternCount);
+  });
+
+  test("every registry pattern name is unique and non-empty", () => {
+    const registryPath = join(import.meta.dir, "..", "config", "matcher-registry.json");
+    const raw = JSON.parse(readFileSync(registryPath, "utf-8"));
+    const names = raw.patterns.map((p: { name: string }) => p.name);
+    const empty = names.filter((n: string) => !n);
+    expect(empty).toEqual([]);
+    const dupes = names.filter((n: string, i: number) => names.indexOf(n) !== i);
+    expect(dupes).toEqual([]);
+  });
+});
