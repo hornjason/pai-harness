@@ -142,6 +142,18 @@ describe("ST-6: templates/ directory exists for agent brief templates", () => {
   });
 });
 
+describe("ST-8: config/matcher-registry.json exists with pattern entries", () => {
+  test("config/matcher-registry.json exists", () => {
+    expect(existsSync(join(HARNESS_ROOT, "config", "matcher-registry.json"))).toBe(true);
+  });
+
+  test("contains at least 19 pattern entries", () => {
+    const registryPath = join(HARNESS_ROOT, "config", "matcher-registry.json");
+    const raw = JSON.parse(readFileSync(registryPath, "utf-8"));
+    expect(raw.patterns.length).toBeGreaterThanOrEqual(19);
+  });
+});
+
 describe("ST-7: lib/paths.ts exports required functions", () => {
   test("lib/paths.ts exists", () => {
     expect(existsSync(join(HARNESS_ROOT, "lib", "paths.ts"))).toBe(true);
