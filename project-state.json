@@ -20,7 +20,9 @@
     "Do NOT tell agents 'read your Context section' — parse it and generate explicit Read steps",
     "Do NOT write freeform SC text — use create-sc CLI (once built) or matchable patterns from SPEC-TEMPLATE",
     "Do NOT rely on CLAUDE.md for procedural enforcement — use hooks or /ship",
-    "Do NOT let context drift — refresh rules mid-session via Bash cat of CLAUDE.md + AGENTS.md"
+    "Do NOT let context drift — refresh rules mid-session via Bash cat of CLAUDE.md + AGENTS.md",
+    "Do NOT stop the session for a single blocker — log it to the issue, move to next priority, summarize all blockers at session end",
+    "Do NOT ask Jason when the spec has clear ACs — decide, note the decision, keep moving"
   ],
   "phases": [
     {

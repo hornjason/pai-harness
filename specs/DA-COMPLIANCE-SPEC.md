@@ -70,6 +70,31 @@ Invoked via `/da-compliance`. Audits current session against DA criteria:
 3. Report compliance score
 4. Surface worst violations with fix suggestions
 
+## AFK Autonomy
+
+Three blockers prevent autonomous execution. Each has a mechanical fix:
+
+### 1. Permission Prompts
+
+Tool calls that need approval halt the session. Fix: run `/fewer-permission-prompts` to scan transcripts and build allowlists in settings.json. Most prompts are for commands that run every session.
+
+- SC-423: Permission allowlists cover all standard commands (bun test, git, grep, etc.)
+
+### 2. Decision Ambiguity
+
+DA hits a fork and stops to ask instead of deciding. Fix: specs with clear ACs eliminate judgment calls. When ACs don't cover the case, decide conservatively, note the decision in the issue, keep moving.
+
+- SC-424: AFK sessions make decisions when ACs are clear — no stopping to ask
+- SC-425: Decisions made without Jason are logged to the issue with rationale
+
+### 3. Blockers
+
+Something fails and the session stops entirely. Fix: after 3 attempts, log the blocker to the issue, move to the next priority. Summarize all blockers at session end for Jason to review.
+
+- SC-426: Blocked tasks logged to issue after 3 attempts, session moves to next priority
+- SC-427: Session-end summary lists all blockers with status and what was tried
+- SC-428: Blocker summary presented to Jason on next interactive session
+
 ## Success Criteria
 
 - SC-416: Eval criteria table exists per role (DA, Marcus, Quinn) with transcript checks
@@ -79,3 +104,9 @@ Invoked via `/da-compliance`. Audits current session against DA criteria:
 - SC-420: Post-ship audit runs automatically — grades agent transcripts from the ship run
 - SC-421: Directive compliance tracked per-directive across runs (which directives fail most?)
 - SC-422: Brief position optimization — directives that fail move higher in the brief
+- SC-423: Permission allowlists cover all standard commands
+- SC-424: AFK sessions decide when ACs are clear — no stopping to ask
+- SC-425: Decisions made without Jason logged to issue with rationale
+- SC-426: Blocked tasks logged after 3 attempts, session moves on
+- SC-427: Session-end blocker summary
+- SC-428: Blocker summary presented on next interactive session
