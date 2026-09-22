@@ -130,17 +130,16 @@ const MAX_REGRESSIONS = 2
 // Roles from args.roles (passed by skill from rungate.json) or convention fallback.
 const ROLES = parsedArgs.roles || {}
 
-// SC-406: Parse brief Context section at prompt-build time → explicit Read steps
+// SC-406: Brief context paths extracted by a lightweight agent call (no import() in workflow sandbox)
 const CONTEXT_CACHE = {}
 async function loadContextPaths(role, briefPath) {
   if (CONTEXT_CACHE[role]) return CONTEXT_CACHE[role]
-  try {
-    const { parseContextPaths } = await import(`${HARNESS_ROOT}/lib/brief-context-parser.ts`)
-    const { readFileSync } = await import('fs')
-    CONTEXT_CACHE[role] = parseContextPaths(readFileSync(briefPath, 'utf-8'))
-  } catch {
-    CONTEXT_CACHE[role] = []
-  }
+  const result = await agent(`
+Read ${briefPath} and extract ALL file paths from the Context section.
+Return the paths as a JSON object with a "paths" array. Example: {"paths": ["/path/to/file1.md", "/path/to/file2.ts"]}
+If there is no Context section or no paths, return {"paths": []}.
+  `, { label: `ctx-${role}`, schema: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } } }, required: ['paths'] } })
+  CONTEXT_CACHE[role] = (result && result.paths) || []
   return CONTEXT_CACHE[role]
 }
 

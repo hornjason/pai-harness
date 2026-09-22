@@ -67,8 +67,8 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-338: json-has-field matcher exists in matchPattern() for JSON structure assertions
 - [ ] SC-339: scaffold-produces matcher exists — runs scaffold on fixture, checks output file
 - [ ] SC-340: frontmatter-field matcher exists in matchPattern() for YAML frontmatter checks
-- [ ] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
-- [ ] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
+- [x] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
+- [x] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
 - [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests — not migrated
 - [ ] SC-344: Phase-1 test file is ≤200 lines — setup + conformity engine call
 - [ ] SC-345: Every SC in testable specs classified as static or behavioral
