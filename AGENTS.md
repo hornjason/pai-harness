@@ -65,7 +65,7 @@ Read the governing spec BEFORE making changes in that area.
 |------|---------|----------|
 | SESSION-LIFECYCLE-SPEC.md | Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation | yes |
 | harness-automation-matrix.md | Automation strategy — bash scripts vs hooks vs workflows for harness enforcement | yes |
-| PROJECT-STATE.md | PROJECT-STATE | no |
+| PROJECT-STATE.md | TODO — describe what this spec governs | no |
 | HARNESS-GATES.md | Gate definitions — what checks run at each harness gate and their pass/fail criteria | yes |
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |

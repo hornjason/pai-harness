@@ -1267,17 +1267,38 @@ ${identitySection}## Core Principles
   // Load shared rules partial for template variable substitution
   const harnessTemplatesDir = join(__dirname, "..", "templates", "agent-briefs");
   const sharedRulesPath = join(harnessTemplatesDir, "_shared.md");
-  const sharedRules = existsSync(sharedRulesPath) ? readFileSync(sharedRulesPath, "utf-8").trim() : "";
+  let sharedRules = existsSync(sharedRulesPath) ? readFileSync(sharedRulesPath, "utf-8").trim() : "";
+  // Strip frontmatter from partials (hooks may auto-add it)
+  sharedRules = sharedRules.replace(/^---[\s\S]*?---\n*/, "");
+
+  // Agent metadata for frontmatter generation (hooks may overwrite template frontmatter)
+  const agentMeta: Record<string, { description: string; tools: string; model: string }> = {
+    discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet" },
+    marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet" },
+    quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet" },
+    rook: { description: "Security reviewer — scans for vulnerabilities, credentials, injection", tools: "[Bash, Read]", model: "sonnet" },
+    serena: { description: "Architect — system design, module boundaries, dependency analysis", tools: "[Bash, Read]", model: "sonnet" },
+    aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet" },
+  };
 
   // Load template-based briefs from templates/agent-briefs/
   function loadBriefTemplate(name: string): string | null {
     const templatePath = join(harnessTemplatesDir, name);
     if (!existsSync(templatePath)) return null;
     let content = readFileSync(templatePath, "utf-8");
+    // Strip any hook-injected frontmatter
+    content = content.replace(/^---[\s\S]*?---\n*/, "");
+    // Apply variable substitution
     content = content.replace(/\$\{PROJECT_IDENTITY\}/g, identitySection);
     content = content.replace(/\$\{SHARED_RULES\}/g, sharedRules);
     content = content.replace(/\$\{SOURCE_DIRS\}/g, dirList);
     content = content.replace(/\$\{CONSUMERS\}/g, consumerNote);
+    // Prepend correct agent frontmatter
+    const agentName = name.replace(".md", "");
+    const meta = agentMeta[agentName];
+    if (meta) {
+      content = `---\nname: ${agentName}\ndescription: ${meta.description}\ntools: ${meta.tools}\nmodel: ${meta.model}\n---\n\n${content}`;
+    }
     return content;
   }
 
