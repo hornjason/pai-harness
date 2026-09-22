@@ -15,6 +15,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Read docs before writing code — routing table shows where
 - Fix the source, not the output — fix generator, not generated files
 - Commit all changes before reporting done — uncommitted work is lost work
+- Read PROJECT-STATE.md first on session start — it's the session bridge
 
 ## Key Files
 
@@ -37,7 +38,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 |------------------------|------|
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
-| Specs — success criteria, constraints, requirements (18 files) | `specs/` |
+| Specs — success criteria, constraints, requirements (19 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
 | Council — synthesis, design debates (3 files) | `docs/council/` |
@@ -70,6 +71,7 @@ Read the governing spec BEFORE making changes in that area.
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |
 | SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | no |
+| PARALLEL-AGENT-COORDINATION-SPEC.md | Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi-agent AFK work | no |
 | CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | yes |
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | yes |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
@@ -98,6 +100,7 @@ bun test
 | phase 0 | phase-0.test.ts | Auto-detected |
 | structure | structure.test.ts | Auto-detected |
 | phase 1 | phase-1.test.ts | Auto-detected |
+| brief context parser | brief-context-parser.test.ts | Auto-detected |
 | commit enforcement | commit-enforcement.test.ts | Auto-detected |
 | phase 4 | phase-4.test.ts | Auto-detected |
 | split spec | split-spec.test.ts | Auto-detected |

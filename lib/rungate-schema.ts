@@ -43,6 +43,7 @@ const ProjectHarnessSchema = z.object({
   pages: z.record(z.string()).optional(),
   codeCommittedPaths: z.array(z.string()).optional(),
   consumers: z.array(z.string()).optional(),
+  promptKeywords: z.record(z.array(z.string())).optional(),
   contextDocs: z.record(z.string().nullable()).optional(),
   mcp: z.array(McpServerSchema).optional(),
   research: z.array(ResearchToolSchema).optional(),
