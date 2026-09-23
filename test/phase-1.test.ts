@@ -10,27 +10,21 @@ const OUTPUT = "/tmp/rungate-phase1-test";
 const HARNESS = resolve(import.meta.dir, "..");
 const SCAFFOLD = join(HARNESS, "scripts", "scaffold-project.ts");
 
-function runConformitySubprocess(root: string, suiteFilter?: string): { pass: number; fail: number; output: string } {
+function parseResults(out: string) {
+  return { pass: parseInt(out.match(/(\d+) pass/)?.[1] || "0"), fail: parseInt(out.match(/(\d+) fail/)?.[1] || "0"), output: out };
+}
+
+function runConformitySubprocess(root: string, suiteFilter?: string) {
   const tmpTest = join(root, "_conformity-check.test.ts");
-  const importPath = join(HARNESS, "lib", "conformity");
-  const suiteImports = suiteFilter || "runDocHygiene, runSpecDiscovery";
-  writeFileSync(tmpTest, `
-    import { ${suiteImports} } from "${importPath}";
-    const ROOT = "${root}";
-    ${suiteImports.split(",").map(s => `${s.trim()}(ROOT);`).join("\n    ")}
-  `);
+  const suites = suiteFilter || "runDocHygiene, runSpecDiscovery";
+  writeFileSync(tmpTest, `import { ${suites} } from "${join(HARNESS, "lib", "conformity")}";\n${suites.split(",").map(s => `${s.trim()}("${root}");`).join("\n")}`);
   try {
-    const output = execSync(`bun test ${tmpTest} 2>&1`, { encoding: "utf-8", timeout: 30000 });
+    const out = execSync(`bun test ${tmpTest} 2>&1`, { encoding: "utf-8", timeout: 30000 });
     try { rmSync(tmpTest); } catch {}
-    const passMatch = output.match(/(\d+) pass/);
-    const failMatch = output.match(/(\d+) fail/);
-    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output };
+    return parseResults(out);
   } catch (e: any) {
     try { rmSync(tmpTest); } catch {}
-    const out = (e.stdout || "") + (e.stderr || "");
-    const passMatch = out.match(/(\d+) pass/);
-    const failMatch = out.match(/(\d+) fail/);
-    return { pass: passMatch ? parseInt(passMatch[1]) : 0, fail: failMatch ? parseInt(failMatch[1]) : 0, output: out };
+    return parseResults((e.stdout || "") + (e.stderr || ""));
   }
 }
 
