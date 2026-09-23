@@ -2,20 +2,19 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.
+Session 8 (AFK → interactive) — Prior-branch detection, worktree cleanup, issue triage, first harness dogfood.
 
 **Shipped this session:**
 - lib/prior-branch.ts (#563): detects existing branches, word-boundary matching, isolated temp worktree tests
 - lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (uncommitted + merge checks)
-- ship.js: prior-branch detection + worktree cleanup integrated
-- hooks/StaleTTLCleanup: worktree pruning on session start
-- /simplify review applied: 5 findings fixed
+- ship.js + prove.js: import() → agent/bun-e (Workflow sandbox fix)
+- matchPattern() config-driven dispatch (#551, SC-380)
+- SPEC-TEMPLATE auto-generated from matcher registry (#552, SC-381)
+- First harness dogfood: #1447 → ALREADY_SHIPPED, all ACs MET
 
-**Issues closed this session:** #559, #560, #536, #550, #514, #513 (7 total)
+**Issues closed this session:** #559, #560, #536, #550, #514, #513, #563, #564, #551, #552, #1447 (11 total)
 
-**Key finding:** #514 and #513 (harness blockers) were already implemented — code shipped in prior sessions, issues just needed closing. No remaining blockers for consumer project dogfooding.
-
-**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4
+**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4, 9d3781a, 2984e35, b534838, 1d0a50a, 4b8530f, 08cc2b7
 
 **Test suite: 1,062 pass, 0 fail across 57 files**
 
@@ -148,6 +147,12 @@ Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.
 - Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)
 - Harness readiness audit: no remaining blockers for consumer project dogfooding
 - Shipped SC-380 (#551): matchPattern() refactored to config-driven dispatch — 19 handlers, 365→14 line body, zero test changes
+- Shipped SC-381 (#552): SPEC-TEMPLATE patterns auto-generated from config/matcher-registry.json
+- Fixed import() sandbox issue in ship.js and prove.js — Workflow sandbox doesn't support import()
+- First harness dogfood: #1447 shipped via ship workflow — ALREADY_SHIPPED path, all 7 ACs MET, prove UNPROVEN
+- Closed #1447 (council fixes) with harness evidence — first cross-repo harness run
+- Dogfood finding: GRADE unreachable on ALREADY_SHIPPED path (by design — no Marcus work to grade)
+- Dogfood finding: need an unimplemented issue to test full pipeline including Marcus briefs + GRADE
 
 **Session 2026-09-22 session 5:**
 - Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned
