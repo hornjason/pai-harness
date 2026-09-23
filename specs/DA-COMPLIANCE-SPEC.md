@@ -75,20 +75,20 @@ specs/DA-COMPLIANCE-SPEC.md   -- this spec: criteria tables + baseline scores
 
 ### Observability — Deterministic Grading + Self-Healing (Council 2026-09-23)
 
-- [ ] SC-423: lib/grade-agents.ts exists
-- [ ] SC-424: lib/grade-agents.ts contains [evaluateCriteria]
-- [ ] SC-425: lib/grade-agents.ts contains [parseToolCalls]
-- [ ] SC-426: workflows/ship.js GRADE phase does not contain [Grade each agent] (LLM prompt removed)
-- [ ] SC-427: workflows/ship-and-heal.js contains [COMPLIANCE_LOW]
-- [ ] SC-428: workflows/ship-and-heal.js contains [gradeResult]
-- [ ] SC-429: lib/observability-types.ts exists
-- [ ] SC-430: lib/observability-types.ts contains [TraceSignal]
-- [ ] SC-431: lib/observability-types.ts contains [fixableBy]
-- [ ] SC-432: gates/prompt-health.ts exists
-- [ ] SC-433: gates/prompt-health.ts contains [agentType]
-- [ ] SC-434: gates/prompt-health.ts has no [transcript] (static only, not runtime)
-- [ ] SC-435: test/grade-agents.test.ts exists
-- [ ] SC-436: workflows/ship-and-heal.js contains [MAX_HEAL_SPAWNS]
+- [ ] SC-437: lib/grade-agents.ts exists
+- [ ] SC-438: lib/grade-agents.ts contains [evaluateCriteria]
+- [ ] SC-439: lib/grade-agents.ts contains [parseToolCalls]
+- [ ] SC-440: workflows/ship.js GRADE phase does not contain [Grade each agent] (LLM prompt removed)
+- [ ] SC-441: workflows/ship-and-heal.js contains [COMPLIANCE_LOW]
+- [ ] SC-442: workflows/ship-and-heal.js contains [gradeResult]
+- [ ] SC-443: lib/observability-types.ts exists
+- [ ] SC-444: lib/observability-types.ts contains [TraceSignal]
+- [ ] SC-445: lib/observability-types.ts contains [fixableBy]
+- [ ] SC-446: gates/prompt-health.ts exists
+- [ ] SC-447: gates/prompt-health.ts contains [agentType]
+- [ ] SC-448: gates/prompt-health.ts has no [transcript] (static only, not runtime)
+- [ ] SC-449: test/grade-agents.test.ts exists
+- [ ] SC-450: workflows/ship-and-heal.js contains [MAX_HEAL_SPAWNS]
 
 ## Grading Scale
 

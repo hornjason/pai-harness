@@ -240,17 +240,17 @@ All design decisions in this spec are backed by research in `docs/research/`:
 
 ## Success Criteria
 
-- [x] SC-240: runTemplateCompliance uses agnix + RepoRails via Bun.spawnSync
-- [x] SC-241: runGeneratedCompliance compares against baseline
-- [x] SC-242: runBehavioralCompliance spawns fresh agent + auditor
-- [x] SC-243: Hill climb loop with max 5 iterations
-- [x] SC-244: 7 compliance factors applied during rewrites
-- [x] SC-245: Compliance surface = 4 file types only
-- [x] SC-246: Escalate to mechanical after 5 failed iterations
-- [x] SC-247: Report to compliance-report.json
-- [x] SC-248: Auditor after every agent
-- [x] SC-249: Agent briefs load with matching agentType
-- [x] SC-250: Five-layer measurement model
+- [x] SC-451: runTemplateCompliance uses agnix + RepoRails via Bun.spawnSync
+- [x] SC-452: runGeneratedCompliance compares against baseline
+- [x] SC-453: runBehavioralCompliance spawns fresh agent + auditor
+- [x] SC-454: Hill climb loop with max 5 iterations
+- [x] SC-455: 7 compliance factors applied during rewrites
+- [x] SC-456: Compliance surface = 4 file types only
+- [x] SC-457: Escalate to mechanical after 5 failed iterations
+- [x] SC-458: Report to compliance-report.json
+- [x] SC-459: Auditor after every agent
+- [x] SC-460: Agent briefs load with matching agentType
+- [x] SC-461: Five-layer measurement model
 - [x] SC-286: resolveAndContain() utility validates all file paths in matchPattern — rejects [../, absolute paths, symlink escape]
 - [ ] SC-287: Unmatched SCs produce FAIL in strict mode (default), WARN only when frontmatter has `compliance: permissive`
 - [x] SC-288: matchPattern supports content-contains — SC bracket-list values [x, y, z] become assertion targets

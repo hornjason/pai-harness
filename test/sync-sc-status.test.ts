@@ -14,6 +14,8 @@ import {
   checkConformitySCs,
   flipCheckboxes,
   generateReport,
+  scopedKey,
+  findDuplicateSCIds,
   type UncheckedSC,
 } from "../scripts/sync-sc-status";
 
@@ -70,11 +72,11 @@ testable: true
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
 
-    // SC-900 and SC-901 should pass (files exist), SC-902 should fail
-    expect(result.passing.has("SC-900")).toBe(true);
-    expect(result.passing.has("SC-901")).toBe(true);
-    expect(result.passing.has("SC-902")).toBe(false);
-    expect(result.failing.has("SC-902")).toBe(true);
+    // SC-900 and SC-901 should pass (files exist), SC-902 should fail — scoped by spec file
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-900"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-901"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-902"))).toBe(false);
+    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-902"))).toBe(true);
   });
 
   test("AC-3: flipCheckboxes flips conformity-passing SCs", () => {
@@ -188,19 +190,12 @@ testable: true
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
 
-    // Only SC-910 passes (AGENTS.md exists)
-    expect(result.passing.has("SC-910")).toBe(true);
-    // SC-911 and SC-912 should NOT be in passing (false positive check)
-    expect(result.passing.has("SC-911")).toBe(false);
-    expect(result.passing.has("SC-912")).toBe(false);
-    expect(result.failing.has("SC-911")).toBe(true);
-    expect(result.failing.has("SC-912")).toBe(true);
-
-    // Verify: 0 false positives
-    const falsePositives = [...result.passing].filter(id =>
-      id === "SC-911" || id === "SC-912"
-    );
-    expect(falsePositives.length).toBe(0);
+    // Only SC-910 passes (AGENTS.md exists) — scoped keys
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-910"))).toBe(true);
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-911"))).toBe(false);
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-912"))).toBe(false);
+    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-911"))).toBe(true);
+    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-912"))).toBe(true);
   });
 
   test("checkConformitySCs returns unmatchable SCs separately", () => {
@@ -209,8 +204,42 @@ testable: true
     ];
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
-    expect(result.unmatchable.has("SC-999")).toBe(true);
-    expect(result.passing.has("SC-999")).toBe(false);
-    expect(result.failing.has("SC-999")).toBe(false);
+    expect(result.unmatchable.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(false);
+    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(false);
+  });
+
+  test("cross-spec isolation: same SC ID in two specs doesn't bleed", () => {
+    mkdirSync(join(FIXTURE_ROOT, "lib"), { recursive: true });
+    writeFileSync(join(FIXTURE_ROOT, "lib", "real-module.ts"), "export function doThing() {}\n");
+
+    const unchecked: UncheckedSC[] = [
+      { id: "SC-500", statement: "AGENTS.md exists", specFile: "SPEC-A.md" },
+      { id: "SC-500", statement: "lib/nonexistent-file.ts exists", specFile: "SPEC-B.md" },
+    ];
+
+    const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
+
+    // SC-500 passes in SPEC-A (AGENTS.md exists) but fails in SPEC-B (file doesn't exist)
+    expect(result.passing.has(scopedKey("SPEC-A.md", "SC-500"))).toBe(true);
+    expect(result.passing.has(scopedKey("SPEC-B.md", "SC-500"))).toBe(false);
+    expect(result.failing.has(scopedKey("SPEC-B.md", "SC-500"))).toBe(true);
+  });
+
+  test("findDuplicateSCIds detects duplicates across specs", () => {
+    const scs: UncheckedSC[] = [
+      { id: "SC-100", statement: "a", specFile: "SPEC-A.md" },
+      { id: "SC-100", statement: "b", specFile: "SPEC-B.md" },
+      { id: "SC-200", statement: "c", specFile: "SPEC-A.md" },
+    ];
+
+    const dupes = findDuplicateSCIds(scs);
+    expect(dupes.size).toBe(1);
+    expect(dupes.get("SC-100")).toEqual(["SPEC-A.md", "SPEC-B.md"]);
+    expect(dupes.has("SC-200")).toBe(false);
+  });
+
+  test("scopedKey format is specFile::id", () => {
+    expect(scopedKey("MY-SPEC.md", "SC-123")).toBe("MY-SPEC.md::SC-123");
   });
 });

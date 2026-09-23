@@ -83,8 +83,34 @@ export interface ConformityResult {
 }
 
 /**
+ * Composite key scoped to spec file — prevents cross-spec ID collisions.
+ */
+export function scopedKey(specFile: string, id: string): string {
+  return `${specFile}::${id}`;
+}
+
+/**
+ * Detect duplicate SC IDs across specs.
+ */
+export function findDuplicateSCIds(scs: UncheckedSC[]): Map<string, string[]> {
+  const idToSpecs = new Map<string, string[]>();
+  for (const sc of scs) {
+    if (sc.specFile.includes("SPEC-TEMPLATE")) continue;
+    const specs = idToSpecs.get(sc.id) || [];
+    if (!specs.includes(sc.specFile)) specs.push(sc.specFile);
+    idToSpecs.set(sc.id, specs);
+  }
+  const duplicates = new Map<string, string[]>();
+  for (const [id, specs] of idToSpecs) {
+    if (specs.length > 1) duplicates.set(id, specs);
+  }
+  return duplicates;
+}
+
+/**
  * AC-2: For each unchecked SC without a hand-written test, runs matchPattern()
  * and executes the returned assertion against the project root.
+ * Results are scoped by spec file to prevent cross-spec ID collisions.
  */
 export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): ConformityResult {
   const passing = new Set<string>();
@@ -94,17 +120,18 @@ export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): C
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
     const assertion = matchPattern({ id: sc.id, statement, specFile: sc.specFile });
+    const key = scopedKey(sc.specFile, sc.id);
 
     if (!assertion) {
-      unmatchable.add(sc.id);
+      unmatchable.add(key);
       continue;
     }
 
     try {
       assertion(root);
-      passing.add(sc.id);
+      passing.add(key);
     } catch {
-      failing.add(sc.id);
+      failing.add(key);
     }
   }
 
@@ -180,12 +207,22 @@ if (isDirectExecution) {
   const scIds = new Set(unchecked.map(s => s.id));
   console.log(`Found ${unchecked.length} unchecked SCs across specs`);
 
+  // Step 0: Detect duplicate SC IDs across specs
+  const duplicates = findDuplicateSCIds(unchecked);
+  if (duplicates.size > 0) {
+    console.log(`\n⚠️  Duplicate SC IDs found across specs:`);
+    for (const [id, specs] of duplicates) {
+      console.log(`  ${id}: ${specs.join(", ")}`);
+    }
+    console.log(`  Fix: renumber duplicates so each SC ID is unique across all specs.\n`);
+  }
+
   // Step 1: Find SCs covered by hand-written test files
   const testFileMap = findTestFilesForSCs(scIds);
   const testedSCs = new Set(Array.from(testFileMap.values()).flat());
   const untestedSCs = unchecked.filter(s => !testedSCs.has(s.id));
 
-  // Step 2: Run hand-written tests
+  // Step 2: Run hand-written tests — scope by spec file
   const passingSCs = new Set<string>();
   const failingSCs = new Set<string>();
 
@@ -194,31 +231,42 @@ if (isDirectExecution) {
     const passed = runTestFile(testFile);
     if (passed) {
       console.log(` (${scs.length} SCs)`);
-      scs.forEach(sc => passingSCs.add(sc));
+      for (const scId of scs) {
+        for (const sc of unchecked.filter(u => u.id === scId)) {
+          passingSCs.add(scopedKey(sc.specFile, sc.id));
+        }
+      }
     } else {
       console.log(` (${scs.join(", ")})`);
-      scs.forEach(sc => failingSCs.add(sc));
+      for (const scId of scs) {
+        for (const sc of unchecked.filter(u => u.id === scId)) {
+          failingSCs.add(scopedKey(sc.specFile, sc.id));
+        }
+      }
     }
   }
 
   // Remove any SCs that failed from passing set
-  for (const sc of failingSCs) passingSCs.delete(sc);
+  for (const key of failingSCs) passingSCs.delete(key);
 
   // Step 3: AC-2 — Run conformity assertions on untested SCs
   if (untestedSCs.length > 0) {
     console.log(`\nChecking ${untestedSCs.length} untested SCs via conformity engine...`);
     const conformityResult = checkConformitySCs(untestedSCs, ROOT);
 
-    for (const id of conformityResult.passing) {
-      passingSCs.add(id);
-      console.log(`  ${id}: conformity PASS`);
+    for (const key of conformityResult.passing) {
+      passingSCs.add(key);
+      const scId = key.split("::")[1];
+      console.log(`  ${scId}: conformity PASS`);
     }
-    for (const id of conformityResult.failing) {
-      failingSCs.add(id);
-      console.log(`  ${id}: conformity FAIL`);
+    for (const key of conformityResult.failing) {
+      failingSCs.add(key);
+      const scId = key.split("::")[1];
+      console.log(`  ${scId}: conformity FAIL`);
     }
     if (conformityResult.unmatchable.size > 0) {
-      console.log(`  ${conformityResult.unmatchable.size} SCs unmatchable: ${[...conformityResult.unmatchable].join(", ")}`);
+      const ids = [...conformityResult.unmatchable].map(k => k.split("::")[1]);
+      console.log(`  ${conformityResult.unmatchable.size} SCs unmatchable: ${ids.join(", ")}`);
     }
 
     // AC-4: --report flag
@@ -236,15 +284,16 @@ if (isDirectExecution) {
           });
         }
         const coverage = specCoverage.get(sc.specFile)!;
+        const key = scopedKey(sc.specFile, sc.id);
 
         if (testedSCs.has(sc.id)) {
-          if (passingSCs.has(sc.id)) coverage.testedPassing.push(sc.id);
-          else if (failingSCs.has(sc.id)) coverage.testedFailing.push(sc.id);
-        } else if (conformityResult.passing.has(sc.id)) {
+          if (passingSCs.has(key)) coverage.testedPassing.push(sc.id);
+          else if (failingSCs.has(key)) coverage.testedFailing.push(sc.id);
+        } else if (conformityResult.passing.has(key)) {
           coverage.conformityPassing.push(sc.id);
-        } else if (conformityResult.failing.has(sc.id)) {
+        } else if (conformityResult.failing.has(key)) {
           coverage.conformityFailing.push(sc.id);
-        } else if (conformityResult.unmatchable.has(sc.id)) {
+        } else if (conformityResult.unmatchable.has(key)) {
           coverage.unmatchable.push(sc.id);
         }
       }
@@ -259,10 +308,11 @@ if (isDirectExecution) {
     process.exit(0);
   }
 
-  // Group passing SCs by spec file and flip
+  // Group passing SCs by spec file and flip — scoped keys prevent cross-spec bleeding
   const bySpec = new Map<string, string[]>();
   for (const sc of unchecked) {
-    if (passingSCs.has(sc.id)) {
+    const key = scopedKey(sc.specFile, sc.id);
+    if (passingSCs.has(key)) {
       const list = bySpec.get(sc.specFile) || [];
       list.push(sc.id);
       bySpec.set(sc.specFile, list);

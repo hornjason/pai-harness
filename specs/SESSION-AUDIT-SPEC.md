@@ -193,7 +193,7 @@ The auditor MUST read these before producing the report:
 ## Success Criteria
 
 - [ ] SC-321: Session auditor fork produces navigability metrics (direct hits, searches, bounces, wasted reads)
-- [ ] SC-344: Auditor scopes to current session only — not entire conversation history
+- [ ] SC-462: Auditor scopes to current session only — not entire conversation history
 - [ ] SC-322: AGENTS.md rules extracted and checked against session evidence
 - [ ] SC-323: Global CLAUDE.md rules checked against session evidence
 - [ ] SC-324: Delegation matrix scored — project agents vs generic agents
@@ -203,8 +203,8 @@ The auditor MUST read these before producing the report:
 - [ ] SC-328: User corrections counted and categorized
 - [ ] SC-329: Report written to docs/research/
 - [ ] SC-330: Metrics compared to previous session audit — trend tracked
-- [ ] SC-347: Hill climb loop runs: fresh agent → auditor → compare → improve → re-run
-- [ ] SC-348: Collaboration audit runs: fork auditor → agnix + RepoRails → compare → improve
+- [ ] SC-463: Hill climb loop runs: fresh agent → auditor → compare → improve → re-run
+- [ ] SC-464: Collaboration audit runs: fork auditor → agnix + RepoRails → compare → improve
 
 ## Cautions
 

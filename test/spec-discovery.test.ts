@@ -67,6 +67,35 @@ describe("spec-discovery: frontmatter enforcement", () => {
     }
   });
 
+  test("SD-4: No duplicate SC IDs across specs (checkbox definitions)", () => {
+    const scToSpecs = new Map<string, string[]>();
+    const scPattern = /^- \[[ x]\] (SC-\d+):/gm;
+
+    for (const f of specFiles) {
+      // Skip template files
+      if (f.includes("SPEC-TEMPLATE")) continue;
+      const content = readFileSync(join(SPECS_DIR, f), "utf-8");
+      for (const match of content.matchAll(scPattern)) {
+        const id = match[1];
+        const specs = scToSpecs.get(id) || [];
+        if (!specs.includes(f)) specs.push(f);
+        scToSpecs.set(id, specs);
+      }
+    }
+
+    const duplicates: string[] = [];
+    for (const [id, specs] of scToSpecs) {
+      if (specs.length > 1) {
+        duplicates.push(`${id}: ${specs.join(", ")}`);
+      }
+    }
+
+    if (duplicates.length > 0) {
+      console.error(`Duplicate SC IDs:\n  ${duplicates.join("\n  ")}`);
+    }
+    expect(duplicates).toEqual([]);
+  });
+
   test("SD-3: Total claim count across all testable specs is non-zero", () => {
     let totalClaims = 0;
     for (const f of specFiles) {
