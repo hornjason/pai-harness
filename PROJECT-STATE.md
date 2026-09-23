@@ -157,6 +157,16 @@ Session 7 — Three-tier rule enforcement architecture.
 
 ---
 
+**Session 2026-09-23 session 8 (AFK):**
+- Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees) — all already on main
+- lib/prior-branch.ts: detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests
+- lib/worktree-cleanup.ts: safely prunes stale worktrees (checks uncommitted changes + merge status)
+- ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow
+- hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start
+- /simplify review: fixed destructive checkout → temp worktree, collapsed redundant booleans, replaced agent merge with direct spawn, populated filesChanged from git diff
+- Test suite: 1,062 pass, 0 fail across 57 files
+- Commits: 624796b, 2a8a5f3, c04253d
+
 **Session 2026-09-22 session 5:**
 - Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned
 - Merged #560 worktree fix (70ed812), #559 briefedAgent parser (0671786), combined (86181db)
@@ -183,13 +193,4 @@ Session 7 — Three-tier rule enforcement architecture.
 - Published #558: test-brief CLI for isolated agent compliance testing
 - Ship #550 VALIDATE_FAILED: worktree isolation bug — Quinn can't see Marcus's worktree changes
 - agnix+RepoRails: run on all 32 files, 10 HIGH findings. Cross-referenced with transcript for behavioral gaps
-
-**Session 2026-09-21 session 3:**
-- Council reviewed CONFIG-DRIVEN-TESTING-SPEC (3 rounds), revised spec
-- Executed Phases A-E: SC classification, 6 matchers, test migration, staleness check
-- Scaffold fixed: prompt inlining → routing tables (briefs -88%)
-- Audit hill climb: 55%→82% direct hits, 28→3 wasted calls
-- Template improvements baked into scaffold template (model:sonnet, no subagents, AGENTS.md first)
-- Post-migration audit: 3 foundational specs written (scaffold decomp, hooks, gates)
-- AGENT-BRIEF-TEMPLATE-SPEC written (externalize templates from TypeScript)
 

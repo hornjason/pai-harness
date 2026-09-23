@@ -369,6 +369,19 @@
   ],
   "sessions": [
     {
+      "date": "2026-09-23 session 8 (AFK)",
+      "items": [
+        "Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees) — all already on main",
+        "lib/prior-branch.ts: detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests",
+        "lib/worktree-cleanup.ts: safely prunes stale worktrees (checks uncommitted changes + merge status)",
+        "ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow",
+        "hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start",
+        "/simplify review: fixed destructive checkout → temp worktree, collapsed redundant booleans, replaced agent merge with direct spawn, populated filesChanged from git diff",
+        "Test suite: 1,062 pass, 0 fail across 57 files",
+        "Commits: 624796b, 2a8a5f3, c04253d"
+      ]
+    },
+    {
       "date": "2026-09-22 session 5",
       "items": [
         "Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned",
