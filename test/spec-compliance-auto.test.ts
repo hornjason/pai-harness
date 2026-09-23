@@ -18,29 +18,29 @@ describe("auto-spec: ship.js claims from HARNESS-SKILL-CHAIN.md", () => {
     expect(SHIP_JS.toLowerCase()).toContain("gate");
   });
 
-  // Spec line 82: 1. Marcus codes on local dev (make dev-all, :7778 API / :5173 UI)
-  test("AUTO-PORT-3: Port 7778 referenced in SHIP context", () => {
-    expect(SHIP_JS).toContain("7778");
+  // Spec line 82: dev URLs come from project config, not hardcoded
+  test("AUTO-CONFIG-3: API/UI URLs read from project config", () => {
+    expect(SHIP_JS).toContain("projectConfig");
+    expect(SHIP_JS).toContain("apiUrl");
+    expect(SHIP_JS).toContain("uiUrl");
   });
 
-  // Spec line 84: 3. Quinn validates on local dev (:5173 UI, :7778 API)
-  test("AUTO-PORT-4: Port 5173 referenced in SHIP context", () => {
-    expect(SHIP_JS).toContain("5173");
-  });
-
-  // Spec line 84: 3. Quinn validates on local dev (:5173 UI, :7778 API)
+  // Spec line 84: Quinn validates using config-driven URLs
   test("AUTO-QUINN-5: Quinn validates in SHIP", () => {
     expect(SHIP_JS.toLowerCase()).toContain("quinn");
   });
 
-  // Spec line 90: 5. `make test-rebuild` → rebuilds container image from current code, starts on :7776 with seed data
-  test("AUTO-MAKE-7: Spec requires make test-rebuild", () => {
-    expect(SHIP_JS.toLowerCase()).toContain("test-rebuild");
+  // Spec line 90: container rebuild command comes from config
+  test("AUTO-CONFIG-7: Container rebuild is config-driven", () => {
+    expect(SHIP_JS).toContain("containerConfig");
+    expect(SHIP_JS).toContain("rebuildCommand");
   });
 
-  // Spec line 90: 5. `make test-rebuild` → rebuilds container image from current code, starts on :7776 with seed data
-  test("AUTO-PORT-8: Port 7776 referenced in SHIP context", () => {
-    expect(SHIP_JS).toContain("7776");
+  // Spec line 90: container port and hosts come from config
+  test("AUTO-CONFIG-8: Container hosts/port from config", () => {
+    expect(SHIP_JS).toContain("containerConfig");
+    expect(SHIP_JS).toContain("containerPort");
+    expect(SHIP_JS).toContain("containerHosts");
   });
 
   // Spec line 103: 13. **GATE: Ship gate PASS. PR ready for review.**

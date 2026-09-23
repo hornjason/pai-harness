@@ -153,12 +153,10 @@ describe("evidence-requirements: mechanical evidence checks", () => {
     expect(commitSection).toContain("ENV_CHECK_SCHEMA");
   });
 
-  test("ER-1c: Container image rebuild before Quinn container (not just restart)", () => {
-    // Spec Layer 2: container must have the fix code — need image rebuild, not just restart
-    // make test-rebuild = build + test-down + seed + run (rebuilds image)
-    // make test-up = test-down + seed + run (reuses existing image — stale!)
+  test("ER-1c: Container rebuild is config-driven (not hardcoded)", () => {
     const verifySection = sliceBetween(SHIP_JS, "PHASE 7: VERIFY", "PHASE 8: SHIP");
-    expect(verifySection).toContain("make test-rebuild");
+    expect(verifySection).toContain("containerConfig");
+    expect(verifySection).toContain("rebuildCommand");
   });
 
   test("ER-2: AC anchoring instruction in discovery prompt", () => {
