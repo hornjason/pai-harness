@@ -467,6 +467,26 @@ if (SLUG) {
   }
   await agent(`Write this JSON to ~/.rungate/${SLUG}/council-synthesis.json (create directory with mkdir -p if needed):\n${JSON.stringify(synthEnvelope)}`, { label: 'write-synthesis', phase: 'Synthesis' })
   log(`Council synthesis written to ~/.rungate/${SLUG}/council-synthesis.json`)
+
+  // Save permanent record to docs/council/ in the repo
+  const today = 'agent_fill_date'
+  const topicSlug = TOPIC.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60)
+  await agent(`
+Save the council synthesis as a permanent record in the repo.
+
+1. Run: date +%Y-%m-%d to get today's date
+2. Write a markdown file to ${PROJECT_ROOT}/docs/council/{date}-${topicSlug}.md with:
+   - Frontmatter: doc-type: council, status: accepted, created: {date}, topic: "${TOPIC}"
+   - Council topic, decisions, convergence points, recommendation
+   - Members and round count
+
+Content to save:
+${JSON.stringify(synthEnvelope, null, 2)}
+
+3. Stage and commit: git add docs/council/ && git commit -m "docs: council synthesis — ${TOPIC.slice(0, 50)}"
+Do NOT push — the caller handles that.
+  `, { label: 'save-council-doc', phase: 'Synthesis' })
+  log('Council record saved to docs/council/')
 }
 
 return {
