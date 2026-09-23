@@ -445,25 +445,30 @@ if (DRY_RUN) {
 // ── Prior-branch detection ─────────────────────────────────
 let priorBranchResult = null
 try {
-  const { detectPriorBranch } = await import(`${HARNESS_ROOT}/lib/prior-branch.ts`)
-  const priorBranch = await detectPriorBranch({ issueNumber: ISSUE, projectRoot: PROJECT_ROOT })
-  if (priorBranch) {
-    log(`Prior branch detected: ${priorBranch.branch} (${priorBranch.commitCount} commits, tests ${priorBranch.testsPass ? 'PASS' : 'FAIL'})`)
-    const { spawnSync } = await import('child_process')
-    const merge = spawnSync('git', ['merge', priorBranch.branch, '--no-edit'], { cwd: PROJECT_ROOT, encoding: 'utf-8', timeout: 30_000 })
-    if (merge.status === 0) {
-      log(`Merged prior branch ${priorBranch.branch}`)
-      priorBranchResult = priorBranch
-      if (!priorBranch.testsPass) {
-        log(`Prior branch has failing tests — Marcus will fix`)
-        discovery.scopeOut = discovery.scopeOut || []
-        discovery.scopeOut.push(`Prior implementation exists on branch ${priorBranch.branch} — fix failing tests, do not rewrite from scratch`)
-      }
-    } else {
-      log(`Prior branch merge failed: ${merge.stderr?.slice(0, 200)}`)
-    }
+  const priorBranch = await agent(`
+Run this command and return the JSON result:
+bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))"
+Return the raw JSON output only — no commentary.
+  `, { label: 'prior-branch-detect', phase: 'Discovery', schema: {
+    type: 'object',
+    properties: {
+      branch: { type: 'string' },
+      commitCount: { type: 'number' },
+      testsPass: { type: 'boolean' },
+    },
+  }})
+  if (priorBranch && priorBranch.branch) {
+    log(`Prior branch detected: ${priorBranch.branch} (${priorBranch.commitCount} commits)`)
+    await agent(`
+Merge prior implementation branch:
+1. cd ${PROJECT_ROOT}
+2. git merge ${priorBranch.branch} --no-edit
+3. Report: merge result (success/conflict)
+    `, { label: 'merge-prior', phase: 'Implement' })
+    priorBranchResult = priorBranch
+    log(`Merged prior branch ${priorBranch.branch}`)
   }
-} catch (e) { log(`Prior-branch detection error: ${e.message}`) }
+} catch (e) { log(`Prior-branch detection skipped: ${e?.message || 'no prior branch'}`) }
 
 // ════════════════════════════════════════════════════════════
 // PHASE 4: IMPLEMENT (Marcus writes code — NO commit)
@@ -514,9 +519,11 @@ Also report worktreePath: your current working directory (run pwd and include th
 let implementResult
 if (priorBranchResult?.testsPass) {
   log('Skipping Implement phase — using prior branch implementation')
-  const { spawnSync } = await import('child_process')
-  const diffFiles = spawnSync('git', ['diff', '--name-only', 'main...HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf-8', timeout: 15_000 })
-  const filesChanged = diffFiles.status === 0 ? diffFiles.stdout.trim().split('\n').filter(Boolean) : []
+  const diffResult = await agent(`
+Run: cd ${PROJECT_ROOT} && git diff --name-only main...HEAD
+Return only the file list, one per line.
+  `, { label: 'prior-diff', phase: 'Implement' })
+  const filesChanged = typeof diffResult === 'string' ? diffResult.trim().split('\n').filter(Boolean) : []
   implementResult = { success: true, buildResult: { filesChanged } }
 } else {
   implementResult = await runImplement()
@@ -985,11 +992,12 @@ if (gradeResult?.grades) {
 
 // ── Worktree cleanup (post-workflow) ────────────────────
 try {
-  const { cleanupWorktrees } = await import(`${HARNESS_ROOT}/lib/worktree-cleanup.ts`)
-  const cleanup = await cleanupWorktrees({ projectRoot: PROJECT_ROOT })
-  if (cleanup.removed.length) log(`Worktree cleanup: removed ${cleanup.removed.length} (${cleanup.removed.join(', ')})`)
-  if (cleanup.errors.length) log(`Worktree cleanup errors: ${cleanup.errors.join(', ')}`)
-} catch (e) { log(`Worktree cleanup failed: ${e.message}`) }
+  await agent(`
+Run worktree cleanup:
+bun -e "import {cleanupWorktrees} from '${HARNESS_ROOT}/lib/worktree-cleanup.ts'; const r = await cleanupWorktrees({projectRoot:'${PROJECT_ROOT}'}); console.log(JSON.stringify(r))"
+Report the result.
+  `, { label: 'worktree-cleanup', phase: 'Prove' })
+} catch (e) { log(`Worktree cleanup skipped`) }
 
 return {
   status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN' : 'SHIP_PASSED_PROVE_FAILED',
