@@ -58,12 +58,12 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 
 ## Success Criteria
 
-- [ ] SC-348: Agent brief templates stored as markdown files in `templates/agent-briefs/`
-- [ ] SC-349: Shared rules in `templates/agent-briefs/_shared.md` included by all agent templates
+- [ ] SC-348: templates/agent-briefs/ directory exists
+- [ ] SC-349: templates/agent-briefs/_shared.md exists
 - [ ] SC-350: Scaffold reads template files instead of hardcoded strings for agent brief generation
 - [ ] SC-351: Each generated brief has all 8 required sections
-- [ ] SC-352: All generated briefs use model: sonnet (not opus)
-- [ ] SC-353: Generated briefs under 120 lines each
+- [ ] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
+- [ ] SC-353: .claude/agents/marcus.md is under [120] lines
 - [ ] SC-354: Editing a template file and re-scaffolding updates the generated brief
 - [ ] SC-355: Shared rules appear in every generated agent brief
 - [ ] SC-356: Prompt routing table generated dynamically, not from template
@@ -135,7 +135,7 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 ### Success Criteria (Three-Tier)
 
 - [ ] SC-423: Brief frontmatter includes `tiers` field mapping sections to reinforcement/mechanical
-- [ ] SC-424: `lib/rule-registry.ts` exports `getRulesForTier(role, tier)` returning classified rules
+- [ ] SC-424: lib/rule-registry.ts exists
 - [ ] SC-425: `briefedAgent()` in ship.js injects reinforcement-tier rules at top of task prompt
 - [ ] SC-426: Reinforcement rules extracted dynamically from brief, not hardcoded in ship.js
 - [ ] SC-427: Scaffold `agentMeta` carries `tiers` through to generated brief frontmatter

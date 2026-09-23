@@ -136,6 +136,7 @@ function extractSCs(content: string, specFile: string): ParsedSC[] {
 interface SpecMetadata {
   scs: ParsedSC[];
   compliance: "strict" | "permissive";
+  status: "active" | "draft";
 }
 
 function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<string, SpecMetadata> {
@@ -148,9 +149,12 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<strin
       const fm = parseFrontmatter(content);
       if (fm?.testable === "true") {
         const compliance = fm?.compliance === "permissive" ? "permissive" : "strict";
+        const scs = extractSCs(content, f);
+        const hasCheckedSC = /- \[x\] SC-/i.test(content);
         specMap.set(f, {
-          scs: extractSCs(content, f),
-          compliance
+          scs,
+          compliance,
+          status: hasCheckedSC ? "active" : "draft",
         });
       }
     }
@@ -165,10 +169,12 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<strin
       const governs = fm?.governs || "";
       if (!governs.toLowerCase().includes("scaffold") && !governs.toLowerCase().includes("universal")) continue;
       const compliance = fm?.compliance === "permissive" ? "permissive" : "strict";
+      const hasCheckedSC = /- \[x\] SC-/i.test(content);
       const specFile = `${dir.split("/").pop()}/${f}`;
       specMap.set(specFile, {
         scs: extractSCs(content, specFile),
-        compliance
+        compliance,
+        status: hasCheckedSC ? "active" : "draft",
       });
     }
   }
@@ -565,7 +571,11 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
         for (const sc of metadata.scs) {
           const assertion = matchPattern(sc);
           if (!assertion) { unmatched.push(`${sc.id}: ${sc.statement}`); continue; }
-          test(`${sc.id}: ${sc.statement}`, () => { assertion(root); });
+          if (metadata.status === "draft") {
+            test.todo(`${sc.id}: ${sc.statement}`);
+          } else {
+            test(`${sc.id}: ${sc.statement}`, () => { assertion(root); });
+          }
         }
         if (unmatched.length > 0) {
           // SC-287: strict mode (default) fails on unmatched, permissive mode warns

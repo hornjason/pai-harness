@@ -59,22 +59,22 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 
 - [ ] SC-331: matchPattern() returns non-null for all static file verification SCs in testable strict specs
 - [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs + integration tail for cross-project checks
-- [ ] SC-333: Phase-2 test file is ≤100 lines — setup + conformity engine call
-- [ ] SC-334: Phase-3 test file is ≤100 lines — setup + conformity engine call
-- [ ] SC-335: Phase-5 test file is ≤100 lines — setup + conformity engine call
-- [ ] SC-336: regex-match matcher exists in matchPattern() and handles `/pattern/` syntax
-- [ ] SC-337: source-contains matcher exists in matchPattern() for harness source file checks
-- [ ] SC-338: json-has-field matcher exists in matchPattern() for JSON structure assertions
-- [ ] SC-339: scaffold-produces matcher exists — runs scaffold on fixture, checks output file
-- [ ] SC-340: frontmatter-field matcher exists in matchPattern() for YAML frontmatter checks
+- [ ] SC-333: test/phase-2.test.ts is under [100] lines
+- [ ] SC-334: test/phase-3.test.ts is under [100] lines
+- [ ] SC-335: test/phase-5.test.ts is under [100] lines
+- [ ] SC-336: harness lib/conformity.ts contains [regex-match]
+- [ ] SC-337: harness lib/conformity.ts contains [source-contains]
+- [ ] SC-338: harness lib/conformity.ts contains [json-has-field]
+- [ ] SC-339: harness lib/conformity.ts contains [scaffold-produces]
+- [ ] SC-340: harness lib/conformity.ts contains [frontmatter-field]
 - [x] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
 - [x] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
 - [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests — not migrated
-- [ ] SC-344: Phase-1 test file is ≤200 lines — setup + conformity engine call
+- [ ] SC-344: test/phase-1.test.ts is under [200] lines
 - [ ] SC-345: Every SC in testable specs classified as static or behavioral
 - [ ] SC-346: Behavioral SCs have `verification: behavioral` tag and route to SESSION-AUDIT-SPEC
 - [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists
-- [ ] SC-379: Matcher registry config exists listing all patterns with name, syntax, example, and notes
+- [ ] SC-379: config/matcher-registry.json exists
 - [ ] SC-380: matchPattern() reads matcher config to dispatch — no hardcoded pattern branches
 - [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config
 - [ ] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite

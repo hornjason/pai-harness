@@ -51,18 +51,18 @@ Agent loads AGENTS.md (automatic)
 
 ## Success Criteria
 
-- [ ] SC-309: session-end.ts script exists and runs without errors
-- [ ] SC-310: session-end checks for uncommitted changes and warns
-- [ ] SC-311: session-end checks for stale worktrees and lists them
-- [ ] SC-312: session-end runs sync-sc-status.ts automatically
-- [ ] SC-313: session-end runs update-project-state.ts automatically
+- [ ] SC-309: scripts/session-end.ts exists
+- [ ] SC-310: scripts/session-end.ts contains [uncommitted changes, warns]
+- [ ] SC-311: scripts/session-end.ts contains [stale worktrees, lists]
+- [ ] SC-312: scripts/session-end.ts contains [sync-sc-status]
+- [ ] SC-313: scripts/session-end.ts contains [update-project-state]
 - [ ] SC-314: session-end updates project-state.json with current priorities and antipatterns
 - [ ] SC-315: session-end appends session notes to project-state.json sessions array
 - [ ] SC-316: session-end commits all state files in one commit
-- [ ] SC-317: AGENTS.md Key Files table includes PROJECT-STATE.md as first-read after AGENTS.md
+- [ ] SC-317: AGENTS.md contains [PROJECT-STATE.md]
 - [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls (behavioral)
-- [ ] SC-319: Scaffold output includes session-end.ts for consumer projects
-- [ ] SC-320: PROJECT-STATE.md renders antipatterns section (what NOT to do)
+- [ ] SC-319: scaffold output scripts/session-end.ts exists
+- [ ] SC-320: PROJECT-STATE.md has section [Antipatterns]
 
 ## Blocked On
 

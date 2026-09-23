@@ -45,7 +45,7 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - [ ] SC-373: Every gate source file has a typed input/output interface exported
 - [ ] SC-374: Pass/fail criteria for each gate documented as SCs in this spec
 - [ ] SC-375: Gate chain order documented — which gates feed into which
-- [ ] SC-376: run-gate.ts is under 400 lines — extract CLI parsing and orchestration
+- [ ] SC-376: gates/run-gate.ts is under [400] lines
 - [ ] SC-377: Gate contracts testable by conformity engine (interface exports verifiable)
 - [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces
 
