@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-22",
+  "updated": "2026-09-23",
   "priorities": [
     "P0: RULE-LEVEL EVAL SYSTEM — extract rules from all files each agent loads, test each rule individually with canary tasks, hill climb wording until each passes. Phase 1 of 3-phase eval strategy.",
     "P0: Fix ship.js Commit phase — commit from marcusWorktreePath not PROJECT_ROOT (worktree bug still causing empty commits)",

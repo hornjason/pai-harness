@@ -123,6 +123,7 @@ const HARNESS_ROOT = parsedArgs.harnessRoot
 const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
 const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
+const SKIP_GRADE = parsedArgs.skipGrade || false
 const MAX_REGRESSIONS = 2
 
 // ── Agent brief loader (config-driven) ────────────────────
@@ -877,6 +878,51 @@ Append a single JSON line to ${HOME}/.claude/MEMORY/LEARNING/SIGNALS/harness-tel
 Use Bash echo to append.
 `, { label: 'telemetry', phase: 'Prove' })
 
+// ── GRADE: Post-run compliance grading ───────────────────
+// Reads each agent's transcript and grades rule compliance.
+// Results feed the hill-climb loop: low-scoring rules get flagged for repositioning.
+// Skip with args.skipGrade=true when not actively testing rule quality.
+let gradeResult = null
+if (!SKIP_GRADE) {
+gradeResult = await agent(`
+Grade agent compliance for this ship run:
+
+1. Read ${WORK_DIR}/workflow-state.json to find which agents ran
+2. For each agent that ran (marcus, quinn, discovery):
+   a. Read their brief from ${PROJECT_ROOT}/.claude/agents/{role}.md
+   b. Check the brief frontmatter for tiers field
+   c. List all reinforcement-tier rules and whether they were followed
+3. Write a compliance report to ${WORK_DIR}/compliance-grade.json with:
+   {"grades": [{"role": "marcus", "reinforcement_rules": N, "followed": N, "score": N/N}]}
+4. Log any rules with score < 100% as candidates for tier promotion
+
+Report the grades as JSON.
+`, { label: 'grade', phase: 'Prove', schema: {
+  type: 'object',
+  properties: {
+    grades: { type: 'array', items: {
+      type: 'object',
+      properties: {
+        role: { type: 'string' },
+        total: { type: 'number' },
+        followed: { type: 'number' },
+        flagged: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['role', 'total', 'followed']
+    }}
+  },
+  required: ['grades']
+}})
+
+if (gradeResult?.grades) {
+  for (const g of gradeResult.grades) {
+    log(`GRADE ${g.role}: ${g.followed}/${g.total} rules followed${g.flagged?.length ? ' — flagged: ' + g.flagged.join(', ') : ''}`)
+  }
+}
+} else {
+  log('GRADE: skipped (skipGrade=true)')
+}
+
 return {
   status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN' : 'SHIP_PASSED_PROVE_FAILED',
   issue: ISSUE, slug: SLUG,
@@ -884,4 +930,5 @@ return {
   proveVerdict,
   regressions: regressionCount,
   workDir: WORK_DIR,
+  grades: gradeResult?.grades || [],
 }
