@@ -160,6 +160,7 @@ async function briefedAgent(prompt, opts = {}) {
       if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
       else opts.isolation = 'worktree'
     }
+    if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT
 
     const contextPaths = await loadContextPaths(role, briefPath)
     const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
