@@ -298,7 +298,7 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, contextFiles.
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
 7. Garbage test each AC.
-8. Find governingSpec from ${PROJECT_ROOT}/DOCS.md routing table (absolute path or empty).
+8. Find governingSpec from ${PROJECT_ROOT}/AGENTS.md routing table (absolute path or empty).
 9. Set sourceSpecs with citedInDiscovery:true, specElements[]. One AC per specElement minimum.
 
 Project root: ${PROJECT_ROOT}
