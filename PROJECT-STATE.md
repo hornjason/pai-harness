@@ -2,44 +2,19 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 7 — Three-tier rule enforcement architecture.
+Session 8 (AFK) — Prior-branch detection and worktree cleanup.
 
 **Shipped this session:**
-- Three-tier rule enforcement: identity (brief), reinforcement (task prompt), mechanical (harness structure)
-- lib/rule-registry.ts: extracts rules from briefs, classifies by tier from frontmatter config
-- Config-driven: tiers field in brief frontmatter maps sections to reinforcement/mechanical, identity is default
-- ship.js briefedAgent(): dynamically extracts reinforcement rules via agent call, injects at top of task prompt
-- Scaffold agentMeta: carries tiers through to generated briefs (survives re-scaffold)
-- Marcus tiers: reinforcement=[Testing Rules], mechanical=[Workflow], identity=24 rules
-- Quinn tiers: reinforcement=[Project Type Detection, CLI Testing Mode], identity=rest
-- docs/research/three-tier-enforcement.md: full writeup with Mermaid diagram
-- specs/AGENT-BRIEF-TEMPLATE-SPEC.md: SC-423 through SC-428 for tier enforcement
+- lib/prior-branch.ts (#563): detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests
+- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (checks uncommitted changes + merge status)
+- ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow
+- hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start
+- Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees)
+- /simplify review applied: destructive checkout → temp worktree, collapsed booleans, agent merge → direct spawn
 
-**Validation results:**
-- Marcus compliance: 3/8 → 8/8 process rules followed after reinforcement tier
-- Context reads: 3/6 → 6/6 files after reinforcement
-- TDD: TEST_AFTER → test-first after position fix (line 460 → line 8)
-- Research confirmed: Instruction Stacking Collapse (arXiv 2608.02639), Lost-in-the-Middle (Liu 2023)
+**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f
 
-**Architecture:**
-- Brief is single source of truth (rules + tier classification in frontmatter)
-- Rule registry is deep module (one interface, multiple consumers: ship.js, evals, audit)
-- No hardcoded rules in ship.js — dynamic extraction
-- Add a rule to a brief section → everything downstream adjusts automatically
-
-**Additional shipped this session:**
-- Quinn solo validation: 5/5 ACs, zero Playwright calls, correct CLI detection
-- All 6 agents audited and wired: Discovery+Aditi get reinforcement, Rook+Serena confirmed identity-only
-- GRADE phase added to ship.js (post-PROVE compliance grading with skipGrade flag)
-- Layer 3: TDD sequence verification in GRADE phase (two-spawn blocked by worktree isolation)
-- Worktree merge fix: verify gate runs FROM worktree, merge to main AFTER verify passes (8468aac)
-- Filed #563 (prior-branch detection) and #564 (worktree cleanup)
-- First full harness run: reinforcement extraction worked, Marcus did TDD, SHIP_FAILED on worktree bug (now fixed)
-- Second harness run in-flight with worktree fix
-
-**Commits this session:** a9ad455, ca1540b, 1e93bc7, 3db23c1, f462a0c, c061a39, 8468aac
-
-**Test suite: 1,089 pass, 0 fail across 54 files**
+**Test suite: 1,062 pass, 0 fail across 57 files**
 
 **Next priorities:**
 1. P0: GRADE #550 — harness re-run with worktree merge fix. Grade results, verify TDD compliance.
