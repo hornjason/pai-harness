@@ -194,12 +194,14 @@ async function briefedAgent(prompt, opts = {}) {
 
 // ── Helper: run gate with self-heal + error classification ──
 
-async function runGateWithHeal(gateName, phaseName, healContext) {
+async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) {
+  const gateCwd = gateOpts.cwd || PROJECT_ROOT
+  const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
   for (let attempt = 1; attempt <= 3; attempt++) {
     const result = await agent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
+1. Run: ${cdPrefix}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -622,6 +624,9 @@ if (!commitResult?.commitSha) {
 }
 log(`Committed: ${commitResult.commitSha} on ${commitResult.branch}`)
 
+// Branch stored for post-verify merge — do NOT merge to main until verify passes
+const worktreeBranch = commitResult.branch
+
 // Check environment status (structured output — no JSON writing)
 const ENV_CHECK_SCHEMA = {
   type: 'object',
@@ -670,8 +675,10 @@ Run this command and report the output.
 phase('Verify')
 
 // Run verify gate first (mechanical checks)
+// Run verify from worktree (where Marcus's code lives) — NOT main
 const verifyResult = await runGateWithHeal('verify', 'Verify',
-  'Fix evidence gaps, test failures, uncommitted code. Run AC evidence commands.')
+  'Fix evidence gaps, test failures, uncommitted code. Run AC evidence commands.',
+  { cwd: marcusWorktreePath })
 
 if (verifyResult?.result === 'FAIL') {
   if (verifyResult.regressionTarget === 'DISCOVERY' && regressionCount < MAX_REGRESSIONS) {
@@ -760,6 +767,18 @@ if (discovery.ceremonyTier === 'THOROUGH') {
 Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
   `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
+}
+
+// ── Merge worktree to main (only after verify passes) ────
+if (marcusWorktreePath !== PROJECT_ROOT && worktreeBranch) {
+  await agent(`
+Merge the verified worktree branch into main:
+1. cd ${PROJECT_ROOT}
+2. git merge ${worktreeBranch} --no-edit
+3. Report: merge result (success/conflict), current HEAD SHA
+If merge conflicts, report them — do NOT force.
+  `, { label: 'merge-to-main', phase: 'Verify' })
+  log('Worktree branch merged to main after verify pass')
 }
 
 // ════════════════════════════════════════════════════════════
