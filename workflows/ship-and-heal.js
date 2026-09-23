@@ -66,7 +66,9 @@ for (let i = 0; i < MAX_ITERATIONS; i++) {
   const status = shipResult?.status || 'UNKNOWN'
   log(`Ship result: ${status}`)
 
-  if (status !== 'SHIP_FAILED' && status !== 'SCOPE_FAILED' && status !== 'VERIFY_FAILED') {
+  const FAILURE_STATUSES = ['SHIP_FAILED', 'SCOPE_FAILED', 'VERIFY_FAILED', 'IMPLEMENT_FAILED', 'DISCOVERY_FAILED', 'GOAL_FAILED', 'ARGS_ERROR', 'UNKNOWN']
+  const isSuccess = !FAILURE_STATUSES.includes(status) && shipResult?.success !== false
+  if (isSuccess) {
     iterations.push({ attempt: i + 1, status, action: 'COMPLETED' })
     return {
       status: 'SHIPPED',
