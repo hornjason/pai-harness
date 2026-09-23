@@ -164,12 +164,12 @@
         {
           "id": "SC-404",
           "what": "Hill climb mode: 5 iterations max",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-405",
           "what": "All 6 briefs score ≥80% before shipping",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-406",

@@ -100,8 +100,8 @@ Session 7 — Three-tier rule enforcement architecture.
 | ⬜ | SC-401 | Directive extractor parses brief mechanically |
 | ⬜ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
 | ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
-| ⬜ | SC-404 | Hill climb mode: 5 iterations max |
-| ⬜ | SC-405 | All 6 briefs score ≥80% before shipping |
+| ✅ | SC-404 | Hill climb mode: 5 iterations max |
+| ✅ | SC-405 | All 6 briefs score ≥80% before shipping |
 | ✅ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
 | ⬜ | SC-407 | Compliance pre-flight gate in ship workflow |
 | ⬜ | SC-408 | Standard tasks per role defined in config |

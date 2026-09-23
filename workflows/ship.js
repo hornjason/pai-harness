@@ -442,6 +442,29 @@ if (DRY_RUN) {
   }
 }
 
+// ── Prior-branch detection ─────────────────────────────────
+let priorBranchResult = null
+try {
+  const { detectPriorBranch } = await import(`${HARNESS_ROOT}/lib/prior-branch.ts`)
+  const priorBranch = await detectPriorBranch({ issueNumber: ISSUE, projectRoot: PROJECT_ROOT })
+  if (priorBranch) {
+    log(`Prior branch detected: ${priorBranch.branch} (${priorBranch.commitCount} commits, tests ${priorBranch.testsPass ? 'PASS' : 'FAIL'})`)
+    const { spawnSync } = await import('child_process')
+    const merge = spawnSync('git', ['merge', priorBranch.branch, '--no-edit'], { cwd: PROJECT_ROOT, encoding: 'utf-8', timeout: 30_000 })
+    if (merge.status === 0) {
+      log(`Merged prior branch ${priorBranch.branch}`)
+      priorBranchResult = priorBranch
+      if (!priorBranch.testsPass) {
+        log(`Prior branch has failing tests — Marcus will fix`)
+        discovery.scopeOut = discovery.scopeOut || []
+        discovery.scopeOut.push(`Prior implementation exists on branch ${priorBranch.branch} — fix failing tests, do not rewrite from scratch`)
+      }
+    } else {
+      log(`Prior branch merge failed: ${merge.stderr?.slice(0, 200)}`)
+    }
+  }
+} catch (e) { log(`Prior-branch detection error: ${e.message}`) }
+
 // ════════════════════════════════════════════════════════════
 // PHASE 4: IMPLEMENT (Marcus writes code — NO commit)
 // ════════════════════════════════════════════════════════════
@@ -488,13 +511,22 @@ Also report worktreePath: your current working directory (run pwd and include th
   return { success: true, buildResult }
 }
 
-let implementResult = await runImplement()
-if (!implementResult.success) {
-  return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
+let implementResult
+if (priorBranchResult?.testsPass) {
+  log('Skipping Implement phase — using prior branch implementation')
+  const { spawnSync } = await import('child_process')
+  const diffFiles = spawnSync('git', ['diff', '--name-only', 'main...HEAD'], { cwd: PROJECT_ROOT, encoding: 'utf-8', timeout: 15_000 })
+  const filesChanged = diffFiles.status === 0 ? diffFiles.stdout.trim().split('\n').filter(Boolean) : []
+  implementResult = { success: true, buildResult: { filesChanged } }
+} else {
+  implementResult = await runImplement()
+  if (!implementResult.success) {
+    return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
+  }
 }
 
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
-const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_ROOT
+const marcusWorktreePath = priorBranchResult?.testsPass ? PROJECT_ROOT : (implementResult.buildResult?.worktreePath || PROJECT_ROOT)
 
 // ════════════════════════════════════════════════════════════
 // PHASE 5: VALIDATE (Quinn local dev — fast feedback before commit)
@@ -950,6 +982,14 @@ if (gradeResult?.grades) {
 } else {
   log('GRADE: skipped (skipGrade=true)')
 }
+
+// ── Worktree cleanup (post-workflow) ────────────────────
+try {
+  const { cleanupWorktrees } = await import(`${HARNESS_ROOT}/lib/worktree-cleanup.ts`)
+  const cleanup = await cleanupWorktrees({ projectRoot: PROJECT_ROOT })
+  if (cleanup.removed.length) log(`Worktree cleanup: removed ${cleanup.removed.length} (${cleanup.removed.join(', ')})`)
+  if (cleanup.errors.length) log(`Worktree cleanup errors: ${cleanup.errors.join(', ')}`)
+} catch (e) { log(`Worktree cleanup failed: ${e.message}`) }
 
 return {
   status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN' : 'SHIP_PASSED_PROVE_FAILED',
