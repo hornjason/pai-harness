@@ -68,12 +68,14 @@ Sections not listed default to `identity`. The `tiers` field is set in the scaff
 
 | Agent | Reinforcement Sections | Mechanical Sections | Identity (default) |
 |-------|----------------------|--------------------|--------------------|
-| Marcus | Testing Rules | Workflow | Core Principles, Always Do, Never Do, Ask First, Coding Principles |
-| Quinn | Project Type Detection, CLI Testing Mode | — | Core Principles, Always Do, Never Do, UI Testing Mode, Anti-checks |
-| Discovery | — | — | All (read-only agent, no process rules) |
-| Rook | — | — | All (scan-only agent) |
-| Serena | — | — | All (review-only agent) |
-| Aditi | — | — | All (design-only agent) |
+| Marcus | Testing Rules (2 rules) | Workflow (2 rules) | Core Principles, Always Do, Never Do, Ask First, Coding Principles (24 rules) |
+| Quinn | Project Type Detection, CLI Testing Mode (4 rules) | — | Core Principles, Always Do, Never Do, UI Testing Mode, Anti-checks (18 rules) |
+| Discovery | Discovery Rules (2 rules: pages check, read order) | — | Core Principles, Always Do, Never Do, Context (22 rules) |
+| Rook | — | — | All identity (18 rules) — scan-only, no process rules |
+| Serena | — | — | All identity (17 rules) — review-only, no process rules |
+| Aditi | Project Type Detection (1 rule: pages check) | — | Core Principles, Always Do, Never Do, Context (18 rules) |
+
+**Testing gap:** Quinn's UI Testing Mode (viewport, browser_snapshot, anti-checks) is untested because RunGate has no UI. Validate on a project with `pages` entries.
 
 ## Validation Results
 

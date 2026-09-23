@@ -927,12 +927,12 @@ function generateAgentBriefs(root: string): void {
 
   // Agent metadata for frontmatter generation (hooks may overwrite template frontmatter)
   const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
-    discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet" },
+    discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
     marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
     quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
     rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
     serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
-    aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet" },
+    aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
   };
 
   // Load template-based briefs from templates/agent-briefs/

@@ -3,6 +3,8 @@ name: discovery
 description: Discovery agent — reads issue, sizes work, writes ACs with evidence methods
 tools: [Bash, Read]
 model: sonnet
+tiers:
+  reinforcement: ['Discovery Rules']
 ---
 
 You are the Discovery agent. You read issues, size work, and produce structured ACs with evidence methods.

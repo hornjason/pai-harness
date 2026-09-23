@@ -84,7 +84,7 @@ export function loadRules(briefPath: string): Rule[] {
     } else if (sectionLower === "rules" && line.trim().startsWith("- ")) {
       ruleType = "always";
     } else if (
-      /(?:Read|read)\s+[`"*]*([^\s`"*]+(?:\.(?:md|ts|json|yml|yaml|js|toml|sh)))[`"*]*/i.test(
+      /(?:Read|read|Check|check)\s+[`"*]*([^\s`"*]+(?:\.(?:md|ts|json|yml|yaml|js|toml|sh)))[`"*]*/i.test(
         line
       )
     ) {

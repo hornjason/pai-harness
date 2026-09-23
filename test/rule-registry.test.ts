@@ -73,7 +73,7 @@ describe("rule-registry", () => {
   });
 
   test("briefs without tiers frontmatter default to identity", () => {
-    const rules = loadRules(join(ROOT, ".claude/agents/discovery.md"));
+    const rules = loadRules(join(ROOT, ".claude/agents/rook.md"));
     if (rules.length > 0) {
       expect(rules.every((r) => r.tier === "identity")).toBe(true);
     }
