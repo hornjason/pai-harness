@@ -2,33 +2,36 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 8 (AFK → interactive) — Prior-branch detection, worktree cleanup, issue triage, first harness dogfood.
+Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
 
-**Shipped this session:**
-- lib/prior-branch.ts (#563): detects existing branches, word-boundary matching, isolated temp worktree tests
-- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (uncommitted + merge checks)
-- ship.js + prove.js: import() → agent/bun-e (Workflow sandbox fix)
-- matchPattern() config-driven dispatch (#551, SC-380)
-- SPEC-TEMPLATE auto-generated from matcher registry (#552, SC-381)
-- First harness dogfood: #1447 → ALREADY_SHIPPED, all ACs MET
+**Stress test results (4 parallel ships):**
+- 74 agents, 0 errors, 0 skipped, 657 tool calls, ~59 min
+- All 4 ships: SHIP_FAILED (witness LIGHT-skip bug + env-check hardcoding)
+- Marcus code merged to main for #566, #567, #569 (3 of 4)
+- Found: DDB-hardcoded URLs in env-check, scope witness required for LIGHT tier
+- Found: no monitoring of agent prompts (only results) — missed prompt bugs
+- Fixed: all hardcoded DDB values removed from ship.js
+- Fixed: witness test allows missing scope for LIGHT ceremony
+- Filed: #572 (env-check hardcoding)
 
-**Issues closed this session:** #559, #560, #536, #550, #514, #513, #563, #564, #551, #552, #1447 (11 total)
+**Issues filed this session:** #566, #567, #568, #569, #570, #571, #572
 
-**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4, 9d3781a, 2984e35, b534838, 1d0a50a, 4b8530f, 08cc2b7
-
-**Test suite: 1,062 pass, 0 fail across 57 files**
+**Test suite: 1,261 tests, 5 fail (from Marcus parallel commits) across 59 files**
 
 **Next priorities:**
-1. P0: Fix sync-sc-status.ts — extend to check conformity tests + add --report flag
-2. P0: Add command-output matcher pattern to registry + conformity.ts handler
-3. P0: #553 create-sc CLI — Phase G (prevent unmatchable SCs at authoring time)
-4. P0: #554 Wire create-spec SC validation via matchPattern
-5. P0: #556 audit-specs CLI — Phase H (classify + auto-rewrite legacy SCs)
-6. P0: #557 Migrate all specs to compliance: strict
-7. P0: Tag behavioral SCs (SC-345, SC-346)
-8. P1: #565 Verify worktree fix on real cross-repo run
-9. P1: #561 Brief compliance gate (SC-407–SC-409)
-10. P2: Harness ship on DDB #1438 (email preview — full pipeline test with Quinn + GRADE)
+1. P0: #572 Fix env-check hardcoding — DONE (committed 7c50374)
+2. P0: Fix HMAC witness LIGHT skip — DONE (committed 7c50374)
+3. P0: #568 Tag behavioral SCs (SC-345, SC-346) — Phase A classification
+4. P0: #570 Rewrite hook-wiring SCs (SC-347) — Phase A, code merged by Marcus
+5. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
+6. P0: #554 Wire create-spec SC validation (SC-382)
+7. P0: #571 Consumer extension (SC-384, SC-395)
+8. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
+9. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331)
+10. P0: Build ship-and-heal.js — closed-loop self-improvement workflow
+11. P0: Fix 5 test failures from parallel ship Marcus commits
+12. P1: #565 Verify worktree fix on real cross-repo run
+13. P1: #561 Brief compliance gate (SC-407–SC-409)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
