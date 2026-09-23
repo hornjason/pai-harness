@@ -27,21 +27,31 @@ Session 7 — Three-tier rule enforcement architecture.
 - No hardcoded rules in ship.js — dynamic extraction
 - Add a rule to a brief section → everything downstream adjusts automatically
 
-**Next:**
-- Quinn solo validation (running)
-- Layer 3 mechanical enforcement: split Marcus into test-only + implement-only spawns
-- Eval integration: post-PROVE phase grades transcript, feeds findings back to templates
-- Hill climb loop: eval watches behavior → tightens briefs → re-eval
+**Additional shipped this session:**
+- Quinn solo validation: 5/5 ACs, zero Playwright calls, correct CLI detection
+- All 6 agents audited and wired: Discovery+Aditi get reinforcement, Rook+Serena confirmed identity-only
+- GRADE phase added to ship.js (post-PROVE compliance grading with skipGrade flag)
+- Layer 3: TDD sequence verification in GRADE phase (two-spawn blocked by worktree isolation)
+- Worktree merge fix: verify gate runs FROM worktree, merge to main AFTER verify passes (8468aac)
+- Filed #563 (prior-branch detection) and #564 (worktree cleanup)
+- First full harness run: reinforcement extraction worked, Marcus did TDD, SHIP_FAILED on worktree bug (now fixed)
+- Second harness run in-flight with worktree fix
+
+**Commits this session:** a9ad455, ca1540b, 1e93bc7, 3db23c1, f462a0c, c061a39, 8468aac
 
 **Test suite: 1,089 pass, 0 fail across 54 files**
 
 **Next priorities:**
-1. P0: RULE-LEVEL EVAL SYSTEM — extract rules from all files each agent loads, test each rule individually with canary tasks, hill climb wording until each passes. Phase 1 of 3-phase eval strategy.
-2. P0: Fix ship.js Commit phase — commit from marcusWorktreePath not PROJECT_ROOT (worktree bug still causing empty commits)
-3. P1: CONFIG-DRIVEN-TESTING Phase F+G+H (#550–#557, SC-379–SC-399): Matcher registry, create-sc CLI, audit-specs --fix
-4. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
-5. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
-6. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+1. P0: GRADE #550 — harness re-run with worktree merge fix in flight. Grade results, verify TDD compliance, confirm verify gate passes now.
+2. P0: #563 Prior-branch detection — ship.js should detect existing implementation branches and skip Marcus if tests pass. Saves ~10 min per re-run.
+3. P0: #564 Worktree cleanup — prune stale agent worktrees in SessionStart hook + ship.js post-run. 14 worktrees at 34MB accumulating.
+4. P1: #559 briefedAgent() Context parser — may already be done (loadContextPaths built this session). Verify and close.
+5. P1: #560 Quinn can't validate worktree changes — may be fixed by worktree merge fix (8468aac). Verify and close.
+6. P1: Quinn UI mode validation — test Quinn on a project WITH pages. Needs dev server + Playwright. Do with Jason, not AFK.
+7. P1: #550 CONFIG-DRIVEN-TESTING Phase F — matcher registry config format. In-flight via harness.
+8. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). ship.js also at 962 lines.
+9. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
+10. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
