@@ -154,6 +154,62 @@ describe("SC-292: section-exists matcher", () => {
   });
 });
 
+// ── command-output matcher ──────────────────────────────────────
+
+describe("command-output matcher: pattern matching", () => {
+  test("matches command-output SC syntax", () => {
+    const sc: ParsedSC = {
+      id: "SC-TEST-CMD",
+      statement: 'command-output `echo hello` contains [hello]',
+      specFile: "test.md"
+    };
+    const matcher = matchPattern(sc);
+    expect(matcher).not.toBeNull();
+  });
+
+  test("returned assertion passes when command output contains expected strings", () => {
+    const sc: ParsedSC = {
+      id: "SC-TEST-CMD2",
+      statement: 'command-output `echo hello world` contains [hello, world]',
+      specFile: "test.md"
+    };
+    const matcher = matchPattern(sc);
+    expect(matcher).not.toBeNull();
+    if (matcher) {
+      expect(() => matcher(FIXTURE_ROOT)).not.toThrow();
+    }
+  });
+
+  test("returned assertion fails when command output lacks expected strings", () => {
+    const sc: ParsedSC = {
+      id: "SC-TEST-CMD3",
+      statement: 'command-output `echo hello` contains [missing-value-xyz]',
+      specFile: "test.md"
+    };
+    const matcher = matchPattern(sc);
+    expect(matcher).not.toBeNull();
+    if (matcher) {
+      expect(() => matcher(FIXTURE_ROOT)).toThrow();
+    }
+  });
+});
+
+describe("command-output matcher: command failure handling", () => {
+  test("returns FAIL assertion (not crash) when command exits non-zero", () => {
+    const sc: ParsedSC = {
+      id: "SC-TEST-CMDFAIL",
+      statement: 'command-output `exit 1` contains [anything]',
+      specFile: "test.md"
+    };
+    const matcher = matchPattern(sc);
+    expect(matcher).not.toBeNull();
+    if (matcher) {
+      // Should throw an expect error (assertion failure), not an unhandled crash
+      expect(() => matcher(FIXTURE_ROOT)).toThrow();
+    }
+  });
+});
+
 // ── SC-294: directory name validation ────────────────────────────
 
 describe("SC-294: directory name validation", () => {

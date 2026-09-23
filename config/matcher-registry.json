@@ -131,5 +131,12 @@
     "regex": "^(\\S+)\\s+is\\s+between\\s+\\[(\\d+)\\]\\s+and\\s+\\[(\\d+)\\]\\s+lines",
     "example": "AGENTS.md is between [50] and [300] lines",
     "notes": "Checks that a file's line count falls within a range (inclusive). Useful for ensuring files are neither too short nor too long."
+  },
+  {
+    "name": "command-output",
+    "syntax": "command-output `{command}` contains [{expected1}, {expected2}, ...]",
+    "regex": "^command-output\\s+`([^`]+)`\\s+contains\\s+\\[([^\\]]+)\\]",
+    "example": "command-output `bun test --help` contains [test, run]",
+    "notes": "Runs a shell command via spawnSync with a 10-second timeout and checks that stdout contains all listed strings. Returns FAIL (not crash) on non-zero exit."
   }
 ]

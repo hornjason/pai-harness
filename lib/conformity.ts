@@ -7,6 +7,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { spawnSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
@@ -532,6 +533,25 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       const lineCount = content.trimEnd().split("\n").length;
       expect(lineCount).toBeGreaterThanOrEqual(min);
       expect(lineCount).toBeLessThanOrEqual(max);
+    };
+  },
+
+  "command-output": (sc, match) => {
+    const command = match[1];
+    const items = match[2].split(",").map(i => i.trim());
+    return (root) => {
+      const result = spawnSync("sh", ["-c", command], {
+        cwd: root,
+        timeout: 10000,
+        encoding: "utf-8",
+        env: { ...process.env },
+      });
+      const exitCode = result.status ?? 1;
+      expect(exitCode).toBe(0);
+      const stdout = result.stdout || "";
+      for (const item of items) {
+        expect(stdout.includes(item)).toBe(true);
+      }
     };
   },
 };
