@@ -135,9 +135,12 @@ const CONTEXT_CACHE = {}
 async function loadContextPaths(role, briefPath) {
   if (CONTEXT_CACHE[role]) return CONTEXT_CACHE[role]
   try {
-    const { parseContextPaths } = await import(`${HARNESS_ROOT}/lib/brief-context-parser.ts`)
-    const { readFileSync } = await import('fs')
-    CONTEXT_CACHE[role] = parseContextPaths(readFileSync(briefPath, 'utf-8'))
+    const result = await agent(`
+Run this command and return the JSON result:
+bun -e "import {parseContextPaths} from '${HARNESS_ROOT}/lib/brief-context-parser.ts'; import {readFileSync} from 'fs'; console.log(JSON.stringify(parseContextPaths(readFileSync('${briefPath}','utf-8'))))"
+Return only the raw JSON array.
+    `, { label: `ctx-${role}`, schema: { type: 'object', properties: { paths: { type: 'array', items: { type: 'string' } } } } })
+    CONTEXT_CACHE[role] = (result && result.paths) || []
   } catch {
     CONTEXT_CACHE[role] = []
   }
