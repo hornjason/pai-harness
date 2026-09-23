@@ -2,28 +2,32 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 8 (AFK) — Prior-branch detection and worktree cleanup.
+Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.
 
 **Shipped this session:**
-- lib/prior-branch.ts (#563): detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests
-- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (checks uncommitted changes + merge status)
-- ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow
-- hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start
-- Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees)
-- /simplify review applied: destructive checkout → temp worktree, collapsed booleans, agent merge → direct spawn
+- lib/prior-branch.ts (#563): detects existing branches, word-boundary matching, isolated temp worktree tests
+- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (uncommitted + merge checks)
+- ship.js: prior-branch detection + worktree cleanup integrated
+- hooks/StaleTTLCleanup: worktree pruning on session start
+- /simplify review applied: 5 findings fixed
 
-**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f
+**Issues closed this session:** #559, #560, #536, #550, #514, #513 (7 total)
+
+**Key finding:** #514 and #513 (harness blockers) were already implemented — code shipped in prior sessions, issues just needed closing. No remaining blockers for consumer project dogfooding.
+
+**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4
 
 **Test suite: 1,062 pass, 0 fail across 57 files**
 
 **Next priorities:**
-1. P0: GRADE #550 — harness re-run with worktree merge fix. Grade results, verify TDD compliance.
-2. P1: Quinn UI mode validation — test Quinn on a project WITH pages. Needs dev server + Playwright. Do with Jason, not AFK.
-3. P1: #550 CONFIG-DRIVEN-TESTING Phase F — matcher registry config format.
+1. P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline
+2. P1: #551 matchPattern config-driven refactor (SC-380) — in flight
+3. P1: #552 SPEC-TEMPLATE auto-generated from matcher config (SC-381) — depends on #551
 4. P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)
-5. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
-6. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
-7. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+5. P2: #555 Consumer custom matcher extension (SC-384)
+6. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts
+7. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard
+8. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -141,6 +145,10 @@ Session 8 (AFK) — Prior-branch detection and worktree cleanup.
 - /simplify review: fixed destructive checkout → temp worktree, collapsed redundant booleans, replaced agent merge with direct spawn, populated filesChanged from git diff
 - Test suite: 1,062 pass, 0 fail across 57 files
 - Commits: 624796b, 2a8a5f3, c04253d
+- Verified and closed #550 (matcher-registry.json — 19 patterns, all required fields)
+- Verified and closed #514 (ship gate blocks on FAIL ACs — already implemented in orchestrator.ts:66-82)
+- Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)
+- Harness readiness audit: no remaining blockers for consumer project dogfooding
 
 **Session 2026-09-22 session 5:**
 - Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned

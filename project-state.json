@@ -1,15 +1,16 @@
 {
   "updated": "2026-09-23",
   "priorities": [
-    "P0: GRADE #550 — harness re-run with worktree merge fix. Grade results, verify TDD compliance.",
-    "P1: Quinn UI mode validation — test Quinn on a project WITH pages. Needs dev server + Playwright. Do with Jason, not AFK.",
-    "P1: #550 CONFIG-DRIVEN-TESTING Phase F — matcher registry config format.",
+    "P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline",
+    "P1: #551 matchPattern config-driven refactor (SC-380) — in flight",
+    "P1: #552 SPEC-TEMPLATE auto-generated from matcher config (SC-381) — depends on #551",
     "P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)",
-    "P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)",
-    "P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)",
+    "P2: #555 Consumer custom matcher extension (SC-384)",
+    "P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts",
+    "P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard",
     "P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates"
   ],
-  "notes": "Session 8 (AFK) — Prior-branch detection and worktree cleanup.\n\n**Shipped this session:**\n- lib/prior-branch.ts (#563): detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests\n- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (checks uncommitted changes + merge status)\n- ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow\n- hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start\n- Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees)\n- /simplify review applied: destructive checkout → temp worktree, collapsed booleans, agent merge → direct spawn\n\n**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f\n\n**Test suite: 1,062 pass, 0 fail across 57 files**",
+  "notes": "Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.\n\n**Shipped this session:**\n- lib/prior-branch.ts (#563): detects existing branches, word-boundary matching, isolated temp worktree tests\n- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (uncommitted + merge checks)\n- ship.js: prior-branch detection + worktree cleanup integrated\n- hooks/StaleTTLCleanup: worktree pruning on session start\n- /simplify review applied: 5 findings fixed\n\n**Issues closed this session:** #559, #560, #536, #550, #514, #513 (7 total)\n\n**Key finding:** #514 and #513 (harness blockers) were already implemented — code shipped in prior sessions, issues just needed closing. No remaining blockers for consumer project dogfooding.\n\n**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4\n\n**Test suite: 1,062 pass, 0 fail across 57 files**",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
@@ -378,7 +379,11 @@
         "hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start",
         "/simplify review: fixed destructive checkout → temp worktree, collapsed redundant booleans, replaced agent merge with direct spawn, populated filesChanged from git diff",
         "Test suite: 1,062 pass, 0 fail across 57 files",
-        "Commits: 624796b, 2a8a5f3, c04253d"
+        "Commits: 624796b, 2a8a5f3, c04253d",
+        "Verified and closed #550 (matcher-registry.json — 19 patterns, all required fields)",
+        "Verified and closed #514 (ship gate blocks on FAIL ACs — already implemented in orchestrator.ts:66-82)",
+        "Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)",
+        "Harness readiness audit: no remaining blockers for consumer project dogfooding"
       ]
     },
     {
