@@ -38,6 +38,53 @@ export function resolveAndContain(root: string, target: string): string | null {
   return join(root, target);
 }
 
+/**
+ * Resolve the actual .git directory, handling worktrees where .git is a file
+ * containing "gitdir: /path/to/real/gitdir".
+ */
+function resolveGitDir(root: string): string {
+  const dotGit = join(root, ".git");
+  if (!existsSync(dotGit)) return dotGit;
+  const stat = statSync(dotGit);
+  if (stat.isDirectory()) return dotGit;
+  // Worktree: .git is a file with "gitdir: <path>"
+  const content = readFileSync(dotGit, "utf-8").trim();
+  const match = content.match(/^gitdir:\s*(.+)$/);
+  if (match) {
+    const gitdir = match[1].trim();
+    // gitdir may be absolute or relative
+    return gitdir.startsWith("/") ? gitdir : join(root, gitdir);
+  }
+  return dotGit;
+}
+
+/**
+ * Resolve a file path that starts with .git/ through the worktree-aware git dir.
+ * For non-.git paths, returns the normal join(root, file).
+ */
+function resolveFilePath(root: string, file: string): string {
+  if (file.startsWith(".git/")) {
+    const gitDir = resolveGitDir(root);
+    // For worktrees, hooks live in the main repo's hooks dir, not the worktree gitdir.
+    // The worktree gitdir (e.g. .git/worktrees/name/) doesn't have hooks/.
+    // Walk up to the main .git dir if we're in a worktree subdir.
+    const suffix = file.slice(".git/".length); // e.g. "hooks/pre-commit"
+    const resolved = join(gitDir, suffix);
+    if (existsSync(resolved)) return resolved;
+    // Try the common dir (main repo .git) for shared resources like hooks
+    const commonDirFile = join(gitDir, "commondir");
+    if (existsSync(commonDirFile)) {
+      const commonDir = readFileSync(commonDirFile, "utf-8").trim();
+      const commonResolved = commonDir.startsWith("/")
+        ? join(commonDir, suffix)
+        : join(gitDir, commonDir, suffix);
+      if (existsSync(commonResolved)) return commonResolved;
+    }
+    return resolved;
+  }
+  return join(root, file);
+}
+
 export { SIGNAL_PHRASE_PATTERNS } from "./signal-phrases";
 
 // ── Structured findings (machine-readable for agents) ──────
@@ -321,8 +368,9 @@ const matcherHandlers: Record<string, MatcherHandler> = {
     const file = match[1].replace(/`/g, "");
     const target = match[2].replace(/`/g, "");
     return (root) => {
-      expect(existsSync(join(root, file))).toBe(true);
-      expect(readFileSync(join(root, file), "utf-8")).toContain(target);
+      const path = resolveFilePath(root, file);
+      expect(existsSync(path)).toBe(true);
+      expect(readFileSync(path, "utf-8")).toContain(target);
     };
   },
 
@@ -343,7 +391,7 @@ const matcherHandlers: Record<string, MatcherHandler> = {
     const file = match[1].replace(/`/g, "");
     const items = match[2].split(",").map(i => i.trim());
     return (root) => {
-      const path = join(root, file);
+      const path = resolveFilePath(root, file);
       if (!existsSync(path)) {
         expect(existsSync(path)).toBe(true);
         return;
@@ -359,7 +407,7 @@ const matcherHandlers: Record<string, MatcherHandler> = {
     const file = match[1].replace(/`/g, "");
     const items = match[2].split(",").map(i => i.trim());
     return (root) => {
-      const path = join(root, file);
+      const path = resolveFilePath(root, file);
       if (!existsSync(path)) {
         expect(existsSync(path)).toBe(true);
         return;
