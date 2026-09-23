@@ -42,16 +42,13 @@ Session 7 — Three-tier rule enforcement architecture.
 **Test suite: 1,089 pass, 0 fail across 54 files**
 
 **Next priorities:**
-1. P0: GRADE #550 — harness re-run with worktree merge fix in flight. Grade results, verify TDD compliance, confirm verify gate passes now.
-2. P0: #563 Prior-branch detection — ship.js should detect existing implementation branches and skip Marcus if tests pass. Saves ~10 min per re-run.
-3. P0: #564 Worktree cleanup — prune stale agent worktrees in SessionStart hook + ship.js post-run. 14 worktrees at 34MB accumulating.
-4. P1: #559 briefedAgent() Context parser — may already be done (loadContextPaths built this session). Verify and close.
-5. P1: #560 Quinn can't validate worktree changes — may be fixed by worktree merge fix (8468aac). Verify and close.
-6. P1: Quinn UI mode validation — test Quinn on a project WITH pages. Needs dev server + Playwright. Do with Jason, not AFK.
-7. P1: #550 CONFIG-DRIVEN-TESTING Phase F — matcher registry config format. In-flight via harness.
-8. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines). ship.js also at 962 lines.
-9. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
-10. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+1. P0: GRADE #550 — harness re-run with worktree merge fix. Grade results, verify TDD compliance.
+2. P1: Quinn UI mode validation — test Quinn on a project WITH pages. Needs dev server + Playwright. Do with Jason, not AFK.
+3. P1: #550 CONFIG-DRIVEN-TESTING Phase F — matcher registry config format.
+4. P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)
+5. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts (1,844→200 lines)
+6. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard (586→50 lines)
+7. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
