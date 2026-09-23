@@ -520,12 +520,12 @@ Read every file in Context section first. Read "Files to modify" before changes.
 
 CRITICAL PROCESS — TDD (test-driven development):
 1. Write the failing test FIRST
-2. Run ${testCommand} to confirm it fails (use timeout: ${testTimeout})
+2. Run ${testCommand} to confirm it fails — set the Bash tool's timeout parameter to ${testTimeout}
 3. Write the implementation to make the test pass
-4. Run ${testCommand} to confirm all tests pass (use timeout: ${testTimeout})
+4. Run ${testCommand} to confirm all tests pass — set the Bash tool's timeout parameter to ${testTimeout}
 5. Run bunx tsc --noEmit
 Do NOT write source code before writing its test. This order is mandatory.
-IMPORTANT: When running ${testCommand}, always set timeout: ${testTimeout} on the Bash call. The default 120s is too short for some projects.
+IMPORTANT: When running ${testCommand}, set timeout: ${testTimeout} on the Bash tool call itself (not the shell 'timeout' command). The default 120s is too short.
 
 Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
@@ -726,7 +726,9 @@ if (uiUrl) {
   envCheckPrompt += '2. UI: No UI/pages configured for this project. Set uiStatus = "SKIP", uiSkipReason = "No pages configured".\n\n'
 }
 
-envCheckPrompt += `3. Tests: cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -5 (use timeout: ${testTimeout})
+envCheckPrompt += `3. Tests: Run this command with the Bash tool's timeout parameter set to ${testTimeout}:
+   cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -5
+   Do NOT use the shell 'timeout' or 'gtimeout' command — set timeout: ${testTimeout} on the Bash tool call itself.
    - testsStatus = "PASS" if 0 failures
    - testsStatus = "FAIL" if any failures
    - Report testFailCount and testTotalCount\n`
