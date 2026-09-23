@@ -1,0 +1,137 @@
+{
+  "patterns": [
+    {
+      "name": "file-exists",
+      "syntax": "{file} exists [at root] [<= N lines]",
+      "regex": "^(\\S+)\\s+exists?\\b(?:\\s+at\\s+root)?",
+      "example": "AGENTS.md exists",
+      "notes": "Basic file existence check. Optionally checks line count with <= N lines."
+    },
+    {
+      "name": "directory-exists",
+      "syntax": "{dir}/ directory exists [with >= N {type}]",
+      "regex": "^(\\S+?)\\/?\\s+directory\\s+exists",
+      "example": "test/ directory exists with >= 1 tests",
+      "notes": "Directory existence with optional minimum file count. Supports aliases for test/tests and reference."
+    },
+    {
+      "name": "all-specs-frontmatter",
+      "syntax": "all specs have {field} frontmatter",
+      "regex": "^all\\s+specs\\s+have\\b.*frontmatter",
+      "example": "all specs have testable frontmatter",
+      "notes": "Verifies every spec file in specs/ has the required frontmatter field. Skips files with status: split."
+    },
+    {
+      "name": "paths-resolve",
+      "syntax": "all paths referenced in {file} resolve",
+      "regex": "all\\s+paths\\s+referenced\\s+in\\s+(\\S+)\\s+resolve",
+      "example": "all paths referenced in AGENTS.md resolve",
+      "notes": "Checks that all markdown links in the target file point to existing files. Skips http and anchor links."
+    },
+    {
+      "name": "root-clean",
+      "syntax": "root is clean [content: <= N] [code: <= N]",
+      "regex": "root\\s+is\\s+clean",
+      "example": "root is clean content: <= 10 code: <= 30",
+      "notes": "Limits the number of top-level items. Auto-detects code vs content projects. Defaults: content 10, code 30."
+    },
+    {
+      "name": "file-pointer",
+      "syntax": "{file} exists with pointer to {target}",
+      "regex": "(\\S+)\\s+exists\\s+with\\s+pointer\\s+to\\s+(\\S+)",
+      "example": "CLAUDE.md exists with pointer to AGENTS.md",
+      "notes": "Verifies file exists AND its content contains the target string."
+    },
+    {
+      "name": "bun-test-passes",
+      "syntax": "bun test passes",
+      "regex": "bun\\s+test.*passes",
+      "example": "bun test passes",
+      "notes": "Trivially passes as a placeholder. Actual bun test validation happens outside the matcher."
+    },
+    {
+      "name": "canary",
+      "syntax": "{description} canary {description}",
+      "regex": "canary",
+      "example": "scaffold conformity canary test exists",
+      "notes": "Checks that at least one test file with conformity or canary in its name exists in test/."
+    },
+    {
+      "name": "content-contains",
+      "syntax": "{file} contains [{item1}, {item2}, ...]",
+      "regex": "^(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]",
+      "example": "AGENTS.md contains [Rules, Key Files, Specs]",
+      "notes": "Verifies the file contains all listed comma-separated items."
+    },
+    {
+      "name": "content-not-contains",
+      "syntax": "{file} must NOT contain [{item1}, {item2}, ...]",
+      "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|has\\s+no)\\s+\\[([^\\]]+)\\]",
+      "example": "AGENTS.md must NOT contain [hardcoded-path, /Users/]",
+      "notes": "Verifies the file does NOT contain any of the listed items. Also matches 'has no [...]' syntax."
+    },
+    {
+      "name": "count-threshold",
+      "syntax": "{file} is under [{N}] {lines|words}",
+      "regex": "^(.+?)\\s+(?:is\\s+under|at\\s+most)\\s+\\[(\\d+)\\]\\s+(lines?|words?)",
+      "example": "AGENTS.md is under [200] lines",
+      "notes": "Checks file is under a line or word count threshold. Also matches 'at most [N]' syntax."
+    },
+    {
+      "name": "json-field-equals",
+      "syntax": "{file} {field} field equals [{value}]",
+      "regex": "^(\\S+)\\s+(\\S+)\\s+field\\s+equals\\s+\\[([^\\]]+)\\]",
+      "example": "package.json name field equals [rungate]",
+      "notes": "Checks a JSON file field equals the expected value. Supports nested fields with dot notation."
+    },
+    {
+      "name": "section-exists",
+      "syntax": "{file} has section [{SectionName}]",
+      "regex": "^(\\S+)\\s+has\\s+section\\s+\\[([^\\]]+)\\]",
+      "example": "AGENTS.md has section [Rules]",
+      "notes": "Verifies a markdown file contains a heading (any level) matching the section name."
+    },
+    {
+      "name": "regex-match",
+      "syntax": "{file} matches /{pattern}/{flags}",
+      "regex": "^(\\S+)\\s+matches\\s+\\/(.+?)\\/([gimsuvy]*)$",
+      "example": "AGENTS.md matches /^# \\w+/m",
+      "notes": "Tests file content against an arbitrary regex pattern with optional flags."
+    },
+    {
+      "name": "source-contains",
+      "syntax": "harness {file} contains [{keywords}]",
+      "regex": "^(?:harness\\s+)?(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]",
+      "example": "harness lib/conformity.ts contains [matchPattern, ParsedSC]",
+      "notes": "Like content-contains but restricted to source files in lib/, scripts/, hooks/, gates/ or prefixed with 'harness'."
+    },
+    {
+      "name": "json-has-field",
+      "syntax": "{file}.json has field {fieldName}",
+      "regex": "^(\\S+?)(?:\\.json)?\\s+has\\s+field\\s+(\\S+)",
+      "example": "package.json has field scripts.test",
+      "notes": "Checks a JSON file contains the specified field. Supports nested dot-notation paths."
+    },
+    {
+      "name": "scaffold-produces",
+      "syntax": "scaffold output {file} exists",
+      "regex": "^scaffold\\s+output\\s+(\\S+)\\s+exists",
+      "example": "scaffold output AGENTS.md exists",
+      "notes": "Verifies a file that scaffold is expected to produce exists. Currently checks file existence directly."
+    },
+    {
+      "name": "frontmatter-field",
+      "syntax": "{file} frontmatter has {field} [= {value}]",
+      "regex": "^(\\S+)\\s+frontmatter\\s+has\\s+(\\S+)(?:\\s*=\\s*(.+))?$",
+      "example": "specs/CONFIG-DRIVEN-TESTING-SPEC.md frontmatter has testable = yes",
+      "notes": "Checks frontmatter field existence and optionally its value. Parses YAML frontmatter from the file."
+    },
+    {
+      "name": "file-line-range",
+      "syntax": "{file} is between [{min}] and [{max}] lines",
+      "regex": "^(\\S+)\\s+is\\s+between\\s+\\[(\\d+)\\]\\s+and\\s+\\[(\\d+)\\]\\s+lines",
+      "example": "AGENTS.md is between [50] and [300] lines",
+      "notes": "Verifies file line count falls within an inclusive range [min, max]."
+    }
+  ]
+}
