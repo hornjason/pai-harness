@@ -7,7 +7,8 @@
  */
 import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
-import { join } from "path";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
 
 // ── Shared utilities ────────────────────────────────────────
@@ -178,15 +179,23 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<strin
 // ── Pattern matchers ────────────────────────────────────────
 
 type AssertionFn = (root: string) => void;
+type MatcherHandler = (sc: ParsedSC, match: RegExpMatchArray) => AssertionFn | null;
 
-export function matchPattern(sc: ParsedSC): AssertionFn | null {
-  const s = sc.statement;
+// Config loading with caching
+let _registryCache: Array<{ name: string; regex: string }> | null = null;
+function loadRegistry(): Array<{ name: string; regex: string }> {
+  if (_registryCache) return _registryCache;
+  const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", "config", "matcher-registry.json");
+  _registryCache = JSON.parse(readFileSync(configPath, "utf-8"));
+  return _registryCache!;
+}
 
-  const existsMatch = s.match(/^(\S+)\s+exists?\b(?:\s+at\s+root)?/i);
-  if (existsMatch) {
-    const target = existsMatch[1].replace(/`/g, "");
+// Handler registry — one function per pattern type
+const matcherHandlers: Record<string, MatcherHandler> = {
+  "file-exists": (sc, match) => {
+    const target = match[1].replace(/`/g, "");
     if (target.startsWith("~/") || target.startsWith("/")) return null;
-    const limitMatch = s.match(/≤\s*(\d+)\s*lines/);
+    const limitMatch = sc.statement.match(/≤\s*(\d+)\s*lines/);
     return (root) => {
       expect(existsSync(join(root, target))).toBe(true);
       if (limitMatch) {
@@ -195,12 +204,11 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(lineCount).toBeLessThanOrEqual(parseInt(limitMatch[1]));
       }
     };
-  }
+  },
 
-  const dirMatch = s.match(/^(\S+?)\/?\s+directory\s+exists/i);
-  if (dirMatch) {
-    const dir = dirMatch[1].replace(/`/g, "");
-    const minMatch = s.match(/(?:with\s+)?≥\s*(\d+)\s+(\w+)/);
+  "dir-exists": (sc, match) => {
+    const dir = match[1].replace(/`/g, "");
+    const minMatch = sc.statement.match(/(?:with\s+)?≥\s*(\d+)\s+(\w+)/);
     const aliases: Record<string, string[]> = {
       "tests": ["tests", "test"],
       "test": ["test", "tests"],
@@ -234,9 +242,9 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(count).toBeGreaterThanOrEqual(required);
       }
     };
-  }
+  },
 
-  if (/^all\s+specs\s+have\b/i.test(s) && /frontmatter/i.test(s)) {
+  "all-specs-frontmatter": (sc) => {
     return (root) => {
       const specsDir = join(root, "specs");
       if (!existsSync(specsDir)) return;
@@ -260,11 +268,10 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       });
       expect(missing).toEqual([]);
     };
-  }
+  },
 
-  if (/all\s+paths\s+referenced\s+in\s+(\S+)\s+resolve/i.test(s)) {
-    const fileMatch = s.match(/in\s+(\S+)/i);
-    const target = fileMatch?.[1]?.replace(/`/g, "") || "AGENTS.md";
+  "paths-resolve": (sc, match) => {
+    const target = match[1]?.replace(/`/g, "") || "AGENTS.md";
     return (root) => {
       const p = join(root, target);
       if (!existsSync(p)) return;
@@ -278,11 +285,11 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       }
       expect(broken).toEqual([]);
     };
-  }
+  },
 
-  if (/root\s+is\s+clean/i.test(s)) {
-    const contentLimit = s.match(/content:\s*≤\s*(\d+)/i);
-    const codeLimit = s.match(/code:\s*≤\s*(\d+)/i);
+  "root-clean": (sc) => {
+    const contentLimit = sc.statement.match(/content:\s*≤\s*(\d+)/i);
+    const codeLimit = sc.statement.match(/code:\s*≤\s*(\d+)/i);
     return (root) => {
       const items = readdirSync(root).filter(f => !f.startsWith(".") && f !== "node_modules");
       const isCode = existsSync(join(root, "src")) || existsSync(join(root, "lib")) ||
@@ -301,34 +308,33 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       }
       expect(items.length).toBeLessThanOrEqual(limit);
     };
-  }
+  },
 
-  const pointerMatch = s.match(/(\S+)\s+exists\s+with\s+pointer\s+to\s+(\S+)/i);
-  if (pointerMatch) {
-    const file = pointerMatch[1].replace(/`/g, "");
-    const target = pointerMatch[2].replace(/`/g, "");
+  "pointer-exists": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const target = match[2].replace(/`/g, "");
     return (root) => {
       expect(existsSync(join(root, file))).toBe(true);
       expect(readFileSync(join(root, file), "utf-8")).toContain(target);
     };
-  }
+  },
 
-  if (/bun\s+test.*passes/i.test(s)) return () => { expect(true).toBe(true); };
+  "test-passes": () => {
+    return () => { expect(true).toBe(true); };
+  },
 
-  if (/canary/i.test(s)) {
+  "canary": () => {
     return (root) => {
       const testDir = existsSync(join(root, "test")) ? join(root, "test") : join(root, "tests");
       if (!existsSync(testDir)) return;
       const testFiles = readdirSync(testDir).filter(f => f.includes("conformity") || f.includes("canary"));
       expect(testFiles.length).toBeGreaterThanOrEqual(1);
     };
-  }
+  },
 
-  // SC-288: content-contains - file contains [item1, item2, ...]
-  const containsMatch = s.match(/^(\S+)\s+contains?\s+\[([^\]]+)\]/i);
-  if (containsMatch) {
-    const file = containsMatch[1].replace(/`/g, "");
-    const items = containsMatch[2].split(",").map(i => i.trim());
+  "content-contains": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const items = match[2].split(",").map(i => i.trim());
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -340,13 +346,11 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(content).toContain(item);
       }
     };
-  }
+  },
 
-  // SC-289: content-not-contains - file must NOT contain [item1, ...]
-  const notContainsMatch = s.match(/^(\S+)\s+(?:must\s+NOT\s+contain|has\s+no)\s+\[([^\]]+)\]/i);
-  if (notContainsMatch) {
-    const file = notContainsMatch[1].replace(/`/g, "");
-    const items = notContainsMatch[2].split(",").map(i => i.trim());
+  "content-not-contains": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const items = match[2].split(",").map(i => i.trim());
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -358,14 +362,12 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(content).not.toContain(item);
       }
     };
-  }
+  },
 
-  // SC-290: count-threshold - file/section is under [N] lines / at most [N] words
-  const countMatch = s.match(/^(.+?)\s+(?:is\s+under|at\s+most)\s+\[(\d+)\]\s+(lines?|words?)/i);
-  if (countMatch) {
-    const file = countMatch[1].replace(/`/g, "").trim();
-    const threshold = parseInt(countMatch[2]);
-    const unit = countMatch[3].toLowerCase();
+  "count-threshold": (sc, match) => {
+    const file = match[1].replace(/`/g, "").trim();
+    const threshold = parseInt(match[2]);
+    const unit = match[3].toLowerCase();
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -381,14 +383,12 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(wordCount).toBeLessThanOrEqual(threshold);
       }
     };
-  }
+  },
 
-  // SC-291: json-field-equals - file.json field equals [value]
-  const jsonMatch = s.match(/^(\S+)\s+(\S+)\s+field\s+equals\s+\[([^\]]+)\]/i);
-  if (jsonMatch) {
-    const file = jsonMatch[1].replace(/`/g, "");
-    const field = jsonMatch[2];
-    const expectedValue = jsonMatch[3];
+  "json-field-equals": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const field = match[2];
+    const expectedValue = match[3];
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -405,13 +405,11 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       }
       expect(value).toBe(expectedValue);
     };
-  }
+  },
 
-  // SC-292: section-exists - file has section [SectionName]
-  const sectionMatch = s.match(/^(\S+)\s+has\s+section\s+\[([^\]]+)\]/i);
-  if (sectionMatch) {
-    const file = sectionMatch[1].replace(/`/g, "");
-    const sectionName = sectionMatch[2];
+  "section-exists": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const sectionName = match[2];
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -423,14 +421,12 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       const hasSection = new RegExp(`^#+ ${sectionName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "mi").test(content);
       expect(hasSection).toBe(true);
     };
-  }
+  },
 
-  // SC-336: regex-match - X matches /pattern/
-  const regexMatchPattern = s.match(/^(\S+)\s+matches\s+\/(.+?)\/([gimsuvy]*)$/i);
-  if (regexMatchPattern) {
-    const file = regexMatchPattern[1].replace(/`/g, "");
-    const pattern = regexMatchPattern[2];
-    const flags = regexMatchPattern[3] || "";
+  "regex-match": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const pattern = match[2];
+    const flags = match[3] || "";
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -441,18 +437,14 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       const regex = new RegExp(pattern, flags);
       expect(regex.test(content)).toBe(true);
     };
-  }
+  },
 
-  // SC-337: source-contains - harness {file} contains [keywords]
-  // Note: This handles the explicit "harness {file}" pattern for clarity,
-  // though the existing content-contains matcher also works for source files
-  const sourceContainsMatch = s.match(/^(?:harness\s+)?(\S+)\s+contains?\s+\[([^\]]+)\]/i);
-  if (sourceContainsMatch) {
-    const file = sourceContainsMatch[1].replace(/`/g, "");
+  "source-contains": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
     // Only match if it's a source file path (lib/, scripts/, hooks/, gates/) or has "harness" prefix
-    const isSourceFile = /^(lib|scripts|hooks|gates)\//.test(file) || s.toLowerCase().includes("harness");
+    const isSourceFile = /^(lib|scripts|hooks|gates)\//.test(file) || sc.statement.toLowerCase().includes("harness");
     if (isSourceFile) {
-      const items = sourceContainsMatch[2].split(",").map(i => i.trim());
+      const items = match[2].split(",").map(i => i.trim());
       return (root) => {
         const path = join(root, file);
         if (!existsSync(path)) {
@@ -465,14 +457,13 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         }
       };
     }
-  }
+    return null;
+  },
 
-  // SC-338: json-has-field - {file}.json has field {name}
-  const jsonHasFieldMatch = s.match(/^(\S+?)(?:\.json)?\s+has\s+field\s+(\S+)/i);
-  if (jsonHasFieldMatch) {
-    const file = jsonHasFieldMatch[1].replace(/`/g, "");
+  "json-has-field": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
     const filePath = file.endsWith(".json") ? file : `${file}.json`;
-    const field = jsonHasFieldMatch[2];
+    const field = match[2];
     return (root) => {
       const path = join(root, filePath);
       if (!existsSync(path)) {
@@ -489,26 +480,22 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       }
       expect(value).toBeDefined();
     };
-  }
+  },
 
-  // SC-339: scaffold-produces - scaffold output {file} exists
-  const scaffoldProducesMatch = s.match(/^scaffold\s+output\s+(\S+)\s+exists/i);
-  if (scaffoldProducesMatch) {
-    const file = scaffoldProducesMatch[1].replace(/`/g, "");
+  "scaffold-produces": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
     return (root) => {
       // For now, this checks if the file exists in the root
       // A more complete implementation would actually run scaffold and check output
       const path = join(root, file);
       expect(existsSync(path)).toBe(true);
     };
-  }
+  },
 
-  // SC-340: frontmatter-field - {file} frontmatter has {field} = {value} OR {file} frontmatter has {field}
-  const frontmatterMatch = s.match(/^(\S+)\s+frontmatter\s+has\s+(\S+)(?:\s*=\s*(.+))?$/i);
-  if (frontmatterMatch) {
-    const file = frontmatterMatch[1].replace(/`/g, "");
-    const field = frontmatterMatch[2];
-    const expectedValue = frontmatterMatch[3]?.trim();
+  "frontmatter-field": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const field = match[2];
+    const expectedValue = match[3]?.trim();
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -523,14 +510,12 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
         expect(fm?.[field]).toBe(expectedValue);
       }
     };
-  }
+  },
 
-  // file-line-range - {file} is between [N] and [M] lines
-  const lineRangeMatch = s.match(/^(\S+)\s+is\s+between\s+\[(\d+)\]\s+and\s+\[(\d+)\]\s+lines/i);
-  if (lineRangeMatch) {
-    const file = lineRangeMatch[1].replace(/`/g, "");
-    const min = parseInt(lineRangeMatch[2]);
-    const max = parseInt(lineRangeMatch[3]);
+  "file-line-range": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const min = parseInt(match[2]);
+    const max = parseInt(match[3]);
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
@@ -542,8 +527,22 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
       expect(lineCount).toBeGreaterThanOrEqual(min);
       expect(lineCount).toBeLessThanOrEqual(max);
     };
-  }
+  },
+};
 
+export function matchPattern(sc: ParsedSC): AssertionFn | null {
+  const registry = loadRegistry();
+  for (const entry of registry) {
+    const regex = new RegExp(entry.regex, "i");
+    const match = sc.statement.match(regex);
+    if (match) {
+      const handler = matcherHandlers[entry.name];
+      if (handler) {
+        const result = handler(sc, match);
+        if (result) return result;
+      }
+    }
+  }
   return null;
 }
 
