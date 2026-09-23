@@ -117,7 +117,7 @@ export function writeFindingsReport(root: string): string {
   return reportPath;
 }
 
-interface ParsedSC {
+export interface ParsedSC {
   id: string;
   statement: string;
   specFile: string;
