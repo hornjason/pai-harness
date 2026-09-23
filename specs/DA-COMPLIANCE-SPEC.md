@@ -1,10 +1,8 @@
 ---
 doc-type: spec
-testable: yes
-governs: DA compliance evaluation — role-specific audit criteria, transcript grading, and compliance dashboard
-created: 2026-09-22
-updated: 2026-09-22
 status: active
+owner: jason
+updated: 2026-09-22
 ---
 
 # DA Compliance Spec
@@ -73,6 +71,23 @@ specs/DA-COMPLIANCE-SPEC.md   -- this spec: criteria tables + baseline scores
 - **SC-420**: Dashboard output shows per-rule compliance rate as percentage (behavioral)
 - **SC-421**: audit-transcript.ts imports shared eval criteria from lib/eval-criteria.ts
 - **SC-422**: Baseline DA compliance score documented with date and per-criterion pass rates
+
+### Observability — Deterministic Grading + Self-Healing (Council 2026-09-23)
+
+- [ ] SC-423: lib/grade-agents.ts exists
+- [ ] SC-424: lib/grade-agents.ts contains [evaluateCriteria]
+- [ ] SC-425: lib/grade-agents.ts contains [parseToolCalls]
+- [ ] SC-426: workflows/ship.js GRADE phase does not contain [Grade each agent] (LLM prompt removed)
+- [ ] SC-427: workflows/ship-and-heal.js contains [COMPLIANCE_LOW]
+- [ ] SC-428: workflows/ship-and-heal.js contains [gradeResult]
+- [ ] SC-429: lib/observability-types.ts exists
+- [ ] SC-430: lib/observability-types.ts contains [TraceSignal]
+- [ ] SC-431: lib/observability-types.ts contains [fixableBy]
+- [ ] SC-432: gates/prompt-health.ts exists
+- [ ] SC-433: gates/prompt-health.ts contains [agentType]
+- [ ] SC-434: gates/prompt-health.ts has no [transcript] (static only, not runtime)
+- [ ] SC-435: test/grade-agents.test.ts exists
+- [ ] SC-436: workflows/ship-and-heal.js contains [MAX_HEAL_SPAWNS]
 
 ## Grading Scale
 

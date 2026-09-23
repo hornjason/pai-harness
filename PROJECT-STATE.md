@@ -18,18 +18,26 @@ Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
 
 **Test suite: 1,260 tests, 0 fail across 59 files**
 
-**Closed this session:** #566, #567, #569, #572 (4 issues)
-**Total closed across sessions 8+9:** 15 issues
+**Closed this session:** #566, #567, #568, #569, #570, #572 (6 issues)
+**Total closed across sessions 8+9:** 17 issues
+
+**Built this session:**
+- ship-and-heal.js: closed-loop (ship → RCA → fix → re-verify)
+- lib/promote-outputs.ts: auto-promotes council/research to docs/ on commit
+- Config-driven test timeout (rungate.json test.timeout)
+- All DDB hardcoding removed from ship.js + prove.js
+- Council on observability (14 SCs approved, Phase 0+1 next)
+- Witness LIGHT-skip, DOCS.md→AGENTS.md, timeout instruction fixes
 
 **Next priorities:**
-1. P0: #568 Tag behavioral SCs (SC-345, SC-346) — ship-and-heal running (wf_022c842d-828)
-2. P0: #570 Rewrite hook-wiring SCs (SC-347) — code merged, needs verification + close
-3. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
-4. P0: #554 Wire create-spec SC validation (SC-382)
-5. P0: #571 Consumer extension (SC-384, SC-395)
-6. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
-7. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331)
-8. P0: prove.js also needs container config for DDB (add to DDB rungate.json)
+1. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
+2. P0: #554 Wire create-spec SC validation (SC-382)
+3. P0: #571 Consumer extension (SC-384, SC-395)
+4. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
+5. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331) — includes 5 skipped matcher tests
+6. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)
+7. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading replacing LLM (14 SCs in DA-COMPLIANCE)
+8. P0: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
 9. P1: #565 Verify worktree fix on real cross-repo run
 10. P1: #561 Brief compliance gate (SC-407–SC-409)
 
