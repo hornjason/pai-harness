@@ -49,8 +49,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [ ] SC-370: Every hook file traces to at least one SC in a testable spec
 - [ ] SC-371: No hook file exceeds 150 lines
 - [ ] SC-372: Hook logic in lib/ has unit tests independent of hook trigger mechanism
-- [ ] SC-391: Active hooks listed in config, not determined by file existence alone
-- [ ] SC-392: Consumers can enable/disable hooks via config without deleting files
+- [ ] SC-391: .claude/settings.json has field hooks
+- [ ] SC-392: .claude/rungate.json has field hooks
 
 ## Implementation
 

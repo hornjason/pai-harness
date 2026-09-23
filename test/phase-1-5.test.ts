@@ -163,3 +163,76 @@ describe("SC-294: directory name validation", () => {
     expect(true).toBe(true);
   });
 });
+
+// ── #570: Hook-wiring SCs use static file check patterns ────────
+
+describe("#570: hook-wiring SCs rewritten to static patterns", () => {
+  const specRoot = join(import.meta.dir, "..", "specs");
+
+  test("SC-169 uses a matchable static pattern", () => {
+    const content = readFileSync(join(specRoot, "bootstrap-data-flow", "success-criteria.md"), "utf-8");
+    const sc169Line = content.split("\n").find(l => l.includes("SC-169"));
+    expect(sc169Line).toBeDefined();
+    // Extract statement after the SC-ID prefix
+    const statement = sc169Line!.replace(/^.*?SC-169:\s*/, "");
+    const matcher = matchPattern({ id: "SC-169", statement, specFile: "success-criteria.md" });
+    expect(matcher).not.toBeNull();
+  });
+
+  test("SC-188 uses a matchable static pattern", () => {
+    const content = readFileSync(join(specRoot, "bootstrap-data-flow", "success-criteria.md"), "utf-8");
+    const sc188Line = content.split("\n").find(l => l.includes("SC-188"));
+    expect(sc188Line).toBeDefined();
+    const statement = sc188Line!.replace(/^.*?SC-188:\s*/, "");
+    const matcher = matchPattern({ id: "SC-188", statement, specFile: "success-criteria.md" });
+    expect(matcher).not.toBeNull();
+  });
+
+  test("SC-305 uses a matchable static pattern", () => {
+    const content = readFileSync(join(specRoot, "AGENTS-MD-TEMPLATE-SPEC.md"), "utf-8");
+    const sc305Line = content.split("\n").find(l => l.includes("SC-305"));
+    expect(sc305Line).toBeDefined();
+    const statement = sc305Line!.replace(/^.*?SC-305:\s*/, "");
+    const matcher = matchPattern({ id: "SC-305", statement, specFile: "AGENTS-MD-TEMPLATE-SPEC.md" });
+    expect(matcher).not.toBeNull();
+  });
+
+  test("SC-391 uses a matchable static pattern", () => {
+    const content = readFileSync(join(specRoot, "HOOK-ARCHITECTURE-SPEC.md"), "utf-8");
+    const sc391Line = content.split("\n").find(l => l.includes("SC-391"));
+    expect(sc391Line).toBeDefined();
+    const statement = sc391Line!.replace(/^.*?SC-391:\s*/, "");
+    const matcher = matchPattern({ id: "SC-391", statement, specFile: "HOOK-ARCHITECTURE-SPEC.md" });
+    expect(matcher).not.toBeNull();
+  });
+
+  test("SC-392 uses a matchable static pattern", () => {
+    const content = readFileSync(join(specRoot, "HOOK-ARCHITECTURE-SPEC.md"), "utf-8");
+    const sc392Line = content.split("\n").find(l => l.includes("SC-392"));
+    expect(sc392Line).toBeDefined();
+    const statement = sc392Line!.replace(/^.*?SC-392:\s*/, "");
+    const matcher = matchPattern({ id: "SC-392", statement, specFile: "HOOK-ARCHITECTURE-SPEC.md" });
+    expect(matcher).not.toBeNull();
+  });
+
+  test("no behavioral hook-wiring language remains in specs", () => {
+    const files = [
+      join(specRoot, "bootstrap-data-flow", "success-criteria.md"),
+      join(specRoot, "HOOK-ARCHITECTURE-SPEC.md"),
+      join(specRoot, "AGENTS-MD-TEMPLATE-SPEC.md"),
+    ];
+    const behavioralPatterns = [
+      /have executable permission/,
+      /exist on disk.*ctxlint/,
+      /not determined by file existence/,
+      /enable\/disable.*without deleting/,
+      /no hardcoded paths/,
+    ];
+    for (const file of files) {
+      const content = readFileSync(file, "utf-8");
+      for (const pattern of behavioralPatterns) {
+        expect(content).not.toMatch(pattern);
+      }
+    }
+  });
+});
