@@ -650,6 +650,7 @@ ${testsTable}
 | Sync spec tests | \`bunx rungate sync-tests .\` |
 | Create spec | \`bunx rungate create-spec "title"\` |
 | Create ADR | \`bunx rungate create-adr "title"\` |
+| Create SC | \`bunx rungate create-sc --pattern <name> --params '<json>'\` |
 | Extract constraints | \`bunx rungate extract-constraints .\` |
 | Check findings | \`cat .rungate/conformity-findings.json\` — structured findings with fix commands |
 | Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
