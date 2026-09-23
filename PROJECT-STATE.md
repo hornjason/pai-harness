@@ -2,32 +2,25 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
+Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 
-**Stress test results (4 parallel ships):**
-- 74 agents, 0 errors, 0 skipped, 657 tool calls, ~59 min
-- All 4 ships: SHIP_FAILED (witness LIGHT-skip bug + env-check hardcoding)
-- Marcus code merged to main for #566, #567, #569 (3 of 4)
-- Found: DDB-hardcoded URLs in env-check, scope witness required for LIGHT tier
-- Found: no monitoring of agent prompts (only results) — missed prompt bugs
-- Fixed: all hardcoded DDB values removed from ship.js
-- Fixed: witness test allows missing scope for LIGHT ceremony
-- Filed: #572 (env-check hardcoding)
+**Critical fix: sync-sc-status cross-spec ID collision**
+- Root cause: sync tracked SCs by bare ID, so PASS from one spec flipped same ID in different spec
+- Fix: scoped keys (specFile::id), duplicate detection with warnings
+- Renumbered 14 duplicate SCs across DA-COMPLIANCE, INSTRUCTION-COMPLIANCE, SESSION-AUDIT
+- Added SD-4 test to prevent future duplicate SC IDs
+- Added cross-spec isolation test
 
-**Issues filed this session:** #566, #567, #568, #569, #570, #571, #572
+**Test suite: 1,120 pass, 0 fail across 60 files**
 
-**Test suite: 1,260 tests, 0 fail across 59 files**
+**SCs confirmed passing:** SC-379 (matcher-registry.json), SC-348 (templates/), SC-349 (_shared.md)
 
-**Closed this session:** #566, #567, #568, #569, #570, #572 (6 issues)
-**Total closed across sessions 8+9:** 17 issues
-
-**Built this session:**
-- ship-and-heal.js: closed-loop (ship → RCA → fix → re-verify)
-- lib/promote-outputs.ts: auto-promotes council/research to docs/ on commit
-- Config-driven test timeout (rungate.json test.timeout)
-- All DDB hardcoding removed from ship.js + prove.js
-- Council on observability (14 SCs approved, Phase 0+1 next)
-- Witness LIGHT-skip, DOCS.md→AGENTS.md, timeout instruction fixes
+**Sprint priorities (AFK):**
+- P0: #553 create-sc CLI (Phase G)
+- P0: #554 Wire create-spec SC validation
+- P0: #571 Consumer extension
+- P0: #556 audit-specs CLI (Phase H)
+- P0: #557 Migrate all specs to strict
 
 **Next priorities:**
 1. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
@@ -52,11 +45,11 @@ Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
 
 ## ✅ Config-Driven Testing — Phases A-E (COMPLETE)
 
-## ⬜ Config-Driven Testing — Phase F: Matcher Registry (#550-#552, #555) (NOT STARTED)
+## 🔄 Config-Driven Testing — Phase F: Matcher Registry (#550-#552, #555) (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-379 | matcher-registry.json config with all 19 patterns |
+| ✅ | SC-379 | matcher-registry.json config with all 19 patterns |
 | ⬜ | SC-380 | matchPattern() reads from config, no hardcoded branches |
 | ⬜ | SC-381 | SPEC-TEMPLATE auto-generated from config |
 | ⬜ | SC-384 | Consumer custom matcher extension |
@@ -99,8 +92,8 @@ Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-348 | Templates in templates/agent-briefs/ |
-| ⬜ | SC-349 | Shared rules in _shared.md |
+| ✅ | SC-348 | Templates in templates/agent-briefs/ |
+| ✅ | SC-349 | Shared rules in _shared.md |
 | ⬜ | SC-350 | Scaffold reads template files |
 | ⬜ | SC-351 | All 8 required sections present |
 | ✅ | SC-352 | All briefs model: sonnet |

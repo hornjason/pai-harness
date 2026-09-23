@@ -12,7 +12,7 @@
     "P1: #565 Verify worktree fix on real cross-repo run",
     "P1: #561 Brief compliance gate (SC-407–SC-409)"
   ],
-  "notes": "Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.\n\n**Stress test results (4 parallel ships):**\n- 74 agents, 0 errors, 0 skipped, 657 tool calls, ~59 min\n- All 4 ships: SHIP_FAILED (witness LIGHT-skip bug + env-check hardcoding)\n- Marcus code merged to main for #566, #567, #569 (3 of 4)\n- Found: DDB-hardcoded URLs in env-check, scope witness required for LIGHT tier\n- Found: no monitoring of agent prompts (only results) — missed prompt bugs\n- Fixed: all hardcoded DDB values removed from ship.js\n- Fixed: witness test allows missing scope for LIGHT ceremony\n- Filed: #572 (env-check hardcoding)\n\n**Issues filed this session:** #566, #567, #568, #569, #570, #571, #572\n\n**Test suite: 1,260 tests, 0 fail across 59 files**\n\n**Closed this session:** #566, #567, #568, #569, #570, #572 (6 issues)\n**Total closed across sessions 8+9:** 17 issues\n\n**Built this session:**\n- ship-and-heal.js: closed-loop (ship → RCA → fix → re-verify)\n- lib/promote-outputs.ts: auto-promotes council/research to docs/ on commit\n- Config-driven test timeout (rungate.json test.timeout)\n- All DDB hardcoding removed from ship.js + prove.js\n- Council on observability (14 SCs approved, Phase 0+1 next)\n- Witness LIGHT-skip, DOCS.md→AGENTS.md, timeout instruction fixes",
+  "notes": "Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.\n\n**Critical fix: sync-sc-status cross-spec ID collision**\n- Root cause: sync tracked SCs by bare ID, so PASS from one spec flipped same ID in different spec\n- Fix: scoped keys (specFile::id), duplicate detection with warnings\n- Renumbered 14 duplicate SCs across DA-COMPLIANCE, INSTRUCTION-COMPLIANCE, SESSION-AUDIT\n- Added SD-4 test to prevent future duplicate SC IDs\n- Added cross-spec isolation test\n\n**Test suite: 1,120 pass, 0 fail across 60 files**\n\n**SCs confirmed passing:** SC-379 (matcher-registry.json), SC-348 (templates/), SC-349 (_shared.md)\n\n**Sprint priorities (AFK):**\n- P0: #553 create-sc CLI (Phase G)\n- P0: #554 Wire create-spec SC validation\n- P0: #571 Consumer extension\n- P0: #556 audit-specs CLI (Phase H)\n- P0: #557 Migrate all specs to strict",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
@@ -63,7 +63,7 @@
         {
           "id": "SC-379",
           "what": "matcher-registry.json config with all 19 patterns",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-380",
@@ -200,12 +200,12 @@
         {
           "id": "SC-348",
           "what": "Templates in templates/agent-briefs/",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-349",
           "what": "Shared rules in _shared.md",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-350",
