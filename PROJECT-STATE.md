@@ -16,22 +16,22 @@ Session 9 — CONFIG-DRIVEN-TESTING-SPEC completion + harness stress test.
 
 **Issues filed this session:** #566, #567, #568, #569, #570, #571, #572
 
-**Test suite: 1,261 tests, 5 fail (from Marcus parallel commits) across 59 files**
+**Test suite: 1,260 tests, 0 fail across 59 files**
+
+**Closed this session:** #566, #567, #569, #572 (4 issues)
+**Total closed across sessions 8+9:** 15 issues
 
 **Next priorities:**
-1. P0: #572 Fix env-check hardcoding — DONE (committed 7c50374)
-2. P0: Fix HMAC witness LIGHT skip — DONE (committed 7c50374)
-3. P0: #568 Tag behavioral SCs (SC-345, SC-346) — Phase A classification
-4. P0: #570 Rewrite hook-wiring SCs (SC-347) — Phase A, code merged by Marcus
-5. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
-6. P0: #554 Wire create-spec SC validation (SC-382)
-7. P0: #571 Consumer extension (SC-384, SC-395)
-8. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
-9. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331)
-10. P0: Build ship-and-heal.js — closed-loop self-improvement workflow
-11. P0: Fix 5 test failures from parallel ship Marcus commits
-12. P1: #565 Verify worktree fix on real cross-repo run
-13. P1: #561 Brief compliance gate (SC-407–SC-409)
+1. P0: #568 Tag behavioral SCs (SC-345, SC-346) — ship-and-heal running (wf_022c842d-828)
+2. P0: #570 Rewrite hook-wiring SCs (SC-347) — code merged, needs verification + close
+3. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
+4. P0: #554 Wire create-spec SC validation (SC-382)
+5. P0: #571 Consumer extension (SC-384, SC-395)
+6. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
+7. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331)
+8. P0: prove.js also needs container config for DDB (add to DDB rungate.json)
+9. P1: #565 Verify worktree fix on real cross-repo run
+10. P1: #561 Brief compliance gate (SC-407–SC-409)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
