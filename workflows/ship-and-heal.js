@@ -1,16 +1,14 @@
 export const meta = {
   name: 'ship-and-heal',
-  description: 'Closed-loop: ship → RCA on failure → fix → re-ship. Circuit breaker at 3 iterations.',
-  whenToUse: 'When shipping an issue that may need harness-level fixes to pass. Self-improving loop.',
+  description: 'Ship → RCA on failure → fix → re-verify. One ship + one heal cycle max.',
+  whenToUse: 'Ship an issue with automatic failure recovery. Falls back to human on unfixable errors.',
   phases: [
     { title: 'Ship', detail: 'Run ship workflow' },
     { title: 'RCA', detail: 'Analyze failure root cause' },
     { title: 'Fix', detail: 'Implement fix for root cause' },
-    { title: 'Re-Ship', detail: 'Re-run ship with fix applied' },
+    { title: 'Re-Verify', detail: 'Verify fix passes tests and gates' },
   ],
 }
-
-const MAX_ITERATIONS = 3
 
 const RCA_SCHEMA = {
   type: 'object',
@@ -36,6 +34,18 @@ const FIX_SCHEMA = {
   required: ['success', 'summary'],
 }
 
+const VERIFY_SCHEMA = {
+  type: 'object',
+  properties: {
+    testsPass: { type: 'boolean' },
+    testCount: { type: 'number' },
+    failCount: { type: 'number' },
+    gateResult: { type: 'string' },
+    summary: { type: 'string' },
+  },
+  required: ['testsPass', 'summary'],
+}
+
 let parsedArgs = args || {}
 if (typeof parsedArgs === 'string') {
   try { parsedArgs = JSON.parse(parsedArgs) } catch { parsedArgs = {} }
@@ -49,52 +59,62 @@ const ISSUE = parsedArgs.issue
 const PROJECT_ROOT = parsedArgs.projectRoot
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-config'
-const SHIP_ARGS = { ...parsedArgs }
 
-const iterations = []
+// Read test config
+const testConfig = await agent(`
+Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section.
+If no test section or file doesn't exist, return command: "bun test", timeout: 120000.
+`, { label: 'test-config', schema: {
+  type: 'object',
+  properties: {
+    command: { type: 'string' },
+    timeout: { type: 'number' },
+  },
+  required: ['command', 'timeout'],
+}})
+const testCommand = testConfig?.command || 'bun test'
+const testTimeout = testConfig?.timeout || 120000
 
-for (let i = 0; i < MAX_ITERATIONS; i++) {
-  const iterLabel = i === 0 ? '' : ` (iteration ${i + 1})`
-  phase(i === 0 ? 'Ship' : 'Re-Ship')
-  log(`Ship attempt ${i + 1}/${MAX_ITERATIONS}${iterLabel}`)
+// ════════════════════════════════════════════════════════════
+// PHASE 1: SHIP — run full ship workflow (single workflow() call)
+// ════════════════════════════════════════════════════════════
 
-  const shipResult = await workflow(
-    { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
-    SHIP_ARGS
-  )
+phase('Ship')
+log(`Shipping #${ISSUE} through harness`)
 
-  const status = shipResult?.status || 'UNKNOWN'
-  log(`Ship result: ${status}`)
+const shipResult = await workflow(
+  { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
+  { ...parsedArgs }
+)
 
-  const FAILURE_STATUSES = ['SHIP_FAILED', 'SCOPE_FAILED', 'VERIFY_FAILED', 'IMPLEMENT_FAILED', 'DISCOVERY_FAILED', 'GOAL_FAILED', 'ARGS_ERROR', 'UNKNOWN']
-  const isSuccess = !FAILURE_STATUSES.includes(status) && shipResult?.success !== false
-  if (isSuccess) {
-    iterations.push({ attempt: i + 1, status, action: 'COMPLETED' })
-    return {
-      status: 'SHIPPED',
-      issue: ISSUE,
-      iterations,
-      totalAttempts: i + 1,
-      finalResult: shipResult,
-    }
+const status = shipResult?.status || 'UNKNOWN'
+log(`Ship result: ${status}`)
+
+const FAILURE_STATUSES = ['SHIP_FAILED', 'SCOPE_FAILED', 'VERIFY_FAILED', 'IMPLEMENT_FAILED', 'DISCOVERY_FAILED', 'GOAL_FAILED', 'ARGS_ERROR', 'UNKNOWN']
+const isSuccess = !FAILURE_STATUSES.includes(status) && shipResult?.success !== false
+
+if (isSuccess) {
+  return {
+    status: 'SHIPPED',
+    issue: ISSUE,
+    shipResult,
+    healed: false,
   }
+}
 
-  const failures = shipResult?.failures || shipResult?.detail?.failures || []
-  const failureText = Array.isArray(failures) ? failures.join('\n') : String(failures)
+// ════════════════════════════════════════════════════════════
+// PHASE 2: RCA — analyze why ship failed
+// ════════════════════════════════════════════════════════════
 
-  iterations.push({ attempt: i + 1, status, failures: failureText })
+phase('RCA')
 
-  if (i >= MAX_ITERATIONS - 1) {
-    log(`Circuit breaker: ${MAX_ITERATIONS} attempts exhausted`)
-    break
-  }
+const failures = shipResult?.failures || shipResult?.detail?.failures || []
+const failureText = Array.isArray(failures) ? failures.join('\n') : String(failures)
+const workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
 
-  phase('RCA')
-  log(`Analyzing failure: ${status}`)
+log(`Ship failed: ${status}. Analyzing root cause.`)
 
-  const workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
-
-  const rca = await agent(`
+const rca = await agent(`
 You are a root cause analyst for a ship workflow failure.
 
 ## Failure Context
@@ -109,7 +129,7 @@ You are a root cause analyst for a ship workflow failure.
 3. Classify the failure:
    - HARNESS_BUG: the ship workflow itself has a bug (wrong prompts, missing config reads, etc.)
    - CODE_BUG: Marcus wrote code that doesn't work (test failures, logic errors)
-   - ENV_ISSUE: environment problem (server not running, port conflict)
+   - ENV_ISSUE: environment problem (server not running, port conflict, DNS)
    - TEST_REGRESSION: existing tests broke by Marcus's changes
    - CONFIG_MISSING: project config missing required fields
    - UNKNOWN: can't determine
@@ -118,22 +138,29 @@ You are a root cause analyst for a ship workflow failure.
 6. Determine if it's automatically fixable
 
 Be specific — name files, line numbers, exact error messages.
-  `, { label: 'rca-' + (i + 1), phase: 'RCA', schema: RCA_SCHEMA })
+`, { label: 'rca', phase: 'RCA', schema: RCA_SCHEMA })
 
-  if (!rca || !rca.fixable) {
-    log(`RCA: ${rca?.failureClass || 'UNKNOWN'} — not auto-fixable: ${rca?.rootCause || 'unknown'}`)
-    iterations[iterations.length - 1].rca = rca
-    iterations[iterations.length - 1].action = 'NEEDS_HUMAN'
-    break
+if (!rca || !rca.fixable) {
+  log(`RCA: ${rca?.failureClass || 'UNKNOWN'} — not auto-fixable: ${rca?.rootCause || 'unknown'}`)
+  return {
+    status: 'NEEDS_HUMAN',
+    issue: ISSUE,
+    shipResult,
+    rca,
+    healed: false,
   }
+}
 
-  log(`RCA: ${rca.failureClass} — ${rca.rootCause}`)
-  iterations[iterations.length - 1].rca = rca
+log(`RCA: ${rca.failureClass} — ${rca.rootCause}`)
 
-  phase('Fix')
-  log(`Applying fix: ${rca.fixDescription}`)
+// ════════════════════════════════════════════════════════════
+// PHASE 3: FIX — apply the fix
+// ════════════════════════════════════════════════════════════
 
-  const fix = await agent(`
+phase('Fix')
+log(`Applying fix: ${rca.fixDescription}`)
+
+const fix = await agent(`
 You are a fix engineer. Apply this fix to the codebase.
 
 ## Root Cause
@@ -148,34 +175,66 @@ ${(rca.affectedFiles || []).join('\n') || 'Determine from root cause'}
 ## Instructions
 1. Read the affected files
 2. Apply the fix
-3. Run: cd ${PROJECT_ROOT} && bun test 2>&1 | tail -5
+3. Run: cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -10
+   Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 4. If tests pass, commit with message: "fix: ${rca.fixDescription.slice(0, 60)}"
 5. Push to main: git push origin main
 6. Report success/failure
 
 Do NOT introduce new features. Only fix the specific root cause.
-  `, { label: 'fix-' + (i + 1), phase: 'Fix', schema: FIX_SCHEMA })
+`, { label: 'fix', phase: 'Fix', schema: FIX_SCHEMA })
 
-  if (!fix?.success) {
-    log(`Fix failed: ${fix?.summary || 'unknown error'}`)
-    iterations[iterations.length - 1].action = 'FIX_FAILED'
-    break
+if (!fix?.success) {
+  log(`Fix failed: ${fix?.summary || 'unknown error'}`)
+  return {
+    status: 'FIX_FAILED',
+    issue: ISSUE,
+    shipResult,
+    rca,
+    fix,
+    healed: false,
   }
-
-  log(`Fix applied: ${fix.summary}`)
-  iterations[iterations.length - 1].action = 'FIXED'
-  iterations[iterations.length - 1].fix = fix
 }
 
-const lastIteration = iterations[iterations.length - 1]
-const finalStatus = lastIteration?.action === 'COMPLETED' ? 'SHIPPED' :
-  lastIteration?.action === 'NEEDS_HUMAN' ? 'NEEDS_HUMAN' :
-  lastIteration?.action === 'FIX_FAILED' ? 'FIX_FAILED' :
-  'CIRCUIT_BREAKER'
+log(`Fix applied: ${fix.summary}`)
+
+// ════════════════════════════════════════════════════════════
+// PHASE 4: RE-VERIFY — lightweight check that fix works
+// Uses agent() not workflow() to avoid nesting limitation
+// ════════════════════════════════════════════════════════════
+
+phase('Re-Verify')
+log('Re-verifying after fix — running tests and gates')
+
+const verify = await agent(`
+Verify the fix for issue #${ISSUE} after the heal cycle.
+
+1. Run the test suite:
+   cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -10
+   Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
+
+2. Run the ship gate to verify it passes now:
+   cd ${PROJECT_ROOT} && TEST_WORK_DIR="${workDir}" bun ${HARNESS_ROOT}/gates/run-gate.ts ship ${workDir}/workflow-state.json 2>&1 | tail -20
+   Set timeout to ${testTimeout}.
+
+3. Report:
+   - testsPass: true/false
+   - testCount and failCount from test output
+   - gateResult: the gate's PASS/FAIL output
+   - summary: one sentence
+
+If both tests pass AND gate passes, the fix worked.
+`, { label: 're-verify', phase: 'Re-Verify', schema: VERIFY_SCHEMA })
+
+const healed = verify?.testsPass === true
+log(`Re-verify: ${healed ? 'PASS' : 'FAIL'} — ${verify?.summary || 'no summary'}`)
 
 return {
-  status: finalStatus,
+  status: healed ? 'HEALED' : 'VERIFY_FAILED',
   issue: ISSUE,
-  iterations,
-  totalAttempts: iterations.length,
+  shipResult,
+  rca,
+  fix,
+  verify,
+  healed,
 }
