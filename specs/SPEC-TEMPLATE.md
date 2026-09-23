@@ -32,183 +32,142 @@ Each SC must be parseable by the conformity test generator (`lib/conformity.ts` 
 
 ### Recognized Patterns
 
+<!-- BEGIN GENERATED PATTERNS -->
 Use these exact patterns for auto-testable SCs:
 
-#### File Existence
-```
-- [ ] SC-N: {filename} exists
-- [ ] SC-N: {filename} exists at root
-- [ ] SC-N: {filename} exists, ≤{N} lines
-```
+#### file-exists
+**Syntax:** `{file} exists [at root] [<= N lines]`
 
-**Examples:**
-- `AGENTS.md exists`
-- `.claude/rungate.json exists at root, ≤100 lines`
-- `package.json exists`
+**Example:** `- [ ] SC-N: AGENTS.md exists`
 
-**Notes:** Don't use absolute paths (`~/` or `/`) — matcher skips them.
+**Notes:** Checks that a file exists at the project root. Optionally checks line count with <= N lines suffix.
 
-#### Directory Existence
-```
-- [ ] SC-N: {dirname}/ directory exists
-- [ ] SC-N: {dirname}/ directory exists with ≥{N} {things}
-```
+#### dir-exists
+**Syntax:** `{dir}/ directory exists [with >= N {type}]`
 
-**Examples:**
-- `specs/ directory exists`
-- `test/ directory exists with ≥3 files`
-- `tests/ directory exists with ≥1 test`
+**Example:** `- [ ] SC-N: specs/ directory exists`
 
-**Notes:** Matcher knows aliases (`test/` ⟺ `tests/`, `reference/` ⟺ `ref/`, `docs/archive/`).
+**Notes:** Checks that a directory exists. Supports aliases (test/tests, reference/ref). Optional minimum file count.
 
-#### Frontmatter Validation
-```
-- [ ] SC-N: All specs have {field} frontmatter
-- [ ] SC-N: All specs have `testable: true/false` frontmatter
-```
+#### all-specs-frontmatter
+**Syntax:** `all specs have frontmatter`
 
-**Examples:**
-- `All specs have testable frontmatter`
-- `All specs have updated field in frontmatter`
+**Example:** `- [ ] SC-N: all specs have frontmatter`
 
-**Notes:** Must include "all specs have" + "frontmatter" keywords.
+**Notes:** Validates that every spec in specs/ has YAML frontmatter with a testable field. Skips status: split files.
 
-#### Path Resolution
-```
-- [ ] SC-N: All paths referenced in {file} resolve to existing files
-```
+#### paths-resolve
+**Syntax:** `all paths referenced in {file} resolve`
 
-**Examples:**
-- `All paths referenced in AGENTS.md resolve to existing files`
-- `All paths referenced in README.md resolve`
+**Example:** `- [ ] SC-N: all paths referenced in AGENTS.md resolve`
 
-**Notes:** Checks markdown links `[text](path)`. Skips URLs and anchors.
+**Notes:** Scans markdown links in the target file and verifies each local path resolves. Skips http and anchor links.
 
-#### Root Cleanliness
-```
-- [ ] SC-N: Root is clean (content: ≤{N} items)
-- [ ] SC-N: Root is clean (code: ≤{N} items)
-```
+#### root-clean
+**Syntax:** `root is clean [content: <= N] [code: <= N]`
 
-**Examples:**
-- `Root is clean (content: ≤10 items)`
-- `Root is clean (code: ≤30 items)`
+**Example:** `- [ ] SC-N: root is clean`
 
-**Notes:** Auto-detects content vs code projects. Default limits: content=10, code=30. Ignores dotfiles and `node_modules`.
+**Notes:** Checks that the project root has a reasonable number of top-level items. Content projects default to 10, code projects to 30.
 
-#### Pointer Verification
-```
-- [ ] SC-N: {file} exists with pointer to {target}
-```
+#### pointer-exists
+**Syntax:** `{file} exists with pointer to {target}`
 
-**Examples:**
-- `AGENTS.md exists with pointer to specs/`
-- `README.md exists with pointer to HARNESS.md`
+**Example:** `- [ ] SC-N: CLAUDE.md exists with pointer to AGENTS.md`
 
-**Notes:** Checks file exists AND contains the target string.
+**Notes:** Checks that a file exists AND contains a reference to the target string.
 
-#### Test Pass
-```
-- [ ] SC-N: bun test passes
-- [ ] SC-N: `bun test {file}` passes
-```
+#### test-passes
+**Syntax:** `bun test passes`
 
-**Examples:**
-- `bun test passes`
-- `bun test test/conformity.test.ts passes`
+**Example:** `- [ ] SC-N: bun test passes`
 
-**Notes:** Always passes (assumes test suite verifies this separately).
+**Notes:** Placeholder assertion that always passes. Actual test execution is handled by the CI pipeline.
 
-#### Canary Pattern
-```
-- [ ] SC-N: {description} canary test exists
-```
+#### canary
+**Syntax:** `canary`
 
-**Examples:**
-- `Schema canary test exists`
-- `Conformity canary exists`
+**Example:** `- [ ] SC-N: canary test exists`
 
-**Notes:** Verifies at least one test file in `test/` or `tests/` with "conformity" or "canary" in filename.
+**Notes:** Checks that a conformity or canary test file exists in the test/ directory.
 
-### Anti-Criteria
+#### content-contains
+**Syntax:** `{file} contains [{item1}, {item2}, ...]`
 
-Anti-criteria (things that must NOT happen) use `SC-AN:` prefix:
+**Example:** `- [ ] SC-N: AGENTS.md contains [Project Identity, Rules]`
 
-```
-- [ ] SC-A1: [thing that must NOT happen]
-```
+**Notes:** Checks that a file contains all listed items. Items are comma-separated inside brackets.
 
-**Examples:**
-- `SC-A1: No spec files at root (must be in specs/)`
-- `SC-A2: No generated files committed to git`
-- `SC-A3: No hardcoded credentials in source`
+#### content-not-contains
+**Syntax:** `{file} must NOT contain [{item1}, {item2}, ...]`
 
-**Notes:** Anti-criteria must include negative language (`not`, `never`, `no`, `absence`, `must not`).
+**Example:** `- [ ] SC-N: AGENTS.md must NOT contain [deprecated-section]`
 
-#### Content Contains
-```
-- [ ] SC-N: {file} contains [{keyword1}, {keyword2}]
-```
+**Notes:** Checks that a file does NOT contain any of the listed items. Supports both 'must NOT contain' and 'has no' syntax.
 
-**Examples:**
-- `AGENTS.md contains [## Rules, ## Key Files]`
-- `lib/conformity.ts contains [matchPattern, runScaffoldConformity]`
+#### count-threshold
+**Syntax:** `{file} is under [{N}] lines|words`
 
-#### Content Not Contains
-```
-- [ ] SC-N: {file} must NOT contain [{keyword1}, {keyword2}]
-- [ ] SC-N: {file} has no [{keyword1}]
-```
+**Example:** `- [ ] SC-N: AGENTS.md is under [200] lines`
 
-#### Count Threshold
-```
-- [ ] SC-N: {file} is under [{N}] lines
-- [ ] SC-N: {file} at most [{N}] words
-```
+**Notes:** Checks that a file is under a threshold of lines or words. Supports both 'is under' and 'at most' syntax.
 
-#### Section Exists
-```
-- [ ] SC-N: {file} has section [{SectionName}]
-```
+#### json-field-equals
+**Syntax:** `{file} {field} field equals [{value}]`
 
-#### Regex Match
-```
-- [ ] SC-N: {file} matches /{pattern}/{flags}
-```
+**Example:** `- [ ] SC-N: package.json name field equals [rungate]`
 
-**Examples:**
-- `AGENTS.md matches /^## Rules$/m`
+**Notes:** Checks that a JSON file's field has the expected value. Supports nested fields with dot notation (e.g., config.name).
 
-#### JSON Field
-```
-- [ ] SC-N: {file} {field} field equals [{value}]
-- [ ] SC-N: {file}.json has field {name}
-```
+#### section-exists
+**Syntax:** `{file} has section [{SectionName}]`
 
-**Examples:**
-- `package.json name field equals [rungate]`
-- `rungate.json has field consumers`
+**Example:** `- [ ] SC-N: AGENTS.md has section [Rules]`
 
-#### Frontmatter Field
-```
-- [ ] SC-N: {file} frontmatter has {field} = {value}
-- [ ] SC-N: {file} frontmatter has {field}
-```
+**Notes:** Checks that a markdown file has a heading matching the section name. Matches any heading level (# through ######).
 
-**Examples:**
-- `specs/MY-SPEC.md frontmatter has testable = true`
+#### regex-match
+**Syntax:** `{file} matches /{pattern}/[flags]`
 
-#### File Line Range
-```
-- [ ] SC-N: {file} is between [{N}] and [{M}] lines
-```
+**Example:** `- [ ] SC-N: AGENTS.md matches /^# /m`
 
-#### Behavioral (transcript auditor)
-```
-- [ ] SC-N: {description} (behavioral)
-```
+**Notes:** Checks that a file's content matches the given regular expression. Supports standard regex flags.
 
-**Notes:** SCs tagged `(behavioral)` are excluded from conformity engine matching. They route to the SESSION-AUDIT-SPEC transcript auditor for runtime verification.
+#### source-contains
+**Syntax:** `harness {file} contains [{keywords}]`
+
+**Example:** `- [ ] SC-N: harness lib/conformity.ts contains [matchPattern, runScaffoldConformity]`
+
+**Notes:** Checks that a harness source file (lib/, scripts/, hooks/, gates/) contains listed keywords. Requires 'harness' prefix or source path prefix.
+
+#### json-has-field
+**Syntax:** `{file}.json has field {name}`
+
+**Example:** `- [ ] SC-N: package.json has field scripts`
+
+**Notes:** Checks that a JSON file has the specified field defined. Supports nested fields with dot notation.
+
+#### scaffold-produces
+**Syntax:** `scaffold output {file} exists`
+
+**Example:** `- [ ] SC-N: scaffold output AGENTS.md exists`
+
+**Notes:** Checks that a scaffold-generated file exists. Currently validates file presence; future versions will run scaffold and verify output.
+
+#### frontmatter-field
+**Syntax:** `{file} frontmatter has {field} [= {value}]`
+
+**Example:** `- [ ] SC-N: specs/CONFIG-DRIVEN-TESTING-SPEC.md frontmatter has testable = true`
+
+**Notes:** Checks YAML frontmatter in a file. Verifies field exists, optionally checks its value. Used for spec and agent file metadata.
+
+#### file-line-range
+**Syntax:** `{file} is between [{min}] and [{max}] lines`
+
+**Example:** `- [ ] SC-N: AGENTS.md is between [50] and [300] lines`
+
+**Notes:** Checks that a file's line count falls within a range (inclusive). Useful for ensuring files are neither too short nor too long.
+<!-- END GENERATED PATTERNS -->
 
 ### Writing Effective SCs
 
