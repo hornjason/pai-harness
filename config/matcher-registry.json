@@ -1,0 +1,135 @@
+[
+  {
+    "name": "file-exists",
+    "syntax": "{file} exists [at root] [<= N lines]",
+    "regex": "^(\\S+)\\s+exists?\\b(?:\\s+at\\s+root)?",
+    "example": "AGENTS.md exists",
+    "notes": "Checks that a file exists at the project root. Optionally checks line count with <= N lines suffix."
+  },
+  {
+    "name": "dir-exists",
+    "syntax": "{dir}/ directory exists [with >= N {type}]",
+    "regex": "^(\\S+?)\\/?\\s+directory\\s+exists",
+    "example": "specs/ directory exists",
+    "notes": "Checks that a directory exists. Supports aliases (test/tests, reference/ref). Optional minimum file count."
+  },
+  {
+    "name": "all-specs-frontmatter",
+    "syntax": "all specs have frontmatter",
+    "regex": "^all\\s+specs\\s+have\\b.*frontmatter",
+    "example": "all specs have frontmatter",
+    "notes": "Validates that every spec in specs/ has YAML frontmatter with a testable field. Skips status: split files."
+  },
+  {
+    "name": "paths-resolve",
+    "syntax": "all paths referenced in {file} resolve",
+    "regex": "all\\s+paths\\s+referenced\\s+in\\s+(\\S+)\\s+resolve",
+    "example": "all paths referenced in AGENTS.md resolve",
+    "notes": "Scans markdown links in the target file and verifies each local path resolves. Skips http and anchor links."
+  },
+  {
+    "name": "root-clean",
+    "syntax": "root is clean [content: <= N] [code: <= N]",
+    "regex": "root\\s+is\\s+clean",
+    "example": "root is clean",
+    "notes": "Checks that the project root has a reasonable number of top-level items. Content projects default to 10, code projects to 30."
+  },
+  {
+    "name": "pointer-exists",
+    "syntax": "{file} exists with pointer to {target}",
+    "regex": "(\\S+)\\s+exists\\s+with\\s+pointer\\s+to\\s+(\\S+)",
+    "example": "CLAUDE.md exists with pointer to AGENTS.md",
+    "notes": "Checks that a file exists AND contains a reference to the target string."
+  },
+  {
+    "name": "test-passes",
+    "syntax": "bun test passes",
+    "regex": "bun\\s+test.*passes",
+    "example": "bun test passes",
+    "notes": "Placeholder assertion that always passes. Actual test execution is handled by the CI pipeline."
+  },
+  {
+    "name": "canary",
+    "syntax": "canary",
+    "regex": "canary",
+    "example": "canary test exists",
+    "notes": "Checks that a conformity or canary test file exists in the test/ directory."
+  },
+  {
+    "name": "content-contains",
+    "syntax": "{file} contains [{item1}, {item2}, ...]",
+    "regex": "^(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]",
+    "example": "AGENTS.md contains [Project Identity, Rules]",
+    "notes": "Checks that a file contains all listed items. Items are comma-separated inside brackets."
+  },
+  {
+    "name": "content-not-contains",
+    "syntax": "{file} must NOT contain [{item1}, {item2}, ...]",
+    "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|has\\s+no)\\s+\\[([^\\]]+)\\]",
+    "example": "AGENTS.md must NOT contain [deprecated-section]",
+    "notes": "Checks that a file does NOT contain any of the listed items. Supports both 'must NOT contain' and 'has no' syntax."
+  },
+  {
+    "name": "count-threshold",
+    "syntax": "{file} is under [{N}] lines|words",
+    "regex": "^(.+?)\\s+(?:is\\s+under|at\\s+most)\\s+\\[(\\d+)\\]\\s+(lines?|words?)",
+    "example": "AGENTS.md is under [200] lines",
+    "notes": "Checks that a file is under a threshold of lines or words. Supports both 'is under' and 'at most' syntax."
+  },
+  {
+    "name": "json-field-equals",
+    "syntax": "{file} {field} field equals [{value}]",
+    "regex": "^(\\S+)\\s+(\\S+)\\s+field\\s+equals\\s+\\[([^\\]]+)\\]",
+    "example": "package.json name field equals [rungate]",
+    "notes": "Checks that a JSON file's field has the expected value. Supports nested fields with dot notation (e.g., config.name)."
+  },
+  {
+    "name": "section-exists",
+    "syntax": "{file} has section [{SectionName}]",
+    "regex": "^(\\S+)\\s+has\\s+section\\s+\\[([^\\]]+)\\]",
+    "example": "AGENTS.md has section [Rules]",
+    "notes": "Checks that a markdown file has a heading matching the section name. Matches any heading level (# through ######)."
+  },
+  {
+    "name": "regex-match",
+    "syntax": "{file} matches /{pattern}/[flags]",
+    "regex": "^(\\S+)\\s+matches\\s+\\/(.+?)\\/([gimsuvy]*)$",
+    "example": "AGENTS.md matches /^# /m",
+    "notes": "Checks that a file's content matches the given regular expression. Supports standard regex flags."
+  },
+  {
+    "name": "source-contains",
+    "syntax": "harness {file} contains [{keywords}]",
+    "regex": "^(?:harness\\s+)?(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]",
+    "example": "harness lib/conformity.ts contains [matchPattern, runScaffoldConformity]",
+    "notes": "Checks that a harness source file (lib/, scripts/, hooks/, gates/) contains listed keywords. Requires 'harness' prefix or source path prefix."
+  },
+  {
+    "name": "json-has-field",
+    "syntax": "{file}.json has field {name}",
+    "regex": "^(\\S+?)(?:\\.json)?\\s+has\\s+field\\s+(\\S+)",
+    "example": "package.json has field scripts",
+    "notes": "Checks that a JSON file has the specified field defined. Supports nested fields with dot notation."
+  },
+  {
+    "name": "scaffold-produces",
+    "syntax": "scaffold output {file} exists",
+    "regex": "^scaffold\\s+output\\s+(\\S+)\\s+exists",
+    "example": "scaffold output AGENTS.md exists",
+    "notes": "Checks that a scaffold-generated file exists. Currently validates file presence; future versions will run scaffold and verify output."
+  },
+  {
+    "name": "frontmatter-field",
+    "syntax": "{file} frontmatter has {field} [= {value}]",
+    "regex": "^(\\S+)\\s+frontmatter\\s+has\\s+(\\S+)(?:\\s*=\\s*(.+))?$",
+    "example": "specs/CONFIG-DRIVEN-TESTING-SPEC.md frontmatter has testable = true",
+    "notes": "Checks YAML frontmatter in a file. Verifies field exists, optionally checks its value. Used for spec and agent file metadata."
+  },
+  {
+    "name": "file-line-range",
+    "syntax": "{file} is between [{min}] and [{max}] lines",
+    "regex": "^(\\S+)\\s+is\\s+between\\s+\\[(\\d+)\\]\\s+and\\s+\\[(\\d+)\\]\\s+lines",
+    "example": "AGENTS.md is between [50] and [300] lines",
+    "notes": "Checks that a file's line count falls within a range (inclusive). Useful for ensuring files are neither too short nor too long."
+  }
+]
