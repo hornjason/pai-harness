@@ -149,7 +149,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-302: scaffold output PROJECT-STATE.md exists
 - [ ] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
 - [ ] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
-- [ ] SC-305: All RunGate hook registrations use ${RUNGATE_HOOKS_DIR} variable, no hardcoded paths
+- [ ] SC-305: Hook registrations in .claude/settings.json contain ${RUNGATE_HOOKS_DIR} variable in all hook command fields
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
 - [ ] SC-308: scripts/update-project-state.ts contains [✅, ⬜]

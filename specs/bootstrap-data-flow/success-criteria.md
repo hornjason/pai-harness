@@ -129,7 +129,7 @@ testable: true
 - [ ] SC-166: Agent brief environment values match rungate.json dev section — mismatch produces FAIL with fixCommand "Re-run scaffold" (brief-level extension of SC-3/SC-4)
 - [ ] SC-167: AGENTS.md Specs table governs and testable fields match actual spec frontmatter — cross-references AGENTS.md routing table against spec file metadata (distinct from SC-75 spec file validation)
 - [ ] SC-168: CODE-MAP.md exists for code projects and is under 3,000 tokens — over-budget produces WARN
-- [ ] SC-169: Git hooks exist at .git/hooks/ and have executable permission
+- [ ] SC-169: scaffold output .git/hooks/ files match mode 755 and contain scaffold-generated shebang line
 
 - [ ] SC-170: Tier 1 files containing content not produced by scaffold trigger WARN OWNERSHIP-TIER1-EXTRA with fixCommand to relocate (extends SC-104 with extra-content detection)
 - [ ] SC-173: Ownership tier assignment for every harness-touched file declared in lib/ownership-manifest.ts
@@ -151,7 +151,7 @@ testable: true
 - [ ] SC-185: Agent instruction files contain no TODO/FIXME — wrap agentsmd todo-rot
 - [ ] SC-186: No contradictory instructions across files — wrap ccinspect contradiction-keywords
 - [ ] SC-187: No secrets/credentials in agent instruction files — wrap ctxlint content-secrets
-- [ ] SC-188: All hooks in settings.json exist on disk — wrap ctxlint dead-hook
+- [ ] SC-188: Conformity wraps ctxlint dead-hook — settings.json hook command paths resolve to present files
 - [ ] SC-189: No machine-specific absolute paths in instruction files — wrap agentsmd/agnix
 - [ ] SC-190: Total instruction count across always-loaded files under 150 (distinct from SC-17 line count and SC-139 word count — this counts discrete instructions)
 - [ ] SC-191: Agent briefs reference AGENTS.md — never duplicate Hard Constraints inline
