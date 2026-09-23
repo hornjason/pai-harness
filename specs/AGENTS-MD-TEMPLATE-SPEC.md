@@ -116,8 +116,8 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 
 ## Success Criteria
 
-- [ ] SC-258: config/universal-rules.yaml exists
-- [ ] SC-259: prompts/agents-md-template.md exists
+- [ ] SC-258: Universal rules loaded from config/universal-rules.yaml, not hardcoded in scaffold-project.ts
+- [ ] SC-259: AGENTS.md template loaded from prompts/agents-md-template.md with ${VAR} placeholders
 - [ ] SC-260: Scaffold fills template variables from project scan — template file has no scan logic
 - [ ] SC-261: Every universal rule has a failure citation in the config file
 - [ ] SC-262: Universal rules count under 16 (sigmoid collapse threshold)
@@ -144,11 +144,11 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-297: .git/hooks/pre-commit contains [update-project-state]
 - [ ] SC-298: update-project-state.ts updates frontmatter date, test counts, and SC status from specs
 - [ ] SC-299: Phase headers auto-flip (✅/🔄/⬜) based on SC completion within each phase
-- [ ] SC-300: PROJECT-STATE.md is under [150] lines
+- [ ] SC-300: PROJECT-STATE.md capped at 150 lines — auto-update enforces the limit
 - [ ] SC-301: Session summaries archived to docs/session-log/{date}.md — max 3 files, oldest pruned
 - [ ] SC-302: scaffold output PROJECT-STATE.md exists
 - [ ] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
-- [ ] SC-304: .git/hooks/CommitEnforcement.hook.ts contains [code, agent]
+- [ ] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [ ] SC-305: All RunGate hook registrations use ${RUNGATE_HOOKS_DIR} variable, no hardcoded paths
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
