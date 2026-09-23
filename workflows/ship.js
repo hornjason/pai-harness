@@ -358,6 +358,10 @@ If the file doesn't exist, return an empty object {}.
       healthPath: { type: 'string' },
       hosts: { type: 'array', items: { type: 'string' } },
     }},
+    test: { type: 'object', properties: {
+      command: { type: 'string' },
+      timeout: { type: 'number' },
+    }},
     roles: { type: 'object' },
   },
 }})
@@ -365,6 +369,8 @@ const projectConfig = projectConfigResult || {}
 const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)
+const testCommand = projectConfig.test?.command || 'bun test'
+const testTimeout = projectConfig.test?.timeout || 120000
 
 if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
   log(`PROJECT TYPE: CLI/library (pages:{} empty) — overriding ${discovery.ceremonyTier} → LIGHT (no Quinn, no container)`)
@@ -438,7 +444,7 @@ if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
 For evidence-type-ratio: add non-grep evidence methods (BUN_TEST, COMMAND, PLAYWRIGHT) to ACs.
-For tests-pass: run cd ${PROJECT_ROOT} && bun test and write result to environments.local.tests in workflow-state.json.
+For tests-pass: run cd ${PROJECT_ROOT} && ${testCommand} (timeout: ${testTimeout}) and write result to environments.local.tests in workflow-state.json.
 For local-api-validated: read ${PROJECT_ROOT}/.claude/rungate.json for apiUrl. If no apiUrl configured, write environments.local.api = "SKIP". If configured, curl the URL and write PASS/FAIL.
 For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or pages config. If no UI configured, write environments.local.ui = "SKIP" with skipReason. If configured, curl the URL and write PASS/FAIL.
 Edit workflow-state.json ONLY via writeWorkflowState():
@@ -514,11 +520,12 @@ Read every file in Context section first. Read "Files to modify" before changes.
 
 CRITICAL PROCESS — TDD (test-driven development):
 1. Write the failing test FIRST
-2. Run bun test to confirm it fails
+2. Run ${testCommand} to confirm it fails (use timeout: ${testTimeout})
 3. Write the implementation to make the test pass
-4. Run bun test to confirm all tests pass
+4. Run ${testCommand} to confirm all tests pass (use timeout: ${testTimeout})
 5. Run bunx tsc --noEmit
 Do NOT write source code before writing its test. This order is mandatory.
+IMPORTANT: When running ${testCommand}, always set timeout: ${testTimeout} on the Bash call. The default 120s is too short for some projects.
 
 Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
@@ -719,7 +726,7 @@ if (uiUrl) {
   envCheckPrompt += '2. UI: No UI/pages configured for this project. Set uiStatus = "SKIP", uiSkipReason = "No pages configured".\n\n'
 }
 
-envCheckPrompt += `3. Tests: cd ${PROJECT_ROOT} && bun test 2>&1 | tail -5
+envCheckPrompt += `3. Tests: cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -5 (use timeout: ${testTimeout})
    - testsStatus = "PASS" if 0 failures
    - testsStatus = "FAIL" if any failures
    - Report testFailCount and testTotalCount\n`

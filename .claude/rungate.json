@@ -38,5 +38,9 @@
     }
   },
   "consumers": [],
-  "pages": {}
+  "pages": {},
+  "test": {
+    "command": "bun test",
+    "timeout": 300000
+  }
 }
