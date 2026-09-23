@@ -19,12 +19,16 @@ Session 8 (AFK → interactive) — Prior-branch detection, worktree cleanup, is
 **Test suite: 1,062 pass, 0 fail across 57 files**
 
 **Next priorities:**
-1. P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline
-2. P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)
-3. P2: #555 Consumer custom matcher extension (SC-384)
-4. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts
-5. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard
-6. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+1. P0: Fix sync-sc-status.ts — extend to check conformity tests + add --report flag
+2. P0: Add command-output matcher pattern to registry + conformity.ts handler
+3. P0: #553 create-sc CLI — Phase G (prevent unmatchable SCs at authoring time)
+4. P0: #554 Wire create-spec SC validation via matchPattern
+5. P0: #556 audit-specs CLI — Phase H (classify + auto-rewrite legacy SCs)
+6. P0: #557 Migrate all specs to compliance: strict
+7. P0: Tag behavioral SCs (SC-345, SC-346)
+8. P1: #565 Verify worktree fix on real cross-repo run
+9. P1: #561 Brief compliance gate (SC-407–SC-409)
+10. P2: Harness ship on DDB #1438 (email preview — full pipeline test with Quinn + GRADE)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

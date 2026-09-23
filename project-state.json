@@ -1,12 +1,16 @@
 {
   "updated": "2026-09-23",
   "priorities": [
-    "P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline",
-    "P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)",
-    "P2: #555 Consumer custom matcher extension (SC-384)",
-    "P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts",
-    "P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard",
-    "P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates"
+    "P0: Fix sync-sc-status.ts — extend to check conformity tests + add --report flag",
+    "P0: Add command-output matcher pattern to registry + conformity.ts handler",
+    "P0: #553 create-sc CLI — Phase G (prevent unmatchable SCs at authoring time)",
+    "P0: #554 Wire create-spec SC validation via matchPattern",
+    "P0: #556 audit-specs CLI — Phase H (classify + auto-rewrite legacy SCs)",
+    "P0: #557 Migrate all specs to compliance: strict",
+    "P0: Tag behavioral SCs (SC-345, SC-346)",
+    "P1: #565 Verify worktree fix on real cross-repo run",
+    "P1: #561 Brief compliance gate (SC-407–SC-409)",
+    "P2: Harness ship on DDB #1438 (email preview — full pipeline test with Quinn + GRADE)"
   ],
   "notes": "Session 8 (AFK → interactive) — Prior-branch detection, worktree cleanup, issue triage, first harness dogfood.\n\n**Shipped this session:**\n- lib/prior-branch.ts (#563): detects existing branches, word-boundary matching, isolated temp worktree tests\n- lib/worktree-cleanup.ts (#564): safely prunes stale worktrees (uncommitted + merge checks)\n- ship.js + prove.js: import() → agent/bun-e (Workflow sandbox fix)\n- matchPattern() config-driven dispatch (#551, SC-380)\n- SPEC-TEMPLATE auto-generated from matcher registry (#552, SC-381)\n- First harness dogfood: #1447 → ALREADY_SHIPPED, all ACs MET\n\n**Issues closed this session:** #559, #560, #536, #550, #514, #513, #563, #564, #551, #552, #1447 (11 total)\n\n**Commits this session:** 624796b, 2a8a5f3, c04253d, 4f9814f, c34e8c4, 9d3781a, 2984e35, b534838, 1d0a50a, 4b8530f, 08cc2b7\n\n**Test suite: 1,062 pass, 0 fail across 57 files**",
   "antipatterns": [
