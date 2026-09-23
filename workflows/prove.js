@@ -207,6 +207,28 @@ Extract:
 if (!issueData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${issueData.issueTitle}" — UI ACs: ${issueData.hasUIACs ? 'yes' : 'no'}`)
 
+// ── Load project config from rungate.json ──
+const projectConfigResult = await agent(`
+Read ${PROJECT_ROOT}/.claude/rungate.json and return its contents as JSON.
+If the file doesn't exist, return an empty object {}.
+`, { label: 'load-config', schema: {
+  type: 'object',
+  properties: {
+    pages: { type: 'object' },
+    apiUrl: { type: 'string' },
+    uiUrl: { type: 'string' },
+    container: { type: 'object', properties: {
+      port: { type: 'number' },
+      proveUpCommand: { type: 'string' },
+      proveDownCommand: { type: 'string' },
+      healthPath: { type: 'string' },
+      hosts: { type: 'array', items: { type: 'string' } },
+    }},
+  },
+}})
+const projectConfig = projectConfigResult || {}
+const containerConfig = projectConfig.container || null
+
 // ════════════════════════════════════════════════════════════
 // PHASE 2: VERIFY-DEPLOYED — Confirm fix is on main
 // ════════════════════════════════════════════════════════════
@@ -327,16 +349,26 @@ const needsQuinn = issueData.hasUIACs ||
 if (needsQuinn) {
   log('UI ACs detected — starting prove container with prod data, then spawning Quinn')
 
-  // Start prove container with prod data (make prove-up = build + rsync prod data + start on :7776)
-  await agent(`
+  // Start prove container with prod data (config-driven)
+  if (!containerConfig) {
+    log('WARN: No container config in rungate.json — skipping prove container')
+  } else {
+    const proveUpCmd = containerConfig.proveUpCommand || containerConfig.rebuildCommand
+    const provePort = containerConfig.port
+    const proveHost = (containerConfig.hosts || [])[0]
+    const proveHealthPath = containerConfig.healthPath || '/'
+
+    if (proveUpCmd && proveHost && provePort) {
+      await agent(`
 You have ONE task: start the prove container with prod data. Run this EXACT command and report the output:
 
-cd ${PROJECT_ROOT} && make prove-up 2>&1 | tail -20
+cd ${PROJECT_ROOT} && ${proveUpCmd} 2>&1 | tail -20
 
-This rebuilds the container image, rsyncs prod data to data-test/, and starts the container on port 7776.
-After it completes, verify the container is up: curl -s -o /dev/null -w "%{http_code}" http://localhost:7776/api/aes
+After it completes, verify the container is up: curl -s -o /dev/null -w "%{http_code}" http://${proveHost}:${provePort}${proveHealthPath}
 Report the output.
-  `, { label: 'prove-container-up', phase: 'Validate' })
+      `, { label: 'prove-container-up', phase: 'Validate' })
+    }
+  }
 
   const quinnACs = (reproducerResult?.quinnNeeded || []).join(', ') ||
     (issueData.successCriteria || []).filter(sc =>
@@ -358,8 +390,8 @@ Fix commit: ${COMMIT_SHA}
 - browser_verify_text_visible(text) — assert text on page
 
 ## Target URLs
-Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
-Prove container base: http://localhost:7776
+Read ${PROJECT_ROOT}/.claude/rungate.json for page paths and container config.
+Prove container base: http://${(containerConfig?.hosts || [])[0] || 'CONFIG_MISSING'}:${containerConfig?.port || 'CONFIG_MISSING'}
 
 ## ACs to verify (UI/OUTCOME — skipped by B3)
 ${quinnACs}
@@ -367,15 +399,15 @@ ${quinnACs}
 ## Test Plan for #${ISSUE} on PROVE CONTAINER
 1. Verify fix deployed: cd ${PROJECT_ROOT} && git rev-parse --short HEAD should match ${COMMIT_SHA.slice(0, 8)}
 2. For each AC:
-   a. browser_navigate("http://localhost:7776" + page path from rungate.json)
+   a. browser_navigate(prove container URL + page path from rungate.json)
    b. browser_snapshot() — verify page loaded
    c. Perform action (browser_click, browser_type, etc.)
    d. browser_snapshot() or browser_verify_text_visible() to verify
    e. browser_take_screenshot() for evidence
-3. Test as a brand-new user — use a customer that HAS contacts (prod data on :7776)
+3. Test as a brand-new user — use actual data from the prove container
 4. Report PASS/FAIL per AC with tool output as evidence
 
-IMPORTANT: Test on port 7776 (prove container with prod data), NOT dev server (port 5173/7778).
+IMPORTANT: Test on the PROVE CONTAINER (config-driven URL above), NOT dev server.
 Report verdict and criteriaResults.
   `, { label: 'quinn-prove', phase: 'Validate', schema: QUINN_SCHEMA })
 
@@ -584,11 +616,14 @@ Create the directory if it doesn't exist: mkdir -p ${HOME}/.claude/MEMORY/LEARNI
 
 log(`Telemetry logged — prove #${ISSUE}: ${verdict}`)
 
-// Cleanup: stop prove container
-await agent(`
-Run: cd ${PROJECT_ROOT} && make prove-down 2>&1 || true
+// Cleanup: stop prove container (config-driven)
+if (containerConfig) {
+  const proveDownCmd = containerConfig.proveDownCommand || 'echo "no prove-down command configured"'
+  await agent(`
+Run: cd ${PROJECT_ROOT} && ${proveDownCmd} 2>&1 || true
 Report output.
-`, { label: 'prove-container-down', phase: 'Output' })
+  `, { label: 'prove-container-down', phase: 'Output' })
+}
 
 return {
   status: verdict,

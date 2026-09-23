@@ -235,18 +235,18 @@ describe("workflow-structure: all phases present", () => {
 describe("prove-workflow: prove.js matches spec", () => {
   const PROVE_JS = readFileSync(join(HR, "workflows/prove.js"), "utf-8");
 
-  test("PW-1: Prove starts container with make prove-up before Quinn", () => {
-    // Spec: "make prove-up (rebuild image + rsync prod data + start on :7776)"
-    expect(PROVE_JS).toContain("make prove-up");
+  test("PW-1: Prove container startup is config-driven", () => {
+    expect(PROVE_JS).toContain("containerConfig");
+    expect(PROVE_JS).toContain("proveUpCommand");
   });
 
-  test("PW-2: Quinn told to test on port 7776 (prove container), not dev server", () => {
-    expect(PROVE_JS).toContain("localhost:7776");
+  test("PW-2: Quinn told to test on prove container (config-driven URL), not dev server", () => {
+    expect(PROVE_JS).toContain("PROVE CONTAINER");
     expect(PROVE_JS).toContain("NOT dev server");
   });
 
-  test("PW-3: Prove container cleaned up with make prove-down", () => {
-    expect(PROVE_JS).toContain("make prove-down");
+  test("PW-3: Prove container cleanup is config-driven", () => {
+    expect(PROVE_JS).toContain("proveDownCommand");
   });
 
   test("PW-4: Quinn instructed to use customers with real contacts", () => {

@@ -51,9 +51,10 @@ describe("auto-spec: ship.js claims from HARNESS-SKILL-CHAIN.md", () => {
 });
 
 describe("auto-spec: prove.js claims from HARNESS-SKILL-CHAIN.md", () => {
-  // Spec line 122: 2. **Rebuild image + spin up isolated prove container** (`make prove-up`, port 7776)
-  test("AUTO-MAKE-14: Spec requires make prove-up", () => {
-    expect(PROVE_JS.toLowerCase()).toContain("prove-up");
+  // Spec line 122: prove container startup is config-driven (was hardcoded make prove-up)
+  test("AUTO-CONFIG-14: Prove container startup is config-driven", () => {
+    expect(PROVE_JS).toContain("containerConfig");
+    expect(PROVE_JS).toContain("proveUpCommand");
   });
 
   // Spec line 127: 3. **Quinn validates on prove container** (port 7776, prod data)
