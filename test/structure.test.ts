@@ -167,3 +167,27 @@ describe("ST-7: lib/paths.ts exports required functions", () => {
     expect(content).toContain("gateSaltPath");
   });
 });
+
+describe("ST-8: config/matcher-registry.json exists with all patterns", () => {
+  const registryPath = join(HARNESS_ROOT, "config", "matcher-registry.json");
+
+  test("config/matcher-registry.json exists", () => {
+    expect(existsSync(registryPath)).toBe(true);
+  });
+
+  test("has at least 19 pattern entries", () => {
+    const raw = JSON.parse(readFileSync(registryPath, "utf8"));
+    expect(raw.patterns.length).toBeGreaterThanOrEqual(19);
+  });
+
+  test("every entry has required fields: name, syntax, regex, example, notes", () => {
+    const raw = JSON.parse(readFileSync(registryPath, "utf8"));
+    const requiredFields = ["name", "syntax", "regex", "example", "notes"];
+    for (const pattern of raw.patterns) {
+      for (const field of requiredFields) {
+        expect(typeof pattern[field]).toBe("string");
+        expect(pattern[field].length).toBeGreaterThan(0);
+      }
+    }
+  });
+});

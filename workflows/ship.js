@@ -447,13 +447,17 @@ if (DRY_RUN) {
 phase('Implement')
 
 async function runImplement() {
-  log('IMPLEMENT: assembling brief + spawning Marcus (no commit)')
+  log('IMPLEMENT: assembling brief + spawning Marcus (reinforcement TDD + post-run verification)')
 
   await agent(`
 Assemble brief: bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
 Report the output.
   `, { label: 'assemble-brief', phase: 'Implement' })
 
+  // Layer 2 reinforcement handles TDD via briefedAgent() injection.
+  // Layer 3 mechanical (two-spawn split) blocked by worktree isolation —
+  // spawn 2 can't see spawn 1's test files in a separate worktree.
+  // Instead: single spawn + post-run TDD sequence verification in GRADE phase.
   const buildResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
@@ -892,9 +896,14 @@ Grade agent compliance for this ship run:
    a. Read their brief from ${PROJECT_ROOT}/.claude/agents/{role}.md
    b. Check the brief frontmatter for tiers field
    c. List all reinforcement-tier rules and whether they were followed
-3. Write a compliance report to ${WORK_DIR}/compliance-grade.json with:
-   {"grades": [{"role": "marcus", "reinforcement_rules": N, "followed": N, "score": N/N}]}
-4. Log any rules with score < 100% as candidates for tier promotion
+3. For Marcus specifically, verify TDD sequence:
+   a. Find Marcus's transcript (the agent labeled 'marcus' in the workflow)
+   b. Check that Write calls to test/ files appear BEFORE Write calls to lib/ files
+   c. Check that bun test ran at least twice (baseline + verify)
+   d. If TDD sequence violated, flag "TDD_SEQUENCE_VIOLATED" in Marcus grade
+4. Write a compliance report to ${WORK_DIR}/compliance-grade.json with:
+   {"grades": [{"role": "marcus", "reinforcement_rules": N, "followed": N, "score": N/N, "tdd": "PASS|FAIL"}]}
+5. Log any rules with score < 100% as candidates for tier promotion
 
 Report the grades as JSON.
 `, { label: 'grade', phase: 'Prove', schema: {
