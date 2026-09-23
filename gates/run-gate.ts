@@ -116,8 +116,15 @@ for (let i = 0; i < (state.acs || []).length; i++) {
     const output = execSync(cmd, { encoding: "utf-8", timeout: 10000, cwd: state.projectRoot || process.cwd() }).trim();
     const lastLine = output.split("\n").pop() || "";
     let verdict: "PASS" | "FAIL" = "FAIL";
+    // BUN_TEST detection: bun test outputs results to stderr; execSync captures
+    // stdout only (version header). Since execSync throws on non-zero exit,
+    // reaching here means exit 0 = all tests passed.
+    const isTestRunner = /^bun test\b/.test(cmd);
+    if (isTestRunner) {
+      verdict = "PASS";
+    }
     const { op, value } = ac.threshold || {};
-    if (op && value !== undefined) {
+    if (!isTestRunner && op && value !== undefined) {
       const num = parseFloat(lastLine);
       const exp = parseFloat(String(value));
       switch (op) {
