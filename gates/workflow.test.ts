@@ -938,7 +938,9 @@ describe("ship checks", () => {
     // Each AC with PASS verdict must be backed by a prior gate witness
     // The verify gate covers AC evidence checks; scope gate covers AC definition
     // Ship witness is written AFTER this test suite — requiring it here is circular
-    const requiredGates = ["scope", "verify"];
+    // Scope is skipped for LIGHT ceremony tier — only require its witness if it ran
+    const scopeRan = sf("gates")?.scope?.ts;
+    const requiredGates = scopeRan ? ["scope", "verify"] : ["verify"];
     const missingGates = requiredGates.filter(g => !passedGatesWithHmac.has(g));
     const passACs = (sf("acs") || []).filter((ac: any) => ac.verdict === "PASS");
     if (passACs.length > 0 && missingGates.length > 0) {

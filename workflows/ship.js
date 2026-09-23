@@ -342,11 +342,29 @@ Report the command output only.
 
 if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
-// ── Project-type detection: override ceremony tier for CLI/library projects ──
-const projectConfig = parsedArgs.roles || {}
-const pagesConfig = parsedArgs.pages || {}
+// ── Load project config from rungate.json ──
+const projectConfigResult = await agent(`
+Read ${PROJECT_ROOT}/.claude/rungate.json and return its contents as JSON.
+If the file doesn't exist, return an empty object {}.
+`, { label: 'load-config', schema: {
+  type: 'object',
+  properties: {
+    pages: { type: 'object' },
+    apiUrl: { type: 'string' },
+    uiUrl: { type: 'string' },
+    container: { type: 'object', properties: {
+      port: { type: 'number' },
+      rebuildCommand: { type: 'string' },
+      healthPath: { type: 'string' },
+      hosts: { type: 'array', items: { type: 'string' } },
+    }},
+    roles: { type: 'object' },
+  },
+}})
+const projectConfig = projectConfigResult || {}
+const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
-const hasContainer = discovery.filesToModify?.some(f => f.includes('Makefile') || f.includes('Dockerfile') || f.includes('docker'))
+const hasContainer = !!(projectConfig.container)
 
 if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
   log(`PROJECT TYPE: CLI/library (pages:{} empty) — overriding ${discovery.ceremonyTier} → LIGHT (no Quinn, no container)`)
@@ -420,9 +438,9 @@ if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
 For evidence-type-ratio: add non-grep evidence methods (BUN_TEST, COMMAND, PLAYWRIGHT) to ACs.
-For tests-pass: run cd ${PROJECT_ROOT} && bun test --isolate test/unit/ and write result to environments.local.tests in workflow-state.json.
-For local-api-validated: check if dev server is up (curl localhost:7778). If down, run cd ${PROJECT_ROOT} && make dev-all in background. Write environments.local.api.
-For local-ui-validated: check if UI is up (curl localhost:5173). Write environments.local.ui or set skipReason.
+For tests-pass: run cd ${PROJECT_ROOT} && bun test and write result to environments.local.tests in workflow-state.json.
+For local-api-validated: read ${PROJECT_ROOT}/.claude/rungate.json for apiUrl. If no apiUrl configured, write environments.local.api = "SKIP". If configured, curl the URL and write PASS/FAIL.
+For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or pages config. If no UI configured, write environments.local.ui = "SKIP" with skipReason. If configured, curl the URL and write PASS/FAIL.
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 This validates via Zod at write time — you get immediate error feedback.`)
@@ -560,8 +578,7 @@ Run all file checks, tests, and validations from that directory (cd ${marcusWork
 This is where Marcus made the code changes — do NOT validate against the main branch.
 
 ## Environment
-- **Dev UI:** http://localhost:5173
-- **Dev API:** http://localhost:7778
+- **Config:** Read ${PROJECT_ROOT}/.claude/rungate.json for dev URLs, page paths, and API endpoints
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
 - **Test as:** Brand-new user — no prior session state
 - **Pages map:** Read ${PROJECT_ROOT}/.claude/rungate.json for exact URL paths
@@ -680,24 +697,34 @@ const ENV_CHECK_SCHEMA = {
   },
   required: ['apiStatus', 'uiStatus', 'testsStatus'],
 }
-const envStatus = await agent(`
-Run these 3 checks and report results. Do NOT read or write any JSON files.
+// Build env-check prompt dynamically from project config
+const apiUrl = projectConfig.apiUrl || null
+const uiUrl = projectConfig.uiUrl || null
 
-1. API: curl -s -o /dev/null -w "%{http_code}" http://localhost:7778/api/aes
+let envCheckPrompt = 'Run these checks and report results. Do NOT read or write any JSON files.\n\n'
+
+if (apiUrl) {
+  envCheckPrompt += `1. API: curl -s -o /dev/null -w "%{http_code}" ${apiUrl}
    - If 200: apiStatus = "PASS"
-   - Otherwise: apiStatus = "FAIL"
+   - Otherwise: apiStatus = "FAIL"\n\n`
+} else {
+  envCheckPrompt += '1. API: No API configured for this project. Set apiStatus = "SKIP".\n\n'
+}
 
-2. UI: curl -s -o /dev/null -w "%{http_code}" http://localhost:5173
+if (uiUrl) {
+  envCheckPrompt += `2. UI: curl -s -o /dev/null -w "%{http_code}" ${uiUrl}
    - If 200 or 302: uiStatus = "PASS"
-   - If unreachable: uiStatus = "SKIP", set uiSkipReason
+   - If unreachable: uiStatus = "SKIP", set uiSkipReason\n\n`
+} else {
+  envCheckPrompt += '2. UI: No UI/pages configured for this project. Set uiStatus = "SKIP", uiSkipReason = "No pages configured".\n\n'
+}
 
-3. Tests — run TWO commands:
-   a. Run the fix-specific test: cd ${PROJECT_ROOT} && bun test test/unit/campaign-quality-gate.test.ts 2>&1 | tail -3
-   b. Run the full suite: cd ${PROJECT_ROOT} && bun test --isolate test/unit/ 2>&1 | tail -3
-   - testsStatus = "PASS" if the fix-specific test (a) passes with 0 fail, regardless of full suite
-   - testsStatus = "FAIL" ONLY if the fix-specific test (a) has failures
-   - Report testFailCount and testTotalCount from the full suite (b) for reference
-`, { label: 'env-check-local', phase: 'Commit', schema: ENV_CHECK_SCHEMA })
+envCheckPrompt += `3. Tests: cd ${PROJECT_ROOT} && bun test 2>&1 | tail -5
+   - testsStatus = "PASS" if 0 failures
+   - testsStatus = "FAIL" if any failures
+   - Report testFailCount and testTotalCount\n`
+
+const envStatus = await agent(envCheckPrompt, { label: 'env-check-local', phase: 'Commit', schema: ENV_CHECK_SCHEMA })
 
 // Write commit + environment data to workflow-state.json via writeWorkflowState (Zod-validated)
 await agent(`
@@ -734,38 +761,44 @@ if (verifyResult?.result === 'FAIL') {
   }
 }
 
-// Container rebuild + Quinn container (STANDARD+ — all tiers except LIGHT)
-if (discovery.ceremonyTier !== 'LIGHT') {
-  // Step 1: Force rebuild container image from fix branch (unconditional)
-  await agent(`
+// Container rebuild + Quinn container (STANDARD+ only, requires container config)
+const containerConfig = projectConfig.container || null
+if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
+  const rebuildCmd = containerConfig.rebuildCommand
+  const containerHosts = containerConfig.hosts || []
+  const containerPort = containerConfig.port
+  const containerHealthPath = containerConfig.healthPath || '/'
+
+  if (rebuildCmd) {
+    await agent(`
 You have ONE task: rebuild the test container. Run this EXACT command and report the output:
 
-cd ${PROJECT_ROOT} && make test-rebuild 2>&1 | tail -20
+cd ${PROJECT_ROOT} && ${rebuildCmd} 2>&1 | tail -20
 
-This stops the old container, rebuilds the image from current code, seeds data, and starts a new container on port 7776. Report the full output.
-  `, { label: 'container-rebuild', phase: 'Verify' })
+Report the full output.
+    `, { label: 'container-rebuild', phase: 'Verify' })
+  }
 
-  // Step 2: Check container availability after rebuild
-  const envCheck = await agent(`
+  if (containerHosts.length > 0 && containerPort) {
+    const hostChecks = containerHosts.map((h, i) => `${i + 1}. curl -s -o /dev/null -w "%{http_code}" http://${h}:${containerPort}${containerHealthPath} 2>/dev/null\n   - host${i} = true if 200, false otherwise`).join('\n')
+    const hostSchema = {}
+    containerHosts.forEach((h, i) => { hostSchema['host' + i] = { type: 'boolean' } })
+
+    const envCheck = await agent(`
 Check if the rebuilt container is available:
-1. Local: curl -s -o /dev/null -w "%{http_code}" http://localhost:7776/api/aes 2>/dev/null
-   - localTest = true if 200, false otherwise
-2. Mac Mini: curl -s -o /dev/null -w "%{http_code}" http://mini.local:7776/api/aes 2>/dev/null || echo "unreachable"
-   - macMini = true if 200, false otherwise
-  `, { label: 'env-check', phase: 'Verify', schema: {
-    type: 'object',
-    properties: {
-      localTest: { type: 'boolean' },
-      macMini: { type: 'boolean' },
-    },
-    required: ['localTest', 'macMini'],
-  }})
+${hostChecks}
+    `, { label: 'env-check', phase: 'Verify', schema: {
+      type: 'object',
+      properties: hostSchema,
+      required: Object.keys(hostSchema),
+    }})
 
-  const testHost = envCheck?.localTest ? 'localhost' : envCheck?.macMini ? 'mini.local' : null
-  log(`Container env: local=${envCheck?.localTest}, macMini=${envCheck?.macMini}, using=${testHost || 'NONE'}`)
+    const hostIdx = containerHosts.findIndex((h, i) => envCheck && envCheck['host' + i])
+    const testHost = hostIdx >= 0 ? containerHosts[hostIdx] : null
+    log(`Container env: ${containerHosts.map((h, i) => `${h}=${envCheck?.['host' + i]}`).join(', ')}, using=${testHost || 'NONE'}`)
 
-  if (testHost) {
-    await briefedAgent(`
+    if (testHost) {
+      await briefedAgent(`
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## COMMIT SHA VERIFICATION (MANDATORY)
@@ -782,9 +815,9 @@ If mismatch, FAIL with "Container running wrong version — HEAD {actual} != bui
 - browser_take_screenshot() — capture PNG evidence
 - browser_verify_text_visible(text) — assert text on page
 
-## Test Plan for #${ISSUE} on CONTAINER — http://${testHost}:7776
+## Test Plan for #${ISSUE} on CONTAINER — http://${testHost}:${containerPort}
 Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
-1. browser_navigate("http://${testHost}:7776" + page path from rungate.json)
+1. browser_navigate("http://${testHost}:${containerPort}" + page path from rungate.json)
 2. browser_snapshot() — verify page loaded
 3. For each AC:
    a. Perform the action (browser_click, browser_type, etc.)
@@ -794,10 +827,13 @@ Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 
 ### ACs to Verify
 ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
-    `, { label: 'quinn-container', phase: 'Verify', role: 'quinn', schema: GATE_RESULT_SCHEMA })
-  } else {
-    log('WARN: No test container available — skipping container Quinn')
+      `, { label: 'quinn-container', phase: 'Verify', role: 'quinn', schema: GATE_RESULT_SCHEMA })
+    } else {
+      log('WARN: No test container available — skipping container Quinn')
+    }
   }
+} else if (discovery.ceremonyTier !== 'LIGHT') {
+  log('No container config in rungate.json — skipping container verify')
 }
 
 // Rook security review (THOROUGH only)
@@ -827,11 +863,14 @@ If merge conflicts, report them — do NOT force.
 
 phase('Ship')
 
-// Record container test evidence (SKIP with reason if no container available)
-await agent(`
+// Record container/environment test evidence
+if (containerConfig) {
+  const containerPort = containerConfig.port || 3000
+  const containerHealthPath = containerConfig.healthPath || '/'
+  await agent(`
 Check test container status, then update workflow-state.json via writeWorkflowState():
 
-1. Check test container: curl -s -o /dev/null -w "%{http_code}" http://localhost:7776/api/aes 2>/dev/null
+1. Check test container: curl -s -o /dev/null -w "%{http_code}" http://${(containerConfig.hosts || [])[0]}:${containerPort}${containerHealthPath} 2>/dev/null
 2. Based on result, run this bun -e command (pick the version matching your result):
 
 If container is up (200):
@@ -842,6 +881,15 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 
 Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
+} else {
+  await agent(`
+No container configured for this project. Record environment as SKIP in workflow-state.json:
+
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'no container configured'; s.environments.prod.smoke = 'SKIP'; s.environments.prod.smokeSkipReason = 'no container configured'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'no container configured'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+
+Run this command and report the output.
+`, { label: 'record-env', phase: 'Ship' })
+}
 
 // Create PR
 log('Creating PR')
