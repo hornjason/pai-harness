@@ -261,16 +261,16 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [ ] SC-293: specs/SPEC-TEMPLATE.md exists
 - [x] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
 - [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern, hand-written tests deleted
-- [ ] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score
+- [ ] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score (behavioral)
 - [ ] SC-401: Directive extractor parses brief for actionable instructions (Read X, Run Y, Never Z) — no manual directive list
-- [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive
+- [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive (behavioral)
 - [ ] SC-403: Cross-reference report shows directive text, file position, RepoRails score, and transcript compliance side by side
 - [x] SC-404: Hill climb mode runs test-brief up to 5 iterations — tweaks brief between runs using 7 compliance factors, stops when target score reached
 - [x] SC-405: All 6 agent briefs score ≥80% directive compliance on standard task before shipping through harness
 - [x] SC-406: briefedAgent() parses brief Context section at prompt-build time and generates explicit numbered Read steps — no hardcoded file paths in workflow
-- [ ] SC-407: Ship workflow runs compliance pre-flight gate before IMPLEMENT — agent must score ≥80% on test-brief or workflow halts
+- [ ] SC-407: Ship workflow runs compliance pre-flight gate before IMPLEMENT — agent must score ≥80% on test-brief or workflow halts (behavioral)
 - [ ] SC-408: Standard tasks defined per role in config — one coding task (Marcus), one testing task (Quinn), one scan task (Rook)
-- [ ] SC-409: Behavioral canary test — prompt contains a unique practice rule, transcript output verified to reflect it (read ≠ followed)
+- [ ] SC-409: Behavioral canary test — prompt contains a unique practice rule, transcript output verified to reflect it (read ≠ followed) (behavioral)
 
 ## Baseline (2026-09-20)
 

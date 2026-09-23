@@ -114,6 +114,7 @@ export interface StalenessEntry {
 const _findings: ConformityFinding[] = [];
 const _candidates: ConstraintCandidate[] = [];
 const _staleness: StalenessEntry[] = [];
+let _behavioralCount = 0;
 
 export function addFinding(finding: ConformityFinding): void {
   _findings.push(finding);
@@ -143,6 +144,15 @@ export function clearFindings(): void {
   _findings.length = 0;
   _candidates.length = 0;
   _staleness.length = 0;
+  _behavioralCount = 0;
+}
+
+export function addBehavioralCount(count: number): void {
+  _behavioralCount += count;
+}
+
+export function getBehavioralCount(): number {
+  return _behavioralCount;
 }
 
 export function writeFindingsReport(root: string): string {
@@ -157,6 +167,7 @@ export function writeFindingsReport(root: string): string {
     failures: _findings.filter(f => f.severity === "FAIL").length,
     warnings: _findings.filter(f => f.severity === "WARN").length,
     candidateCount: _candidates.length,
+    behavioralCount: _behavioralCount,
     staleCount: _staleness.length,
     findings: _findings,
     constraintCandidates: _candidates,
@@ -169,6 +180,34 @@ export interface ParsedSC {
   id: string;
   statement: string;
   specFile: string;
+}
+
+// ── Behavioral SC detection ───────────────────────────────
+
+/**
+ * Detects whether an SC has the (behavioral) suffix, indicating it requires
+ * runtime verification (agent sessions, transcripts, auditing) and cannot
+ * be tested by static file checks.
+ */
+export function isBehavioralSC(sc: ParsedSC): boolean {
+  return /\(behavioral\)\s*$/.test(sc.statement);
+}
+
+/**
+ * Counts behavioral SCs in a list.
+ */
+export function countBehavioralSCs(scs: ParsedSC[]): number {
+  return scs.filter(isBehavioralSC).length;
+}
+
+/**
+ * Returns the routing annotation for behavioral SCs.
+ * Behavioral SCs are verified via SESSION-AUDIT-SPEC's two feedback loops,
+ * not via static conformity checks.
+ */
+export function getBehavioralRouting(sc: ParsedSC): string | null {
+  if (!isBehavioralSC(sc)) return null;
+  return "Verified via SESSION-AUDIT-SPEC § Two Feedback Loops (runtime behavioral check)";
 }
 
 function extractSCs(content: string, specFile: string): ParsedSC[] {
@@ -636,7 +675,14 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
     for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
         const unmatched: string[] = [];
+        const behavioral: string[] = [];
         for (const sc of metadata.scs) {
+          // Behavioral SCs are runtime-only — exclude from unmatched count
+          if (isBehavioralSC(sc)) {
+            const routing = getBehavioralRouting(sc);
+            behavioral.push(`${sc.id}: ${sc.statement} → ${routing}`);
+            continue;
+          }
           const assertion = matchPattern(sc);
           if (!assertion) { unmatched.push(`${sc.id}: ${sc.statement}`); continue; }
           if (metadata.status === "draft") {
@@ -644,6 +690,13 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           } else {
             test(`${sc.id}: ${sc.statement}`, () => { assertion(root); });
           }
+        }
+        if (behavioral.length > 0) {
+          addBehavioralCount(behavioral.length);
+          test(`INFO: ${behavioral.length} behavioral SCs (runtime-only, routed to SESSION-AUDIT-SPEC)`, () => {
+            console.log(`Behavioral SCs in ${specFile} (verified via SESSION-AUDIT-SPEC):\n  ${behavioral.join("\n  ")}`);
+            expect(true).toBe(true);
+          });
         }
         if (unmatched.length > 0) {
           // SC-287: strict mode (default) fails on unmatched, permissive mode warns

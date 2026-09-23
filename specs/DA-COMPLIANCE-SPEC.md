@@ -68,9 +68,9 @@ specs/DA-COMPLIANCE-SPEC.md   -- this spec: criteria tables + baseline scores
 
 - **SC-416**: DA-COMPLIANCE-SPEC.md contains eval criteria tables for DA, Marcus, and Quinn roles with criterion ID, source reference, and transcript check columns (>= 3 role tables)
 - **SC-417**: audit-transcript.ts exports gradeByRole function that accepts role parameter and applies role-specific eval criteria
-- **SC-418**: Transcript grading output includes per-rule FOLLOWED/IGNORED verdict with evidence string
-- **SC-419**: da-compliance.ts skill script reads transcript directory, runs role-aware audit, produces structured JSON
-- **SC-420**: Dashboard output shows per-rule compliance rate as percentage
+- **SC-418**: Transcript grading output includes per-rule FOLLOWED/IGNORED verdict with evidence string (behavioral)
+- **SC-419**: da-compliance.ts skill script reads transcript directory, runs role-aware audit, produces structured JSON (behavioral)
+- **SC-420**: Dashboard output shows per-rule compliance rate as percentage (behavioral)
 - **SC-421**: audit-transcript.ts imports shared eval criteria from lib/eval-criteria.ts
 - **SC-422**: Baseline DA compliance score documented with date and per-criterion pass rates
 
