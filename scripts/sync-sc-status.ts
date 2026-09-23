@@ -5,46 +5,53 @@
  * 1. Scans spec files for unchecked SCs: - [ ] SC-NNN: ...
  * 2. Scans test files for matching SC-NNN references
  * 3. Runs only the test files that contain unchecked SCs
- * 4. If a test file passes (0 fail), flips matching checkboxes to [x]
+ * 4. For SCs without hand-written tests, runs matchPattern() conformity assertions
+ * 5. If assertions pass, flips matching checkboxes to [x]
  *
  * Usage:
  *   bun scripts/sync-sc-status.ts           # Run targeted tests and flip checkboxes
  *   bun scripts/sync-sc-status.ts --dry-run # Show what would flip without changing files
+ *   bun scripts/sync-sc-status.ts --report  # Output per-spec coverage report
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
+import { matchPattern } from "../lib/conformity";
 
 const ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(ROOT, "specs");
 const TEST_DIR = join(ROOT, "test");
 const dryRun = process.argv.includes("--dry-run");
+const reportMode = process.argv.includes("--report");
 
-interface UncheckedSC {
+export interface UncheckedSC {
   id: string;
+  statement?: string;
   specFile: string;
 }
 
-function findUncheckedSCs(): UncheckedSC[] {
+export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
+  const dir = specsDir || SPECS_DIR;
   const unchecked: UncheckedSC[] = [];
-  if (!existsSync(SPECS_DIR)) return unchecked;
+  if (!existsSync(dir)) return unchecked;
 
-  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: SPECS_DIR, absolute: false })) {
-    const content = readFileSync(join(SPECS_DIR, file), "utf-8");
-    for (const match of content.matchAll(/^- \[ \] (SC-\d+):/gm)) {
-      unchecked.push({ id: match[1], specFile: file });
+  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
+    const content = readFileSync(join(dir, file), "utf-8");
+    for (const match of content.matchAll(/^- \[ \] (SC-\d+):\s*(.+)$/gm)) {
+      unchecked.push({ id: match[1], statement: match[2].trim(), specFile: file });
     }
   }
   return unchecked;
 }
 
-function findTestFilesForSCs(scIds: Set<string>): Map<string, string[]> {
+export function findTestFilesForSCs(scIds: Set<string>, testDir?: string): Map<string, string[]> {
+  const dir = testDir || TEST_DIR;
   const testFileToSCs = new Map<string, string[]>();
-  if (!existsSync(TEST_DIR)) return testFileToSCs;
+  if (!existsSync(dir)) return testFileToSCs;
 
-  for (const file of readdirSync(TEST_DIR).filter(f => f.endsWith(".test.ts"))) {
-    const content = readFileSync(join(TEST_DIR, file), "utf-8");
+  for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
+    const content = readFileSync(join(dir, file), "utf-8");
     const foundSCs: string[] = [];
     for (const id of scIds) {
       if (content.includes(id)) foundSCs.push(id);
@@ -69,8 +76,44 @@ function runTestFile(file: string): boolean {
   }
 }
 
-function flipCheckboxes(specFile: string, scIds: string[]): number {
-  const filePath = join(SPECS_DIR, specFile);
+export interface ConformityResult {
+  passing: Set<string>;
+  failing: Set<string>;
+  unmatchable: Set<string>;
+}
+
+/**
+ * AC-2: For each unchecked SC without a hand-written test, runs matchPattern()
+ * and executes the returned assertion against the project root.
+ */
+export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): ConformityResult {
+  const passing = new Set<string>();
+  const failing = new Set<string>();
+  const unmatchable = new Set<string>();
+
+  for (const sc of uncheckedSCs) {
+    const statement = sc.statement || "";
+    const assertion = matchPattern({ id: sc.id, statement, specFile: sc.specFile });
+
+    if (!assertion) {
+      unmatchable.add(sc.id);
+      continue;
+    }
+
+    try {
+      assertion(root);
+      passing.add(sc.id);
+    } catch {
+      failing.add(sc.id);
+    }
+  }
+
+  return { passing, failing, unmatchable };
+}
+
+export function flipCheckboxes(specFile: string, scIds: string[], specsDir?: string, isDryRun?: boolean): number {
+  const dir = specsDir || SPECS_DIR;
+  const filePath = join(dir, specFile);
   let content = readFileSync(filePath, "utf-8");
   let flipped = 0;
 
@@ -82,76 +125,158 @@ function flipCheckboxes(specFile: string, scIds: string[]): number {
     }
   }
 
-  if (flipped > 0 && !dryRun) {
+  // Write unless dry-run: use explicit isDryRun param if provided, else module-level flag
+  const shouldSkipWrite = isDryRun !== undefined ? isDryRun : dryRun;
+  if (flipped > 0 && !shouldSkipWrite) {
     writeFileSync(filePath, content);
   }
   return flipped;
 }
 
-// --- Main ---
-const unchecked = findUncheckedSCs();
-if (unchecked.length === 0) {
-  console.log("✅ All SCs are already checked off");
-  process.exit(0);
+export interface SpecCoverage {
+  testedPassing: string[];
+  testedFailing: string[];
+  conformityPassing: string[];
+  conformityFailing: string[];
+  unmatchable: string[];
 }
 
-const scIds = new Set(unchecked.map(s => s.id));
-console.log(`Found ${unchecked.length} unchecked SCs across specs`);
+/**
+ * AC-4: --report flag outputs per-spec coverage showing
+ * tested-passing, tested-failing, and unmatchable SCs.
+ */
+export function generateReport(specCoverage: Map<string, SpecCoverage>): string {
+  const lines: string[] = [];
+  lines.push("=== SC Coverage Report ===\n");
 
-const testFileMap = findTestFilesForSCs(scIds);
-const testedSCs = new Set(Array.from(testFileMap.values()).flat());
-const untestedSCs = unchecked.filter(s => !testedSCs.has(s.id));
-
-if (untestedSCs.length > 0) {
-  console.log(`⬜ ${untestedSCs.length} SCs have no test: ${untestedSCs.map(s => s.id).join(", ")}`);
-}
-
-if (testFileMap.size === 0) {
-  console.log("No test files reference unchecked SCs");
-  process.exit(0);
-}
-
-const passingSCs = new Set<string>(scIds);
-const failingSCs = new Set<string>();
-for (const [testFile, scs] of testFileMap) {
-  process.stdout.write(`  Running ${testFile}...`);
-  const passed = runTestFile(testFile);
-  if (passed) {
-    console.log(` ✅ (${scs.length} SCs)`);
-  } else {
-    console.log(` ❌ (${scs.join(", ")})`);
-    scs.forEach(sc => failingSCs.add(sc));
+  for (const [specFile, coverage] of specCoverage) {
+    lines.push(`${specFile}:`);
+    if (coverage.testedPassing.length > 0)
+      lines.push(`  tested-passing (${coverage.testedPassing.length}): ${coverage.testedPassing.join(", ")}`);
+    if (coverage.testedFailing.length > 0)
+      lines.push(`  tested-failing (${coverage.testedFailing.length}): ${coverage.testedFailing.join(", ")}`);
+    if (coverage.conformityPassing.length > 0)
+      lines.push(`  conformity-passing (${coverage.conformityPassing.length}): ${coverage.conformityPassing.join(", ")}`);
+    if (coverage.conformityFailing.length > 0)
+      lines.push(`  conformity-failing (${coverage.conformityFailing.length}): ${coverage.conformityFailing.join(", ")}`);
+    if (coverage.unmatchable.length > 0)
+      lines.push(`  unmatchable (${coverage.unmatchable.length}): ${coverage.unmatchable.join(", ")}`);
+    lines.push("");
   }
-}
-// Only flip SCs that pass in ALL test files — any failure blocks the flip
-for (const sc of failingSCs) passingSCs.delete(sc);
-// Only flip SCs that actually have tests
-for (const sc of passingSCs) {
-  if (!testedSCs.has(sc)) passingSCs.delete(sc);
+
+  return lines.join("\n");
 }
 
-if (passingSCs.size === 0) {
-  console.log("No SCs to flip");
-  process.exit(0);
-}
+// --- Main (only runs when executed directly) ---
+const isDirectExecution = import.meta.main;
 
-// Group passing SCs by spec file and flip
-const bySpec = new Map<string, string[]>();
-for (const sc of unchecked) {
-  if (passingSCs.has(sc.id)) {
-    const list = bySpec.get(sc.specFile) || [];
-    list.push(sc.id);
-    bySpec.set(sc.specFile, list);
+if (isDirectExecution) {
+  const unchecked = findUncheckedSCs();
+  if (unchecked.length === 0) {
+    console.log("All SCs are already checked off");
+    process.exit(0);
   }
-}
 
-let totalFlipped = 0;
-for (const [specFile, scs] of bySpec) {
-  const flipped = flipCheckboxes(specFile, scs);
-  if (flipped > 0) {
-    console.log(`${dryRun ? "Would flip" : "Flipped"} ${flipped} SCs in ${specFile}: ${scs.join(", ")}`);
-    totalFlipped += flipped;
+  const scIds = new Set(unchecked.map(s => s.id));
+  console.log(`Found ${unchecked.length} unchecked SCs across specs`);
+
+  // Step 1: Find SCs covered by hand-written test files
+  const testFileMap = findTestFilesForSCs(scIds);
+  const testedSCs = new Set(Array.from(testFileMap.values()).flat());
+  const untestedSCs = unchecked.filter(s => !testedSCs.has(s.id));
+
+  // Step 2: Run hand-written tests
+  const passingSCs = new Set<string>();
+  const failingSCs = new Set<string>();
+
+  for (const [testFile, scs] of testFileMap) {
+    process.stdout.write(`  Running ${testFile}...`);
+    const passed = runTestFile(testFile);
+    if (passed) {
+      console.log(` (${scs.length} SCs)`);
+      scs.forEach(sc => passingSCs.add(sc));
+    } else {
+      console.log(` (${scs.join(", ")})`);
+      scs.forEach(sc => failingSCs.add(sc));
+    }
   }
-}
 
-console.log(`\n${dryRun ? "Would flip" : "✅ Flipped"} ${totalFlipped} SC checkboxes`);
+  // Remove any SCs that failed from passing set
+  for (const sc of failingSCs) passingSCs.delete(sc);
+
+  // Step 3: AC-2 — Run conformity assertions on untested SCs
+  if (untestedSCs.length > 0) {
+    console.log(`\nChecking ${untestedSCs.length} untested SCs via conformity engine...`);
+    const conformityResult = checkConformitySCs(untestedSCs, ROOT);
+
+    for (const id of conformityResult.passing) {
+      passingSCs.add(id);
+      console.log(`  ${id}: conformity PASS`);
+    }
+    for (const id of conformityResult.failing) {
+      failingSCs.add(id);
+      console.log(`  ${id}: conformity FAIL`);
+    }
+    if (conformityResult.unmatchable.size > 0) {
+      console.log(`  ${conformityResult.unmatchable.size} SCs unmatchable: ${[...conformityResult.unmatchable].join(", ")}`);
+    }
+
+    // AC-4: --report flag
+    if (reportMode) {
+      const specCoverage = new Map<string, SpecCoverage>();
+
+      for (const sc of unchecked) {
+        if (!specCoverage.has(sc.specFile)) {
+          specCoverage.set(sc.specFile, {
+            testedPassing: [],
+            testedFailing: [],
+            conformityPassing: [],
+            conformityFailing: [],
+            unmatchable: [],
+          });
+        }
+        const coverage = specCoverage.get(sc.specFile)!;
+
+        if (testedSCs.has(sc.id)) {
+          if (passingSCs.has(sc.id)) coverage.testedPassing.push(sc.id);
+          else if (failingSCs.has(sc.id)) coverage.testedFailing.push(sc.id);
+        } else if (conformityResult.passing.has(sc.id)) {
+          coverage.conformityPassing.push(sc.id);
+        } else if (conformityResult.failing.has(sc.id)) {
+          coverage.conformityFailing.push(sc.id);
+        } else if (conformityResult.unmatchable.has(sc.id)) {
+          coverage.unmatchable.push(sc.id);
+        }
+      }
+
+      console.log("\n" + generateReport(specCoverage));
+    }
+  }
+
+  // Step 4: Flip passing SCs
+  if (passingSCs.size === 0) {
+    console.log("No SCs to flip");
+    process.exit(0);
+  }
+
+  // Group passing SCs by spec file and flip
+  const bySpec = new Map<string, string[]>();
+  for (const sc of unchecked) {
+    if (passingSCs.has(sc.id)) {
+      const list = bySpec.get(sc.specFile) || [];
+      list.push(sc.id);
+      bySpec.set(sc.specFile, list);
+    }
+  }
+
+  let totalFlipped = 0;
+  for (const [specFile, scs] of bySpec) {
+    const flipped = flipCheckboxes(specFile, scs);
+    if (flipped > 0) {
+      console.log(`${dryRun ? "Would flip" : "Flipped"} ${flipped} SCs in ${specFile}: ${scs.join(", ")}`);
+      totalFlipped += flipped;
+    }
+  }
+
+  console.log(`\n${dryRun ? "Would flip" : "Flipped"} ${totalFlipped} SC checkboxes`);
+}
