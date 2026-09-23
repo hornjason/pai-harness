@@ -2,8 +2,6 @@
   "updated": "2026-09-23",
   "priorities": [
     "P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline",
-    "P1: #551 matchPattern config-driven refactor (SC-380) — in flight",
-    "P1: #552 SPEC-TEMPLATE auto-generated from matcher config (SC-381) — depends on #551",
     "P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)",
     "P2: #555 Consumer custom matcher extension (SC-384)",
     "P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts",
@@ -383,7 +381,8 @@
         "Verified and closed #550 (matcher-registry.json — 19 patterns, all required fields)",
         "Verified and closed #514 (ship gate blocks on FAIL ACs — already implemented in orchestrator.ts:66-82)",
         "Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)",
-        "Harness readiness audit: no remaining blockers for consumer project dogfooding"
+        "Harness readiness audit: no remaining blockers for consumer project dogfooding",
+        "Shipped SC-380 (#551): matchPattern() refactored to config-driven dispatch — 19 handlers, 365→14 line body, zero test changes"
       ]
     },
     {

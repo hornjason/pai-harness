@@ -21,13 +21,11 @@ Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.
 
 **Next priorities:**
 1. P0: Dogfood harness on DailyBriefDashboard — pick a real issue and ship through the full pipeline
-2. P1: #551 matchPattern config-driven refactor (SC-380) — in flight
-3. P1: #552 SPEC-TEMPLATE auto-generated from matcher config (SC-381) — depends on #551
-4. P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)
-5. P2: #555 Consumer custom matcher extension (SC-384)
-6. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts
-7. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard
-8. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
+2. P1: #561 Brief compliance — pre-flight gate, standard tasks, behavioral canary (SC-407–SC-409)
+3. P2: #555 Consumer custom matcher extension (SC-384)
+4. P2: SCAFFOLD-DECOMPOSITION-SPEC (SC-358–SC-366): Split scaffold-project.ts
+5. P3: HOOK-ARCHITECTURE-SPEC (SC-367–SC-372): Extract AgentBriefGuard
+6. P4: GATE-CONTRACTS-SPEC (SC-373–SC-378): Typed contracts for all gates
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -149,6 +147,7 @@ Session 8 (AFK) — Prior-branch detection, worktree cleanup, issue triage.
 - Verified and closed #514 (ship gate blocks on FAIL ACs — already implemented in orchestrator.ts:66-82)
 - Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)
 - Harness readiness audit: no remaining blockers for consumer project dogfooding
+- Shipped SC-380 (#551): matchPattern() refactored to config-driven dispatch — 19 handlers, 365→14 line body, zero test changes
 
 **Session 2026-09-22 session 5:**
 - Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned
