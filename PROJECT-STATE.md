@@ -2,23 +2,21 @@
 
 **Current phase: Brief Compliance (#558) — 4 SCs open**
 
-Session 11 — AFK review + feedback loop closure.
+Session 11 — AFK review + feedback loop closure + AFK execution.
 
-Shipped: Option B (conformity auto-flip), stale issue scanner in ship.js, PostCompact hook (#578).
-8 SCs auto-flipped. Closed 6 stale issues + #578. Created #577-#582.
-Behavioral SC reclassification in progress.
-Suite: 1224 pass, 0 fail, 63 files.
+Shipped: Option B (conformity auto-flip), SC reclassification (10 behavioral→matchable),
+mechanical stale issue scanner, closed #565 worktree bug + #577 SubagentStop + #578 PostCompact.
+Both hooks already existed from prior AFK. 12 SCs auto-flipped total.
+Suite: 1209 pass, 0 fail, 65 files. Remaining priorities need Jason.
 
 **Next priorities:**
-1. P0: Reclassify ~20 misclassified behavioral SCs to matchable static checks (in progress)
-2. P1: #565 Worktree repo mismatch bug — fix applied, needs cross-repo verification
-3. P1: Observability Phase 0 — validate scorer on 5 historical transcripts
-4. P1: #577 SubagentStop hook — extend AgentVerdictCapture with transcript auditing
-5. P1: #561 Brief compliance gate (SC-407–SC-409)
-6. P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance
-7. P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)
-8. P2: Agent Brief Templates — SC-350, SC-351, SC-354, SC-357 still open
-9. P2: #582 Agent Teams — evaluate for council and parallel coordination
+1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (needs Jason)
+2. P1: #561 Brief compliance gate (SC-407–SC-409) — needs Jason for standard task definitions
+3. P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance
+4. P1: Enhance SubagentStop hook — run full audit-transcript.ts, not just verdict capture
+5. P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)
+6. P2: Agent Brief Templates — SC-351, SC-354, SC-357 still open
+7. P2: #582 Agent Teams — evaluate for council and parallel coordination
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

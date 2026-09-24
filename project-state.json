@@ -1,17 +1,15 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P0: Reclassify ~20 misclassified behavioral SCs to matchable static checks (in progress)",
-    "P1: #565 Worktree repo mismatch bug — fix applied, needs cross-repo verification",
-    "P1: Observability Phase 0 — validate scorer on 5 historical transcripts",
-    "P1: #577 SubagentStop hook — extend AgentVerdictCapture with transcript auditing",
-    "P1: #561 Brief compliance gate (SC-407–SC-409)",
+    "P0: Observability Phase 0 — validate scorer on 5 historical transcripts (needs Jason)",
+    "P1: #561 Brief compliance gate (SC-407–SC-409) — needs Jason for standard task definitions",
     "P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance",
+    "P1: Enhance SubagentStop hook — run full audit-transcript.ts, not just verdict capture",
     "P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)",
-    "P2: Agent Brief Templates — SC-350, SC-351, SC-354, SC-357 still open",
+    "P2: Agent Brief Templates — SC-351, SC-354, SC-357 still open",
     "P2: #582 Agent Teams — evaluate for council and parallel coordination"
   ],
-  "notes": "Session 11 — AFK review + feedback loop closure.\n\nShipped: Option B (conformity auto-flip), stale issue scanner in ship.js, PostCompact hook (#578).\n8 SCs auto-flipped. Closed 6 stale issues + #578. Created #577-#582.\nBehavioral SC reclassification in progress.\nSuite: 1224 pass, 0 fail, 63 files.",
+  "notes": "Session 11 — AFK review + feedback loop closure + AFK execution.\n\nShipped: Option B (conformity auto-flip), SC reclassification (10 behavioral→matchable),\nmechanical stale issue scanner, closed #565 worktree bug + #577 SubagentStop + #578 PostCompact.\nBoth hooks already existed from prior AFK. 12 SCs auto-flipped total.\nSuite: 1209 pass, 0 fail, 65 files. Remaining priorities need Jason.",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
