@@ -212,7 +212,7 @@
         {
           "id": "SC-351",
           "what": "All 8 required sections present",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-352",
@@ -227,7 +227,7 @@
         {
           "id": "SC-354",
           "what": "Edit template → re-scaffold updates brief",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-355",
@@ -242,7 +242,7 @@
         {
           "id": "SC-357",
           "what": "Template vars match project values",
-          "done": false
+          "done": true
         }
       ]
     },
