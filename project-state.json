@@ -88,7 +88,7 @@
         {
           "id": "SC-382",
           "what": "create-spec validates SCs at write time",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-396",

@@ -54,11 +54,11 @@ Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 | ⬜ | SC-381 | SPEC-TEMPLATE auto-generated from config |
 | ⬜ | SC-384 | Consumer custom matcher extension |
 
-## 🔄 Config-Driven Testing — Phase G: Structured SC Authoring (#553-#554) (IN PROGRESS)
+## ✅ Config-Driven Testing — Phase G: Structured SC Authoring (#553-#554) (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-382 | create-spec validates SCs at write time |
+| ✅ | SC-382 | create-spec validates SCs at write time |
 | ✅ | SC-396 | create-sc CLI: pattern + params → matchable SC |
 | ✅ | SC-397 | create-sc --list shows all patterns |
 | ✅ | SC-399 | AGENTS.md Commands table includes create-sc |
