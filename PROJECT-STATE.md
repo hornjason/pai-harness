@@ -32,7 +32,7 @@ Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-379 | matcher-registry.json config with all 19 patterns |
-| ⬜ | SC-380 | matchPattern() reads from config, no hardcoded branches |
+| ✅ | SC-380 | matchPattern() reads from config, no hardcoded branches |
 | ⬜ | SC-381 | SPEC-TEMPLATE auto-generated from config |
 | ✅ | SC-384 | Consumer custom matcher extension |
 
@@ -59,8 +59,8 @@ Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-400 | test-brief CLI: isolated worktree compliance test |
-| ⬜ | SC-401 | Directive extractor parses brief mechanically |
+| ✅ | SC-400 | test-brief CLI: isolated worktree compliance test |
+| ✅ | SC-401 | Directive extractor parses brief mechanically |
 | ⬜ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
 | ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
 | ✅ | SC-404 | Hill climb mode: 5 iterations max |
@@ -68,7 +68,7 @@ Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 | ✅ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
 | ⬜ | SC-407 | Compliance pre-flight gate in ship workflow |
 | ⬜ | SC-408 | Standard tasks per role defined in config |
-| ⬜ | SC-409 | Behavioral canary: read ≠ followed verification |
+| ✅ | SC-409 | Behavioral canary: read ≠ followed verification |
 
 ## 🔄 Agent Brief Templates (IN PROGRESS)
 

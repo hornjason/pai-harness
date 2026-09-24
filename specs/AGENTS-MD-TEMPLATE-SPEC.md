@@ -127,7 +127,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
 - [ ] SC-270: Large specs with multiple intents split into single-intent files (behavioral)
 - [x] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
-- [ ] SC-272: AGENTS.md contains [Spec, Governs, Testable]
+- [x] SC-272: AGENTS.md contains [Spec, Governs, Testable]
 - [x] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Satisfied by SC-17 (150-line cap)
 - [x] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
 - [x] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
@@ -140,16 +140,16 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-285: Scaffold WARN when a Where to Create Things category has no corresponding docs/ subdirectory (e.g. council listed but docs/council/ doesn't exist)
 
 ### PROJECT-STATE.md Automation
-- [ ] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
-- [ ] SC-297: .git/hooks/pre-commit contains [update-project-state]
+- [x] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
+- [x] SC-297: .git/hooks/pre-commit contains [update-project-state]
 - [ ] SC-298: update-project-state.ts updates frontmatter date, test counts, and SC status from specs (behavioral)
 - [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
-- [ ] SC-300: PROJECT-STATE.md is under [200] lines
+- [x] SC-300: PROJECT-STATE.md is under [200] lines
 - [ ] SC-301: Session summaries archived to docs/session-log/ — max 3 files, oldest pruned (behavioral)
-- [ ] SC-302: scaffold output PROJECT-STATE.md exists
-- [ ] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
-- [ ] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
-- [ ] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
+- [x] SC-302: scaffold output PROJECT-STATE.md exists
+- [x] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
+- [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
+- [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
-- [ ] SC-308: scripts/update-project-state.ts contains [✅, ⬜]
+- [x] SC-308: scripts/update-project-state.ts contains [✅, ⬜]

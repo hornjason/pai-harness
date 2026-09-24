@@ -59,23 +59,23 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 
 - [ ] SC-331: matchPattern() returns non-null for all static SCs in testable strict specs (behavioral)
 - [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs (behavioral)
-- [ ] SC-333: test/phase-2.test.ts is under [100] lines
-- [ ] SC-334: test/phase-3.test.ts is under [100] lines
-- [ ] SC-335: test/phase-5.test.ts is under [100] lines
-- [ ] SC-336: harness lib/conformity.ts contains [regex-match]
-- [ ] SC-337: harness lib/conformity.ts contains [source-contains]
-- [ ] SC-338: harness lib/conformity.ts contains [json-has-field]
-- [ ] SC-339: harness lib/conformity.ts contains [scaffold-produces]
-- [ ] SC-340: harness lib/conformity.ts contains [frontmatter-field]
+- [x] SC-333: test/phase-2.test.ts is under [100] lines
+- [x] SC-334: test/phase-3.test.ts is under [100] lines
+- [x] SC-335: test/phase-5.test.ts is under [100] lines
+- [x] SC-336: harness lib/conformity.ts contains [regex-match]
+- [x] SC-337: harness lib/conformity.ts contains [source-contains]
+- [x] SC-338: harness lib/conformity.ts contains [json-has-field]
+- [x] SC-339: harness lib/conformity.ts contains [scaffold-produces]
+- [x] SC-340: harness lib/conformity.ts contains [frontmatter-field]
 - [x] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
 - [x] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
 - [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests (behavioral)
-- [ ] SC-344: test/phase-1.test.ts is under [200] lines
+- [x] SC-344: test/phase-1.test.ts is under [200] lines
 - [ ] SC-345: Every SC in testable specs classified as static or behavioral (behavioral)
 - [ ] SC-346: Behavioral SCs have verification: behavioral tag and route to SESSION-AUDIT-SPEC (behavioral)
 - [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists (behavioral)
-- [ ] SC-379: config/matcher-registry.json exists
-- [ ] SC-380: lib/conformity.ts contains [loadRegistry, matcherHandlers]
+- [x] SC-379: config/matcher-registry.json exists
+- [x] SC-380: lib/conformity.ts contains [loadRegistry, matcherHandlers]
 - [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config (behavioral)
 - [x] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite
 - [x] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns

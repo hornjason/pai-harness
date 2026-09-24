@@ -64,7 +64,7 @@
         {
           "id": "SC-380",
           "what": "matchPattern() reads from config, no hardcoded branches",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-381",
@@ -140,12 +140,12 @@
         {
           "id": "SC-400",
           "what": "test-brief CLI: isolated worktree compliance test",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-401",
           "what": "Directive extractor parses brief mechanically",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-402",
@@ -185,7 +185,7 @@
         {
           "id": "SC-409",
           "what": "Behavioral canary: read ≠ followed verification",
-          "done": false
+          "done": true
         }
       ],
       "note": "P0 — agents don't read right files without this"

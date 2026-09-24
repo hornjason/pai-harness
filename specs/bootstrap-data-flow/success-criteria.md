@@ -128,8 +128,8 @@ testable: true
 - [ ] SC-165: Quinn brief frontmatter includes tools: [Bash, Read, mcp__playwright__*]
 - [ ] SC-166: Agent brief environment values match rungate.json dev section — mismatch produces FAIL with fixCommand "Re-run scaffold" (brief-level extension of SC-3/SC-4)
 - [ ] SC-167: AGENTS.md Specs table governs and testable fields match actual spec frontmatter — cross-references AGENTS.md routing table against spec file metadata (distinct from SC-75 spec file validation)
-- [ ] SC-168: CODE-MAP.md exists for code projects and is under 3,000 tokens — over-budget produces WARN
-- [ ] SC-169: scaffold output .git/hooks/ files match mode 755 and contain scaffold-generated shebang line
+- [x] SC-168: CODE-MAP.md exists for code projects and is under 3,000 tokens — over-budget produces WARN
+- [x] SC-169: scaffold output .git/hooks/ files match mode 755 and contain scaffold-generated shebang line
 
 - [ ] SC-170: Tier 1 files containing content not produced by scaffold trigger WARN OWNERSHIP-TIER1-EXTRA with fixCommand to relocate (extends SC-104 with extra-content detection)
 - [ ] SC-173: Ownership tier assignment for every harness-touched file declared in lib/ownership-manifest.ts
@@ -151,7 +151,7 @@ testable: true
 - [ ] SC-185: Agent instruction files contain no TODO/FIXME — wrap agentsmd todo-rot
 - [ ] SC-186: No contradictory instructions across files — wrap ccinspect contradiction-keywords
 - [ ] SC-187: No secrets/credentials in agent instruction files — wrap ctxlint content-secrets
-- [ ] SC-188: Conformity wraps ctxlint dead-hook — settings.json hook command paths resolve to present files
+- [x] SC-188: Conformity wraps ctxlint dead-hook — settings.json hook command paths resolve to present files
 - [ ] SC-189: No machine-specific absolute paths in instruction files — wrap agentsmd/agnix
 - [ ] SC-190: Total instruction count across always-loaded files under 150 (distinct from SC-17 line count and SC-139 word count — this counts discrete instructions)
 - [ ] SC-191: Agent briefs reference AGENTS.md — never duplicate Hard Constraints inline
@@ -166,9 +166,9 @@ testable: true
 - [ ] SC-197: Post-generation quality check errors trigger regeneration — max 5 iterations
 - [ ] SC-198: Composite quality threshold configurable in rungate.json — weights budget over coverage (agentsmd coverage excluded per SC-A6)
 - [ ] SC-199: Final scores written to .rungate/scaffold-score.json
-- [ ] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
+- [x] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
 
-- [ ] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
+- [x] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
 - [ ] SC-202: New rules include provenance comment: source incident and date recurred
 - [ ] SC-232: Constraint extraction enforces second-occurrence rule — rules promoted to Hard Constraints only after recurring in 2+ incidents (Anthropic best practice)
 

@@ -252,17 +252,17 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [x] SC-460: Agent briefs load with matching agentType
 - [x] SC-461: Five-layer measurement model
 - [x] SC-286: resolveAndContain() utility validates all file paths in matchPattern — rejects [../, absolute paths, symlink escape]
-- [ ] SC-287: lib/conformity.ts contains [strict, permissive, WARN, FAIL]
+- [x] SC-287: lib/conformity.ts contains [strict, permissive, WARN, FAIL]
 - [x] SC-288: matchPattern supports content-contains — SC bracket-list values [x, y, z] become assertion targets
 - [x] SC-289: matchPattern supports content-not-contains — SC with "must NOT" or "no" + bracket-list
 - [x] SC-290: matchPattern supports count-threshold — SC with "under [N] lines" or "at most [N]" extracts number
 - [x] SC-291: matchPattern supports json-field-equals — SC with "field X equals Y" checks JSON files
 - [x] SC-292: matchPattern supports section-exists — SC with "has section [heading]" checks markdown
-- [ ] SC-293: specs/SPEC-TEMPLATE.md exists
+- [x] SC-293: specs/SPEC-TEMPLATE.md exists
 - [x] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
 - [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern (behavioral)
-- [ ] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score (behavioral)
-- [ ] SC-401: lib/directive-extractor.ts exists
+- [x] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score (behavioral)
+- [x] SC-401: lib/directive-extractor.ts exists
 - [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive (behavioral)
 - [ ] SC-403: Cross-reference report shows directive text, file position, and transcript compliance (behavioral)
 - [x] SC-404: Hill climb mode runs test-brief up to 5 iterations — tweaks brief between runs using 7 compliance factors, stops when target score reached
@@ -270,7 +270,7 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [x] SC-406: briefedAgent() parses brief Context section at prompt-build time and generates explicit numbered Read steps — no hardcoded file paths in workflow
 - [ ] SC-407: Ship workflow runs compliance pre-flight gate before IMPLEMENT — agent must score ≥80% on test-brief or workflow halts (behavioral)
 - [ ] SC-408: Standard tasks defined per role in config (behavioral)
-- [ ] SC-409: Behavioral canary test — prompt contains a unique practice rule, transcript output verified to reflect it (read ≠ followed) (behavioral)
+- [x] SC-409: Behavioral canary test — prompt contains a unique practice rule, transcript output verified to reflect it (read ≠ followed) (behavioral)
 
 ## Baseline (2026-09-20)
 
