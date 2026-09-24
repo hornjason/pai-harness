@@ -18,6 +18,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern } from "../lib/conformity";
+import { detectDrift } from "./detect-sc-drift";
 
 const ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(ROOT, "specs");
@@ -207,7 +208,32 @@ if (isDirectExecution) {
   const scIds = new Set(unchecked.map(s => s.id));
   console.log(`Found ${unchecked.length} unchecked SCs across specs`);
 
-  // Step 0: Detect duplicate SC IDs across specs
+  // Step 0: Check for drift and staleness
+  const driftResult = detectDrift(SPECS_DIR, ROOT);
+  const driftedSCs = new Set<string>();
+  const staleSCs = new Set<string>();
+
+  if (driftResult.drifted.size > 0 || driftResult.stale.size > 0) {
+    console.log(`\n⚠️  SC drift/staleness detected:`);
+
+    for (const [specFile, details] of driftResult.drifted) {
+      for (const detail of details) {
+        console.log(`  DRIFT: ${detail.scId} in ${specFile} references ${detail.path} but file does not exist`);
+        driftedSCs.add(scopedKey(specFile, detail.scId));
+      }
+    }
+
+    for (const [specFile, details] of driftResult.stale) {
+      for (const detail of details) {
+        console.log(`  STALE: ${detail.scId} in ${specFile} expects [${detail.keyword}] in ${detail.path} but it's missing`);
+        staleSCs.add(scopedKey(specFile, detail.scId));
+      }
+    }
+
+    console.log(`  Fix: update SC descriptions to match current file structure.\n`);
+  }
+
+  // Step 1: Detect duplicate SC IDs across specs
   const duplicates = findDuplicateSCIds(unchecked);
   if (duplicates.size > 0) {
     console.log(`\n⚠️  Duplicate SC IDs found across specs:`);
@@ -217,12 +243,12 @@ if (isDirectExecution) {
     console.log(`  Fix: renumber duplicates so each SC ID is unique across all specs.\n`);
   }
 
-  // Step 1: Find SCs covered by hand-written test files
+  // Step 2: Find SCs covered by hand-written test files
   const testFileMap = findTestFilesForSCs(scIds);
   const testedSCs = new Set(Array.from(testFileMap.values()).flat());
   const untestedSCs = unchecked.filter(s => !testedSCs.has(s.id));
 
-  // Step 2: Run hand-written tests — scope by spec file
+  // Step 3: Run hand-written tests — scope by spec file
   const passingSCs = new Set<string>();
   const failingSCs = new Set<string>();
 
@@ -249,7 +275,7 @@ if (isDirectExecution) {
   // Remove any SCs that failed from passing set
   for (const key of failingSCs) passingSCs.delete(key);
 
-  // Step 3: AC-2 — Run conformity assertions on untested SCs
+  // Step 4: AC-2 — Run conformity assertions on untested SCs
   if (untestedSCs.length > 0) {
     console.log(`\nChecking ${untestedSCs.length} untested SCs via conformity engine...`);
     const conformityResult = checkConformitySCs(untestedSCs, ROOT);
@@ -302,7 +328,23 @@ if (isDirectExecution) {
     }
   }
 
-  // Step 4: Flip passing SCs
+  // Step 4: Filter out drifted/stale SCs before flipping
+  for (const key of driftedSCs) {
+    if (passingSCs.has(key)) {
+      passingSCs.delete(key);
+      const scId = key.split("::")[1];
+      console.log(`\n⚠️  Not flipping ${scId}: drifted (references nonexistent file)`);
+    }
+  }
+  for (const key of staleSCs) {
+    if (passingSCs.has(key)) {
+      passingSCs.delete(key);
+      const scId = key.split("::")[1];
+      console.log(`\n⚠️  Not flipping ${scId}: stale (keyword missing from file)`);
+    }
+  }
+
+  // Step 5: Flip passing SCs
   if (passingSCs.size === 0) {
     console.log("No SCs to flip");
     process.exit(0);
