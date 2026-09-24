@@ -22,6 +22,8 @@
   },
   "scripts": {
     "test": "bun test",
+    "posttest": "bun scripts/sync-sc-status.ts",
+    "sync-scs": "bun scripts/sync-sc-status.ts",
     "test:structure": "bun test test/structure.test.ts",
     "test:external-deps": "bun test test/external-deps.test.ts"
   },

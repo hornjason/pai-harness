@@ -263,7 +263,7 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [x] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern (behavioral)
 - [x] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score (behavioral)
 - [x] SC-401: lib/directive-extractor.ts exists
-- [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive (behavioral)
+- [x] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive (behavioral)
 - [ ] SC-403: Cross-reference report shows directive text, file position, and transcript compliance (behavioral)
 - [x] SC-404: Hill climb mode runs test-brief up to 5 iterations — tweaks brief between runs using 7 compliance factors, stops when target score reached
 - [x] SC-405: All 6 agent briefs score ≥80% directive compliance on standard task before shipping through harness
