@@ -1,3 +1,10 @@
+---
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-09-23
+---
+
 # rungate
 
 ## Project Identity
@@ -135,6 +142,7 @@ bun test
 | Create ADR | `bunx rungate create-adr "title"` |
 | Extract constraints | `bunx rungate extract-constraints .` |
 | Check findings | `cat .rungate/conformity-findings.json` — structured findings with fix commands |
+| Create SC | `bun scripts/create-sc.ts --pattern {name} --params '{...}'` — generates matchable SC line |
 | Re-scaffold | `bun ~/Projects/rungate/scripts/scaffold-project.ts .` |
 
 
