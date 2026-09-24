@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Config-Driven Testing
@@ -57,8 +57,8 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 
 ## Success Criteria
 
-- [ ] SC-331: matchPattern() returns non-null for all static file verification SCs in testable strict specs
-- [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs + integration tail for cross-project checks
+- [ ] SC-331: matchPattern() returns non-null for all static SCs in testable strict specs (behavioral)
+- [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs (behavioral)
 - [ ] SC-333: test/phase-2.test.ts is under [100] lines
 - [ ] SC-334: test/phase-3.test.ts is under [100] lines
 - [ ] SC-335: test/phase-5.test.ts is under [100] lines
@@ -69,23 +69,23 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-340: harness lib/conformity.ts contains [frontmatter-field]
 - [x] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
 - [x] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
-- [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests — not migrated
+- [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests (behavioral)
 - [ ] SC-344: test/phase-1.test.ts is under [200] lines
-- [ ] SC-345: Every SC in testable specs classified as static or behavioral
-- [ ] SC-346: Behavioral SCs have `verification: behavioral` tag and route to SESSION-AUDIT-SPEC
-- [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists
+- [ ] SC-345: Every SC in testable specs classified as static or behavioral (behavioral)
+- [ ] SC-346: Behavioral SCs have verification: behavioral tag and route to SESSION-AUDIT-SPEC (behavioral)
+- [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists (behavioral)
 - [ ] SC-379: config/matcher-registry.json exists
-- [ ] SC-380: matchPattern() reads matcher config to dispatch — no hardcoded pattern branches
-- [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config
+- [ ] SC-380: lib/conformity.ts contains [loadRegistry, matcherHandlers]
+- [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config (behavioral)
 - [x] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite
 - [x] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
-- [ ] SC-384: Consumers can extend matcher config with custom matchers for their domain
+- [ ] SC-384: Consumers can extend matcher config with custom matchers for their domain (behavioral)
 - [x] SC-393: `rungate audit-specs --fix` rewrites unmatched SCs in-place to matchable patterns — flags ambiguous cases for human review
-- [ ] SC-394: Scaffold runs `rungate audit-specs` post-generation — every generated spec has 100% matchable SCs
-- [ ] SC-395: Consumers running `bunx rungate create-spec` get SC validation identical to RunGate's own — same matchers, same enforcement
+- [ ] SC-394: scripts/scaffold-project.ts contains [auditSpecs]
+- [ ] SC-395: Consumers running create-spec get SC validation identical to RunGate's own (behavioral)
 - [x] SC-396: `rungate create-sc` CLI accepts `--pattern` and `--params` — generates SC text from structured input, no freeform prose
 - [x] SC-397: `rungate create-sc --list` shows all available patterns with syntax and examples from matcher registry config
-- [ ] SC-398: All RunGate specs at `compliance: strict` after audit-specs --fix migration — zero unmatched SCs
+- [ ] SC-398: All RunGate specs at compliance: strict — zero unmatched SCs (behavioral)
 - [x] SC-399: AGENTS.md Commands table includes `rungate create-sc` — one-line instruction, no pattern docs needed in agent context
 
 ## Implementation

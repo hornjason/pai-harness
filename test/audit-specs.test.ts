@@ -4,7 +4,7 @@
  * Tests AC-1 through AC-9 from issue #556.
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 
 // ── Test fixture helpers ─────────────────────────────────────
@@ -367,6 +367,66 @@ governs: test
         k.includes("audit-specs")
       );
       expect(hasExport).toBe(true);
+    });
+  });
+
+  // ── SC-394: Scaffold runs audit-specs post-generation ─────────
+
+  describe("SC-394: scaffold wires audit-specs post-generation", () => {
+    test("scaffold-project.ts imports auditSpecs from audit-specs module", () => {
+      const scaffoldSrc = readFileSync(
+        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
+        "utf-8"
+      );
+      expect(scaffoldSrc).toContain("auditSpecs");
+    });
+
+    test("scaffold-project.ts calls auditSpecs with fix mode after spec generation", () => {
+      const scaffoldSrc = readFileSync(
+        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
+        "utf-8"
+      );
+      // The audit-specs call should happen after spec template copy and before commit
+      expect(scaffoldSrc).toContain("auditSpecs(");
+      expect(scaffoldSrc).toContain("fix: true");
+    });
+
+    test("audit-specs post-generation step appears after spec template copy", () => {
+      const scaffoldSrc = readFileSync(
+        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
+        "utf-8"
+      );
+      const specTemplateIdx = scaffoldSrc.indexOf("copySpecTemplateIfEmpty");
+      const auditIdx = scaffoldSrc.indexOf("runAuditSpecsFix(");
+      const commitIdx = scaffoldSrc.indexOf("postScaffoldCommit(");
+      // audit-specs should be called after spec template copy and before commit
+      expect(auditIdx).toBeGreaterThan(specTemplateIdx);
+      expect(auditIdx).toBeLessThan(commitIdx);
+    });
+  });
+
+  // ── SC-398: All RunGate specs at compliance: strict ────────────
+
+  describe("SC-398: all RunGate testable specs at compliance: strict", () => {
+    test("every testable spec has compliance: strict in frontmatter", () => {
+      const specsDir = join(import.meta.dir, "..", "specs");
+      const specFiles = readdirSync(specsDir).filter((f) => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+      const permissiveSpecs: string[] = [];
+
+      for (const f of specFiles) {
+        const content = readFileSync(join(specsDir, f), "utf-8");
+        // Check if testable
+        const testableMatch = content.match(/^testable:\s*(.+)$/m);
+        if (!testableMatch || testableMatch[1].trim() !== "true") continue;
+
+        // Check compliance
+        const complianceMatch = content.match(/^compliance:\s*(.+)$/m);
+        if (!complianceMatch || complianceMatch[1].trim() !== "strict") {
+          permissiveSpecs.push(f);
+        }
+      }
+
+      expect(permissiveSpecs).toEqual([]);
     });
   });
 });

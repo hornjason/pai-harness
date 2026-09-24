@@ -5,7 +5,7 @@ import { join, resolve } from "path";
 import { extractConstraints } from "../scripts/extract-constraints";
 import { runScaffoldConformity } from "../lib/conformity";
 
-const TEST_PLAN_HASH = "7fb0bb69a53a466d";
+const TEST_PLAN_HASH = "352ebe436fbd3330";
 const OUTPUT = "/tmp/rungate-phase1-test";
 const HARNESS = resolve(import.meta.dir, "..");
 const SCAFFOLD = join(HARNESS, "scripts", "scaffold-project.ts");

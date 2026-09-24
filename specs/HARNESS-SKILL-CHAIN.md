@@ -5,6 +5,7 @@ owner: jason
 created: 2026-09-03
 updated: 2026-09-03
 testable: true
+compliance: strict
 governs: Skill chaining — how goal → ship → prove → close sequences connect and pass state
 ---
 

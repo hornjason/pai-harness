@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Hook architecture — hooks as thin triggers delegating to lib/ modules, not deep logic in hook files
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Hook Architecture
@@ -46,11 +46,11 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [ ] SC-367: .git/hooks/AgentBriefGuard.hook.ts is under [50] lines
 - [ ] SC-368: lib/brief-validator.ts exists
 - [ ] SC-369: .git/hooks/GateEnforcement.hook.ts is under [100] lines
-- [ ] SC-370: Every hook file traces to at least one SC in a testable spec
-- [ ] SC-371: No hook file exceeds 150 lines
-- [ ] SC-372: Hook logic in lib/ has unit tests independent of hook trigger mechanism
-- [ ] SC-391: .claude/settings.json hooks[] array contains explicit entries per active hook with hookFor and command fields
-- [ ] SC-392: Hook activation controlled by config enabled field — hook files persist regardless of activation state
+- [ ] SC-370: Every hook file traces to at least one SC in a testable spec (behavioral)
+- [ ] SC-371: No hook file exceeds 150 lines (behavioral)
+- [ ] SC-372: Hook logic in lib/ has unit tests independent of hook trigger mechanism (behavioral)
+- [ ] SC-391: Hook registrations in settings.json contain hookFor and command fields (behavioral)
+- [ ] SC-392: Hook activation controlled by config enabled field (behavioral)
 
 ## Implementation
 

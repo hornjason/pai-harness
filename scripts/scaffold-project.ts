@@ -10,6 +10,7 @@
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
+import { auditSpecs } from "./audit-specs";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -186,6 +187,9 @@ copySpecTemplateIfEmpty(join(projectPath, "specs"));
 
 // 9.5. Generate PROJECT-STATE files for the consumer project (SC-302)
 generateProjectState(projectPath);
+
+// 9.6. Run audit-specs --fix on generated specs (SC-394)
+runAuditSpecsFix(projectPath);
 
 // 10. Add rungate to package.json devDeps (only if package.json exists)
 addPaiHarnessDevDep(projectPath);
@@ -1637,6 +1641,26 @@ fi
 `);
     chmodSync(prePush, 0o755);
     actions.push("CREATED: .git/hooks/pre-push (conformity check)");
+  }
+}
+
+function runAuditSpecsFix(root: string): void {
+  const specsDir = join(root, "specs");
+  if (!existsSync(specsDir)) {
+    actions.push("SKIP: audit-specs (no specs/ directory)");
+    return;
+  }
+  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md"));
+  if (specFiles.length === 0) {
+    actions.push("SKIP: audit-specs (no spec files)");
+    return;
+  }
+  const result = auditSpecs(root, { fix: true });
+  const rewriteCount = result.rewrites?.length ?? 0;
+  if (rewriteCount > 0) {
+    actions.push(`CREATED: audit-specs --fix rewrote ${rewriteCount} SCs`);
+  } else {
+    actions.push("SKIP: audit-specs (all SCs already matchable)");
   }
 }
 

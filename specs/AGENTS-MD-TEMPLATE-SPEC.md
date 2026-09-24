@@ -6,7 +6,7 @@ created: 2026-09-20
 updated: 2026-09-20
 governs: AGENTS.md template structure — what's baked in, what's scanned, how to update
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # AGENTS.md Template Spec
@@ -116,25 +116,25 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 
 ## Success Criteria
 
-- [ ] SC-258: Universal rules loaded from config/universal-rules.yaml, not hardcoded in scaffold-project.ts
-- [ ] SC-259: AGENTS.md template loaded from prompts/agents-md-template.md with ${VAR} placeholders
-- [ ] SC-260: Scaffold fills template variables from project scan — template file has no scan logic
-- [ ] SC-261: Every universal rule has a failure citation in the config file
-- [ ] SC-262: Universal rules count under 16 (sigmoid collapse threshold)
-- [ ] SC-263: Re-scaffold on RunGate itself produces correct AGENTS.md with 0 warnings
+- [ ] SC-258: Universal rules loaded from config/universal-rules.yaml (behavioral)
+- [ ] SC-259: AGENTS.md template loaded from prompts/agents-md-template.md (behavioral)
+- [ ] SC-260: Scaffold fills template variables from project scan — template file has no scan logic (behavioral)
+- [ ] SC-261: Every universal rule has a failure citation in the config file (behavioral)
+- [ ] SC-262: Universal rules count under 16 — sigmoid collapse threshold (behavioral)
+- [ ] SC-263: Re-scaffold on RunGate itself produces correct AGENTS.md with 0 warnings (behavioral)
 - [ ] SC-264: Fresh agent test — zero-context agent runs Phase 0 + Phase 1 using only scaffold output, navigability score tracked (behavioral)
 - [x] SC-268: Spec template prompts intent-based governs: at creation time — scaffold reads it deterministically, no LLM at scaffold time
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
-- [ ] SC-270: Large specs with multiple intents split into single-intent files — each under [500] lines
+- [ ] SC-270: Large specs with multiple intents split into single-intent files (behavioral)
 - [x] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
 - [ ] SC-272: AGENTS.md contains [Spec, Governs, Testable]
 - [x] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Satisfied by SC-17 (150-line cap)
 - [x] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
 - [x] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
 - [x] SC-279: Writing constraint enforced: content that doesn't match governs intent triggers "create new file" guidance
-- [ ] SC-280: Split files sharing a common parent group under one routing entry (e.g. "Bootstrap phases (5 specs)" → specs/bootstrap/)
+- [ ] SC-280: Split files sharing a common parent group under one routing entry (behavioral)
 - [x] SC-281: Routing table filters to non-obvious mappings only — specs whose filename matches their intent are excluded from table
-- [ ] SC-282: split-spec derives directory name from source filename — no LLM needed (e.g. BOOTSTRAP-DATA-FLOW-SPEC.md → specs/bootstrap-data-flow/)
+- [ ] SC-282: split-spec derives directory name from source filename — no LLM needed (behavioral)
 - [x] SC-283: Documentation Routing and Where to Create Things use the same category list — every create-target has a routing entry and vice versa
 - [x] SC-284: Permanent routing categories always present in AGENTS.md: specs, docs/adr, docs/research, docs/council, docs/guides, reference — regardless of whether files exist yet
 - [x] SC-285: Scaffold WARN when a Where to Create Things category has no corresponding docs/ subdirectory (e.g. council listed but docs/council/ doesn't exist)
@@ -142,14 +142,14 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 ### PROJECT-STATE.md Automation
 - [ ] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
 - [ ] SC-297: .git/hooks/pre-commit contains [update-project-state]
-- [ ] SC-298: update-project-state.ts updates frontmatter date, test counts, and SC status from specs
-- [ ] SC-299: Phase headers auto-flip (✅/🔄/⬜) based on SC completion within each phase
-- [ ] SC-300: PROJECT-STATE.md capped at 150 lines — auto-update enforces the limit
-- [ ] SC-301: Session summaries archived to docs/session-log/{date}.md — max 3 files, oldest pruned
+- [ ] SC-298: update-project-state.ts updates frontmatter date, test counts, and SC status from specs (behavioral)
+- [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
+- [ ] SC-300: PROJECT-STATE.md is under [200] lines
+- [ ] SC-301: Session summaries archived to docs/session-log/ — max 3 files, oldest pruned (behavioral)
 - [ ] SC-302: scaffold output PROJECT-STATE.md exists
 - [ ] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
 - [ ] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
-- [ ] SC-305: Hook registrations in .claude/settings.json contain ${RUNGATE_HOOKS_DIR} variable in all hook command fields
-- [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents
+- [ ] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
+- [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
 - [ ] SC-308: scripts/update-project-state.ts contains [✅, ⬜]

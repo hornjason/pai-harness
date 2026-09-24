@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Gate contracts — what gates exist, their inputs/outputs, pass/fail criteria, and how they chain
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Gate Contracts
@@ -42,12 +42,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 ## Success Criteria
 
-- [ ] SC-373: Every gate source file has a typed input/output interface exported
-- [ ] SC-374: Pass/fail criteria for each gate documented as SCs in this spec
-- [ ] SC-375: Gate chain order documented — which gates feed into which
+- [ ] SC-373: Every gate source file has a typed input/output interface exported (behavioral)
+- [ ] SC-374: Pass/fail criteria for each gate documented as SCs in this spec (behavioral)
+- [ ] SC-375: Gate chain order documented — which gates feed into which (behavioral)
 - [ ] SC-376: gates/run-gate.ts is under [400] lines
-- [ ] SC-377: Gate contracts testable by conformity engine (interface exports verifiable)
-- [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces
+- [ ] SC-377: Gate contracts testable by conformity engine (behavioral)
+- [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces (behavioral)
 
 ## Implementation
 

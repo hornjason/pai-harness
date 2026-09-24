@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Session start and end rituals — cold-start context loading, session-end state capture, handoff brief generation
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Session Lifecycle
@@ -56,9 +56,9 @@ Agent loads AGENTS.md (automatic)
 - [ ] SC-311: scripts/session-end.ts contains [stale worktrees, lists]
 - [ ] SC-312: scripts/session-end.ts contains [sync-sc-status]
 - [ ] SC-313: scripts/session-end.ts contains [update-project-state]
-- [ ] SC-314: session-end updates project-state.json with current priorities and antipatterns
-- [ ] SC-315: session-end appends session notes to project-state.json sessions array
-- [ ] SC-316: session-end commits all state files in one commit
+- [ ] SC-314: session-end updates project-state.json with current priorities and antipatterns (behavioral)
+- [ ] SC-315: session-end appends session notes to project-state.json sessions array (behavioral)
+- [ ] SC-316: session-end commits all state files in one commit (behavioral)
 - [ ] SC-317: AGENTS.md contains [PROJECT-STATE.md]
 - [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls (behavioral)
 - [ ] SC-319: scaffold output scripts/session-end.ts exists

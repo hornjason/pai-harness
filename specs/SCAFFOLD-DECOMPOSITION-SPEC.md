@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focused modules
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Scaffold Decomposition
@@ -57,18 +57,18 @@ lib/validators/
 ## Success Criteria
 
 - [ ] SC-358: lib/scanner.ts exists
-- [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories from project root
+- [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories (behavioral)
 - [ ] SC-360: lib/generators/agents-md.ts exists
 - [ ] SC-361: lib/generators/agent-briefs.ts exists
 - [ ] SC-362: lib/generators/code-map.ts exists
 - [ ] SC-363: scripts/scaffold-project.ts is under [200] lines
-- [ ] SC-364: Re-scaffold produces identical output before and after decomposition
-- [ ] SC-365: Scanner is importable by other scripts without pulling in generation logic
-- [ ] SC-366: Each generator is independently testable with mock ProjectScan data
+- [ ] SC-364: Re-scaffold produces identical output before and after decomposition (behavioral)
+- [ ] SC-365: Scanner is importable by other scripts without pulling in generation logic (behavioral)
+- [ ] SC-366: Each generator is independently testable with mock ProjectScan data (behavioral)
 - [ ] SC-387: config/universal-rules.yaml exists
-- [ ] SC-388: Key files list loaded from rungate.json, not hardcoded array in scaffold
-- [ ] SC-389: rungate.json schema expanded to hold key files, agent config, and config file paths
-- [ ] SC-390: Consumer can add project-specific rules via config without editing scaffold code
+- [ ] SC-388: Key files list loaded from rungate.json, not hardcoded in scaffold (behavioral)
+- [ ] SC-389: rungate.json schema expanded to hold key files, agent config, config paths (behavioral)
+- [ ] SC-390: Consumer can add project-specific rules via config (behavioral)
 
 ## Implementation
 

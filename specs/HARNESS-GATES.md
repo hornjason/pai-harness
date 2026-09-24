@@ -4,6 +4,7 @@ status: active
 owner: jason
 updated: 2026-09-17
 testable: true
+compliance: strict
 created: 2026-09-20
 governs: Gate definitions — what checks run at each harness gate and their pass/fail criteria
 ---

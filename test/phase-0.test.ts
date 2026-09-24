@@ -4,7 +4,7 @@ import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
 
-const SPEC_HASHES: Record<string, string> = { bootstrap: "230dbd993b03bb8e", testPlan: "7fb0bb69a53a466d" };
+const SPEC_HASHES: Record<string, string> = { bootstrap: "230dbd993b03bb8e", testPlan: "352ebe436fbd3330" };
 
 function checkSpecDrift() {
   const specs = [

@@ -6,7 +6,7 @@ created: 2026-09-21
 updated: 2026-09-21
 governs: Agent brief templates — externalized markdown templates with variable substitution, not hardcoded TypeScript strings
 testable: true
-compliance: permissive
+compliance: strict
 ---
 
 # Agent Brief Template
@@ -60,16 +60,16 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 
 - [ ] SC-348: templates/agent-briefs/ directory exists
 - [ ] SC-349: templates/agent-briefs/_shared.md exists
-- [ ] SC-350: Scaffold reads template files instead of hardcoded strings for agent brief generation
-- [ ] SC-351: Each generated brief has all 8 required sections
+- [ ] SC-350: Scaffold reads template files instead of hardcoded strings (behavioral)
+- [ ] SC-351: Each generated brief has all 8 required sections (behavioral)
 - [ ] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
 - [ ] SC-353: .claude/agents/marcus.md is under [120] lines
-- [ ] SC-354: Editing a template file and re-scaffolding updates the generated brief
-- [ ] SC-355: Shared rules appear in every generated agent brief
-- [ ] SC-356: Prompt routing table generated dynamically, not from template
-- [ ] SC-357: Template variables filled from project scan match actual project values
-- [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold
-- [ ] SC-386: Consumers can override keyword routing in their rungate.json
+- [ ] SC-354: Editing a template file and re-scaffolding updates the generated brief (behavioral)
+- [ ] SC-355: Shared rules appear in every generated agent brief (behavioral)
+- [ ] SC-356: Prompt routing table generated dynamically, not from template (behavioral)
+- [ ] SC-357: Template variables filled from project scan match actual project values (behavioral)
+- [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold (behavioral)
+- [ ] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
 
 ## Implementation
 
@@ -134,12 +134,12 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 
 ### Success Criteria (Three-Tier)
 
-- [ ] SC-423: Brief frontmatter includes `tiers` field mapping sections to reinforcement/mechanical
+- [ ] SC-423: Brief frontmatter includes tiers field mapping sections to tiers (behavioral)
 - [ ] SC-424: lib/rule-registry.ts exists
-- [ ] SC-425: `briefedAgent()` in ship.js injects reinforcement-tier rules at top of task prompt
-- [ ] SC-426: Reinforcement rules extracted dynamically from brief, not hardcoded in ship.js
-- [ ] SC-427: Scaffold `agentMeta` carries `tiers` through to generated brief frontmatter
-- [ ] SC-428: Briefs without `tiers` field default all rules to identity tier
+- [ ] SC-425: briefedAgent() injects reinforcement-tier rules at top of task prompt (behavioral)
+- [ ] SC-426: Reinforcement rules extracted dynamically from brief (behavioral)
+- [ ] SC-427: Scaffold agentMeta carries tiers through to generated brief frontmatter (behavioral)
+- [ ] SC-428: Briefs without tiers field default all rules to identity tier (behavioral)
 
 ## Cautions
 
