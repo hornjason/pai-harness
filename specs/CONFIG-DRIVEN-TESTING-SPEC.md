@@ -78,9 +78,9 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-380: matchPattern() reads matcher config to dispatch — no hardcoded pattern branches
 - [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config
 - [x] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite
-- [ ] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
+- [x] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
 - [ ] SC-384: Consumers can extend matcher config with custom matchers for their domain
-- [ ] SC-393: `rungate audit-specs --fix` rewrites unmatched SCs in-place to matchable patterns — flags ambiguous cases for human review
+- [x] SC-393: `rungate audit-specs --fix` rewrites unmatched SCs in-place to matchable patterns — flags ambiguous cases for human review
 - [ ] SC-394: Scaffold runs `rungate audit-specs` post-generation — every generated spec has 100% matchable SCs
 - [ ] SC-395: Consumers running `bunx rungate create-spec` get SC validation identical to RunGate's own — same matchers, same enforcement
 - [x] SC-396: `rungate create-sc` CLI accepts `--pattern` and `--params` — generates SC text from structured input, no freeform prose

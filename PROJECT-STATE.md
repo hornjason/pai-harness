@@ -63,12 +63,12 @@ Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 | ✅ | SC-397 | create-sc --list shows all patterns |
 | ✅ | SC-399 | AGENTS.md Commands table includes create-sc |
 
-## ⬜ Config-Driven Testing — Phase H: Legacy Migration (#556-#557) (NOT STARTED)
+## 🔄 Config-Driven Testing — Phase H: Legacy Migration (#556-#557) (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-383 | audit-specs classifies all SCs |
-| ⬜ | SC-393 | audit-specs --fix auto-rewrites unmatched SCs |
+| ✅ | SC-383 | audit-specs classifies all SCs |
+| ✅ | SC-393 | audit-specs --fix auto-rewrites unmatched SCs |
 | ⬜ | SC-394 | Scaffold runs audit-specs post-generation |
 | ⬜ | SC-395 | Consumers get identical create-spec validation |
 | ⬜ | SC-398 | All RunGate specs at compliance: strict |

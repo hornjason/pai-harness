@@ -114,12 +114,12 @@
         {
           "id": "SC-383",
           "what": "audit-specs classifies all SCs",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-393",
           "what": "audit-specs --fix auto-rewrites unmatched SCs",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-394",
