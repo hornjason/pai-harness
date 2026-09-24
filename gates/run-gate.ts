@@ -109,7 +109,7 @@ if (projectHarnessPath && existsSync(projectHarnessPath)) {
 let acUpdated = false;
 for (let i = 0; i < (state.acs || []).length; i++) {
   const ac = state.acs[i];
-  if (ac.verdict && ac.verdict !== "PENDING") continue;
+  if (ac.verdict && ac.verdict !== "PENDING" && ac.verdict !== "FAIL") continue;
   const cmd = ac.evidenceMethod?.command;
   if (!cmd) continue;
   try {
