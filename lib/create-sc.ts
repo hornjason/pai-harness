@@ -27,7 +27,7 @@ interface ParamDef {
 
 let _registryCache: RegistryEntry[] | null = null;
 
-function loadRegistry(): RegistryEntry[] {
+export function loadRegistry(): RegistryEntry[] {
   if (_registryCache) return _registryCache;
   const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", "config", "matcher-registry.json");
   _registryCache = JSON.parse(readFileSync(configPath, "utf-8"));
