@@ -467,6 +467,46 @@ if (DRY_RUN) {
   }
 }
 
+// ── AC evidence/threshold pre-validation (#573) ─────────────
+// Dry-run each AC evidence command and verify output format matches threshold operator.
+// Prevents false gate failures from mismatched evidence/threshold types.
+if (!skipScope) {
+  const acValidation = await agent(`
+Pre-validate AC evidence commands in workflow-state.json:
+
+1. Read ${WORK_DIR}/workflow-state.json
+2. For each AC with an evidenceMethod.command:
+   a. Run the command (timeout 10s, allow non-zero exit)
+   b. Capture the output
+   c. Check if the threshold can meaningfully evaluate the output:
+      - If threshold.op is ">=" or "<=" or "==" or "!=": output must be numeric (parseFloat succeeds)
+      - If threshold.op is "contains": output must be non-empty string
+   d. If mismatch found, fix the AC:
+      - Numeric threshold but string output → change to op:"contains" with a key substring
+      - String threshold but numeric output → change to op:">=" with numeric comparison
+      - Empty output → flag as broken evidence command
+3. Write fixes via writeWorkflowState():
+   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fixes */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+4. Report: how many ACs validated, how many fixed, what was fixed
+
+Do NOT change AC statements or evidence commands — only fix threshold operator/value mismatches.
+`, { label: 'ac-prevalidation', phase: 'Scope', schema: {
+    type: 'object',
+    properties: {
+      totalACs: { type: 'number' },
+      validated: { type: 'number' },
+      fixed: { type: 'number' },
+      fixes: { type: 'array', items: { type: 'string' } }
+    },
+    required: ['totalACs', 'validated', 'fixed']
+  }})
+  if (acValidation?.fixed > 0) {
+    log(`AC pre-validation: fixed ${acValidation.fixed}/${acValidation.totalACs} evidence/threshold mismatches`)
+  } else {
+    log(`AC pre-validation: ${acValidation?.validated || 0}/${acValidation?.totalACs || 0} ACs validated, no fixes needed`)
+  }
+}
+
 // ── Prior-branch detection ─────────────────────────────────
 let priorBranchResult = null
 try {
@@ -866,6 +906,54 @@ If merge conflicts, report them — do NOT force.
   log('Worktree branch merged to main after verify pass')
 }
 
+// ── GRADE: Post-run compliance grading (#574 — runs before ship gate) ──
+// Moved from after PROVE to before SHIP so grading happens even when gate fails.
+let gradeResult = null
+if (!SKIP_GRADE) {
+gradeResult = await agent(`
+Grade agent compliance for this ship run:
+
+1. Read ${WORK_DIR}/workflow-state.json to find which agents ran
+2. For each agent that ran (marcus, quinn, discovery):
+   a. Read their brief from ${PROJECT_ROOT}/.claude/agents/{role}.md
+   b. Check the brief frontmatter for tiers field
+   c. List all reinforcement-tier rules and whether they were followed
+3. For Marcus specifically, verify TDD sequence:
+   a. Find Marcus's transcript (the agent labeled 'marcus' in the workflow)
+   b. Check that Write calls to test/ files appear BEFORE Write calls to lib/ files
+   c. Check that bun test ran at least twice (baseline + verify)
+   d. If TDD sequence violated, flag "TDD_SEQUENCE_VIOLATED" in Marcus grade
+4. Write a compliance report to ${WORK_DIR}/compliance-grade.json with:
+   {"grades": [{"role": "marcus", "reinforcement_rules": N, "followed": N, "score": N/N, "tdd": "PASS|FAIL"}]}
+5. Log any rules with score < 100% as candidates for tier promotion
+
+Report the grades as JSON.
+`, { label: 'grade', phase: 'Verify', schema: {
+  type: 'object',
+  properties: {
+    grades: { type: 'array', items: {
+      type: 'object',
+      properties: {
+        role: { type: 'string' },
+        total: { type: 'number' },
+        followed: { type: 'number' },
+        flagged: { type: 'array', items: { type: 'string' } }
+      },
+      required: ['role', 'total', 'followed']
+    }}
+  },
+  required: ['grades']
+}})
+
+if (gradeResult?.grades) {
+  for (const g of gradeResult.grades) {
+    log(`GRADE ${g.role}: ${g.followed}/${g.total} rules followed${g.flagged?.length ? ' — flagged: ' + g.flagged.join(', ') : ''}`)
+  }
+}
+} else {
+  log('GRADE: skipped (skipGrade=true)')
+}
+
 // ════════════════════════════════════════════════════════════
 // PHASE 8: SHIP (container verify + PR creation + gate)
 // ════════════════════════════════════════════════════════════
@@ -997,56 +1085,6 @@ Append a single JSON line to ${HOME}/.claude/MEMORY/LEARNING/SIGNALS/harness-tel
 - regressions: ${regressionCount}
 Use Bash echo to append.
 `, { label: 'telemetry', phase: 'Prove' })
-
-// ── GRADE: Post-run compliance grading ───────────────────
-// Reads each agent's transcript and grades rule compliance.
-// Results feed the hill-climb loop: low-scoring rules get flagged for repositioning.
-// Skip with args.skipGrade=true when not actively testing rule quality.
-let gradeResult = null
-if (!SKIP_GRADE) {
-gradeResult = await agent(`
-Grade agent compliance for this ship run:
-
-1. Read ${WORK_DIR}/workflow-state.json to find which agents ran
-2. For each agent that ran (marcus, quinn, discovery):
-   a. Read their brief from ${PROJECT_ROOT}/.claude/agents/{role}.md
-   b. Check the brief frontmatter for tiers field
-   c. List all reinforcement-tier rules and whether they were followed
-3. For Marcus specifically, verify TDD sequence:
-   a. Find Marcus's transcript (the agent labeled 'marcus' in the workflow)
-   b. Check that Write calls to test/ files appear BEFORE Write calls to lib/ files
-   c. Check that bun test ran at least twice (baseline + verify)
-   d. If TDD sequence violated, flag "TDD_SEQUENCE_VIOLATED" in Marcus grade
-4. Write a compliance report to ${WORK_DIR}/compliance-grade.json with:
-   {"grades": [{"role": "marcus", "reinforcement_rules": N, "followed": N, "score": N/N, "tdd": "PASS|FAIL"}]}
-5. Log any rules with score < 100% as candidates for tier promotion
-
-Report the grades as JSON.
-`, { label: 'grade', phase: 'Prove', schema: {
-  type: 'object',
-  properties: {
-    grades: { type: 'array', items: {
-      type: 'object',
-      properties: {
-        role: { type: 'string' },
-        total: { type: 'number' },
-        followed: { type: 'number' },
-        flagged: { type: 'array', items: { type: 'string' } }
-      },
-      required: ['role', 'total', 'followed']
-    }}
-  },
-  required: ['grades']
-}})
-
-if (gradeResult?.grades) {
-  for (const g of gradeResult.grades) {
-    log(`GRADE ${g.role}: ${g.followed}/${g.total} rules followed${g.flagged?.length ? ' — flagged: ' + g.flagged.join(', ') : ''}`)
-  }
-}
-} else {
-  log('GRADE: skipped (skipGrade=true)')
-}
 
 // ── Worktree cleanup (post-workflow) ────────────────────
 try {

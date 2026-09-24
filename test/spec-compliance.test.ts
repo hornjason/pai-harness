@@ -292,3 +292,52 @@ describe("spec-sync: HARNESS-SKILL-CHAIN.md contains required claims", () => {
     expect(SKILL_MD).toContain("Rook");
   });
 });
+
+// ── Harness Bug Fixes (#573-576) ────────────────────────────────
+
+describe("harness-fixes: ship.js and ship-and-heal.js structural checks", () => {
+  const HEAL_JS = readFileSync(join(HR, "workflows/ship-and-heal.js"), "utf-8");
+
+  test("#573: ship.js has AC evidence pre-validation step after scope", () => {
+    expect(SHIP_JS).toContain("ac-prevalidation");
+    expect(SHIP_JS).toContain("evidence/threshold");
+  });
+
+  test("#573: pre-validation checks numeric vs string threshold types", () => {
+    expect(SHIP_JS).toContain("parseFloat");
+    expect(SHIP_JS).toContain("op:\"contains\"");
+  });
+
+  test("#574: GRADE phase runs before SHIP phase, not after PROVE", () => {
+    const gradeIdx = SHIP_JS.indexOf("label: 'grade'");
+    const shipPhaseIdx = SHIP_JS.indexOf("phase('Ship')");
+    expect(gradeIdx).toBeGreaterThan(-1);
+    expect(shipPhaseIdx).toBeGreaterThan(-1);
+    expect(gradeIdx).toBeLessThan(shipPhaseIdx);
+  });
+
+  test("#574: no duplicate GRADE section after PROVE", () => {
+    const gradeOccurrences = SHIP_JS.match(/label: 'grade'/g) || [];
+    expect(gradeOccurrences.length).toBe(1);
+  });
+
+  test("#575: ship-and-heal RCA prompt includes generator fix guidance", () => {
+    expect(HEAL_JS).toContain("generator fix");
+    expect(HEAL_JS).toContain("ship.js");
+  });
+
+  test("#575: ship-and-heal fix prompt mentions both instance and generator fixes", () => {
+    expect(HEAL_JS).toContain("instance");
+    expect(HEAL_JS).toContain("generator");
+  });
+
+  test("#576: ship-and-heal has nesting fallback with try/catch", () => {
+    expect(HEAL_JS).toContain("nesting");
+    expect(HEAL_JS).toContain("ship-fallback");
+  });
+
+  test("run-gate.ts re-evaluates FAIL verdicts (stale verdict fix)", () => {
+    const gateTS = readFileSync(join(HR, "gates/run-gate.ts"), "utf-8");
+    expect(gateTS).toContain('ac.verdict !== "FAIL"');
+  });
+});

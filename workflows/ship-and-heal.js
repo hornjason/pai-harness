@@ -82,10 +82,40 @@ const testTimeout = testConfig?.timeout || 120000
 phase('Ship')
 log(`Shipping #${ISSUE} through harness`)
 
-const shipResult = await workflow(
-  { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
-  { ...parsedArgs }
-)
+// Try workflow() first; fall back to agent() if nesting limit hit (#576)
+let shipResult = null
+try {
+  shipResult = await workflow(
+    { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
+    { ...parsedArgs }
+  )
+} catch (nestingError) {
+  if (String(nestingError).includes('nesting')) {
+    log('Workflow nesting limit hit — falling back to direct ship via agent()')
+    shipResult = await agent(`
+Run the ship workflow for issue #${ISSUE}:
+1. cd ${PROJECT_ROOT}
+2. Read ${HARNESS_ROOT}/workflows/ship.js to understand the flow
+3. Execute the ship lifecycle: GOAL → DISCOVERY → SCOPE → IMPLEMENT → VERIFY → SHIP
+4. Use the project at ${PROJECT_ROOT} with harness at ${HARNESS_ROOT}
+5. Issue repo: ${ISSUE_REPO}
+6. Report the final status and any failures
+
+This is a fallback because workflow nesting was not available.
+`, { label: 'ship-fallback', phase: 'Ship', schema: {
+      type: 'object',
+      properties: {
+        status: { type: 'string' },
+        issue: { type: 'number' },
+        slug: { type: 'string' },
+        workDir: { type: 'string' },
+      },
+      required: ['status']
+    }})
+  } else {
+    throw nestingError
+  }
+}
 
 const status = shipResult?.status || 'UNKNOWN'
 log(`Ship result: ${status}`)
@@ -136,6 +166,7 @@ You are a root cause analyst for a ship workflow failure.
 4. Describe the root cause concisely
 5. Describe what fix is needed
 6. Determine if it's automatically fixable
+7. For HARNESS_BUG: include BOTH the instance fix (workflow-state.json) AND the generator fix (ship.js or gates/) in affectedFiles. Fixing only workflow-state.json patches the symptom — the same bug will recur on next ship.
 
 Be specific — name files, line numbers, exact error messages.
 `, { label: 'rca', phase: 'RCA', schema: RCA_SCHEMA })
@@ -174,12 +205,14 @@ ${(rca.affectedFiles || []).join('\n') || 'Determine from root cause'}
 
 ## Instructions
 1. Read the affected files
-2. Apply the fix
+2. Apply the fix — for HARNESS_BUG fixes, patch BOTH:
+   a. The instance (workflow-state.json) so this run passes
+   b. The generator (ship.js, gates/*.ts) so future runs don't hit the same bug
 3. Run: cd ${PROJECT_ROOT} && ${testCommand} 2>&1 | tail -10
    Set the Bash tool's timeout parameter to ${testTimeout}. Do NOT use the shell 'timeout' command.
 4. If tests pass, commit with message: "fix: ${rca.fixDescription.slice(0, 60)}"
 5. Push to main: git push origin main
-6. Report success/failure
+6. Report success/failure — list instance fixes AND generator fixes separately
 
 Do NOT introduce new features. Only fix the specific root cause.
 `, { label: 'fix', phase: 'Fix', schema: FIX_SCHEMA })
