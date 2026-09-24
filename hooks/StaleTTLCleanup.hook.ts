@@ -126,15 +126,15 @@ try {
   // Skip
 }
 
-// Clean stale worktrees (older than 24h with merged branches)
+// Clean stale worktrees (older than 24h with merged branches) in the current project
 try {
   const { cleanupWorktrees } = await import('../lib/worktree-cleanup.ts')
-  const projectRoot = process.env.PROJECT_ROOT || process.cwd()
+  const projectRoot = process.cwd()
   if (existsSync(join(projectRoot, '.claude', 'worktrees'))) {
     const result = await cleanupWorktrees({ projectRoot, maxAgeMs: 24 * 60 * 60 * 1000 })
     if (result.removed.length) {
       deletedCount += result.removed.length
-      log(`WORKTREE cleanup: removed ${result.removed.length} stale worktrees`)
+      log(`WORKTREE cleanup [${projectRoot}]: removed ${result.removed.length} stale worktrees`)
     }
   }
 } catch (e) {
