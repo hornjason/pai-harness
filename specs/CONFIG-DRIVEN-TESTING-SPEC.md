@@ -58,7 +58,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 ## Success Criteria
 
 - [ ] SC-331: matchPattern() returns non-null for all static SCs in testable strict specs (behavioral)
-- [ ] SC-332: Phase-0 test file uses runScaffoldConformity() for auto-matched SCs (behavioral)
+- [x] SC-332: test/phase-0.test.ts contains [runScaffoldConformity]
 - [x] SC-333: test/phase-2.test.ts is under [100] lines
 - [x] SC-334: test/phase-3.test.ts is under [100] lines
 - [x] SC-335: test/phase-5.test.ts is under [100] lines

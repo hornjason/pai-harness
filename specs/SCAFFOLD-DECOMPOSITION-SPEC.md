@@ -66,8 +66,8 @@ lib/validators/
 - [ ] SC-365: Scanner is importable by other scripts without pulling in generation logic (behavioral)
 - [ ] SC-366: Each generator is independently testable with mock ProjectScan data (behavioral)
 - [ ] SC-387: config/universal-rules.yaml exists
-- [ ] SC-388: Key files list loaded from rungate.json, not hardcoded in scaffold (behavioral)
-- [ ] SC-389: rungate.json schema expanded to hold key files, agent config, config paths (behavioral)
+- [ ] SC-388: .claude/rungate.json has field keyFiles
+- [ ] SC-389: .claude/rungate.json has field agentConfig
 - [ ] SC-390: Consumer can add project-specific rules via config (behavioral)
 
 ## Implementation

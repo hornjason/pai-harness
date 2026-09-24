@@ -60,7 +60,7 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 
 - [x] SC-348: templates/agent-briefs/ directory exists
 - [x] SC-349: templates/agent-briefs/_shared.md exists
-- [ ] SC-350: Scaffold reads template files instead of hardcoded strings (behavioral)
+- [x] SC-350: scripts/scaffold-project.ts contains [templates/agent-briefs]
 - [ ] SC-351: Each generated brief has all 8 required sections (behavioral)
 - [x] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
 - [x] SC-353: .claude/agents/marcus.md is under [120] lines
@@ -134,11 +134,11 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 
 ### Success Criteria (Three-Tier)
 
-- [ ] SC-423: Brief frontmatter includes tiers field mapping sections to tiers (behavioral)
+- [ ] SC-423: .claude/agents/marcus.md frontmatter has tiers
 - [x] SC-424: lib/rule-registry.ts exists
 - [ ] SC-425: briefedAgent() injects reinforcement-tier rules at top of task prompt (behavioral)
 - [ ] SC-426: Reinforcement rules extracted dynamically from brief (behavioral)
-- [ ] SC-427: Scaffold agentMeta carries tiers through to generated brief frontmatter (behavioral)
+- [x] SC-427: scripts/scaffold-project.ts contains [tiers, agentMeta]
 - [ ] SC-428: Briefs without tiers field default all rules to identity tier (behavioral)
 
 ## Cautions
