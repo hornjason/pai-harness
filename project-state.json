@@ -124,7 +124,7 @@
         {
           "id": "SC-394",
           "what": "Scaffold runs audit-specs post-generation",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-395",
@@ -134,7 +134,7 @@
         {
           "id": "SC-398",
           "what": "All RunGate specs at compliance: strict",
-          "done": false
+          "done": true
         }
       ]
     },

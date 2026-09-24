@@ -69,9 +69,9 @@ Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 |---|---|---|
 | ✅ | SC-383 | audit-specs classifies all SCs |
 | ✅ | SC-393 | audit-specs --fix auto-rewrites unmatched SCs |
-| ⬜ | SC-394 | Scaffold runs audit-specs post-generation |
+| ✅ | SC-394 | Scaffold runs audit-specs post-generation |
 | ⬜ | SC-395 | Consumers get identical create-spec validation |
-| ⬜ | SC-398 | All RunGate specs at compliance: strict |
+| ✅ | SC-398 | All RunGate specs at compliance: strict |
 
 ## 🔄 Brief Compliance (#558) (IN PROGRESS)
 
