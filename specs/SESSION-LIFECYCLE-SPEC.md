@@ -59,7 +59,7 @@ Agent loads AGENTS.md (automatic)
 - [ ] SC-314: session-end updates project-state.json with current priorities and antipatterns (behavioral)
 - [ ] SC-315: session-end appends session notes to project-state.json sessions array (behavioral)
 - [ ] SC-316: session-end commits all state files in one commit (behavioral)
-- [ ] SC-317: AGENTS.md contains [PROJECT-STATE.md]
+- [x] SC-317: AGENTS.md contains [PROJECT-STATE.md]
 - [ ] SC-318: Cold-start agent finds PROJECT-STATE.md within first 3 tool calls (behavioral)
 - [ ] SC-319: scaffold output scripts/session-end.ts exists
 - [ ] SC-320: PROJECT-STATE.md has section [Antipatterns]

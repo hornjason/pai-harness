@@ -1,39 +1,48 @@
 # Project State
 
-**Current phase: Phase 1.5 — Context Quality — 1 SCs open**
+**Current phase: Brief Compliance (#558) — 4 SCs open**
 
-Session 10 — Sync fix, duplicate SC cleanup, Phase G+H shipped.
+Session 11 — AFK review with Jason (sessions 3-10, ~70 commits, ~20 issues shipped).
 
-Shipped 5 issues: #553 create-sc, #554 create-spec validation, #556 audit-specs, #557 strict migration, #571 consumer extension.
-Harness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs renumbered.
-Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
+Flipped SC-295 (Phase 1.5 closed), SC-381 (Phase F closed). Pruned 31 stale worktrees.
+Closed 6 stale shipped-but-open issues (#537, #549, #555, #562, #563, #564).
+Research: Claude Code feature audit — 3 Tier 1 hooks (#577-#579), 3 Tier 2 features (#580-#582).
+Key decisions: behavioral SCs should be eliminated as a category — test enforcement artifacts instead.
+Option B chosen for conformity auto-flip. Ship workflow close step for stale issue detection.
+Suite: 1253 pass, 0 fail, 63 files. 33/56 SCs passing in conformity (8 more ready to flip).
 
 **Next priorities:**
-1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts
-2. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)
-3. P1: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
-4. P1: #565 Verify worktree fix on real cross-repo run
-5. P1: #561 Brief compliance gate (SC-407–SC-409)
-6. P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)
+1. P0: Option B — conformity test auto-flips spec checkboxes on pass (closes feedback loop)
+2. P0: Reclassify ~20 misclassified behavioral SCs to matchable static checks
+3. P0: Stale issue scanner in ship.js close step — detect and close orphaned issues
+4. P1: #565 Worktree repo mismatch bug — Marcus gets harness repo, not target
+5. P1: Observability Phase 0 — validate scorer on 5 historical transcripts
+6. P1: #577 SubagentStop hook — mechanical auditor for every agent (Tier 1)
+7. P1: #578 PostCompact hook — re-inject rules after context compression (Tier 1)
+8. P1: #561 Brief compliance gate (SC-407–SC-409)
+9. P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance
+10. P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)
+11. P2: Agent Brief Templates — SC-350, SC-351, SC-354, SC-357 still open
+12. P2: #582 Agent Teams — evaluate for council and parallel coordination
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
-## 🔄 Phase 1.5 — Context Quality (IN PROGRESS)
+## ✅ Phase 1.5 — Context Quality (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-293 | SPEC-TEMPLATE updated with matchable patterns |
-| ⬜ | SC-295 | SC enrichment — 25 remaining |
+| ✅ | SC-295 | SC enrichment — 35 SCs enriched to matchable patterns |
 
 ## ✅ Config-Driven Testing — Phases A-E (COMPLETE)
 
-## 🔄 Config-Driven Testing — Phase F: Matcher Registry (#550-#552, #555) (IN PROGRESS)
+## ✅ Config-Driven Testing — Phase F: Matcher Registry (#550-#552, #555) (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-379 | matcher-registry.json config with all 19 patterns |
 | ✅ | SC-380 | matchPattern() reads from config, no hardcoded branches |
-| ⬜ | SC-381 | SPEC-TEMPLATE auto-generated from config |
+| ✅ | SC-381 | SPEC-TEMPLATE auto-generated from config |
 | ✅ | SC-384 | Consumer custom matcher extension |
 
 ## ✅ Config-Driven Testing — Phase G: Structured SC Authoring (#553-#554) (COMPLETE)

@@ -260,7 +260,7 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [x] SC-292: matchPattern supports section-exists — SC with "has section [heading]" checks markdown
 - [x] SC-293: specs/SPEC-TEMPLATE.md exists
 - [x] SC-294: Every specs/ subdirectory name passes deriveDirectoryName() validation — hand-created directories FAIL
-- [ ] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern (behavioral)
+- [x] SC-295: ~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern (behavioral)
 - [x] SC-400: `rungate test-brief {role} "{task}"` CLI spawns agent in isolated worktree with standard task, audits transcript, reports directive compliance score (behavioral)
 - [x] SC-401: lib/directive-extractor.ts exists
 - [ ] SC-402: Transcript compliance checker cross-references extracted directives against agent tool calls — FOLLOWED/IGNORED per directive (behavioral)

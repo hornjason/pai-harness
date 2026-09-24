@@ -58,12 +58,12 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 
 ## Success Criteria
 
-- [ ] SC-348: templates/agent-briefs/ directory exists
-- [ ] SC-349: templates/agent-briefs/_shared.md exists
+- [x] SC-348: templates/agent-briefs/ directory exists
+- [x] SC-349: templates/agent-briefs/_shared.md exists
 - [ ] SC-350: Scaffold reads template files instead of hardcoded strings (behavioral)
 - [ ] SC-351: Each generated brief has all 8 required sections (behavioral)
-- [ ] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
-- [ ] SC-353: .claude/agents/marcus.md is under [120] lines
+- [x] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
+- [x] SC-353: .claude/agents/marcus.md is under [120] lines
 - [ ] SC-354: Editing a template file and re-scaffolding updates the generated brief (behavioral)
 - [ ] SC-355: Shared rules appear in every generated agent brief (behavioral)
 - [ ] SC-356: Prompt routing table generated dynamically, not from template (behavioral)
@@ -135,7 +135,7 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 ### Success Criteria (Three-Tier)
 
 - [ ] SC-423: Brief frontmatter includes tiers field mapping sections to tiers (behavioral)
-- [ ] SC-424: lib/rule-registry.ts exists
+- [x] SC-424: lib/rule-registry.ts exists
 - [ ] SC-425: briefedAgent() injects reinforcement-tier rules at top of task prompt (behavioral)
 - [ ] SC-426: Reinforcement rules extracted dynamically from brief (behavioral)
 - [ ] SC-427: Scaffold agentMeta carries tiers through to generated brief frontmatter (behavioral)

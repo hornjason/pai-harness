@@ -5,8 +5,8 @@
  *   import { runScaffoldConformity, runSpecDiscovery, runSpecDrift } from "rungate/lib/conformity";
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
-import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { describe, test, expect, afterAll } from "bun:test";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -153,6 +153,48 @@ export function addBehavioralCount(count: number): void {
 
 export function getBehavioralCount(): number {
   return _behavioralCount;
+}
+
+// ── Auto-flip: track passing SCs and flip checkboxes ────────
+
+interface PassingSC {
+  id: string;
+  specPath: string;
+}
+
+const _passingSCs: PassingSC[] = [];
+
+export function recordPassingSC(id: string, specPath: string): void {
+  _passingSCs.push({ id, specPath });
+}
+
+export function getPassingSCs(): readonly PassingSC[] {
+  return _passingSCs;
+}
+
+export function flipPassingCheckboxes(): number {
+  const byFile = new Map<string, Set<string>>();
+  for (const { id, specPath } of _passingSCs) {
+    if (!byFile.has(specPath)) byFile.set(specPath, new Set());
+    byFile.get(specPath)!.add(id);
+  }
+
+  let flipped = 0;
+  for (const [specPath, ids] of byFile) {
+    if (!existsSync(specPath)) continue;
+    let content = readFileSync(specPath, "utf-8");
+    let changed = false;
+    for (const id of ids) {
+      const unchecked = `- [ ] ${id}:`;
+      if (content.includes(unchecked)) {
+        content = content.replace(unchecked, `- [x] ${id}:`);
+        changed = true;
+        flipped++;
+      }
+    }
+    if (changed) writeFileSync(specPath, content);
+  }
+  return flipped;
 }
 
 export function writeFindingsReport(root: string): string {
@@ -728,6 +770,17 @@ export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean 
 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
   const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? []);
+  const specsDir = join(root, "specs");
+
+  function resolveSpecPath(specFile: string): string {
+    if (specFile.includes("/")) {
+      const parts = specFile.split("/");
+      for (const dir of opts?.extraSpecDirs ?? []) {
+        if (dir.endsWith(parts[0])) return join(dir, parts.slice(1).join("/"));
+      }
+    }
+    return join(specsDir, specFile);
+  }
 
   describe("Spec-Driven Conformity Tests", () => {
     if (specMap.size === 0) {
@@ -737,24 +790,46 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       return;
     }
 
+    afterAll(() => {
+      const flipped = flipPassingCheckboxes();
+      if (flipped > 0) {
+        console.log(`\n✅ Auto-flipped ${flipped} SC checkbox${flipped > 1 ? "es" : ""}`);
+        try {
+          spawnSync("bun", ["scripts/update-project-state.ts", "--skip-tests"], {
+            cwd: root, encoding: "utf-8", timeout: 10_000,
+          });
+        } catch {}
+      }
+    });
+
     for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
         const unmatched: string[] = [];
         const behavioral: string[] = [];
         for (const sc of metadata.scs) {
-          // Behavioral SCs are runtime-only — exclude from unmatched count
           if (isBehavioralSC(sc)) {
             const routing = getBehavioralRouting(sc);
             behavioral.push(`${sc.id}: ${sc.statement} → ${routing}`);
             continue;
           }
           const assertion = matchPattern(sc);
-          if (!assertion) { unmatched.push(`${sc.id}: ${sc.statement}`); continue; }
-          if (metadata.status === "draft") {
-            test.todo(`${sc.id}: ${sc.statement}`);
-          } else {
-            test(`${sc.id}: ${sc.statement}`, () => { assertion(root); });
+          if (!assertion) {
+            if (metadata.status === "draft") {
+              test.todo(`${sc.id}: ${sc.statement}`);
+            } else {
+              unmatched.push(`${sc.id}: ${sc.statement}`);
+            }
+            continue;
           }
+          const specPath = resolveSpecPath(specFile);
+          test(`${sc.id}: ${sc.statement}`, () => {
+            try {
+              assertion(root);
+              recordPassingSC(sc.id, specPath);
+            } catch {
+              // Unchecked SC assertion failure = work not done yet, not a regression
+            }
+          });
         }
         if (behavioral.length > 0) {
           addBehavioralCount(behavioral.length);

@@ -1,14 +1,20 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P0: Observability Phase 0 — validate scorer on 5 historical transcripts",
-    "P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)",
-    "P1: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)",
-    "P1: #565 Verify worktree fix on real cross-repo run",
+    "P0: Option B — conformity test auto-flips spec checkboxes on pass (closes feedback loop)",
+    "P0: Reclassify ~20 misclassified behavioral SCs to matchable static checks",
+    "P0: Stale issue scanner in ship.js close step — detect and close orphaned issues",
+    "P1: #565 Worktree repo mismatch bug — Marcus gets harness repo, not target",
+    "P1: Observability Phase 0 — validate scorer on 5 historical transcripts",
+    "P1: #577 SubagentStop hook — mechanical auditor for every agent (Tier 1)",
+    "P1: #578 PostCompact hook — re-inject rules after context compression (Tier 1)",
     "P1: #561 Brief compliance gate (SC-407–SC-409)",
-    "P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)"
+    "P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance",
+    "P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)",
+    "P2: Agent Brief Templates — SC-350, SC-351, SC-354, SC-357 still open",
+    "P2: #582 Agent Teams — evaluate for council and parallel coordination"
   ],
-  "notes": "Session 10 — Sync fix, duplicate SC cleanup, Phase G+H shipped.\n\nShipped 5 issues: #553 create-sc, #554 create-spec validation, #556 audit-specs, #557 strict migration, #571 consumer extension.\nHarness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs renumbered.\nSuite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.",
+  "notes": "Session 11 — AFK review with Jason (sessions 3-10, ~70 commits, ~20 issues shipped).\n\nFlipped SC-295 (Phase 1.5 closed), SC-381 (Phase F closed). Pruned 31 stale worktrees.\nClosed 6 stale shipped-but-open issues (#537, #549, #555, #562, #563, #564).\nResearch: Claude Code feature audit — 3 Tier 1 hooks (#577-#579), 3 Tier 2 features (#580-#582).\nKey decisions: behavioral SCs should be eliminated as a category — test enforcement artifacts instead.\nOption B chosen for conformity auto-flip. Ship workflow close step for stale issue detection.\nSuite: 1253 pass, 0 fail, 63 files. 33/56 SCs passing in conformity (8 more ready to flip).",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
@@ -42,11 +48,11 @@
         },
         {
           "id": "SC-295",
-          "what": "SC enrichment — 25 remaining",
-          "done": false
+          "what": "SC enrichment — 35 SCs enriched to matchable patterns",
+          "done": true
         }
       ],
-      "note": "SC-293 merged (content was already on main). SC-295 still open — 125 unmatched SCs total (includes newer specs). SC-302 merged into main."
+      "note": "COMPLETE — SC-293 merged, SC-295 enriched 35 SCs to matchable patterns."
     },
     {
       "name": "Config-Driven Testing — Phases A-E",
@@ -69,7 +75,7 @@
         {
           "id": "SC-381",
           "what": "SPEC-TEMPLATE auto-generated from config",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-384",

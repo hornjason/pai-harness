@@ -76,7 +76,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [ ] SC-347: Hook-wiring SCs rewritten as static checks where artifact exists (behavioral)
 - [x] SC-379: config/matcher-registry.json exists
 - [x] SC-380: lib/conformity.ts contains [loadRegistry, matcherHandlers]
-- [ ] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config (behavioral)
+- [x] SC-381: SPEC-TEMPLATE pattern reference auto-generated from matcher config (behavioral)
 - [x] SC-382: create-spec.ts validates every SC against matchPattern() at write time — unmatched SCs block save with suggested rewrite
 - [x] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
 - [x] SC-384: Consumers can extend matcher config with custom matchers for their domain (behavioral)
