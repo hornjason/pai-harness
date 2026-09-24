@@ -72,20 +72,20 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 | ⬜ | SC-408 | Standard tasks per role defined in config |
 | ✅ | SC-409 | Behavioral canary: read ≠ followed verification |
 
-## 🔄 Agent Brief Templates (IN PROGRESS)
+## ✅ Agent Brief Templates (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-348 | Templates in templates/agent-briefs/ |
 | ✅ | SC-349 | Shared rules in _shared.md |
 | ✅ | SC-350 | Scaffold reads template files |
-| ⬜ | SC-351 | All 8 required sections present |
+| ✅ | SC-351 | All 8 required sections present |
 | ✅ | SC-352 | All briefs model: sonnet |
 | ✅ | SC-353 | Briefs under 120 lines each |
-| ⬜ | SC-354 | Edit template → re-scaffold updates brief |
+| ✅ | SC-354 | Edit template → re-scaffold updates brief |
 | ✅ | SC-355 | Shared rules in every brief |
 | ✅ | SC-356 | Prompt routing generated dynamically |
-| ⬜ | SC-357 | Template vars match project values |
+| ✅ | SC-357 | Template vars match project values |
 
 ## ⬜ Scaffold Decomposition (NOT STARTED)
 
