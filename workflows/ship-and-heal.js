@@ -369,7 +369,6 @@ if (!workDir) {
 
 const failures = shipResult?.failures || shipResult?.detail?.failures || []
 const failureText = Array.isArray(failures) ? failures.join('\n') : String(failures)
-const workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
 
 log(`Ship failed: ${status}. Analyzing root cause.`)
 
