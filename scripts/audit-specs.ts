@@ -26,6 +26,7 @@ export interface SpecAuditResult {
   matched: number;
   unmatched: number;
   behavioral: number;
+  compliance: "strict" | "permissive";
   matchedSCs: SCClassification[];
   unmatchedSCs: SCClassification[];
   behavioralSCs: SCClassification[];
@@ -52,6 +53,7 @@ export interface AuditResult {
   totalMatched: number;
   totalUnmatched: number;
   totalBehavioral: number;
+  strictUnmatched: number;
   rewrites?: RewriteEntry[];
 }
 
@@ -272,7 +274,7 @@ export function auditSpecs(
   const rewrites: RewriteEntry[] = [];
 
   if (!existsSync(specsDir)) {
-    return { specs, totalSCs: 0, totalMatched: 0, totalUnmatched: 0, totalBehavioral: 0, rewrites };
+    return { specs, totalSCs: 0, totalMatched: 0, totalUnmatched: 0, totalBehavioral: 0, strictUnmatched: 0, rewrites };
   }
 
   const specFiles = readdirSync(specsDir).filter((f) => f.endsWith(".md"));
@@ -284,6 +286,9 @@ export function auditSpecs(
 
     // Skip non-testable specs
     if (!fm || fm.testable !== "true") continue;
+
+    const compliance: "strict" | "permissive" =
+      fm.compliance === "permissive" ? "permissive" : "strict";
 
     const scs = extractSCs(content, specFile);
     const matchedSCs: SCClassification[] = [];
@@ -306,6 +311,7 @@ export function auditSpecs(
       matched: matchedSCs.length,
       unmatched: unmatchedSCs.length,
       behavioral: behavioralSCs.length,
+      compliance,
       matchedSCs,
       unmatchedSCs,
       behavioralSCs,
@@ -376,8 +382,11 @@ export function auditSpecs(
   const totalMatched = specs.reduce((sum, s) => sum + s.matched, 0);
   const totalUnmatched = specs.reduce((sum, s) => sum + s.unmatched, 0);
   const totalBehavioral = specs.reduce((sum, s) => sum + s.behavioral, 0);
+  const strictUnmatched = specs
+    .filter((s) => s.compliance === "strict")
+    .reduce((sum, s) => sum + s.unmatched, 0);
 
-  return { specs, totalSCs, totalMatched, totalUnmatched, totalBehavioral, rewrites };
+  return { specs, totalSCs, totalMatched, totalUnmatched, totalBehavioral, strictUnmatched, rewrites };
 }
 
 // ── Report formatting ─────────────────────────────────────────
@@ -453,8 +462,8 @@ if (import.meta.main) {
     console.log(formatDiffSummary(result));
   }
 
-  // Exit with non-zero if there are unmatched SCs
-  if (result.totalUnmatched > 0 && !fix) {
+  // Exit with non-zero if there are unmatched SCs in strict specs
+  if (result.strictUnmatched > 0 && !fix) {
     process.exit(1);
   }
 }

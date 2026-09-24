@@ -415,9 +415,10 @@ governs: test
 
       for (const f of specFiles) {
         const content = readFileSync(join(specsDir, f), "utf-8");
-        // Check if testable
+        // Check if testable (accept both "true" and "yes")
         const testableMatch = content.match(/^testable:\s*(.+)$/m);
-        if (!testableMatch || testableMatch[1].trim() !== "true") continue;
+        const testableValue = testableMatch?.[1].trim();
+        if (!testableValue || (testableValue !== "true" && testableValue !== "yes")) continue;
 
         // Check compliance
         const complianceMatch = content.match(/^compliance:\s*(.+)$/m);
@@ -427,6 +428,184 @@ governs: test
       }
 
       expect(permissiveSpecs).toEqual([]);
+    });
+  });
+
+  // ── AC-5: Non-zero exit for strict specs with unmatched SCs ────
+
+  describe("AC-5: strict spec exit code", () => {
+    test("strictUnmatched counts only SCs from strict specs", async () => {
+      writeSpec("STRICT-SPEC.md", `---
+doc-type: spec
+testable: true
+compliance: strict
+updated: 2026-09-23
+governs: test
+---
+
+# Strict Spec
+
+## Success Criteria
+
+- [ ] SC-1000: AGENTS.md exists
+- [ ] SC-1001: This is an unmatched freeform SC that nobody can parse
+`);
+      writeSpec("PERMISSIVE-SPEC.md", `---
+doc-type: spec
+testable: true
+compliance: permissive
+updated: 2026-09-23
+governs: test
+---
+
+# Permissive Spec
+
+## Success Criteria
+
+- [ ] SC-1002: AGENTS.md exists
+- [ ] SC-1003: Another unmatched freeform SC nobody can parse
+`);
+      const { auditSpecs } = await importAuditSpecs();
+      const result = auditSpecs(FIXTURE_ROOT);
+
+      // Total unmatched should include both specs
+      expect(result.totalUnmatched).toBe(2);
+      // strictUnmatched should only count from strict spec
+      expect(result.strictUnmatched).toBe(1);
+    });
+
+    test("auditSpecs result includes compliance per spec", async () => {
+      writeSpec("COMP-STRICT.md", `---
+doc-type: spec
+testable: true
+compliance: strict
+updated: 2026-09-23
+governs: test
+---
+
+# Strict
+
+## Success Criteria
+
+- [ ] SC-1100: AGENTS.md exists
+`);
+      writeSpec("COMP-PERMISSIVE.md", `---
+doc-type: spec
+testable: true
+compliance: permissive
+updated: 2026-09-23
+governs: test
+---
+
+# Permissive
+
+## Success Criteria
+
+- [ ] SC-1101: AGENTS.md exists
+`);
+      const { auditSpecs } = await importAuditSpecs();
+      const result = auditSpecs(FIXTURE_ROOT);
+
+      const strictSpec = result.specs.find((s: any) => s.specFile === "COMP-STRICT.md");
+      const permissiveSpec = result.specs.find((s: any) => s.specFile === "COMP-PERMISSIVE.md");
+      expect(strictSpec?.compliance).toBe("strict");
+      expect(permissiveSpec?.compliance).toBe("permissive");
+    });
+
+    test("defaults to strict when compliance field is absent", async () => {
+      writeSpec("NO-COMPLIANCE.md", `---
+doc-type: spec
+testable: true
+updated: 2026-09-23
+governs: test
+---
+
+# No Compliance
+
+## Success Criteria
+
+- [ ] SC-1200: AGENTS.md exists
+`);
+      const { auditSpecs } = await importAuditSpecs();
+      const result = auditSpecs(FIXTURE_ROOT);
+
+      const spec = result.specs.find((s: any) => s.specFile === "NO-COMPLIANCE.md");
+      expect(spec?.compliance).toBe("strict");
+    });
+  });
+
+  // ── AC-6: Consumer specs excluded from strict migration ────────
+
+  describe("AC-6: consumer specs excluded", () => {
+    test("rungate.json consumers array is empty", () => {
+      const config = JSON.parse(
+        readFileSync(join(import.meta.dir, "..", ".claude", "rungate.json"), "utf-8")
+      );
+      expect(config.consumers).toEqual([]);
+    });
+
+    test("audit-specs scopes to project specs/ directory only", async () => {
+      // Create a mock project with specs in a non-standard location
+      const otherDir = join(FIXTURE_ROOT, "other-specs");
+      mkdirSync(otherDir, { recursive: true });
+      writeFileSync(join(otherDir, "CONSUMER-SPEC.md"), `---
+doc-type: spec
+testable: true
+compliance: permissive
+updated: 2026-09-23
+governs: test
+---
+
+# Consumer Spec
+
+## Success Criteria
+
+- [ ] SC-1300: AGENTS.md exists
+`);
+      // Also create a normal spec in specs/
+      writeSpec("LOCAL-SPEC.md", `---
+doc-type: spec
+testable: true
+compliance: strict
+updated: 2026-09-23
+governs: test
+---
+
+# Local Spec
+
+## Success Criteria
+
+- [ ] SC-1301: AGENTS.md exists
+`);
+
+      const { auditSpecs } = await importAuditSpecs();
+      const result = auditSpecs(FIXTURE_ROOT);
+
+      // Should only include specs from specs/, not other-specs/
+      const specFiles = result.specs.map((s: any) => s.specFile);
+      expect(specFiles).toContain("LOCAL-SPEC.md");
+      expect(specFiles).not.toContain("CONSUMER-SPEC.md");
+    });
+  });
+
+  // ── AC-3: No flagged markers in specs ──────────────────────────
+
+  describe("AC-3: no flagged markers remain", () => {
+    test("no FLAGGED, AMBIGUOUS, or REVIEW markers in any RunGate spec", () => {
+      const specsDir = join(import.meta.dir, "..", "specs");
+      const specFiles = readdirSync(specsDir).filter(
+        (f) => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md"
+      );
+      const flaggedSpecs: string[] = [];
+
+      for (const f of specFiles) {
+        const content = readFileSync(join(specsDir, f), "utf-8");
+        if (/<!-- REVIEW:|FLAGGED|AMBIGUOUS.*SC|TODO.*rewrite.*SC|FIXME.*SC/.test(content)) {
+          flaggedSpecs.push(f);
+        }
+      }
+
+      expect(flaggedSpecs).toEqual([]);
     });
   });
 });

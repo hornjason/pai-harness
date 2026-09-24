@@ -5,7 +5,8 @@ owner: jason
 created: 2026-09-22
 updated: 2026-09-22
 governs: Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi-agent AFK work
-testable: yes
+testable: true
+compliance: strict
 ---
 
 # Parallel Agent Coordination
