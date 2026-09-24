@@ -1,10 +1,6 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P0: #573 AC evidence/threshold pre-validation in ship.js SCOPE phase",
-    "P0: #574 GRADE phase must run before ship gate, not after",
-    "P0: #575 Self-heal fixes generators (ship.js), not just instances (workflow-state.json)",
-    "P0: #576 ship-and-heal workflow nesting limitation",
     "P0: Observability Phase 0 — validate scorer on 5 historical transcripts",
     "P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)",
     "P1: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)",
