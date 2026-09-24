@@ -9,16 +9,13 @@ Harness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs 
 Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 
 **Next priorities:**
-1. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
-2. P0: #554 Wire create-spec SC validation (SC-382)
-3. DONE: #571 Consumer extension (SC-384, SC-395)
-4. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
-5. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331) — includes 5 skipped matcher tests
-6. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)
-7. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading replacing LLM (14 SCs in DA-COMPLIANCE)
-8. P0: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
-9. P1: #565 Verify worktree fix on real cross-repo run
-10. P1: #561 Brief compliance gate (SC-407–SC-409)
+1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)
+2. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)
+3. P0: AC evidence/threshold validation — GOAL phase must verify evidence format matches threshold operator
+4. P0: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
+5. P1: #565 Verify worktree fix on real cross-repo run
+6. P1: #561 Brief compliance gate (SC-407–SC-409)
+7. P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
