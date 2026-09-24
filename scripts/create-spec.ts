@@ -15,20 +15,24 @@
 
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
+import { isMatchablePattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { loadRegistry, type RegistryEntry } from "../lib/create-sc";
 
 // ── Argument parsing ──────────────────────────────────────────
 
 const rawArgs = process.argv.slice(2);
 
-// Extract --sc flags before positional args
+// Extract --sc and --project-root flags before positional args
 const scStatements: string[] = [];
 const positionalArgs: string[] = [];
+let projectRoot: string | undefined;
 
 for (let i = 0; i < rawArgs.length; i++) {
   if (rawArgs[i] === "--sc" && i + 1 < rawArgs.length) {
     scStatements.push(rawArgs[i + 1]);
+    i++; // skip the value
+  } else if (rawArgs[i] === "--project-root" && i + 1 < rawArgs.length) {
+    projectRoot = rawArgs[i + 1];
     i++; // skip the value
   } else {
     positionalArgs.push(rawArgs[i]);
@@ -44,7 +48,7 @@ const title = positionalArgs[0];
 const governs = positionalArgs[1] || "TODO — describe what this spec governs";
 const slug = title.toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/(^-|-$)/g, "");
 const filename = `${slug}-SPEC.md`;
-const root = join(import.meta.dir, "..");
+const root = projectRoot ?? join(import.meta.dir, "..");
 const specsDir = join(root, "specs");
 const filePath = join(specsDir, filename);
 
@@ -62,7 +66,7 @@ if (existsSync(filePath)) {
  * Returns up to 3 pattern suggestions based on keyword overlap.
  */
 function suggestClosestPatterns(statement: string): RegistryEntry[] {
-  const registry = loadRegistry();
+  const registry = loadRegistry(projectRoot);
   const words = statement.toLowerCase().split(/\s+/);
 
   const scored = registry.map((entry) => {
@@ -91,9 +95,8 @@ if (scStatements.length > 0) {
       continue;
     }
 
-    // Validate against matchPattern
-    const assertion = matchPattern(sc);
-    if (!assertion) {
+    // Validate against registry patterns (regex match only, no handler required)
+    if (!isMatchablePattern(sc, projectRoot)) {
       const suggestions = suggestClosestPatterns(statement);
       failures.push({ statement, suggestions });
     }

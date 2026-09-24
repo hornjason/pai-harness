@@ -275,12 +275,60 @@ type AssertionFn = (root: string) => void;
 type MatcherHandler = (sc: ParsedSC, match: RegExpMatchArray) => AssertionFn | null;
 
 // Config loading with caching
-let _registryCache: Array<{ name: string; regex: string }> | null = null;
-function loadRegistry(): Array<{ name: string; regex: string }> {
-  if (_registryCache) return _registryCache;
+const _registryCache = new Map<string, Array<{ name: string; regex: string }>>();
+
+function loadBuiltInRegistry(): Array<{ name: string; regex: string }> {
+  const key = "__builtin__";
+  if (_registryCache.has(key)) return _registryCache.get(key)!;
   const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", "config", "matcher-registry.json");
-  _registryCache = JSON.parse(readFileSync(configPath, "utf-8"));
-  return _registryCache!;
+  const entries: Array<{ name: string; regex: string }> = JSON.parse(readFileSync(configPath, "utf-8"));
+  _registryCache.set(key, entries);
+  return entries;
+}
+
+/**
+ * Load the matcher registry, optionally merging consumer-defined custom matchers.
+ *
+ * When projectRoot is provided, looks for .claude/rungate.json in that directory
+ * and merges any `customMatchers` array entries with the built-in registry.
+ * Consumer entries with the same `name` as a built-in entry override the built-in.
+ */
+function loadRegistry(projectRoot?: string): Array<{ name: string; regex: string }> {
+  const cacheKey = projectRoot ?? "__builtin__";
+  if (_registryCache.has(cacheKey)) return _registryCache.get(cacheKey)!;
+
+  const builtIn = loadBuiltInRegistry();
+  if (!projectRoot) {
+    return builtIn;
+  }
+
+  // Look for consumer custom matchers in .claude/rungate.json
+  const configPath = join(projectRoot, ".claude", "rungate.json");
+  if (!existsSync(configPath)) {
+    _registryCache.set(cacheKey, builtIn);
+    return builtIn;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const customMatchers: Array<{ name: string; regex: string }> = config.customMatchers ?? [];
+    if (customMatchers.length === 0) {
+      _registryCache.set(cacheKey, builtIn);
+      return builtIn;
+    }
+
+    // Merge: consumer entries override built-in entries with same name
+    const merged = builtIn.filter(
+      (entry) => !customMatchers.some((c) => c.name === entry.name)
+    );
+    merged.push(...customMatchers);
+
+    _registryCache.set(cacheKey, merged);
+    return merged;
+  } catch {
+    _registryCache.set(cacheKey, builtIn);
+    return builtIn;
+  }
 }
 
 // Handler registry — one function per pattern type
@@ -643,8 +691,8 @@ const matcherHandlers: Record<string, MatcherHandler> = {
   },
 };
 
-export function matchPattern(sc: ParsedSC): AssertionFn | null {
-  const registry = loadRegistry();
+export function matchPattern(sc: ParsedSC, projectRoot?: string): AssertionFn | null {
+  const registry = loadRegistry(projectRoot);
   for (const entry of registry) {
     const regex = new RegExp(entry.regex, "i");
     const match = sc.statement.match(regex);
@@ -657,6 +705,23 @@ export function matchPattern(sc: ParsedSC): AssertionFn | null {
     }
   }
   return null;
+}
+
+/**
+ * Check if an SC statement matches any pattern in the registry (built-in + consumer).
+ * Unlike matchPattern, this only checks regex matches — it does not require a handler.
+ * Used by create-spec for SC validation: a consumer custom pattern without a handler
+ * is still a valid SC pattern for specification purposes.
+ */
+export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean {
+  const registry = loadRegistry(projectRoot);
+  for (const entry of registry) {
+    const regex = new RegExp(entry.regex, "i");
+    if (regex.test(sc.statement)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 // ── Exported test runners ───────────────────────────────────

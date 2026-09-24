@@ -25,13 +25,60 @@ interface ParamDef {
 
 // ── Registry loading ──────────────────────────────────────────
 
-let _registryCache: RegistryEntry[] | null = null;
+const _registryCache = new Map<string, RegistryEntry[]>();
 
-export function loadRegistry(): RegistryEntry[] {
-  if (_registryCache) return _registryCache;
+function loadBuiltInRegistry(): RegistryEntry[] {
+  const key = "__builtin__";
+  if (_registryCache.has(key)) return _registryCache.get(key)!;
   const configPath = join(dirname(fileURLToPath(import.meta.url)), "..", "config", "matcher-registry.json");
-  _registryCache = JSON.parse(readFileSync(configPath, "utf-8"));
-  return _registryCache!;
+  const entries: RegistryEntry[] = JSON.parse(readFileSync(configPath, "utf-8"));
+  _registryCache.set(key, entries);
+  return entries;
+}
+
+/**
+ * Load the matcher registry, optionally merging consumer-defined custom matchers.
+ *
+ * When projectRoot is provided, looks for .claude/rungate.json in that directory
+ * and merges any `customMatchers` array entries with the built-in registry.
+ * Consumer entries with the same `name` as a built-in entry override the built-in.
+ */
+export function loadRegistry(projectRoot?: string): RegistryEntry[] {
+  const cacheKey = projectRoot ?? "__builtin__";
+  if (_registryCache.has(cacheKey)) return _registryCache.get(cacheKey)!;
+
+  const builtIn = loadBuiltInRegistry();
+  if (!projectRoot) {
+    return builtIn;
+  }
+
+  // Look for consumer custom matchers in .claude/rungate.json
+  const configPath = join(projectRoot, ".claude", "rungate.json");
+  if (!existsSync(configPath)) {
+    _registryCache.set(cacheKey, builtIn);
+    return builtIn;
+  }
+
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const customMatchers: RegistryEntry[] = config.customMatchers ?? [];
+    if (customMatchers.length === 0) {
+      _registryCache.set(cacheKey, builtIn);
+      return builtIn;
+    }
+
+    // Merge: consumer entries override built-in entries with same name
+    const merged = builtIn.filter(
+      (entry) => !customMatchers.some((c) => c.name === entry.name)
+    );
+    merged.push(...customMatchers);
+
+    _registryCache.set(cacheKey, merged);
+    return merged;
+  } catch {
+    _registryCache.set(cacheKey, builtIn);
+    return builtIn;
+  }
 }
 
 // ── Pattern param definitions ─────────────────────────────────
