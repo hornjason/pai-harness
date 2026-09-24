@@ -5,6 +5,7 @@
  * Parses agent output for structured verdict blocks.
  * Writes verdict, testedSha, testedPaths, spawned to workflow-state.json.
  * Auto-appends blockers to verifyBlockers[].
+ * Runs transcript audit and writes compliance results to workflow-state.json.
  *
  * Issue: #439
  */
@@ -13,6 +14,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from '
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
+import { runAgentAudit } from '../lib/agent-audit';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
@@ -81,6 +83,7 @@ function identifyRole(toolInput: any): string | null {
   return null;
 }
 
+
 async function main() {
   const payload = await parseHookInput();
   if (!payload) process.exit(0);
@@ -123,6 +126,14 @@ async function main() {
     }
   } else {
     state.agents[role].verdict = null;
+  }
+
+  // Run transcript audit (non-blocking)
+  const auditResult = runAgentAudit(payload.transcript_path, role);
+  if (auditResult) {
+    if (!state.audits) state.audits = {};
+    state.audits[role] = auditResult;
+    console.error(`[agent-verdict-capture] ${role} audit: ${auditResult.score}% (${auditResult.grade})`);
   }
 
   state.updatedTs = new Date().toISOString();
