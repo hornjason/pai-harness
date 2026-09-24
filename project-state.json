@@ -1,10 +1,13 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)",
+    "P0: #573 AC evidence/threshold pre-validation in ship.js SCOPE phase",
+    "P0: #574 GRADE phase must run before ship gate, not after",
+    "P0: #575 Self-heal fixes generators (ship.js), not just instances (workflow-state.json)",
+    "P0: #576 ship-and-heal workflow nesting limitation",
+    "P0: Observability Phase 0 — validate scorer on 5 historical transcripts",
     "P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)",
-    "P0: AC evidence/threshold validation — GOAL phase must verify evidence format matches threshold operator",
-    "P0: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)",
+    "P1: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)",
     "P1: #565 Verify worktree fix on real cross-repo run",
     "P1: #561 Brief compliance gate (SC-407–SC-409)",
     "P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)"

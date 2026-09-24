@@ -9,13 +9,16 @@ Harness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs 
 Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 
 **Next priorities:**
-1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)
-2. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)
-3. P0: AC evidence/threshold validation — GOAL phase must verify evidence format matches threshold operator
-4. P0: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
-5. P1: #565 Verify worktree fix on real cross-repo run
-6. P1: #561 Brief compliance gate (SC-407–SC-409)
-7. P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)
+1. P0: #573 AC evidence/threshold pre-validation in ship.js SCOPE phase
+2. P0: #574 GRADE phase must run before ship gate, not after
+3. P0: #575 Self-heal fixes generators (ship.js), not just instances (workflow-state.json)
+4. P0: #576 ship-and-heal workflow nesting limitation
+5. P0: Observability Phase 0 — validate scorer on 5 historical transcripts
+6. P0: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs in DA-COMPLIANCE)
+7. P1: Add container config to DDB rungate.json (apiUrl, uiUrl, container section)
+8. P1: #565 Verify worktree fix on real cross-repo run
+9. P1: #561 Brief compliance gate (SC-407–SC-409)
+10. P1: Phase F remaining — SC-380 (config dispatch), SC-381 (SPEC-TEMPLATE auto-gen)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
