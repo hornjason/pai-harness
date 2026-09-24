@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Brief Compliance (#558) — 4 SCs open**
+**Current phase: Brief Compliance (#558) — 3 SCs open**
 
 Session 11 — Feedback loop closed, AFK items shipped.
 
@@ -63,7 +63,7 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 |---|---|---|
 | ✅ | SC-400 | test-brief CLI: isolated worktree compliance test |
 | ✅ | SC-401 | Directive extractor parses brief mechanically |
-| ⬜ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
+| ✅ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
 | ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
 | ✅ | SC-404 | Hill climb mode: 5 iterations max |
 | ✅ | SC-405 | All 6 briefs score ≥80% before shipping |

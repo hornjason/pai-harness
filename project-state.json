@@ -151,7 +151,7 @@
         {
           "id": "SC-402",
           "what": "Transcript checker: FOLLOWED/IGNORED per directive",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-403",
