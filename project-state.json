@@ -154,7 +154,7 @@
         {
           "id": "SC-403",
           "what": "Cross-reference report: brief position + RepoRails + transcript",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-404",

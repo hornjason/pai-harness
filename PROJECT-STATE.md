@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Brief Compliance (#558) — 1 SCs open**
+**Current phase: Scaffold Decomposition — 9 SCs open**
 
 Session 11 — Feedback loop closed, AFK items shipped.
 
@@ -55,14 +55,14 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 | ✅ | SC-395 | Consumers get identical create-spec validation |
 | ✅ | SC-398 | All RunGate specs at compliance: strict |
 
-## 🔄 Brief Compliance (#558) (IN PROGRESS)
+## ✅ Brief Compliance (#558) (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-400 | test-brief CLI: isolated worktree compliance test |
 | ✅ | SC-401 | Directive extractor parses brief mechanically |
 | ✅ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
-| ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
+| ✅ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
 | ✅ | SC-404 | Hill climb mode: 5 iterations max |
 | ✅ | SC-405 | All 6 briefs score ≥80% before shipping |
 | ✅ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
