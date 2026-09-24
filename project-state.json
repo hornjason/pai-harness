@@ -3,7 +3,7 @@
   "priorities": [
     "P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)",
     "P0: #554 Wire create-spec SC validation (SC-382)",
-    "P0: #571 Consumer extension (SC-384, SC-395)",
+    "DONE: #571 Consumer extension (SC-384, SC-395)",
     "P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H",
     "P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331) — includes 5 skipped matcher tests",
     "P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)",
@@ -12,7 +12,7 @@
     "P1: #565 Verify worktree fix on real cross-repo run",
     "P1: #561 Brief compliance gate (SC-407–SC-409)"
   ],
-  "notes": "Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.\n\n**Critical fix: sync-sc-status cross-spec ID collision**\n- Root cause: sync tracked SCs by bare ID, so PASS from one spec flipped same ID in different spec\n- Fix: scoped keys (specFile::id), duplicate detection with warnings\n- Renumbered 14 duplicate SCs across DA-COMPLIANCE, INSTRUCTION-COMPLIANCE, SESSION-AUDIT\n- Added SD-4 test to prevent future duplicate SC IDs\n- Added cross-spec isolation test\n\n**Test suite: 1,120 pass, 0 fail across 60 files**\n\n**SCs confirmed passing:** SC-379 (matcher-registry.json), SC-348 (templates/), SC-349 (_shared.md)\n\n**Sprint priorities (AFK):**\n- P0: #553 create-sc CLI (Phase G)\n- P0: #554 Wire create-spec SC validation\n- P0: #571 Consumer extension\n- P0: #556 audit-specs CLI (Phase H)\n- P0: #557 Migrate all specs to strict",
+  "notes": "Session 10 — Sync fix, duplicate SC cleanup, Phase G+H shipped.\n\nShipped 5 issues: #553 create-sc, #554 create-spec validation, #556 audit-specs, #557 strict migration, #571 consumer extension.\nHarness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs renumbered.\nSuite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
@@ -78,7 +78,7 @@
         {
           "id": "SC-384",
           "what": "Consumer custom matcher extension",
-          "done": false
+          "done": true
         }
       ]
     },
@@ -129,7 +129,7 @@
         {
           "id": "SC-395",
           "what": "Consumers get identical create-spec validation",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-398",

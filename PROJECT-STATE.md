@@ -2,30 +2,16 @@
 
 **Current phase: Phase 1.5 — Context Quality — 1 SCs open**
 
-Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
+Session 10 — Sync fix, duplicate SC cleanup, Phase G+H shipped.
 
-**Critical fix: sync-sc-status cross-spec ID collision**
-- Root cause: sync tracked SCs by bare ID, so PASS from one spec flipped same ID in different spec
-- Fix: scoped keys (specFile::id), duplicate detection with warnings
-- Renumbered 14 duplicate SCs across DA-COMPLIANCE, INSTRUCTION-COMPLIANCE, SESSION-AUDIT
-- Added SD-4 test to prevent future duplicate SC IDs
-- Added cross-spec isolation test
-
-**Test suite: 1,120 pass, 0 fail across 60 files**
-
-**SCs confirmed passing:** SC-379 (matcher-registry.json), SC-348 (templates/), SC-349 (_shared.md)
-
-**Sprint priorities (AFK):**
-- P0: #553 create-sc CLI (Phase G)
-- P0: #554 Wire create-spec SC validation
-- P0: #571 Consumer extension
-- P0: #556 audit-specs CLI (Phase H)
-- P0: #557 Migrate all specs to strict
+Shipped 5 issues: #553 create-sc, #554 create-spec validation, #556 audit-specs, #557 strict migration, #571 consumer extension.
+Harness fixes: sync scoped keys, SD-4 duplicate test, stale verdict fix, 14 SCs renumbered.
+Suite: 1181 pass, 0 fail, 63 files. 21/56 SCs done.
 
 **Next priorities:**
 1. P0: #553 create-sc CLI — Phase G (SC-396, SC-397, SC-399)
 2. P0: #554 Wire create-spec SC validation (SC-382)
-3. P0: #571 Consumer extension (SC-384, SC-395)
+3. DONE: #571 Consumer extension (SC-384, SC-395)
 4. P0: #556 audit-specs CLI (SC-383, SC-393) — Phase H
 5. P0: #557 Migrate all specs to strict (SC-394, SC-398, SC-331) — includes 5 skipped matcher tests
 6. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (council approved)
@@ -52,7 +38,7 @@ Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 | ✅ | SC-379 | matcher-registry.json config with all 19 patterns |
 | ⬜ | SC-380 | matchPattern() reads from config, no hardcoded branches |
 | ⬜ | SC-381 | SPEC-TEMPLATE auto-generated from config |
-| ⬜ | SC-384 | Consumer custom matcher extension |
+| ✅ | SC-384 | Consumer custom matcher extension |
 
 ## ✅ Config-Driven Testing — Phase G: Structured SC Authoring (#553-#554) (COMPLETE)
 
@@ -63,14 +49,14 @@ Session 10 — Sync-SC-Status hardening + duplicate SC cleanup.
 | ✅ | SC-397 | create-sc --list shows all patterns |
 | ✅ | SC-399 | AGENTS.md Commands table includes create-sc |
 
-## 🔄 Config-Driven Testing — Phase H: Legacy Migration (#556-#557) (IN PROGRESS)
+## ✅ Config-Driven Testing — Phase H: Legacy Migration (#556-#557) (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-383 | audit-specs classifies all SCs |
 | ✅ | SC-393 | audit-specs --fix auto-rewrites unmatched SCs |
 | ✅ | SC-394 | Scaffold runs audit-specs post-generation |
-| ⬜ | SC-395 | Consumers get identical create-spec validation |
+| ✅ | SC-395 | Consumers get identical create-spec validation |
 | ✅ | SC-398 | All RunGate specs at compliance: strict |
 
 ## 🔄 Brief Compliance (#558) (IN PROGRESS)
