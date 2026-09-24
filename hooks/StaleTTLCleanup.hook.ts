@@ -141,6 +141,25 @@ try {
   log(`WORKTREE cleanup error: ${e}`)
 }
 
+// Clean stale remote branches (older than 7 days with no open PR)
+try {
+  const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts')
+  const projectRoot = process.cwd()
+  const result = cleanupStaleBranches({ projectRoot, maxAgeDays: 7 })
+  if (result.deleted.length) {
+    deletedCount += result.deleted.length
+    log(`BRANCH cleanup [${projectRoot}]: deleted ${result.deleted.length} stale remote branches: ${result.deleted.join(', ')}`)
+  }
+  if (result.skipped.length) {
+    log(`BRANCH cleanup [${projectRoot}]: skipped ${result.skipped.length} branches (open PRs): ${result.skipped.join(', ')}`)
+  }
+  if (result.errors.length) {
+    log(`BRANCH cleanup [${projectRoot}]: ${result.errors.length} errors: ${result.errors.join('; ')}`)
+  }
+} catch (e) {
+  log(`BRANCH cleanup error: ${e}`)
+}
+
 if (deletedCount > 0) {
   console.log(`Stale TTL cleanup: removed ${deletedCount} files older than 4h`);
 } else {
