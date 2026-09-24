@@ -85,7 +85,7 @@ Suite: 1253 pass, 0 fail, 63 files. 33/56 SCs passing in conformity (8 more read
 |---|---|---|
 | ✅ | SC-348 | Templates in templates/agent-briefs/ |
 | ✅ | SC-349 | Shared rules in _shared.md |
-| ⬜ | SC-350 | Scaffold reads template files |
+| ✅ | SC-350 | Scaffold reads template files |
 | ⬜ | SC-351 | All 8 required sections present |
 | ✅ | SC-352 | All briefs model: sonnet |
 | ✅ | SC-353 | Briefs under 120 lines each |

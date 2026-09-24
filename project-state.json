@@ -212,7 +212,7 @@
         {
           "id": "SC-350",
           "what": "Scaffold reads template files",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-351",
