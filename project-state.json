@@ -1,13 +1,11 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P0: Observability Phase 0 — validate scorer on 5 historical transcripts (needs Jason)",
-    "P1: #561 Brief compliance gate (SC-407–SC-409) — needs Jason for standard task definitions",
-    "P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance",
-    "P1: Enhance SubagentStop hook — run full audit-transcript.ts, not just verdict capture",
-    "P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)",
-    "P2: Agent Brief Templates — SC-351, SC-354, SC-357 still open",
-    "P2: #582 Agent Teams — evaluate for council and parallel coordination"
+    "P1: Test feedback loop end-to-end — ship a real issue through ship-and-heal with auto-grading",
+    "P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)",
+    "P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)",
+    "P2: #582 Agent Teams — evaluate for council and parallel coordination",
+    "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
   ],
   "notes": "Session 11 — Feedback loop closed, AFK items shipped.\n\nShipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,\nPostCompact hook. Closed 13 issues. Created #577-#583.\nSuite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.\nPriorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.",
   "antipatterns": [
@@ -151,7 +149,7 @@
         {
           "id": "SC-402",
           "what": "Transcript checker: FOLLOWED/IGNORED per directive",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-403",
@@ -176,12 +174,12 @@
         {
           "id": "SC-407",
           "what": "Compliance pre-flight gate in ship workflow",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-408",
           "what": "Standard tasks per role defined in config",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-409",
@@ -437,5 +435,13 @@
         "AGENT-BRIEF-TEMPLATE-SPEC written (externalize templates from TypeScript)"
       ]
     }
-  ]
+  ],
+  "session": {
+    "number": 12,
+    "date": "2026-09-24",
+    "summary": "Closed observability feedback loop. Phase 0 scorer validated, Phase 1 deterministic grading shipped, Phase 2 auto-heal wired. Merged eval modules, shipped TaskCompleted hook, brief compliance gate, brief template tests, post-fix verification, SubagentStop enhancement.",
+    "suite": "1316 pass, 0 fail, 69 files",
+    "scs_done": "39/56",
+    "commits": 16
+  }
 }

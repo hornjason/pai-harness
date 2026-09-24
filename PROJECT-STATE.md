@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Brief Compliance (#558) — 4 SCs open**
+**Current phase: Brief Compliance (#558) — 1 SCs open**
 
 Session 11 — Feedback loop closed, AFK items shipped.
 
@@ -10,13 +10,11 @@ Suite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.
 Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.
 
 **Next priorities:**
-1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (needs Jason)
-2. P1: #561 Brief compliance gate (SC-407–SC-409) — needs Jason for standard task definitions
-3. P1: Ship-and-heal post-fix verification — mechanically check generator was fixed, not just instance
-4. P1: Enhance SubagentStop hook — run full audit-transcript.ts, not just verdict capture
-5. P2: Observability Phase 1 — lib/grade-agents.ts, deterministic grading (14 SCs)
-6. P2: Agent Brief Templates — SC-351, SC-354, SC-357 still open
-7. P2: #582 Agent Teams — evaluate for council and parallel coordination
+1. P1: Test feedback loop end-to-end — ship a real issue through ship-and-heal with auto-grading
+2. P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)
+3. P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)
+4. P2: #582 Agent Teams — evaluate for council and parallel coordination
+5. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -63,13 +61,13 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 |---|---|---|
 | ✅ | SC-400 | test-brief CLI: isolated worktree compliance test |
 | ✅ | SC-401 | Directive extractor parses brief mechanically |
-| ⬜ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
+| ✅ | SC-402 | Transcript checker: FOLLOWED/IGNORED per directive |
 | ⬜ | SC-403 | Cross-reference report: brief position + RepoRails + transcript |
 | ✅ | SC-404 | Hill climb mode: 5 iterations max |
 | ✅ | SC-405 | All 6 briefs score ≥80% before shipping |
 | ✅ | SC-406 | briefedAgent() parses Context section → explicit Read steps |
-| ⬜ | SC-407 | Compliance pre-flight gate in ship workflow |
-| ⬜ | SC-408 | Standard tasks per role defined in config |
+| ✅ | SC-407 | Compliance pre-flight gate in ship workflow |
+| ✅ | SC-408 | Standard tasks per role defined in config |
 | ✅ | SC-409 | Behavioral canary: read ≠ followed verification |
 
 ## ✅ Agent Brief Templates (COMPLETE)

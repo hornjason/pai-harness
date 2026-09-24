@@ -49,8 +49,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [ ] SC-370: Every hook file traces to at least one SC in a testable spec (behavioral)
 - [ ] SC-371: No hook file exceeds 150 lines (behavioral)
 - [ ] SC-372: Hook logic in lib/ has unit tests independent of hook trigger mechanism (behavioral)
-- [ ] SC-391: Hook registrations in settings.json contain hookFor and command fields (behavioral)
-- [ ] SC-392: Hook activation controlled by config enabled field (behavioral)
+- [x] SC-391: Hook registrations in settings.json contain hookFor and command fields (behavioral)
+- [x] SC-392: Hook activation controlled by config enabled field (behavioral)
 
 ## Implementation
 
