@@ -535,6 +535,42 @@ Merge prior implementation branch:
   }
 } catch (e) { log(`Prior-branch detection skipped: ${e?.message || 'no prior branch'}`) }
 
+// ── Brief compliance pre-flight (SC-407) ───────────────────
+// Quick sanity check: do agent briefs have extractable directives?
+// NOT the full test-brief (which spawns agents) — just directive count.
+// Warns but doesn't block if briefs score low.
+try {
+  log('Brief pre-flight: checking agent briefs for directive compliance')
+  const roles = ['marcus', 'quinn']
+  const preflightCmd = `
+    bun -e "
+      import {readFileSync,writeFileSync} from 'fs';
+      import {extractDirectives} from '${HARNESS_ROOT}/lib/directive-extractor.ts';
+      const results = {};
+      const roles = ['marcus', 'quinn'];
+      for (const role of roles) {
+        try {
+          const briefPath = '${PROJECT_ROOT}/.claude/agents/' + role + '.md';
+          const content = readFileSync(briefPath, 'utf-8');
+          const directives = extractDirectives(content);
+          results[role] = {count: directives.length};
+          console.log('Brief pre-flight: ' + role + ' has ' + directives.length + ' directives');
+          if (directives.length === 0) {
+            console.log('⚠️  WARNING: ' + role + ' has 0 extractable directives');
+          }
+        } catch(e) {
+          results[role] = {count: 0, error: e.message};
+          console.log('⚠️  Brief pre-flight FAILED for ' + role + ': ' + e.message);
+        }
+      }
+      writeFileSync('${WORK_DIR}/brief-preflight.json', JSON.stringify(results, null, 2));
+    "
+  `
+  await agent(preflightCmd.trim(), { label: 'brief-preflight', phase: 'Implement' })
+} catch (e) {
+  log(`Brief pre-flight skipped: ${e?.message || 'unknown error'}`)
+}
+
 // ════════════════════════════════════════════════════════════
 // PHASE 4: IMPLEMENT (Marcus writes code — NO commit)
 // ════════════════════════════════════════════════════════════
