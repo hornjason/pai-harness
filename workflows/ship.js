@@ -947,16 +947,26 @@ If merge conflicts, report them — do NOT force.
 // Uses deterministic evaluation via evaluateCriteria() instead of LLM grading.
 let gradeResult = null
 if (!SKIP_GRADE) {
-  const gradeOutput = await bash(`bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts ${WORK_DIR}`, { label: 'grade', phase: 'Verify' })
-  try {
-    // Parse JSON output from the script
-    const jsonMatch = gradeOutput.match(/\{[\s\S]*"grades"[\s\S]*\}/)
-    if (jsonMatch) {
-      gradeResult = JSON.parse(jsonMatch[0])
-    }
-  } catch (err) {
-    log(`GRADE: failed to parse output — ${err.message}`)
-  }
+  gradeResult = await agent(`
+Run deterministic grading:
+bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts ${WORK_DIR}
+Parse the JSON output and return it.
+  `, { label: 'grade', phase: 'Verify', schema: {
+    type: 'object',
+    properties: {
+      grades: { type: 'array', items: {
+        type: 'object',
+        properties: {
+          role: { type: 'string' },
+          total: { type: 'number' },
+          followed: { type: 'number' },
+          flagged: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['role', 'total', 'followed']
+      }}
+    },
+    required: ['grades']
+  })
 
   if (gradeResult?.grades) {
     for (const g of gradeResult.grades) {
