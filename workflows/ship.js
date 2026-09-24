@@ -1095,6 +1095,36 @@ Report the result.
   `, { label: 'worktree-cleanup', phase: 'Prove' })
 } catch (e) { log(`Worktree cleanup skipped`) }
 
+// ── Stale issue scanner (post-ship) ─────────────────────
+try {
+  const staleResult = await agent(`
+Scan for stale issues — open GitHub issues whose work is already complete.
+
+1. Run: cd ${HARNESS_ROOT} && bun scripts/update-project-state.ts --skip-tests
+2. Read ${HARNESS_ROOT}/project-state.json
+3. Find phases where ALL SCs have "done": true
+4. Extract issue numbers from phase names (e.g., "#558" from "Brief Compliance (#558)")
+5. For each extracted issue number, check if it's still open:
+   gh issue view {number} --repo ${ISSUE_REPO} --json state --jq .state
+6. If open, close it:
+   gh issue close {number} --repo ${ISSUE_REPO} --comment "Auto-closed: all SCs in phase are done."
+
+Report how many stale issues were found and closed. If none found, report "0 stale issues."
+Do NOT close issue #${ISSUE} — that's handled by the prove step above.
+  `, { label: 'stale-issue-scan', phase: 'Prove', schema: {
+    type: 'object',
+    properties: {
+      scanned: { type: 'number' },
+      staleFound: { type: 'number' },
+      closed: { type: 'array', items: { type: 'number' } },
+    },
+    required: ['scanned', 'staleFound'],
+  }})
+  if (staleResult?.staleFound > 0) {
+    log(`Stale issue scan: closed ${staleResult.staleFound} orphaned issues: ${(staleResult.closed || []).join(', ')}`)
+  }
+} catch (e) { log(`Stale issue scan skipped`) }
+
 return {
   status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN' : 'SHIP_PASSED_PROVE_FAILED',
   issue: ISSUE, slug: SLUG,
