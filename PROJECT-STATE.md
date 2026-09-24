@@ -10,11 +10,14 @@ Suite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.
 Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.
 
 **Next priorities:**
-1. P1: Test feedback loop end-to-end — ship a real issue through ship-and-heal with auto-grading
-2. P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)
+1. P0: Ship a real issue through ship-and-heal to validate grading scores in production (not just healing)
+2. P1: Observability Phase 3 — gates/prompt-health.ts static lint for file refs and hardcoded paths (SC-446–448)
 3. P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)
-4. P2: #582 Agent Teams — evaluate for council and parallel coordination
-5. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+4. P1: Fix PROJECT-STATE.md narrative generation — update script doesn't rewrite session summary
+5. P2: #584 Behavioral SC cache — map transcript results to SC verification (54 behavioral SCs)
+6. P2: #582 Agent Teams — evaluate for council and parallel coordination
+7. P2: M-05 criterion tuning — 'read prompts/' fails on every agent, may be outdated
+8. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

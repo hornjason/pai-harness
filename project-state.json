@@ -1,10 +1,13 @@
 {
   "updated": "2026-09-24",
   "priorities": [
-    "P1: Test feedback loop end-to-end — ship a real issue through ship-and-heal with auto-grading",
-    "P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)",
+    "P0: Ship a real issue through ship-and-heal to validate grading scores in production (not just healing)",
+    "P1: Observability Phase 3 — gates/prompt-health.ts static lint for file refs and hardcoded paths (SC-446–448)",
     "P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)",
+    "P1: Fix PROJECT-STATE.md narrative generation — update script doesn't rewrite session summary",
+    "P2: #584 Behavioral SC cache — map transcript results to SC verification (54 behavioral SCs)",
     "P2: #582 Agent Teams — evaluate for council and parallel coordination",
+    "P2: M-05 criterion tuning — 'read prompts/' fails on every agent, may be outdated",
     "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
   ],
   "notes": "Session 11 — Feedback loop closed, AFK items shipped.\n\nShipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,\nPostCompact hook. Closed 13 issues. Created #577-#583.\nSuite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.\nPriorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.",
