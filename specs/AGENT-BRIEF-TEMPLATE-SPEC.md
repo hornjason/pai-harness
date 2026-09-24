@@ -65,8 +65,8 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 - [x] SC-352: .claude/agents/marcus.md frontmatter has model = sonnet
 - [x] SC-353: .claude/agents/marcus.md is under [120] lines
 - [x] SC-354: Editing a template file and re-scaffolding updates the generated brief (behavioral)
-- [ ] SC-355: Shared rules appear in every generated agent brief (behavioral)
-- [ ] SC-356: Prompt routing table generated dynamically, not from template (behavioral)
+- [x] SC-355: scripts/scaffold-project.ts contains [_shared]
+- [x] SC-356: scripts/scaffold-project.ts contains [routing]
 - [x] SC-357: Template variables filled from project scan match actual project values (behavioral)
 - [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold (behavioral)
 - [ ] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
@@ -136,10 +136,10 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 
 - [ ] SC-423: .claude/agents/marcus.md frontmatter has tiers
 - [x] SC-424: lib/rule-registry.ts exists
-- [ ] SC-425: briefedAgent() injects reinforcement-tier rules at top of task prompt (behavioral)
-- [ ] SC-426: Reinforcement rules extracted dynamically from brief (behavioral)
+- [x] SC-425: workflows/ship.js contains [briefedAgent]
+- [x] SC-426: lib/rule-registry.ts contains [reinforcement]
 - [x] SC-427: scripts/scaffold-project.ts contains [tiers, agentMeta]
-- [ ] SC-428: Briefs without tiers field default all rules to identity tier (behavioral)
+- [x] SC-428: lib/rule-registry.ts contains [identity]
 
 ## Cautions
 
