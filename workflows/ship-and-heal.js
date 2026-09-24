@@ -4,6 +4,7 @@ export const meta = {
   whenToUse: 'Ship an issue with automatic failure recovery. Falls back to human on unfixable errors.',
   phases: [
     { title: 'Ship', detail: 'Run ship workflow' },
+    { title: 'Heal', detail: 'Auto-improve low-compliance agent briefs' },
     { title: 'RCA', detail: 'Analyze failure root cause' },
     { title: 'Fix', detail: 'Implement fix for root cause' },
     { title: 'Re-Verify', detail: 'Verify fix passes tests and gates' },
@@ -45,6 +46,10 @@ const VERIFY_SCHEMA = {
   },
   required: ['testsPass', 'summary'],
 }
+
+// Compliance thresholds
+const COMPLIANCE_LOW = 50  // Agents scoring below this need improvement
+const MAX_HEAL_SPAWNS = 4  // Total spawn cap per council decision D-6
 
 let parsedArgs = args || {}
 if (typeof parsedArgs === 'string') {
@@ -133,10 +138,234 @@ if (isSuccess) {
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 2: RCA — analyze why ship failed
+// PHASE 2: HEAL — auto-improve low-compliance agent briefs
+// ════════════════════════════════════════════════════════════
+
+phase('Heal')
+
+let workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
+let gradeResult = null
+
+// Check for compliance-grade.json
+const gradeFilePath = workDir ? `${workDir}/compliance-grade.json` : null
+let complianceGrade = null
+
+if (gradeFilePath) {
+  try {
+    const gradeData = await agent(`
+Read ${gradeFilePath} and return the parsed JSON content.
+If the file doesn't exist, return null.
+`, { label: 'read-grade', schema: {
+      type: 'object',
+      properties: {
+        grades: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              role: { type: 'string' },
+              total: { type: 'number' },
+              followed: { type: 'number' },
+              flagged: { type: 'array', items: { type: 'string' } },
+            },
+          },
+        },
+      },
+    }})
+    complianceGrade = gradeData
+  } catch (err) {
+    log(`No compliance grade found at ${gradeFilePath}`)
+  }
+}
+
+// Check for low-compliance agents
+let lowComplianceAgents = []
+if (complianceGrade && complianceGrade.grades) {
+  for (const grade of complianceGrade.grades) {
+    const score = grade.total > 0 ? Math.round((grade.followed / grade.total) * 100) : 0
+    if (score < COMPLIANCE_LOW) {
+      lowComplianceAgents.push({
+        role: grade.role,
+        score,
+        total: grade.total,
+        followed: grade.followed,
+        flagged: grade.flagged || [],
+      })
+    }
+  }
+}
+
+if (lowComplianceAgents.length > 0) {
+  log(`Found ${lowComplianceAgents.length} agent(s) with compliance < ${COMPLIANCE_LOW}%`)
+
+  // For each low-compliance agent, attempt ONE heal iteration
+  let healAttempted = false
+  let healImproved = false
+
+  for (const agentGrade of lowComplianceAgents) {
+    if (healAttempted) {
+      log(`Already attempted heal — skipping additional agents per D-6 (max 1 iteration)`)
+      break
+    }
+
+    log(`Attempting heal for ${agentGrade.role} (score: ${agentGrade.score}%)`)
+
+    // Spawn agent to improve the brief template
+    const healResult = await agent(`
+You are improving agent brief quality based on compliance audit results.
+
+## Low-Compliance Agent
+- Role: ${agentGrade.role}
+- Score: ${agentGrade.score}% (${agentGrade.followed}/${agentGrade.total} rules followed)
+- Ignored criteria: ${agentGrade.flagged.join('; ') || 'none flagged'}
+
+## Your Task
+1. Read templates/agent-briefs/${agentGrade.role}.md if it exists
+2. Identify which directives correspond to the ignored criteria
+3. Strengthen those directives — make them more explicit, add examples, move to top
+4. Update the template file with Edit tool
+5. Do NOT modify scaffold-project.ts or workflow files
+6. Report which directives you strengthened
+
+## Constraints (Council Decision D-6)
+- This is ONE heal iteration only
+- Modify the TEMPLATE, not the generated brief
+- Focus on the flagged criteria only
+- Keep changes minimal and targeted
+
+Be specific about what you changed.
+`, { label: 'heal-brief', phase: 'Heal', schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        templateModified: { type: 'string' },
+        changesDescription: { type: 'string' },
+      },
+      required: ['success'],
+    }})
+
+    if (healResult?.success) {
+      log(`Brief template healed: ${healResult.changesDescription || 'changes applied'}`)
+
+      // Re-scaffold to propagate the brief change
+      log('Re-scaffolding to propagate brief changes')
+      await agent(`
+Run the scaffold to propagate the updated brief template.
+
+1. cd ${PROJECT_ROOT}
+2. Run: bun ${HARNESS_ROOT}/scripts/scaffold-project.ts ${PROJECT_ROOT}
+3. Report success/failure
+`, { label: 'rescaffold', phase: 'Heal' })
+
+      // Re-run ship workflow ONCE
+      log('Re-running ship with improved brief')
+      let shipResult2 = null
+      try {
+        shipResult2 = await workflow(
+          { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
+          { ...parsedArgs }
+        )
+      } catch (nestingError) {
+        if (String(nestingError).includes('nesting')) {
+          log('Workflow nesting limit hit — skipping re-ship')
+        } else {
+          throw nestingError
+        }
+      }
+
+      // Grade again
+      if (shipResult2 && workDir) {
+        log('Grading healed run')
+        await agent(`
+Run the compliance grader on the healed ship run:
+
+cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts ${workDir}
+
+Report the new scores.
+`, { label: 'grade-healed', phase: 'Heal' })
+
+        // Read new grade
+        try {
+          const gradeData2 = await agent(`
+Read ${gradeFilePath} and return the parsed JSON content.
+`, { label: 'read-grade-2', schema: {
+            type: 'object',
+            properties: {
+              grades: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    role: { type: 'string' },
+                    total: { type: 'number' },
+                    followed: { type: 'number' },
+                  },
+                },
+              },
+            },
+          }})
+
+          const afterGrade = gradeData2?.grades?.find(g => g.role === agentGrade.role)
+          const afterScore = afterGrade && afterGrade.total > 0
+            ? Math.round((afterGrade.followed / afterGrade.total) * 100)
+            : 0
+
+          gradeResult = {
+            role: agentGrade.role,
+            before: agentGrade.score,
+            after: afterScore,
+            improved: afterScore > agentGrade.score,
+          }
+
+          log(`Heal result: ${agentGrade.role} ${agentGrade.score}% → ${afterScore}%`)
+
+          if (afterScore > agentGrade.score) {
+            healImproved = true
+
+            // Check if second ship succeeded
+            const status2 = shipResult2?.status || 'UNKNOWN'
+            const isSuccess2 = !FAILURE_STATUSES.includes(status2) && shipResult2?.success !== false
+
+            if (isSuccess2) {
+              return {
+                status: 'HEALED',
+                issue: ISSUE,
+                shipResult: shipResult2,
+                gradeResult,
+                healed: true,
+              }
+            }
+          }
+        } catch (err) {
+          log(`Failed to read healed grade: ${err}`)
+        }
+      }
+
+      healAttempted = true
+    } else {
+      log(`Heal failed: ${healResult?.changesDescription || 'unknown error'}`)
+      healAttempted = true
+    }
+  }
+
+  // If heal was attempted but didn't improve or ship still failed, fall through to RCA
+  if (healAttempted && !healImproved) {
+    log(`Heal attempted but did not improve compliance — falling through to RCA`)
+  }
+} else {
+  log(`No low-compliance agents found (threshold: ${COMPLIANCE_LOW}%)`)
+}
+
+// ════════════════════════════════════════════════════════════
+// PHASE 3: RCA — analyze why ship failed
 // ════════════════════════════════════════════════════════════
 
 phase('RCA')
+
+// Update workDir in case it wasn't set earlier
+if (!workDir) {
+  workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
+}
 
 const failures = shipResult?.failures || shipResult?.detail?.failures || []
 const failureText = Array.isArray(failures) ? failures.join('\n') : String(failures)
@@ -178,6 +407,7 @@ if (!rca || !rca.fixable) {
     issue: ISSUE,
     shipResult,
     rca,
+    gradeResult,
     healed: false,
   }
 }
@@ -185,7 +415,7 @@ if (!rca || !rca.fixable) {
 log(`RCA: ${rca.failureClass} — ${rca.rootCause}`)
 
 // ════════════════════════════════════════════════════════════
-// PHASE 3: FIX — apply the fix
+// PHASE 4: FIX — apply the fix
 // ════════════════════════════════════════════════════════════
 
 phase('Fix')
@@ -225,6 +455,7 @@ if (!fix?.success) {
     shipResult,
     rca,
     fix,
+    gradeResult,
     healed: false,
   }
 }
@@ -232,7 +463,7 @@ if (!fix?.success) {
 log(`Fix applied: ${fix.summary}`)
 
 // ════════════════════════════════════════════════════════════
-// PHASE 4: RE-VERIFY — lightweight check that fix works
+// PHASE 5: RE-VERIFY — lightweight check that fix works
 // Uses agent() not workflow() to avoid nesting limitation
 // ════════════════════════════════════════════════════════════
 
@@ -269,5 +500,6 @@ return {
   rca,
   fix,
   verify,
+  gradeResult,
   healed,
 }
