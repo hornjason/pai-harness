@@ -966,7 +966,7 @@ Parse the JSON output and return it.
       }}
     },
     required: ['grades']
-  })
+  }})
 
   if (gradeResult?.grades) {
     for (const g of gradeResult.grades) {
