@@ -9,7 +9,7 @@
     "P2: Agent Brief Templates — SC-351, SC-354, SC-357 still open",
     "P2: #582 Agent Teams — evaluate for council and parallel coordination"
   ],
-  "notes": "Session 11 — AFK review + feedback loop closure + AFK execution.\n\nShipped: Option B (conformity auto-flip), SC reclassification (10 behavioral→matchable),\nmechanical stale issue scanner, closed #565 worktree bug + #577 SubagentStop + #578 PostCompact.\nBoth hooks already existed from prior AFK. 12 SCs auto-flipped total.\nSuite: 1209 pass, 0 fail, 65 files. Remaining priorities need Jason.",
+  "notes": "Session 11 — Feedback loop closed, AFK items shipped.\n\nShipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,\nPostCompact hook. Closed 13 issues. Created #577-#583.\nSuite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.\nPriorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",

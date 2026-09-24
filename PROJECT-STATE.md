@@ -2,12 +2,12 @@
 
 **Current phase: Brief Compliance (#558) — 4 SCs open**
 
-Session 11 — AFK review + feedback loop closure + AFK execution.
+Session 11 — Feedback loop closed, AFK items shipped.
 
-Shipped: Option B (conformity auto-flip), SC reclassification (10 behavioral→matchable),
-mechanical stale issue scanner, closed #565 worktree bug + #577 SubagentStop + #578 PostCompact.
-Both hooks already existed from prior AFK. 12 SCs auto-flipped total.
-Suite: 1209 pass, 0 fail, 65 files. Remaining priorities need Jason.
+Shipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,
+PostCompact hook. Closed 13 issues. Created #577-#583.
+Suite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.
+Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.
 
 **Next priorities:**
 1. P0: Observability Phase 0 — validate scorer on 5 historical transcripts (needs Jason)
