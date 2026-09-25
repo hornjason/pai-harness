@@ -194,6 +194,7 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
       env: {
         ...process.env,
         CLAUDE_TRANSCRIPT_DIR: transcriptPath,
+        CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0",
       },
     },
   );
