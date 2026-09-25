@@ -181,7 +181,7 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
     "claude",
     [
       "--print",
-      "--output-format", "json",
+      "--output-format", "stream-json",
       "--agent-type", agentRole,
       agentTask,
     ],
