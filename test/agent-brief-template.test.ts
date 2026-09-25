@@ -115,6 +115,67 @@ describe("Agent Brief Template Tests", () => {
     });
   });
 
+  describe("AC-4: agentMeta read from roles config, not hardcoded", () => {
+    test("scaffold-project.ts reads agentMeta from roles config", () => {
+      const scaffoldSrc = readFileSync(join(import.meta.dir, "..", "scripts", "scaffold-project.ts"), "utf-8");
+      // Should read from harness roles config, not just use a hardcoded literal
+      expect(scaffoldSrc).toMatch(/harness\?\.roles|roles.*config|getAgentMeta/);
+    });
+
+    test("rungate.json roles have description, tools, and model fields", () => {
+      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      const roles = config.roles || {};
+      for (const [name, role] of Object.entries(roles) as [string, any][]) {
+        expect(role.description).toBeTruthy();
+        expect(role.tools).toBeTruthy();
+        expect(role.model).toBeTruthy();
+      }
+    });
+  });
+
+  describe("AC-5: Existing briefs produce identical output after agentMeta migration", () => {
+    const agents = ["marcus", "quinn", "rook", "serena", "aditi", "discovery"];
+
+    test("all 6 generated briefs contain correct frontmatter from config", () => {
+      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+
+      for (const agent of agents) {
+        const briefPath = join(OUTPUT, ".claude/agents", `${agent}.md`);
+        if (!existsSync(briefPath)) continue;
+        const content = readFileSync(briefPath, "utf-8");
+        const roleConfig = config.roles?.[agent];
+        if (roleConfig?.description) {
+          expect(content).toContain(`description: ${roleConfig.description}`);
+        }
+      }
+    });
+
+    test("generated briefs have 0 fail diff lines against expected frontmatter", () => {
+      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      let failDiffs = 0;
+
+      for (const agent of agents) {
+        const briefPath = join(OUTPUT, ".claude/agents", `${agent}.md`);
+        if (!existsSync(briefPath)) continue;
+        const content = readFileSync(briefPath, "utf-8");
+        const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+        if (!fmMatch) { failDiffs++; continue; }
+        const fm = fmMatch[1];
+        const roleConfig = config.roles?.[agent];
+        if (!roleConfig) continue;
+
+        // Verify key fields match
+        if (roleConfig.description && !fm.includes(`description: ${roleConfig.description}`)) failDiffs++;
+        if (roleConfig.tools && !fm.includes(`tools: ${roleConfig.tools}`)) failDiffs++;
+        if (roleConfig.model && !fm.includes(`model: ${roleConfig.model}`)) failDiffs++;
+      }
+      expect(failDiffs).toBe(0);
+    });
+  });
+
   describe("SC-354: Editing template and re-scaffolding updates brief", () => {
     test("modify template, re-scaffold, verify update appears", () => {
       const templatePath = join(TEMPLATES_DIR, "marcus.md");

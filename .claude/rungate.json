@@ -9,32 +9,74 @@
   "roles": {
     "discovery": {
       "brief": ".claude/agents/discovery.md",
-      "standardTask": "Scan the codebase and identify all specs, their SCs, and current test coverage"
+      "standardTask": "Scan the codebase and identify all specs, their SCs, and current test coverage",
+      "description": "Discovery agent — reads issue, sizes work, writes ACs with evidence methods",
+      "tools": "[Bash, Read]",
+      "model": "sonnet",
+      "tiers": {
+        "reinforcement": [
+          "Discovery Rules"
+        ]
+      }
     },
     "marcus": {
       "brief": ".claude/agents/marcus.md",
       "isolation": "worktree",
-      "standardTask": "Add config/test.json with {name: test} and write a unit test for it"
+      "standardTask": "Add config/test.json with {name: test} and write a unit test for it",
+      "description": "Principal engineer — implements code changes with TDD, writes tests, commits",
+      "tools": "[Bash, Read, Write, Edit]",
+      "model": "sonnet",
+      "tiers": {
+        "reinforcement": [
+          "Testing Rules"
+        ],
+        "mechanical": [
+          "Workflow"
+        ]
+      }
     },
     "quinn": {
       "brief": ".claude/agents/quinn.md",
       "isolation": "worktree",
-      "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence"
+      "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence",
+      "description": "QA engineer — tests as a brand-new user using Playwright MCP tools",
+      "tools": "[Bash, Read, mcp__playwright__*]",
+      "model": "sonnet",
+      "tiers": {
+        "reinforcement": [
+          "Project Type Detection",
+          "CLI Testing Mode"
+        ]
+      }
     },
     "rook": {
       "brief": ".claude/agents/rook.md",
       "isolation": "worktree",
-      "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection"
+      "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection",
+      "description": "Security engineer — scans changed files for vulnerabilities",
+      "tools": "[Bash, Read]",
+      "model": "sonnet"
     },
     "serena": {
       "brief": ".claude/agents/serena.md",
       "isolation": "worktree",
-      "standardTask": "Review the scaffold-project.ts architecture and propose decomposition into modules"
+      "standardTask": "Review the scaffold-project.ts architecture and propose decomposition into modules",
+      "description": "Software architect — structural decisions, ADRs, module boundary review",
+      "tools": "[Bash, Read]",
+      "model": "sonnet"
     },
     "aditi": {
       "brief": ".claude/agents/aditi.md",
       "isolation": "worktree",
-      "standardTask": "Design the CLI output format for test-brief compliance report with accessibility"
+      "standardTask": "Design the CLI output format for test-brief compliance report with accessibility",
+      "description": "UX/UI designer — component specs, visual review, accessibility",
+      "tools": "[Bash, Read]",
+      "model": "sonnet",
+      "tiers": {
+        "reinforcement": [
+          "Project Type Detection"
+        ]
+      }
     }
   },
   "consumers": [],
