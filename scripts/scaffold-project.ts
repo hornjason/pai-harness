@@ -930,8 +930,8 @@ function generateAgentBriefs(root: string): void {
   // Strip frontmatter from partials (hooks may auto-add it)
   sharedRules = sharedRules.replace(/^---[\s\S]*?---\n*/, "");
 
-  // Agent metadata for frontmatter generation (hooks may overwrite template frontmatter)
-  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
+  // Agent metadata for frontmatter generation — read from roles config, fall back to defaults
+  const defaultAgentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
     discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
     marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
     quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
@@ -939,6 +939,23 @@ function generateAgentBriefs(root: string): void {
     serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
     aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
   };
+
+  // Build agentMeta by merging roles config from harness?.roles with defaults
+  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = { ...defaultAgentMeta };
+  if (harness?.roles) {
+    for (const [roleName, roleConfig] of Object.entries(harness.roles as Record<string, any>)) {
+      if (roleConfig.description || roleConfig.tools || roleConfig.model) {
+        agentMeta[roleName] = {
+          description: roleConfig.description || defaultAgentMeta[roleName]?.description || `${roleName} agent`,
+          tools: roleConfig.tools || defaultAgentMeta[roleName]?.tools || "[Bash, Read]",
+          model: roleConfig.model || defaultAgentMeta[roleName]?.model || "sonnet",
+          ...(roleConfig.tiers || defaultAgentMeta[roleName]?.tiers
+            ? { tiers: roleConfig.tiers || defaultAgentMeta[roleName]?.tiers }
+            : {}),
+        };
+      }
+    }
+  }
 
   // Load template-based briefs from templates/agent-briefs/
   function loadBriefTemplate(name: string): string | null {

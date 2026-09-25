@@ -33,6 +33,18 @@ const ResearchToolSchema = z.object({
   type: z.enum(["mcp", "cli", "api"]).optional(),
 });
 
+const RoleSchema = z.object({
+  brief: z.string(),
+  isolation: z.string().optional(),
+  standardTask: z.string(),
+  description: z.string().optional(),
+  tools: z.string().optional(),
+  model: z.string().optional(),
+  tiers: z.record(z.array(z.string())).optional(),
+});
+
+export type RoleConfig = z.infer<typeof RoleSchema>;
+
 const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
@@ -47,6 +59,7 @@ const ProjectHarnessSchema = z.object({
   contextDocs: z.record(z.string().nullable()).optional(),
   mcp: z.array(McpServerSchema).optional(),
   research: z.array(ResearchToolSchema).optional(),
+  roles: z.record(RoleSchema).optional(),
   schemaVersion: z.number().default(1),
 });
 
