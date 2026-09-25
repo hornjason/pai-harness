@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-24",
+  "updated": "2026-09-25",
   "priorities": [
     "P0: Ship a real issue through ship-and-heal to validate grading scores in production (not just healing)",
     "P1: Observability Phase 3 — gates/prompt-health.ts static lint for file refs and hardcoded paths (SC-446–448)",
@@ -10,7 +10,7 @@
     "P2: M-05 criterion tuning — 'read prompts/' fails on every agent, may be outdated",
     "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
   ],
-  "notes": "Session 11 — Feedback loop closed, AFK items shipped.\n\nShipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,\nPostCompact hook. Closed 13 issues. Created #577-#583.\nSuite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.\nPriorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.",
+  "notes": "Session 11 — Feedback loop closed, AFK items shipped.\n\nShipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,\nPostCompact hook. Closed 13 issues. Created #577-#583.\nSuite: 1264 pass, 0 fail, 65 files. 35/56 SCs done.\nPriorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.",
   "antipatterns": [
     "Do NOT write hand-wired phase tests — use conformity engine",
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",

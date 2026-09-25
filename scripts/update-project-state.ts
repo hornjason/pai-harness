@@ -126,6 +126,17 @@ for (const phase of state.phases) {
   }
 }
 
+// Update SC count in notes field
+const done = state.phases.reduce((n, p) => n + p.scs.filter(s => s.done).length, 0);
+const total = state.phases.reduce((n, p) => n + p.scs.length, 0);
+const scCountPattern = /\d+\/\d+ SCs done/;
+if (state.notes && scCountPattern.test(state.notes)) {
+  state.notes = state.notes.replace(scCountPattern, `${done}/${total} SCs done`);
+} else {
+  const suffix = `Suite: ${done}/${total} SCs done.`;
+  state.notes = state.notes ? `${state.notes}\n${suffix}` : suffix;
+}
+
 writeFileSync(STATE_JSON, JSON.stringify(state, null, 2) + "\n");
 writeFileSync(STATE_MD, render(state) + "\n");
 console.log(`✅ Updated PROJECT-STATE.md (${state.phases.reduce((n, p) => n + p.scs.filter(s => s.done).length, 0)}/${state.phases.reduce((n, p) => n + p.scs.length, 0)} SCs done)`);

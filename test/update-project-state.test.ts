@@ -156,6 +156,68 @@ describe("update-project-state", () => {
     expect(md).not.toContain("Day 4");
   });
 
+  test("updates SC count in notes after sync", () => {
+    writeTestJson({
+      updated: "2026-01-01",
+      priorities: [],
+      notes: "Session 11 — stuff happened.\nSuite: 1264 pass, 0 fail. 28/56 SCs done.\nMore stuff.",
+      phases: [
+        { name: "Phase 0", scs: [
+          { id: "SC-900", what: "A", done: true },
+          { id: "SC-901", what: "B", done: true },
+          { id: "SC-902", what: "C", done: false }
+        ]}
+      ],
+      sessions: []
+    });
+    run();
+    const json = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
+    // After sync, notes should say 2/3 SCs done (two done out of three)
+    expect(json.notes).toContain("2/3 SCs done");
+    expect(json.notes).not.toContain("28/56 SCs done");
+    // Preserve surrounding text
+    expect(json.notes).toContain("Session 11");
+    expect(json.notes).toContain("More stuff.");
+  });
+
+  test("appends SC count to notes when no pattern exists", () => {
+    writeTestJson({
+      updated: "2026-01-01",
+      priorities: [],
+      notes: "Session 11 — no counts here.",
+      phases: [
+        { name: "Phase 0", scs: [
+          { id: "SC-900", what: "A", done: true },
+          { id: "SC-901", what: "B", done: false }
+        ]}
+      ],
+      sessions: []
+    });
+    run();
+    const json = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
+    expect(json.notes).toContain("Suite:");
+    expect(json.notes).toContain("1/2 SCs done");
+    // Original text preserved
+    expect(json.notes).toContain("Session 11 — no counts here.");
+  });
+
+  test("appends SC count when notes field is absent", () => {
+    writeTestJson({
+      updated: "2026-01-01",
+      priorities: [],
+      phases: [
+        { name: "Phase 0", scs: [
+          { id: "SC-900", what: "A", done: true }
+        ]}
+      ],
+      sessions: []
+    });
+    run();
+    const json = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
+    expect(json.notes).toContain("Suite:");
+    expect(json.notes).toContain("1/1 SCs done");
+  });
+
   test("exits cleanly when project-state.json missing", () => {
     const backup = readFileSync(STATE_JSON, "utf-8");
     rmSync(STATE_JSON);

@@ -6,7 +6,7 @@ Session 11 — Feedback loop closed, AFK items shipped.
 
 Shipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,
 PostCompact hook. Closed 13 issues. Created #577-#583.
-Suite: 1264 pass, 0 fail, 65 files. 28/56 SCs done.
+Suite: 1264 pass, 0 fail, 65 files. 35/56 SCs done.
 Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.
 
 **Next priorities:**
