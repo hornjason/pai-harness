@@ -168,3 +168,49 @@ describe("AC-5: grade output includes efficiency", () => {
     }
   });
 });
+
+// ── AC-6: grade output includes timing ──────────────────────────
+
+describe("AC-6: grade output includes timing", () => {
+  const tmpDir = join(import.meta.dir, "fixtures", "tmp-grade-timing");
+  const GRADE_SCRIPT = join(import.meta.dir, "..", "scripts", "grade-deterministic.ts");
+
+  beforeEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("compliance-grade.json includes timing field with role and durationSeconds per agent", async () => {
+    const proc = Bun.spawnSync(
+      ["bun", GRADE_SCRIPT, "--transcripts", FIXTURES, tmpDir],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    const gradeFile = join(tmpDir, "compliance-grade.json");
+    expect(existsSync(gradeFile)).toBe(true);
+    const gradeOutput = JSON.parse(readFileSync(gradeFile, "utf-8"));
+    expect(gradeOutput).toHaveProperty("timing");
+    expect(Array.isArray(gradeOutput.timing)).toBe(true);
+    expect(gradeOutput.timing.length).toBeGreaterThan(0);
+    for (const entry of gradeOutput.timing) {
+      expect(typeof entry.role).toBe("string");
+      expect(typeof entry.durationSeconds).toBe("number");
+      expect(entry.durationSeconds).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  test("timing entries match graded agent roles", async () => {
+    const proc = Bun.spawnSync(
+      ["bun", GRADE_SCRIPT, "--transcripts", FIXTURES, tmpDir],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    const gradeFile = join(tmpDir, "compliance-grade.json");
+    const gradeOutput = JSON.parse(readFileSync(gradeFile, "utf-8"));
+    const gradeRoles = gradeOutput.grades.map((g: any) => g.role);
+    const timingRoles = gradeOutput.timing.map((t: any) => t.role);
+    expect(timingRoles).toEqual(gradeRoles);
+  });
+});

@@ -9,7 +9,7 @@
  * role-specific criteria, and writes compliance-grade.json.
  */
 
-import { readFileSync, readdirSync, writeFileSync, existsSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync, statSync } from "fs";
 import { join, basename } from "path";
 import {
   type TranscriptData,
@@ -34,6 +34,11 @@ interface RuleResult {
   evidence: string;
 }
 
+interface TimingEntry {
+  role: string;
+  durationSeconds: number;
+}
+
 interface GradeOutput {
   grades: {
     role: string;
@@ -43,6 +48,7 @@ interface GradeOutput {
     flagged?: string[];
     efficiency?: EfficiencyMetrics;
   }[];
+  timing?: TimingEntry[];
 }
 
 function loadValidRoles(projectRoot?: string): Set<string> {
@@ -203,6 +209,13 @@ function gradeTranscript(transcriptPath: string, validRoles: Set<string>): Grade
   };
 }
 
+function computeTiming(transcriptPath: string, role: string): TimingEntry {
+  const stats = statSync(transcriptPath);
+  const durationMs = stats.mtime.getTime() - stats.birthtime.getTime();
+  const durationSeconds = Math.max(0, Math.round(durationMs / 1000));
+  return { role, durationSeconds };
+}
+
 function main() {
   const rawArgs = process.argv.slice(2);
   const flags: Record<string, string> = {};
@@ -269,12 +282,14 @@ function main() {
   console.error(`Found ${transcriptFiles.length} transcript(s) in ${transcriptDir}`);
 
   const grades: GradeOutput["grades"] = [];
+  const timing: TimingEntry[] = [];
 
   let skipped = 0;
   for (const transcriptPath of transcriptFiles) {
     const grade = gradeTranscript(transcriptPath, validRoles);
     if (grade) {
       grades.push(grade);
+      timing.push(computeTiming(transcriptPath, grade.role));
       console.error(`Graded ${basename(transcriptPath)}: ${grade.role} - ${grade.followed}/${grade.total}`);
     } else {
       skipped++;
@@ -284,7 +299,7 @@ function main() {
     console.error(`Skipped ${skipped} agent(s) — no matching role in config`);
   }
 
-  const output: GradeOutput = { grades };
+  const output: GradeOutput = { grades, timing };
   const outputPath = join(workDir, "compliance-grade.json");
   writeFileSync(outputPath, JSON.stringify(output, null, 2));
 
