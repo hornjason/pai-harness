@@ -1,0 +1,162 @@
+{
+  "SC-258": {
+    "criterionId": "SHARED-01",
+    "description": "Universal rules loaded from config/universal-rules.yaml"
+  },
+  "SC-259": {
+    "criterionId": "SHARED-01",
+    "description": "AGENTS.md template loaded from prompts/agents-md-template.md"
+  },
+  "SC-262": {
+    "criterionId": "SHARED-01",
+    "description": "Universal rules count under 16 — sigmoid collapse threshold"
+  },
+  "SC-270": {
+    "criterionId": "DA-03",
+    "description": "Large specs with multiple intents split into single-intent files"
+  },
+  "SC-280": {
+    "criterionId": "DA-03",
+    "description": "Split files sharing a common parent group under one routing entry"
+  },
+  "SC-295": {
+    "criterionId": "M-04",
+    "description": "~35 structural SCs enriched with bracket-list values — auto-tested by matchPattern"
+  },
+  "SC-305": {
+    "criterionId": "SHARED-03",
+    "description": "Hook registrations contain RUNGATE_HOOKS_DIR variable"
+  },
+  "SC-318": {
+    "criterionId": "SHARED-04",
+    "description": "Cold-start agent finds PROJECT-STATE.md within first 3 tool calls"
+  },
+  "SC-331": {
+    "criterionId": "Q-01",
+    "description": "matchPattern() returns non-null for all static SCs in testable strict specs"
+  },
+  "SC-343": {
+    "criterionId": "Q-01",
+    "description": "Phase-1.5 tests remain as conformity engine unit tests"
+  },
+  "SC-345": {
+    "criterionId": "M-04",
+    "description": "Every SC in testable specs classified as static or behavioral"
+  },
+  "SC-346": {
+    "criterionId": "M-04",
+    "description": "Behavioral SCs have verification tag and route to SESSION-AUDIT-SPEC"
+  },
+  "SC-347": {
+    "criterionId": "Q-01",
+    "description": "Hook-wiring SCs rewritten as static checks where artifact exists"
+  },
+  "SC-351": {
+    "criterionId": "SHARED-01",
+    "description": "Each generated brief has all 8 required sections"
+  },
+  "SC-357": {
+    "criterionId": "M-05",
+    "description": "Template variables filled from project scan match actual project values"
+  },
+  "SC-359": {
+    "criterionId": "M-05",
+    "description": "Scanner detects tech stack, specs, consumers, source directories"
+  },
+  "SC-365": {
+    "criterionId": "M-05",
+    "description": "Scanner is importable by other scripts without pulling in generation logic"
+  },
+  "SC-366": {
+    "criterionId": "M-03",
+    "description": "Each generator is independently testable with mock ProjectScan data"
+  },
+  "SC-370": {
+    "criterionId": "M-04",
+    "description": "Every hook file traces to at least one SC in a testable spec"
+  },
+  "SC-371": {
+    "criterionId": "SHARED-03",
+    "description": "No hook file exceeds 150 lines"
+  },
+  "SC-372": {
+    "criterionId": "Q-01",
+    "description": "Hook logic in lib/ has unit tests independent of hook trigger mechanism"
+  },
+  "SC-373": {
+    "criterionId": "Q-02",
+    "description": "Every gate source file has a typed input/output interface exported"
+  },
+  "SC-374": {
+    "criterionId": "M-04",
+    "description": "Pass/fail criteria for each gate documented as SCs in this spec"
+  },
+  "SC-375": {
+    "criterionId": "M-04",
+    "description": "Gate chain order documented — which gates feed into which"
+  },
+  "SC-377": {
+    "criterionId": "Q-01",
+    "description": "Gate contracts testable by conformity engine"
+  },
+  "SC-378": {
+    "criterionId": "Q-02",
+    "description": "No gate passes implicit state — all data flows through typed interfaces"
+  },
+  "SC-381": {
+    "criterionId": "M-05",
+    "description": "SPEC-TEMPLATE pattern reference auto-generated from matcher config"
+  },
+  "SC-384": {
+    "criterionId": "M-05",
+    "description": "Consumers can extend matcher config with custom matchers for their domain"
+  },
+  "SC-385": {
+    "criterionId": "SHARED-01",
+    "description": "Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold"
+  },
+  "SC-386": {
+    "criterionId": "SHARED-01",
+    "description": "Consumers can override keyword routing in their rungate.json"
+  },
+  "SC-390": {
+    "criterionId": "SHARED-01",
+    "description": "Consumer can add project-specific rules via config"
+  },
+  "SC-391": {
+    "criterionId": "SHARED-03",
+    "description": "Hook registrations in settings.json contain hookFor and command fields"
+  },
+  "SC-392": {
+    "criterionId": "SHARED-01",
+    "description": "Hook activation controlled by config enabled field"
+  },
+  "SC-395": {
+    "criterionId": "Q-01",
+    "description": "Consumers running create-spec get SC validation identical to RunGate's own"
+  },
+  "SC-398": {
+    "criterionId": "Q-01",
+    "description": "All RunGate specs at compliance: strict — zero unmatched SCs"
+  },
+  "SC-400": {
+    "criterionId": "M-01",
+    "description": "test-brief CLI spawns agent, audits transcript, reports compliance score"
+  },
+  "SC-402": {
+    "criterionId": "M-02",
+    "description": "Transcript compliance checker cross-references directives against tool calls"
+  },
+  "SC-408": {
+    "criterionId": "SHARED-01",
+    "description": "Standard tasks defined per role in config"
+  },
+  "SC-418": {
+    "criterionId": "M-01",
+    "description": "Transcript grading includes per-rule FOLLOWED/IGNORED verdict with evidence"
+  },
+  "SC-420": {
+    "criterionId": "M-01",
+    "description": "Dashboard output shows per-rule compliance rate as percentage"
+  }
+}

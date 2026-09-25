@@ -17,7 +17,8 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { matchPattern } from "../lib/conformity";
+import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
+import { readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
 
 const ROOT = join(import.meta.dir, "..");
@@ -112,16 +113,35 @@ export function findDuplicateSCIds(scs: UncheckedSC[]): Map<string, string[]> {
  * AC-2: For each unchecked SC without a hand-written test, runs matchPattern()
  * and executes the returned assertion against the project root.
  * Results are scoped by spec file to prevent cross-spec ID collisions.
+ *
+ * Behavioral SCs are checked against the behavioral-results cache first.
+ * If a fresh cached result exists, it's used instead of matchPattern.
  */
 export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): ConformityResult {
   const passing = new Set<string>();
   const failing = new Set<string>();
   const unmatchable = new Set<string>();
 
+  // Read behavioral cache for behavioral SCs
+  const cachePath = join(root, ".rungate", "behavioral-results.json");
+  const behavioralCache = readFreshCache(cachePath);
+
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
-    const assertion = matchPattern({ id: sc.id, statement, specFile: sc.specFile });
     const key = scopedKey(sc.specFile, sc.id);
+    const parsed: ParsedSC = { id: sc.id, statement, specFile: sc.specFile };
+
+    // Check behavioral cache first for behavioral SCs
+    if (isBehavioralSC(parsed) && behavioralCache[sc.id]) {
+      if (behavioralCache[sc.id].passed) {
+        passing.add(key);
+      } else {
+        failing.add(key);
+      }
+      continue;
+    }
+
+    const assertion = matchPattern(parsed);
 
     if (!assertion) {
       unmatchable.add(key);

@@ -11,6 +11,7 @@ import { spawnSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
+import { readFreshCache } from "./behavioral-cache";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -250,6 +251,23 @@ export function countBehavioralSCs(scs: ParsedSC[]): number {
 export function getBehavioralRouting(sc: ParsedSC): string | null {
   if (!isBehavioralSC(sc)) return null;
   return "Verified via SESSION-AUDIT-SPEC § Two Feedback Loops (runtime behavioral check)";
+}
+
+/**
+ * Returns an AssertionFn for a behavioral SC when cached results exist.
+ * Returns null when no fresh cache entry exists (treated as unmatchable).
+ * Stale entries (>= 7 days old) return null so they're treated as unmatchable.
+ */
+export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: string) => void) | null {
+  const cache = readFreshCache(cachePath);
+  const entry = cache[sc.id];
+  if (!entry) return null;
+
+  return (_root: string) => {
+    if (!entry.passed) {
+      throw new Error(`Behavioral SC ${sc.id} failed: ${entry.evidence}`);
+    }
+  };
 }
 
 function extractSCs(content: string, specFile: string): ParsedSC[] {

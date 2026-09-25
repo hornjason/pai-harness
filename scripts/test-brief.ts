@@ -18,7 +18,7 @@ import { readFileSync, existsSync, readdirSync, writeFileSync } from "fs";
 import { join, basename, resolve } from "path";
 import { spawnSync } from "child_process";
 import { extractDirectives } from "../lib/directive-extractor.js";
-import { checkCompliance, computeScore, formatReport } from "../lib/transcript-checker.js";
+import { checkCompliance, computeScore, formatReport, evaluateCriteria, parseToolCalls, type Role, type CriterionResult } from "../lib/transcript-checker.js";
 import { createWorktree, type WorktreeResult } from "../lib/worktree-isolation.js";
 import {
   MAX_ITERATIONS,
@@ -29,6 +29,7 @@ import {
   formatHillClimbReport,
   type HillClimbResult,
 } from "../lib/hill-climb.js";
+import { writeCache, type BehavioralCache } from "../lib/behavioral-cache.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -236,8 +237,75 @@ function runComplianceCheck(
     } else {
       console.log(formatReport(agentRole, results, rrCount));
     }
+
+    // Write behavioral results cache from eval criteria
+    writeBehavioralResults(agentRole, content);
   }
   return { score: lastScore, grade: lastGrade };
+}
+
+/**
+ * Populate behavioral-results.json from eval criteria after transcript audit.
+ * Maps SC IDs to criterion results via config/behavioral-sc-map.json.
+ */
+function writeBehavioralResults(agentRole: string, transcriptContent: string): void {
+  try {
+    const mapPath = join(ROOT, "config", "behavioral-sc-map.json");
+    if (!existsSync(mapPath)) return;
+    const scMap: Record<string, { criterionId: string; description: string }> =
+      JSON.parse(readFileSync(mapPath, "utf-8"));
+
+    const role = agentRole as Role;
+    const calls = parseToolCalls(transcriptContent);
+    const reads = calls.filter(c => c.name === "Read").map(c => c.input.file_path || "");
+    const bashes = calls.filter(c => c.name === "Bash").map(c => c.input.command || "");
+    const edits = calls.filter(c => c.name === "Edit").map(c => c.input.file_path || "");
+    const writes = calls.filter(c => c.name === "Write").map(c => c.input.file_path || "");
+    const readCounts: Record<string, number> = {};
+    for (const r of reads) { readCounts[r] = (readCounts[r] || 0) + 1; }
+    const duplicateReads: Record<string, number> = {};
+    for (const [path, count] of Object.entries(readCounts)) {
+      if (count > 1) duplicateReads[path] = count;
+    }
+
+    const data = {
+      calls,
+      reads,
+      bashes,
+      edits,
+      writes,
+      duplicateReads,
+      firstThreeReads: reads.slice(0, 3),
+      promptContent: transcriptContent.substring(0, 5000),
+    };
+
+    const criteriaResults = evaluateCriteria(role, data);
+    const criterionMap = new Map<string, CriterionResult>();
+    for (const r of criteriaResults) {
+      criterionMap.set(r.id, r);
+    }
+
+    const cacheData: BehavioralCache = {};
+    const now = new Date().toISOString();
+    for (const [scId, mapping] of Object.entries(scMap)) {
+      const result = criterionMap.get(mapping.criterionId);
+      if (result) {
+        cacheData[scId] = {
+          passed: result.verdict === "FOLLOWED",
+          evidence: `${result.id}: ${result.evidence}`,
+          timestamp: now,
+        };
+      }
+    }
+
+    if (Object.keys(cacheData).length > 0) {
+      const cachePath = join(ROOT, ".rungate", "behavioral-results.json");
+      writeCache(cachePath, cacheData);
+      console.log(`  Behavioral cache: ${Object.keys(cacheData).length} entries written`);
+    }
+  } catch (err) {
+    console.error(`  Behavioral cache write failed: ${err}`);
+  }
 }
 
 // ── Hill climb mode ──────────────────────────────────────

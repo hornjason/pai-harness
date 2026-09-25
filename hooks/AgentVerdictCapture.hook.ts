@@ -15,6 +15,7 @@ import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
 import { runAgentAudit } from '../lib/agent-audit';
+import { writeCache, type BehavioralCache } from '../lib/behavioral-cache';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
@@ -134,6 +135,39 @@ async function main() {
     if (!state.audits) state.audits = {};
     state.audits[role] = auditResult;
     console.error(`[agent-verdict-capture] ${role} audit: ${auditResult.score}% (${auditResult.grade})`);
+
+    // Populate behavioral-results cache from audit criteria
+    try {
+      const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
+      const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
+      if (existsSync(mapPath)) {
+        const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
+        const criteriaResults = auditResult.criteria || [];
+        const criterionMap = new Map<string, any>();
+        for (const r of criteriaResults) {
+          criterionMap.set(r.id, r);
+        }
+        const cacheData: BehavioralCache = {};
+        const now = new Date().toISOString();
+        for (const [scId, mapping] of Object.entries(scMap)) {
+          const result = criterionMap.get(mapping.criterionId);
+          if (result) {
+            cacheData[scId] = {
+              passed: result.verdict === 'FOLLOWED',
+              evidence: `${result.id}: ${result.evidence}`,
+              timestamp: now,
+            };
+          }
+        }
+        if (Object.keys(cacheData).length > 0) {
+          const cachePath = join(projectRoot, '.rungate', 'behavioral-results.json');
+          writeCache(cachePath, cacheData);
+          console.error(`[agent-verdict-capture] behavioral cache: ${Object.keys(cacheData).length} entries`);
+        }
+      }
+    } catch (err) {
+      console.error(`[agent-verdict-capture] behavioral cache write failed: ${err}`);
+    }
   }
 
   state.updatedTs = new Date().toISOString();
