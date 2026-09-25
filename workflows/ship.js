@@ -952,9 +952,16 @@ If merge conflicts, report them — do NOT force.
 let gradeResult = null
 if (!SKIP_GRADE) {
   gradeResult = await agent(`
-Run deterministic grading:
-bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts ${WORK_DIR}
-Parse the JSON output and return it.
+Find the workflow transcript directory and run grading:
+
+1. Find the transcript dir — look for agent-*.jsonl files:
+   find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${WORK_DIR}/workflow-state.json 2>/dev/null | head -1
+   Extract the directory from that path.
+
+2. Run grading with the found transcript dir:
+   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${WORK_DIR}
+
+3. Parse the JSON output and return it. If no transcripts found, return {"grades": []}.
   `, { label: 'grade', phase: 'Verify', schema: {
     type: 'object',
     properties: {

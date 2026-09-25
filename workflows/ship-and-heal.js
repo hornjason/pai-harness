@@ -128,244 +128,174 @@ log(`Ship result: ${status}`)
 const FAILURE_STATUSES = ['SHIP_FAILED', 'SCOPE_FAILED', 'VERIFY_FAILED', 'IMPLEMENT_FAILED', 'DISCOVERY_FAILED', 'GOAL_FAILED', 'ARGS_ERROR', 'UNKNOWN']
 const isSuccess = !FAILURE_STATUSES.includes(status) && shipResult?.success !== false
 
-if (isSuccess) {
+// ════════════════════════════════════════════════════════════
+// GRADE — always run, regardless of ship success/failure (D-11)
+// ════════════════════════════════════════════════════════════
+
+let workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
+let gradeResult = null
+let qualityViolations = []
+let processViolations = []
+
+if (workDir) {
+  phase('Heal')
+  log('Grading agent compliance (runs on every ship, success or failure)')
+
+  const gradeData = await agent(`
+Find the workflow transcript directory and run compliance grading:
+
+1. Find transcripts — look for recently created agent-*.jsonl files:
+   find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${workDir}/workflow-state.json 2>/dev/null | head -1
+   Extract the directory path from the result.
+
+2. Run grading:
+   cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${workDir}
+
+3. Return the JSON output. If no transcripts found, return {"grades": []}.
+`, { label: 'grade-compliance', phase: 'Heal', schema: {
+    type: 'object',
+    properties: {
+      grades: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            role: { type: 'string' },
+            total: { type: 'number' },
+            followed: { type: 'number' },
+            flagged: { type: 'array', items: { type: 'string' } },
+          },
+        },
+      },
+    },
+  }})
+
+  gradeResult = gradeData
+  if (gradeData?.grades?.length > 0) {
+    for (const grade of gradeData.grades) {
+      const score = grade.total > 0 ? Math.round((grade.followed / grade.total) * 100) : 100
+      log(`GRADE ${grade.role}: ${score}% (${grade.followed}/${grade.total})${grade.flagged?.length ? ' — flagged: ' + grade.flagged.join(', ') : ''}`)
+    }
+  } else {
+    log('GRADE: no agents matched known roles (empty grades)')
+  }
+}
+
+// Read compliance threshold from config
+const complianceThreshold = parsedArgs.complianceThreshold || 80
+
+// Classify violations
+if (gradeResult?.grades) {
+  for (const grade of gradeResult.grades) {
+    const score = grade.total > 0 ? Math.round((grade.followed / grade.total) * 100) : 100
+    if (score < complianceThreshold && grade.flagged?.length > 0) {
+      for (const flag of grade.flagged) {
+        // TODO: use directive-extractor category once #588 adds category to grade output
+        // For now, use a heuristic: TDD, spec, and methodology flags are quality; read-order flags are process
+        const isQuality = /TDD|spec|governing|test.*first|methodology/i.test(flag)
+        if (isQuality) {
+          qualityViolations.push({ role: grade.role, flag, score })
+        } else {
+          processViolations.push({ role: grade.role, flag, score })
+        }
+      }
+    }
+  }
+}
+
+// On clean success with no violations, ship is done
+if (isSuccess && qualityViolations.length === 0 && processViolations.length === 0) {
   return {
     status: 'SHIPPED',
     issue: ISSUE,
     shipResult,
+    gradeResult,
     healed: false,
   }
 }
 
-// ════════════════════════════════════════════════════════════
-// PHASE 2: HEAL — auto-improve low-compliance agent briefs
-// ════════════════════════════════════════════════════════════
+// On success with only process violations, heal briefs but don't re-ship
+if (isSuccess && qualityViolations.length === 0 && processViolations.length > 0) {
+  log(`Ship succeeded with ${processViolations.length} process violation(s) — healing briefs for next time`)
+  // Heal briefs for process violations
+  for (const v of processViolations) {
+    log(`  Process: ${v.role} — ${v.flag}`)
+  }
 
-phase('Heal')
+  const healResult = await agent(`
+You are improving agent brief quality based on process violations.
 
-let workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
-let gradeResult = null
+## Violations Found
+${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
 
-// Check for compliance-grade.json
-const gradeFilePath = workDir ? `${workDir}/compliance-grade.json` : null
-let complianceGrade = null
+## Task
+1. Read the relevant brief templates in ${HARNESS_ROOT}/templates/agent-briefs/
+2. Strengthen the violated directives — make them more explicit, move to top of section
+3. Edit the template files with targeted changes
+4. Report which directives you strengthened
+`, { label: 'heal-process', phase: 'Heal' })
 
-if (gradeFilePath) {
-  try {
-    const gradeData = await agent(`
-Read ${gradeFilePath} and return the parsed JSON content.
-If the file doesn't exist, return null.
-`, { label: 'read-grade', schema: {
-      type: 'object',
-      properties: {
-        grades: {
-          type: 'array',
-          items: {
-            type: 'object',
-            properties: {
-              role: { type: 'string' },
-              total: { type: 'number' },
-              followed: { type: 'number' },
-              flagged: { type: 'array', items: { type: 'string' } },
-            },
-          },
-        },
-      },
-    }})
-    complianceGrade = gradeData
-  } catch (err) {
-    log(`No compliance grade found at ${gradeFilePath}`)
+  log('Brief templates healed for process violations')
+
+  return {
+    status: 'SHIPPED_WITH_HEAL',
+    issue: ISSUE,
+    shipResult,
+    gradeResult,
+    qualityViolations,
+    processViolations,
+    healed: true,
+    healType: 'process-only',
   }
 }
 
-// Check for low-compliance agents
-let lowComplianceAgents = []
-if (complianceGrade && complianceGrade.grades) {
-  for (const grade of complianceGrade.grades) {
-    const score = grade.total > 0 ? Math.round((grade.followed / grade.total) * 100) : 0
-    if (score < COMPLIANCE_LOW) {
-      lowComplianceAgents.push({
-        role: grade.role,
-        score,
-        total: grade.total,
-        followed: grade.followed,
-        flagged: grade.flagged || [],
-      })
-    }
+// On success with quality violations, remediate the shipped code
+if (isSuccess && qualityViolations.length > 0) {
+  log(`Ship succeeded with ${qualityViolations.length} quality violation(s) — remediating shipped code`)
+  for (const v of qualityViolations) {
+    log(`  Quality: ${v.role} — ${v.flag}`)
   }
-}
 
-if (lowComplianceAgents.length > 0) {
-  log(`Found ${lowComplianceAgents.length} agent(s) with compliance < ${COMPLIANCE_LOW}%`)
+  const remediationResult = await agent(`
+You are remediating code that shipped without following best practices.
+The code works, but it violated quality standards during implementation.
 
-  // For each low-compliance agent, attempt ONE heal iteration
-  let healAttempted = false
-  let healImproved = false
-
-  for (const agentGrade of lowComplianceAgents) {
-    if (healAttempted) {
-      log(`Already attempted heal — skipping additional agents per D-6 (max 1 iteration)`)
-      break
-    }
-
-    log(`Attempting heal for ${agentGrade.role} (score: ${agentGrade.score}%)`)
-
-    // Spawn agent to improve the brief template
-    const healResult = await agent(`
-You are improving agent brief quality based on compliance audit results.
-
-## Low-Compliance Agent
-- Role: ${agentGrade.role}
-- Score: ${agentGrade.score}% (${agentGrade.followed}/${agentGrade.total} rules followed)
-- Ignored criteria: ${agentGrade.flagged.join('; ') || 'none flagged'}
+## Quality Violations
+${qualityViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
 
 ## Your Task
-1. Read templates/agent-briefs/${agentGrade.role}.md if it exists
-2. Identify which directives correspond to the ignored criteria
-3. Strengthen those directives — make them more explicit, add examples, move to top
-4. Update the template file with Edit tool
-5. Do NOT modify scaffold-project.ts or workflow files
-6. Report which directives you strengthened
+For each violation, apply the practice that was skipped:
 
-## Constraints (Council Decision D-6)
-- This is ONE heal iteration only
-- Modify the TEMPLATE, not the generated brief
-- Focus on the flagged criteria only
-- Keep changes minimal and targeted
-
-Be specific about what you changed.
-`, { label: 'heal-brief', phase: 'Heal', schema: {
-      type: 'object',
-      properties: {
-        success: { type: 'boolean' },
-        templateModified: { type: 'string' },
-        changesDescription: { type: 'string' },
-      },
-      required: ['success'],
-    }})
-
-    if (healResult?.success) {
-      log(`Brief template healed: ${healResult.changesDescription || 'changes applied'}`)
-
-      // Re-scaffold to propagate the brief change
-      log('Re-scaffolding to propagate brief changes')
-      await agent(`
-Run the scaffold to propagate the updated brief template.
-
+${qualityViolations.some(v => /TDD/i.test(v.flag)) ? '- **TDD violated**: Write the tests that should have been written first. Verify the shipped code passes them. Fix any gaps found.\n' : ''}${qualityViolations.some(v => /spec|governing/i.test(v.flag)) ? '- **Spec not read**: Read the governing spec from AGENTS.md routing table. Verify the code conforms to all relevant SCs. Fix any drift.\n' : ''}${qualityViolations.some(v => /test.*first/i.test(v.flag)) ? '- **Tests not written first**: Review test coverage. Add missing edge case tests.\n' : ''}
 1. cd ${PROJECT_ROOT}
-2. Run: bun ${HARNESS_ROOT}/scripts/scaffold-project.ts ${PROJECT_ROOT}
-3. Report success/failure
-`, { label: 'rescaffold', phase: 'Heal' })
+2. Read AGENTS.md to find the governing spec
+3. Apply the skipped practices above
+4. Run bun test to verify everything passes
+5. Commit the remediation changes
 
-      // Re-run ship workflow ONCE
-      log('Re-running ship with improved brief')
-      let shipResult2 = null
-      try {
-        shipResult2 = await workflow(
-          { scriptPath: HARNESS_ROOT + '/workflows/ship.js' },
-          { ...parsedArgs }
-        )
-      } catch (nestingError) {
-        if (String(nestingError).includes('nesting')) {
-          log('Workflow nesting limit hit — skipping re-ship')
-        } else {
-          throw nestingError
-        }
-      }
+Report what you fixed and what tests you added.
+`, { label: 'remediate', phase: 'Heal', isolation: 'worktree', cwd: PROJECT_ROOT })
 
-      // Grade again
-      if (shipResult2 && workDir) {
-        log('Grading healed run')
-        await agent(`
-Run the compliance grader on the healed ship run:
+  log(`Remediation complete: ${remediationResult || 'done'}`)
 
-cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts ${workDir}
-
-Report the new scores.
-`, { label: 'grade-healed', phase: 'Heal' })
-
-        // Read new grade
-        try {
-          const gradeData2 = await agent(`
-Read ${gradeFilePath} and return the parsed JSON content.
-`, { label: 'read-grade-2', schema: {
-            type: 'object',
-            properties: {
-              grades: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  properties: {
-                    role: { type: 'string' },
-                    total: { type: 'number' },
-                    followed: { type: 'number' },
-                  },
-                },
-              },
-            },
-          }})
-
-          const afterGrade = gradeData2?.grades?.find(g => g.role === agentGrade.role)
-          const afterScore = afterGrade && afterGrade.total > 0
-            ? Math.round((afterGrade.followed / afterGrade.total) * 100)
-            : 0
-
-          gradeResult = {
-            role: agentGrade.role,
-            before: agentGrade.score,
-            after: afterScore,
-            improved: afterScore > agentGrade.score,
-          }
-
-          log(`Heal result: ${agentGrade.role} ${agentGrade.score}% → ${afterScore}%`)
-
-          if (afterScore > agentGrade.score) {
-            healImproved = true
-
-            // Check if second ship succeeded
-            const status2 = shipResult2?.status || 'UNKNOWN'
-            const isSuccess2 = !FAILURE_STATUSES.includes(status2) && shipResult2?.success !== false
-
-            if (isSuccess2) {
-              return {
-                status: 'HEALED',
-                issue: ISSUE,
-                shipResult: shipResult2,
-                gradeResult,
-                healed: true,
-              }
-            }
-          }
-        } catch (err) {
-          log(`Failed to read healed grade: ${err}`)
-        }
-      }
-
-      healAttempted = true
-    } else {
-      log(`Heal failed: ${healResult?.changesDescription || 'unknown error'}`)
-      healAttempted = true
-    }
+  return {
+    status: 'SHIPPED_WITH_REMEDIATION',
+    issue: ISSUE,
+    shipResult,
+    gradeResult,
+    qualityViolations,
+    processViolations,
+    healed: true,
+    healType: 'quality-remediation',
+    remediationResult,
   }
-
-  // If heal was attempted but didn't improve or ship still failed, fall through to RCA
-  if (healAttempted && !healImproved) {
-    log(`Heal attempted but did not improve compliance — falling through to RCA`)
-  }
-} else {
-  log(`No low-compliance agents found (threshold: ${COMPLIANCE_LOW}%)`)
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 3: RCA — analyze why ship failed
+// FAILURE PATH: RCA — analyze why ship failed
 // ════════════════════════════════════════════════════════════
 
 phase('RCA')
-
-// Update workDir in case it wasn't set earlier
-if (!workDir) {
-  workDir = shipResult?.workDir || shipResult?.detail?.workDir || ''
-}
 
 const failures = shipResult?.failures || shipResult?.detail?.failures || []
 const failureText = Array.isArray(failures) ? failures.join('\n') : String(failures)

@@ -28,25 +28,37 @@ interface GradeOutput {
   }[];
 }
 
-function inferRole(metaPath: string, transcriptPath: string): Role {
-  // Try to read meta file first
+function loadValidRoles(projectRoot?: string): Set<string> {
+  const configPaths = [
+    projectRoot ? join(projectRoot, ".claude", "rungate.json") : "",
+    join(process.cwd(), ".claude", "rungate.json"),
+  ].filter(Boolean);
+  for (const p of configPaths) {
+    if (existsSync(p)) {
+      try {
+        const config = JSON.parse(readFileSync(p, "utf-8"));
+        if (config.roles) return new Set(Object.keys(config.roles));
+      } catch { /* fall through */ }
+    }
+  }
+  return new Set(["marcus", "quinn", "discovery", "rook", "serena", "aditi", "da"]);
+}
+
+function inferRole(metaPath: string, transcriptPath: string, validRoles: Set<string>): Role | null {
   if (existsSync(metaPath)) {
     try {
       const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
-      const agentType = (meta.agentType || meta.description || "").toLowerCase();
-      if (agentType.includes("da") || agentType.includes("orchestrat")) return "da";
-      if (agentType.includes("quinn") || agentType.includes("valid") || agentType.includes("qa")) return "quinn";
-      if (agentType.includes("marcus") || agentType.includes("impl") || agentType.includes("code")) return "marcus";
-    } catch {
-      // Fall through to filename-based inference
-    }
+      const label = (meta.label || meta.description || "").toLowerCase();
+      for (const role of validRoles) {
+        if (label === role || label.startsWith(`${role}-`)) return role as Role;
+      }
+      const agentType = (meta.agentType || "").toLowerCase();
+      for (const role of validRoles) {
+        if (agentType === role) return role as Role;
+      }
+    } catch { /* fall through */ }
   }
-
-  // Infer from filename
-  const filename = basename(transcriptPath).toLowerCase();
-  if (filename.includes("da") || filename.includes("orchestrat")) return "da";
-  if (filename.includes("quinn") || filename.includes("valid") || filename.includes("qa")) return "quinn";
-  return "marcus"; // Default to marcus for code-related agents
+  return null;
 }
 
 function buildTranscriptData(calls: any[]): TranscriptData {
@@ -95,9 +107,10 @@ function buildTranscriptData(calls: any[]): TranscriptData {
   };
 }
 
-function gradeTranscript(transcriptPath: string): GradeOutput["grades"][0] | null {
+function gradeTranscript(transcriptPath: string, validRoles: Set<string>): GradeOutput["grades"][0] | null {
   const metaPath = transcriptPath.replace(".jsonl", ".meta.json");
-  const role = inferRole(metaPath, transcriptPath);
+  const role = inferRole(metaPath, transcriptPath, validRoles);
+  if (!role) return null;
 
   let transcriptContent: string;
   try {
@@ -140,11 +153,23 @@ function gradeTranscript(transcriptPath: string): GradeOutput["grades"][0] | nul
 }
 
 function main() {
-  const args = process.argv.slice(2);
-  const workDir = args[0];
+  const rawArgs = process.argv.slice(2);
+  const flags: Record<string, string> = {};
+  const positional: string[] = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i] === "--transcripts" && rawArgs[i + 1]) {
+      flags.transcripts = rawArgs[++i];
+    } else if (rawArgs[i] === "--project" && rawArgs[i + 1]) {
+      flags.project = rawArgs[++i];
+    } else {
+      positional.push(rawArgs[i]);
+    }
+  }
+
+  const workDir = positional[0];
 
   if (!workDir) {
-    console.error("Usage: bun scripts/grade-deterministic.ts <work-dir>");
+    console.error("Usage: bun scripts/grade-deterministic.ts [--transcripts <dir>] [--project <root>] <work-dir>");
     process.exit(1);
   }
 
@@ -153,13 +178,16 @@ function main() {
     process.exit(1);
   }
 
+  const validRoles = loadValidRoles(flags.project);
+  console.error(`Valid roles: ${[...validRoles].join(", ")}`);
+
   // Look for agent transcript files
-  // Try multiple possible locations
   const possibleDirs = [
+    flags.transcripts,
     workDir,
     join(workDir, "subagents"),
     join(workDir, "transcripts"),
-  ];
+  ].filter(Boolean) as string[];
 
   let transcriptFiles: string[] = [];
   let transcriptDir = workDir;
@@ -191,12 +219,18 @@ function main() {
 
   const grades: GradeOutput["grades"] = [];
 
+  let skipped = 0;
   for (const transcriptPath of transcriptFiles) {
-    const grade = gradeTranscript(transcriptPath);
+    const grade = gradeTranscript(transcriptPath, validRoles);
     if (grade) {
       grades.push(grade);
       console.error(`Graded ${basename(transcriptPath)}: ${grade.role} - ${grade.followed}/${grade.total}`);
+    } else {
+      skipped++;
     }
+  }
+  if (skipped > 0) {
+    console.error(`Skipped ${skipped} agent(s) — no matching role in config`);
   }
 
   const output: GradeOutput = { grades };
