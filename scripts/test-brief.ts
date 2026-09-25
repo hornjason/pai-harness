@@ -177,13 +177,12 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
   console.log(`  Task: "${agentTask}"`);
   console.log(`  Transcript: ${transcriptPath}`);
 
-  const projectRoot = join(worktreePath, "..", "..", "..");
   const result = spawnSync(
     "claude",
     [
       "--print",
       "--output-format", "stream-json",
-      "--dangerously-skip-permissions",
+      "--allowedTools", "Read,Write,Edit,Bash,Grep,Glob",
       "--agent-type", agentRole,
       agentTask,
     ],
@@ -194,7 +193,6 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
       env: {
         ...process.env,
         CLAUDE_TRANSCRIPT_DIR: transcriptPath,
-        CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "0",
       },
     },
   );
