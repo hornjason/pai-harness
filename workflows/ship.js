@@ -940,6 +940,10 @@ Merge the verified worktree branch into main:
 If merge conflicts, report them — do NOT force.
   `, { label: 'merge-to-main', phase: 'Verify' })
   log('Worktree branch merged to main after verify pass')
+
+  // Push main to origin after merge so ship gate's code-pushed check passes
+  await agent(`cd ${PROJECT_ROOT} && git push`, { label: 'push-main', phase: 'Ship' })
+  log('Main pushed to origin after worktree merge')
 }
 
 // ── GRADE: Post-run compliance grading (#574 — runs before ship gate) ──
