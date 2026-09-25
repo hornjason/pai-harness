@@ -177,11 +177,13 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
   console.log(`  Task: "${agentTask}"`);
   console.log(`  Transcript: ${transcriptPath}`);
 
+  const projectRoot = join(worktreePath, "..", "..", "..");
   const result = spawnSync(
     "claude",
     [
       "--print",
       "--output-format", "stream-json",
+      "--dangerously-skip-permissions",
       "--agent-type", agentRole,
       agentTask,
     ],
