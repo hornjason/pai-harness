@@ -82,7 +82,7 @@
   "consumers": [],
   "pages": {},
   "test": {
-    "command": "bun test",
+    "command": "bun test --parallel --no-isolate",
     "timeout": 300000
   }
 }

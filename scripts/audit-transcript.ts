@@ -85,7 +85,7 @@ function buildTranscriptData(
   duplicateReads: Record<string, number>,
   firstThreeReads: string[]
 ): TranscriptData {
-  return { calls, reads, bashes, edits, writes, duplicateReads, firstThreeReads };
+  return { calls, reads, bashes, edits, writes, duplicateReads, firstThreeReads, promptContent: '' };
 }
 
 function applyUtilityExemptions(results: CriterionResult[], totalCalls: number): CriterionResult[] {
