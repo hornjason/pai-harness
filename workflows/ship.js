@@ -163,8 +163,10 @@ Only return the rule TEXT — strip leading dashes, numbers, and whitespace.
 
 async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
+  const taskContextFiles = opts.contextFiles || null
   const callerSetIsolation = 'isolation' in opts
   delete opts.role
+  delete opts.contextFiles
   if (role) {
     const roleConfig = ROLES[role]
     const briefPath = roleConfig?.brief
@@ -176,9 +178,20 @@ async function briefedAgent(prompt, opts = {}) {
     }
     if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT
 
-    const contextPaths = await loadContextPaths(role, briefPath)
     const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
-    contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
+
+    if (taskContextFiles && taskContextFiles.length > 0) {
+      // Task-aware context: use Discovery's contextFiles instead of static brief list
+      taskContextFiles.forEach((cf, i) => {
+        const path = typeof cf === 'string' ? cf : cf.path
+        const reason = typeof cf === 'string' ? '' : ` — ${cf.reason}`
+        readSteps.push(`${i + 2}. Read \`${path}\`${reason}`)
+      })
+    } else {
+      // Fallback: use static brief Context section paths
+      const contextPaths = await loadContextPaths(role, briefPath)
+      contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
+    }
 
     let fullPrompt = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above.\n\n`
 
@@ -293,9 +306,10 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
    Report in priorWork.acStatus array. Include evidence string (command output snippet).
    Also include git log results in priorWork.explicitCommits array.
 
-4. Read relevant source files. Identify filesToModify, scopeOut, contextFiles per AC.
+4. Read relevant source files. Identify filesToModify, scopeOut.
 5. Size: XS→LIGHT | S/M→STANDARD | L→THOROUGH.
 6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, contextFiles.
+   CONTEXT FILES RULE (CRITICAL): Every AC MUST have a contextFiles array listing the specific files Marcus will need to read to implement that AC. Include path and reason. Example: [{"path": "hooks/WorkflowStateGuard.hook.ts", "reason": "existing hook pattern to follow"}, {"path": "lib/conformity.ts", "reason": "matchPattern function to reuse"}]. Do NOT leave contextFiles empty — Marcus wastes 80% of context loading files he doesn't need when you don't specify what he actually needs.
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
    BUN TEST GREP RULE: In bun test --grep patterns, use | (pipe) for alternation, NOT \\| (backslash-pipe). Bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and will match 0 tests. Example: --grep 'foo|bar' is correct, --grep 'foo\\|bar' is WRONG.
 7. Garbage test each AC.
@@ -329,6 +343,7 @@ initWorkflow(sf, {
 writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
   id: ac.id, type: ac.type, statement: ac.statement,
   threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
+  contextFiles: ac.contextFiles || [],
 })))});
 console.log('initialized');
 " 2>&1
@@ -586,6 +601,17 @@ Assemble brief: bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} 
 Report the output.
   `, { label: 'assemble-brief', phase: 'Implement' })
 
+  // Collect task-specific context files from Discovery ACs
+  const acContextFiles = (discovery?.acs || [])
+    .flatMap(ac => ac.contextFiles || [])
+    .filter((cf, i, arr) => {
+      const path = typeof cf === 'string' ? cf : cf.path
+      return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
+    })
+  if (acContextFiles.length > 0) {
+    log(`Task-aware context: ${acContextFiles.length} files from Discovery (replacing static brief reads)`)
+  }
+
   // Layer 2 reinforcement handles TDD via briefedAgent() injection.
   // Layer 3 mechanical (two-spawn split) blocked by worktree isolation —
   // spawn 2 can't see spawn 1's test files in a separate worktree.
@@ -609,7 +635,7 @@ If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
 Also report worktreePath: your current working directory (run pwd and include the result).
-  `, { label: 'marcus', phase: 'Implement', role: 'marcus', schema: BUILD_RESULT_SCHEMA })
+  `, { label: 'marcus', phase: 'Implement', role: 'marcus', contextFiles: acContextFiles.length > 0 ? acContextFiles : null, schema: BUILD_RESULT_SCHEMA })
 
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)

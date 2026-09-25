@@ -179,6 +179,52 @@ Find the workflow transcript directory and run compliance grading:
   } else {
     log('GRADE: no agents matched known roles (empty grades)')
   }
+
+  // Run transcript efficiency analysis
+  log('Analyzing agent efficiency from transcripts')
+  const efficiencyData = await agent(`
+Analyze agent transcripts for efficiency metrics:
+
+1. Find the transcript directory (same as grading — find recent agent-*.jsonl files):
+   TDIR=$(dirname $(find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${workDir}/workflow-state.json 2>/dev/null | head -1))
+
+2. Run the transcript analyzer:
+   cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
+
+3. Return the JSON array output. If no transcripts found, return [].
+`, { label: 'analyze-efficiency', phase: 'Heal', schema: {
+    type: 'array',
+    items: {
+      type: 'object',
+      properties: {
+        role: { type: 'string' },
+        toolCalls: { type: 'object' },
+        efficiency: { type: 'object', properties: {
+          ratio: { type: 'number' },
+          filesRead: { type: 'array', items: { type: 'string' } },
+          filesChanged: { type: 'array', items: { type: 'string' } },
+          filesWasted: { type: 'array', items: { type: 'string' } },
+        }},
+        testRuns: { type: 'object', properties: { total: { type: 'number' } } },
+        deliverableRatio: { type: 'number' },
+        context: { type: 'object', properties: {
+          startTokens: { type: 'number' },
+          endTokens: { type: 'number' },
+          growthRatio: { type: 'number' },
+        }},
+      },
+    },
+  }})
+
+  if (Array.isArray(efficiencyData)) {
+    for (const e of efficiencyData) {
+      const eff = Math.round((e.efficiency?.ratio || 0) * 100)
+      const del = Math.round((e.deliverableRatio || 0) * 100)
+      const tests = e.testRuns?.total || 0
+      const growth = e.context?.growthRatio ? Math.round((e.context.growthRatio - 1) * 100) : 0
+      log(`EFFICIENCY ${e.role}: ${eff}% file use, ${del}% deliverable, ${tests} test runs, ${growth}% context growth`)
+    }
+  }
 }
 
 // Read compliance threshold from config
