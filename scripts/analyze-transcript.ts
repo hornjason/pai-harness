@@ -14,7 +14,7 @@
  * - Rule compliance vs behavior
  */
 
-import { readFileSync, readdirSync, existsSync } from "fs";
+import { readFileSync, readdirSync, existsSync, writeFileSync, mkdirSync } from "fs";
 import { join, basename } from "path";
 
 interface ToolCall {
@@ -23,7 +23,7 @@ interface ToolCall {
   turn: number;
 }
 
-interface TranscriptAnalysis {
+export interface TranscriptAnalysis {
   agent: string;
   role: string;
   toolCalls: {
@@ -110,7 +110,7 @@ function inferRole(metaPath: string): string {
   } catch { return "unknown"; }
 }
 
-function analyzeTranscript(transcriptPath: string): TranscriptAnalysis {
+export function analyzeTranscript(transcriptPath: string): TranscriptAnalysis {
   const metaPath = transcriptPath.replace(".jsonl", ".meta.json");
   const role = inferRole(metaPath);
   const calls = parseToolCalls(transcriptPath);
@@ -263,10 +263,16 @@ function formatReport(analysis: TranscriptAnalysis): string {
 // ── Main ──
 
 const args = process.argv.slice(2);
-const transcriptDir = args.find(a => !a.startsWith("--"));
+// Parse flags that take values
+const outputIdx = args.indexOf("--output");
+const outputDir = outputIdx >= 0 ? args[outputIdx + 1] : undefined;
 const roleFilter = args.find(a => a.startsWith("--role="))?.split("=")[1];
 const showAll = args.includes("--all");
 const jsonOutput = args.includes("--json");
+// Positional arg is the transcript dir — skip flag values
+const skipIndices = new Set<number>();
+if (outputIdx >= 0) { skipIndices.add(outputIdx); skipIndices.add(outputIdx + 1); }
+const transcriptDir = args.find((a, i) => !a.startsWith("--") && !skipIndices.has(i));
 
 if (!transcriptDir) {
   console.error("Usage: bun scripts/analyze-transcript.ts <transcript-dir> [--role=marcus] [--all] [--json]");
@@ -301,7 +307,15 @@ for (const t of transcripts) {
 }
 
 if (jsonOutput) {
-  console.log(JSON.stringify(analyses, null, 2));
+  const jsonStr = JSON.stringify(analyses, null, 2);
+  console.log(jsonStr);
+
+  // Write transcript-analysis.json if --output dir specified
+  if (outputDir) {
+    if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
+    writeFileSync(join(outputDir, "transcript-analysis.json"), jsonStr);
+    console.error(`Wrote transcript-analysis.json to ${outputDir}`);
+  }
 } else {
   if (analyses.length === 0) {
     console.log("No matching agents found. Use --all to show all agents.");

@@ -18,6 +18,14 @@ import {
   checkTDD,
   parseToolCalls,
 } from "../lib/transcript-checker.js";
+import { analyzeTranscript } from "./analyze-transcript.js";
+
+interface EfficiencyMetrics {
+  ratio: number;
+  deliverableRatio: number;
+  contextGrowthRatio: number;
+  duplicateReads: number;
+}
 
 interface GradeOutput {
   grades: {
@@ -25,6 +33,7 @@ interface GradeOutput {
     total: number;
     followed: number;
     flagged?: string[];
+    efficiency?: EfficiencyMetrics;
   }[];
 }
 
@@ -162,11 +171,21 @@ function gradeTranscript(transcriptPath: string, validRoles: Set<string>): Grade
     }
   }
 
+  // Compute efficiency metrics from transcript analysis
+  const analysis = analyzeTranscript(transcriptPath);
+  const efficiency: EfficiencyMetrics = {
+    ratio: analysis.efficiency.ratio,
+    deliverableRatio: analysis.deliverableRatio,
+    contextGrowthRatio: analysis.context.growthRatio,
+    duplicateReads: Object.keys(analysis.duplicateReads).length,
+  };
+
   return {
     role,
     total,
     followed,
     ...(flagged.length > 0 && { flagged }),
+    efficiency,
   };
 }
 
