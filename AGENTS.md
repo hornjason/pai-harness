@@ -1,10 +1,3 @@
----
-doc-type: reference
-status: active
-owner: jason
-updated: 2026-09-23
----
-
 # rungate
 
 ## Project Identity
@@ -47,9 +40,9 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
 | Specs — success criteria, constraints, requirements (20 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
-| Research — findings, evaluations, competitive analysis (15 files) | `docs/research/` |
-| Council — synthesis, design debates (3 files) | `docs/council/` |
-| Guides — setup, onboarding, reference | `docs/guides/` |
+| Research — findings, evaluations, competitive analysis (19 files) | `docs/research/` |
+| Council — synthesis, design debates (7 files) | `docs/council/` |
+| Guides — setup, onboarding, reference (1 files) | `docs/guides/` |
 | Reference — historical and inactive docs (0 files) | `reference/` |
 
 ## Where to Create Things
@@ -78,7 +71,7 @@ Read the governing spec BEFORE making changes in that area.
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | yes |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | yes |
 | SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | no |
-| PARALLEL-AGENT-COORDINATION-SPEC.md | Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi-agent AFK work | no |
+| PARALLEL-AGENT-COORDINATION-SPEC.md | Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi-agent AFK work | yes |
 | CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | yes |
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | yes |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | yes |
@@ -89,7 +82,7 @@ Read the governing spec BEFORE making changes in that area.
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
 | SCAFFOLD-DECOMPOSITION-SPEC.md | Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focused modules | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | TODO | no |
-| DA-COMPLIANCE-SPEC.md | DA compliance evaluation — role-specific audit criteria, transcript grading, and compliance dashboard | no |
+| DA-COMPLIANCE-SPEC.md | DA-COMPLIANCE-SPEC | no |
 
 ## Tests
 
@@ -101,33 +94,50 @@ bun test
 |----------|------|------|
 | update project state | update-project-state.test.ts | Auto-detected |
 | phase 3 | phase-3.test.ts | Auto-detected |
+| prior branch | prior-branch.test.ts | Auto-detected |
+| rule registry | rule-registry.test.ts | Auto-detected |
 | scaffold conformity | scaffold-conformity.test.ts | Auto-detected |
 | phase 2 | phase-2.test.ts | Auto-detected |
 | spec discovery | spec-discovery.test.ts | Auto-detected |
+| agent brief template | agent-brief-template.test.ts | Auto-detected |
+| post fix verify | post-fix-verify.test.ts | Auto-detected |
 | test brief roles | test-brief-roles.test.ts | Auto-detected |
 | schema canary | schema-canary.test.ts | Auto-detected |
+| deep modules | deep-modules.test.ts | Auto-detected |
 | directive extractor | directive-extractor.test.ts | Auto-detected |
 | phase 0 | phase-0.test.ts | Auto-detected |
 | structure | structure.test.ts | Auto-detected |
 | phase 1 | phase-1.test.ts | Auto-detected |
+| tdd checker | tdd-checker.test.ts | Auto-detected |
 | hill climb | hill-climb.test.ts | Auto-detected |
+| sync sc status | sync-sc-status.test.ts | Auto-detected |
 | brief context parser | brief-context-parser.test.ts | Auto-detected |
+| task completion checks | task-completion-checks.test.ts | Auto-detected |
 | transcript checker | transcript-checker.test.ts | Auto-detected |
 | commit enforcement | commit-enforcement.test.ts | Auto-detected |
 | phase 4 | phase-4.test.ts | Auto-detected |
+| matcher registry | matcher-registry.test.ts | Auto-detected |
+| audit specs | audit-specs.test.ts | Auto-detected |
 | split spec | split-spec.test.ts | Auto-detected |
 | spec compliance | spec-compliance.test.ts | Auto-detected |
 | phase 5 | phase-5.test.ts | Auto-detected |
 | contract | contract.test.ts | Auto-detected |
+| branch cleanup | branch-cleanup.test.ts | Auto-detected |
 | external deps | external-deps.test.ts | Auto-detected |
 | audit transcript | audit-transcript.test.ts | Auto-detected |
 | anti | anti.test.ts | Auto-detected |
 | instruction compliance | instruction-compliance.test.ts | Auto-detected |
 | meta sc coverage | meta-sc-coverage.test.ts | Auto-detected |
+| worktree cleanup | worktree-cleanup.test.ts | Auto-detected |
+| stale issue scanner | stale-issue-scanner.test.ts | Auto-detected |
 | phase 1 5 | phase-1-5.test.ts | Auto-detected |
+| sc guard | sc-guard.test.ts | Auto-detected |
 | contract negative | contract-negative.test.ts | Auto-detected |
 | spec compliance auto | spec-compliance-auto.test.ts | Auto-detected |
 | spec drift | spec-drift.test.ts | Auto-detected |
+| scan stale issues | scan-stale-issues.test.ts | Auto-detected |
+| sc drift | sc-drift.test.ts | Auto-detected |
+| create sc | create-sc.test.ts | Auto-detected |
 
 ## Commands
 
@@ -140,9 +150,9 @@ bun test
 | Sync spec tests | `bunx rungate sync-tests .` |
 | Create spec | `bunx rungate create-spec "title"` |
 | Create ADR | `bunx rungate create-adr "title"` |
+| Create SC | `bunx rungate create-sc --pattern <name> --params '<json>'` |
 | Extract constraints | `bunx rungate extract-constraints .` |
 | Check findings | `cat .rungate/conformity-findings.json` — structured findings with fix commands |
-| Create SC | `bun scripts/create-sc.ts --pattern {name} --params '{...}'` — generates matchable SC line |
 | Re-scaffold | `bun ~/Projects/rungate/scripts/scaffold-project.ts .` |
 
 

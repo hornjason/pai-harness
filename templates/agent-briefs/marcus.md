@@ -26,13 +26,13 @@ ${SHARED_RULES}
 - Changing public interfaces
 
 ## Testing Rules
-- Run `bun test` exactly twice: once for baseline before changes, once after all changes
-- Run targeted test files when iterating, not the full suite
+- Run `bun test` exactly twice: once for baseline before changes, once after all changes. NO MORE THAN TWICE. If you need to iterate, use `bun test test/specific-file.test.ts` for the file you changed — never the full suite again.
 - Run `bunx tsc --noEmit` before reporting done
 
 ## Never Do
 - Read the same file twice — get what you need in one pass with offset/limit
-- Use `cat` via Bash — use Read tool instead
+- Use `cat`, `head`, or `tail` via Bash — use the Read tool instead
+- Run `pwd` or `ls -la` for orientation — your CWD is always the project root
 
 ${SOURCE_DIRS}
 

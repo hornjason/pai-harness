@@ -1,8 +1,8 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-09-22
-scanned-at-sha: d821e536
+updated: 2026-09-25
+scanned-at-sha: 4702c8be
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -15,12 +15,12 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Metric | Count |
 |--------|-------|
-| Source directories | 12 |
+| Source directories | 13 |
 | Dependencies | 1 |
 | Dev dependencies | 1 |
 | API routes | 0 |
 | React components | 0 |
-| Entry points (fallow) | 89 |
+| Entry points (fallow) | 128 |
 | Unused files | 6 |
 | Unused exports | 1 |
 | Circular dependencies | N/A |
@@ -31,18 +31,19 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| .claude/ | 5246 | DS_Store, agents, worktrees, json, md |
-| test/ | 105 | ts, unit, json, fixtures, fixtures/golden-project |
+| .claude/ | 1058 | DS_Store, json, agents, worktrees, md |
+| test/ | 150 | ts, unit, json, fixtures, fixtures/golden-project |
+| evals/ | 76 | md, json, reads-agents-md, marcus-context-loading, marcus-tool-hygiene |
+| scripts/ | 39 | ts, sh, git-hooks, lib, git-hooks/pre-push |
+| docs/ | 34 | research, adr, DS_Store, council, guides |
 | gates/ | 32 | ts, gate-salt, toml, md, test-fixtures |
-| specs/ | 29 | md, bootstrap-data-flow, json, png |
-| scripts/ | 28 | ts, sh, git-hooks, lib, git-hooks/pre-push |
-| docs/ | 24 | research, adr, DS_Store, council, md |
+| specs/ | 30 | md, bootstrap-data-flow, json, png |
 | prompts/ | 24 | md |
-| hooks/ | 16 | ts, lib |
+| lib/ | 22 | ts |
+| hooks/ | 19 | ts, lib |
 | templates/ | 8 | agent-briefs, md |
-| lib/ | 6 | ts |
-| config/ | 5 | json |
-| workflows/ | 5 | js |
+| config/ | 6 | json |
+| workflows/ | 6 | js |
 
 ## Code Health (fallow)
 
@@ -58,5 +59,7 @@ Regenerate when src/ has commits since scanned-at-sha.
 ## Package Scripts
 
 - `test`
+- `posttest`
+- `sync-scs`
 - `test:structure`
 - `test:external-deps`
