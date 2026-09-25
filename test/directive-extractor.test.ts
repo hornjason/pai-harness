@@ -175,4 +175,155 @@ describe("directive-extractor", () => {
     expect(types.has("never")).toBe(true);
     expect(types.has("always")).toBe(true);
   });
+
+  // ── SC-465: Directive category field ──
+
+  test("every directive has a category field (SC-465)", () => {
+    const brief = `## Context (MANDATORY)
+1. **AGENTS.md** — read first
+
+## Workflow
+1. Run \`bun test\` — baseline
+
+## Never Do
+- Use cat via Bash
+`;
+    const directives = extractDirectives(brief);
+    for (const d of directives) {
+      expect(d.category).toBeDefined();
+      expect(["quality", "process"]).toContain(d.category);
+    }
+  });
+
+  // ── SC-466: Context, Always Do, Ask First → process ──
+
+  test("Context section directives are process (SC-466)", () => {
+    const brief = `## Context (READ THIS FIRST)
+1. **AGENTS.md** — MANDATORY FIRST READ
+2. **PROJECT-STATE.md** — current priorities
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(2);
+    for (const d of directives) {
+      expect(d.category).toBe("process");
+    }
+  });
+
+  test("Always Do section directives are process (SC-466)", () => {
+    const brief = `## Always Do
+- Read AGENTS.md before starting work
+- Verify before asserting
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(2);
+    for (const d of directives) {
+      expect(d.category).toBe("process");
+    }
+  });
+
+  test("Ask First section directives are process (SC-466)", () => {
+    const brief = `## Ask First
+- Modifying files outside the brief scope
+- Adding new dependencies
+`;
+    const directives = extractDirectives(brief);
+    for (const d of directives) {
+      expect(d.category).toBe("process");
+    }
+  });
+
+  // ── SC-467: All other sections default to quality ──
+
+  test("Workflow section directives are quality (SC-467)", () => {
+    const brief = `## Workflow
+1. Run \`bun test\` — establish baseline
+- Never skip the governing spec
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(1);
+    for (const d of directives) {
+      expect(d.category).toBe("quality");
+    }
+  });
+
+  test("Never Do section directives default to quality (SC-467)", () => {
+    const brief = `## Never Do
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(2);
+    for (const d of directives) {
+      expect(d.category).toBe("quality");
+    }
+  });
+
+  test("Testing Rules section directives are quality (SC-467)", () => {
+    const brief = `## Testing Rules
+- Run \`bun test\` exactly twice: once for baseline, once after changes
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(1);
+    for (const d of directives) {
+      expect(d.category).toBe("quality");
+    }
+  });
+
+  // ── SC-468: process_overrides frontmatter ──
+
+  test("process_overrides demotes matching directives to process (SC-468)", () => {
+    const brief = `---
+name: marcus
+process_overrides:
+  - "Use cat via Bash"
+  - "Read the same file twice"
+---
+
+## Never Do
+- Self-attest evidence (tier F)
+- Use \`cat\` via Bash — use Read tool instead
+- Read the same file twice
+`;
+    const directives = extractDirectives(brief);
+    const selfAttest = directives.find(d => d.text.includes("Self-attest"));
+    const cat = directives.find(d => d.text.includes("cat"));
+    const duplicate = directives.find(d => d.text.includes("same file twice"));
+
+    expect(selfAttest?.category).toBe("quality");
+    expect(cat?.category).toBe("process");
+    expect(duplicate?.category).toBe("process");
+  });
+
+  test("process_overrides with no matching text has no effect (SC-468)", () => {
+    const brief = `---
+name: test
+process_overrides:
+  - "nonexistent rule"
+---
+
+## Workflow
+1. Run \`bun test\` — baseline
+`;
+    const directives = extractDirectives(brief);
+    for (const d of directives) {
+      expect(d.category).toBe("quality");
+    }
+  });
+
+  // ── Category on real briefs ──
+
+  test("marcus.md has both quality and process directives", () => {
+    const briefPath = join(ROOT, ".claude/agents/marcus.md");
+    const content = readFileSync(briefPath, "utf-8");
+    const directives = extractDirectives(content);
+
+    const categories = new Set(directives.map(d => d.category));
+    expect(categories.has("quality")).toBe(true);
+    expect(categories.has("process")).toBe(true);
+
+    const contextDirectives = directives.filter(d => d.section.toLowerCase().includes("context"));
+    for (const d of contextDirectives) {
+      expect(d.category).toBe("process");
+    }
+  });
 });

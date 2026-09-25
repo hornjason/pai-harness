@@ -272,6 +272,61 @@ All design decisions in this spec are backed by research in `docs/research/`:
 - [x] SC-408: Standard tasks defined per role in config (behavioral)
 - [x] SC-409: Behavioral canary test — prompt contains a unique practice rule, transcript output verified to reflect it (read ≠ followed) (behavioral)
 
+## Violation Categorization & Remediation
+
+### Design Decisions (continued)
+
+| # | Decision | Rationale |
+|---|----------|-----------|
+| D-8 | Default category is 'quality' — override to 'process' | Quality-affecting is the safe default. Missing a quality violation is worse than over-remediating a process one |
+| D-9 | Category derived from section header + per-item overrides | Zero template modification for 80% of cases. Frontmatter `process_overrides` for the 20% in mixed sections |
+| D-10 | Remediation pass for quality violations on successful ships | Shipped code may work but not meet standards. Remediation applies the skipped practices retroactively |
+| D-11 | Grade always, not just on failure | Previous design returned early on success, losing all grade data |
+| D-12 | Compliance threshold configurable in rungate.json | Different projects have different quality bars |
+
+### Section-to-Category Mapping
+
+Validated via first-principles analysis across all 7 brief templates (20 unique section headers):
+
+| Category | Sections |
+|----------|----------|
+| **process** (explicit) | Context, Always Do, Ask First |
+| **quality** (everything else) | Workflow, Testing Rules, Coding Principles, What you scan, What you look for, CLI Testing Mode, UI Testing Mode, Discovery Rules, Discovery Workflow, Architecture principles, Design principles, What you do, Report, Project Type Detection, Rules, Never Do, Core Principles |
+
+Mixed sections (Rules, Never Do, Core Principles) default to quality. Individual items can be demoted via `process_overrides` in brief frontmatter:
+
+```yaml
+process_overrides:
+  - "Use cat via Bash"
+  - "Read the same file twice"
+  - "Run pwd or ls -la"
+```
+
+### Remediation Flow
+
+```
+Ship succeeds → Grade (always) →
+  Quality violations?
+    YES → Remediation pass:
+      1. Fix brief (heal template for next time)
+      2. Re-present code to agent with improved brief
+      3. Agent applies skipped practices (write missing tests, verify spec)
+      4. Grade remediation transcript
+      5. Commit improvements, close issue
+    NO → Process violations only?
+      YES → Heal brief + test-brief --hill-climb, close issue
+      NO → Clean ship, close issue
+```
+
+### Success Criteria (continued)
+
+- [x] SC-465: lib/directive-extractor.ts contains [category, quality, process]
+- [x] SC-466: lib/directive-extractor.ts contains [PROCESS_SECTIONS, context, always do, ask first]
+- [x] SC-467: lib/directive-extractor.ts contains [sectionCategory, quality]
+- [x] SC-468: lib/directive-extractor.ts contains [parseProcessOverrides, process_overrides]
+
+SCs for #588 (config-driven grading) and #589 (remediation pass) will be added when those issues are built. See design decisions D-8 through D-12 and the Remediation Flow section above for the design.
+
 ## Baseline (2026-09-20)
 
 31 files scanned. 15 HIGH findings across 6 files:

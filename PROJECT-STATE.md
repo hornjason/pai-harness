@@ -2,22 +2,22 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 11 — Feedback loop closed, AFK items shipped.
+Session 13 — Ship-and-heal dogfood + grading architecture redesign.
 
-Shipped: Option B (conformity auto-flip), 10 SCs reclassified, stale issue scanner,
-PostCompact hook. Closed 13 issues. Created #577-#583.
-Suite: 1264 pass, 0 fail, 65 files. 35/56 SCs done.
-Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardening.
+Dogfood: shipped #585, found #586 (transcript path disconnect), grading works when connected.
+Design: violation categorization (quality vs process), remediation pass, config-driven grading.
+New SCs: SC-465 through SC-478 in INSTRUCTION-COMPLIANCE-SPEC.md.
+Issues: #587 (categories), #588 (config grading), #589 (remediation pass).
+Suite: 1275 pass, 0 fail, 71 files. 35/56 SCs done.
 
 **Next priorities:**
-1. P0: Ship a real issue through ship-and-heal to validate grading scores in production (not just healing)
-2. P1: Observability Phase 3 — gates/prompt-health.ts static lint for file refs and hardcoded paths (SC-446–448)
-3. P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)
-4. P1: Fix PROJECT-STATE.md narrative generation — update script doesn't rewrite session summary
-5. P2: #584 Behavioral SC cache — map transcript results to SC verification (54 behavioral SCs)
-6. P2: #582 Agent Teams — evaluate for council and parallel coordination
-7. P2: M-05 criterion tuning — 'read prompts/' fails on every agent, may be outdated
-8. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+1. P0: #587 Directive category extraction (SC-465–468) — quality vs process violations
+2. P0: #588 Config-driven grading (SC-469–473) — roles from rungate.json, directives from briefs
+3. P0: #589 Ship-and-heal remediation pass (SC-474–478) — grade always, remediate quality violations
+4. P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)
+5. P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)
+6. P2: #584 Behavioral SC cache
+7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -126,6 +126,14 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 
 ---
 
+**Session 2026-09-24 session 13:**
+- Ship-and-heal dogfood: #585 shipped, status HEALED, 26 agents
+- Found critical bug #586: grade-deterministic.ts transcript path disconnect
+- Grading works when connected: Marcus avg 7.3/10, DA avg 4/9
+- ship.js fix: added git push after worktree-to-main merge (cbf2b512)
+- PR #17 merged on pai-harness
+- Key findings: TDD violated on all Marcus agents, SHARED-01/04 fail on 96%
+
 **Session 2026-09-23 session 8 (AFK):**
 - Closed #559 (briefedAgent parser), #560 (Quinn worktree fix), #536 (merge worktrees) — all already on main
 - lib/prior-branch.ts: detects existing branches by issue number, word-boundary matching, isolated temp worktree for tests
@@ -159,18 +167,4 @@ Priorities confirmed: Observability Phase 0 → Brief compliance → AFK hardeni
 - Rewrote project CLAUDE.md: 6 project-specific rules as guidance
 - Decision: RunGate exempt from harness enforcement (bootstrap problem)
 - Mid-session rule refresh via Bash cat works — Read tool blocks unchanged files
-
-**Session 2026-09-22 session 4:**
-- Ship workflow dogfood: 3 bugs found (process.env, agentType, unnamed discovery)
-- Config-driven roles: rungate.json roles{} maps role→brief+isolation
-- Transcript auditor: scripts/audit-transcript.ts grades agent behavior (11 rules)
-- test-brief CLI: scripts/test-brief.ts extracts directives from brief, cross-references with transcript
-- Compliance hill climb: Marcus F(27%)→D(45%)→C(70%)→B(85%)→B(80%) in 5 iterations
-- Key finding: explicit numbered Read steps in prompt > 'read Context section' > brief-only
-- briefedAgent() parses brief Context section, generates explicit Read steps at prompt-build time
-- Template system: discovery.md + marcus.md externalized to templates/agent-briefs/ with ${VAR}
-- Published 8 issues (#550-#557) for Phase F/G/H: matcher registry, create-sc, audit-specs --fix
-- Published #558: test-brief CLI for isolated agent compliance testing
-- Ship #550 VALIDATE_FAILED: worktree isolation bug — Quinn can't see Marcus's worktree changes
-- agnix+RepoRails: run on all 32 files, 10 HIGH findings. Cross-referenced with transcript for behavioral gaps
 

@@ -8,13 +8,49 @@
  */
 
 export type DirectiveType = "read" | "run" | "never" | "always";
+export type DirectiveCategory = "quality" | "process";
 
 export interface Directive {
   text: string;
   type: DirectiveType;
+  category: DirectiveCategory;
   line: number;
   section: string;
   target?: string;
+}
+
+const PROCESS_SECTIONS = new Set([
+  "context",
+  "always do",
+  "ask first",
+]);
+
+function sectionCategory(section: string, processOverrides: string[]): (text: string) => DirectiveCategory {
+  const sectionKey = section.toLowerCase().replace(/\s*\(.*\)/, "").trim();
+  const isProcessSection = PROCESS_SECTIONS.has(sectionKey);
+  return (text: string): DirectiveCategory => {
+    if (isProcessSection) return "process";
+    const normalizedText = text.toLowerCase().replace(/[`*"']/g, "");
+    if (processOverrides.some(o => normalizedText.includes(o.toLowerCase().replace(/[`*"']/g, "")))) return "process";
+    return "quality";
+  };
+}
+
+function parseProcessOverrides(content: string): string[] {
+  const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fmMatch) return [];
+  const lines = fmMatch[1].split("\n");
+  let inOverrides = false;
+  const overrides: string[] = [];
+  for (const line of lines) {
+    if (/^process_overrides:\s*$/.test(line)) { inOverrides = true; continue; }
+    if (inOverrides && /^\s+-\s+/.test(line)) {
+      overrides.push(line.replace(/^\s+-\s+["']?/, "").replace(/["']?\s*$/, ""));
+    } else if (inOverrides && !/^\s+/.test(line)) {
+      inOverrides = false;
+    }
+  }
+  return overrides;
 }
 
 // ── Pattern matchers ──────────────────────────────────────
@@ -37,6 +73,8 @@ export function extractDirectives(briefContent: string): Directive[] {
   const directives: Directive[] = [];
   const lines = briefContent.split("\n");
   let currentSection = "top";
+  const processOverrides = parseProcessOverrides(briefContent);
+  let getCategory = sectionCategory("top", processOverrides);
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -45,6 +83,7 @@ export function extractDirectives(briefContent: string): Directive[] {
     // Track sections
     if (line.startsWith("## ")) {
       currentSection = line.replace("## ", "").trim();
+      getCategory = sectionCategory(currentSection, processOverrides);
       continue;
     }
 
@@ -57,14 +96,14 @@ export function extractDirectives(briefContent: string): Directive[] {
     // ── Never classification (HIGHEST PRIORITY — before all content patterns) ──
     // Priority 1: Lines starting with "Never" regardless of section or content
     if (/^never\b/i.test(trimmedLine) && !directives.some(d => d.line === lineNum)) {
-      directives.push({ text: trimmedLine, type: "never", line: lineNum, section: currentSection });
+      directives.push({ text: trimmedLine, type: "never", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       continue;
     }
 
     // Priority 2: All bullet items in "Never Do" or "Additional Never Do" sections
     if ((sectionLower.includes("never") || sectionLower.includes("additional never")) && line.trim().startsWith("- ")) {
       if (!directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "never", line: lineNum, section: currentSection });
+        directives.push({ text: trimmedLine, type: "never", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
         continue;
       }
     }
@@ -75,7 +114,7 @@ export function extractDirectives(briefContent: string): Directive[] {
     if (readMatch) {
       const target = readMatch[1].replace(/[`"*]/g, "");
       if (isFilePath(target)) {
-        directives.push({ text: trimmedLine, type: "read", line: lineNum, section: currentSection, target });
+        directives.push({ text: trimmedLine, type: "read", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target });
       }
     }
 
@@ -85,7 +124,7 @@ export function extractDirectives(briefContent: string): Directive[] {
       const pathMatch = line.match(BACKTICK_PATH_PATTERN);
       const target = boldMatch?.[1] || pathMatch?.[1];
       if (target && !directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "read", line: lineNum, section: currentSection, target });
+        directives.push({ text: trimmedLine, type: "read", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target });
       }
     }
 
@@ -95,46 +134,46 @@ export function extractDirectives(briefContent: string): Directive[] {
       const pathMatch = line.match(BACKTICK_PATH_PATTERN);
       const target = boldMatch?.[1] || pathMatch?.[1];
       if (target && !directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "read", line: lineNum, section: currentSection, target });
+        directives.push({ text: trimmedLine, type: "read", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target });
       }
     }
 
     // ── Run patterns (only after never checks pass) ──
     const runMatch = line.match(RUN_PATTERN);
     if (runMatch && !directives.some(d => d.line === lineNum)) {
-      directives.push({ text: trimmedLine, type: "run", line: lineNum, section: currentSection, target: runMatch[1] });
+      directives.push({ text: trimmedLine, type: "run", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target: runMatch[1] });
     }
 
     // Inline bun test pattern
     const bunTestMatch = line.match(BUN_TEST_PATTERN);
     if (bunTestMatch && !directives.some(d => d.line === lineNum)) {
-      directives.push({ text: trimmedLine, type: "run", line: lineNum, section: currentSection, target: bunTestMatch[1] });
+      directives.push({ text: trimmedLine, type: "run", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target: bunTestMatch[1] });
     }
 
     // tsc --noEmit pattern
     const tscMatch = line.match(TSC_PATTERN);
     if (tscMatch && !directives.some(d => d.line === lineNum)) {
-      directives.push({ text: trimmedLine, type: "run", line: lineNum, section: currentSection, target: tscMatch[1] });
+      directives.push({ text: trimmedLine, type: "run", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target: tscMatch[1] });
     }
 
     // Always patterns — in "Always Do" or "Always" sections
     if (sectionLower.includes("always") && line.trim().startsWith("- ")) {
       if (!directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "always", line: lineNum, section: currentSection });
+        directives.push({ text: trimmedLine, type: "always", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       }
     }
 
     // Core Principles section — treat as "always"
     if (sectionLower.includes("core principles") && line.trim().startsWith("- ")) {
       if (!directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "always", line: lineNum, section: currentSection });
+        directives.push({ text: trimmedLine, type: "always", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       }
     }
 
     // Rules section — treat bullet points as "always"
     if (sectionLower === "rules" && line.trim().startsWith("- ")) {
       if (!directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "always", line: lineNum, section: currentSection });
+        directives.push({ text: trimmedLine, type: "always", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       }
     }
 
@@ -142,7 +181,7 @@ export function extractDirectives(briefContent: string): Directive[] {
     if (sectionLower.includes("before") && /^\d+\.\s/.test(line.trim())) {
       const match = line.match(RUN_PATTERN) || line.match(BUN_TEST_PATTERN) || line.match(TSC_PATTERN);
       if (match && !directives.some(d => d.line === lineNum)) {
-        directives.push({ text: trimmedLine, type: "run", line: lineNum, section: currentSection, target: match[1] });
+        directives.push({ text: trimmedLine, type: "run", category: getCategory(trimmedLine), line: lineNum, section: currentSection, target: match[1] });
       }
     }
   }
