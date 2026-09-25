@@ -82,7 +82,7 @@ Read the governing spec BEFORE making changes in that area.
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | yes |
 | SCAFFOLD-DECOMPOSITION-SPEC.md | Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focused modules | yes |
 | BOOTSTRAP-DATA-FLOW-SPEC.md | TODO | no |
-| DA-COMPLIANCE-SPEC.md | DA-COMPLIANCE-SPEC | no |
+| DA-COMPLIANCE-SPEC.md | TODO | no |
 
 ## Tests
 

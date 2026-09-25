@@ -2,22 +2,36 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 13 — Ship-and-heal dogfood + grading architecture redesign.
+Session 14 — AES dry-run pipeline + lessons learned analysis.
 
-Dogfood: shipped #585, found #586 (transcript path disconnect), grading works when connected.
-Design: violation categorization (quality vs process), remediation pass, config-driven grading.
-New SCs: SC-465 through SC-478 in INSTRUCTION-COMPLIANCE-SPEC.md.
-Issues: #587 (categories), #588 (config grading), #589 (remediation pass).
-Suite: 1275 pass, 0 fail, 71 files. 35/56 SCs done.
+Dry-run approach: Workflow agent() with isolation:'worktree' bypasses the test-brief trust blocker.
+AES formula: compliance(0.3) + file_efficiency(0.25) + deliverable_ratio(0.25) + test_discipline(0.1) + context_discipline(0.1).
+Baseline AES: 31.5. Target: 80.
+Baseline metrics: compliance 71%, file efficiency 23%, deliverable ratio 7%, test runs 13 (limit 2), context growth 440%.
+
+Dry-run AES (workflow brief-test): 32.75.
+Dry-run metrics: compliance 50% (5/10), file efficiency 22% (2/9), deliverable ratio 9%, test runs 4 (2 full + 2 targeted), context growth 153%.
+Flags: TDD_SEQUENCE_VIOLATED, SHARED-02 (dup reads), SHARED-03 (cat via bash), M-03 (test runs), M-04 (no governing spec), M-06 (no grep before read).
+All 10 reads marked unused — 0% read utility. Brief rules aren't producing behavior change yet.
+
+Key decisions this session:
+- DRY_RUN should flow through full pipeline but skip commit/push/PR/heal
+- Workflow agent() with isolation:'worktree' is the solution for worktree trust (auto-trusts)
+- AES ≥ 80 must gate commits — quality violations block shipping
+- Process violations → brief heal only, quality violations → remediation pass
+- All AES dimensions must hit 80%+ (compliance, file efficiency, deliverable ratio, test discipline, context discipline)
+
+Suite: 1304 pass, 0 fail, 72 files. 39/60 SCs done.
 
 **Next priorities:**
-1. P0: #587 Directive category extraction (SC-465–468) — quality vs process violations
-2. P0: #588 Config-driven grading (SC-469–473) — roles from rungate.json, directives from briefs
-3. P0: #589 Ship-and-heal remediation pass (SC-474–478) — grade always, remediate quality violations
-4. P1: Observability Phase 3 — gates/prompt-health.ts static lint (SC-446–448)
-5. P1: Observability Phase 4 — TraceSignal types + routing config (SC-443–445)
-6. P2: #584 Behavioral SC cache
-7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+1. P0: AES dry-run — get Agent Efficiency Score to 80% via workflow-based brief testing
+2. P0: Grade BEFORE commit — move grading gate between implement and commit in ship.js
+3. P0: AES ≥ 80 gate — block commit if AES below threshold
+4. P1: #590 create-brief CLI — generate new agent briefs from templates
+5. P1: #591 SC validation hook — block unmatchable SCs in strict specs
+6. P1: #593 Fast path for XS issues (38 min full pipeline is too slow)
+7. P2: #584 Behavioral SC cache
+8. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -88,6 +102,17 @@ Suite: 1275 pass, 0 fail, 71 files. 35/56 SCs done.
 | ✅ | SC-356 | Prompt routing generated dynamically |
 | ✅ | SC-357 | Template vars match project values |
 
+## ✅ Instruction Compliance — Grading Pipeline (COMPLETE)
+
+| Status | SC | What |
+|---|---|---|
+| ✅ | SC-465 | Every directive has category field (quality|process) |
+| ✅ | SC-466 | Context/Always Do/Ask First sections → process |
+| ✅ | SC-467 | All other sections → quality |
+| ✅ | SC-468 | process_overrides frontmatter demotes matching directives |
+
+## ⬜ AES Quality Gate (NEW) (NOT STARTED)
+
 ## ⬜ Scaffold Decomposition (NOT STARTED)
 
 | Status | SC | What |
@@ -126,6 +151,21 @@ Suite: 1275 pass, 0 fail, 71 files. 35/56 SCs done.
 
 ---
 
+**Session 2026-09-25 session 14:**
+- AES dry-run completed via Workflow agent(isolation:'worktree') — trust blocker bypassed
+- Dry-run AES: 32.75 (vs baseline 31.5) — marginal improvement, same core problems
+- Compliance 50% (5/10), file efficiency 22%, deliverable ratio 9%, context growth 153%
+- Flags: TDD violated, dup reads, cat-via-bash, no governing spec, no grep-before-read
+- All 10 reads unused (0% utility) — brief rules not producing behavior change
+- AES formula finalized: compliance(0.3) + file_eff(0.25) + deliverable(0.25) + test(0.1) + context(0.1)
+- Baseline AES: 31.5 — target 80. All dimensions must hit 80%+
+- Launched brief-test workflow: context extraction → Marcus in worktree → grade + analyze
+- Key design: DRY_RUN flows through full pipeline but skips commit/push/PR/heal
+- Decision: quality violations block shipping, process violations get brief heal only
+- Lessons learned analysis from shipped issues: TDD, context bloat, test discipline all improvable
+- analyze-transcript.ts provides: file efficiency, deliverable ratio, test runs, context growth
+- Blocker resolved: worktree trust bypass via Workflow agent() isolation:'worktree' (auto-trusts)
+
 **Session 2026-09-24 session 13:**
 - Ship-and-heal dogfood: #585 shipped, status HEALED, 26 agents
 - Found critical bug #586: grade-deterministic.ts transcript path disconnect
@@ -140,31 +180,5 @@ Suite: 1275 pass, 0 fail, 71 files. 35/56 SCs done.
 - lib/worktree-cleanup.ts: safely prunes stale worktrees (checks uncommitted changes + merge status)
 - ship.js: prior-branch detection between Discovery/Implement, worktree cleanup post-workflow
 - hooks/StaleTTLCleanup: worktree pruning (24h+ with merged branches) on session start
-- /simplify review: fixed destructive checkout → temp worktree, collapsed redundant booleans, replaced agent merge with direct spawn, populated filesChanged from git diff
-- Test suite: 1,062 pass, 0 fail across 57 files
-- Commits: 624796b, 2a8a5f3, c04253d
-- Verified and closed #550 (matcher-registry.json — 19 patterns, all required fields)
-- Verified and closed #514 (ship gate blocks on FAIL ACs — already implemented in orchestrator.ts:66-82)
-- Verified and closed #513 (per-AC evidence commands — already implemented in run-gate.ts:108-136)
-- Harness readiness audit: no remaining blockers for consumer project dogfooding
-- Shipped SC-380 (#551): matchPattern() refactored to config-driven dispatch — 19 handlers, 365→14 line body, zero test changes
-- Shipped SC-381 (#552): SPEC-TEMPLATE patterns auto-generated from config/matcher-registry.json
-- Fixed import() sandbox issue in ship.js and prove.js — Workflow sandbox doesn't support import()
-- First harness dogfood: #1447 shipped via ship workflow — ALREADY_SHIPPED path, all 7 ACs MET, prove UNPROVEN
-- Closed #1447 (council fixes) with harness evidence — first cross-repo harness run
-- Dogfood finding: GRADE unreachable on ALREADY_SHIPPED path (by design — no Marcus work to grade)
-- Dogfood finding: need an unimplemented issue to test full pipeline including Marcus briefs + GRADE
-
-**Session 2026-09-22 session 5:**
-- Merged SC-293 (already on main), SC-302 (6d1ba72), worktrees cleaned
-- Merged #560 worktree fix (70ed812), #559 briefedAgent parser (0671786), combined (86181db)
-- Fixed 3 pre-existing test failures ST-6, SC-140, SC-145 (d821e53) — suite green 955/0
-- Created issues #559, #560, #561. Wrote PARALLEL-AGENT-COORDINATION-SPEC (SC-410–415)
-- DA self-audit: F(40%), 12/20 rules violated. Hill climb 4 iterations: CLAUDE.md procedural rules proven ineffective
-- Key finding: behavioral rules work in CLAUDE.md, procedural rules do NOT — model prioritizes task over system context
-- Council (4 members, 2 rounds): hooks as enforcement floor, /ship for workflow, CLAUDE.md behavioral only
-- Rewrote global CLAUDE.md: 91→33 lines, 7 behavioral rules. Procedural rules dropped.
-- Rewrote project CLAUDE.md: 6 project-specific rules as guidance
-- Decision: RunGate exempt from harness enforcement (bootstrap problem)
-- Mid-session rule refresh via Bash cat works — Read tool blocks unchanged files
+- First harness dogfood: #1447 shipped via ship workflow — first cross-repo harness run
 

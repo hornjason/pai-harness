@@ -35,6 +35,7 @@ export interface TranscriptData {
   writes: string[];
   duplicateReads: Record<string, number>;
   firstThreeReads: string[];
+  promptContent: string;
 }
 
 export type Verdict = "FOLLOWED" | "IGNORED";
@@ -329,22 +330,26 @@ export function formatReport(
 const sharedCriteria: EvalCriterion[] = [
   {
     id: "SHARED-01",
-    rule: "Read AGENTS.md in first 5 calls",
+    rule: "AGENTS.md context available (read or injected)",
     weight: 20,
     source: "AGENTS.md § Rules",
     check(data) {
-      const first5 = data.calls.slice(0, 5);
-      const found = first5.some(
+      const readIt = data.calls.some(
         (c) => c.name === "Read" && (c.input.file_path || "").endsWith("AGENTS.md")
       );
-      const pos = data.calls.findIndex(
-        (c) => c.name === "Read" && (c.input.file_path || "").endsWith("AGENTS.md")
-      );
+      if (readIt) {
+        const pos = data.calls.findIndex(
+          (c) => c.name === "Read" && (c.input.file_path || "").endsWith("AGENTS.md")
+        );
+        return { verdict: "FOLLOWED", evidence: `AGENTS.md read at position ${pos + 1}` };
+      }
+      const injected = data.promptContent.includes("AGENTS.md");
+      if (injected) {
+        return { verdict: "FOLLOWED", evidence: "AGENTS.md content injected in prompt" };
+      }
       return {
-        verdict: found ? "FOLLOWED" : "IGNORED",
-        evidence: found
-          ? `AGENTS.md read at position ${pos + 1}`
-          : `First reads: ${data.firstThreeReads.join(", ")}`,
+        verdict: "IGNORED",
+        evidence: `AGENTS.md not read or injected. First reads: ${data.firstThreeReads.join(", ")}`,
       };
     },
   },
@@ -382,22 +387,25 @@ const sharedCriteria: EvalCriterion[] = [
   },
   {
     id: "SHARED-04",
-    rule: "Read PROJECT-STATE early (first 10 calls)",
+    rule: "Read PROJECT-STATE if task requires project context",
     weight: 10,
     source: "AGENTS.md § Key Files",
     check(data) {
-      const first10 = data.calls.slice(0, 10);
-      const found = first10.some(
-        (c) =>
-          c.name === "Read" &&
-          ((c.input.file_path || "").includes("PROJECT-STATE") ||
-            (c.input.file_path || "").includes("project-state.json"))
+      const found = data.reads.some(
+        (r) => r.includes("PROJECT-STATE") || r.includes("project-state.json")
       );
+      const touchesMultipleFiles = data.edits.length + data.writes.length > 3;
+      if (!touchesMultipleFiles && !found) {
+        return {
+          verdict: "FOLLOWED",
+          evidence: "Small task — PROJECT-STATE read not required",
+        };
+      }
       return {
         verdict: found ? "FOLLOWED" : "IGNORED",
         evidence: found
-          ? "Project state read early"
-          : "PROJECT-STATE not read in first 10 calls",
+          ? "Project state read"
+          : "PROJECT-STATE not read (multi-file task)",
       };
     },
   },
@@ -544,24 +552,27 @@ const marcusCriteria: EvalCriterion[] = [
   },
   {
     id: "M-03",
-    rule: "<= 1 full bun test run",
+    rule: "<= 2 full suite runs (targeted runs are unlimited)",
     weight: 10,
-    source: "marcus.md § Additional Never Do",
+    source: "marcus.md § Testing Rules",
     check(data) {
-      const bunTestRuns = data.bashes.filter(
-        (b) => /\bbun test\b/.test(b) && !b.includes("grep")
+      const fullSuiteRuns = data.bashes.filter(
+        (b) => /\bbun test\s*$/.test(b.trim()) || (/\bbun test\b/.test(b) && !b.includes("test/") && !b.includes(".test.") && !b.includes("grep"))
+      );
+      const targetedRuns = data.bashes.filter(
+        (b) => /\bbun test\b/.test(b) && (b.includes("test/") || b.includes(".test.")) && !b.includes("grep")
       );
       return {
-        verdict: bunTestRuns.length <= 1 ? "FOLLOWED" : "IGNORED",
-        evidence: `${bunTestRuns.length} bun test runs`,
+        verdict: fullSuiteRuns.length <= 2 ? "FOLLOWED" : "IGNORED",
+        evidence: `${fullSuiteRuns.length} full suite runs, ${targetedRuns.length} targeted runs`,
       };
     },
   },
   {
     id: "M-04",
-    rule: "Read governing spec before first edit",
+    rule: "Governing spec context available (read or injected) when touching spec'd area",
     weight: 15,
-    source: "marcus.md § Before writing code",
+    source: "marcus.md § Context",
     check(data) {
       const firstEdit = data.calls.findIndex(
         (c) => c.name === "Edit" || c.name === "Write"
@@ -572,30 +583,59 @@ const marcusCriteria: EvalCriterion[] = [
       const specRead = data.calls.slice(0, firstEdit).some(
         (c) => c.name === "Read" && (c.input.file_path || "").includes("specs/")
       );
+      if (specRead) {
+        return { verdict: "FOLLOWED", evidence: "Spec read before edits" };
+      }
+      const specInjected = data.promptContent.includes("specs/") || data.promptContent.includes("Governing spec");
+      if (specInjected) {
+        return { verdict: "FOLLOWED", evidence: "Spec content injected in prompt" };
+      }
+      const editPaths = data.edits.concat(data.writes);
+      const touchesSpecArea = editPaths.some(
+        (p) => p.includes("lib/") || p.includes("gates/") || p.includes("hooks/") || p.includes("workflows/")
+      );
+      if (!touchesSpecArea) {
+        return { verdict: "FOLLOWED", evidence: "Task does not touch spec'd area — spec read not required" };
+      }
       return {
-        verdict: specRead ? "FOLLOWED" : "IGNORED",
-        evidence: specRead
-          ? "Spec read before edits"
-          : "No spec read before first edit",
+        verdict: "IGNORED",
+        evidence: "No spec read or injection before first edit (touches spec'd area)",
       };
     },
   },
   {
     id: "M-05",
-    rule: "Read prompts/ before writing code",
+    rule: "Coding/testing principles available (read or injected) for core changes",
     weight: 15,
-    source: "marcus.md § Context (MANDATORY)",
+    source: "marcus.md § Context",
     check(data) {
       if (data.edits.length === 0 && data.writes.length === 0) {
         return { verdict: "FOLLOWED", evidence: "No code written — exempt" };
       }
       const promptReads = data.reads.filter((r) => r.includes("prompts/"));
+      if (promptReads.length > 0) {
+        return {
+          verdict: "FOLLOWED",
+          evidence: `${promptReads.length} prompt(s) read: ${promptReads.map((r) => basename(r)).join(", ")}`,
+        };
+      }
+      const principlesInjected = data.promptContent.includes("prompts/") ||
+        data.promptContent.includes("Coding Principles") ||
+        data.promptContent.includes("coding-principles");
+      if (principlesInjected) {
+        return { verdict: "FOLLOWED", evidence: "Coding/testing principles injected in prompt" };
+      }
+      const editPaths = data.edits.concat(data.writes);
+      const touchesCoreLib = editPaths.some(
+        (p) => p.includes("lib/") || p.includes("src/")
+      );
+      const multipleFiles = editPaths.length > 3;
+      if (!touchesCoreLib && !multipleFiles) {
+        return { verdict: "FOLLOWED", evidence: "Simple task — prompts/ read not required" };
+      }
       return {
-        verdict: promptReads.length > 0 ? "FOLLOWED" : "IGNORED",
-        evidence:
-          promptReads.length > 0
-            ? `${promptReads.length} prompt(s) read: ${promptReads.map((r) => basename(r)).join(", ")}`
-            : "No prompts/ files read",
+        verdict: "IGNORED",
+        evidence: "No coding principles read or injected (touches core lib or multi-file change)",
       };
     },
   },

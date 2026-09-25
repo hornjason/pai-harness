@@ -164,9 +164,11 @@ Only return the rule TEXT — strip leading dashes, numbers, and whitespace.
 async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
   const taskContextFiles = opts.contextFiles || null
+  const taskContextExcerpts = opts.contextExcerpts || null
   const callerSetIsolation = 'isolation' in opts
   delete opts.role
   delete opts.contextFiles
+  delete opts.contextExcerpts
   if (role) {
     const roleConfig = ROLES[role]
     const briefPath = roleConfig?.brief
@@ -178,22 +180,35 @@ async function briefedAgent(prompt, opts = {}) {
     }
     if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT
 
-    const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
+    let fullPrompt = ''
 
-    if (taskContextFiles && taskContextFiles.length > 0) {
-      // Task-aware context: use Discovery's contextFiles instead of static brief list
-      taskContextFiles.forEach((cf, i) => {
-        const path = typeof cf === 'string' ? cf : cf.path
-        const reason = typeof cf === 'string' ? '' : ` — ${cf.reason}`
-        readSteps.push(`${i + 2}. Read \`${path}\`${reason}`)
-      })
+    if (taskContextExcerpts && taskContextExcerpts.length > 0) {
+      // Injected context mode: content is in the prompt, agent does NOT read files
+      fullPrompt += `MANDATORY FIRST STEP:\n1. Read ${briefPath} — your identity, rules, and workflow\n\n`
+      fullPrompt += `## Injected Context (DO NOT re-read these files — content is here)\n\n`
+      for (const excerpt of taskContextExcerpts) {
+        const source = excerpt.source || excerpt.path || 'unknown'
+        const section = excerpt.section || ''
+        const content = excerpt.content || ''
+        fullPrompt += `### ${section}${source ? ' (from ' + source + ')' : ''}\n${content}\n\n`
+      }
     } else {
-      // Fallback: use static brief Context section paths
-      const contextPaths = await loadContextPaths(role, briefPath)
-      contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
-    }
+      // Read-step mode: agent reads files itself
+      const readSteps = [`1. Read ${briefPath} — your identity, rules, and workflow`]
 
-    let fullPrompt = `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above.\n\n`
+      if (taskContextFiles && taskContextFiles.length > 0) {
+        taskContextFiles.forEach((cf, i) => {
+          const path = typeof cf === 'string' ? cf : cf.path
+          const reason = typeof cf === 'string' ? '' : ` — ${cf.reason}`
+          readSteps.push(`${i + 2}. Read \`${path}\`${reason}`)
+        })
+      } else {
+        const contextPaths = await loadContextPaths(role, briefPath)
+        contextPaths.forEach((p, i) => readSteps.push(`${i + 2}. Read \`${p}\``))
+      }
+
+      fullPrompt += `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above.\n\n`
+    }
 
     const reinforcement = await loadReinforcementRules(role, briefPath)
     if (reinforcement.length) {
@@ -608,34 +623,80 @@ Report the output.
       const path = typeof cf === 'string' ? cf : cf.path
       return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
     })
+
+  // Extract context excerpts: read files and pull relevant sections
+  let contextExcerpts = null
   if (acContextFiles.length > 0) {
-    log(`Task-aware context: ${acContextFiles.length} files from Discovery (replacing static brief reads)`)
+    log(`Extracting context excerpts from ${acContextFiles.length} Discovery files`)
+    const EXCERPT_SCHEMA = {
+      type: 'object',
+      properties: {
+        excerpts: { type: 'array', items: {
+          type: 'object',
+          properties: {
+            source: { type: 'string' },
+            section: { type: 'string' },
+            content: { type: 'string' },
+            reason: { type: 'string' }
+          },
+          required: ['source', 'section', 'content', 'reason']
+        }}
+      },
+      required: ['excerpts']
+    }
+    const fileList = acContextFiles.map(cf => {
+      const path = typeof cf === 'string' ? cf : cf.path
+      const reason = typeof cf === 'string' ? '' : cf.reason || ''
+      return `- ${path}${reason ? ' — ' + reason : ''}`
+    }).join('\n')
+    const excerptResult = await agent(`
+Read these files and extract ONLY the sections relevant to this task. Return 2-5 bullet points per file, not full files.
+
+Files to extract from:
+${fileList}
+
+Also read these standard context files:
+- ${PROJECT_ROOT}/AGENTS.md — project identity, rules, test commands
+- ${PROJECT_ROOT}/prompts/coding-principles.md — coding standards
+
+For each, return: source (file path), section (header), content (the relevant text), reason (why it matters for this task).
+    `, { label: 'extract-context', phase: 'Implement', schema: EXCERPT_SCHEMA })
+    contextExcerpts = excerptResult?.excerpts || null
+    if (contextExcerpts) {
+      log(`Injecting ${contextExcerpts.length} context excerpts into Marcus prompt`)
+    }
   }
 
-  // Layer 2 reinforcement handles TDD via briefedAgent() injection.
-  // Layer 3 mechanical (two-spawn split) blocked by worktree isolation —
-  // spawn 2 can't see spawn 1's test files in a separate worktree.
-  // Instead: single spawn + post-run TDD sequence verification in GRADE phase.
+  const useExcerpts = contextExcerpts && contextExcerpts.length > 0
   const buildResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
-Read ${WORK_DIR}/marcus-brief.md for full instructions.
-Read every file in Context section first. Read "Files to modify" before changes.
+Read ${WORK_DIR}/marcus-brief.md for full instructions including ACs and files to modify.
 
-CRITICAL PROCESS — TDD (test-driven development):
+## TDD — NON-NEGOTIABLE
 1. Write the failing test FIRST
-2. Run ${testCommand} to confirm it fails — set the Bash tool's timeout parameter to ${testTimeout}
+2. Run the targeted test to confirm it fails — set the Bash tool's timeout parameter to ${testTimeout}
 3. Write the implementation to make the test pass
-4. Run ${testCommand} to confirm all tests pass — set the Bash tool's timeout parameter to ${testTimeout}
+4. Run the targeted test to confirm all tests pass — set the Bash tool's timeout parameter to ${testTimeout}
 5. Run bunx tsc --noEmit
 Do NOT write source code before writing its test. This order is mandatory.
-IMPORTANT: When running ${testCommand}, set timeout: ${testTimeout} on the Bash tool call itself (not the shell 'timeout' command). The default 120s is too short.
+
+## Efficiency Rules
+- Do NOT read files listed in "Injected Context" above — the content is already in your prompt
+- Do NOT run the full test suite unless the brief requires it — use targeted tests: ${testCommand.replace('bun test', 'bun test test/specific-file.test.ts')}
+- Do NOT use ls, pwd, cat, head, or tail via Bash — use Read tool if you must read a file
+- Every tool call should produce value — no exploratory commands
 
 Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
 Also report worktreePath: your current working directory (run pwd and include the result).
-  `, { label: 'marcus', phase: 'Implement', role: 'marcus', contextFiles: acContextFiles.length > 0 ? acContextFiles : null, schema: BUILD_RESULT_SCHEMA })
+  `, {
+    label: 'marcus', phase: 'Implement', role: 'marcus',
+    contextExcerpts: useExcerpts ? contextExcerpts : null,
+    contextFiles: !useExcerpts && acContextFiles.length > 0 ? acContextFiles : null,
+    schema: BUILD_RESULT_SCHEMA
+  })
 
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
@@ -979,16 +1040,30 @@ If merge conflicts, report them — do NOT force.
 let gradeResult = null
 if (!SKIP_GRADE) {
   gradeResult = await agent(`
-Find the workflow transcript directory and run grading:
+Find the workflow transcript directory and run grading + efficiency analysis + wall-clock timing:
 
 1. Find the transcript dir — look for agent-*.jsonl files:
    find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${WORK_DIR}/workflow-state.json 2>/dev/null | head -1
-   Extract the directory from that path.
+   Extract the directory from that path (dirname of the found file).
 
-2. Run grading with the found transcript dir:
-   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts <found-dir> --project ${PROJECT_ROOT} ${WORK_DIR}
+2. Run grading:
+   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${PROJECT_ROOT} ${WORK_DIR}
 
-3. Parse the JSON output and return it. If no transcripts found, return {"grades": []}.
+3. Run efficiency analysis:
+   bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
+
+4. Wall-clock timing per agent — for each agent-*.jsonl file, get file timestamps:
+   for f in "$TDIR"/agent-*.jsonl; do
+     name=$(basename "$f" .jsonl)
+     created=$(stat -f '%B' "$f" 2>/dev/null || stat -c '%W' "$f" 2>/dev/null)
+     modified=$(stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null)
+     if [ -n "$created" ] && [ -n "$modified" ]; then
+       elapsed=$((modified - created))
+       echo "$name: ${elapsed}s"
+     fi
+   done
+
+5. Return a JSON object with grades array, efficiency metrics, and timing. If no transcripts found, return {"grades": [], "efficiency": null, "timing": []}.
   `, { label: 'grade', phase: 'Verify', schema: {
     type: 'object',
     properties: {
@@ -1001,6 +1076,21 @@ Find the workflow transcript directory and run grading:
           flagged: { type: 'array', items: { type: 'string' } }
         },
         required: ['role', 'total', 'followed']
+      }},
+      efficiency: { type: 'object', properties: {
+        fileEfficiency: { type: 'string' },
+        deliverableRatio: { type: 'string' },
+        testRuns: { type: 'string' },
+        contextGrowth: { type: 'string' },
+        toolCalls: { type: 'number' }
+      }},
+      timing: { type: 'array', items: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string' },
+          seconds: { type: 'number' }
+        },
+        required: ['agent', 'seconds']
       }}
     },
     required: ['grades']
@@ -1009,6 +1099,14 @@ Find the workflow transcript directory and run grading:
   if (gradeResult?.grades) {
     for (const g of gradeResult.grades) {
       log(`GRADE ${g.role}: ${g.followed}/${g.total} rules followed${g.flagged?.length ? ' — flagged: ' + g.flagged.join(', ') : ''}`)
+    }
+  }
+  if (gradeResult?.efficiency) {
+    log(`EFFICIENCY: file=${gradeResult.efficiency.fileEfficiency}, deliverable=${gradeResult.efficiency.deliverableRatio}, tests=${gradeResult.efficiency.testRuns}, context=${gradeResult.efficiency.contextGrowth}, calls=${gradeResult.efficiency.toolCalls}`)
+  }
+  if (gradeResult?.timing?.length) {
+    for (const t of gradeResult.timing) {
+      log(`TIMING: ${t.agent} = ${t.seconds}s`)
     }
   }
 } else {
