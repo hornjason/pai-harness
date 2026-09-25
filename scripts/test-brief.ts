@@ -181,13 +181,13 @@ function spawnAgent(worktreePath: string, agentRole: string, agentTask: string, 
     "claude",
     [
       "--print",
-      "--output-format", "jsonl",
+      "--output-format", "json",
       "--agent-type", agentRole,
       agentTask,
     ],
     {
       cwd: worktreePath,
-      timeout: 120_000,
+      timeout: 600_000,
       encoding: "utf-8",
       env: {
         ...process.env,
