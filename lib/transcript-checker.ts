@@ -329,7 +329,7 @@ export function formatReport(
 
 const sharedCriteria: EvalCriterion[] = [
   {
-    id: "SHARED-01",
+    id: "COMP-1",
     rule: "AGENTS.md context available (read or injected)",
     weight: 20,
     source: "AGENTS.md § Rules",
@@ -354,7 +354,7 @@ const sharedCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "SHARED-02",
+    id: "COMP-6",
     rule: "No duplicate file reads",
     weight: 15,
     source: "marcus.md § Never Do",
@@ -372,7 +372,7 @@ const sharedCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "SHARED-03",
+    id: "COMP-7",
     rule: "No cat/head via Bash (use Read)",
     weight: 5,
     source: "marcus.md § Never Do",
@@ -386,7 +386,7 @@ const sharedCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "SHARED-04",
+    id: "COMP-8",
     rule: "Read PROJECT-STATE if task requires project context",
     weight: 10,
     source: "AGENTS.md § Key Files",
@@ -524,7 +524,7 @@ const daCriteria: EvalCriterion[] = [
 
 const marcusCriteria: EvalCriterion[] = [
   {
-    id: "M-01",
+    id: "COMP-9",
     rule: "Total tool calls <= 30",
     weight: 10,
     source: "marcus.md § Additional Never Do",
@@ -537,7 +537,7 @@ const marcusCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "M-02",
+    id: "COMP-10",
     rule: "Grep:Read ratio <= 2:1",
     weight: 10,
     source: "prompts/coding-principles.md",
@@ -551,7 +551,7 @@ const marcusCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "M-03",
+    id: "COMP-2",
     rule: "<= 2 full suite runs (targeted runs are unlimited)",
     weight: 10,
     source: "marcus.md § Testing Rules",
@@ -569,7 +569,43 @@ const marcusCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "M-04",
+    id: "COMP-3",
+    rule: "Use golden fixture pattern for test files",
+    weight: 10,
+    source: "INSTRUCTION-COMPLIANCE-SPEC § COMP-3",
+    check(data) {
+      const testWrites = data.edits.concat(data.writes).filter(
+        (p) => p.includes("test/") && p.includes(".test.")
+      );
+      if (testWrites.length === 0) {
+        return { verdict: "FOLLOWED", evidence: "No test files written — exempt" };
+      }
+      return { verdict: "FOLLOWED", evidence: `${testWrites.length} test file(s) written` };
+    },
+  },
+  {
+    id: "COMP-4",
+    rule: "Update spec-drift hash after modifying spec",
+    weight: 10,
+    source: "INSTRUCTION-COMPLIANCE-SPEC § COMP-4",
+    check(data) {
+      const specEdits = data.edits.concat(data.writes).filter(
+        (p) => p.includes("specs/") && p.endsWith(".md")
+      );
+      if (specEdits.length === 0) {
+        return { verdict: "FOLLOWED", evidence: "No spec files modified — exempt" };
+      }
+      const hasHashUpdate = data.bashes.some((b) => b.includes("shasum") || b.includes("SPEC_HASH"));
+      return {
+        verdict: hasHashUpdate ? "FOLLOWED" : "IGNORED",
+        evidence: hasHashUpdate
+          ? "Spec-drift hash updated after spec edit"
+          : `${specEdits.length} spec(s) modified without hash update`,
+      };
+    },
+  },
+  {
+    id: "COMP-5",
     rule: "Governing spec context available (read or injected) when touching spec'd area",
     weight: 15,
     source: "marcus.md § Context",
@@ -604,7 +640,7 @@ const marcusCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "M-05",
+    id: "COMP-11",
     rule: "Coding/testing principles available (read or injected) for core changes",
     weight: 15,
     source: "marcus.md § Context",
@@ -640,7 +676,7 @@ const marcusCriteria: EvalCriterion[] = [
     },
   },
   {
-    id: "M-06",
+    id: "COMP-12",
     rule: "Grep before Read for non-key files",
     weight: 5,
     source: "memory: Grep Before Read",

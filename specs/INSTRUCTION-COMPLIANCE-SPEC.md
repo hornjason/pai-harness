@@ -94,11 +94,19 @@ Both agnix and RepoRails support batch mode — pass multiple files in one call.
 
 | Test | Instruction | Check Method | Pass Condition |
 |------|-------------|--------------|----------------|
-| COMP-1 | Read AGENTS.md before any other action | First 3 Read calls include AGENTS.md | Agent reads AGENTS.md early |
-| COMP-2 | Run bun test before reporting done | Bash call with `bun test` exists before last message | Agent runs full test suite |
-| COMP-3 | Use golden fixture pattern for phase tests | Write/Edit to test file contains `fixtures/` and `beforeAll` | Agent follows test architecture |
-| COMP-4 | Update spec-drift hash after modifying spec | Bash with `shasum` AND Edit with `SPEC_HASH` | Agent updates hash |
-| COMP-5 | Find governing spec from routing table | Read(BOOTSTRAP-DATA-FLOW-SPEC) within first 10 calls, no preceding grep | Agent uses routing table |
+| COMP-1 | AGENTS.md context available | Read in first 5 calls OR content injected in prompt | Agent has project context |
+| COMP-2 | Test run discipline | Full suite ≤ 2 runs, targeted unlimited | Agent doesn't over-run tests |
+| COMP-3 | Use golden fixture pattern for test files | Test file written to test/ with .test. suffix | Agent follows test architecture |
+| COMP-4 | Update spec-drift hash after modifying spec | Bash with `shasum` after spec edit | Agent updates hash |
+| COMP-5 | Governing spec context available | Read spec before edit OR content injected in prompt | Agent has spec context |
+| COMP-6 | No duplicate file reads | Each file read at most once | Agent is efficient with reads |
+| COMP-7 | No cat/head via Bash | No `cat` or `head` commands in Bash calls | Agent uses Read tool |
+| COMP-8 | PROJECT-STATE context for multi-file tasks | Read PROJECT-STATE or exempt for small tasks | Agent has project context when needed |
+| COMP-9 | Tool calls ≤ 30 | Total tool calls under threshold | Agent is efficient |
+| COMP-10 | Grep:Read ratio ≤ 2:1 | grep calls / Read calls ≤ 2 | Agent doesn't over-grep |
+| COMP-11 | Coding principles available for core changes | Read prompts/ or content injected for lib/ changes | Agent has coding standards |
+| COMP-12 | Grep before Read for non-key files | Files not in key-files list grepped before reading | Agent validates relevance first |
+| COMP-13 | TDD sequence (test-first) | Write to test file before Write to source file | Agent follows TDD |
 
 **Canary tests:** Plant a known phrase in the instruction file. If the agent's output contains the phrase, the file was read AND the instruction was processed. If not, either the file didn't load or the instruction was too weak.
 

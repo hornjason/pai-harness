@@ -226,11 +226,12 @@ async function briefedAgent(prompt, opts = {}) {
 async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) {
   const gateCwd = gateOpts.cwd || PROJECT_ROOT
   const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
+  const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
   for (let attempt = 1; attempt <= 3; attempt++) {
     const result = await agent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: ${cdPrefix}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
+1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -1013,8 +1014,10 @@ Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traver
   `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
 }
 
-// ── Merge worktree to main (only after verify passes) ────
-if (marcusWorktreePath !== PROJECT_ROOT && worktreeBranch) {
+// ── Merge worktree to main (ONLY after verify passes) ────
+if (verifyResult?.result === 'FAIL') {
+  log('Verify FAILED — skipping merge to main')
+} else if (marcusWorktreePath !== PROJECT_ROOT && worktreeBranch) {
   await agent(`
 Merge the verified worktree branch into main:
 1. cd ${PROJECT_ROOT}

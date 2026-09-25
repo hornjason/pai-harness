@@ -113,7 +113,8 @@ for (let i = 0; i < (state.acs || []).length; i++) {
   const cmd = ac.evidenceMethod?.command;
   if (!cmd) continue;
   try {
-    const output = execSync(cmd, { encoding: "utf-8", timeout: 10000, cwd: state.projectRoot || process.cwd() }).trim();
+    const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
+    const output = execSync(cmd, { encoding: "utf-8", timeout: 10000, cwd: evidenceCwd }).trim();
     const lastLine = output.split("\n").pop() || "";
     let verdict: "PASS" | "FAIL" = "FAIL";
     // BUN_TEST detection: bun test outputs results to stderr; execSync captures

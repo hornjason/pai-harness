@@ -29,9 +29,9 @@ describe("gradeByRole", () => {
     const daIds = results.filter((r) => r.id.startsWith("DA-"));
     expect(daIds.length).toBeGreaterThanOrEqual(3);
 
-    // Should contain shared criteria
-    const sharedIds = results.filter((r) => r.id.startsWith("SHARED-"));
-    expect(sharedIds.length).toBeGreaterThanOrEqual(3);
+    // Should contain shared criteria (now COMP-prefixed)
+    const compIds = results.filter((r) => r.id.startsWith("COMP-"));
+    expect(compIds.length).toBeGreaterThanOrEqual(3);
   });
 
   test("accepts 'marcus' role and applies Marcus-specific criteria", () => {
@@ -46,8 +46,8 @@ describe("gradeByRole", () => {
       ["/project/AGENTS.md", "/project/PROJECT-STATE.md", "/project/prompts/coding-principles.md", "/project/specs/SPEC.md"],
       [], ["/project/lib/foo.ts"], [], {}, ["AGENTS.md", "PROJECT-STATE.md", "coding-principles.md"]);
 
-    const marcusIds = results.filter((r) => r.id.startsWith("M-"));
-    expect(marcusIds.length).toBeGreaterThanOrEqual(3);
+    const compIds = results.filter((r) => r.id.startsWith("COMP-"));
+    expect(compIds.length).toBeGreaterThanOrEqual(3);
   });
 
   test("accepts 'quinn' role and applies Quinn-specific criteria", () => {
@@ -148,11 +148,11 @@ describe("eval-criteria module", () => {
     expect(daIds).toContain("DA-05");
   });
 
-  test("marcus criteria include M-01 through M-06", () => {
+  test("marcus criteria include COMP-1 through COMP-12", () => {
     const criteria = getCriteria("marcus");
-    const mIds = criteria.filter((c) => c.id.startsWith("M-")).map((c) => c.id);
-    expect(mIds).toContain("M-01");
-    expect(mIds).toContain("M-06");
+    const compIds = criteria.map((c) => c.id);
+    expect(compIds).toContain("COMP-1");
+    expect(compIds).toContain("COMP-12");
   });
 
   test("quinn criteria include Q-01 through Q-05", () => {
@@ -177,7 +177,7 @@ describe("fixture transcript audit", () => {
   test("Marcus transcript audits with Marcus role criteria", () => {
     const audit = auditAgent(join(FIXTURES, "agent-marcus-impl1.jsonl"));
     expect(audit.role).toBe("marcus");
-    expect(audit.rules.some((r) => r.id.startsWith("M-"))).toBe(true);
+    expect(audit.rules.some((r) => r.id.startsWith("COMP-"))).toBe(true);
   });
 
   test("Quinn transcript audits with Quinn role criteria", () => {

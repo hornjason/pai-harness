@@ -27,11 +27,19 @@ interface EfficiencyMetrics {
   duplicateReads: number;
 }
 
+interface RuleResult {
+  id: string;
+  rule: string;
+  verdict: string;
+  evidence: string;
+}
+
 interface GradeOutput {
   grades: {
     role: string;
     total: number;
     followed: number;
+    rules: RuleResult[];
     flagged?: string[];
     efficiency?: EfficiencyMetrics;
   }[];
@@ -155,17 +163,22 @@ function gradeTranscript(transcriptPath: string, validRoles: Set<string>): Grade
   const total = results.length;
   const followed = results.filter(r => r.verdict === "FOLLOWED").length;
   const flagged: string[] = [];
+  const rules: RuleResult[] = [];
 
   // For Marcus, also check TDD
   if (role === "marcus") {
     const tddResult = checkTDD(transcriptContent);
     if (tddResult.verdict !== "TDD") {
       flagged.push(`TDD_SEQUENCE_VIOLATED: ${tddResult.evidence}`);
+      rules.push({ id: "COMP-13", rule: "Write failing test before implementation (TDD)", verdict: "IGNORED", evidence: tddResult.evidence });
+    } else {
+      rules.push({ id: "COMP-13", rule: "Write failing test before implementation (TDD)", verdict: "FOLLOWED", evidence: tddResult.evidence });
     }
   }
 
-  // Flag ignored rules
+  // Capture all rule results with evidence
   for (const r of results) {
+    rules.push({ id: r.id, rule: r.rule, verdict: r.verdict, evidence: r.evidence });
     if (r.verdict === "IGNORED") {
       flagged.push(`${r.id}: ${r.rule}`);
     }
@@ -184,6 +197,7 @@ function gradeTranscript(transcriptPath: string, validRoles: Set<string>): Grade
     role,
     total,
     followed,
+    rules,
     ...(flagged.length > 0 && { flagged }),
     efficiency,
   };

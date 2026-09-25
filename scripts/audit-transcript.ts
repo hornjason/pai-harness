@@ -91,7 +91,7 @@ function buildTranscriptData(
 function applyUtilityExemptions(results: CriterionResult[], totalCalls: number): CriterionResult[] {
   if (totalCalls > 3) return results;
   return results.map((r) => {
-    if (r.id === "SHARED-01" || r.id === "SHARED-04") {
+    if (r.id === "COMP-1" || r.id === "COMP-8") {
       return { ...r, verdict: "FOLLOWED" as Verdict, evidence: "Exempt (utility agent, <= 3 calls)" };
     }
     return r;
