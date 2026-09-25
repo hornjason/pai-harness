@@ -152,6 +152,25 @@ if (skipped > 0) {
   writeFileSync(SF, JSON.stringify(state, null, 2));
 }
 
+// Verify gate: check for PENDING ACs after auto-populate — catches evidence gaps
+// that would otherwise pass silently at verify (LIGHT tier skips B2 validator)
+if (gate === "verify") {
+  const pendingCodeACs = (state.acs || []).filter(
+    (ac: any) => ac.type !== "OUTCOME" && (!ac.verdict || ac.verdict === "PENDING")
+  );
+  if (pendingCodeACs.length > 0) {
+    for (const ac of pendingCodeACs) {
+      fails++;
+      results.push({
+        check: `verify-ac-evidence-gap: ${ac.id} still PENDING after auto-populate`,
+        result: "FAIL" as const,
+        detail: `${ac.id} evidence command may be broken or matching 0 tests — check evidenceMethod.command: ${ac.evidenceMethod?.command || "(none)"}`,
+      });
+    }
+    console.log(`Verify AC evidence gap: ${pendingCodeACs.length} CODE AC(s) still PENDING — ${pendingCodeACs.map((ac: any) => ac.id).join(", ")}`);
+  }
+}
+
 // B3: Prove Reproducer — runs BEFORE test suite so prove.test.ts can verify/override (ADR-009)
 if (gate === "prove") {
   const tier = state.sizing?.ceremonyTier || "STANDARD";

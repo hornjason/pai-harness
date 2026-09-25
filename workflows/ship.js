@@ -297,6 +297,7 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 5. Size: XS→LIGHT | S/M→STANDARD | L→THOROUGH.
 6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, contextFiles.
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
+   BUN TEST GREP RULE: In bun test --grep patterns, use | (pipe) for alternation, NOT \\| (backslash-pipe). Bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and will match 0 tests. Example: --grep 'foo|bar' is correct, --grep 'foo\\|bar' is WRONG.
 7. Garbage test each AC.
 8. Find governingSpec from ${PROJECT_ROOT}/AGENTS.md routing table (absolute path or empty).
 9. Set sourceSpecs with citedInDiscovery:true, specElements[]. One AC per specElement minimum.
@@ -470,7 +471,7 @@ if (DRY_RUN) {
 // ── AC evidence/threshold pre-validation (#573) ─────────────
 // Dry-run each AC evidence command and verify output format matches threshold operator.
 // Prevents false gate failures from mismatched evidence/threshold types.
-if (!skipScope) {
+{
   const acValidation = await agent(`
 Pre-validate AC evidence commands in workflow-state.json:
 
