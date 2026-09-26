@@ -42,6 +42,7 @@ const ENVIRONMENT_CHECKS = new Set([
 ]);
 
 const STATE_KEYWORDS = ["threshold", "statement", "schema"];
+const CODE_KEYWORDS = ["ac-verdict", "tests-pass", "tsc-pass", "code-committed"];
 const NON_RETRYABLE_KEYWORDS = ["auth", "credential", "permission", "timeout"];
 
 function categorizeCheck(check: string): FailureCategory {
@@ -53,8 +54,9 @@ function categorizeCheck(check: string): FailureCategory {
   if (DISCOVERY_CHECKS.has(check)) return "DISCOVERY";
   if (ENVIRONMENT_CHECKS.has(check)) return "ENVIRONMENT";
   if (STATE_KEYWORDS.some((kw) => lower.includes(kw))) return "STATE";
+  if (CODE_KEYWORDS.some((kw) => lower.includes(kw))) return "CODE";
 
-  return "NON_RETRYABLE";
+  return "CODE";
 }
 
 const CATEGORY_META: Record<FailureCategory, { retryable: boolean; regressionTarget?: "BUILD" | "DISCOVERY" }> = {

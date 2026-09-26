@@ -165,10 +165,11 @@ describe("error-classifier", () => {
       expect(c.category).toBe("NON_RETRYABLE");
     });
 
-    test("unknown check defaults to NON_RETRYABLE", () => {
+    test("unknown check defaults to CODE (safe default — attempt fix before giving up)", () => {
       const c = classifyFailures([fail("totally-unknown-check-xyz")]);
-      expect(c.category).toBe("NON_RETRYABLE");
-      expect(c.retryable).toBe(false);
+      expect(c.category).toBe("CODE");
+      expect(c.retryable).toBe(true);
+      expect(c.regressionTarget).toBe("BUILD");
     });
   });
 

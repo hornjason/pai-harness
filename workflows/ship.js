@@ -339,6 +339,22 @@ Project root: ${PROJECT_ROOT}
 
   for (const ac of discovery.acs) {
     if (ac.threshold && typeof ac.threshold.value === 'boolean') ac.threshold.value = String(ac.threshold.value)
+    // Normalize evidence commands: strip absolute paths and cd prefixes so EVIDENCE_CWD works in worktrees
+    if (ac.evidenceMethod?.command) {
+      let cmd = ac.evidenceMethod.command
+      cmd = cmd.replace(new RegExp(PROJECT_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '/', 'g'), '')
+      cmd = cmd.replace(new RegExp('^cd\\s+' + PROJECT_ROOT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*&&\\s*', ''), '')
+      if (cmd !== ac.evidenceMethod.command) {
+        log(`Normalized evidence path for ${ac.id}: stripped absolute paths`)
+      }
+      ac.evidenceMethod.command = cmd
+    }
+    // Normalize contextFiles paths too
+    for (const cf of ac.contextFiles || []) {
+      if (cf.path?.startsWith(PROJECT_ROOT + '/')) {
+        cf.path = cf.path.slice(PROJECT_ROOT.length + 1)
+      }
+    }
   }
 
   await agent(`
@@ -1073,7 +1089,27 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 log(`Ship: ${shipResult?.result || 'UNKNOWN'}`)
 
 if (shipResult?.result !== 'PASS') {
-  return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+  if (shipResult?.regressionTarget === 'BUILD' && regressionCount < MAX_REGRESSIONS) {
+    regressionCount++
+    log(`Ship BUILD regression #${regressionCount} — re-implementing`)
+    const reimpl = await runImplement()
+    if (reimpl.success) {
+      const reCommit = await agent(`
+cd ${PROJECT_ROOT} && git add -A && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
+Report commit SHA.
+      `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
+      const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.')
+      if (retryShip?.result === 'PASS') {
+        log('Ship passed after BUILD regression fix')
+      } else {
+        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+      }
+    } else {
+      return { status: 'SHIP_FAILED', reason: 'BUILD regression failed', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+    }
+  } else {
+    return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+  }
 }
 
 // ════════════════════════════════════════════════════════════

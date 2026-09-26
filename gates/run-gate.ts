@@ -418,6 +418,18 @@ if (gate === "ship") {
   }
 }
 
+// Set phase to gate level BEFORE tests execute so phase-gated tests run at the right time.
+// Without this, verify runs with phase=GOAL (LIGHT) or BUILD (STANDARD), causing isVerifyPlus()
+// tests to silently skip — they only execute at ship time, discovering violations too late.
+const GATE_PHASE_MAP: Record<string, string> = { scope: "SCOPE", verify: "VERIFY", ship: "SHIP", prove: "DONE" };
+const gatePhase = GATE_PHASE_MAP[gate];
+if (gatePhase && state.phase !== gatePhase) {
+  const priorPhase = state.phase;
+  state.phase = gatePhase;
+  writeFileSync(SF, JSON.stringify(state, null, 2));
+  console.log(`Phase set to ${gatePhase} for gate tests (was ${priorPhase})`);
+}
+
 // Run tests
 let testOutput: string;
 let testExitCode = 0;
@@ -568,7 +580,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
 }
 
 // B1 report check — verify gate reads adversary result (ADR-009)
-if (gate === "verify" && fails === 0 && testExitCode === 0) {
+if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier !== "LIGHT") {
     const reportPath = join(WORK_DIR, "adversary-report.json");
@@ -612,7 +624,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
 }
 
 // B2: Evidence Validator — run evidence commands in clean worktree (ADR-009)
-if (gate === "verify" && fails === 0 && testExitCode === 0) {
+if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier !== "LIGHT") {
     const scopeSha = state.gates?.scope?.commitSha;

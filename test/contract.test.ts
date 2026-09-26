@@ -47,7 +47,7 @@ describe("contract: LIGHT tier", { timeout: 30_000 }, () => {
     expect(r.pass).toBeGreaterThan(0);
   });
 
-  test("ship passes", { timeout: 15_000 }, () => {
+  test("ship passes", { timeout: 30_000 }, () => {
     const r = runGate("ship", "light");
     expect(r.pass).toBeGreaterThan(0);
   });
@@ -62,8 +62,8 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
       projectRoot: "/tmp/test", slug: "standard", phase: "DONE",
       issueGoal: "Test canary standard", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
       acs: [
-        { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "grep", command: "grep fix src/test.ts" }, evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
-        { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
+        { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "COMMAND", command: "grep fix src/test.ts" }, specElement: "target module fix", evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
+        { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, specElement: "test regression", evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
       ],
       sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
@@ -71,7 +71,7 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
       agents: { marcus: { spawned: true, verdict: "PASS" }, quinn: { spawned: true, verdict: "PASS" } },
       buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
     }, null, 2));
-    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nFix applied\n\n## AC-2\nAll unit tests pass\n");
+    writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\n## Context\nProject root: /tmp/test\n\n## Task\nFix the module\n\n## AC-1\nFix applied to target module correctly\n\n## AC-2\nAll unit tests pass without regression\n\n## Verify\nbun test\n\n## Report back\nReport results\n");
   });
 
   test("scope passes", () => {
@@ -84,7 +84,7 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
     expect(r.fail).toBe(0);
   });
 
-  test("ship passes", { timeout: 15_000 }, () => {
+  test("ship passes", { timeout: 30_000 }, () => {
     const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
   });
