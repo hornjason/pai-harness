@@ -120,10 +120,10 @@ describe("prove-integration: prove.js workflow, not gate test", () => {
     expect(proveSection).not.toContain("runGateWithHeal('prove')");
   });
 
-  test("PI-2: ALREADY_SHIPPED path uses workflow() for prove", () => {
+  test("PI-2: ALREADY_SHIPPED path returns early with status", () => {
     const alreadySection = sliceBetween(SHIP_JS, "ALREADY_SHIPPED", "Prior work:");
-    expect(alreadySection).toContain("workflow(");
-    expect(alreadySection).toContain("prove.js");
+    expect(alreadySection).toContain("return {");
+    expect(alreadySection).toContain("status: 'ALREADY_SHIPPED'");
   });
 
   test("PI-3: Prove passes issue + project args to child workflow", () => {

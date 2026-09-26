@@ -2,68 +2,33 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 14 — AES hill-climb + pipeline optimization + spec alignment.
+Session 14 — AES hill-climb + pipeline optimization + agent count reduction.
 
-Hill-climb: AES 32.75 → 87 in 3 dry-run iterations. Key levers: TDD at top of brief, context injection (excerpts not Read steps), conditional context reads, efficiency rules.
-Pipeline: Context injection backported to ship.js briefedAgent(). Verify gate cwd fixed (EVIDENCE_CWD). Merge guard added. Redundant test runs eliminated (4-5 → 0-1 full suite). bun test --parallel --no-isolate.
-Grading: Aligned to spec COMP-1 through COMP-13. Every rule reports verdict + evidence. Followed AND violated both tracked.
-Real ship runs: #590 shipped (compliance 40%), #592 shipped (compliance 70%). Compliance improving but still below 80% target on real tasks.
+Hill-climb: AES 32→87 in 3 dry-run iterations. Production compliance: 83% (10/12).
+Pipeline: 32 agents/141 min → 16 agents/20 min. Prove regression eliminated. Bash agents batched.
+Grading: Aligned to spec COMP-1 through COMP-13. Every rule reports verdict + evidence.
+Context injection: Discovery extracts excerpts, briefedAgent() injects inline.
 
-Baseline AES: 31.5 → Dry-run AES: 87 → Production: ~60-70 (real tasks harder than toy tasks).
-Test suite: 1304 pass, 0 fail, 73 files. bun test --parallel --no-isolate = 176s.
+Remaining bottleneck: 16 agents × 75s overhead = 20 min. Target: 6 agents × 75s = ~7.5 min.
+Ship gate fails on ceremony checks (B1/B2/evidence-type-ratio) that shouldn't apply to LIGHT.
+5 issues shipped through pipeline: #590, #592, #584, #594, #595.
 
-Suite: 1304 pass, 0 fail, 73 files. 26/47 SCs done.
+Suite: 1304 pass, 0 fail, 73 files. 4/25 SCs done.
 
 **Next priorities:**
-1. P0: AES quality gate — verify grading holds in production pipeline
-2. P0: Verify gate cwd fix — evidence commands run from worktree, not main
-3. P0: Merge guard — block merge on verify FAIL
-4. P1: #593 Fast path for XS issues (target <7 min)
-5. P1: #590 create-brief CLI (shipped by pipeline, needs verification)
-6. P1: #591 SC validation hook
-7. P2: #584 Behavioral SC cache
-8. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+1. P0: Fix gates before shipping — every issue takes 2 runs because gates fail on untested LIGHT paths
+2. P0: Gate integration tests for LIGHT/XS path — exercise verify/ship/prove gates with mock state
+3. P0: 6-agent refactor — collapse 16 agents to 6 for <5 min XS pipeline
+4. P1: #593 Fast path for XS issues (mechanically blocked until 6-agent refactor)
+5. P1: Close gap between dry-run AES (87) and production (~70)
+6. P2: Canary tests (spec requirement, not implemented)
+7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
-## ✅ Phase 1.5 — Context Quality (COMPLETE)
+## ✅ Phase 1.5 — Context Quality + Config-Driven Testing (A-H) (COMPLETE)
 
-| Status | SC | What |
-|---|---|---|
-| ✅ | SC-293 | SPEC-TEMPLATE updated with matchable patterns |
-| ✅ | SC-295 | SC enrichment — 35 SCs enriched to matchable patterns |
-
-## ✅ Config-Driven Testing — Phases A-H (COMPLETE)
-
-## ✅ Brief Compliance (#558) (COMPLETE)
-
-| Status | SC | What |
-|---|---|---|
-| ✅ | SC-400 | test-brief CLI |
-| ✅ | SC-401 | Directive extractor |
-| ✅ | SC-402 | Transcript checker |
-| ✅ | SC-403 | Cross-reference report |
-| ✅ | SC-404 | Hill climb mode |
-| ✅ | SC-405 | All briefs ≥80% |
-| ✅ | SC-406 | briefedAgent() context parsing |
-| ✅ | SC-407 | Compliance pre-flight gate |
-| ✅ | SC-408 | Standard tasks per role |
-| ✅ | SC-409 | Behavioral canary |
-
-## ✅ Agent Brief Templates (COMPLETE)
-
-| Status | SC | What |
-|---|---|---|
-| ✅ | SC-348 | Templates in templates/agent-briefs/ |
-| ✅ | SC-349 | Shared rules in _shared.md |
-| ✅ | SC-350 | Scaffold reads template files |
-| ✅ | SC-351 | All 8 required sections present |
-| ✅ | SC-352 | All briefs model: sonnet |
-| ✅ | SC-353 | Briefs under 120 lines each |
-| ✅ | SC-354 | Edit template → re-scaffold updates brief |
-| ✅ | SC-355 | Shared rules in every brief |
-| ✅ | SC-356 | Prompt routing generated dynamically |
-| ✅ | SC-357 | Template vars match project values |
+## ✅ Brief Compliance + Agent Brief Templates (COMPLETE)
 
 ## ✅ Instruction Compliance — Grading Pipeline (COMPLETE)
 
@@ -74,7 +39,7 @@ Suite: 1304 pass, 0 fail, 73 files. 26/47 SCs done.
 | ✅ | SC-467 | All other sections → quality |
 | ✅ | SC-468 | process_overrides frontmatter |
 
-## ⬜ AES Quality Gate (NOT STARTED)
+## ⬜ AES Quality Gate + Pipeline Optimization (NOT STARTED)
 
 ## ⬜ Scaffold Decomposition (NOT STARTED)
 
@@ -115,24 +80,21 @@ Suite: 1304 pass, 0 fail, 73 files. 26/47 SCs done.
 ---
 
 **Session 2026-09-25 session 14:**
-- AES hill-climb: 32.75 → 87 in 3 dry-run iterations (TDD top, context injection, efficiency rules)
-- Context injection: Discovery extracts excerpts, briefedAgent() injects inline, Marcus doesn't read reference files
-- Grading aligned to spec: COMP-1 through COMP-13, verdict + evidence per rule
-- Pipeline bugs fixed: verify cwd (EVIDENCE_CWD), merge guard, ${elapsed} template literal
-- Redundant test runs eliminated: 4-5 full suite → 0-1 + targeted
-- bun test --parallel --no-isolate: 209s → 176s (0 failures after promptContent fix)
-- Ship #590: compliance 40% (4/10), 66 tool calls, 24 min — wrong repo bug found and fixed
-- Ship #592: compliance 70% (7/10), 63 tool calls, 81 min — verify cwd bug caused regression loop
-- Marcus brief improved: TDD at top, conditional reads, grep-before-read, efficiency rules, STOP warning
-- Prompt-aware grader: checks content in prompt, not just file reads (COMP-1, COMP-5, COMP-11)
+- AES hill-climb: 32→87 in 3 dry-run iterations (TDD top, context injection, efficiency rules)
+- Pipeline optimization: 32 agents/141 min → 16 agents/20 min
+- Prove regression eliminated: LIGHT skips prove, no re-implementation loop
+- Agent batching: init+prior-branch, ac-prevalidation+prior-branch, brief-preflight+assemble, commit+env-check+record, merge+push, finalize (4→1)
+- Grading aligned to COMP-1 through COMP-13 with verdict + evidence
+- Context injection working: COMP-1/COMP-5/COMP-11 pass via prompt injection
+- Verify gate cwd fixed (EVIDENCE_CWD), merge guard added
+- bun test --parallel --no-isolate (209→176s), redundant test runs eliminated
+- 5 issues shipped: #590 (40%), #592 (70%), #584 (67%), #594 (83%), #595 (83%)
+- Ship gate false positives: B1/B2/evidence-type-ratio checks fire on LIGHT (should be exempt)
+- Deep adversarial audit: 26/32 agents were bash wrappers, prove was 42% of runtime
 
 **Session 2026-09-24 session 13:**
 - Ship-and-heal dogfood: #585 shipped (HEALED), #591 shipped (HEALED)
 - Grading pipeline shipped: transcript path fix, role filtering, remediation flow
 - Violation categorization: quality vs process (SC-465-468)
 - analyze-transcript.ts: file efficiency, deliverable ratio, test runs, context growth
-
-**Session 2026-09-23 session 8 (AFK):**
-- Prior-branch detection, worktree cleanup, stale TTL hook
-- First cross-repo harness run (#1447 on pai-config)
 
