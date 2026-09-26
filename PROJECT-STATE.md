@@ -2,26 +2,26 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 14 — AES hill-climb + pipeline optimization + agent count reduction.
+Session 15 — 6-agent refactor shipped, pipeline forensics, council audit.
 
-Hill-climb: AES 32→87 in 3 dry-run iterations. Production compliance: 83% (10/12).
-Pipeline: 32 agents/141 min → 16 agents/20 min. Prove regression eliminated. Bash agents batched.
-Grading: Aligned to spec COMP-1 through COMP-13. Every rule reports verdict + evidence.
-Context injection: Discovery extracts excerpts, briefedAgent() injects inline.
+6-agent refactor: ship.js committed with batched agents, 7 spec-compliance tests fixed.
+Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%).
+Root cause analysis: 21% first-attempt ship pass rate across 16 issues. 78% of failures are 1 test.
+  - Evidence commands with absolute paths override EVIDENCE_CWD in worktrees
+  - Ceremony fields not pre-populated before ship gate
+  - 16/19 agents are bash wrappers (Workflow API lacks exec())
+New: lib/canary.ts (13 tests), B2 operator fix (contains/exists/!=/< added), AES prompt reinforcement.
+Council v2 running with full forensic data (10 runs, 37 gate attempts, agent-level transcripts).
 
-Remaining bottleneck: 16 agents × 75s overhead = 20 min. Target: 6 agents × 75s = ~7.5 min.
-Ship gate fails on ceremony checks (B1/B2/evidence-type-ratio) that shouldn't apply to LIGHT.
-5 issues shipped through pipeline: #590, #592, #584, #594, #595.
-
-Suite: 1304 pass, 0 fail, 73 files. 4/25 SCs done.
+Suite: 1376 pass, 0 fail, 77 files. 4/25 SCs done. 6 issues shipped: #590, #592, #584, #594, #595.
 
 **Next priorities:**
-1. P0: Fix gates before shipping — every issue takes 2 runs because gates fail on untested LIGHT paths
-2. P0: Gate integration tests for LIGHT/XS path — exercise verify/ship/prove gates with mock state
-3. P0: 6-agent refactor — collapse 16 agents to 6 for <5 min XS pipeline
-4. P1: #593 Fast path for XS issues (mechanically blocked until 6-agent refactor)
-5. P1: Close gap between dry-run AES (87) and production (~70)
-6. P2: Canary tests (spec requirement, not implemented)
+1. P0: Fix 21% first-attempt pass rate — evidence-path worktree mismatch + ceremony field gaps (council in progress)
+2. P0: Reduce XS pipeline from 19 agents / 14 min to <6 agents / <5 min
+3. P1: Close AES gap — COMP-6 (dup reads) leaks through prompt reinforcement, needs mechanical enforcement
+4. P1: #593 Fast path for XS issues
+5. P1: Integrate canary module into brief assembler + transcript checker
+6. P2: Navigability scoring (SC-236/237 still test.todo)
 7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
@@ -78,6 +78,15 @@ Suite: 1304 pass, 0 fail, 73 files. 4/25 SCs done.
 | ⬜ | SC-378 | No implicit state passing |
 
 ---
+
+**Session 2026-09-26 session 15:**
+- 6-agent refactor shipped: batched agents, 7 spec-compliance tests fixed, undefined alreadyVerdict bug fixed
+- Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%)
+- Root cause analysis: 21% first-attempt pass rate. Evidence-path worktree mismatch + ceremony gaps
+- Canary testing module: lib/canary.ts + 13 tests (generateCanaryPhrase, plantCanaries, checkCanaries)
+- B2 evidence validator: added missing contains/exists/!=/< operators + NaN guards
+- AES prompt reinforcement: COMP-6/COMP-12 in Marcus prompt (still leaks — needs mechanical enforcement)
+- Council v2 launched with full forensic data: 10 runs, 37 gate attempts, agent-level transcripts
 
 **Session 2026-09-25 session 14:**
 - AES hill-climb: 32→87 in 3 dry-run iterations (TDD top, context injection, efficiency rules)

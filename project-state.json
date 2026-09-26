@@ -1,15 +1,15 @@
 {
   "updated": "2026-09-26",
   "priorities": [
-    "P0: Fix gates before shipping — every issue takes 2 runs because gates fail on untested LIGHT paths",
-    "P0: Gate integration tests for LIGHT/XS path — exercise verify/ship/prove gates with mock state",
-    "P0: 6-agent refactor — collapse 16 agents to 6 for <5 min XS pipeline",
-    "P1: #593 Fast path for XS issues (mechanically blocked until 6-agent refactor)",
-    "P1: Close gap between dry-run AES (87) and production (~70)",
-    "P2: Canary tests (spec requirement, not implemented)",
+    "P0: Fix 21% first-attempt pass rate — evidence-path worktree mismatch + ceremony field gaps (council in progress)",
+    "P0: Reduce XS pipeline from 19 agents / 14 min to <6 agents / <5 min",
+    "P1: Close AES gap — COMP-6 (dup reads) leaks through prompt reinforcement, needs mechanical enforcement",
+    "P1: #593 Fast path for XS issues",
+    "P1: Integrate canary module into brief assembler + transcript checker",
+    "P2: Navigability scoring (SC-236/237 still test.todo)",
     "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
   ],
-  "notes": "Session 14 — AES hill-climb + pipeline optimization + agent count reduction.\n\nHill-climb: AES 32→87 in 3 dry-run iterations. Production compliance: 83% (10/12).\nPipeline: 32 agents/141 min → 16 agents/20 min. Prove regression eliminated. Bash agents batched.\nGrading: Aligned to spec COMP-1 through COMP-13. Every rule reports verdict + evidence.\nContext injection: Discovery extracts excerpts, briefedAgent() injects inline.\n\nRemaining bottleneck: 16 agents × 75s overhead = 20 min. Target: 6 agents × 75s = ~7.5 min.\nShip gate fails on ceremony checks (B1/B2/evidence-type-ratio) that shouldn't apply to LIGHT.\n5 issues shipped through pipeline: #590, #592, #584, #594, #595.\n\nSuite: 1304 pass, 0 fail, 73 files. 4/25 SCs done.",
+  "notes": "Session 15 — 6-agent refactor shipped, pipeline forensics, council audit.\n\n6-agent refactor: ship.js committed with batched agents, 7 spec-compliance tests fixed.\nPipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%).\nRoot cause analysis: 21% first-attempt ship pass rate across 16 issues. 78% of failures are 1 test.\n  - Evidence commands with absolute paths override EVIDENCE_CWD in worktrees\n  - Ceremony fields not pre-populated before ship gate\n  - 16/19 agents are bash wrappers (Workflow API lacks exec())\nNew: lib/canary.ts (13 tests), B2 operator fix (contains/exists/!=/< added), AES prompt reinforcement.\nCouncil v2 running with full forensic data (10 runs, 37 gate attempts, agent-level transcripts).\n\nSuite: 1376 pass, 0 fail, 77 files. 4/25 SCs done. 6 issues shipped: #590, #592, #584, #594, #595.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -66,7 +66,7 @@
     {
       "name": "AES Quality Gate + Pipeline Optimization",
       "scs": [],
-      "note": "IN PROGRESS — AES 87 dry-run, 83% production compliance. Pipeline 32→16 agents, 141→20 min. Next: 6-agent refactor for <5 min."
+      "note": "IN PROGRESS — 6-agent refactor shipped. Pipeline 32→19 agents (batching), 141→14 min. First-attempt pass rate: 21%. Council audit in progress to fix root causes. Canary module built (lib/canary.ts). B2 operators fixed. AES: 87 dry-run, 75% production (9/12 Marcus)."
     },
     {
       "name": "Scaffold Decomposition",
@@ -191,6 +191,18 @@
   ],
   "sessions": [
     {
+      "date": "2026-09-26 session 15",
+      "items": [
+        "6-agent refactor shipped: batched agents, 7 spec-compliance tests fixed, undefined alreadyVerdict bug fixed",
+        "Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%)",
+        "Root cause analysis: 21% first-attempt pass rate. Evidence-path worktree mismatch + ceremony gaps",
+        "Canary testing module: lib/canary.ts + 13 tests (generateCanaryPhrase, plantCanaries, checkCanaries)",
+        "B2 evidence validator: added missing contains/exists/!=/< operators + NaN guards",
+        "AES prompt reinforcement: COMP-6/COMP-12 in Marcus prompt (still leaks — needs mechanical enforcement)",
+        "Council v2 launched with full forensic data: 10 runs, 37 gate attempts, agent-level transcripts"
+      ]
+    },
+    {
       "date": "2026-09-25 session 14",
       "items": [
         "AES hill-climb: 32→87 in 3 dry-run iterations (TDD top, context injection, efficiency rules)",
@@ -217,11 +229,11 @@
     }
   ],
   "session": {
-    "number": 14,
-    "date": "2026-09-25",
-    "summary": "AES hill-climb (32→87), pipeline 32→16 agents (141→20 min), grading COMP-1-13, 5 issues shipped. Next: 6-agent refactor for <5 min.",
-    "suite": "1304 pass, 0 fail, 73 files",
-    "scs_done": "26/47",
-    "commits": 0
+    "number": 15,
+    "date": "2026-09-26",
+    "summary": "6-agent refactor shipped, #595 through pipeline (19 agents/14 min), root cause analysis (21% first-pass rate), canary module, B2 fix, council audit in progress.",
+    "suite": "1376 pass, 0 fail, 77 files",
+    "scs_done": "4/25",
+    "commits": 4
   }
 }
