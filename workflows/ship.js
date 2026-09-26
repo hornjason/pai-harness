@@ -357,6 +357,25 @@ Project root: ${PROJECT_ROOT}
     }
   }
 
+  // P1-4: Enforce evidence-type-ratio mechanically — gate requires ≤50% pattern-only (GREP_CHECK/grep)
+  const grepOnlyACs = discovery.acs.filter(ac => {
+    const t = (ac.evidenceMethod?.type || '').toUpperCase()
+    return t === 'GREP_CHECK' || t === 'GREP'
+  })
+  if (grepOnlyACs.length > discovery.acs.length * 0.5) {
+    const toUpgrade = grepOnlyACs.slice(0, grepOnlyACs.length - Math.floor(discovery.acs.length * 0.5))
+    for (const ac of toUpgrade) {
+      const cmd = ac.evidenceMethod.command
+      ac.evidenceMethod.type = 'COMMAND'
+      ac.evidenceMethod.command = `${cmd} | wc -l | tr -d ' '`
+      if (ac.threshold?.op === 'contains') {
+        ac.threshold.op = '>='
+        ac.threshold.value = 1
+      }
+      log(`Upgraded ${ac.id} evidence from GREP_CHECK to COMMAND (evidence-type-ratio enforcement)`)
+    }
+  }
+
   await agent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 

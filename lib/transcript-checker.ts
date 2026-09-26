@@ -125,7 +125,7 @@ function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall
   const textLower = d.text.toLowerCase();
 
   if (textLower.includes("cat") && (textLower.includes("bash") || textLower.includes("read tool"))) {
-    const catCalls = bashes.filter((b) => /\bcat\b/.test(b) && !b.includes("<<"));
+    const catCalls = bashes.filter((b) => /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) && !b.includes("<<"));
     return { directive: d, status: catCalls.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${catCalls.length} cat commands` };
   }
 
@@ -377,7 +377,7 @@ const sharedCriteria: EvalCriterion[] = [
     weight: 5,
     source: "marcus.md § Never Do",
     check(data) {
-      const catBashes = data.bashes.filter((b) => /\bcat\b/.test(b) && !b.includes("<<"));
+      const catBashes = data.bashes.filter((b) => /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) && !b.includes("<<"));
       return {
         verdict: catBashes.length === 0 ? "FOLLOWED" : "IGNORED",
         evidence:
