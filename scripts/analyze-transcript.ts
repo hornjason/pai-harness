@@ -262,6 +262,10 @@ function formatReport(analysis: TranscriptAnalysis): string {
 
 // ── Main ──
 
+if (!import.meta.main) {
+  // Module imported as a library — skip CLI execution
+} else {
+
 const args = process.argv.slice(2);
 // Parse flags that take values
 const outputIdx = args.indexOf("--output");
@@ -339,3 +343,5 @@ if (jsonOutput) {
     console.log(`  Avg deliverable ratio: ${avgDeliverable}%`);
   }
 }
+
+} // end if (import.meta.main)

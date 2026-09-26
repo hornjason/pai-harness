@@ -39,7 +39,7 @@ interface TimingEntry {
   durationSeconds: number;
 }
 
-interface GradeOutput {
+export interface GradeOutput {
   grades: {
     role: string;
     total: number;
@@ -51,7 +51,7 @@ interface GradeOutput {
   timing?: TimingEntry[];
 }
 
-function loadValidRoles(projectRoot?: string): Set<string> {
+export function loadValidRoles(projectRoot?: string): Set<string> {
   const configPaths = [
     projectRoot ? join(projectRoot, ".claude", "rungate.json") : "",
     join(process.cwd(), ".claude", "rungate.json"),
@@ -147,7 +147,7 @@ function buildTranscriptData(calls: any[], promptContent: string): TranscriptDat
   };
 }
 
-function gradeTranscript(transcriptPath: string, validRoles: Set<string>): GradeOutput["grades"][0] | null {
+export function gradeTranscript(transcriptPath: string, validRoles: Set<string>): GradeOutput["grades"][0] | null {
   const metaPath = transcriptPath.replace(".jsonl", ".meta.json");
   const role = inferRole(metaPath, transcriptPath, validRoles);
   if (!role) return null;
