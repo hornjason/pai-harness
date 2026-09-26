@@ -145,7 +145,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-298: scripts/update-project-state.ts contains [scanSpecSCStatus, frontmatter]
 - [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
 - [x] SC-300: PROJECT-STATE.md is under [200] lines
-- [ ] SC-301: docs/session-log/ directory exists
+- [x] SC-301: docs/session-log/ directory exists
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
 - [x] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
