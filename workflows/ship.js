@@ -613,6 +613,8 @@ NEVER run the full suite (bun test without a file path) — it takes 3+ minutes.
 - Do NOT read files listed in "Injected Context" above — the content is already in your prompt
 - Do NOT use ls, pwd, cat, head, or tail via Bash — use Read tool if you must read a file
 - Every tool call should produce value — no exploratory commands
+- NEVER read the same file twice — use offset/limit to get what you need in one pass
+- Grep/find BEFORE reading non-key files — confirm the file is relevant before loading it
 
 Do NOT commit or push yet — Quinn will validate on local dev first.
 If tests fail, fix them before reporting.
