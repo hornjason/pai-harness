@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { join } from "path";
-import { gradeTranscript, loadValidRoles } from "../scripts/grade-deterministic.js";
+import { readFileSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { gradeTranscript, loadValidRoles, loadRoleBriefPaths } from "../scripts/grade-deterministic.js";
 import type { GradeOutput } from "../scripts/grade-deterministic.js";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures", "transcripts");
@@ -50,6 +51,56 @@ describe("grade-deterministic", () => {
       expect(typeof result!.efficiency!.deliverableRatio).toBe("number");
       expect(typeof result!.efficiency!.contextGrowthRatio).toBe("number");
       expect(typeof result!.efficiency!.duplicateReads).toBe("number");
+    });
+  });
+
+  describe("role filtering", () => {
+    test("loadValidRoles reads roles from rungate.json", () => {
+      const roles = loadValidRoles(join(import.meta.dir, ".."));
+      expect(roles.has("marcus")).toBe(true);
+      expect(roles.has("quinn")).toBe(true);
+      expect(roles.has("discovery")).toBe(true);
+    });
+
+    test("inferRole returns null for unknown agent type", () => {
+      const transcriptPath = join(FIXTURE_DIR, "agent-nonexistent-session.jsonl");
+      const result = gradeTranscript(transcriptPath, validRoles);
+      expect(result).toBeNull();
+    });
+
+    test("loadRoleBriefPaths returns brief paths from rungate.json", () => {
+      const PROJECT_ROOT = join(import.meta.dir, "..");
+      const paths = loadRoleBriefPaths(PROJECT_ROOT);
+      expect(paths["marcus"]).toBeDefined();
+      expect(paths["marcus"]).toContain(".claude/agents/marcus.md");
+    });
+  });
+
+  describe("directive-based grading", () => {
+    const PROJECT_ROOT = join(import.meta.dir, "..");
+
+    test("gradeTranscript with projectRoot produces DIR- prefixed rules from extractDirectives", () => {
+      const transcriptPath = join(FIXTURE_DIR, "agent-marcus-impl1.jsonl");
+      const result = gradeTranscript(transcriptPath, validRoles, PROJECT_ROOT);
+
+      expect(result).not.toBeNull();
+      expect(result!.role).toBe("marcus");
+      // Should have directive-based rules with DIR-L prefix
+      const dirRules = result!.rules.filter(r => r.id.startsWith("DIR-L"));
+      expect(dirRules.length).toBeGreaterThan(0);
+    });
+
+    test("directive-based rules include category (quality|process)", () => {
+      const transcriptPath = join(FIXTURE_DIR, "agent-marcus-impl1.jsonl");
+      const result = gradeTranscript(transcriptPath, validRoles, PROJECT_ROOT);
+
+      expect(result).not.toBeNull();
+      const dirRules = result!.rules.filter(r => r.id.startsWith("DIR-L"));
+      expect(dirRules.length).toBeGreaterThan(0);
+      for (const rule of dirRules) {
+        expect(rule.category).toBeDefined();
+        expect(["quality", "process"]).toContain(rule.category);
+      }
     });
   });
 
