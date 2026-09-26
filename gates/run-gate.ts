@@ -651,15 +651,19 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
             try { execSync(`git worktree remove "${scopeWorktree}" --force`, { cwd: state.projectRoot }); } catch {}
           }
 
-          // Compare thresholds
+          // Compare thresholds — must match ac-populate switch at line ~131
           const actual = parseFloat(fixOutput) || 0;
           const expected = parseFloat(ac.threshold?.value || "0");
           const op = ac.threshold?.op || ">=";
           let passes = false;
-          if (op === ">=") passes = actual >= expected;
-          else if (op === "==") passes = actual === expected;
-          else if (op === ">") passes = actual > expected;
-          else if (op === "<=") passes = actual <= expected;
+          if (op === ">=") passes = !isNaN(actual) && actual >= expected;
+          else if (op === "==") passes = fixOutput === String(ac.threshold?.value) || (!isNaN(actual) && actual === expected);
+          else if (op === "!=") passes = fixOutput !== String(ac.threshold?.value);
+          else if (op === ">") passes = !isNaN(actual) && actual > expected;
+          else if (op === "<=") passes = !isNaN(actual) && actual <= expected;
+          else if (op === "<") passes = !isNaN(actual) && actual < expected;
+          else if (op === "contains") passes = fixOutput.includes(String(ac.threshold?.value || ""));
+          else if (op === "exists") passes = fixOutput.length > 0;
 
           // Metamorphic check
           if (fixOutput === preFixOutput && preFixOutput !== "METAMORPHIC_SKIP") {
