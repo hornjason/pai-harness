@@ -8,7 +8,7 @@ const GATES_DIR = join(import.meta.dir, "..", "gates");
 
 function runGate(gate: string, slug: string): { pass: number; fail: number; output: string } {
   const gateRunner = join(GATES_DIR, "run-gate.ts");
-  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 2>&1`;
+  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --force 2>&1`;
   try {
     const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
     const passMatch = output.match(/(\d+) pass/);

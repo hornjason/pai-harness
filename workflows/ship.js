@@ -690,6 +690,39 @@ Return only the file list, one per line.
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
 const marcusWorktreePath = priorBranchResult?.testsPass ? PROJECT_ROOT : (implementResult.buildResult?.worktreePath || PROJECT_ROOT)
 
+// AC completion gate: run ALL evidence commands from Marcus's worktree before committing.
+// Catches incomplete implementations where Marcus reports success but didn't finish all ACs.
+{
+  const acCmds = discovery.acs.filter(ac => ac.evidenceMethod?.command).map(ac => `echo "--- ${ac.id} ---" && (cd ${marcusWorktreePath} && ${ac.evidenceMethod.command}) 2>&1 || echo "${ac.id}: EVIDENCE_FAILED"`)
+  if (acCmds.length > 0) {
+    const evidenceCheck = await agent(`
+Run ALL of these evidence commands and report their output. Do NOT modify any code.
+
+${acCmds.join('\n\n')}
+
+Report the full output for each AC.
+    `, { label: 'ac-completion-check', phase: 'Validate' })
+
+    const checkText = typeof evidenceCheck === 'string' ? evidenceCheck : ''
+    const failedACs = discovery.acs.filter(ac => {
+      if (!ac.evidenceMethod?.command) return false
+      return checkText.includes(`${ac.id}: EVIDENCE_FAILED`) ||
+        (checkText.includes(`--- ${ac.id} ---`) && !checkText.includes(ac.id + ':') && checkText.split(`--- ${ac.id} ---`)[1]?.trim()?.startsWith('EVIDENCE_FAILED'))
+    })
+
+    if (failedACs.length > 0 && regressionCount < MAX_REGRESSIONS) {
+      regressionCount++
+      log(`AC completion gate: ${failedACs.length}/${discovery.acs.length} ACs failed evidence check — ${failedACs.map(a=>a.id).join(', ')}. Re-implementing.`)
+      implementResult = await runImplement()
+      if (!implementResult.success) {
+        return { status: 'IMPLEMENT_FAILED', reason: `AC completion regression failed: ${failedACs.map(a=>a.id).join(', ')}`, workDir: WORK_DIR }
+      }
+    } else if (failedACs.length > 0) {
+      log(`AC completion gate: ${failedACs.length} ACs still failing after max regressions — proceeding to verify gate`)
+    }
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // PHASE 5: VALIDATE (Quinn local dev — fast feedback before commit)
 // ════════════════════════════════════════════════════════════

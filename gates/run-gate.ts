@@ -87,6 +87,13 @@ if (!issue) issue = state.issue || 0;
 if (!slug) slug = state.slug || "";
 const issueRepo = state.issueRepo || state.repo || "";
 
+// Gate idempotency guard: skip re-execution if gate already PASSED (prevents ddb-592 pattern)
+if (!process.argv.includes("--force") && state.gates?.[gate]?.result === "PASS") {
+  console.log(`Gate ${gate}: already PASSED (attempt ${state.gates[gate].attempt}). Use --force to re-run.`);
+  console.log(`\n${gate} GATE: PASS (cached)`);
+  process.exit(0);
+}
+
 // Validate rungate.json against Zod schema (SC-6)
 let validatedHarness: ProjectHarness | null = null;
 const projectHarnessPath = state.projectRoot
