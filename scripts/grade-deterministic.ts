@@ -16,8 +16,11 @@ import {
   type Role,
   evaluateCriteria,
   checkTDD,
+  checkCompliance,
   parseToolCalls,
 } from "../lib/transcript-checker.js";
+import { extractDirectives } from "../lib/directive-extractor.js";
+import type { DirectiveCategory } from "../lib/directive-extractor.js";
 import { analyzeTranscript } from "./analyze-transcript.js";
 
 interface EfficiencyMetrics {
@@ -32,6 +35,7 @@ interface RuleResult {
   rule: string;
   verdict: string;
   evidence: string;
+  category?: DirectiveCategory;
 }
 
 interface TimingEntry {
@@ -67,7 +71,27 @@ export function loadValidRoles(projectRoot?: string): Set<string> {
   return new Set(["marcus", "quinn", "discovery", "rook", "serena", "aditi", "da"]);
 }
 
-function inferRole(metaPath: string, transcriptPath: string, validRoles: Set<string>): Role | null {
+export function loadRoleBriefPaths(projectRoot: string): Record<string, string> {
+  const configPath = join(projectRoot, ".claude", "rungate.json");
+  if (!existsSync(configPath)) return {};
+  try {
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
+    const result: Record<string, string> = {};
+    if (config.roles) {
+      for (const [name, roleConfig] of Object.entries(config.roles)) {
+        const brief = (roleConfig as Record<string, unknown>).brief;
+        if (typeof brief === "string") {
+          result[name] = join(projectRoot, brief);
+        }
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function inferRole(metaPath: string, transcriptPath: string, validRoles: Set<string>): Role | null {
   if (existsSync(metaPath)) {
     try {
       const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
@@ -147,7 +171,7 @@ function buildTranscriptData(calls: any[], promptContent: string): TranscriptDat
   };
 }
 
-export function gradeTranscript(transcriptPath: string, validRoles: Set<string>): GradeOutput["grades"][0] | null {
+export function gradeTranscript(transcriptPath: string, validRoles: Set<string>, projectRoot?: string): GradeOutput["grades"][0] | null {
   const metaPath = transcriptPath.replace(".jsonl", ".meta.json");
   const role = inferRole(metaPath, transcriptPath, validRoles);
   if (!role) return null;
@@ -164,14 +188,10 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>)
   const promptContent = extractPromptContent(transcriptContent);
   const data = buildTranscriptData(calls, promptContent);
 
-  // Evaluate role-specific criteria
-  const results = evaluateCriteria(role, data);
-  const total = results.length;
-  const followed = results.filter(r => r.verdict === "FOLLOWED").length;
   const flagged: string[] = [];
   const rules: RuleResult[] = [];
 
-  // For Marcus, also check TDD
+  // For Marcus, also check TDD (behavioral — not directive-based)
   if (role === "marcus") {
     const tddResult = checkTDD(transcriptContent);
     if (tddResult.verdict !== "TDD") {
@@ -182,13 +202,45 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>)
     }
   }
 
-  // Capture all rule results with evidence
-  for (const r of results) {
-    rules.push({ id: r.id, rule: r.rule, verdict: r.verdict, evidence: r.evidence });
-    if (r.verdict === "IGNORED") {
-      flagged.push(`${r.id}: ${r.rule}`);
+  // Directive-based grading: extract directives from the role's brief and check compliance
+  if (projectRoot) {
+    const briefPaths = loadRoleBriefPaths(projectRoot);
+    const briefPath = briefPaths[role];
+    if (briefPath && existsSync(briefPath)) {
+      const briefContent = readFileSync(briefPath, "utf-8");
+      const directives = extractDirectives(briefContent);
+      const complianceResults = checkCompliance(directives, transcriptContent);
+
+      for (const cr of complianceResults) {
+        const verdict = cr.status === "N/A" ? "N/A" : cr.status;
+        rules.push({
+          id: `DIR-L${cr.directive.line}`,
+          rule: cr.directive.text,
+          verdict,
+          evidence: cr.evidence,
+          category: cr.directive.category,
+        });
+        if (verdict === "IGNORED" || verdict === "VIOLATED") {
+          flagged.push(`DIR-L${cr.directive.line}: ${cr.directive.text}`);
+        }
+      }
     }
   }
+
+  // Fallback: hardcoded criteria when no projectRoot (backward compat)
+  if (!projectRoot) {
+    const results = evaluateCriteria(role, data);
+    for (const r of results) {
+      rules.push({ id: r.id, rule: r.rule, verdict: r.verdict, evidence: r.evidence });
+      if (r.verdict === "IGNORED") {
+        flagged.push(`${r.id}: ${r.rule}`);
+      }
+    }
+  }
+
+  const checkableRules = rules.filter(r => r.verdict !== "N/A");
+  const total = checkableRules.length;
+  const followed = checkableRules.filter(r => r.verdict === "FOLLOWED").length;
 
   // Compute efficiency metrics from transcript analysis
   const analysis = analyzeTranscript(transcriptPath);
@@ -286,7 +338,7 @@ function main() {
 
   let skipped = 0;
   for (const transcriptPath of transcriptFiles) {
-    const grade = gradeTranscript(transcriptPath, validRoles);
+    const grade = gradeTranscript(transcriptPath, validRoles, flags.project);
     if (grade) {
       grades.push(grade);
       timing.push(computeTiming(transcriptPath, grade.role));
