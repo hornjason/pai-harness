@@ -156,3 +156,24 @@ describe("contract: negative cases", () => {
     expect(r.output).toContain("all-acs-have-evidence");
   });
 });
+
+describe("contract: M-size decomposition", () => {
+  test("ship.js contains AC grouping schema and batched implement", () => {
+    const { readFileSync } = require("fs");
+    const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
+    expect(shipContent).toContain("AC_GROUPING_SCHEMA");
+    expect(shipContent).toContain("runBatchedImplement");
+    expect(shipContent).toContain("decompose-acs");
+    expect(shipContent).toContain("BATCH");
+    expect(shipContent).toContain("discovery.sizing === 'M'");
+  });
+
+  test("batched implement loops over batches and scopes Marcus", () => {
+    const { readFileSync } = require("fs");
+    const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
+    expect(shipContent).toContain("for (let bi = 0; bi < batches.length; bi++)");
+    expect(shipContent).toContain("marcus-b${bi + 1}");
+    expect(shipContent).toContain("sharedWorktreePath");
+    expect(shipContent).toContain("Focus ONLY on these ACs");
+  });
+});
