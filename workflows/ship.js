@@ -283,11 +283,49 @@ Extract verbatim:
 if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
+// ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
+const roleBriefs = ['discovery', 'marcus'].map(role => {
+  const rc = ROLES[role]
+  return { role, path: rc?.brief ? `${PROJECT_ROOT}/${rc.brief}` : `${PROJECT_ROOT}/.claude/agents/${role}.md` }
+})
+
+const preloadResult = await agent(`
+For each agent brief file below, extract:
+1. All file paths from the "## Context" section (if any)
+2. All bullet/numbered items from sections listed under "tiers.reinforcement" in the YAML frontmatter
+
+Brief files:
+${roleBriefs.map(b => `- ${b.role}: ${b.path}`).join('\n')}
+
+For reinforcement: read the YAML frontmatter, find the "tiers.reinforcement" array (e.g. ['Testing Rules']), then extract all items under those section headers.
+`, { label: 'preload-contexts', phase: 'Discovery', schema: {
+  type: 'object',
+  properties: {
+    roles: { type: 'object', additionalProperties: {
+      type: 'object',
+      properties: {
+        paths: { type: 'array', items: { type: 'string' } },
+        rules: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['paths', 'rules'],
+    } },
+  },
+  required: ['roles'],
+} })
+
+if (preloadResult?.roles) {
+  for (const [role, data] of Object.entries(preloadResult.roles)) {
+    CONTEXT_CACHE[role] = data.paths || []
+    REINFORCEMENT_CACHE[role] = data.rules || []
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // PHASE 2: DISCOVERY (with regression support + prior work)
 // ════════════════════════════════════════════════════════════
 
 let discovery = null
+let setupResult = null
 let regressionCount = 0
 
 async function runDiscovery(context) {
@@ -376,7 +414,7 @@ Project root: ${PROJECT_ROOT}
     }
   }
 
-  await agent(`
+  setupResult = await agent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 
 1. Init workflow state:
@@ -397,7 +435,8 @@ writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
   threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
   contextFiles: ac.contextFiles || [],
 })))});
-console.log('initialized');
+const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
+console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
 " 2>&1
 
 2. Load config:
@@ -406,20 +445,18 @@ cat ${PROJECT_ROOT}/.claude/rungate.json 2>/dev/null || echo "{}"
 3. Prior branch detect:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
 
-4. Verify file exists: ls -la ${WORK_DIR}/workflow-state.json
+Return: acCount from step 1, the full JSON from step 2 as config, and prior branch from step 3.
+  `, { label: 'setup', phase: 'Discovery', schema: {
+    type: 'object',
+    properties: {
+      acCount: { type: 'number' },
+      config: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } },
+      priorBranch: { type: 'object', properties: { branch: { type: 'string' }, commitCount: { type: 'number' } } },
+    },
+    required: ['acCount'],
+  } })
 
-Report ALL outputs.
-  `, { label: 'setup', phase: 'Discovery' })
-
-  // Verify ACs were written to state (writeACs can fail silently inside agent)
-  const stateCheck = await agent(`
-Read ${WORK_DIR}/workflow-state.json and report:
-1. How many ACs are in the "acs" array
-2. The phase field
-Run: bun -e "const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json','utf-8'));console.log(JSON.stringify({acCount:s.acs.length,phase:s.phase}))"
-  `, { label: 'verify-acs', phase: 'Discovery', schema: { type: 'object', properties: { acCount: { type: 'number' }, phase: { type: 'string' } }, required: ['acCount'] } })
-
-  if (!stateCheck || stateCheck.acCount === 0) {
+  if (!setupResult || setupResult.acCount === 0) {
     log('FATAL: workflow-state.json has 0 ACs after setup — writeACs likely failed. Re-writing.')
     await agent(`
 Re-write ACs to workflow-state.json:
@@ -442,10 +479,7 @@ console.log('ACs written: ' + s.acs.length);
 
 if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
-// Load config — read rungate.json inline (no separate agent needed for LIGHT)
-const projectConfigResult = discovery.ceremonyTier === 'LIGHT'
-  ? await agent(`Read ${PROJECT_ROOT}/.claude/rungate.json and return its JSON contents.`, { label: 'load-config', schema: { type: 'object', properties: { pages: { type: 'object' }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } } })
-  : await agent(`Read ${PROJECT_ROOT}/.claude/rungate.json and return its JSON contents.`, { label: 'load-config', schema: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } } })
+const projectConfigResult = setupResult?.config || {}
 const projectConfig = projectConfigResult || {}
 const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
