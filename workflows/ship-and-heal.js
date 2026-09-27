@@ -47,8 +47,6 @@ const VERIFY_SCHEMA = {
   required: ['testsPass', 'summary'],
 }
 
-// Compliance thresholds
-const COMPLIANCE_LOW = 50  // Agents scoring below this need improvement
 const MAX_HEAL_SPAWNS = 4  // Total spawn cap per council decision D-6
 
 let parsedArgs = args || {}
@@ -283,7 +281,33 @@ ${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
 4. Report which directives you strengthened
 `, { label: 'heal-process', phase: 'Heal' })
 
-  log('Brief templates healed for process violations')
+  log('Brief templates healed for process violations — running test-brief verification')
+
+  // Verify healed briefs parse correctly and retain required structure
+  const briefVerifyResult = await agent(`
+You are verifying that healed agent brief templates are still valid.
+
+## Task
+1. Find all brief templates in ${HARNESS_ROOT}/templates/agent-briefs/
+2. For each template, verify:
+   - Markdown parses without errors (no broken headers, unclosed blocks)
+   - Required sections present: TDD, Context, Never Do, Testing Rules, Workflow
+   - Variable placeholders intact (e.g. {{role}}, {{project}})
+   - No duplicate headers at same level
+3. Report which briefs passed and which failed
+
+Return pass: true if ALL briefs verify, false if any fail.
+`, { label: 'test-brief-verification', phase: 'Heal', schema: {
+    type: 'object',
+    properties: {
+      pass: { type: 'boolean' },
+      briefsChecked: { type: 'number' },
+      failures: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['pass'],
+  }})
+
+  log(`Brief verification: ${briefVerifyResult?.pass ? 'PASS' : 'FAIL'} (${briefVerifyResult?.briefsChecked || 0} briefs checked)`)
 
   // Verify healed briefs still parse and contain required sections (test-brief verification)
   const violatedProcessRoles = [...new Set(processViolations.map(v => v.role))]
