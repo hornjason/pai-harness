@@ -12,6 +12,13 @@ const GATES_DIR = __dirname;
 
 export type GateName = "scope" | "verify" | "ship";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface ShipGateInput {
+  slug: string;
+  gate: GateName;
+}
+
 const PHASE_GATE: Record<string, GateName> = {
   SCOPE: "scope",
   BUILD: "verify",

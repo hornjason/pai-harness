@@ -1,5 +1,13 @@
 export type FailureCategory = "STATE" | "CODE" | "DISCOVERY" | "ENVIRONMENT" | "NON_RETRYABLE";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface ClassifyInput {
+  failures: Array<{ check: string; result: string; detail: string }>;
+}
+
+export type ClassifyResult = Classification;
+
 export interface Classification {
   category: FailureCategory;
   regressionTarget?: "BUILD" | "DISCOVERY";

@@ -11,6 +11,30 @@ export interface GateResult {
   detail: string;
 }
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface WriteGateResultInput {
+  sf: string;
+  gate: string;
+  passes: number;
+  fails: number;
+  warns: number;
+  results: GateResult[];
+  projectRoot?: string;
+}
+
+export interface InitWorkflowInput {
+  issue: number;
+  repo: string;
+  issueRepo?: string;
+  projectRoot: string;
+  slug: string;
+  issueGoal: string;
+  sizing?: { predicted?: string; ceremonyTier?: string };
+  sourceSpecs?: Array<{ path: string; citedInDiscovery: boolean; specElements?: string[] }>;
+  bootstrappedFrom?: string;
+}
+
 interface WorkflowState {
   [key: string]: any;
 }
@@ -411,7 +435,7 @@ export function writeGateSummary(
 
 // ── Write-time Zod validation (#453) ─────────────────────────────────────
 
-export function writeWorkflowState(sf: string, state: object): void {
+export function writeWorkflowState(sf: string, state: Record<string, unknown>): void {
   try {
     WorkflowStateSchema.passthrough().parse(state);
   } catch (err) {
@@ -431,17 +455,7 @@ export function writeWorkflowState(sf: string, state: object): void {
 
 // ── Structured workflow authoring (#454) ─────────────────────────────────
 
-export function initWorkflow(sf: string, opts: {
-  issue: number;
-  repo: string;
-  issueRepo?: string;
-  projectRoot: string;
-  slug: string;
-  issueGoal: string;
-  sizing?: { predicted?: string; ceremonyTier?: string };
-  sourceSpecs?: Array<{ path: string; citedInDiscovery: boolean; specElements?: string[] }>;
-  bootstrappedFrom?: string;
-}): void {
+export function initWorkflow(sf: string, opts: InitWorkflowInput): void {
   const ts = isoNow();
   const state: Record<string, any> = {
     schemaVersion: 2,

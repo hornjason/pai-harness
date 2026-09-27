@@ -28,6 +28,18 @@ import {
   requiresResearchEscalation,
 } from "./ship-orchestrator";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface RunGateInput {
+  gate: string;
+  slug: string;
+  issue: number;
+}
+
+export type ParseTestOutput = GateResult[];
+
+// ── Implementation ────────────────────────────────────────────────────────
+
 export function parseTestResults(output: string): GateResult[] {
   const results: GateResult[] = [];
   const lines = output.split("\n");
