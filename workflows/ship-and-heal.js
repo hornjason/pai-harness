@@ -228,7 +228,7 @@ Analyze agent transcripts for efficiency metrics:
 }
 
 // Read compliance.threshold from rungate.json config with default 80
-const complianceThreshold = testConfig?.complianceThreshold || parsedArgs.complianceThreshold || 80
+const complianceThreshold = testConfig?.complianceThreshold || 80
 
 // Classify violations
 if (gradeResult?.grades) {
@@ -311,7 +311,7 @@ Return pass: true if ALL briefs verify, false if any fail.
 
   // Verify healed briefs still parse and contain required sections (test-brief verification)
   const violatedProcessRoles = [...new Set(processViolations.map(v => v.role))]
-  const briefVerifyResult = await agent(`
+  const roleBriefVerifyResult = await agent(`
 You are verifying that healed agent brief templates are still valid.
 
 ## Task: test-brief verification
@@ -327,7 +327,7 @@ ${violatedProcessRoles.map(r => `- ${r}.md`).join('\n')}
 Report which briefs passed verification and any issues found.
 `, { label: 'test-brief', phase: 'Heal' })
 
-  log(`Brief verification complete: ${briefVerifyResult ? 'done' : 'skipped'}`)
+  log(`Brief verification complete: ${roleBriefVerifyResult ? 'done' : 'skipped'}`)
 
   return {
     status: 'SHIPPED_WITH_HEAL',
