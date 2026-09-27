@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync, statSync
 import { join, dirname } from "path";
 import { createHash, createHmac, randomBytes } from "crypto";
 import { execSync } from "child_process";
-import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASONS } from "./schema";
+import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASONS, type WorkflowState } from "./schema";
 import { ZodError } from "zod";
 
 export interface GateResult {
@@ -33,10 +33,6 @@ export interface InitWorkflowInput {
   sizing?: { predicted?: string; ceremonyTier?: string };
   sourceSpecs?: Array<{ path: string; citedInDiscovery: boolean; specElements?: string[] }>;
   bootstrappedFrom?: string;
-}
-
-interface WorkflowState {
-  [key: string]: any;
 }
 
 function readState(sf: string): WorkflowState {
@@ -435,7 +431,7 @@ export function writeGateSummary(
 
 // ── Write-time Zod validation (#453) ─────────────────────────────────────
 
-export function writeWorkflowState(sf: string, state: Record<string, unknown>): void {
+export function writeWorkflowState(sf: string, state: WorkflowState): void {
   try {
     WorkflowStateSchema.passthrough().parse(state);
   } catch (err) {

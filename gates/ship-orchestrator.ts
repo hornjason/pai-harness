@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import type { WorkflowState } from "./schema";
 
 export const MAX_ITERATIONS = 3;
 
@@ -49,7 +50,7 @@ function statePath(slug: string): string {
   return join(workDirBase(), slug, "workflow-state.json");
 }
 
-function readState(slug: string): Record<string, any> {
+function readState(slug: string): WorkflowState {
   const sf = statePath(slug);
   if (!existsSync(sf)) {
     throw new Error(`workflow-state.json not found: ${sf}`);
@@ -57,7 +58,7 @@ function readState(slug: string): Record<string, any> {
   return JSON.parse(readFileSync(sf, "utf-8"));
 }
 
-function writeStateFile(slug: string, state: Record<string, any>): void {
+function writeStateFile(slug: string, state: WorkflowState): void {
   const sf = statePath(slug);
   writeFileSync(sf, JSON.stringify(state, null, 2));
 }
@@ -66,7 +67,7 @@ function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
-export async function currentState(slug: string): Promise<Record<string, any>> {
+export async function currentState(slug: string): Promise<WorkflowState> {
   return readState(slug);
 }
 

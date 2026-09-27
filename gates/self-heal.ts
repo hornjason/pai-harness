@@ -1,6 +1,12 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import type { WorkflowState } from "./schema";
+
+export interface ProtectedFieldsSnapshot {
+  gates: Record<string, unknown>;
+  acs: Array<{ id: string; verdict: string; evidence: unknown }>;
+}
 
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
 
@@ -83,7 +89,7 @@ export async function runWithHeal(opts: HealInput): Promise<HealResult> {
   return { result: "FAIL", attempts: attempt, failures };
 }
 
-export function snapshotProtectedFields(state: Record<string, any>): Record<string, any> {
+export function snapshotProtectedFields(state: WorkflowState): ProtectedFieldsSnapshot {
   const gates = JSON.parse(JSON.stringify(state.gates ?? {}));
   const acs = (state.acs ?? []).map((ac: any) => ({
     id: ac.id,
@@ -94,8 +100,8 @@ export function snapshotProtectedFields(state: Record<string, any>): Record<stri
 }
 
 export function checkIntegrity(
-  before: Record<string, any>,
-  after: Record<string, any>,
+  before: ProtectedFieldsSnapshot,
+  after: ProtectedFieldsSnapshot,
 ): { violated: boolean; changes: string[] } {
   const changes: string[] = [];
 
