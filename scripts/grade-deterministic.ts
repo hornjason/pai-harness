@@ -53,6 +53,7 @@ export interface GradeOutput {
     efficiency?: EfficiencyMetrics;
   }[];
   timing?: TimingEntry[];
+  canary?: { total: number; triggered: number; results: { id: string; phrase: string; triggered: boolean }[] };
 }
 
 export function loadValidRoles(projectRoot?: string): Set<string> {
@@ -351,7 +352,28 @@ function main() {
     console.error(`Skipped ${skipped} agent(s) — no matching role in config`);
   }
 
-  const output: GradeOutput = { grades, timing };
+  // Check canary phrases if canaries.json exists
+  let canaryResult: GradeOutput["canary"] = undefined;
+  const canaryPath = join(workDir, "canaries.json");
+  if (existsSync(canaryPath)) {
+    try {
+      const planted = JSON.parse(readFileSync(canaryPath, "utf-8"));
+      const allTranscriptText = transcriptFiles.map(f => readFileSync(f, "utf-8")).join("\n");
+      const results = planted.map((c: any) => ({
+        id: c.id,
+        phrase: c.phrase,
+        triggered: allTranscriptText.includes(c.phrase),
+      }));
+      canaryResult = {
+        total: results.length,
+        triggered: results.filter((r: any) => r.triggered).length,
+        results,
+      };
+      console.error(`Canary check: ${canaryResult.triggered}/${canaryResult.total} triggered`);
+    } catch { /* canary check is best-effort */ }
+  }
+
+  const output: GradeOutput = { grades, timing, canary: canaryResult };
   const outputPath = join(workDir, "compliance-grade.json");
   writeFileSync(outputPath, JSON.stringify(output, null, 2));
 
