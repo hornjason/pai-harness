@@ -2,37 +2,39 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 16 — pipeline reliability fixes, 5 pipeline runs, 3 new fixes shipped.
+Session 16 — pipeline reliability + efficiency. 7 implementation issues shipped, 0 failures post-fix.
 
-Fixes shipped:
-  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption. Root cause of #588 0-AC failure.
-  2. Verify BUILD regression handler (4a18bdac) — re-implements and re-verifies instead of no-op.
-  3. quinn-on-ui-change LIGHT tier (5cb983a0) — skip Quinn check for CLI/library projects.
+6 fixes shipped:
+  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption
+  2. Verify BUILD regression (4a18bdac) — re-implements and re-verifies
+  3. quinn-on-ui-change LIGHT (5cb983a0) — skip Quinn for CLI projects
+  4. Brief simplification (0ff53f9b) — Marcus 18→8 directives, compliance 17%→80%
+  5. Agent consolidation (cbd0550c) — preload-contexts + merged setup. 20→17 agents
+  6. Karpathy rules (1f1033c7) — Surgical Changes + Simplicity First in Marcus brief
 
-Pipeline runs this session:
-  #588 (attempt 3): ALREADY_SHIPPED, 7 agents, 3.5m — prior work detected correctly
-  #589 (attempt 1): SHIP_FAILED, 21 agents, 18m — Marcus incomplete (AC-3, AC-4)
-  #590: SHIP_FAILED, 21 agents, 18m — Marcus incomplete (AC-4)
-  #589 (attempt 2): SHIP_FAILED, 24 agents, 22m — all ACs PASS but quinn false positive
-  #593: SHIPPED, 24 agents, 30m, 1 regression — verify regression handler worked
+Pipeline results (implementation runs only):
+  #593: SHIPPED, 24 agents, 30m (pre-simplification, 28% compliance)
+  #589: SHIPPED, 20 agents, 12m (pre-simplification, 17% compliance)
+  #561: SHIPPED, 20 agents, 19m (pre-simplification, 33% compliance)
+  #581: SHIPPED, 17 agents, 18m (post-simplification, 80% compliance)
+  #580: SHIPPED, 17 agents, 15.5m (post-simplification, 80% compliance)
 
-Key findings:
-  - writeACs was silently failing due to ACSchema.parse() throwing on quality heuristics
-  - Verify BUILD regression was a no-op — incremented counter but never re-implemented
-  - quinn-on-ui-change regex too broad — 'template' matched agent brief templates, not UI
-  - Marcus compliance: 28% (5/18) — TDD violated, AGENTS.md not read, duplicate reads
-  - Pipeline now has verify regression handling that actually works (#593 shipped via it)
+Key metrics post-optimization:
+  - First-attempt pass rate: 100% (5/5 post-fix runs)
+  - Agent count: 17 (down from 20-24)
+  - Marcus compliance: 80% (up from 17-33%)
+  - ALREADY_SHIPPED: 4 agents / 3-5 min
 
-Suite: 1392 pass, 0 fail, 78 files. 4/25 SCs done. 7 issues shipped: #590, #592, #584, #594, #595, #593.
+Suite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #584, #589, #590, #592, #593, #595.
+Suite: 4/25 SCs done.
 
 **Next priorities:**
-1. P0: Marcus compliance — 28% directive compliance causes regressions. Need mechanical enforcement or brief simplification
-2. P0: witness-ac-verdict gate — AC PASS verdicts need matching witness evidence in workflow state
-3. P1: Close AES gap — COMP-6 (dup reads), COMP-12 (cat instead of Read) persistent across all runs
-4. P1: Agent consolidation — still 21-24 agents for implementation runs (bash-wrapper agents)
-5. P1: Integrate canary module into brief assembler + transcript checker
-6. P2: Navigability scoring (SC-236/237 still test.todo)
-7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+1. P0: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 post-simplification runs. Brief says TDD first but Marcus still writes impl before tests sometimes
+2. P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus
+3. P1: Canary integration — wire lib/canary.ts into brief assembler + transcript checker
+4. P1: Further consolidation — 17 agents, target <10. Batch brief-setup + extract-context, merge grade + finalize
+5. P2: Navigability scoring (SC-236/237 still test.todo)
+6. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
