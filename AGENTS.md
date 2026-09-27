@@ -41,7 +41,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Specs — success criteria, constraints, requirements (20 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (19 files) | `docs/research/` |
-| Council — synthesis, design debates (7 files) | `docs/council/` |
+| Council — synthesis, design debates (9 files) | `docs/council/` |
 | Guides — setup, onboarding, reference (1 files) | `docs/guides/` |
 | Reference — historical and inactive docs (0 files) | `reference/` |
 
@@ -107,13 +107,17 @@ bun test
 | directive extractor | directive-extractor.test.ts | Auto-detected |
 | phase 0 | phase-0.test.ts | Auto-detected |
 | structure | structure.test.ts | Auto-detected |
+| create brief | create-brief.test.ts | Auto-detected |
 | phase 1 | phase-1.test.ts | Auto-detected |
 | tdd checker | tdd-checker.test.ts | Auto-detected |
 | hill climb | hill-climb.test.ts | Auto-detected |
 | sync sc status | sync-sc-status.test.ts | Auto-detected |
+| aes calculator | aes-calculator.test.ts | Auto-detected |
 | brief context parser | brief-context-parser.test.ts | Auto-detected |
 | task completion checks | task-completion-checks.test.ts | Auto-detected |
+| behavioral cache | behavioral-cache.test.ts | Auto-detected |
 | transcript checker | transcript-checker.test.ts | Auto-detected |
+| analyze transcript | analyze-transcript.test.ts | Auto-detected |
 | commit enforcement | commit-enforcement.test.ts | Auto-detected |
 | phase 4 | phase-4.test.ts | Auto-detected |
 | matcher registry | matcher-registry.test.ts | Auto-detected |
@@ -124,9 +128,11 @@ bun test
 | contract | contract.test.ts | Auto-detected |
 | branch cleanup | branch-cleanup.test.ts | Auto-detected |
 | external deps | external-deps.test.ts | Auto-detected |
+| grade deterministic | grade-deterministic.test.ts | Auto-detected |
 | audit transcript | audit-transcript.test.ts | Auto-detected |
 | anti | anti.test.ts | Auto-detected |
 | instruction compliance | instruction-compliance.test.ts | Auto-detected |
+| canary | canary.test.ts | Auto-detected |
 | meta sc coverage | meta-sc-coverage.test.ts | Auto-detected |
 | worktree cleanup | worktree-cleanup.test.ts | Auto-detected |
 | stale issue scanner | stale-issue-scanner.test.ts | Auto-detected |
@@ -136,6 +142,7 @@ bun test
 | spec compliance auto | spec-compliance-auto.test.ts | Auto-detected |
 | spec drift | spec-drift.test.ts | Auto-detected |
 | scan stale issues | scan-stale-issues.test.ts | Auto-detected |
+| ship and heal | ship-and-heal.test.ts | Auto-detected |
 | sc drift | sc-drift.test.ts | Auto-detected |
 | create sc | create-sc.test.ts | Auto-detected |
 
