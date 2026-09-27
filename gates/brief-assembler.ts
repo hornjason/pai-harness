@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, basename } from "path";
+import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
 
 export interface AssembleResult {
   briefPath: string;
@@ -55,7 +56,15 @@ export async function assembleBrief(opts: {
   sections.push(buildVerifySection(verifyCommands));
   sections.push(buildReportSection());
 
-  const brief = sections.join("\n\n");
+  let brief = sections.join("\n\n");
+
+  // Plant canary values in the brief for behavioral verification (D-5, SC-409)
+  const canaries = getDefaultCanaries().filter((c) => c.location === "brief");
+  if (canaries.length > 0) {
+    const { brief: briefWithCanaries } = plantCanaries(brief, canaries);
+    brief = briefWithCanaries;
+  }
+
   const briefPath = join(workDir, "marcus-brief.md");
   writeFileSync(briefPath, brief);
 

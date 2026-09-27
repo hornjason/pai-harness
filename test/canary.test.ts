@@ -1,4 +1,6 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, afterAll } from "bun:test";
+import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
+import { join } from "path";
 import {
   generateCanaryPhrase,
   getDefaultCanaries,
@@ -7,6 +9,11 @@ import {
   type CanaryDefinition,
   type CanaryReport,
 } from "../lib/canary";
+import { assembleBrief } from "../gates/brief-assembler";
+import { checkComplianceWithCanaries } from "../lib/transcript-checker";
+import { extractDirectives } from "../lib/directive-extractor";
+
+const ROOT = join(import.meta.dir, "..");
 
 describe("canary: phrase generation", () => {
   test("generates CANARY-{hex} format", () => {
@@ -144,5 +151,77 @@ describe("canary: checking", () => {
   test("report includes timestamp", () => {
     const report = checkCanaries("x", []);
     expect(report.ts).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+});
+
+describe("canary: brief assembler integration", () => {
+  const tmpDir = join(ROOT, "test/fixtures/tmp-canary-integration");
+
+  afterAll(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("assembleBrief plants canaries in the output brief", async () => {
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(
+      join(tmpDir, "workflow-state.json"),
+      JSON.stringify({
+        acs: [{ id: "AC-1", statement: "test canary integration", type: "CODE" }],
+        issue: 999,
+        issueGoal: "Test canary planting in brief assembler",
+      }),
+    );
+
+    const result = await assembleBrief({
+      slug: "test-canary",
+      workDir: tmpDir,
+      projectRoot: ROOT,
+    });
+
+    const briefContent = readFileSync(result.briefPath, "utf-8");
+    expect(briefContent).toContain("CANARY-");
+    expect(briefContent).toContain("Canary Check");
+    expect(briefContent).toContain("verification token");
+  });
+
+  test("brief-assembler.ts imports canary module", () => {
+    const content = readFileSync(join(ROOT, "gates/brief-assembler.ts"), "utf-8");
+    expect(content).toContain("plantCanaries");
+    expect(content).toMatch(/from\s+["'].*canary/);
+  });
+});
+
+describe("canary: transcript checker integration", () => {
+  test("checkComplianceWithCanaries combines directive and canary checks", () => {
+    const briefContent = readFileSync(join(ROOT, ".claude/agents/marcus.md"), "utf-8");
+    const directives = extractDirectives(briefContent);
+    const canaries: CanaryDefinition[] = [
+      {
+        id: "integration-test",
+        phrase: "CANARY-integration1",
+        location: "brief",
+        expectedBehavior: "test integration",
+        checkFn: (t) => t.includes("CANARY-integration1"),
+      },
+    ];
+
+    const transcript = readFileSync(
+      join(ROOT, "test/fixtures/transcripts/agent-marcus-impl1.jsonl"),
+      "utf-8",
+    );
+
+    const result = checkComplianceWithCanaries(directives, transcript, canaries);
+    expect(result.compliance).toBeDefined();
+    expect(result.compliance.length).toBeGreaterThan(0);
+    expect(result.canaryReport).toBeDefined();
+    expect(result.canaryReport.total).toBe(1);
+    // Canary phrase is NOT in the fixture transcript, so it should not be triggered
+    expect(result.canaryReport.triggered).toBe(0);
+  });
+
+  test("transcript-checker.ts imports canary module", () => {
+    const content = readFileSync(join(ROOT, "lib/transcript-checker.ts"), "utf-8");
+    expect(content).toContain("checkCanaries");
+    expect(content).toMatch(/from\s+["'].*canary/);
   });
 });
