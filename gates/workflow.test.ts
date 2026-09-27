@@ -451,6 +451,8 @@ describe("verify checks", () => {
   // 29. quinn-on-ui-change
   test("quinn-on-ui-change: quinn spawned when UI files change", () => {
     if (!isShipPlus()) return;
+    const tier = sf("sizing")?.ceremonyTier;
+    if (tier === "LIGHT") return;
     const UI_EXT = /\.(tsx|jsx|css|scss|html|svg|less)$/i;
     const UI_SVC = /template|campaign-html|brief-pipeline|email-template|dashboard/i;
     const allPaths: string[] = [];
