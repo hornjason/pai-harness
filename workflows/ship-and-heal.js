@@ -47,8 +47,6 @@ const VERIFY_SCHEMA = {
   required: ['testsPass', 'summary'],
 }
 
-// Compliance thresholds
-const COMPLIANCE_LOW = 50  // Agents scoring below this need improvement
 const MAX_HEAL_SPAWNS = 4  // Total spawn cap per council decision D-6
 
 let parsedArgs = args || {}
@@ -67,13 +65,15 @@ const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-con
 
 // Read test config
 const testConfig = await agent(`
-Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section.
+Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section AND compliance.threshold.
 If no test section or file doesn't exist, return command: "bun test", timeout: 120000.
+If no compliance.threshold field, omit it (caller defaults to 80).
 `, { label: 'test-config', schema: {
   type: 'object',
   properties: {
     command: { type: 'string' },
     timeout: { type: 'number' },
+    complianceThreshold: { type: 'number' },
   },
   required: ['command', 'timeout'],
 }})
@@ -227,8 +227,8 @@ Analyze agent transcripts for efficiency metrics:
   }
 }
 
-// Read compliance threshold from config
-const complianceThreshold = parsedArgs.complianceThreshold || 80
+// Read compliance threshold from config (compliance.threshold in rungate.json, default 80)
+const complianceThreshold = testConfig?.complianceThreshold || 80
 
 // Classify violations
 if (gradeResult?.grades) {
@@ -281,7 +281,33 @@ ${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
 4. Report which directives you strengthened
 `, { label: 'heal-process', phase: 'Heal' })
 
-  log('Brief templates healed for process violations')
+  log('Brief templates healed for process violations — running test-brief verification')
+
+  // Verify healed briefs parse correctly and retain required structure
+  const briefVerifyResult = await agent(`
+You are verifying that healed agent brief templates are still valid.
+
+## Task
+1. Find all brief templates in ${HARNESS_ROOT}/templates/agent-briefs/
+2. For each template, verify:
+   - Markdown parses without errors (no broken headers, unclosed blocks)
+   - Required sections present: TDD, Context, Never Do, Testing Rules, Workflow
+   - Variable placeholders intact (e.g. {{role}}, {{project}})
+   - No duplicate headers at same level
+3. Report which briefs passed and which failed
+
+Return pass: true if ALL briefs verify, false if any fail.
+`, { label: 'test-brief-verification', phase: 'Heal', schema: {
+    type: 'object',
+    properties: {
+      pass: { type: 'boolean' },
+      briefsChecked: { type: 'number' },
+      failures: { type: 'array', items: { type: 'string' } },
+    },
+    required: ['pass'],
+  }})
+
+  log(`Brief verification: ${briefVerifyResult?.pass ? 'PASS' : 'FAIL'} (${briefVerifyResult?.briefsChecked || 0} briefs checked)`)
 
   return {
     status: 'SHIPPED_WITH_HEAL',
@@ -292,6 +318,7 @@ ${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
     processViolations,
     healed: true,
     healType: 'process-only',
+    briefVerifyResult,
   }
 }
 
