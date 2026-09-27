@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-26",
+  "updated": "2026-09-27",
   "priorities": [
     "P0: Fix 21% first-attempt pass rate — evidence-path worktree mismatch + ceremony field gaps (council in progress)",
     "P0: Reduce XS pipeline from 19 agents / 14 min to <6 agents / <5 min",

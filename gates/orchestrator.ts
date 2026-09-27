@@ -480,8 +480,12 @@ export function writeACs(sf: string, acs: Array<{
 
   state.acs = acs.map(ac => {
     const enriched = { ...ac, evidence: null, verdict: "PENDING" as const };
-    ACSchema.parse(enriched);
-    return enriched;
+    const result = ACSchema.safeParse(enriched);
+    if (!result.success) {
+      const issues = result.error.issues.map(i => i.message).join('; ');
+      console.warn(`WARN: AC ${ac.id} has validation issues (will be caught at gate time): ${issues}`);
+    }
+    return enriched as (typeof state.acs)[number];
   });
 
   writeState(sf, state);

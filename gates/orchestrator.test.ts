@@ -625,9 +625,9 @@ describe("writeACs", () => {
     expect(state.acs[1].verdict).toBe("PENDING");
   });
 
-  test("throws on invalid AC type enum", () => {
+  test("writes ACs with invalid type enum (warns, caught at gate time)", () => {
     writeFileSync(SF, JSON.stringify(makeState(), null, 2));
-    expect(() => writeACs(SF, [
+    writeACs(SF, [
       {
         id: "SC-1",
         type: "INVALID_TYPE" as any,
@@ -635,19 +635,25 @@ describe("writeACs", () => {
         threshold: { op: "==", value: "true" },
         evidenceMethod: { type: "GREP_CHECK" },
       },
-    ])).toThrow();
+    ]);
+    const state = JSON.parse(readFileSync(SF, "utf-8"));
+    expect(state.acs).toHaveLength(1);
+    expect(state.acs[0].id).toBe("SC-1");
   });
 
-  test("throws on invalid threshold op", () => {
+  test("writes ACs with invalid threshold op (warns, caught at gate time)", () => {
     writeFileSync(SF, JSON.stringify(makeState(), null, 2));
-    expect(() => writeACs(SF, [
+    writeACs(SF, [
       {
         id: "SC-1",
         statement: "test fixture validates gate behavior correctly",
         threshold: { op: "eq" as any, value: "true" },
         evidenceMethod: { type: "GREP_CHECK" },
       },
-    ])).toThrow();
+    ]);
+    const state = JSON.parse(readFileSync(SF, "utf-8"));
+    expect(state.acs).toHaveLength(1);
+    expect(state.acs[0].id).toBe("SC-1");
   });
 
   test("preserves existing state fields", () => {

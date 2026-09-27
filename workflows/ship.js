@@ -411,6 +411,31 @@ bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; c
 Report ALL outputs.
   `, { label: 'setup', phase: 'Discovery' })
 
+  // Verify ACs were written to state (writeACs can fail silently inside agent)
+  const stateCheck = await agent(`
+Read ${WORK_DIR}/workflow-state.json and report:
+1. How many ACs are in the "acs" array
+2. The phase field
+Run: bun -e "const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json','utf-8'));console.log(JSON.stringify({acCount:s.acs.length,phase:s.phase}))"
+  `, { label: 'verify-acs', phase: 'Discovery', schema: { type: 'object', properties: { acCount: { type: 'number' }, phase: { type: 'string' } }, required: ['acCount'] } })
+
+  if (!stateCheck || stateCheck.acCount === 0) {
+    log('FATAL: workflow-state.json has 0 ACs after setup — writeACs likely failed. Re-writing.')
+    await agent(`
+Re-write ACs to workflow-state.json:
+bun -e "
+import {writeACs} from '${HARNESS_ROOT}/gates/orchestrator.ts';
+writeACs('${WORK_DIR}/workflow-state.json', ${JSON.stringify(discovery.acs.map(ac => ({
+  id: ac.id, type: ac.type, statement: ac.statement,
+  threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
+  contextFiles: ac.contextFiles || [],
+})))});
+const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json','utf-8'));
+console.log('ACs written: ' + s.acs.length);
+" 2>&1
+    `, { label: 'fix-acs', phase: 'Discovery' })
+  }
+
   log(`Sized: ${discovery.sizing}/${discovery.ceremonyTier} — ${discovery.acs.length} ACs`)
   return true
 }
