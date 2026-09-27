@@ -182,8 +182,8 @@ if (gate === "verify") {
 // B3: Prove Reproducer — runs BEFORE test suite so prove.test.ts can verify/override (ADR-009)
 if (gate === "prove") {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier === "LIGHT") {
-    console.log("prove gate: LIGHT tier — skipping reproducer (API check only)");
+  if (tier === "MINIMAL" || tier === "LIGHT") {
+    console.log("prove gate: LIGHT/MINIMAL tier — skipping reproducer (API check only)");
   } else {
     let issueBody = "";
     let issueTitle = "";
@@ -541,7 +541,7 @@ let b1VerifyAgentResult: any = null;
 // B1: AC Adversary — fire-and-forget at scope, checked at verify (ADR-009)
 if (gate === "scope" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier !== "LIGHT") {
+  if (tier !== "MINIMAL" && tier !== "LIGHT") {
     const b1ProjectPrompt = join(__dirname, "prompts", "ac-adversary.md");
     const b1HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
     const promptPath = existsSync(b1ProjectPrompt) ? b1ProjectPrompt : b1HomePrompt;
@@ -589,7 +589,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0) {
 // B1 report check — verify gate reads adversary result (ADR-009)
 if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier !== "LIGHT") {
+  if (tier !== "MINIMAL" && tier !== "LIGHT") {
     const reportPath = join(WORK_DIR, "adversary-report.json");
     if (!existsSync(reportPath)) {
       fails++;
@@ -633,7 +633,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGA
 // B2: Evidence Validator — run evidence commands in clean worktree (ADR-009)
 if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier !== "LIGHT") {
+  if (tier !== "MINIMAL" && tier !== "LIGHT") {
     const scopeSha = state.gates?.scope?.commitSha;
     const fixSha = execSync("git rev-parse HEAD", { encoding: "utf-8", cwd: state.projectRoot || undefined }).trim();
 
@@ -723,7 +723,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGA
 // B2 Agent: Evidence Validator — LLM review of evidence quality (#1407, ADR-009)
 if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier !== "LIGHT") {
+  if (tier !== "MINIMAL" && tier !== "LIGHT") {
     const b2ProjectPrompt = join(__dirname, "prompts", "evidence-validator.md");
     const b2HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "evidence-validator.md");
     const b2PromptPath = existsSync(b2ProjectPrompt) ? b2ProjectPrompt : b2HomePrompt;
@@ -784,7 +784,7 @@ if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGA
 // B1 Agent: AC Adversary at verify — challenges evidence with full context (#1406, ADR-009)
 if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier !== "LIGHT") {
+  if (tier !== "MINIMAL" && tier !== "LIGHT") {
     const b1ProjectPrompt = join(__dirname, "prompts", "ac-adversary.md");
     const b1HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
     const b1PromptPath = existsSync(b1ProjectPrompt) ? b1ProjectPrompt : b1HomePrompt;

@@ -167,7 +167,7 @@ export const WorkflowStateSchema = z.object({
 
   sizing: z.object({
     predicted: z.enum(["XS", "S", "M", "L"]).optional(),
-    ceremonyTier: z.enum(["LIGHT", "STANDARD", "THOROUGH"]).optional(),
+    ceremonyTier: z.enum(["MINIMAL", "LIGHT", "STANDARD", "THOROUGH"]).optional(),
     actualFiles: z.number().optional(),
     actualMinutes: z.number().optional(),
   }).optional(),

@@ -32,7 +32,7 @@ const DISCOVERY_SCHEMA = {
   type: 'object',
   properties: {
     sizing: { type: 'string', enum: ['XS', 'S', 'M', 'L'] },
-    ceremonyTier: { type: 'string', enum: ['LIGHT', 'STANDARD', 'THOROUGH'] },
+    ceremonyTier: { type: 'string', enum: ['MINIMAL', 'LIGHT', 'STANDARD', 'THOROUGH'] },
     acs: {
       type: 'array',
       items: {
@@ -323,7 +323,7 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
    Also include git log results in priorWork.explicitCommits array.
 
 4. Read relevant source files. Identify filesToModify, scopeOut.
-5. Size: XS→LIGHT | S/M→STANDARD | L→THOROUGH.
+5. Size: XS→MINIMAL | S/M→STANDARD | L→THOROUGH.
 6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, contextFiles.
    CONTEXT FILES RULE (CRITICAL): Every AC MUST have a contextFiles array listing the specific files Marcus will need to read to implement that AC. Include path and reason. Example: [{"path": "hooks/WorkflowStateGuard.hook.ts", "reason": "existing hook pattern to follow"}, {"path": "lib/conformity.ts", "reason": "matchPattern function to reuse"}]. Do NOT leave contextFiles empty — Marcus wastes 80% of context loading files he doesn't need when you don't specify what he actually needs.
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
@@ -443,7 +443,7 @@ console.log('ACs written: ' + s.acs.length);
 if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
 // Load config — read rungate.json inline (no separate agent needed for LIGHT)
-const projectConfigResult = discovery.ceremonyTier === 'LIGHT'
+const projectConfigResult = discovery.ceremonyTier === 'MINIMAL' || discovery.ceremonyTier === 'LIGHT'
   ? await agent(`Read ${PROJECT_ROOT}/.claude/rungate.json and return its JSON contents.`, { label: 'load-config', schema: { type: 'object', properties: { pages: { type: 'object' }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } } })
   : await agent(`Read ${PROJECT_ROOT}/.claude/rungate.json and return its JSON contents.`, { label: 'load-config', schema: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } } })
 const projectConfig = projectConfigResult || {}
@@ -453,7 +453,7 @@ const hasContainer = !!(projectConfig.container)
 const testCommand = projectConfig.test?.command || 'bun test'
 const testTimeout = projectConfig.test?.timeout || 120000
 
-if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
+if (!hasUI && discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT') {
   log(`PROJECT TYPE: CLI/library (pages:{} empty) — overriding ${discovery.ceremonyTier} → LIGHT (no Quinn, no container)`)
   discovery.ceremonyTier = 'LIGHT'
 }
@@ -500,7 +500,7 @@ if (PHASE_TARGET === 'discovery') {
 // ════════════════════════════════════════════════════════════
 
 phase('Scope')
-const skipScope = discovery.ceremonyTier === 'LIGHT'
+const skipScope = discovery.ceremonyTier === 'MINIMAL' || discovery.ceremonyTier === 'LIGHT'
 
 let scopeResult = { result: 'PASS' }
 if (!skipScope) {
@@ -531,8 +531,11 @@ if (DRY_RUN) {
 }
 
 // Batched: AC evidence/threshold pre-validation + prior-branch detection (was 2-3 agents, now 1)
+// MINIMAL tier skips ac-prevalidation — not enough ceremony to justify the agent call
 let priorBranchResult = null
-const preflightResult = await agent(`
+const skipPreflight = discovery.ceremonyTier === 'MINIMAL'
+if (!skipPreflight) {
+  const preflightResult = await agent(`
 Do BOTH tasks and report results:
 
 TASK 1 — AC pre-validation (evidence/threshold type checking):
@@ -551,23 +554,26 @@ If a prior branch exists, merge it:
 
 Report both results.
 `, { label: 'ac-prevalidation', phase: 'Scope', schema: {
-  type: 'object',
-  properties: {
-    totalACs: { type: 'number' },
-    validated: { type: 'number' },
-    fixed: { type: 'number' },
-    fixes: { type: 'array', items: { type: 'string' } },
-    priorBranch: { type: 'string' },
-    priorCommitCount: { type: 'number' },
-  },
-  required: ['totalACs', 'validated', 'fixed']
-}})
-if (preflightResult?.fixed > 0) {
-  log(`AC pre-validation: fixed ${preflightResult.fixed}/${preflightResult.totalACs}`)
-}
-if (preflightResult?.priorBranch) {
-  log(`Prior branch merged: ${preflightResult.priorBranch}`)
-  priorBranchResult = { branch: preflightResult.priorBranch, commitCount: preflightResult.priorCommitCount || 0 }
+    type: 'object',
+    properties: {
+      totalACs: { type: 'number' },
+      validated: { type: 'number' },
+      fixed: { type: 'number' },
+      fixes: { type: 'array', items: { type: 'string' } },
+      priorBranch: { type: 'string' },
+      priorCommitCount: { type: 'number' },
+    },
+    required: ['totalACs', 'validated', 'fixed']
+  }})
+  if (preflightResult?.fixed > 0) {
+    log(`AC pre-validation: fixed ${preflightResult.fixed}/${preflightResult.totalACs}`)
+  }
+  if (preflightResult?.priorBranch) {
+    log(`Prior branch merged: ${preflightResult.priorBranch}`)
+    priorBranchResult = { branch: preflightResult.priorBranch, commitCount: preflightResult.priorCommitCount || 0 }
+  }
+} else {
+  log('AC pre-validation: SKIPPED (MINIMAL tier)')
 }
 
 // ════════════════════════════════════════════════════════════
@@ -580,7 +586,10 @@ async function runImplement() {
   log('IMPLEMENT: brief preflight + assemble + spawn Marcus')
 
   // Batched: brief-preflight + assemble-brief (was 2 agents, now 1)
-  await agent(`
+  // MINIMAL tier skips brief pre-flight — Marcus gets ACs directly, no brief assembly needed
+  const skipBrief = discovery.ceremonyTier === 'MINIMAL'
+  if (!skipBrief) {
+    await agent(`
 Run BOTH commands in order:
 
 1. Brief pre-flight:
@@ -602,7 +611,10 @@ console.log(JSON.stringify(results));
 bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
 
 Report both outputs.
-  `, { label: 'brief-setup', phase: 'Implement' })
+    `, { label: 'brief-setup', phase: 'Implement' })
+  } else {
+    log('Brief pre-flight: SKIPPED (MINIMAL tier)')
+  }
 
   // Collect task-specific context files from Discovery ACs
   const acContextFiles = (discovery?.acs || [])
@@ -756,7 +768,7 @@ phase('Validate')
 let quinnLocalResult = { result: 'PASS' }
 
 // Quinn local runs for ALL STANDARD+ tiers (spec: Layer 1, ceremony table: STANDARD = Quinn)
-if (discovery.ceremonyTier !== 'LIGHT') {
+if (discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT') {
   for (let validateAttempt = 1; validateAttempt <= 3; validateAttempt++) {
     log(`Quinn local dev — attempt ${validateAttempt}/3`)
 
@@ -879,7 +891,7 @@ Do ALL of these steps in order:
    sha=$(git rev-parse --short HEAD)
 
 3. Update workflow-state.json with environments.local.api, environments.local.ui, environments.local.tests:
-   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.buildCommit = process.argv[1]; s.agents = {marcus: {branch: process.argv[2], commitSha: process.argv[1], spawned: true, verdict: 'PASS'}, quinn: {spawned: ${discovery.ceremonyTier !== 'LIGHT'}, verdict: '${discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'}'}}; s.environments = {local: {api: '${projectConfig.apiUrl ? 'PASS' : 'SKIP'}', ui: '${hasUI ? 'PASS' : 'SKIP'}', uiSkipReason: '${hasUI ? '' : 'No UI configured'}', tests: 'PASS'}}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);" "$sha" "$branch"
+   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.buildCommit = process.argv[1]; s.agents = {marcus: {branch: process.argv[2], commitSha: process.argv[1], spawned: true, verdict: 'PASS'}, quinn: {spawned: ${discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT'}, verdict: '${discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'}'}}; s.environments = {local: {api: '${projectConfig.apiUrl ? 'PASS' : 'SKIP'}', ui: '${hasUI ? 'PASS' : 'SKIP'}', uiSkipReason: '${hasUI ? '' : 'No UI configured'}', tests: 'PASS'}}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);" "$sha" "$branch"
 
 Report: branch name, commit SHA, pushed (true/false)
 `, { label: 'commit', phase: 'Commit', schema: {
@@ -940,7 +952,7 @@ Report commit SHA.
 
 // Container rebuild + Quinn container (STANDARD+ only, requires container config)
 const containerConfig = projectConfig.container || null
-if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
+if (discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
   const rebuildCmd = containerConfig.rebuildCommand
   const containerHosts = containerConfig.hosts || []
   const containerPort = containerConfig.port
@@ -1009,7 +1021,7 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
       log('WARN: No test container available — skipping container Quinn')
     }
   }
-} else if (discovery.ceremonyTier !== 'LIGHT') {
+} else if (discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT') {
   log('No container config in rungate.json — skipping container verify')
 }
 
@@ -1211,7 +1223,7 @@ phase('Prove')
 // LIGHT/CODE-only: verify gate already ran evidence commands. Prove adds no signal.
 // Only run prove for STANDARD+ with UI/OUTCOME ACs where Quinn browser verification matters.
 const hasUIACs = (discovery?.acs || []).some(ac => ac.type === 'OUTCOME' || ac.evidenceMethod?.type === 'PLAYWRIGHT' || ac.evidenceMethod?.type === 'SCREENSHOT')
-const shouldProve = discovery.ceremonyTier !== 'LIGHT' && hasUIACs
+const shouldProve = discovery.ceremonyTier !== 'MINIMAL' && discovery.ceremonyTier !== 'LIGHT' && hasUIACs
 
 let proveVerdict = 'UNPROVEN'
 if (shouldProve) {

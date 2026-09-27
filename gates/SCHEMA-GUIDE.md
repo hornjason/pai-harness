@@ -50,13 +50,18 @@ Valid `type` values (case-sensitive): `GREP_CHECK`, `FILE_EXISTS`, `CURL_CHECK`,
 
 ## Ceremony Tier Requirements
 
-| Requirement | LIGHT (XS) | STANDARD (S/M) | THOROUGH (L) |
-|---|---|---|---|
-| `sourceSpecs[]` | not required | **REQUIRED** | **REQUIRED** |
-| `governingSpec` | not required | **REQUIRED** | **REQUIRED** |
-| `specElement` on ACs | not required | at least 1 AC per specElement | at least 1 AC per specElement |
-| spec-prohibited checks | skipped | **ACTIVE** | **ACTIVE** |
-| hardcoded value checks | skipped | **ACTIVE** | **ACTIVE** |
+| Requirement | MINIMAL (XS) | LIGHT | STANDARD (S/M) | THOROUGH (L) |
+|---|---|---|---|---|
+| `sourceSpecs[]` | not required | not required | **REQUIRED** | **REQUIRED** |
+| `governingSpec` | not required | not required | **REQUIRED** | **REQUIRED** |
+| `specElement` on ACs | not required | not required | at least 1 AC per specElement | at least 1 AC per specElement |
+| spec-prohibited checks | skipped | skipped | **ACTIVE** | **ACTIVE** |
+| hardcoded value checks | skipped | skipped | **ACTIVE** | **ACTIVE** |
+| brief pre-flight | skipped | active | **ACTIVE** | **ACTIVE** |
+| scope gate | skipped | skipped | **ACTIVE** | **ACTIVE** |
+| ac-prevalidation | skipped | active | **ACTIVE** | **ACTIVE** |
+| Quinn local validation | skipped | skipped | **ACTIVE** | **ACTIVE** |
+| B1/B2 adversary agents | skipped | skipped | **ACTIVE** | **ACTIVE** |
 
 ### sourceSpecs format
 ```json

@@ -376,4 +376,102 @@ describe("ship-orchestrator", () => {
       expect(state.changelog[1].detail).toContain("DISCOVERY");
     });
   });
+
+  // ── MINIMAL ceremony tier (#593) ─────────────────────────────
+
+  describe("MINIMAL ceremony tier", () => {
+    test("MINIMAL is a valid ceremonyTier in the Zod schema", () => {
+      // AC-1: MINIMAL must be accepted by the WorkflowStateSchema
+      const { WorkflowStateSchema } = require("./schema");
+      const state = minimalState({
+        sizing: { predicted: "XS", ceremonyTier: "MINIMAL" },
+      });
+      const result = WorkflowStateSchema.safeParse(state);
+      expect(result.success).toBe(true);
+    });
+
+    test("MINIMAL ceremonyTier is in ship.js DISCOVERY_SCHEMA enum", () => {
+      // AC-1: MINIMAL must be in the DISCOVERY_SCHEMA ceremonyTier enum
+      const { readFileSync } = require("fs");
+      const shipSrc = readFileSync(
+        join(__dirname, "..", "workflows", "ship.js"),
+        "utf-8"
+      );
+      // Find the ceremonyTier enum in DISCOVERY_SCHEMA
+      const match = shipSrc.match(
+        /ceremonyTier:\s*\{\s*type:\s*'string',\s*enum:\s*\[([^\]]+)\]/
+      );
+      expect(match).toBeTruthy();
+      expect(match![1]).toContain("MINIMAL");
+    });
+
+    test("XS sizing auto-routes to MINIMAL ceremony tier", () => {
+      // AC-2: The discovery prompt should map XS→MINIMAL
+      const { readFileSync } = require("fs");
+      const shipSrc = readFileSync(
+        join(__dirname, "..", "workflows", "ship.js"),
+        "utf-8"
+      );
+      // The sizing instruction line should say XS→MINIMAL
+      expect(shipSrc).toMatch(/XS.*MINIMAL/);
+    });
+
+    test("MINIMAL tier skips scope gate, brief pre-flight, and ac-prevalidation", () => {
+      // AC-3: At least 3 skip conditions reference MINIMAL
+      const { readFileSync } = require("fs");
+      const shipSrc = readFileSync(
+        join(__dirname, "..", "workflows", "ship.js"),
+        "utf-8"
+      );
+      // Count distinct MINIMAL skip conditions in the workflow
+      const skipPatterns = [
+        /skipScope.*MINIMAL|ceremonyTier\s*===\s*'MINIMAL'/,    // scope gate skip
+        /MINIMAL.*brief|brief.*MINIMAL|skipBrief.*MINIMAL/,      // brief pre-flight skip
+        /MINIMAL.*preflight|preflight.*MINIMAL|skipPreflight.*MINIMAL/, // ac-prevalidation skip
+      ];
+      const matchCount = skipPatterns.filter((p) => p.test(shipSrc)).length;
+      expect(matchCount).toBeGreaterThanOrEqual(3);
+    });
+
+    test("MINIMAL tier preserves Marcus, bun test, commit, verify, and grading", () => {
+      // AC-4: These phases must NOT be skipped for MINIMAL
+      const { readFileSync } = require("fs");
+      const shipSrc = readFileSync(
+        join(__dirname, "..", "workflows", "ship.js"),
+        "utf-8"
+      );
+      // Verify these critical phases exist and are NOT gated behind non-MINIMAL checks
+      // The implementation phase (Marcus) should run
+      expect(shipSrc).toContain("phase('Implement')");
+      // The commit phase should run
+      expect(shipSrc).toContain("phase('Commit')");
+      // The verify gate should run
+      expect(shipSrc).toContain("phase('Verify')");
+      // Grading should run
+      expect(shipSrc).toMatch(/grade/i);
+      // These phases must NOT be wrapped in ceremonyTier !== 'MINIMAL' checks
+      // Verify that Marcus (briefedAgent), commit, verify, and grading are not skipped
+      const marcusSection = shipSrc.slice(
+        shipSrc.indexOf("phase('Implement')"),
+        shipSrc.indexOf("phase('Validate')")
+      );
+      expect(marcusSection).not.toMatch(/ceremonyTier\s*!==\s*'MINIMAL'/);
+    });
+
+    test("MINIMAL tier in run-gate.ts skips same checks as LIGHT", () => {
+      // AC-3: MINIMAL in run-gate should be handled like LIGHT
+      const { readFileSync } = require("fs");
+      const gateSrc = readFileSync(
+        join(__dirname, "run-gate.ts"),
+        "utf-8"
+      );
+      // Every LIGHT tier check should also cover MINIMAL
+      // Look for patterns like tier !== "LIGHT" && tier !== "MINIMAL"
+      // or tier === "LIGHT" || tier === "MINIMAL"
+      const lightChecks = (gateSrc.match(/tier\s*!==?\s*["']LIGHT["']/g) || []).length;
+      const minimalChecks = (gateSrc.match(/MINIMAL/g) || []).length;
+      // Each LIGHT skip should have a corresponding MINIMAL skip
+      expect(minimalChecks).toBeGreaterThanOrEqual(lightChecks);
+    });
+  });
 });
