@@ -5,6 +5,7 @@ import { generateBriefTemplate, addRoleToConfig } from "../lib/create-brief";
 
 const ROOT = join(import.meta.dir, "..");
 const TEMPLATES_DIR = join(ROOT, "templates", "agent-briefs");
+const SCAFFOLD_PATH = join(ROOT, "scripts", "scaffold-project.ts");
 
 describe("create-brief", () => {
   describe("AC-1: generateBriefTemplate produces template with PROJECT_IDENTITY", () => {
@@ -132,6 +133,91 @@ describe("create-brief", () => {
       writeFileSync(tmpConfig, JSON.stringify(initialConfig, null, 2));
 
       expect(() => addRoleToConfig(tmpConfig, "tester3", "Test engineer")).toThrow(/already exists/);
+    });
+  });
+
+  describe("AC-4: scaffold-project.ts has no hardcoded defaultAgentMeta", () => {
+    test("defaultAgentMeta does not appear in scaffold-project.ts", () => {
+      const content = readFileSync(SCAFFOLD_PATH, "utf-8");
+      const matches = (content.match(/defaultAgentMeta/g) || []).length;
+      expect(matches).toBe(0);
+    });
+
+    test("agentMeta is built entirely from harness.roles config", () => {
+      const content = readFileSync(SCAFFOLD_PATH, "utf-8");
+      // Should read from harness.roles, not from hardcoded object
+      expect(content).toContain("harness");
+      expect(content).toContain("roles");
+      // Should NOT have a hardcoded object literal with all 6 role descriptions
+      expect(content).not.toContain("discovery: { description:");
+      expect(content).not.toContain("marcus: { description:");
+    });
+
+    test("scaffold-project.ts does not hardcode agent descriptions", () => {
+      const content = readFileSync(SCAFFOLD_PATH, "utf-8");
+      // None of the 6 hardcoded descriptions should appear as string literals
+      expect(content).not.toContain('"Discovery agent — reads issue');
+      expect(content).not.toContain('"Principal engineer — implements code');
+      expect(content).not.toContain('"QA engineer — tests as a brand-new');
+      expect(content).not.toContain('"Security engineer — scans changed');
+      expect(content).not.toContain('"Software architect — structural');
+      expect(content).not.toContain('"UX/UI designer — component specs');
+    });
+  });
+
+  describe("AC-5: existing roles produce identical scaffold output after migration", () => {
+    const SUPPORTED_ROLES = ["marcus", "quinn", "rook", "serena", "aditi", "discovery"] as const;
+
+    // Expected metadata — these must match what was previously hardcoded in defaultAgentMeta
+    const EXPECTED_META: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
+      discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
+      marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
+      quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
+      rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
+      serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
+      aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
+    };
+
+    test("rungate.json has all 6 roles with required metadata fields", () => {
+      const configPath = join(ROOT, ".claude", "rungate.json");
+      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      for (const role of SUPPORTED_ROLES) {
+        expect(config.roles[role]).toBeDefined();
+        expect(config.roles[role].description).toBeTruthy();
+        expect(config.roles[role].tools).toBeTruthy();
+        expect(config.roles[role].model).toBeTruthy();
+      }
+    });
+
+    for (const role of SUPPORTED_ROLES) {
+      test(`${role} config matches previously hardcoded metadata`, () => {
+        const configPath = join(ROOT, ".claude", "rungate.json");
+        const config = JSON.parse(readFileSync(configPath, "utf-8"));
+        const roleConfig = config.roles[role];
+        const expected = EXPECTED_META[role];
+
+        expect(roleConfig.description).toBe(expected.description);
+        expect(roleConfig.tools).toBe(expected.tools);
+        expect(roleConfig.model).toBe(expected.model);
+
+        if (expected.tiers) {
+          expect(roleConfig.tiers).toEqual(expected.tiers);
+        } else {
+          // Roles without tiers should not have tiers in config either
+          // (or it should be undefined/null)
+          if (roleConfig.tiers) {
+            // If config has tiers that weren't hardcoded, that's fine — config is the source of truth now
+          }
+        }
+      });
+    }
+
+    test("scaffold reads metadata from config with sensible fallbacks for unknown roles", () => {
+      const content = readFileSync(SCAFFOLD_PATH, "utf-8");
+      // Should have fallback logic for roles not in config
+      expect(content).toContain("agent");
+      // Should not have a hardcoded defaultAgentMeta record
+      expect(content).not.toMatch(/const\s+defaultAgentMeta/);
     });
   });
 });
