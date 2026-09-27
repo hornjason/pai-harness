@@ -2,6 +2,14 @@ import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, basename } from "path";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface AssembleBriefInput {
+  slug: string;
+  workDir: string;
+  projectRoot: string;
+}
+
 export interface AssembleResult {
   briefPath: string;
   acCount: number;
@@ -19,11 +27,7 @@ const BRIEF_POLICIES_PATH = join(
 
 const REQUIRED_SECTIONS = ["Goal", "ACs", "Files", "Scope", "Verify"] as const;
 
-export async function assembleBrief(opts: {
-  slug: string;
-  workDir: string;
-  projectRoot: string;
-}): Promise<AssembleResult> {
+export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleResult> {
   const { slug, workDir, projectRoot } = opts;
 
   const sf = join(workDir, "workflow-state.json");

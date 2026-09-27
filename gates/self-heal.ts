@@ -2,6 +2,18 @@ import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { execFileSync } from "child_process";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface HealInput {
+  gate: string;
+  slug: string;
+  issue: number;
+  projectRoot: string;
+  workDir: string;
+  maxAttempts?: number;
+  dryRun?: boolean;
+}
+
 export interface HealResult {
   result: "PASS" | "FAIL";
   attempts: number;
@@ -12,15 +24,7 @@ export interface HealResult {
 const VALID_GATES = ["scope", "verify", "ship", "prove", "merge"] as const;
 type GateName = (typeof VALID_GATES)[number];
 
-export async function runWithHeal(opts: {
-  gate: string;
-  slug: string;
-  issue: number;
-  projectRoot: string;
-  workDir: string;
-  maxAttempts?: number;
-  dryRun?: boolean;
-}): Promise<HealResult> {
+export async function runWithHeal(opts: HealInput): Promise<HealResult> {
   const { gate, slug, issue, projectRoot, workDir, maxAttempts = 3, dryRun = false } = opts;
 
   if (!VALID_GATES.includes(gate as GateName)) {

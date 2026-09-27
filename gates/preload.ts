@@ -2,6 +2,18 @@ import { afterAll } from "bun:test";
 import { readFileSync, appendFileSync, existsSync, readdirSync, statSync } from "fs";
 import { join } from "path";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface RecordTestInput {
+  name: string;
+  passed: boolean;
+}
+
+export interface TestRecordResult {
+  testName: string;
+  result: string;
+}
+
 const WORK_DIR = join(process.env.RUNGATE_WORK_DIR || join(process.env.HOME || "", ".rungate"));
 const STATE_DIR = join(process.env.HOME || "", ".claude", "state");
 const RESULTS_PATH = join(STATE_DIR, "gate-results.jsonl");

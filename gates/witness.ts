@@ -23,6 +23,23 @@ const GATE_SALT_PATH = gateSaltPath();
 
 const REQUIRED_GATES = ["scope", "ship"] as const;
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface WriteWitnessInput {
+  slug: string;
+  gate: string;
+  result: "PASS" | "FAIL";
+  testOutput: string;
+  issue?: number;
+  projectRoot?: string;
+}
+
+export interface VerifyWitnessResult {
+  valid: boolean;
+  record: WitnessRecord | null;
+  error?: string;
+}
+
 export interface WitnessRecord {
   gate: string;
   result: "PASS" | "FAIL";
