@@ -921,7 +921,20 @@ if (verifyResult?.result === 'FAIL') {
   }
   if (verifyResult.regressionTarget === 'BUILD' && regressionCount < MAX_REGRESSIONS) {
     regressionCount++
-    log(`Verify CODE regression #${regressionCount}`)
+    log(`Verify CODE regression #${regressionCount} — re-implementing failed ACs`)
+    const reimpl = await runImplement()
+    if (reimpl.success) {
+      const reCommit = await agent(`
+cd ${PROJECT_ROOT} && git add -A && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
+Report commit SHA.
+      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
+      const retryVerify = await runGateWithHeal('verify', 'Verify',
+        'Fix remaining verify gate failures.',
+        { cwd: reimpl.buildResult?.worktreePath || marcusWorktreePath })
+      if (retryVerify?.result === 'PASS') {
+        log('Verify passed after BUILD regression fix')
+      }
+    }
   }
 }
 
