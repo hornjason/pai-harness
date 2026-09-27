@@ -121,13 +121,11 @@ for (let i = 0; i < (state.acs || []).length; i++) {
   if (!cmd) continue;
   try {
     const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
-    const output = execSync(cmd, { encoding: "utf-8", timeout: 10000, cwd: evidenceCwd }).trim();
+    const isTestRunner = /^bun test\b/.test(cmd);
+    const cmdTimeout = isTestRunner ? 300000 : 10000;
+    const output = execSync(cmd, { encoding: "utf-8", timeout: cmdTimeout, cwd: evidenceCwd }).trim();
     const lastLine = output.split("\n").pop() || "";
     let verdict: "PASS" | "FAIL" = "FAIL";
-    // BUN_TEST detection: bun test outputs results to stderr; execSync captures
-    // stdout only (version header). Since execSync throws on non-zero exit,
-    // reaching here means exit 0 = all tests passed.
-    const isTestRunner = /^bun test\b/.test(cmd);
     if (isTestRunner) {
       verdict = "PASS";
     }
@@ -148,7 +146,9 @@ for (let i = 0; i < (state.acs || []).length; i++) {
     state.acs[i].verdict = verdict;
     state.acs[i].evidence = { type: "command-output", content: lastLine };
     acUpdated = true;
-  } catch { /* command failed — leave as PENDING */ }
+  } catch (e: any) {
+    console.warn(`WARN: AC ${ac.id} evidence command failed: ${e.message?.slice(0, 100) || 'unknown'}`);
+  }
 }
 // #513 SC-A1: ACs without evidenceMethod.command get SKIP, not generic output
 const skipped = markCommandlessACsAsSkip(SF);
