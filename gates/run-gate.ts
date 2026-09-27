@@ -172,6 +172,10 @@ if (skipped > 0) {
   writeFileSync(SF, JSON.stringify(state, null, 2));
 }
 
+// Early results accumulator — used by verify-gate PENDING check below and by test output parsing later
+const earlyResults: GateResult[] = [];
+let earlyFails = 0;
+
 // Verify gate: check for PENDING ACs after auto-populate — catches evidence gaps
 // that would otherwise pass silently at verify (LIGHT tier skips B2 validator)
 if (gate === "verify") {
@@ -180,8 +184,8 @@ if (gate === "verify") {
   );
   if (pendingCodeACs.length > 0) {
     for (const ac of pendingCodeACs) {
-      fails++;
-      results.push({
+      earlyFails++;
+      earlyResults.push({
         check: `verify-ac-evidence-gap: ${ac.id} still PENDING after auto-populate`,
         result: "FAIL" as const,
         detail: `${ac.id} evidence command may be broken or matching 0 tests — check evidenceMethod.command: ${ac.evidenceMethod?.command || "(none)"}`,
@@ -484,8 +488,14 @@ if (failMatch) fails = parseInt(failMatch[1]);
 // Extract individual test results: "(pass) name" or "(fail) name"
 results.push(...parseTestResults(testOutput));
 
-// Fallback: if no individual results parsed, create summary entry
-if (results.length === 0) {
+// Merge pre-test-suite results (verify PENDING AC checks)
+if (earlyResults.length > 0) {
+  results.push(...earlyResults);
+  fails += earlyFails;
+}
+
+// Fallback: if no individual results parsed (excluding early), create summary entry
+if (results.length === earlyResults.length) {
   if (fails > 0 || testExitCode !== 0) {
     results.push({ check: "test-suite", result: "FAIL", detail: `${fails} tests failed` });
   } else {
