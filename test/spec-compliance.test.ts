@@ -341,3 +341,50 @@ describe("harness-fixes: ship.js and ship-and-heal.js structural checks", () => 
     expect(gateTS).toContain('ac.verdict !== "FAIL"');
   });
 });
+
+// ── #589: ship-and-heal grading, classification, and remediation ─────
+describe("#589: ship-and-heal grading and violation handling", () => {
+  const HEAL_JS = readFileSync(join(HR, "workflows/ship-and-heal.js"), "utf-8");
+
+  test("AC-1: GRADE section appears before any SHIPPED return", () => {
+    const gradeLine = HEAL_JS.indexOf("GRADE");
+    const shippedLine = HEAL_JS.indexOf("'SHIPPED'");
+    expect(gradeLine).toBeGreaterThan(-1);
+    expect(shippedLine).toBeGreaterThan(-1);
+    expect(gradeLine).toBeLessThan(shippedLine);
+  });
+
+  test("AC-2: quality violations trigger remediation in a worktree", () => {
+    expect(HEAL_JS).toContain("qualityViolations.length > 0");
+    expect(HEAL_JS).toContain("label: 'remediate'");
+    expect(HEAL_JS).toContain("isolation: 'worktree'");
+  });
+
+  test("AC-3: remediation prompt loads the violated role brief template", () => {
+    // The remediation section (label: 'remediate') must reference brief templates
+    const remediateIdx = HEAL_JS.indexOf("label: 'remediate'");
+    // Find the agent prompt string that precedes the remediate label
+    const remediatePromptStart = HEAL_JS.lastIndexOf("await agent(`", remediateIdx);
+    const remediateSection = HEAL_JS.substring(remediatePromptStart, remediateIdx);
+    expect(remediateSection).toContain("templates/agent-briefs/");
+    expect(remediateSection).toMatch(/Read.*brief.*template|brief.*template/i);
+  });
+
+  test("AC-4: process violations trigger test-brief verification after healing", () => {
+    expect(HEAL_JS).toContain("test-brief");
+    expect(HEAL_JS).toMatch(/verify.*brief|brief.*verif/i);
+  });
+
+  test("AC-5: compliance threshold reads from rungate.json with default 80", () => {
+    // Must read compliance.threshold from rungate.json config, not just parsedArgs
+    expect(HEAL_JS).toMatch(/rungate\.json.*compliance.*threshold|compliance\.threshold.*rungate/i);
+    // Default of 80 when not configured
+    expect(HEAL_JS).toContain("|| 80");
+  });
+
+  test("AC-6: clean success returns SHIPPED with healed:false and gradeResult", () => {
+    expect(HEAL_JS).toContain("status: 'SHIPPED'");
+    expect(HEAL_JS).toContain("healed: false");
+    expect(HEAL_JS).toContain("gradeResult");
+  });
+});

@@ -65,15 +65,17 @@ const PROJECT_ROOT = parsedArgs.projectRoot
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const ISSUE_REPO = parsedArgs.issueRepo || parsedArgs.repo || 'hornjason/pai-config'
 
-// Read test config
+// Read test config and compliance.threshold from rungate.json
 const testConfig = await agent(`
-Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section.
+Read ${PROJECT_ROOT}/.claude/rungate.json and return the test section and compliance.threshold.
 If no test section or file doesn't exist, return command: "bun test", timeout: 120000.
+If no compliance.threshold field exists, omit it (caller defaults to 80).
 `, { label: 'test-config', schema: {
   type: 'object',
   properties: {
     command: { type: 'string' },
     timeout: { type: 'number' },
+    complianceThreshold: { type: 'number' },
   },
   required: ['command', 'timeout'],
 }})
@@ -227,8 +229,8 @@ Analyze agent transcripts for efficiency metrics:
   }
 }
 
-// Read compliance threshold from config
-const complianceThreshold = parsedArgs.complianceThreshold || 80
+// Read compliance.threshold from rungate.json config with default 80
+const complianceThreshold = testConfig?.complianceThreshold || parsedArgs.complianceThreshold || 80
 
 // Classify violations
 if (gradeResult?.grades) {
@@ -283,6 +285,26 @@ ${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
 
   log('Brief templates healed for process violations')
 
+  // Verify healed briefs still parse and contain required sections (test-brief verification)
+  const violatedProcessRoles = [...new Set(processViolations.map(v => v.role))]
+  const briefVerifyResult = await agent(`
+You are verifying that healed agent brief templates are still valid.
+
+## Task: test-brief verification
+For each role below, verify the brief template at ${HARNESS_ROOT}/templates/agent-briefs/:
+${violatedProcessRoles.map(r => `- ${r}.md`).join('\n')}
+
+## Checks
+1. The file parses as valid markdown (no broken frontmatter, no unclosed sections)
+2. Required sections exist: TDD, Context, Never Do, Testing Rules, Workflow
+3. Variable substitution placeholders are intact ($\{PROJECT_IDENTITY}, $\{SHARED_RULES}, $\{SOURCE_DIRS})
+4. No duplicate section headers
+
+Report which briefs passed verification and any issues found.
+`, { label: 'test-brief', phase: 'Heal' })
+
+  log(`Brief verification complete: ${briefVerifyResult ? 'done' : 'skipped'}`)
+
   return {
     status: 'SHIPPED_WITH_HEAL',
     issue: ISSUE,
@@ -292,6 +314,7 @@ ${processViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
     processViolations,
     healed: true,
     healType: 'process-only',
+    briefVerifyResult,
   }
 }
 
@@ -302,22 +325,29 @@ if (isSuccess && qualityViolations.length > 0) {
     log(`  Quality: ${v.role} — ${v.flag}`)
   }
 
+  // Build list of unique violated roles for brief template loading
+  const violatedRoles = [...new Set(qualityViolations.map(v => v.role))]
+
   const remediationResult = await agent(`
 You are remediating code that shipped without following best practices.
 The code works, but it violated quality standards during implementation.
 
 ## Quality Violations
-${qualityViolations.map(v => `- ${v.role}: ${v.flag}`).join('\n')}
+${qualityViolations.map(v => `- ${v.role}: ${v.flag} (category: ${/TDD|spec|governing|test.*first|methodology/i.test(v.flag) ? 'quality' : 'process'})`).join('\n')}
+
+## Brief Templates — Read these first to understand the violated standards
+${violatedRoles.map(role => `- Read the brief template for ${role}: ${HARNESS_ROOT}/templates/agent-briefs/${role}.md`).join('\n')}
 
 ## Your Task
 For each violation, apply the practice that was skipped:
 
 ${qualityViolations.some(v => /TDD/i.test(v.flag)) ? '- **TDD violated**: Write the tests that should have been written first. Verify the shipped code passes them. Fix any gaps found.\n' : ''}${qualityViolations.some(v => /spec|governing/i.test(v.flag)) ? '- **Spec not read**: Read the governing spec from AGENTS.md routing table. Verify the code conforms to all relevant SCs. Fix any drift.\n' : ''}${qualityViolations.some(v => /test.*first/i.test(v.flag)) ? '- **Tests not written first**: Review test coverage. Add missing edge case tests.\n' : ''}
 1. cd ${PROJECT_ROOT}
-2. Read AGENTS.md to find the governing spec
-3. Apply the skipped practices above
-4. Run bun test to verify everything passes
-5. Commit the remediation changes
+2. Read the brief template(s) listed above to understand the quality standards
+3. Read AGENTS.md to find the governing spec
+4. Apply the skipped practices above
+5. Run bun test to verify everything passes
+6. Commit the remediation changes
 
 Report what you fixed and what tests you added.
 `, { label: 'remediate', phase: 'Heal', isolation: 'worktree', cwd: PROJECT_ROOT })
