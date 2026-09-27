@@ -97,6 +97,8 @@ export function loadRules(briefPath: string): Rule[] {
       ruleType = "run";
     } else if (/`(bunx? tsc[^`]*)`/.test(line)) {
       ruleType = "run";
+    } else if (tierMap.mechanical?.includes(currentSection) && /^\d+\./.test(line.trim())) {
+      ruleType = "always";
     }
 
     if (ruleType) {

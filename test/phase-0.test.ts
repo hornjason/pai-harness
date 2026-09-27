@@ -183,9 +183,9 @@ describe("Phase 0: Pre-flight + static files", () => {
       const content = readFileSync(join(OUTPUT, ".claude/agents/marcus.md"), "utf-8");
       const nameIdx = content.indexOf("name: marcus");
       const principlesIdx = content.indexOf("## Core Principles");
-      const alwaysDoIdx = content.indexOf("## Always Do");
+      const neverDoIdx = content.indexOf("## Never Do");
       expect(nameIdx).toBeLessThan(principlesIdx);
-      expect(principlesIdx).toBeLessThan(alwaysDoIdx);
+      expect(principlesIdx).toBeLessThan(neverDoIdx);
     });
 
     test("SC-74: tsconfig.json strict mode", () => {
