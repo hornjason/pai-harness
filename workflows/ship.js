@@ -682,43 +682,37 @@ Report the output.
       return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
     })
 
-  // Extract context excerpts: read files and pull relevant sections
+  // Extract context excerpts deterministically (no LLM needed — just read and truncate)
   let contextExcerpts = null
   if (acContextFiles.length > 0) {
-    log(`Extracting context excerpts from ${acContextFiles.length} Discovery files`)
-    const EXCERPT_SCHEMA = {
-      type: 'object',
-      properties: {
-        excerpts: { type: 'array', items: {
-          type: 'object',
-          properties: {
-            source: { type: 'string' },
-            section: { type: 'string' },
-            content: { type: 'string' },
-            reason: { type: 'string' }
-          },
-          required: ['source', 'section', 'content', 'reason']
-        }}
-      },
-      required: ['excerpts']
-    }
-    const fileList = acContextFiles.map(cf => {
-      const path = typeof cf === 'string' ? cf : cf.path
-      const reason = typeof cf === 'string' ? '' : cf.reason || ''
-      return `- ${path}${reason ? ' — ' + reason : ''}`
-    }).join('\n')
+    log(`Reading ${acContextFiles.length} context files deterministically`)
+    const allFiles = [
+      ...acContextFiles.map(cf => ({ path: typeof cf === 'string' ? cf : cf.path, reason: typeof cf === 'string' ? '' : cf.reason || '' })),
+      { path: `${PROJECT_ROOT}/AGENTS.md`, reason: 'project identity, rules, test commands' },
+    ]
+    const filePaths = allFiles.map(f => f.path).join(' ')
     const excerptResult = await agent(`
-Read these files and extract ONLY the sections relevant to this task. Return 2-5 bullet points per file, not full files.
-
-Files to extract from:
-${fileList}
-
-Also read these standard context files:
-- ${PROJECT_ROOT}/AGENTS.md — project identity, rules, test commands
-- ${PROJECT_ROOT}/prompts/coding-principles.md — coding standards
-
-For each, return: source (file path), section (header), content (the relevant text), reason (why it matters for this task).
-    `, { label: 'extract-context', phase: 'Implement', schema: EXCERPT_SCHEMA })
+Run this command and return the JSON output:
+bun -e "
+const fs = require('fs');
+const path = require('path');
+const files = ${JSON.stringify(allFiles)};
+const excerpts = [];
+for (const f of files) {
+  try {
+    let content = fs.readFileSync(f.path, 'utf-8');
+    const lines = content.split('\\n');
+    if (lines.length > 200) content = lines.slice(0, 200).join('\\n') + '\\n... (truncated)';
+    excerpts.push({ source: f.path, section: path.basename(f.path), content, reason: f.reason });
+  } catch(e) { /* skip missing files */ }
+}
+console.log(JSON.stringify({ excerpts }));
+" 2>&1
+    `, { label: 'extract-context', phase: 'Implement', schema: {
+      type: 'object',
+      properties: { excerpts: { type: 'array', items: { type: 'object', properties: { source: { type: 'string' }, section: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['source', 'content'] } } },
+      required: ['excerpts']
+    } })
     contextExcerpts = excerptResult?.excerpts || null
     if (contextExcerpts) {
       log(`Injecting ${contextExcerpts.length} context excerpts into Marcus prompt`)
