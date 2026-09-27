@@ -2,24 +2,34 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 15 — 6-agent refactor shipped, pipeline forensics, council audit.
+Session 16 — pipeline reliability fixes, 5 pipeline runs, 3 new fixes shipped.
 
-6-agent refactor: ship.js committed with batched agents, 7 spec-compliance tests fixed.
-Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%).
-Root cause analysis: 21% first-attempt ship pass rate across 16 issues. 78% of failures are 1 test.
-  - Evidence commands with absolute paths override EVIDENCE_CWD in worktrees
-  - Ceremony fields not pre-populated before ship gate
-  - 16/19 agents are bash wrappers (Workflow API lacks exec())
-New: lib/canary.ts (13 tests), B2 operator fix (contains/exists/!=/< added), AES prompt reinforcement.
-Council v2 running with full forensic data (10 runs, 37 gate attempts, agent-level transcripts).
+Fixes shipped:
+  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption. Root cause of #588 0-AC failure.
+  2. Verify BUILD regression handler (4a18bdac) — re-implements and re-verifies instead of no-op.
+  3. quinn-on-ui-change LIGHT tier (5cb983a0) — skip Quinn check for CLI/library projects.
 
-Suite: 1376 pass, 0 fail, 77 files. 4/25 SCs done. 6 issues shipped: #590, #592, #584, #594, #595.
+Pipeline runs this session:
+  #588 (attempt 3): ALREADY_SHIPPED, 7 agents, 3.5m — prior work detected correctly
+  #589 (attempt 1): SHIP_FAILED, 21 agents, 18m — Marcus incomplete (AC-3, AC-4)
+  #590: SHIP_FAILED, 21 agents, 18m — Marcus incomplete (AC-4)
+  #589 (attempt 2): SHIP_FAILED, 24 agents, 22m — all ACs PASS but quinn false positive
+  #593: SHIPPED, 24 agents, 30m, 1 regression — verify regression handler worked
+
+Key findings:
+  - writeACs was silently failing due to ACSchema.parse() throwing on quality heuristics
+  - Verify BUILD regression was a no-op — incremented counter but never re-implemented
+  - quinn-on-ui-change regex too broad — 'template' matched agent brief templates, not UI
+  - Marcus compliance: 28% (5/18) — TDD violated, AGENTS.md not read, duplicate reads
+  - Pipeline now has verify regression handling that actually works (#593 shipped via it)
+
+Suite: 1392 pass, 0 fail, 78 files. 4/25 SCs done. 7 issues shipped: #590, #592, #584, #594, #595, #593.
 
 **Next priorities:**
-1. P0: Fix 21% first-attempt pass rate — evidence-path worktree mismatch + ceremony field gaps (council in progress)
-2. P0: Reduce XS pipeline from 19 agents / 14 min to <6 agents / <5 min
-3. P1: Close AES gap — COMP-6 (dup reads) leaks through prompt reinforcement, needs mechanical enforcement
-4. P1: #593 Fast path for XS issues
+1. P0: Marcus compliance — 28% directive compliance causes regressions. Need mechanical enforcement or brief simplification
+2. P0: witness-ac-verdict gate — AC PASS verdicts need matching witness evidence in workflow state
+3. P1: Close AES gap — COMP-6 (dup reads), COMP-12 (cat instead of Read) persistent across all runs
+4. P1: Agent consolidation — still 21-24 agents for implementation runs (bash-wrapper agents)
 5. P1: Integrate canary module into brief assembler + transcript checker
 6. P2: Navigability scoring (SC-236/237 still test.todo)
 7. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
