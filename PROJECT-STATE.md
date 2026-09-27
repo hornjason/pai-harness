@@ -29,9 +29,9 @@ Suite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #5
 Suite: 4/25 SCs done.
 
 **Next priorities:**
-1. P0: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 post-simplification runs. Brief says TDD first but Marcus still writes impl before tests sometimes
-2. P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus
-3. P1: Canary integration — wire lib/canary.ts into brief assembler + transcript checker
+1. P0: M-size pipeline validation — decomposition implemented, needs live pipeline test with M-size issue (#548 after #547 ships)
+2. P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 runs. Brief says TDD first but Marcus still writes impl before tests
+3. P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus
 4. P1: Further consolidation — 17 agents, target <10. Batch brief-setup + extract-context, merge grade + finalize
 5. P2: Navigability scoring (SC-236/237 still test.todo)
 6. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
@@ -113,9 +113,9 @@ Suite: 4/25 SCs done.
 - Ship gate false positives: B1/B2/evidence-type-ratio checks fire on LIGHT (should be exempt)
 - Deep adversarial audit: 26/32 agents were bash wrappers, prove was 42% of runtime
 
-**Session 2026-09-24 session 13:**
-- Ship-and-heal dogfood: #585 shipped (HEALED), #591 shipped (HEALED)
-- Grading pipeline shipped: transcript path fix, role filtering, remediation flow
-- Violation categorization: quality vs process (SC-465-468)
-- analyze-transcript.ts: file efficiency, deliverable ratio, test runs, context growth
+**Session 2026-09-27 session 17:**
+- M-size decomposition (c835bbb6) — batched Marcus implementation for M/L issues with >5 ACs
+- #582 shipped (23 agents, 30m) — Agent Teams evaluation. Marcus 3/5 compliance, Discovery 8/9
+- Pipeline run for #547 (typed interfaces) in progress — prerequisite for M-size test #548
+- Suite: 1426 pass, 0 fail, 81 files. Worktree cleanup: removed 8 stale worktrees
 

@@ -1,9 +1,9 @@
 {
   "updated": "2026-09-27",
   "priorities": [
-    "P0: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 post-simplification runs. Brief says TDD first but Marcus still writes impl before tests sometimes",
+    "P0: M-size pipeline validation — decomposition implemented, needs live pipeline test with M-size issue (#548 after #547 ships)",
+    "P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 runs. Brief says TDD first but Marcus still writes impl before tests",
     "P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus",
-    "P1: Canary integration — wire lib/canary.ts into brief assembler + transcript checker",
     "P1: Further consolidation — 17 agents, target <10. Batch brief-setup + extract-context, merge grade + finalize",
     "P2: Navigability scoring (SC-236/237 still test.todo)",
     "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
@@ -218,6 +218,15 @@
       ]
     },
     {
+      "date": "2026-09-27 session 17",
+      "items": [
+        "M-size decomposition (c835bbb6) — batched Marcus implementation for M/L issues with >5 ACs",
+        "#582 shipped (23 agents, 30m) — Agent Teams evaluation. Marcus 3/5 compliance, Discovery 8/9",
+        "Pipeline run for #547 (typed interfaces) in progress — prerequisite for M-size test #548",
+        "Suite: 1426 pass, 0 fail, 81 files. Worktree cleanup: removed 8 stale worktrees"
+      ]
+    },
+    {
       "date": "2026-09-24 session 13",
       "items": [
         "Ship-and-heal dogfood: #585 shipped (HEALED), #591 shipped (HEALED)",
@@ -228,11 +237,11 @@
     }
   ],
   "session": {
-    "number": 15,
-    "date": "2026-09-26",
-    "summary": "6-agent refactor shipped, #595 through pipeline (19 agents/14 min), root cause analysis (21% first-pass rate), canary module, B2 fix, council audit in progress.",
-    "suite": "1376 pass, 0 fail, 77 files",
+    "number": 17,
+    "date": "2026-09-27",
+    "summary": "M-size decomposition implemented (#596). Batched Marcus: groups ACs into 3-5 per batch, runs sequentially. #582 shipped (23 agents, 30m). Pipeline for #547 in progress.",
+    "suite": "1426 pass, 0 fail, 81 files",
     "scs_done": "4/25",
-    "commits": 4
+    "commits": 1
   }
 }
