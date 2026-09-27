@@ -14,6 +14,9 @@ ${PROJECT_IDENTITY}
 
 ${SHARED_RULES}
 
+## Context
+Content from AGENTS.md and the governing spec is injected into your prompt via "Injected Context". Do not re-read injected files.
+
 ## Ask First
 - Modifying files outside the brief's listed files
 - Adding new dependencies

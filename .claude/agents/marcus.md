@@ -30,6 +30,9 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 - Commit secrets or credentials
 - Spawn subagents for single-file tasks — do the work directly
 
+## Context
+Content from AGENTS.md and the governing spec is injected into your prompt via "Injected Context". Do not re-read injected files.
+
 ## Ask First
 - Modifying files outside the brief's listed files
 - Adding new dependencies
