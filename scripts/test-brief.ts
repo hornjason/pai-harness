@@ -78,7 +78,6 @@ const flags = args.filter((a) => a.startsWith("--"));
 const positional = args.filter((a) => !a.startsWith("--"));
 
 const role = positional[0];
-const task = positional[1];
 const transcriptDir = positional[2];
 
 const isDryRun = flags.includes("--dry-run");
@@ -87,8 +86,8 @@ const isHillClimb = flags.includes("--hill-climb");
 const targetFlag = flags.find((f) => f.startsWith("--target="));
 const targetScore = targetFlag ? parseInt(targetFlag.split("=")[1], 10) : DEFAULT_TARGET_SCORE;
 
-if (!role || !task) {
-  console.error("Usage: bun scripts/test-brief.ts <role> <task> [options]");
+if (!role) {
+  console.error("Usage: bun scripts/test-brief.ts <role> [task] [options]");
   console.error("");
   console.error("Roles: " + SUPPORTED_ROLES.join(", "));
   console.error("");
@@ -98,9 +97,21 @@ if (!role || !task) {
   console.error("  --hill-climb    Run up to 5 iterations to improve score");
   console.error("  --target=N      Set target score (default: 80)");
   console.error("");
+  console.error("When task is omitted, standardTask from rungate.json is used as fallback.");
+  console.error("");
   console.error("Examples:");
   console.error('  bun scripts/test-brief.ts marcus "Add config/test.json" --dry-run');
+  console.error('  bun scripts/test-brief.ts marcus --dry-run  (uses standardTask from config)');
   console.error('  bun scripts/test-brief.ts quinn "Validate tests" --score-only');
+  process.exit(1);
+}
+
+// Resolve task: CLI arg > standardTask from config > error
+const roleConfig = loadRoleConfig();
+const task = positional[1] || roleConfig[role]?.standardTask;
+
+if (!task) {
+  console.error(`No task provided and no standardTask configured for role "${role}" in rungate.json`);
   process.exit(1);
 }
 
@@ -110,7 +121,6 @@ if (!isValidRole(role)) {
   process.exit(1);
 }
 
-const roleConfig = loadRoleConfig();
 const briefRelPath = roleConfig[role]?.brief || `.claude/agents/${role}.md`;
 const briefPath = join(ROOT, briefRelPath);
 

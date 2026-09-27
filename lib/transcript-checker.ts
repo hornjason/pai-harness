@@ -10,6 +10,7 @@
 import { readFileSync } from "fs";
 import { basename } from "path";
 import type { Directive } from "./directive-extractor.js";
+import { checkCanaries, type CanaryDefinition, type CanaryReport } from "./canary.js";
 
 type ComplianceVerdict = "FOLLOWED" | "IGNORED" | "VIOLATED" | "N/A";
 
@@ -277,6 +278,18 @@ export function computeScore(results: ComplianceResult[]): { score: number; grad
   const score = checkable > 0 ? Math.round((followed / checkable) * 100) : 0;
   const grade = score >= 90 ? "A" : score >= 75 ? "B" : score >= 60 ? "C" : score >= 40 ? "D" : "F";
   return { score, grade, followed, ignored, violated, checkable };
+}
+
+// ── Combined compliance + canary verification (SC-409, D-5) ──
+
+export function checkComplianceWithCanaries(
+  directives: Directive[],
+  transcriptContent: string,
+  canaries: CanaryDefinition[],
+): { compliance: ComplianceResult[]; canaryReport: CanaryReport } {
+  const compliance = checkCompliance(directives, transcriptContent);
+  const canaryReport = checkCanaries(transcriptContent, canaries);
+  return { compliance, canaryReport };
 }
 
 // ── Report formatting ────────────────────────────────────

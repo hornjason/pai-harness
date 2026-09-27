@@ -121,4 +121,25 @@ describe("test-brief-roles", () => {
     expect(canContinue(1)).toBe(true);
     expect(canContinue(5)).toBe(false);
   });
+
+  test("ship.js contains preflightScore gate that halts below 80% (SC-407)", () => {
+    const shipContent = readFileSync(join(ROOT, "workflows/ship.js"), "utf-8");
+    // Must contain a preflightScore function or gate
+    expect(shipContent).toMatch(/preflightScore/);
+    // Must contain score threshold check at 80
+    expect(shipContent).toMatch(/score.*<.*80/);
+    // Must contain halt/stop logic for compliance failure
+    expect(shipContent).toMatch(/briefCompliance.*halt|HALT.*compliance|compliance.*FATAL/i);
+  });
+
+  test("test-brief uses standardTask from config as default task from role config (SC-408)", () => {
+    const scriptContent = readFileSync(join(ROOT, "scripts/test-brief.ts"), "utf-8");
+    // The script should use standardTask as fallback when no task arg is provided
+    expect(scriptContent).toContain("standardTask");
+    // The old guard `if (!role || !task)` should be replaced with just `if (!role)`
+    // because task now falls back to standardTask from config
+    expect(scriptContent).not.toMatch(/if\s*\(\s*!role\s*\|\|\s*!task\s*\)/);
+    // Should contain fallback logic that reads standardTask from roleConfig
+    expect(scriptContent).toMatch(/roleConfig.*standardTask|standardTask.*fallback|task\s*=\s*.*standardTask/);
+  });
 });

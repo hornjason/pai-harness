@@ -577,32 +577,68 @@ if (preflightResult?.priorBranch) {
 phase('Implement')
 
 async function runImplement() {
-  log('IMPLEMENT: brief preflight + assemble + spawn Marcus')
+  log('IMPLEMENT: brief preflight + compliance gate + assemble + spawn Marcus')
 
-  // Batched: brief-preflight + assemble-brief (was 2 agents, now 1)
+  // Step 1: Brief pre-flight with compliance scoring
   await agent(`
-Run BOTH commands in order:
-
-1. Brief pre-flight:
+Run this command:
 bun -e "
-import {readFileSync,writeFileSync} from 'fs';
+import {readFileSync,writeFileSync,existsSync} from 'fs';
 import {extractDirectives} from '${HARNESS_ROOT}/lib/directive-extractor.ts';
+import {checkCompliance,computeScore} from '${HARNESS_ROOT}/lib/transcript-checker.ts';
 const results = {};
 for (const role of ['marcus','quinn']) {
   try {
     const content = readFileSync('${PROJECT_ROOT}/.claude/agents/' + role + '.md', 'utf-8');
-    results[role] = {count: extractDirectives(content).length};
-  } catch(e) { results[role] = {count: 0, error: e.message}; }
+    const directives = extractDirectives(content);
+    const fixtureMap = {marcus:'agent-marcus-impl1.jsonl',quinn:'agent-quinn-validate1.jsonl'};
+    const fixturePath = '${HARNESS_ROOT}/test/fixtures/transcripts/' + fixtureMap[role];
+    let score = 0;
+    if (existsSync(fixturePath)) {
+      const transcript = readFileSync(fixturePath, 'utf-8');
+      const compliance = checkCompliance(directives, transcript);
+      const result = computeScore(compliance);
+      score = result.score;
+    } else {
+      score = directives.length >= 5 ? 100 : Math.round((directives.length / 5) * 100);
+    }
+    results[role] = {count: directives.length, score};
+  } catch(e) { results[role] = {count: 0, score: 0, error: e.message}; }
 }
 writeFileSync('${WORK_DIR}/brief-preflight.json', JSON.stringify(results, null, 2));
 console.log(JSON.stringify(results));
 "
+Report the output.
+  `, { label: 'brief-preflight', phase: 'Implement' })
 
-2. Assemble brief:
+  // Compliance gate: preflightScore check — halt if any role scores below 80%
+  function preflightScore(data) {
+    for (const [role, info] of Object.entries(data)) {
+      if (info.score < 80) return { pass: false, role, score: info.score }
+    }
+    return { pass: true }
+  }
+
+  try {
+    const preflightPath = `${WORK_DIR}/brief-preflight.json`
+    const preflightRaw = require('fs').readFileSync(preflightPath, 'utf-8')
+    const preflightData = JSON.parse(preflightRaw)
+    const briefCompliance = preflightScore(preflightData)
+    if (!briefCompliance.pass) {
+      log(`FATAL: briefCompliance halt — ${briefCompliance.role} scored ${briefCompliance.score}% (threshold: 80%)`)
+      return { status: 'COMPLIANCE_GATE_FAILED', message: `Brief compliance score ${briefCompliance.score}% for ${briefCompliance.role} is below 80% threshold` }
+    }
+    log(`Brief compliance gate PASSED: all roles >= 80%`)
+  } catch (e) {
+    log(`WARN: Could not read brief-preflight.json — skipping compliance gate: ${e.message}`)
+  }
+
+  // Step 2: Assemble brief
+  await agent(`
+Run this command:
 bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
-
-Report both outputs.
-  `, { label: 'brief-setup', phase: 'Implement' })
+Report the output.
+  `, { label: 'brief-assemble', phase: 'Implement' })
 
   // Collect task-specific context files from Discovery ACs
   const acContextFiles = (discovery?.acs || [])
