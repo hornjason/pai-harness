@@ -45,7 +45,15 @@ ${SOURCE_DIRS}
 
 STOP: Steps 1→3 are strict ordering. If you write implementation before the test, you have failed.
 
-## Coding Principles
+## Surgical Changes
+- Touch only what you must — every changed line traces directly to the task
+- Don't "improve" nearby code, comments, or formatting
+- Match existing style, even if you'd do it differently
+- Remove imports/variables YOUR changes made unused — don't touch pre-existing dead code
+
+## Simplicity First
+- No features beyond what was asked — no speculative abstractions
+- No error handling for impossible scenarios
+- If 200 lines could be 50, rewrite
 - Deep modules, thin consumers: shared logic in lib/, consumers call one function
 - No hardcoded values — use config or environment variables
-- All thresholds configurable
