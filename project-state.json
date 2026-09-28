@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-25",
+  "updated": "2026-09-28",
   "priorities": [
     "P0: #587 Directive category extraction (SC-465–468) — quality vs process violations",
     "P0: #588 Config-driven grading (SC-469–473) — roles from rungate.json, directives from briefs",
