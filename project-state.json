@@ -8,7 +8,7 @@
     "P2: Navigability scoring (SC-236/237 still test.todo)",
     "P3: Scaffold Decomposition, Hook Architecture, Gate Contracts"
   ],
-  "notes": "Session 16 — pipeline reliability + efficiency. 7 implementation issues shipped, 0 failures post-fix.\n\n6 fixes shipped:\n  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption\n  2. Verify BUILD regression (4a18bdac) — re-implements and re-verifies\n  3. quinn-on-ui-change LIGHT (5cb983a0) — skip Quinn for CLI projects\n  4. Brief simplification (0ff53f9b) — Marcus 18→8 directives, compliance 17%→80%\n  5. Agent consolidation (cbd0550c) — preload-contexts + merged setup. 20→17 agents\n  6. Karpathy rules (1f1033c7) — Surgical Changes + Simplicity First in Marcus brief\n\nPipeline results (implementation runs only):\n  #593: SHIPPED, 24 agents, 30m (pre-simplification, 28% compliance)\n  #589: SHIPPED, 20 agents, 12m (pre-simplification, 17% compliance)\n  #561: SHIPPED, 20 agents, 19m (pre-simplification, 33% compliance)\n  #581: SHIPPED, 17 agents, 18m (post-simplification, 80% compliance)\n  #580: SHIPPED, 17 agents, 15.5m (post-simplification, 80% compliance)\n\nKey metrics post-optimization:\n  - First-attempt pass rate: 100% (5/5 post-fix runs)\n  - Agent count: 17 (down from 20-24)\n  - Marcus compliance: 80% (up from 17-33%)\n  - ALREADY_SHIPPED: 4 agents / 3-5 min\n\nSuite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #584, #589, #590, #592, #593, #595.\nSuite: 4/25 SCs done.",
+  "notes": "Session 16 — pipeline reliability + efficiency. 7 implementation issues shipped, 0 failures post-fix.\n\n6 fixes shipped:\n  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption\n  2. Verify BUILD regression (4a18bdac) — re-implements and re-verifies\n  3. quinn-on-ui-change LIGHT (5cb983a0) — skip Quinn for CLI projects\n  4. Brief simplification (0ff53f9b) — Marcus 18→8 directives, compliance 17%→80%\n  5. Agent consolidation (cbd0550c) — preload-contexts + merged setup. 20→17 agents\n  6. Karpathy rules (1f1033c7) — Surgical Changes + Simplicity First in Marcus brief\n\nPipeline results (implementation runs only):\n  #593: SHIPPED, 24 agents, 30m (pre-simplification, 28% compliance)\n  #589: SHIPPED, 20 agents, 12m (pre-simplification, 17% compliance)\n  #561: SHIPPED, 20 agents, 19m (pre-simplification, 33% compliance)\n  #581: SHIPPED, 17 agents, 18m (post-simplification, 80% compliance)\n  #580: SHIPPED, 17 agents, 15.5m (post-simplification, 80% compliance)\n\nKey metrics post-optimization:\n  - First-attempt pass rate: 100% (5/5 post-fix runs)\n  - Agent count: 17 (down from 20-24)\n  - Marcus compliance: 80% (up from 17-33%)\n  - ALREADY_SHIPPED: 4 agents / 3-5 min\n\nSuite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #584, #589, #590, #592, #593, #595.\nSuite: 5/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -173,7 +173,7 @@
         {
           "id": "SC-376",
           "what": "run-gate.ts under 400 lines",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-377",

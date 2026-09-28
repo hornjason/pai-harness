@@ -26,7 +26,7 @@ Key metrics post-optimization:
   - ALREADY_SHIPPED: 4 agents / 3-5 min
 
 Suite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #584, #589, #590, #592, #593, #595.
-Suite: 4/25 SCs done.
+Suite: 5/25 SCs done.
 
 **Next priorities:**
 1. P0: M-size pipeline validation — decomposition implemented, needs live pipeline test with M-size issue (#548 after #547 ships)
@@ -78,14 +78,14 @@ Suite: 4/25 SCs done.
 | ⬜ | SC-371 | No hook over 150 lines |
 | ⬜ | SC-372 | Hook logic in lib/ has unit tests |
 
-## ⬜ Gate Contracts (NOT STARTED)
+## 🔄 Gate Contracts (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
 | ⬜ | SC-373 | Every gate has typed input/output |
 | ⬜ | SC-374 | Pass/fail criteria documented as SCs |
 | ⬜ | SC-375 | Gate chain order documented |
-| ⬜ | SC-376 | run-gate.ts under 400 lines |
+| ✅ | SC-376 | run-gate.ts under 400 lines |
 | ⬜ | SC-377 | Contracts testable by conformity engine |
 | ⬜ | SC-378 | No implicit state passing |
 
