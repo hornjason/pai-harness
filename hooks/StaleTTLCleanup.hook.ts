@@ -109,56 +109,30 @@ for (const f of findFiles(PAI_WORK, 'workflow-state.json')) {
 
 // Clean up empty directories
 try {
-  const topDirs = readdirSync(PAI_WORK, { withFileTypes: true }).filter(d => d.isDirectory());
-  for (const d of topDirs) {
-    const dirPath = join(PAI_WORK, d.name);
-    try {
-      const contents = readdirSync(dirPath);
-      if (contents.length === 0) {
-        const { rmdirSync } = require('fs');
-        rmdirSync(dirPath);
-      }
-    } catch {
-      // Skip if can't read or remove
-    }
+  const { rmdirSync } = require('fs');
+  for (const d of readdirSync(PAI_WORK, { withFileTypes: true }).filter(d => d.isDirectory())) {
+    try { if (readdirSync(join(PAI_WORK, d.name)).length === 0) rmdirSync(join(PAI_WORK, d.name)); } catch {}
   }
-} catch {
-  // Skip
-}
+} catch {}
 
-// Clean stale worktrees (older than 24h with merged branches) in the current project
+// Clean stale worktrees (older than 24h with merged branches)
 try {
   const { cleanupWorktrees } = await import('../lib/worktree-cleanup.ts')
-  const projectRoot = process.cwd()
-  if (existsSync(join(projectRoot, '.claude', 'worktrees'))) {
-    const result = await cleanupWorktrees({ projectRoot, maxAgeMs: 24 * 60 * 60 * 1000 })
-    if (result.removed.length) {
-      deletedCount += result.removed.length
-      log(`WORKTREE cleanup [${projectRoot}]: removed ${result.removed.length} stale worktrees`)
-    }
+  const pr = process.cwd()
+  if (existsSync(join(pr, '.claude', 'worktrees'))) {
+    const r = await cleanupWorktrees({ projectRoot: pr, maxAgeMs: 24 * 60 * 60 * 1000 })
+    if (r.removed.length) { deletedCount += r.removed.length; log(`WORKTREE cleanup: removed ${r.removed.length}`) }
   }
-} catch (e) {
-  log(`WORKTREE cleanup error: ${e}`)
-}
+} catch (e) { log(`WORKTREE cleanup error: ${e}`) }
 
 // Clean stale remote branches (older than 7 days with no open PR)
 try {
   const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts')
-  const projectRoot = process.cwd()
-  const result = cleanupStaleBranches({ projectRoot, maxAgeDays: 7 })
-  if (result.deleted.length) {
-    deletedCount += result.deleted.length
-    log(`BRANCH cleanup [${projectRoot}]: deleted ${result.deleted.length} stale remote branches: ${result.deleted.join(', ')}`)
-  }
-  if (result.skipped.length) {
-    log(`BRANCH cleanup [${projectRoot}]: skipped ${result.skipped.length} branches (open PRs): ${result.skipped.join(', ')}`)
-  }
-  if (result.errors.length) {
-    log(`BRANCH cleanup [${projectRoot}]: ${result.errors.length} errors: ${result.errors.join('; ')}`)
-  }
-} catch (e) {
-  log(`BRANCH cleanup error: ${e}`)
-}
+  const r = cleanupStaleBranches({ projectRoot: process.cwd(), maxAgeDays: 7 })
+  if (r.deleted.length) { deletedCount += r.deleted.length; log(`BRANCH cleanup: deleted ${r.deleted.join(', ')}`) }
+  if (r.skipped.length) log(`BRANCH cleanup: skipped ${r.skipped.length} (open PRs)`)
+  if (r.errors.length) log(`BRANCH cleanup: ${r.errors.length} errors`)
+} catch (e) { log(`BRANCH cleanup error: ${e}`) }
 
 if (deletedCount > 0) {
   console.log(`Stale TTL cleanup: removed ${deletedCount} files older than 4h`);

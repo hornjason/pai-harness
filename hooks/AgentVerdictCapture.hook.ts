@@ -14,8 +14,7 @@ import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from '
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
-import { runAgentAudit } from '../lib/agent-audit';
-import { writeCache, type BehavioralCache } from '../lib/behavioral-cache';
+import { runAgentAudit, populateBehavioralCache } from '../lib/agent-audit';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
@@ -67,11 +66,7 @@ function findActiveWorkflow(): { path: string; data: any } | null {
 function extractVerdict(text: string): any | null {
   const match = text.match(/## Verdict\n(\{[\s\S]*?\n\})/);
   if (!match) return null;
-  try {
-    return JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
+  try { return JSON.parse(match[1]); } catch { return null; }
 }
 
 function identifyRole(toolInput: any): string | null {
@@ -83,7 +78,6 @@ function identifyRole(toolInput: any): string | null {
   if (name.startsWith('rook')) return 'rook';
   return null;
 }
-
 
 async function main() {
   const payload = await parseHookInput();
@@ -136,37 +130,11 @@ async function main() {
     state.audits[role] = auditResult;
     console.error(`[agent-verdict-capture] ${role} audit: ${auditResult.score}% (${auditResult.grade})`);
 
-    // Populate behavioral-results cache from audit criteria
-    try {
-      const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
-      const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
-      if (existsSync(mapPath)) {
-        const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
-        const criteriaResults = auditResult.criteria || [];
-        const criterionMap = new Map<string, any>();
-        for (const r of criteriaResults) {
-          criterionMap.set(r.id, r);
-        }
-        const cacheData: BehavioralCache = {};
-        const now = new Date().toISOString();
-        for (const [scId, mapping] of Object.entries(scMap)) {
-          const result = criterionMap.get(mapping.criterionId);
-          if (result) {
-            cacheData[scId] = {
-              passed: result.verdict === 'FOLLOWED',
-              evidence: `${result.id}: ${result.evidence}`,
-              timestamp: now,
-            };
-          }
-        }
-        if (Object.keys(cacheData).length > 0) {
-          const cachePath = join(projectRoot, '.rungate', 'behavioral-results.json');
-          writeCache(cachePath, cacheData);
-          console.error(`[agent-verdict-capture] behavioral cache: ${Object.keys(cacheData).length} entries`);
-        }
-      }
-    } catch (err) {
-      console.error(`[agent-verdict-capture] behavioral cache write failed: ${err}`);
+    // Populate behavioral-results cache from audit criteria (extracted to lib/)
+    const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
+    const cacheCount = populateBehavioralCache(auditResult as any, projectRoot);
+    if (cacheCount > 0) {
+      console.error(`[agent-verdict-capture] behavioral cache: ${cacheCount} entries`);
     }
   }
 
