@@ -2,39 +2,40 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 16 — pipeline reliability + efficiency. 7 implementation issues shipped, 0 failures post-fix.
+Session 17 — gate bug fixes + pipeline hardening. 7 fixes, 3 new issues shipped, 4 ALREADY_SHIPPED.
 
-6 fixes shipped:
-  1. writeACs resilience (bb219258) — safeParse prevents 0-AC state corruption
-  2. Verify BUILD regression (4a18bdac) — re-implements and re-verifies
-  3. quinn-on-ui-change LIGHT (5cb983a0) — skip Quinn for CLI projects
-  4. Brief simplification (0ff53f9b) — Marcus 18→8 directives, compliance 17%→80%
-  5. Agent consolidation (cbd0550c) — preload-contexts + merged setup. 20→17 agents
-  6. Karpathy rules (1f1033c7) — Surgical Changes + Simplicity First in Marcus brief
+7 fixes shipped this session:
+  1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs
+  2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash
+  3. Auto-populate timeout (f794fb04) — 10s→300s for bun test
+  4. AC anchoring relaxed (6bdea4a1) — allows additional ACs for test coverage
+  5. Discovery brief consolidated (751d219d) — Never Do sections merged
+  6. Bun test output rule (3c170471) — stops 'grep -c ✓' evidence commands
+  7. Spec-compliance test fixed (d9f96db1) — broken test was silently failing ALL bun test ACs
 
-Pipeline results (implementation runs only):
-  #593: SHIPPED, 24 agents, 30m (pre-simplification, 28% compliance)
-  #589: SHIPPED, 20 agents, 12m (pre-simplification, 17% compliance)
-  #561: SHIPPED, 20 agents, 19m (pre-simplification, 33% compliance)
-  #581: SHIPPED, 17 agents, 18m (post-simplification, 80% compliance)
-  #580: SHIPPED, 17 agents, 15.5m (post-simplification, 80% compliance)
+Pipeline results this session:
+  #543: SHIPPED, 22 agents, 35m (1 regression)
+  #546: SHIPPED, 17 agents, 23m (0 regressions)
+  #539: SHIPPED, 17 agents, 32m (0 regressions)
+  #547: ALREADY_SHIPPED (prior work from earlier attempts)
+  #579: ALREADY_SHIPPED
+  #585: ALREADY_SHIPPED
+  #594: ALREADY_SHIPPED
+  #544: retrying (DNS failure last attempt)
+  #548: retrying (DNS failure last attempt)
 
-Key metrics post-optimization:
-  - First-attempt pass rate: 100% (5/5 post-fix runs)
-  - Agent count: 17 (down from 20-24)
-  - Marcus compliance: 80% (up from 17-33%)
-  - ALREADY_SHIPPED: 4 agents / 3-5 min
+Key insight: broken spec-compliance test was the root cause of ALL 'bun test' AC failures. It made the full suite exit non-zero, which left ACs as PENDING, which failed verify gate. Fix (d9f96db1) unlocked #539, #546, #543 shipping.
 
-Suite: 1415 pass, 0 fail, 80 files. 9 issues shipped total: #579, #580, #581, #584, #589, #590, #592, #593, #595.
+Cumulative: 12 issues shipped, 17 closed. Suite: 1447 pass, 0 fail, 82 files.
 Suite: 4/25 SCs done.
 
 **Next priorities:**
-1. P0: M-size pipeline validation — decomposition implemented, needs live pipeline test with M-size issue (#548 after #547 ships)
-2. P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 runs. Brief says TDD first but Marcus still writes impl before tests
-3. P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus
-4. P1: Further consolidation — 17 agents, target <10. Batch brief-setup + extract-context, merge grade + finalize
+1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
+2. P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in ~40% of runs. Brief says TDD first but not mechanically enforced
+3. P1: Discovery cat usage — 6/8 compliance after consolidating Never Do sections + adding to reinforcement tier
+4. P1: Further consolidation — 17 agents, target <10
 5. P2: Navigability scoring (SC-236/237 still test.todo)
-6. P3: Scaffold Decomposition, Hook Architecture, Gate Contracts
+6. P3: Scaffold Decomposition remaining issues
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
