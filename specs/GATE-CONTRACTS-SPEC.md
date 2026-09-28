@@ -49,6 +49,87 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - [ ] SC-377: Gate contracts testable by conformity engine (behavioral)
 - [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces (behavioral)
 
+## Per-Gate Pass/Fail Criteria
+
+### SC-379: run-gate pass/fail criteria
+- **Input:** `RunGateInput` — gate name, slug, issue number
+- **Output:** `ParseTestOutput` (alias for `GateResult[]`)
+- **PASS:** All AC evidence commands succeed, all AC verdicts are PASS or SKIP, zero FAIL results
+- **FAIL:** Any AC evidence command fails, any AC verdict is FAIL, or any gate check returns FAIL
+
+### SC-380: orchestrator pass/fail criteria
+- **Input:** `WriteGateResultInput` — state file path, gate name, pass/fail/warn counts, results array
+- **Output:** `GateResult` — check name, result (PASS/FAIL/WARN), detail string
+- **PASS:** `fails === 0` and no non-OUTCOME ACs have FAIL verdicts
+- **FAIL:** `fails > 0` or any non-OUTCOME AC has FAIL verdict
+
+### SC-381: ship-orchestrator pass/fail criteria
+- **Input:** `ShipGateInput` — slug, gate name
+- **Output:** `AdvanceResult` — phase, gateResult, failures, iteration, circuitBreaker
+- **PASS:** Gate executor completes without error and gate result in state is PASS
+- **FAIL:** Gate executor throws or gate result in state is FAIL; circuit breaks after MAX_ITERATIONS
+
+### SC-382: brief-assembler pass/fail criteria
+- **Input:** `AssembleBriefInput` — slug, workDir, projectRoot
+- **Output:** `AssembleResult` — briefPath, acCount, contextFileCount, validated
+- **PASS:** workflow-state.json exists, brief file written, `validated === true` (all required sections present)
+- **FAIL:** workflow-state.json missing (throws), or required sections missing (`validated === false`)
+
+### SC-383: schema pass/fail criteria
+- **Input:** `SchemaValidateInput` — raw state object to validate
+- **Output:** `SchemaValidateResult` — valid boolean, issues array
+- **PASS:** Zod parse succeeds with zero issues — no behavioral language, no garbage statements, no weak thresholds
+- **FAIL:** Zod parse fails — behavioral pattern detected, garbage statement, weak threshold, or missing required fields
+
+### SC-384: witness pass/fail criteria
+- **Input:** `WriteWitnessInput` — slug, gate, result, testOutput, issue, projectRoot
+- **Output:** `VerifyWitnessResult` — valid boolean, record, error
+- **PASS (write):** Witness file written with valid HMAC signature
+- **PASS (verify):** HMAC recomputed matches stored HMAC, all required fields present
+- **FAIL:** HMAC mismatch, missing fields, or witness file not found
+
+### SC-385: self-heal pass/fail criteria
+- **Input:** `HealInput` — gate, slug, issue, projectRoot, workDir, maxAttempts, dryRun
+- **Output:** `HealResult` — result (PASS/FAIL), attempts, failures, circuitBroken
+- **PASS:** Gate execution result is PASS within maxAttempts
+- **FAIL:** Gate result is FAIL; circuit breaks when `attempt >= maxAttempts`
+
+### SC-386: error-classifier pass/fail criteria
+- **Input:** `ClassifyInput` — failures array
+- **Output:** `ClassifyResult` (alias for `Classification`) — category, regressionTarget, retryable, failures
+- **PASS:** N/A (always produces a classification). Empty failures array returns NON_RETRYABLE
+- **FAIL:** N/A — classification is deterministic, never fails; consumer decides action based on category
+
+### SC-387: preload pass/fail criteria
+- **Input:** `RecordTestInput` — test name, passed boolean
+- **Output:** `TestRecordResult` — testName, result string
+- **PASS:** Test result recorded to gate-results.jsonl and recurring failures logged
+- **FAIL:** N/A — recording is best-effort; missing state dir silently skips
+
+## Gate Chain Order (SC-375)
+
+The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
+
+```
+ship-orchestrator.advancePhase(slug)
+  -> GOAL -> DISCOVERY (direct advance, no gate)
+  -> DISCOVERY -> SCOPE (direct advance, no gate)
+  -> SCOPE -> run-gate(scope) -> orchestrator.writeGateResult -> BUILD
+  -> BUILD -> run-gate(verify) -> orchestrator.writeGateResult -> SHIP
+  -> SHIP -> run-gate(ship) -> orchestrator.writeGateResult -> DONE
+```
+
+### Chain connections
+
+1. `ship-orchestrator` -> `run-gate`: advancePhase delegates to runGate which calls the gate executor
+2. `run-gate` -> `schema`: validates workflow-state.json against WorkflowStateSchema before gate checks
+3. `run-gate` -> `orchestrator`: calls writeGateResult to persist pass/fail and advance phase
+4. `run-gate` -> `witness`: calls writeWitness after gate execution to create tamper-evident record
+5. `run-gate` -> `brief-assembler`: scope gate validates brief exists and is well-formed
+6. `self-heal` -> `run-gate`: re-executes gate up to maxAttempts on failure
+7. `orchestrator` -> `error-classifier`: failure results feed into classifyFailures for regression targeting
+8. `preload` -> `orchestrator`: test results captured by preload feed into gate result evaluation
+
 ## Implementation
 
 ### Phase 1: Contract audit

@@ -1,5 +1,16 @@
 import { z } from "zod";
 
+// ── Gate contract interfaces (SC-373) ─────────────────────────────────────
+
+export interface SchemaValidateInput {
+  state: Record<string, unknown>;
+}
+
+export interface SchemaValidateResult {
+  valid: boolean;
+  issues: Array<{ path: string; message: string }>;
+}
+
 const BEHAVIORAL_PATTERN = /\b(DA should|remember to|make sure to|don't forget)\b/i;
 
 const GARBAGE_PATTERNS = [
