@@ -336,8 +336,8 @@ describe("harness-fixes: ship.js and ship-and-heal.js structural checks", () => 
     expect(HEAL_JS).toContain("ship-fallback");
   });
 
-  test("run-gate.ts re-evaluates FAIL verdicts (stale verdict fix)", () => {
-    const gateTS = readFileSync(join(HR, "gates/run-gate.ts"), "utf-8");
+  test("gate-executor.ts re-evaluates FAIL verdicts (stale verdict fix)", () => {
+    const gateTS = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
     expect(gateTS).toContain('ac.verdict !== "FAIL"');
   });
 });

@@ -57,6 +57,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **PASS:** All AC evidence commands succeed, all AC verdicts are PASS or SKIP, zero FAIL results
 - **FAIL:** Any AC evidence command fails, any AC verdict is FAIL, or any gate check returns FAIL
 
+### SC-388: gate-executor pass/fail criteria
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath
+- **Output:** `GateExecutorResult` — resultVal, passes, fails, warns, results, attempt, exitCode
+- **PASS:** All gate checks pass, all AC verdicts are PASS or SKIP, exitCode is 0
+- **FAIL:** Any gate check fails, any AC verdict is FAIL, or exitCode is non-zero
+
 ### SC-380: orchestrator pass/fail criteria
 - **Input:** `WriteGateResultInput` — state file path, gate name, pass/fail/warn counts, results array
 - **Output:** `GateResult` — check name, result (PASS/FAIL/WARN), detail string
