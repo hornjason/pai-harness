@@ -114,8 +114,11 @@ Suite: 4/25 SCs done.
 - Deep adversarial audit: 26/32 agents were bash wrappers, prove was 42% of runtime
 
 **Session 2026-09-27 session 17:**
-- M-size decomposition (c835bbb6) — batched Marcus implementation for M/L issues with >5 ACs
-- #582 shipped (23 agents, 30m) — Agent Teams evaluation. Marcus 3/5 compliance, Discovery 8/9
-- Pipeline run for #547 (typed interfaces) in progress — prerequisite for M-size test #548
-- Suite: 1426 pass, 0 fail, 81 files. Worktree cleanup: removed 8 stale worktrees
+- M-size decomposition (c835bbb6) — batched Marcus for M/L issues with >5 ACs
+- ReferenceError fix (020fcb8c) — verify gate fails/results temporal dead zone. Root cause of all #547 failures
+- Auto-populate timeout (f794fb04) — 10s→300s for bun test evidence commands. Prevented AC verdicts
+- #547 ALREADY_SHIPPED (attempt 4) — prior work from attempts 1-2 satisfied all 3 ACs
+- #548 SHIP_FAILED — Marcus decomposed run-gate.ts to 353 lines but broke full test suite. Need more ACs for test updates
+- #582 SHIPPED (23 agents, 30m) — from previous session compaction
+- Suite: 1387 pass, 0 fail, 82 files. 4 pipeline runs. 2 critical gate bugs fixed
 
