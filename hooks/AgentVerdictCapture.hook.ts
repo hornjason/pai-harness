@@ -5,74 +5,19 @@
  * Parses agent output for structured verdict blocks.
  * Writes verdict, testedSha, testedPaths, spawned to workflow-state.json.
  * Auto-appends blockers to verifyBlockers[].
- * Runs transcript audit and writes compliance results to workflow-state.json.
+ * Runs transcript audit and writes compliance results.
  *
- * Issue: #439
+ * Issue: #439, #544 (extracted findActiveWorkflow + extractVerdict to lib/)
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
-import { runAgentAudit } from '../lib/agent-audit';
-import { writeCache, type BehavioralCache } from '../lib/behavioral-cache';
+import { runAgentAudit, populateBehavioralCache } from '../lib/agent-audit';
+import { findActiveWorkflow, extractVerdict } from '../lib/verdict-capture';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
-
-function findActiveWorkflow(): { path: string; data: any } | null {
-  if (!existsSync(WORK_DIR)) return null;
-  let best: { path: string; data: any; mtime: number } | null = null;
-
-  function scan(dir: string) {
-    try {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const wfPath = join(dir, entry.name, 'workflow-state.json');
-        if (existsSync(wfPath)) {
-          try {
-            const data = JSON.parse(readFileSync(wfPath, 'utf-8'));
-            if (['BUILD', 'VERIFY', 'SHIP'].includes(data.phase)) {
-              const mtime = statSync(wfPath).mtimeMs;
-              if (!best || mtime > best.mtime) {
-                best = { path: wfPath, data, mtime };
-              }
-            }
-          } catch {}
-        }
-        const nested = join(dir, entry.name);
-        try {
-          for (const sub of readdirSync(nested, { withFileTypes: true })) {
-            if (!sub.isDirectory()) continue;
-            const nestedWf = join(nested, sub.name, 'workflow-state.json');
-            if (!existsSync(nestedWf)) continue;
-            try {
-              const data = JSON.parse(readFileSync(nestedWf, 'utf-8'));
-              if (['BUILD', 'VERIFY', 'SHIP'].includes(data.phase)) {
-                const mtime = statSync(nestedWf).mtimeMs;
-                if (!best || mtime > best.mtime) {
-                  best = { path: nestedWf, data, mtime };
-                }
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-    } catch {}
-  }
-
-  scan(WORK_DIR);
-  return best ? { path: best.path, data: best.data } : null;
-}
-
-function extractVerdict(text: string): any | null {
-  const match = text.match(/## Verdict\n(\{[\s\S]*?\n\})/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
-}
 
 function identifyRole(toolInput: any): string | null {
   const detected = detectAgent(toolInput);
@@ -84,7 +29,6 @@ function identifyRole(toolInput: any): string | null {
   return null;
 }
 
-
 async function main() {
   const payload = await parseHookInput();
   if (!payload) process.exit(0);
@@ -93,18 +37,16 @@ async function main() {
   const role = identifyRole(toolInput);
   if (!role) process.exit(0);
 
-  const wf = findActiveWorkflow();
+  const wf = findActiveWorkflow(WORK_DIR);
   if (!wf) process.exit(0);
 
   const resp = payload.tool_response;
   const respText = typeof resp === 'string' ? resp : (resp?.output || JSON.stringify(resp) || '');
-
   const verdict = extractVerdict(respText);
   const state = wf.data;
 
   if (!state.agents) state.agents = {};
   if (!state.agents[role]) state.agents[role] = {};
-
   state.agents[role].spawned = true;
 
   if (verdict) {
@@ -117,11 +59,7 @@ async function main() {
       for (const b of verdict.blockers) {
         const id = b.id || `${role}-blocker-${state.verifyBlockers.length + 1}`;
         if (!state.verifyBlockers.some((vb: any) => vb.id === id)) {
-          state.verifyBlockers.push({
-            id,
-            description: b.description || b.detail || String(b),
-            quinnReverified: false,
-          });
+          state.verifyBlockers.push({ id, description: b.description || b.detail || String(b), quinnReverified: false });
         }
       }
     }
@@ -129,50 +67,17 @@ async function main() {
     state.agents[role].verdict = null;
   }
 
-  // Run transcript audit (non-blocking)
   const auditResult = runAgentAudit(payload.transcript_path, role);
   if (auditResult) {
     if (!state.audits) state.audits = {};
     state.audits[role] = auditResult;
-    console.error(`[agent-verdict-capture] ${role} audit: ${auditResult.score}% (${auditResult.grade})`);
 
-    // Populate behavioral-results cache from audit criteria
-    try {
-      const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
-      const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
-      if (existsSync(mapPath)) {
-        const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
-        const criteriaResults = auditResult.criteria || [];
-        const criterionMap = new Map<string, any>();
-        for (const r of criteriaResults) {
-          criterionMap.set(r.id, r);
-        }
-        const cacheData: BehavioralCache = {};
-        const now = new Date().toISOString();
-        for (const [scId, mapping] of Object.entries(scMap)) {
-          const result = criterionMap.get(mapping.criterionId);
-          if (result) {
-            cacheData[scId] = {
-              passed: result.verdict === 'FOLLOWED',
-              evidence: `${result.id}: ${result.evidence}`,
-              timestamp: now,
-            };
-          }
-        }
-        if (Object.keys(cacheData).length > 0) {
-          const cachePath = join(projectRoot, '.rungate', 'behavioral-results.json');
-          writeCache(cachePath, cacheData);
-          console.error(`[agent-verdict-capture] behavioral cache: ${Object.keys(cacheData).length} entries`);
-        }
-      }
-    } catch (err) {
-      console.error(`[agent-verdict-capture] behavioral cache write failed: ${err}`);
-    }
+    const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
+    populateBehavioralCache(auditResult as any, projectRoot);
   }
 
   state.updatedTs = new Date().toISOString();
   writeFileSync(wf.path, JSON.stringify(state, null, 2));
-  console.error(`[agent-verdict-capture] ${role}: verdict=${verdict?.verdict || 'null'}, path=${wf.path}`);
   process.exit(0);
 }
 

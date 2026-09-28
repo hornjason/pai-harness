@@ -118,6 +118,73 @@ describe("SC-376: run-gate.ts decomposition", () => {
   });
 });
 
+describe("SC-544: Hook extraction — thin hooks delegate to lib/", () => {
+  test("AC-1: GateEnforcement.hook.ts is under 100 lines", () => {
+    const content = readFileSync(join(ROOT, "hooks/GateEnforcement.hook.ts"), "utf-8");
+    const lineCount = content.trimEnd().split("\n").length;
+    expect(lineCount).toBeLessThanOrEqual(100);
+  });
+
+  test("AC-2: No hook file exceeds 150 lines (excluding AgentBriefGuard)", () => {
+    const { readdirSync } = require("fs");
+    const hookFiles = readdirSync(join(ROOT, "hooks"))
+      .filter((f: string) => f.endsWith(".hook.ts") && !f.startsWith("AgentBriefGuard"));
+    const overLimit: string[] = [];
+    for (const f of hookFiles) {
+      const content = readFileSync(join(ROOT, "hooks", f), "utf-8");
+      const lineCount = content.trimEnd().split("\n").length;
+      if (lineCount > 150) overLimit.push(`${f}: ${lineCount} lines`);
+    }
+    expect(overLimit).toEqual([]);
+  });
+
+  test("AC-3: lib/gate-enforcement.ts exports findWorkflowGateFailure", () => {
+    const content = readFileSync(join(ROOT, "lib/gate-enforcement.ts"), "utf-8");
+    expect(content).toMatch(/export function findWorkflowGateFailure/);
+  });
+
+  test("AC-3: lib/gate-enforcement.ts exports logSignal", () => {
+    const content = readFileSync(join(ROOT, "lib/gate-enforcement.ts"), "utf-8");
+    expect(content).toMatch(/export function logSignal/);
+  });
+
+  test("AC-3: lib/gate-enforcement.ts exports buildGatePending", () => {
+    const content = readFileSync(join(ROOT, "lib/gate-enforcement.ts"), "utf-8");
+    expect(content).toMatch(/export function buildGatePending/);
+  });
+
+  test("AC-3: lib/gate-enforcement.ts exports makeEnforcementDecision", () => {
+    const content = readFileSync(join(ROOT, "lib/gate-enforcement.ts"), "utf-8");
+    expect(content).toMatch(/export function makeEnforcementDecision/);
+  });
+
+  test("AC-3: lib/stale-cleanup.ts exports cleanStaleFiles", () => {
+    const content = readFileSync(join(ROOT, "lib/stale-cleanup.ts"), "utf-8");
+    expect(content).toMatch(/export function cleanStaleFiles/);
+  });
+
+  test("AC-3: lib/verdict-capture.ts exports findActiveWorkflow and extractVerdict", () => {
+    const content = readFileSync(join(ROOT, "lib/verdict-capture.ts"), "utf-8");
+    expect(content).toMatch(/export function findActiveWorkflow/);
+    expect(content).toMatch(/export function extractVerdict/);
+  });
+
+  test("GateEnforcement.hook.ts imports from lib/gate-enforcement", () => {
+    const content = readFileSync(join(ROOT, "hooks/GateEnforcement.hook.ts"), "utf-8");
+    expect(content).toContain("../lib/gate-enforcement");
+  });
+
+  test("StaleTTLCleanup.hook.ts imports from lib/stale-cleanup", () => {
+    const content = readFileSync(join(ROOT, "hooks/StaleTTLCleanup.hook.ts"), "utf-8");
+    expect(content).toContain("../lib/stale-cleanup");
+  });
+
+  test("AgentVerdictCapture.hook.ts imports from lib/verdict-capture", () => {
+    const content = readFileSync(join(ROOT, "hooks/AgentVerdictCapture.hook.ts"), "utf-8");
+    expect(content).toContain("../lib/verdict-capture");
+  });
+});
+
 describe("Deep modules: conformity engine agent brief checks", () => {
   const conformitySrc = readFileSync(join(ROOT, "lib/conformity.ts"), "utf-8");
 
