@@ -2,6 +2,9 @@
 /**
  * CommitEnforcement.hook.ts — PostToolUse on Agent
  *
+ * SC-304 (AGENTS-MD-TEMPLATE-SPEC): CommitEnforcement contains [code, agent]
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ *
  * TRIGGER: PostToolUse (matcher: Agent)
  *
  * Detects two conditions in code agent worktrees after agent completion:

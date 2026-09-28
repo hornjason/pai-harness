@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 /**
- * StaleTTLCleanup.hook.ts — Auto-cleanup stale workflow artifacts (#256, #270)
+ * StaleTTLCleanup.hook.ts — Auto-cleanup stale workflow-state.json and .ship-active files (#256, #270)
+ *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * TRIGGER: SessionStart
  *
  * Enforces 4h TTL on ship artifacts, 7d hard TTL on active phases.

@@ -1,6 +1,10 @@
 #!/usr/bin/env bun
 /**
  * AgentBriefGuard.hook.ts — PreToolUse on Agent
+ *
+ * SC-367 (HOOK-ARCHITECTURE-SPEC): AgentBriefGuard line count target
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ *
  * TRIGGER: PreToolUse (matcher: Agent)
  *
  * Validates agent spawn briefs use templates, bypassPermissions mode,

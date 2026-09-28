@@ -1,8 +1,33 @@
 #!/usr/bin/env bun
 /**
  * GateEnforcement.hook.ts — PreToolUse gate for harness gate failures
- * TRIGGER: PreToolUse (matcher: ".*")
- * Thin trigger: delegates to lib/gate-enforcement.ts. Issue: #544
+ *
+ * SC-369 (HOOK-ARCHITECTURE-SPEC): GateEnforcement line count target
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ *
+ * TRIGGER: PreToolUse (matcher: ".*" — fires on every tool call)
+ *
+ * PURPOSE:
+ * When a harness gate fails, nag the DA on every tool call until fixed.
+ * After max_strikes, block Skill calls (Bash/Read/Agent still work for fixing).
+ * OUTCOME AC failures get immediate block — no strike counting.
+ *
+ * BEHAVIOR:
+ *  1. Read MEMORY/STATE/gate-pending.json — if missing/expired → exit 0
+ *  2. Cross-session guard: if pending session_id ≠ current → exit 0
+ *  3. outcome_ac_failure → immediate block on Skill calls
+ *  4. Skill + strike_count >= max_strikes → block
+ *  5. Otherwise → nag (system-reminder), increment strike_count
+ *  6. Write updated strike_count back
+ *  7. Log to MEMORY/LEARNING/SIGNALS/signals.jsonl
+ *
+ * INPUT:
+ *  - stdin: PreToolUse JSON payload { tool_name, tool_input, session_id, ... }
+ *
+ * OUTPUT:
+ *  - stdout: JSON block decision OR system-reminder nag
+ *  - stderr: status messages
+ *  - exit(0): always
  */
 
 import { existsSync, unlinkSync, writeFileSync } from 'fs';

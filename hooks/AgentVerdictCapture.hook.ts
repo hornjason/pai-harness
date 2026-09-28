@@ -2,6 +2,9 @@
 /**
  * AgentVerdictCapture.hook.ts — SubagentStop hook
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Parses agent output for structured verdict blocks.
  * Writes verdict, testedSha, testedPaths, spawned to workflow-state.json.
  * Auto-appends blockers to verifyBlockers[].

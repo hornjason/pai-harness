@@ -28,18 +28,22 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 
 ## Current State
 
-| Hook | Lines | Assessment |
-|------|-------|-----------|
-| AgentBriefGuard | 586 | Deep logic in hook — extract to lib/ |
-| GateEnforcement | 273 | Borderline — review what's logic vs trigger |
-| CommitEnforcement | 143 | Acceptable |
-| AgentVerdictCapture | 134 | Acceptable |
-| StaleTTLCleanup | 133 | Acceptable |
-| IssueCloseGuard | 116 | Acceptable |
-| VerifyPhaseLock | 81 | Good |
-| AutoVerifyGate | 76 | Good |
-| MergeGuard | 55 | Good |
-| WorkflowStateGuard | 37 | Ideal thin trigger |
+| Hook | File | Lines | Governing SCs | Assessment |
+|------|------|-------|---------------|-----------|
+| AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
+| GateEnforcement | GateEnforcement.hook.ts | 275 | SC-369, SC-370 | Borderline — review what's logic vs trigger |
+| AgentVerdictCapture | AgentVerdictCapture.hook.ts | 182 | SC-370, SC-371 | Acceptable |
+| StaleTTLCleanup | StaleTTLCleanup.hook.ts | 170 | SC-370, SC-371 | Acceptable |
+| CommitEnforcement | CommitEnforcement.hook.ts | 146 | SC-304, SC-370 | Acceptable |
+| SpecSCGuard | SpecSCGuard.hook.ts | 123 | SC-370, SC-371 | Acceptable |
+| IssueCloseGuard | IssueCloseGuard.hook.ts | 119 | SC-370, SC-371 | Acceptable |
+| VerifyPhaseLock | VerifyPhaseLock.hook.ts | 84 | SC-370, SC-371 | Good |
+| AutoVerifyGate | AutoVerifyGate.hook.ts | 79 | SC-370, SC-371 | Good |
+| PostCompact | PostCompact.hook.ts | 60 | SC-370, SC-371 | Good |
+| MergeGuard | MergeGuard.hook.ts | 58 | SC-370, SC-371 | Good |
+| TaskCompleted | TaskCompleted.hook.ts | 51 | SC-370, SC-372 | Good — logic in lib/task-completion-checks.ts |
+| SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
+| WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
 
 ## Success Criteria
 

@@ -2,6 +2,9 @@
 /**
  * IssueCloseGuard.hook.ts — PreToolUse on Bash
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Blocks gh issue close if ship-gate hasn't passed.
  * Validates HMAC provenance on PASS results.
  * Also validates comment templates on gh issue comment.

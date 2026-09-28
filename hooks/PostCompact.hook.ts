@@ -2,6 +2,9 @@
 /**
  * PostCompact.hook.ts — PostCompact hook
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Re-injects critical rules after context window compaction.
  * Rules that survive compaction prevent agent drift in long sessions.
  */

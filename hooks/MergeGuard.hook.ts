@@ -2,6 +2,9 @@
 /**
  * MergeGuard.hook.ts — PreToolUse on Bash
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Early warning when git merge targets main/master without verify-gate passing.
  * The pre-push hook is the hard enforcement; this warns so the agent can fix first.
  */
