@@ -117,7 +117,6 @@ describe("SC-376: run-gate.ts decomposition", () => {
     expect(content).toContain("./gate-executor");
   });
 });
-
 describe("Deep modules: conformity engine agent brief checks", () => {
   const conformitySrc = readFileSync(join(ROOT, "lib/conformity.ts"), "utf-8");
 

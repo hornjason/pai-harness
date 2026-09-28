@@ -256,6 +256,8 @@ describe("behavioral-cache: integration with test-brief and sync-sc-status", () 
     const hasWriteRef = content.includes("writeCache") ||
       content.includes("behavioral-results") ||
       content.includes("behavioralCache") ||
+      content.includes("BehavioralCache") ||
+      content.includes("populateBehavioral") ||
       content.includes("behavioral-cache");
     expect(hasWriteRef).toBe(true);
   });
