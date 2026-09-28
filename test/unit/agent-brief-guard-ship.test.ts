@@ -206,7 +206,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
 
       expect(stdout).toContain('"decision":"block"');
       expect(stdout).toContain('ship');
-      expect(stderr).toContain('no_ship_session');
+      expect(stderr).toContain('BLOCKED');
     });
 
     it('ALLOWS Engineer when valid .ship-active marker exists', async () => {
@@ -247,7 +247,7 @@ describe('AgentBriefGuard — ship-active enforcement', () => {
 
       expect(stdout).toContain('"decision":"block"');
       expect(stdout).toContain('ship');
-      expect(stderr).toContain('no_ship_session');
+      expect(stderr).toContain('BLOCKED');
     });
 
     it('Quinn NOT affected — passes with active ship session', async () => {
