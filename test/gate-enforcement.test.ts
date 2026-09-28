@@ -193,6 +193,21 @@ describe('gate-enforcement', () => {
       expect(result!.failures[0].check).toBe('alt-id');
       expect(result!.failures[0].detail).toBe('alt-msg');
     });
+
+    it('scans nested directories (e.g. pai/361)', () => {
+      const nestedDir = join(tempDir, 'pai', '361');
+      mkdirSync(nestedDir, { recursive: true });
+      writeFileSync(join(nestedDir, 'workflow-state.json'), JSON.stringify({
+        phase: 'BUILD',
+        issue: 361,
+        gates: {
+          scope: { result: 'FAIL', failures: [{ check: 'nested', detail: 'found' }] },
+        },
+      }));
+      const result = findWorkflowGateFailure(tempDir);
+      expect(result).not.toBeNull();
+      expect(result!.issue).toBe(361);
+    });
   });
 
   describe('makeEnforcementDecision', () => {

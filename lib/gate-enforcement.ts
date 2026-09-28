@@ -62,6 +62,7 @@ export function formatFailures(failures: GateFailure[]): string {
 /**
  * Scan workflow-state.json files under workDir for active gate failures.
  * Returns the first failure found (scope > verify > ship priority).
+ * Checks both direct children and nested subdirectories.
  */
 export function findWorkflowGateFailure(workDir: string): WorkflowGateFailure | null {
   if (!existsSync(workDir)) return null;
@@ -71,36 +72,61 @@ export function findWorkflowGateFailure(workDir: string): WorkflowGateFailure | 
       .filter(d => d.isDirectory());
 
     for (const d of dirs) {
-      const wfPath = `${workDir}/${d.name}/workflow-state.json`;
-      if (!existsSync(wfPath)) continue;
+      // Level 1: direct children
+      const result = checkWorkflowFile(`${workDir}/${d.name}/workflow-state.json`, d.name);
+      if (result) return result;
 
+      // Level 2: nested subdirectories
       try {
-        const wf = JSON.parse(readFileSync(wfPath, 'utf-8'));
-        if (wf.phase === 'DONE') continue;
-
-        const gates = wf.gates || {};
-        for (const gateName of ['scope', 'verify', 'ship']) {
-          const gate = gates[gateName];
-          if (gate?.result === 'FAIL' && Array.isArray(gate.failures) && gate.failures.length > 0) {
-            const acs = Array.isArray(wf.acs) ? wf.acs : [];
-            const hasOutcomeAcFailure = acs.some(
-              (ac: { type?: string; verdict?: string }) => ac.type === 'OUTCOME' && ac.verdict === 'FAIL'
-            );
-            return {
-              gate: gateName,
-              issue: wf.issue,
-              slug: wf.slug || d.name,
-              failures: gate.failures.map((f: { check?: string; id?: string; detail?: string; message?: string }) => ({
-                check: f.check || f.id || 'unknown',
-                detail: f.detail || f.message || JSON.stringify(f),
-              })),
-              hasOutcomeAcFailure,
-            };
-          }
+        const subDirs = readdirSync(`${workDir}/${d.name}`, { withFileTypes: true })
+          .filter(sd => sd.isDirectory());
+        for (const sd of subDirs) {
+          const nestedResult = checkWorkflowFile(
+            `${workDir}/${d.name}/${sd.name}/workflow-state.json`,
+            `${d.name}/${sd.name}`,
+          );
+          if (nestedResult) return nestedResult;
         }
-      } catch { /* skip malformed */ }
+      } catch { /* skip */ }
     }
   } catch { /* skip */ }
+
+  return null;
+}
+
+/**
+ * Check a single workflow-state.json file for gate failures.
+ */
+function checkWorkflowFile(wfPath: string, slug: string): WorkflowGateFailure | null {
+  if (!existsSync(wfPath)) return null;
+
+  try {
+    const wf = JSON.parse(readFileSync(wfPath, 'utf-8'));
+    if (wf.phase === 'DONE') return null;
+
+    const gates = wf.gates || {};
+    for (const gateName of ['scope', 'verify', 'ship']) {
+      const gate = gates[gateName];
+      if (gate?.result === 'FAIL' && Array.isArray(gate.failures) && gate.failures.length > 0) {
+        const acs = Array.isArray(wf.acs) ? wf.acs : [];
+        const hasOutcomeAcFailure = acs.some(
+          (ac: { type?: string; verdict?: string }) => ac.type === 'OUTCOME' && ac.verdict === 'FAIL',
+        );
+        return {
+          gate: gateName,
+          issue: wf.issue,
+          slug: wf.slug || slug,
+          failures: gate.failures.map(
+            (f: { check?: string; id?: string; detail?: string; message?: string }) => ({
+              check: f.check || f.id || 'unknown',
+              detail: f.detail || f.message || JSON.stringify(f),
+            }),
+          ),
+          hasOutcomeAcFailure,
+        };
+      }
+    }
+  } catch { /* skip malformed */ }
 
   return null;
 }

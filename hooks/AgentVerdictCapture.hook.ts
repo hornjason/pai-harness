@@ -10,12 +10,11 @@
  * Issue: #439, #544 (extracted findActiveWorkflow + extractVerdict to lib/)
  */
 
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
-import { runAgentAudit } from '../lib/agent-audit';
-import { writeCache, type BehavioralCache } from '../lib/behavioral-cache';
+import { runAgentAudit, populateBehavioralCache } from '../lib/agent-audit';
 import { findActiveWorkflow, extractVerdict } from '../lib/verdict-capture';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
@@ -73,27 +72,8 @@ async function main() {
     if (!state.audits) state.audits = {};
     state.audits[role] = auditResult;
 
-    try {
-      const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
-      const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
-      if (existsSync(mapPath)) {
-        const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
-        const criteriaResults = auditResult.criteria || [];
-        const criterionMap = new Map<string, any>();
-        for (const r of criteriaResults) criterionMap.set(r.id, r);
-        const cacheData: BehavioralCache = {};
-        const now = new Date().toISOString();
-        for (const [scId, mapping] of Object.entries(scMap)) {
-          const result = criterionMap.get(mapping.criterionId);
-          if (result) {
-            cacheData[scId] = { passed: result.verdict === 'FOLLOWED', evidence: `${result.id}: ${result.evidence}`, timestamp: now };
-          }
-        }
-        if (Object.keys(cacheData).length > 0) {
-          writeCache(join(projectRoot, '.rungate', 'behavioral-results.json'), cacheData);
-        }
-      }
-    } catch {}
+    const projectRoot = process.env.RUNGATE_PROJECT_ROOT || join(WORK_DIR, '..');
+    populateBehavioralCache(auditResult as any, projectRoot);
   }
 
   state.updatedTs = new Date().toISOString();

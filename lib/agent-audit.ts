@@ -7,8 +7,10 @@
  * Used by: AgentVerdictCapture.hook.ts
  */
 
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { auditAgent, type Role } from '../scripts/audit-transcript';
+import { writeCache, type BehavioralCache } from './behavioral-cache';
 
 export interface AgentAuditResult {
   role: Role;
@@ -71,4 +73,48 @@ export function runAgentAudit(
     // Non-blocking — log and return null
     return null;
   }
+}
+
+/**
+ * Populate behavioral-results cache from audit criteria results.
+ * Maps SC IDs to audit criterion verdicts via behavioral-sc-map.json.
+ * Non-blocking — catches all errors.
+ *
+ * Issue: #544 — extracted from AgentVerdictCapture.hook.ts
+ */
+export function populateBehavioralCache(
+  auditResult: AgentAuditResult & { criteria?: Array<{ id: string; verdict: string; evidence: string }> },
+  projectRoot: string,
+): number {
+  try {
+    const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
+    if (!existsSync(mapPath)) return 0;
+
+    const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
+    const criteriaResults = auditResult.criteria || [];
+    const criterionMap = new Map<string, { id: string; verdict: string; evidence: string }>();
+    for (const r of criteriaResults) criterionMap.set(r.id, r);
+
+    const cacheData: BehavioralCache = {};
+    const now = new Date().toISOString();
+    for (const [scId, mapping] of Object.entries(scMap)) {
+      const result = criterionMap.get(mapping.criterionId);
+      if (result) {
+        cacheData[scId] = {
+          passed: result.verdict === 'FOLLOWED',
+          evidence: `${result.id}: ${result.evidence}`,
+          timestamp: now,
+        };
+      }
+    }
+
+    if (Object.keys(cacheData).length > 0) {
+      const cachePath = join(projectRoot, '.rungate', 'behavioral-results.json');
+      writeCache(cachePath, cacheData);
+      return Object.keys(cacheData).length;
+    }
+  } catch {
+    // Non-blocking
+  }
+  return 0;
 }
