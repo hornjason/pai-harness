@@ -2,31 +2,28 @@
 
 **Current phase: Scaffold Decomposition — 9 SCs open**
 
-Session 17 — gate bug fixes + pipeline hardening. 7 fixes, 3 new issues shipped, 4 ALREADY_SHIPPED.
+Session 17 — 8 fixes, 5 shipped, 4 ALREADY_SHIPPED.
 
-7 fixes shipped this session:
+8 fixes:
   1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs
   2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash
   3. Auto-populate timeout (f794fb04) — 10s→300s for bun test
-  4. AC anchoring relaxed (6bdea4a1) — allows additional ACs for test coverage
-  5. Discovery brief consolidated (751d219d) — Never Do sections merged
-  6. Bun test output rule (3c170471) — stops 'grep -c ✓' evidence commands
-  7. Spec-compliance test fixed (d9f96db1) — broken test was silently failing ALL bun test ACs
+  4. AC anchoring relaxed (6bdea4a1) — additional ACs for test/import coverage
+  5. Discovery brief consolidated (751d219d) — merged Never Do + reinforcement tier
+  6. Bun test output rule (3c170471) — prevents broken grep evidence commands
+  7. Spec-compliance test (d9f96db1) — ROOT CAUSE: broken test failing ALL bun test ACs
+  8. Circular dep fix (fd8c96ad) — parseTestResults post-#548 decomp
 
-Pipeline results this session:
-  #543: SHIPPED, 22 agents, 35m (1 regression)
-  #546: SHIPPED, 17 agents, 23m (0 regressions)
-  #539: SHIPPED, 17 agents, 32m (0 regressions)
-  #547: ALREADY_SHIPPED (prior work from earlier attempts)
-  #579: ALREADY_SHIPPED
-  #585: ALREADY_SHIPPED
-  #594: ALREADY_SHIPPED
-  #544: retrying (DNS failure last attempt)
-  #548: retrying (DNS failure last attempt)
+Shipped:
+  #543: SHIPPED (22 agents, 35m) — AgentBriefGuard extracted
+  #546: SHIPPED (17 agents, 23m) — gate contracts audited
+  #539: SHIPPED (17 agents, 32m) — brief validation
+  #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines
+  #545: SHIPPED (17 agents, 24m) — hook SC traceability
+  #547, #579, #585, #594: ALREADY_SHIPPED
+  #544: in progress
 
-Key insight: broken spec-compliance test was the root cause of ALL 'bun test' AC failures. It made the full suite exit non-zero, which left ACs as PENDING, which failed verify gate. Fix (d9f96db1) unlocked #539, #546, #543 shipping.
-
-Cumulative: 12 issues shipped, 17 closed. Suite: 1447 pass, 0 fail, 82 files.
+14 issues shipped total, 19 closed. Suite: 1400 pass, 0 fail, 82 files.
 Suite: 5/25 SCs done.
 
 **Next priorities:**
