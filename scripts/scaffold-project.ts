@@ -11,6 +11,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "./audit-specs";
+import { detectProjectType, scanProject, type ProjectType } from "../lib/scanner";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -31,49 +32,7 @@ if (!statSync(projectPath).isDirectory()) {
   process.exit(1);
 }
 
-// ── Project type detection ─────────────────────────────────────
-
-type ProjectType = "code" | "content" | "infra";
-
-function detectProjectType(root: string): ProjectType {
-  const hasPackageJson = existsSync(join(root, "package.json"));
-  const hasSrc = existsSync(join(root, "src"));
-  const hasLib = existsSync(join(root, "lib"));
-  const hasMakefile = existsSync(join(root, "Makefile"));
-  const hasTsConfig = existsSync(join(root, "tsconfig.json"));
-  const hasDockerCompose = existsSync(join(root, "docker-compose.yml")) || existsSync(join(root, "docker-compose.yaml"));
-  const hasDockerfile = existsSync(join(root, "Dockerfile"));
-  const hasScriptsDir = existsSync(join(root, "scripts"));
-  const hasManifests = hasDockerCompose || hasDockerfile ||
-    existsSync(join(root, "k8s")) || existsSync(join(root, "terraform"));
-
-  // Code project: has source directories or package.json with source
-  if (hasSrc || hasLib || hasTsConfig || (hasPackageJson && (hasSrc || hasLib))) {
-    return "code";
-  }
-
-  // Infra project: has deployment/config files
-  if (hasManifests || (hasScriptsDir && !hasPackageJson)) {
-    return "infra";
-  }
-
-  // Code project: has package.json (even without src/)
-  if (hasPackageJson && hasMakefile) {
-    return "code";
-  }
-
-  // Content project: predominantly markdown/media files
-  if (hasPackageJson) {
-    return "code";
-  }
-
-  // Infra: has scripts dir
-  if (hasScriptsDir) {
-    return "infra";
-  }
-
-  return "content";
-}
+// ── Project type detection imported from lib/scanner.ts (SC-358) ──
 
 // ── Helpers ────────────────────────────────────────────────────
 
