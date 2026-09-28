@@ -1379,6 +1379,108 @@ export function runAgentFileValidation(root: string) {
       expect(missing).toEqual([]);
     });
 
+    test("AGENT-7: All agent briefs have required sections", () => {
+      if (!existsSync(agentsDir)) return;
+      // 8 required sections per AGENT-BRIEF-TEMPLATE-SPEC.md
+      const sectionChecks: Array<{ name: string; pattern: RegExp }> = [
+        { name: "frontmatter", pattern: /^---\n[\s\S]*?\n---/ },
+        { name: "identity", pattern: /You are\s+\w+/i },
+        { name: "project", pattern: /^##\s+Project/im },
+        { name: "core-principles", pattern: /^##\s+(Core\s+Principles|Coding\s+Principles)/im },
+        { name: "always-do", pattern: /^##\s+(Always|Workflow|Rules|Testing|Discovery|What you|TDD|CLI|UI|Project Type|Efficiency|Design|Architecture)/im },
+        { name: "never-do", pattern: /^##\s+Never Do/im },
+        { name: "context", pattern: /^##\s+Context/im },
+        { name: "reference", pattern: /^##\s+Reference/im },
+      ];
+      const missing: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        for (const check of sectionChecks) {
+          if (!check.pattern.test(content)) {
+            missing.push(`${f}: missing required section '${check.name}'`);
+            addFinding({
+              ruleId: "AGENT-REQUIRED-SECTION",
+              severity: "FAIL",
+              file: `.claude/agents/${f}`,
+              message: `Brief missing required section: ${check.name}`,
+            });
+          }
+        }
+      }
+      if (missing.length > 0) {
+        console.error(`Agent briefs missing required sections:\n  ${missing.join("\n  ")}`);
+      }
+      expect(missing).toEqual([]);
+    });
+
+    test("AGENT-8: All agent briefs use model: sonnet", () => {
+      if (!existsSync(agentsDir)) return;
+      const wrong: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const fm = parseFrontmatter(content);
+        if (!fm?.model) {
+          wrong.push(`${f}: missing model field`);
+        } else if (fm.model !== "sonnet") {
+          wrong.push(`${f}: model is "${fm.model}", expected "sonnet"`);
+        }
+      }
+      if (wrong.length > 0) {
+        wrong.forEach(w => addFinding({
+          ruleId: "AGENT-MODEL",
+          severity: "FAIL",
+          file: `.claude/agents/${w.split(":")[0]}`,
+          message: w,
+        }));
+        console.error(`Agent briefs with wrong model:\n  ${wrong.join("\n  ")}`);
+      }
+      expect(wrong).toEqual([]);
+    });
+
+    test("AGENT-9: All agent briefs are under 120 lines", () => {
+      if (!existsSync(agentsDir)) return;
+      const over: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const lineCount = content.trimEnd().split("\n").length;
+        if (lineCount > 120) {
+          over.push(`${f}: ${lineCount} lines (max 120)`);
+          addFinding({
+            ruleId: "AGENT-LINECOUNT",
+            severity: "FAIL",
+            file: `.claude/agents/${f}`,
+            message: `Brief is ${lineCount} lines, exceeds 120-line cap`,
+          });
+        }
+      }
+      if (over.length > 0) {
+        console.error(`Agent briefs over 120 lines:\n  ${over.join("\n  ")}`);
+      }
+      expect(over).toEqual([]);
+    });
+
+    test("AGENT-10: No unfilled template variables in agent briefs", () => {
+      if (!existsSync(agentsDir)) return;
+      const unfilled: string[] = [];
+      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
+        const content = readFileSync(join(agentsDir, f), "utf-8");
+        const vars = content.match(/\$\{[A-Z_]+\}/g);
+        if (vars && vars.length > 0) {
+          unfilled.push(`${f}: unfilled template variables: ${vars.join(", ")}`);
+          addFinding({
+            ruleId: "AGENT-TEMPLATE-VAR",
+            severity: "FAIL",
+            file: `.claude/agents/${f}`,
+            message: `Brief has unfilled template variables: ${vars.join(", ")}`,
+          });
+        }
+      }
+      if (unfilled.length > 0) {
+        console.error(`Agent briefs with unfilled template variables:\n  ${unfilled.join("\n  ")}`);
+      }
+      expect(unfilled).toEqual([]);
+    });
+
     test("AGENT-6: All file paths referenced in briefs exist", () => {
       if (!existsSync(agentsDir)) return;
       const broken: string[] = [];
