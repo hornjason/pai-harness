@@ -30,7 +30,8 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 | Gate | Lines | Test Lines | Contract Defined? |
 |------|-------|-----------|------------------|
-| run-gate.ts | 936 | — | No |
+| run-gate.ts | <400 | — | Yes (SC-379) |
+| gate-executor.ts | ~600 | — | Yes (SC-388) |
 | orchestrator.ts | 569 | 950 | Partially (HARNESS-STANDARD.md) |
 | ship-orchestrator.ts | 363 | 379 | Partially (HARNESS-SKILL-CHAIN.md) |
 | brief-assembler.ts | 338 | 429 | No |
@@ -45,7 +46,7 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - [ ] SC-373: Every gate source file has a typed input/output interface exported (behavioral)
 - [ ] SC-374: Pass/fail criteria for each gate documented as SCs in this spec (behavioral)
 - [ ] SC-375: Gate chain order documented — which gates feed into which (behavioral)
-- [ ] SC-376: gates/run-gate.ts is under [400] lines
+- [x] SC-376: gates/run-gate.ts is under [400] lines
 - [ ] SC-377: Gate contracts testable by conformity engine (behavioral)
 - [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces (behavioral)
 
@@ -56,6 +57,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **Output:** `ParseTestOutput` (alias for `GateResult[]`)
 - **PASS:** All AC evidence commands succeed, all AC verdicts are PASS or SKIP, zero FAIL results
 - **FAIL:** Any AC evidence command fails, any AC verdict is FAIL, or any gate check returns FAIL
+
+### SC-388: gate-executor pass/fail criteria
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath
+- **Output:** `GateExecutorResult` — resultVal, passes, fails, warns, results, attempt, exitCode
+- **PASS:** All gate checks pass, all AC verdicts are PASS or SKIP, exitCode is 0
+- **FAIL:** Any gate check fails, any AC verdict is FAIL, or exitCode is non-zero
 
 ### SC-380: orchestrator pass/fail criteria
 - **Input:** `WriteGateResultInput` — state file path, gate name, pass/fail/warn counts, results array
@@ -105,6 +112,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **Output:** `TestRecordResult` — testName, result string
 - **PASS:** Test result recorded to gate-results.jsonl and recurring failures logged
 - **FAIL:** N/A — recording is best-effort; missing state dir silently skips
+
+### SC-388: gate-executor pass/fail criteria
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, projectRoot, issueRepo
+- **Output:** `GateExecutorResult` — passes, fails, warns, results array, testOutput
+- **PASS:** All delegated gate functions complete without error, aggregated fails === 0
+- **FAIL:** Any delegated function reports failures; consumer (run-gate.ts) aggregates and writes gate result
 
 ## Gate Chain Order (SC-375)
 

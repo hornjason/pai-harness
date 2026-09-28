@@ -27,7 +27,7 @@ Pipeline results this session:
 Key insight: broken spec-compliance test was the root cause of ALL 'bun test' AC failures. It made the full suite exit non-zero, which left ACs as PENDING, which failed verify gate. Fix (d9f96db1) unlocked #539, #546, #543 shipping.
 
 Cumulative: 12 issues shipped, 17 closed. Suite: 1447 pass, 0 fail, 82 files.
-Suite: 4/25 SCs done.
+Suite: 5/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -79,14 +79,14 @@ Suite: 4/25 SCs done.
 | ⬜ | SC-371 | No hook over 150 lines |
 | ⬜ | SC-372 | Hook logic in lib/ has unit tests |
 
-## ⬜ Gate Contracts (NOT STARTED)
+## 🔄 Gate Contracts (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
 | ⬜ | SC-373 | Every gate has typed input/output |
 | ⬜ | SC-374 | Pass/fail criteria documented as SCs |
 | ⬜ | SC-375 | Gate chain order documented |
-| ⬜ | SC-376 | run-gate.ts under 400 lines |
+| ✅ | SC-376 | run-gate.ts under 400 lines |
 | ⬜ | SC-377 | Contracts testable by conformity engine |
 | ⬜ | SC-378 | No implicit state passing |
 

@@ -39,6 +39,7 @@ describe("SC-373: Gate contract typed interfaces", () => {
   const GATE_FILES = [
     "gates/brief-assembler.ts",
     "gates/error-classifier.ts",
+    "gates/gate-executor.ts",
     "gates/orchestrator.ts",
     "gates/preload.ts",
     "gates/run-gate.ts",
@@ -48,7 +49,7 @@ describe("SC-373: Gate contract typed interfaces", () => {
     "gates/witness.ts",
   ];
 
-  test("AC-1: all 9 gate files export typed Input and Output/Result interfaces", () => {
+  test("AC-1: all 10 gate files export typed Input and Output/Result interfaces", () => {
     let count = 0;
     const missing: string[] = [];
     for (const f of GATE_FILES) {
@@ -62,13 +63,13 @@ describe("SC-373: Gate contract typed interfaces", () => {
       }
     }
     expect(missing).toEqual([]);
-    expect(count).toBeGreaterThanOrEqual(9);
+    expect(count).toBeGreaterThanOrEqual(10);
   });
 
-  test("AC-2: spec has per-gate pass/fail SCs for all 9 gates", () => {
+  test("AC-2: spec has per-gate pass/fail SCs for all 10 gates", () => {
     const spec = readFileSync(join(ROOT, "specs/GATE-CONTRACTS-SPEC.md"), "utf-8");
     const gates = [
-      "brief-assembler", "error-classifier", "orchestrator", "preload",
+      "brief-assembler", "error-classifier", "gate-executor", "orchestrator", "preload",
       "run-gate", "schema", "self-heal", "ship-orchestrator", "witness",
     ];
     let found = 0;
@@ -82,13 +83,38 @@ describe("SC-373: Gate contract typed interfaces", () => {
       }
     }
     expect(missing).toEqual([]);
-    expect(found).toBeGreaterThanOrEqual(9);
+    expect(found).toBeGreaterThanOrEqual(10);
+  });
+
+  test("SC-376: gates/run-gate.ts is under 400 lines", () => {
+    const content = readFileSync(join(ROOT, "gates/run-gate.ts"), "utf-8");
+    const lineCount = content.trimEnd().split("\n").length;
+    expect(lineCount).toBeLessThanOrEqual(400);
   });
 
   test("AC-3: spec documents gate chain with >= 5 arrow connections", () => {
     const spec = readFileSync(join(ROOT, "specs/GATE-CONTRACTS-SPEC.md"), "utf-8");
     const arrows = (spec.match(/→|-->|->(?!\.)/g) || []).length;
     expect(arrows).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe("SC-376: run-gate.ts decomposition", () => {
+  test("gates/run-gate.ts is under 400 lines", () => {
+    const content = readFileSync(join(ROOT, "gates/run-gate.ts"), "utf-8");
+    const lineCount = content.trimEnd().split("\n").length;
+    expect(lineCount).toBeLessThan(400);
+  });
+
+  test("gates/gate-executor.ts exists and exports GateExecutorInput + GateExecutorResult", () => {
+    const content = readFileSync(join(ROOT, "gates/gate-executor.ts"), "utf-8");
+    expect(content).toMatch(/export interface GateExecutorInput/);
+    expect(content).toMatch(/export interface GateExecutorResult/);
+  });
+
+  test("run-gate.ts imports from gate-executor", () => {
+    const content = readFileSync(join(ROOT, "gates/run-gate.ts"), "utf-8");
+    expect(content).toContain("./gate-executor");
   });
 });
 

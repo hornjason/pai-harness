@@ -6,6 +6,7 @@ const GATES_DIR = join(import.meta.dir, "..", "gates");
 
 const GATE_FILES = [
   "run-gate.ts",
+  "gate-executor.ts",
   "orchestrator.ts",
   "ship-orchestrator.ts",
   "brief-assembler.ts",
