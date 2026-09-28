@@ -2,7 +2,9 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { type GateResult } from "./orchestrator";
-import { executeGate, type GateExecutorInput, type GateExecutorResult } from "./gate-executor";
+import { executeGate, parseTestResults, type GateExecutorInput, type GateExecutorResult } from "./gate-executor";
+
+export { parseTestResults };
 
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
 
