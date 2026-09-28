@@ -30,7 +30,8 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 | Gate | Lines | Test Lines | Contract Defined? |
 |------|-------|-----------|------------------|
-| run-gate.ts | 936 | — | No |
+| run-gate.ts | <400 | — | Yes (SC-379) |
+| gate-executor.ts | ~600 | — | Yes (SC-388) |
 | orchestrator.ts | 569 | 950 | Partially (HARNESS-STANDARD.md) |
 | ship-orchestrator.ts | 363 | 379 | Partially (HARNESS-SKILL-CHAIN.md) |
 | brief-assembler.ts | 338 | 429 | No |
@@ -105,6 +106,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **Output:** `TestRecordResult` — testName, result string
 - **PASS:** Test result recorded to gate-results.jsonl and recurring failures logged
 - **FAIL:** N/A — recording is best-effort; missing state dir silently skips
+
+### SC-388: gate-executor pass/fail criteria
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, projectRoot, issueRepo
+- **Output:** `GateExecutorResult` — passes, fails, warns, results array, testOutput
+- **PASS:** All delegated gate functions complete without error, aggregated fails === 0
+- **FAIL:** Any delegated function reports failures; consumer (run-gate.ts) aggregates and writes gate result
 
 ## Gate Chain Order (SC-375)
 

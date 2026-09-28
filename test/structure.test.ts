@@ -47,6 +47,7 @@ describe("ST-2: Containment — harness files not in old locations", () => {
     "workflows/batch-ship.js",
     "workflows/verify.js",
     "gates/run-gate.ts",
+    "gates/gate-executor.ts",
     "gates/orchestrator.ts",
     "gates/schema.ts",
     "gates/witness.ts",
