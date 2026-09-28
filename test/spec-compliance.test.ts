@@ -161,7 +161,7 @@ describe("evidence-requirements: mechanical evidence checks", () => {
 
   test("ER-2: AC anchoring instruction in discovery prompt", () => {
     const discoveryPrompt = sliceBetween(SHIP_JS, "You are performing DISCOVERY", "DISCOVERY_SCHEMA");
-    expect(discoveryPrompt).toContain("1:1");
+    expect(discoveryPrompt).toContain("Start from the issue SCs");
     expect(discoveryPrompt).toContain("Success Criteria");
     expect(discoveryPrompt).toContain("AC ANCHORING");
   });
