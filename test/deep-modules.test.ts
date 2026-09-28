@@ -86,6 +86,12 @@ describe("SC-373: Gate contract typed interfaces", () => {
     expect(found).toBeGreaterThanOrEqual(10);
   });
 
+  test("SC-376: gates/run-gate.ts is under 400 lines", () => {
+    const content = readFileSync(join(ROOT, "gates/run-gate.ts"), "utf-8");
+    const lineCount = content.trimEnd().split("\n").length;
+    expect(lineCount).toBeLessThanOrEqual(400);
+  });
+
   test("AC-3: spec documents gate chain with >= 5 arrow connections", () => {
     const spec = readFileSync(join(ROOT, "specs/GATE-CONTRACTS-SPEC.md"), "utf-8");
     const arrows = (spec.match(/→|-->|->(?!\.)/g) || []).length;

@@ -14,31 +14,6 @@ export interface RunGateInput {
 
 export type ParseTestOutput = GateResult[];
 
-// ── Implementation ────────────────────────────────────────────────────────
-
-export function parseTestResults(output: string): GateResult[] {
-  const results: GateResult[] = [];
-  const lines = output.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const pm = lines[i].match(/\(pass\)\s+(.+?)(?:\s+\[|$)/);
-    if (pm) {
-      results.push({ check: pm[1].trim(), result: "PASS", detail: "passed" });
-      continue;
-    }
-    const fm = lines[i].match(/\(fail\)\s+(.+?)(?:\s+\[|$)/);
-    if (fm) {
-      const detailLines: string[] = [];
-      for (let j = i + 1; j < lines.length; j++) {
-        if (/\(pass\)\s+/.test(lines[j]) || /\(fail\)\s+/.test(lines[j])) break;
-        const trimmed = lines[j].trim();
-        if (trimmed) detailLines.push(trimmed);
-      }
-      results.push({ check: fm[1].trim(), result: "FAIL", detail: detailLines.length > 0 ? detailLines.join("\n") : "failed" });
-    }
-  }
-  return results;
-}
-
 if (!import.meta.main) {
   // Imported as module — skip main execution
 } else {
@@ -71,7 +46,7 @@ const state = JSON.parse(readFileSync(SF, "utf-8"));
 if (!issue) issue = state.issue || 0;
 if (!slug) slug = state.slug || "";
 
-// Gate idempotency guard: skip re-execution if gate already PASSED (prevents ddb-592 pattern)
+// Gate idempotency guard
 if (!process.argv.includes("--force") && state.gates?.[gate]?.result === "PASS") {
   console.log(`Gate ${gate}: already PASSED (attempt ${state.gates[gate].attempt}). Use --force to re-run.`);
   console.log(`\n${gate} GATE: PASS (cached)`);
