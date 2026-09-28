@@ -133,7 +133,7 @@ for (let i = 0; i < (state.acs || []).length; i++) {
   if (!cmd) continue;
   try {
     const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
-    const isTestRunner = /^bun test\b/.test(cmd);
+    const isTestRunner = /bun test\b/.test(cmd);
     const cmdTimeout = isTestRunner ? 300000 : 10000;
     const output = execSync(cmd, { encoding: "utf-8", timeout: cmdTimeout, cwd: evidenceCwd }).trim();
     const lastLine = output.split("\n").pop() || "";
