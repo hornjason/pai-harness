@@ -66,10 +66,10 @@ describe("create-sc CLI", () => {
     expect(result.stdout).toContain("content-contains");
   });
 
-  // AC-3: scaffold-project.ts Commands table includes create-sc
-  test("AC-3: scaffold-project.ts Commands table includes create-sc entry", () => {
-    const scaffoldContent = readFileSync(join(ROOT, "scripts", "scaffold-project.ts"), "utf-8");
-    expect(scaffoldContent).toContain("create-sc");
+  // AC-3: AGENTS.md generator Commands table includes create-sc
+  test("AC-3: agents-md generator Commands table includes create-sc entry", () => {
+    const generatorContent = readFileSync(join(ROOT, "lib", "generators", "agents-md.ts"), "utf-8");
+    expect(generatorContent).toContain("create-sc");
   });
 
   // AC-4: Invalid pattern name produces clear error listing valid patterns
