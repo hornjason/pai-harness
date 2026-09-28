@@ -235,6 +235,7 @@ function buildScopeSection(scopeOut: string[]): string {
   }
 
   lines.push("- Never run `make rebuild` — DA does that");
+  lines.push("- Never modify `project-state.json` or `PROJECT-STATE.md` — DA manages these");
 
   return lines.join("\n");
 }
