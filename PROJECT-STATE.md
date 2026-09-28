@@ -29,7 +29,7 @@ Shipped:
   #540: SHIP_FAILED (DNS + evidence mismatch) — retriable
   #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable
 
-16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 8/25 SCs done.
+16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 16/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -70,24 +70,24 @@ Shipped:
 | ⬜ | SC-365 | Scanner importable without generation |
 | ⬜ | SC-366 | Generators testable with mock data |
 
-## ⬜ Hook Architecture (NOT STARTED)
+## 🔄 Hook Architecture (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
 | ⬜ | SC-367 | AgentBriefGuard under 50 lines |
-| ⬜ | SC-368 | lib/brief-validator.ts independently testable |
-| ⬜ | SC-369 | GateEnforcement under 100 lines |
-| ⬜ | SC-370 | Every hook traces to an SC |
-| ⬜ | SC-371 | No hook over 150 lines |
-| ⬜ | SC-372 | Hook logic in lib/ has unit tests |
+| ✅ | SC-368 | lib/brief-validator.ts independently testable |
+| ✅ | SC-369 | GateEnforcement under 100 lines |
+| ✅ | SC-370 | Every hook traces to an SC |
+| ✅ | SC-371 | No hook over 150 lines |
+| ✅ | SC-372 | Hook logic in lib/ has unit tests |
 
 ## 🔄 Gate Contracts (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-373 | Every gate has typed input/output |
-| ⬜ | SC-374 | Pass/fail criteria documented as SCs |
-| ⬜ | SC-375 | Gate chain order documented |
+| ✅ | SC-373 | Every gate has typed input/output |
+| ✅ | SC-374 | Pass/fail criteria documented as SCs |
+| ✅ | SC-375 | Gate chain order documented |
 | ✅ | SC-376 | run-gate.ts under 400 lines |
 | ⬜ | SC-377 | Contracts testable by conformity engine |
 | ⬜ | SC-378 | No implicit state passing |

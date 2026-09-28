@@ -8,7 +8,7 @@
     "P2: Navigability scoring (SC-236/237 still test.todo)",
     "P3: Scaffold Decomposition remaining issues"
   ],
-  "notes": "Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).\n\n11 fixes:\n  1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs\n  2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash\n  3. Auto-populate timeout (f794fb04) — 10s→300s for bun test\n  4. AC anchoring relaxed (6bdea4a1) — additional ACs for test/import coverage\n  5. Discovery brief consolidated (751d219d) — merged Never Do + reinforcement tier\n  6. Bun test output rule (3c170471) — prevents broken grep evidence commands\n  7. Spec-compliance test (d9f96db1) — ROOT CAUSE of all bun test AC failures\n  8. Circular dep fix (fd8c96ad) — parseTestResults post-#548 decomp\n  9. Project-state scope-out (582a5538) — prevents Marcus overwriting project state\n  10. AgentBriefGuard test fix (47b1f2b0) — stderr format changed post-#544 decomp\n  11. create-sc test fix (a10596ab) — Commands table moved to generators\n\nShipped:\n  #541: SHIPPED M-SIZE (23 agents, 29m, batched B1+B2) — file generators extracted\n  #543: SHIPPED (22 agents, 35m) — AgentBriefGuard extracted\n  #544: SHIPPED (merged+fixes) — GateEnforcement extracted to lib/\n  #545: SHIPPED (17 agents, 24m) — hook SC traceability\n  #546: SHIPPED (17 agents, 23m) — gate contracts audited\n  #539: SHIPPED (17 agents, 32m) — brief validation\n  #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines\n  #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED\n  #540: SHIP_FAILED (DNS + evidence mismatch) — retriable\n  #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable\n\n16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 8/25 SCs done.",
+  "notes": "Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).\n\n11 fixes:\n  1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs\n  2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash\n  3. Auto-populate timeout (f794fb04) — 10s→300s for bun test\n  4. AC anchoring relaxed (6bdea4a1) — additional ACs for test/import coverage\n  5. Discovery brief consolidated (751d219d) — merged Never Do + reinforcement tier\n  6. Bun test output rule (3c170471) — prevents broken grep evidence commands\n  7. Spec-compliance test (d9f96db1) — ROOT CAUSE of all bun test AC failures\n  8. Circular dep fix (fd8c96ad) — parseTestResults post-#548 decomp\n  9. Project-state scope-out (582a5538) — prevents Marcus overwriting project state\n  10. AgentBriefGuard test fix (47b1f2b0) — stderr format changed post-#544 decomp\n  11. create-sc test fix (a10596ab) — Commands table moved to generators\n\nShipped:\n  #541: SHIPPED M-SIZE (23 agents, 29m, batched B1+B2) — file generators extracted\n  #543: SHIPPED (22 agents, 35m) — AgentBriefGuard extracted\n  #544: SHIPPED (merged+fixes) — GateEnforcement extracted to lib/\n  #545: SHIPPED (17 agents, 24m) — hook SC traceability\n  #546: SHIPPED (17 agents, 23m) — gate contracts audited\n  #539: SHIPPED (17 agents, 32m) — brief validation\n  #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines\n  #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED\n  #540: SHIP_FAILED (DNS + evidence mismatch) — retriable\n  #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable\n\n16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 16/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -123,34 +123,41 @@
         {
           "id": "SC-367",
           "what": "AgentBriefGuard under 50 lines",
-          "done": false
+          "done": false,
+          "note": "64 lines — close but not under 50 yet"
         },
         {
           "id": "SC-368",
           "what": "lib/brief-validator.ts independently testable",
-          "done": false
+          "done": true,
+          "note": "#543 — lib/agent-brief-validation.ts with 16 tests"
         },
         {
           "id": "SC-369",
           "what": "GateEnforcement under 100 lines",
-          "done": false
+          "done": true,
+          "note": "#544 — 97 lines, logic extracted to lib/gate-enforcement.ts"
         },
         {
           "id": "SC-370",
           "what": "Every hook traces to an SC",
-          "done": false
+          "done": true,
+          "note": "#545 — all 14 hooks have SC references"
         },
         {
           "id": "SC-371",
           "what": "No hook over 150 lines",
-          "done": false
+          "done": true,
+          "note": "#544 — max is CommitEnforcement at 146 lines"
         },
         {
           "id": "SC-372",
           "what": "Hook logic in lib/ has unit tests",
-          "done": false
+          "done": true,
+          "note": "#544 — gate-enforcement.test.ts with 359 lines"
         }
-      ]
+      ],
+      "note": "5/6 DONE — only SC-367 remaining (AgentBriefGuard 64 lines, needs 50)"
     },
     {
       "name": "Gate Contracts",
@@ -158,22 +165,26 @@
         {
           "id": "SC-373",
           "what": "Every gate has typed input/output",
-          "done": false
+          "done": true,
+          "note": "#547 — all 9 gate files export Input + Output interfaces"
         },
         {
           "id": "SC-374",
           "what": "Pass/fail criteria documented as SCs",
-          "done": false
+          "done": true,
+          "note": "#546 — 25 pass/fail references in GATE-CONTRACTS-SPEC.md"
         },
         {
           "id": "SC-375",
           "what": "Gate chain order documented",
-          "done": false
+          "done": true,
+          "note": "#546 — chain order documented in spec"
         },
         {
           "id": "SC-376",
           "what": "run-gate.ts under 400 lines",
-          "done": true
+          "done": true,
+          "note": "#548 — 60 lines (was 1008)"
         },
         {
           "id": "SC-377",
@@ -185,7 +196,8 @@
           "what": "No implicit state passing",
           "done": false
         }
-      ]
+      ],
+      "note": "4/6 DONE — SC-377 and SC-378 remaining"
     }
   ],
   "sessions": [
