@@ -11,6 +11,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "./audit-specs";
+import { generateAgentsMd as buildAgentsMdContent } from "../lib/generators/agents-md";
+import { generateAgentBriefs as buildAgentBriefsContent } from "../lib/generators/agent-briefs";
+import { generateCodeMap as buildCodeMapContent } from "../lib/generators/code-map";
+import type { ProjectScan, KeyFile, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../lib/generators/types";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -388,9 +392,9 @@ function generateAgentsMd(name: string, type: ProjectType): string {
 
   const keyFilesTable = keyFiles.map(kf => `| ${kf.file} | ${kf.what} | ${kf.when} |`).join("\n");
 
-  // Scan specs
+  // Scan specs into typed SpecEntry[] — generator formats them
   const specsDir = join(projectPath, "specs");
-  const mergedSpecRows: string[] = [];
+  const specEntries: SpecEntry[] = [];
   if (existsSync(specsDir)) {
     const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
     for (const f of specFiles) {
@@ -406,7 +410,7 @@ function generateAgentsMd(name: string, type: ProjectType): string {
         const tMatch = fmMatch[1].match(/testable:\s*(.+)/);
         if (tMatch) testable = tMatch[1].trim();
       }
-      mergedSpecRows.push(`| ${f} | ${governs} | ${testable} |`);
+      specEntries.push({ file: f, governs, testable });
     }
 
     // Also scan specs subdirectories (e.g., specs/bootstrap/)
@@ -429,25 +433,20 @@ function generateAgentsMd(name: string, type: ProjectType): string {
             }
           }
         }
-        mergedSpecRows.push(`| ${sub}/ (${subFiles.length} specs) | ${groupGoverns} | yes |`);
+        specEntries.push({ file: `${sub}/ (${subFiles.length} specs)`, governs: groupGoverns, testable: "yes" });
       }
     }
   }
-  // No artificial cap — 150-line AGENTS.md limit is the natural bound
-  const mergedSpecsTable = mergedSpecRows.length > 0 ? mergedSpecRows.join("\n") : "| (no specs found) | | |";
 
-  // Scan test files
+  // Scan test files into typed TestFile[] — generator formats them
   const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
-  const testRows: string[] = [];
+  const testEntries: TestFile[] = [];
   if (testDir) {
     for (const f of readdirSync(join(projectPath, testDir)).filter(f => f.endsWith(".test.ts"))) {
       const label = f.replace(".test.ts", "").replace(/-/g, " ");
-      testRows.push(`| ${label} | ${f} | Auto-detected |`);
+      testEntries.push({ label, file: f });
     }
   }
-  const testsTable = testRows.length > 0
-    ? testRows.join("\n")
-    : "| scaffold conformity | scaffold-conformity.test.ts | Structure validation |";
 
   // Detect test command
   let testCmd = "bun test";
@@ -458,18 +457,14 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     } catch {}
   }
 
-  // Scan reference/ files
+  // Scan reference/ files into typed RefFile[] — generator formats them
   const refDir = join(projectPath, "reference");
-  const refRows: string[] = [];
+  const refEntries: RefFile[] = [];
   if (existsSync(refDir)) {
     for (const f of readdirSync(refDir)) {
-      refRows.push(`| ${f} | Historical reference |`);
+      refEntries.push({ file: f, what: "Historical reference" });
     }
   }
-  const refTable = refRows.join("\n");
-  const refSection = refRows.length > 0
-    ? `\n## Reference Files\n\nHistorical and inactive docs live in \`reference/\`.\n\n| File | What |\n|------|------|\n${refTable}\n`
-    : "";
 
   // Detect workflow info
   const repoLine = repoUrl ? `- **Repo:** ${repoUrl}` : "<!-- TODO: Add repo URL -->";
@@ -565,119 +560,44 @@ function generateAgentsMd(name: string, type: ProjectType): string {
     const needLower = d.need.toLowerCase();
     return !needLower.startsWith(slug) || d.need.includes("—") || d.need.includes("(");
   });
-  const docRoutingTable = filteredRouting.length > 0
-    ? filteredRouting.map(d => `| ${d.need} | \`${d.file}\` |`).join("\n")
-    : "| (no docs found) | |";
-
-  // SC-283: Generate "Where to Create" table from same category list
-  const createRows = categories.map(c => `| ${c.label.split(" — ")[0]} | \`${c.dir}/\` | ${c.frontmatter} | ${c.notes} |`);
-  createRows.push(`| Source code | \`src/\` | — | Follow existing module structure |`);
-  createRows.push(`| Tests | \`test/\` | — | Mirror source structure |`);
-  const createTable = createRows.join("\n");
 
   // Environment section injected post-creation by injectEnvironmentSection (SC-3)
 
   // Consumers from rungate.json
   const consumers = harness?.consumers || [];
-  const consumerSection = consumers.length > 0
-    ? `## Consumers (${consumers.length})\n\n${consumers.map((c: string) => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.`
-    : "";
 
-  // CODE-MAP reference
-  const codeMapRef = existsSync(join(projectPath, "CODE-MAP.md"))
-    ? "| `CODE-MAP.md` | Auto-generated codebase map (routes, components, modules, health) | Understanding codebase structure |"
-    : "";
+  // Build ProjectScan and delegate to generator (SCAFFOLD-DECOMPOSITION-SPEC D-2)
+  const scan: ProjectScan = {
+    name: pkgName,
+    type,
+    root: projectPath,
+    identity,
+    techStack,
+    repoUrl,
+    testCmd,
+    keyFiles,
+    specs: specEntries,
+    testFiles: testEntries,
+    refFiles: refEntries,
+    docRouting: filteredRouting as DocRoute[],
+    categories: categories as Category[],
+    consumers,
+    hasCodeMap: existsSync(join(projectPath, "CODE-MAP.md")),
+    makeTargets,
+    sourceDirs: [],
+    promptRouting: {},
+    harnessConfig: harness,
+    agentMeta: {},
+    dirs: [],
+    deps: 0,
+    devDeps: 0,
+    modules: [],
+    routes: [],
+    harnessTemplatesDir: "",
+    promptPrefix: "",
+  };
 
-  return `# ${pkgName}
-
-## Project Identity
-
-${identity}${techLine}
-${repoLine}
-
-## Rules
-
-- Verify before asserting — try it first, report what actually happened
-- Never fake results or hide failures — if it fails, report it honestly
-- Fix all test failures before reporting done — a green suite is the minimum bar
-- Run full test suite (\`${testCmd}\`) and show real output — no summaries, no skipped files
-- Read docs before writing code — routing table shows where
-- Fix the source, not the output — fix generator, not generated files
-- Commit all changes before reporting done — uncommitted work is lost work
-- Read PROJECT-STATE.md first on session start — it's the session bridge
-
-## Key Files
-
-| File | What | When to Read |
-|------|------|--------------|
-${keyFilesTable}
-${codeMapRef}
-
-## Documentation Routing
-
-| I need to understand... | Read |
-|------------------------|------|
-${docRoutingTable}
-
-## Where to Create Things
-
-| Type | Location | Frontmatter | Notes |
-|------|----------|-------------|-------|
-${createTable}
-
-## Specs
-
-Read the governing spec BEFORE making changes in that area.
-
-| Spec | Governs | Testable |
-|------|---------|----------|
-${mergedSpecsTable}
-
-## Tests
-
-\`\`\`bash
-${testCmd}
-\`\`\`
-
-| Category | File | What |
-|----------|------|------|
-${testsTable}
-
-## Commands
-
-| Action | Command |
-|--------|---------|
-| Install | \`bun install\` |
-| Test | \`${testCmd}\` |
-| Type check | \`bunx tsc --noEmit\` |
-| Conformity | \`bun test test/scaffold-conformity.test.ts\` |
-| Sync spec tests | \`bunx rungate sync-tests .\` |
-| Create spec | \`bunx rungate create-spec "title"\` |
-| Create ADR | \`bunx rungate create-adr "title"\` |
-| Create SC | \`bunx rungate create-sc --pattern <name> --params '<json>'\` |
-| Extract constraints | \`bunx rungate extract-constraints .\` |
-| Check findings | \`cat .rungate/conformity-findings.json\` — structured findings with fix commands |
-| Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
-
-${consumerSection}
-
-## Workflow
-${repoLine}${makeTargets}
-- **Test:** \`${testCmd}\`
-- **Conformity:** Imported from rungate. \`bun update rungate && bun test\` to sync.
-
-## Harness-Managed Files
-
-These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**
-
-| File | How to customize | What NOT to do |
-|------|-----------------|----------------|
-| \`.github/workflows/ci.yml\` | Set \`ci\` fields in \`.claude/rungate.json\` | Don't edit the YAML |
-| \`.github/workflows/gates.yml\` | Settings from \`.claude/rungate.json\` | Don't edit the YAML |
-| \`.claude/agents/*.md\` | Settings from \`.claude/rungate.json\` | Don't edit briefs |
-| \`test/scaffold-conformity.test.ts\` | Runs automatically | Don't edit |
-| \`CODE-MAP.md\` | Auto-generated from code scan | Don't edit |
-${refSection}`;
+  return buildAgentsMdContent(scan);
 }
 
 
@@ -837,15 +757,6 @@ function generateAgentBriefs(root: string): void {
   const promptPrefix = isSelf ? "prompts" : "node_modules/rungate/prompts";
 
   const harness = loadHarnessConfig(root);
-  const devUi = harness?.dev?.uiBase || null;
-  const devApi = harness?.dev?.apiBase || null;
-  const testCmd = harness?.dev?.testCmd || "bun test";
-  const typeCheck = harness?.dev?.typeCheck || "bunx tsc --noEmit";
-  const pages = harness?.pages || {};
-  const pagesTable = Object.keys(pages).length > 0
-    ? "### Pages Map\n\n| Path | Page |\n|------|------|\n" +
-      Object.entries(pages).map(([k, v]) => `| ${v} | ${k} |`).join("\n")
-    : "";
 
   // Pull project identity from AGENTS.md or README
   let projectIdentity = "";
@@ -863,9 +774,6 @@ function generateAgentBriefs(root: string): void {
       if (paragraphs.length > 0) projectIdentity = paragraphs[0].replace(/\n/g, " ").trim();
     }
   }
-  const identitySection = projectIdentity ? `## Project\n\n${projectIdentity}\n` : "";
-
-  const architecturalTruths = "";
 
   // Read project prompts/*.md for content separation (SC-161)
   const promptsDir = join(root, "prompts");
@@ -914,102 +822,65 @@ function generateAgentBriefs(root: string): void {
 
   // Pull directory structure for Marcus
   const srcDirs = ["src", "dashboard/src", "lib", "gates", "hooks"].filter(d => existsSync(join(root, d)));
-  const dirList = srcDirs.length > 0 ? srcDirs.map(d => `- \`${d}/\``).join("\n") : "";
 
   // Pull consumers from harness config
   const consumers = harness?.consumers || [];
-  const consumerNote = consumers.length > 0
-    ? `\n## Consumers (${consumers.length})\n\n${consumers.map((c: string) => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.\n`
-    : "";
 
-
-  // Load shared rules partial for template variable substitution
   const harnessTemplatesDir = join(__dirname, "..", "templates", "agent-briefs");
-  const sharedRulesPath = join(harnessTemplatesDir, "_shared.md");
-  let sharedRules = existsSync(sharedRulesPath) ? readFileSync(sharedRulesPath, "utf-8").trim() : "";
-  // Strip frontmatter from partials (hooks may auto-add it)
-  sharedRules = sharedRules.replace(/^---[\s\S]*?---\n*/, "");
 
-  // Agent metadata for frontmatter generation — read from roles config, fall back to defaults
-  const defaultAgentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {
-    discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
-    marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
-    quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
-    rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
-    serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
-    aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
-  };
-
-  // Build agentMeta by merging roles config from harness?.roles with defaults
-  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = { ...defaultAgentMeta };
+  // Build agentMeta from harness?.roles config — generator merges with defaults
+  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {};
   if (harness?.roles) {
     for (const [roleName, roleConfig] of Object.entries(harness.roles as Record<string, any>)) {
       if (roleConfig.description || roleConfig.tools || roleConfig.model) {
         agentMeta[roleName] = {
-          description: roleConfig.description || defaultAgentMeta[roleName]?.description || `${roleName} agent`,
-          tools: roleConfig.tools || defaultAgentMeta[roleName]?.tools || "[Bash, Read]",
-          model: roleConfig.model || defaultAgentMeta[roleName]?.model || "sonnet",
-          ...(roleConfig.tiers || defaultAgentMeta[roleName]?.tiers
-            ? { tiers: roleConfig.tiers || defaultAgentMeta[roleName]?.tiers }
-            : {}),
+          description: roleConfig.description || `${roleName} agent`,
+          tools: roleConfig.tools || "[Bash, Read]",
+          model: roleConfig.model || "sonnet",
+          ...(roleConfig.tiers ? { tiers: roleConfig.tiers } : {}),
         };
       }
     }
   }
 
-  // Load template-based briefs from templates/agent-briefs/
-  function loadBriefTemplate(name: string): string | null {
-    const templatePath = join(harnessTemplatesDir, name);
-    if (!existsSync(templatePath)) return null;
-    let content = readFileSync(templatePath, "utf-8");
-    // Strip any hook-injected frontmatter
-    content = content.replace(/^---[\s\S]*?---\n*/, "");
-    // Apply variable substitution
-    content = content.replace(/\$\{PROJECT_IDENTITY\}/g, identitySection);
-    content = content.replace(/\$\{SHARED_RULES\}/g, sharedRules);
-    content = content.replace(/\$\{SOURCE_DIRS\}/g, dirList);
-    content = content.replace(/\$\{CONSUMERS\}/g, consumerNote);
-    content = content.replace(/\$\{PROMPT_PREFIX\}/g, promptPrefix);
-    content = content.replace(/\$\{DEV_UI_LINE\}/g, devUi ? `- **Dev UI:** ${devUi}` : "- **Dev UI:** not configured — check .claude/rungate.json");
-    content = content.replace(/\$\{DEV_API_LINE\}/g, devApi ? `- **Dev API:** ${devApi}` : "- **Dev API:** not configured — check .claude/rungate.json");
-    content = content.replace(/\$\{PAGES_TABLE\}/g, pagesTable);
-    content = content.replace(/\$\{TEST_CMD\}/g, testCmd);
-    content = content.replace(/\$\{TYPE_CHECK\}/g, typeCheck);
-    // Prepend correct agent frontmatter
-    const agentName = name.replace(".md", "");
-    const meta = agentMeta[agentName];
-    if (meta) {
-      let fm = `---\nname: ${agentName}\ndescription: ${meta.description}\ntools: ${meta.tools}\nmodel: ${meta.model}`;
-      if (meta.tiers) {
-        fm += `\ntiers:`;
-        for (const [tier, sections] of Object.entries(meta.tiers)) {
-          fm += `\n  ${tier}: [${sections.map(s => `'${s}'`).join(', ')}]`;
-        }
-      }
-      fm += `\n---\n\n`;
-      content = fm + content;
-    }
-    return content;
-  }
+  // Build ProjectScan and delegate to generator (SCAFFOLD-DECOMPOSITION-SPEC D-2)
+  const briefScan: ProjectScan = {
+    name: basename(root),
+    type: "code",
+    root,
+    identity: projectIdentity,
+    techStack: [],
+    repoUrl: "",
+    testCmd: harness?.dev?.testCmd || "bun test",
+    keyFiles: [],
+    specs: [],
+    testFiles: [],
+    refFiles: [],
+    docRouting: [],
+    categories: [],
+    consumers,
+    hasCodeMap: false,
+    makeTargets: "",
+    sourceDirs: srcDirs,
+    promptRouting: promptsByAgent,
+    harnessConfig: harness,
+    agentMeta,
+    dirs: [],
+    deps: 0,
+    devDeps: 0,
+    modules: [],
+    routes: [],
+    harnessTemplatesDir,
+    promptPrefix,
+  };
 
-  // Discover all template files (includes any new agents added via templates/)
-  const templateFiles = existsSync(harnessTemplatesDir)
-    ? readdirSync(harnessTemplatesDir).filter(f => f.endsWith(".md") && !f.startsWith("_"))
-    : [];
+  const briefs = buildAgentBriefsContent(briefScan);
 
-  // Agent briefs always regenerate — they're harness-owned templates, not user-customized
-  for (const name of templateFiles) {
-    const agentName = name.replace(".md", "");
-    const briefContent = loadBriefTemplate(name);
-    if (!briefContent) continue;
-    const prompts = promptsByAgent[agentName] || [];
-    const promptSection = prompts.length > 0
-      ? `\n## Reference (read when needed)\n\n| Prompt | When to Read |\n|--------|-------------|\n` +
-        prompts.map(p => `| ${p.file} | ${p.when} |`).join("\n") + "\n"
-      : "";
-    const p = join(agentsDir, name);
-    writeFileSync(p, briefContent + promptSection);
-    actions.push(existsSync(p) ? `UPDATED: .claude/agents/${name}` : `CREATED: .claude/agents/${name}`);
+  // Write generated briefs to .claude/agents/
+  for (const [agentName, content] of Object.entries(briefs)) {
+    const p = join(agentsDir, `${agentName}.md`);
+    writeFileSync(p, content);
+    actions.push(existsSync(p) ? `UPDATED: .claude/agents/${agentName}.md` : `CREATED: .claude/agents/${agentName}.md`);
   }
 }
 
@@ -1273,7 +1144,6 @@ function generateCodeMap(root: string): void {
 }
 
 function generateCodeMapInline(root: string, outPath: string): void {
-  const today = new Date().toISOString().split("T")[0];
   const name = basename(root);
   const skip = new Set(["node_modules", ".git", "reference", "dist", "build", ".next", ".fallow"]);
   const dirs: Array<{ name: string; fileCount: number; types: string[] }> = [];
@@ -1336,16 +1206,38 @@ function generateCodeMapInline(root: string, outPath: string): void {
     }
   }
 
-  let md = `---\ndoc-type: code-map\nstatus: generated\nupdated: ${today}\ngenerator: scaffold-project.ts\n---\n\n# Code Map — ${name}\n\nAuto-generated architecture snapshot.\n\n## Summary\n\n| Metric | Count |\n|--------|-------|\n| Source directories | ${dirs.length} |\n| Dependencies | ${deps} |\n| Dev dependencies | ${devDeps} |\n\n## Directory Structure\n\n| Directory | Files | Types |\n|-----------|-------|-------|\n${dirs.map(d => `| ${d.name}/ | ${d.fileCount} | ${d.types.join(", ")} |`).join("\n")}\n`;
-  if (routes.length > 0) {
-    md += `\n## API Routes\n\n| Method | Path | File |\n|--------|------|------|\n`;
-    for (const r of routes) md += `| ${r.method} | ${r.path} | ${r.file} |\n`;
-  }
-  if (modules.length > 0) {
-    md += `\n## Source Modules\n\n| File | Exports |\n|------|---------|\n`;
-    for (const mod of modules) md += `| ${mod.file} | ${mod.exports.join(", ")} |\n`;
-  }
-  md += "\n";
+  // Build ProjectScan and delegate to generator (SCAFFOLD-DECOMPOSITION-SPEC D-2)
+  const mapScan: ProjectScan = {
+    name,
+    type: "code",
+    root,
+    identity: "",
+    techStack: [],
+    repoUrl: "",
+    testCmd: "",
+    keyFiles: [],
+    specs: [],
+    testFiles: [],
+    refFiles: [],
+    docRouting: [],
+    categories: [],
+    consumers: [],
+    hasCodeMap: false,
+    makeTargets: "",
+    sourceDirs: [],
+    promptRouting: {},
+    harnessConfig: null,
+    agentMeta: {},
+    dirs,
+    deps,
+    devDeps,
+    modules,
+    routes,
+    harnessTemplatesDir: "",
+    promptPrefix: "",
+  };
+
+  const md = buildCodeMapContent(mapScan);
   writeFileSync(outPath, md);
   actions.push("CREATED: CODE-MAP.md (inline)");
 }

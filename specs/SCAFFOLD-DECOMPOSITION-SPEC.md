@@ -58,9 +58,9 @@ lib/validators/
 
 - [ ] SC-358: lib/scanner.ts exists
 - [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories (behavioral)
-- [ ] SC-360: lib/generators/agents-md.ts exists
-- [ ] SC-361: lib/generators/agent-briefs.ts exists
-- [ ] SC-362: lib/generators/code-map.ts exists
+- [x] SC-360: lib/generators/agents-md.ts exists
+- [x] SC-361: lib/generators/agent-briefs.ts exists
+- [x] SC-362: lib/generators/code-map.ts exists
 - [ ] SC-363: scripts/scaffold-project.ts is under [200] lines
 - [ ] SC-364: Re-scaffold produces identical output before and after decomposition (behavioral)
 - [ ] SC-365: Scanner is importable by other scripts without pulling in generation logic (behavioral)

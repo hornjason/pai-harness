@@ -1,0 +1,310 @@
+/**
+ * Generator module tests — verifies extracted generators accept ProjectScan
+ * and produce correct output.
+ *
+ * AC-1: lib/generators/agents-md.ts exports function accepting ProjectScan
+ * AC-2: lib/generators/agent-briefs.ts reads templates and fills variables
+ * AC-3: lib/generators/code-map.ts exports function accepting ProjectScan
+ */
+import { test, expect, describe } from "bun:test";
+import { existsSync } from "fs";
+import { join } from "path";
+
+const ROOT = join(import.meta.dir, "..");
+
+// ── AC-1: agents-md generator ──────────────────────────────────
+
+describe("AC-1: lib/generators/agents-md.ts", () => {
+  test("file exists", () => {
+    expect(existsSync(join(ROOT, "lib/generators/agents-md.ts"))).toBe(true);
+  });
+
+  test("exports generateAgentsMd function that accepts ProjectScan", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/agents-md.ts")).text();
+    return content.then(src => {
+      expect(src).toMatch(/export\s+function\s+generateAgentsMd/);
+      expect(src).toContain("ProjectScan");
+    });
+  });
+
+  test("generateAgentsMd returns string containing project identity", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "test-project",
+      identity: "A test project for verification",
+      techStack: ["Bun", "TypeScript"],
+      repoUrl: "https://github.com/test/test-project",
+    });
+    const result = generateAgentsMd(scan);
+    expect(typeof result).toBe("string");
+    expect(result).toContain("test-project");
+    expect(result).toContain("A test project for verification");
+  });
+
+  test("output contains tech stack line", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      techStack: ["Bun", "ESM"],
+    });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("**Tech:** Bun, ESM");
+  });
+
+  test("output contains key files table", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      keyFiles: [
+        { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
+        { file: "package.json", what: "Dependencies", when: "Adding deps" },
+      ],
+    });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("| AGENTS.md | Project entry point | Always first |");
+    expect(result).toContain("| package.json | Dependencies | Adding deps |");
+  });
+
+  test("output contains specs table", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      specs: [{ file: "MY-SPEC.md", governs: "Test governance", testable: "yes" }],
+    });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("| MY-SPEC.md | Test governance | yes |");
+  });
+
+  test("output contains repo URL", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      repoUrl: "https://github.com/user/my-app",
+    });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("https://github.com/user/my-app");
+  });
+
+  test("output contains rules section", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({ name: "my-app" });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("## Rules");
+    expect(result).toContain("Verify before asserting");
+  });
+
+  test("output contains doc routing table", async () => {
+    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      docRouting: [{ need: "Codebase structure", file: "CODE-MAP.md" }],
+    });
+    const result = generateAgentsMd(scan);
+    expect(result).toContain("## Documentation Routing");
+    expect(result).toContain("Codebase structure");
+  });
+});
+
+// ── AC-2: agent-briefs generator ───────────────────────────────
+
+describe("AC-2: lib/generators/agent-briefs.ts", () => {
+  test("file exists", () => {
+    expect(existsSync(join(ROOT, "lib/generators/agent-briefs.ts"))).toBe(true);
+  });
+
+  test("source references templates/agent-briefs path", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/agent-briefs.ts")).text();
+    return content.then(src => {
+      expect(src).toContain("templates/agent-briefs");
+    });
+  });
+
+  test("exports generateAgentBriefs function that accepts ProjectScan", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/agent-briefs.ts")).text();
+    return content.then(src => {
+      expect(src).toMatch(/export\s+function\s+generateAgentBriefs/);
+      expect(src).toContain("ProjectScan");
+    });
+  });
+
+  test("generateAgentBriefs returns record of agent name to content", async () => {
+    const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "test-project",
+      identity: "A test project",
+      sourceDirs: ["src", "lib"],
+    });
+    const result = generateAgentBriefs(scan);
+    expect(typeof result).toBe("object");
+    // Should contain at least marcus since template exists
+    expect(result.marcus).toBeDefined();
+    expect(typeof result.marcus).toBe("string");
+  });
+
+  test("generated brief has frontmatter with agent name", async () => {
+    const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({ name: "test-project" });
+    const result = generateAgentBriefs(scan);
+    expect(result.marcus).toMatch(/^---\n/);
+    expect(result.marcus).toContain("name: marcus");
+  });
+
+  test("generated brief has no unfilled template variables", async () => {
+    const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "test-project",
+      identity: "Test identity",
+      sourceDirs: ["src"],
+    });
+    const result = generateAgentBriefs(scan);
+    for (const [agent, content] of Object.entries(result)) {
+      const unfilled = content.match(/\$\{[A-Z_]+\}/g);
+      expect(unfilled).toBeNull();
+    }
+  });
+
+  test("fills PROJECT_IDENTITY variable from scan data", async () => {
+    const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "test-project",
+      identity: "Ship harness for testing",
+    });
+    const result = generateAgentBriefs(scan);
+    expect(result.marcus).toContain("Ship harness for testing");
+  });
+
+  test("fills SHARED_RULES from _shared.md partial", async () => {
+    const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({ name: "test-project" });
+    const result = generateAgentBriefs(scan);
+    // _shared.md contains "Verify before asserting"
+    expect(result.marcus).toContain("Verify before asserting");
+  });
+});
+
+// ── AC-3: code-map generator ───────────────────────────────────
+
+describe("AC-3: lib/generators/code-map.ts", () => {
+  test("file exists", () => {
+    expect(existsSync(join(ROOT, "lib/generators/code-map.ts"))).toBe(true);
+  });
+
+  test("exports generateCodeMap function that accepts ProjectScan", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/code-map.ts")).text();
+    return content.then(src => {
+      expect(src).toMatch(/export\s+function\s+generateCodeMap/);
+      expect(src).toContain("ProjectScan");
+    });
+  });
+
+  test("generateCodeMap returns string with code-map frontmatter", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "test-project",
+      dirs: [{ name: "src", fileCount: 10, types: ["ts", "tsx"] }],
+      deps: 5,
+      devDeps: 3,
+    });
+    const result = generateCodeMap(scan);
+    expect(typeof result).toBe("string");
+    expect(result).toContain("doc-type: code-map");
+    expect(result).toContain("status: generated");
+  });
+
+  test("output contains directory structure table", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      dirs: [
+        { name: "src", fileCount: 15, types: ["ts", "tsx"] },
+        { name: "lib", fileCount: 8, types: ["ts"] },
+      ],
+    });
+    const result = generateCodeMap(scan);
+    expect(result).toContain("## Directory Structure");
+    expect(result).toContain("| src/ | 15 | ts, tsx |");
+    expect(result).toContain("| lib/ | 8 | ts |");
+  });
+
+  test("output contains dependency counts", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      deps: 12,
+      devDeps: 7,
+    });
+    const result = generateCodeMap(scan);
+    expect(result).toContain("| Dependencies | 12 |");
+    expect(result).toContain("| Dev dependencies | 7 |");
+  });
+
+  test("output contains API routes when present", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      routes: [{ method: "GET", path: "/api/health", file: "src/index.ts" }],
+    });
+    const result = generateCodeMap(scan);
+    expect(result).toContain("## API Routes");
+    expect(result).toContain("| GET | /api/health | src/index.ts |");
+  });
+
+  test("output contains source modules when present", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({
+      name: "my-app",
+      modules: [{ file: "src/utils.ts", exports: ["formatDate", "parseJSON"] }],
+    });
+    const result = generateCodeMap(scan);
+    expect(result).toContain("## Source Modules");
+    expect(result).toContain("| src/utils.ts | formatDate, parseJSON |");
+  });
+
+  test("output contains project name in title", async () => {
+    const { generateCodeMap } = await import("../lib/generators/code-map");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const scan = mockProjectScan({ name: "awesome-project" });
+    const result = generateCodeMap(scan);
+    expect(result).toContain("# Code Map — awesome-project");
+  });
+});
+
+// ── Shared: types.ts ───────────────────────────────────────────
+
+describe("ProjectScan types", () => {
+  test("types.ts exists", () => {
+    expect(existsSync(join(ROOT, "lib/generators/types.ts"))).toBe(true);
+  });
+
+  test("exports ProjectScan interface", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/types.ts")).text();
+    return content.then(src => {
+      expect(src).toContain("ProjectScan");
+      expect(src).toMatch(/export\s+(interface|type)\s+ProjectScan/);
+    });
+  });
+
+  test("exports mockProjectScan helper for testing", () => {
+    const content = Bun.file(join(ROOT, "lib/generators/types.ts")).text();
+    return content.then(src => {
+      expect(src).toContain("mockProjectScan");
+    });
+  });
+});

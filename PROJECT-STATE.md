@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Scaffold Decomposition — 9 SCs open**
+**Current phase: Scaffold Decomposition — 6 SCs open**
 
 Session 17 — 8 fixes, 5 shipped, 4 ALREADY_SHIPPED.
 
@@ -24,7 +24,7 @@ Shipped:
   #544: in progress
 
 14 issues shipped total, 19 closed. Suite: 1400 pass, 0 fail, 82 files.
-Suite: 5/25 SCs done.
+Suite: 8/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -51,15 +51,15 @@ Suite: 5/25 SCs done.
 
 ## ⬜ AES Quality Gate + Pipeline Optimization (NOT STARTED)
 
-## ⬜ Scaffold Decomposition (NOT STARTED)
+## 🔄 Scaffold Decomposition (IN PROGRESS)
 
 | Status | SC | What |
 |---|---|---|
 | ⬜ | SC-358 | lib/scanner.ts with ProjectScan interface |
 | ⬜ | SC-359 | Scanner detects tech, specs, consumers, dirs |
-| ⬜ | SC-360 | AGENTS.md generator from ProjectScan |
-| ⬜ | SC-361 | Brief generator reads template files |
-| ⬜ | SC-362 | CODE-MAP generator from ProjectScan |
+| ✅ | SC-360 | AGENTS.md generator from ProjectScan |
+| ✅ | SC-361 | Brief generator reads template files |
+| ✅ | SC-362 | CODE-MAP generator from ProjectScan |
 | ⬜ | SC-363 | scaffold-project.ts under 200 lines |
 | ⬜ | SC-364 | Identical output before and after |
 | ⬜ | SC-365 | Scanner importable without generation |
