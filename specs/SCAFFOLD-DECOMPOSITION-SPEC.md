@@ -56,7 +56,7 @@ lib/validators/
 
 ## Success Criteria
 
-- [ ] SC-358: lib/scanner.ts exists
+- [x] SC-358: lib/scanner.ts exists
 - [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories (behavioral)
 - [ ] SC-360: lib/generators/agents-md.ts exists
 - [ ] SC-361: lib/generators/agent-briefs.ts exists
