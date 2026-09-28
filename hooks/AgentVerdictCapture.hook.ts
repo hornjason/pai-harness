@@ -7,72 +7,21 @@
  * Auto-appends blockers to verifyBlockers[].
  * Runs transcript audit and writes compliance results to workflow-state.json.
  *
+ * Thin trigger — scanning/parsing delegated to lib/verdict-capture.ts
+ * per Hook Architecture Spec D-2.
+ *
  * Issue: #439
  */
 
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
 import { detectAgent } from './lib/agentDetection';
 import { runAgentAudit } from '../lib/agent-audit';
 import { writeCache, type BehavioralCache } from '../lib/behavioral-cache';
+import { findActiveWorkflow, extractVerdict } from '../lib/verdict-capture';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
-
-function findActiveWorkflow(): { path: string; data: any } | null {
-  if (!existsSync(WORK_DIR)) return null;
-  let best: { path: string; data: any; mtime: number } | null = null;
-
-  function scan(dir: string) {
-    try {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        const wfPath = join(dir, entry.name, 'workflow-state.json');
-        if (existsSync(wfPath)) {
-          try {
-            const data = JSON.parse(readFileSync(wfPath, 'utf-8'));
-            if (['BUILD', 'VERIFY', 'SHIP'].includes(data.phase)) {
-              const mtime = statSync(wfPath).mtimeMs;
-              if (!best || mtime > best.mtime) {
-                best = { path: wfPath, data, mtime };
-              }
-            }
-          } catch {}
-        }
-        const nested = join(dir, entry.name);
-        try {
-          for (const sub of readdirSync(nested, { withFileTypes: true })) {
-            if (!sub.isDirectory()) continue;
-            const nestedWf = join(nested, sub.name, 'workflow-state.json');
-            if (!existsSync(nestedWf)) continue;
-            try {
-              const data = JSON.parse(readFileSync(nestedWf, 'utf-8'));
-              if (['BUILD', 'VERIFY', 'SHIP'].includes(data.phase)) {
-                const mtime = statSync(nestedWf).mtimeMs;
-                if (!best || mtime > best.mtime) {
-                  best = { path: nestedWf, data, mtime };
-                }
-              }
-            } catch {}
-          }
-        } catch {}
-      }
-    } catch {}
-  }
-
-  scan(WORK_DIR);
-  return best ? { path: best.path, data: best.data } : null;
-}
-
-function extractVerdict(text: string): any | null {
-  const match = text.match(/## Verdict\n(\{[\s\S]*?\n\})/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[1]);
-  } catch {
-    return null;
-  }
-}
 
 function identifyRole(toolInput: any): string | null {
   const detected = detectAgent(toolInput);
@@ -84,7 +33,6 @@ function identifyRole(toolInput: any): string | null {
   return null;
 }
 
-
 async function main() {
   const payload = await parseHookInput();
   if (!payload) process.exit(0);
@@ -93,7 +41,7 @@ async function main() {
   const role = identifyRole(toolInput);
   if (!role) process.exit(0);
 
-  const wf = findActiveWorkflow();
+  const wf = findActiveWorkflow(WORK_DIR);
   if (!wf) process.exit(0);
 
   const resp = payload.tool_response;
@@ -104,7 +52,6 @@ async function main() {
 
   if (!state.agents) state.agents = {};
   if (!state.agents[role]) state.agents[role] = {};
-
   state.agents[role].spawned = true;
 
   if (verdict) {
@@ -142,7 +89,7 @@ async function main() {
       const mapPath = join(projectRoot, 'config', 'behavioral-sc-map.json');
       if (existsSync(mapPath)) {
         const scMap: Record<string, { criterionId: string }> = JSON.parse(readFileSync(mapPath, 'utf-8'));
-        const criteriaResults = auditResult.criteria || [];
+        const criteriaResults = (auditResult as any).criteria || [];
         const criterionMap = new Map<string, any>();
         for (const r of criteriaResults) {
           criterionMap.set(r.id, r);
