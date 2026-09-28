@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-27",
+  "updated": "2026-09-28",
   "priorities": [
     "P0: M-size pipeline validation — decomposition implemented, needs live pipeline test with M-size issue (#548 after #547 ships)",
     "P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 runs. Brief says TDD first but Marcus still writes impl before tests",

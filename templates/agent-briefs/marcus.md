@@ -57,3 +57,8 @@ STOP: Steps 1→3 are strict ordering. If you write implementation before the te
 - If 200 lines could be 50, rewrite
 - Deep modules, thin consumers: shared logic in lib/, consumers call one function
 - No hardcoded values — use config or environment variables
+
+
+## CANARY_MARKER_FOR_SC354
+
+This line verifies template updates propagate.
