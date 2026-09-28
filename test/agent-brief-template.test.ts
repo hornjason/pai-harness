@@ -176,6 +176,69 @@ describe("Agent Brief Template Tests", () => {
     });
   });
 
+  describe("SC-386: promptKeywords override in rungate.json", () => {
+    const OUTPUT_KW = "/tmp/rungate-agent-brief-keyword-test";
+
+    test("default keywords produce routing table entries without config override", () => {
+      const briefPath = join(OUTPUT, ".claude/agents/marcus.md");
+      const content = readFileSync(briefPath, "utf-8");
+      // Marcus should have a Reference section with prompt routing
+      expect(content).toMatch(/##?\s*Reference/i);
+    });
+
+    test("promptKeywords override merges with defaults and appears in generated brief", () => {
+      // Setup: copy golden fixture, add promptKeywords override to rungate.json
+      try { execSync(`rm -rf ${OUTPUT_KW}`, { stdio: "pipe" }); } catch {}
+      mkdirSync(OUTPUT_KW, { recursive: true });
+      execSync(`cp -r ${FIXTURE}/. ${OUTPUT_KW}/`);
+      execSync("git init", { cwd: OUTPUT_KW, stdio: "pipe" });
+
+      // Create .claude/rungate.json with promptKeywords override
+      mkdirSync(join(OUTPUT_KW, ".claude"), { recursive: true });
+      const overrideConfig = {
+        promptKeywords: {
+          marcus: ["custom-keyword", "special-routing"],
+        },
+      };
+      writeFileSync(
+        join(OUTPUT_KW, ".claude", "rungate.json"),
+        JSON.stringify(overrideConfig, null, 2),
+      );
+
+      // Create a prompt file matching the custom keyword
+      mkdirSync(join(OUTPUT_KW, "prompts"), { recursive: true });
+      writeFileSync(
+        join(OUTPUT_KW, "prompts", "custom-keyword-guide.md"),
+        "# Custom Keyword Guide\n\nCustom routing test content.\n",
+      );
+
+      execSync("git add -A && git commit -m 'init with keyword override'", {
+        cwd: OUTPUT_KW,
+        stdio: "pipe",
+      });
+
+      // Run scaffold
+      execSync(`bun run ${SCAFFOLD} ${OUTPUT_KW}`, {
+        timeout: 60000,
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+
+      // Read marcus brief — should have the custom-keyword prompt routed to marcus
+      const briefPath = join(OUTPUT_KW, ".claude/agents/marcus.md");
+      const content = readFileSync(briefPath, "utf-8");
+      expect(content).toContain("custom-keyword-guide");
+
+      // Verify quinn still has default keywords (override didn't wipe other agents)
+      const quinnPath = join(OUTPUT_KW, ".claude/agents/quinn.md");
+      if (existsSync(quinnPath)) {
+        const quinnContent = readFileSync(quinnPath, "utf-8");
+        // Quinn should still have Reference section (default keywords still work)
+        expect(quinnContent).toMatch(/##?\s*Reference/i);
+      }
+    });
+  });
+
   describe("SC-354: Editing template and re-scaffolding updates brief", () => {
     test("modify template, re-scaffold, verify update appears", () => {
       const templatePath = join(TEMPLATES_DIR, "marcus.md");

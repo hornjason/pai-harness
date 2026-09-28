@@ -91,3 +91,27 @@ describe("SC-373: Gate contract typed interfaces", () => {
     expect(arrows).toBeGreaterThanOrEqual(5);
   });
 });
+
+describe("Deep modules: conformity engine agent brief checks", () => {
+  const conformitySrc = readFileSync(join(ROOT, "lib/conformity.ts"), "utf-8");
+
+  test("AGENT-7 check exists: required sections validation", () => {
+    expect(conformitySrc).toContain("AGENT-7");
+    expect(conformitySrc).toMatch(/required.*section/i);
+  });
+
+  test("AGENT-8 check exists: model: sonnet validation", () => {
+    expect(conformitySrc).toContain("AGENT-8");
+    expect(conformitySrc).toMatch(/model.*sonnet/i);
+  });
+
+  test("AGENT-9 check exists: line count under 120", () => {
+    expect(conformitySrc).toContain("AGENT-9");
+    expect(conformitySrc).toMatch(/120/);
+  });
+
+  test("AGENT-10 check exists: no unfilled template variables", () => {
+    expect(conformitySrc).toContain("AGENT-10");
+    expect(conformitySrc).toMatch(/template.*variable|unfilled|\$\{/i);
+  });
+});
