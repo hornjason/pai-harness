@@ -89,7 +89,7 @@ export function detectProjectType(root: string): ProjectType {
 
 // ── Tech stack detection ───────────────────────────────────────
 
-export function detectTechStack(root: string): string[] {
+function detectTechStack(root: string): string[] {
   const techStack: string[] = [];
   const pkgPath = join(root, "package.json");
 
@@ -118,7 +118,7 @@ export function detectTechStack(root: string): string[] {
 
 // ── Spec scanning ──────────────────────────────────────────────
 
-export function scanSpecs(root: string): SpecMeta[] {
+function scanSpecs(root: string): SpecMeta[] {
   const specsDir = join(root, "specs");
   const specs: SpecMeta[] = [];
 
@@ -146,7 +146,7 @@ export function scanSpecs(root: string): SpecMeta[] {
 
 // ── Consumer detection ─────────────────────────────────────────
 
-export function scanConsumers(root: string): string[] {
+function scanConsumers(root: string): string[] {
   const srcDir = join(root, "src");
   const consumers: string[] = [];
 
@@ -168,7 +168,7 @@ export function scanConsumers(root: string): string[] {
 
 // ── Source directory detection ──────────────────────────────────
 
-export function scanSourceDirectories(root: string): string[] {
+function scanSourceDirectories(root: string): string[] {
   const candidates = ["src", "lib", "gates", "workflows", "hooks"];
   return candidates.filter(dir => existsSync(join(root, dir)));
 }
