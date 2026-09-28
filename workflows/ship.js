@@ -364,9 +364,11 @@ Success criteria: ${goalData.successCriteria.map((sc, i) => `${i + 1}. ${sc}`).j
 3. Check prior work: git log --oneline --all --grep="#${ISSUE}" in ${PROJECT_ROOT}.
 
 ## AC ANCHORING (CRITICAL — do not skip)
-ACs MUST map 1:1 to the issue's Success Criteria listed above. Rules:
-- AC-1 corresponds to SC-1, AC-2 to SC-2, etc. Do NOT invent new ACs beyond the issue SCs.
-- If the issue has no structured SCs (no "SC-" or "- [ ]" items), derive ACs from the issue body paragraphs — but still anchor each AC to a specific sentence from the issue.
+ACs should map to the issue's Success Criteria listed above. Rules:
+- Start from the issue SCs: AC-1 corresponds to SC-1, AC-2 to SC-2, etc.
+- You MAY add additional ACs beyond the issue SCs when the work requires it — especially for test updates, import rewiring, or behavioral preservation that the issue doesn't explicitly mention but Marcus must do.
+- For refactoring/decomposition issues: add ACs for each extracted module AND for updating imports/tests that reference the changed files.
+- If the issue has no structured SCs (no "SC-" or "- [ ]" items), derive ACs from the issue body paragraphs.
 - The AC statement should be a testable restatement of the SC, not a reinterpretation.
 - For UI bugs: at least one AC must be type OUTCOME (not CODE) so Quinn verifies it.
 
