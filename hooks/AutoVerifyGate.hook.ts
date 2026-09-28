@@ -2,6 +2,9 @@
 /**
  * AutoVerifyGate.hook.ts — PostToolUse on Agent
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * When Marcus/Quinn/Rook agent returns:
  * 1. Find active workflow-state.json in BUILD/VERIFY phase
  * 2. Write agents.<key>.verdict based on response content

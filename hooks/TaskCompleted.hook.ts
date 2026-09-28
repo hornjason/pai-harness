@@ -2,6 +2,9 @@
 /**
  * TaskCompleted.hook.ts — Quality gate before task completion
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-372 (HOOK-ARCHITECTURE-SPEC): Hook logic in lib/ has unit tests
+ *
  * TRIGGER: TaskCompleted
  *
  * Runs quality checks before allowing an agent to mark a task as complete:

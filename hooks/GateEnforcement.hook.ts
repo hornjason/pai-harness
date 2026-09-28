@@ -2,6 +2,9 @@
 /**
  * GateEnforcement.hook.ts — PreToolUse gate for harness gate failures
  *
+ * SC-369 (HOOK-ARCHITECTURE-SPEC): GateEnforcement line count target
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ *
  * TRIGGER: PreToolUse (matcher: ".*" — fires on every tool call)
  *
  * PURPOSE:

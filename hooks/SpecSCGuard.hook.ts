@@ -2,6 +2,9 @@
 /**
  * SpecSCGuard.hook.ts — PostToolUse on Edit/Write
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * TRIGGER: PostToolUse (matcher: Edit, Write)
  *
  * PURPOSE:

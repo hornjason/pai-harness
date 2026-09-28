@@ -1,5 +1,8 @@
 /**
  * SpecConformityTrigger — PostToolUse hook that auto-runs conformity
+ *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
  * when spec files are modified via Edit or Write.
  *
  * Thin trigger: detects the event, delegates to lib/spec-change-conformity.

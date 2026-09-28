@@ -2,6 +2,9 @@
 /**
  * WorkflowStateGuard.hook.ts -- PreToolUse on Write, Edit
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Blocks direct Write/Edit of workflow-state.json.
  * All writes must go through writeWorkflowState() for Zod validation.
  */

@@ -2,6 +2,9 @@
 /**
  * VerifyPhaseLock.hook.ts — PreToolUse on Bash
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * Blocks `gh issue create` during VERIFY phase.
  * Use verifyBlockers[] instead. Allows `gh issue comment`
  * and `gh issue create` with --label follow-up.

@@ -2,6 +2,9 @@
 /**
  * StaleTTLCleanup.hook.ts — Auto-cleanup stale workflow-state.json and .ship-active files (#256, #270)
  *
+ * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
+ * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
+ *
  * TRIGGER: SessionStart
  *
  * Enforces 4-hour TTL on ship workflow artifacts to prevent stale state from blocking new sessions.
