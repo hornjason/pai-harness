@@ -2,29 +2,34 @@
 
 **Current phase: Scaffold Decomposition — 6 SCs open**
 
-Session 17 — 8 fixes, 5 shipped, 4 ALREADY_SHIPPED.
+Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).
 
-8 fixes:
+11 fixes:
   1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs
   2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash
   3. Auto-populate timeout (f794fb04) — 10s→300s for bun test
   4. AC anchoring relaxed (6bdea4a1) — additional ACs for test/import coverage
   5. Discovery brief consolidated (751d219d) — merged Never Do + reinforcement tier
   6. Bun test output rule (3c170471) — prevents broken grep evidence commands
-  7. Spec-compliance test (d9f96db1) — ROOT CAUSE: broken test failing ALL bun test ACs
+  7. Spec-compliance test (d9f96db1) — ROOT CAUSE of all bun test AC failures
   8. Circular dep fix (fd8c96ad) — parseTestResults post-#548 decomp
+  9. Project-state scope-out (582a5538) — prevents Marcus overwriting project state
+  10. AgentBriefGuard test fix (47b1f2b0) — stderr format changed post-#544 decomp
+  11. create-sc test fix (a10596ab) — Commands table moved to generators
 
 Shipped:
+  #541: SHIPPED M-SIZE (23 agents, 29m, batched B1+B2) — file generators extracted
   #543: SHIPPED (22 agents, 35m) — AgentBriefGuard extracted
+  #544: SHIPPED (merged+fixes) — GateEnforcement extracted to lib/
+  #545: SHIPPED (17 agents, 24m) — hook SC traceability
   #546: SHIPPED (17 agents, 23m) — gate contracts audited
   #539: SHIPPED (17 agents, 32m) — brief validation
   #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines
-  #545: SHIPPED (17 agents, 24m) — hook SC traceability
-  #547, #579, #585, #594: ALREADY_SHIPPED
-  #544: in progress
+  #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED
+  #540: SHIP_FAILED (DNS + evidence mismatch) — retriable
+  #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable
 
-14 issues shipped total, 19 closed. Suite: 1400 pass, 0 fail, 82 files.
-Suite: 8/25 SCs done.
+16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 8/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
