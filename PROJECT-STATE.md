@@ -20,16 +20,44 @@ Pipeline shipped (17):
 Housekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509
 
 First-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.
-24 issues remain open. #508 shipping now.
+23 issues remain open.
+  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.
+  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).
+
+Retroactive compliance audit (48 runs, 1125 agent transcripts):
+  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.
+  Top violations (% of runs):
+    COMP-7  No cat/head via Bash (use Read)           — 90% ignored
+    COMP-12 Grep before Read for non-key files        — 81% ignored
+    COMP-9  Total tool calls <= 30                    — 75% ignored
+    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored
+    COMP-6  No duplicate file reads                   — 60% ignored
+    COMP-13 Write failing test before impl (TDD)      — 48% ignored
+    COMP-11 Coding/testing principles available        — 40% ignored
+  Action items:
+    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails
+    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate
+    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check
+    4. Run grading on EVERY ship going forward (skipGrade=false)
 Suite: 19/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — 71% first-pass (10/14). Monitor for further improvements
-2. P1: #512 (isolated execution), #510 (Playwright MCP), #507 (prove screenshots), #307 (doc hygiene)
-3. P1: Further consolidation — 17 agents, target <10
-4. P2: #508 (spec sync, shipping), #506 (Quinn brief), #477 (move gates/), #470 (gap detection), #469 (.pai-work), #342 (doc archival)
-5. P2: Remaining SCs — SC-364/365/366 (scaffold), SC-367 (AgentBriefGuard), SC-377/378 (gate contracts)
-6. P3: #533 (ADR auto-discover), #526 (skill wrappers), #503 (journal replay), 9 more
+1. P0: Pipeline pass rate — 71% first-pass (10/14). Keep improving evidence quality and agent reliability
+2. P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win
+3. P1: #510 Wire Playwright MCP into Quinn's UI validation — enables real browser testing in prove
+4. P1: #507 Prove must capture before/after screenshots to issue — visual proof of changes
+5. P1: #307 Doc-hygiene: evolve from format stamping to content alignment
+6. P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles
+7. P2: #511 Evaluate Anthropic official plugins for PAI workflow
+8. P2: #506 Quinn prove brief improvements — input mode and reproduction steps from issue
+9. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
+10. P2: #470 Mechanical gap detection — post-ship scanner for product and harness drift
+11. P2: #469 Fix .pai-work lifecycle — archive-then-purge replaces file-level TTL
+12. P2: #412 Per-project ceremony overrides with protected-checks
+13. P2: #342 Doc archival — prune stale docs to reduce context load
+14. P2: Remaining SCs — SC-364/365/366 (scaffold identical output, scanner importable, generators testable), SC-367 (AgentBriefGuard <50 lines), SC-377/378 (gate contracts testable, no implicit state)
+15. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
+16. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -86,6 +114,17 @@ Suite: 19/25 SCs done.
 
 ---
 
+**Session 2026-09-29 session 18:**
+- AFK marathon: 18 issues shipped/closed through pipeline, 15 housekeeping closures (shipped-but-open cleanup)
+- Pipeline shipped: #540, #590, #542, #596, #535, #598, #515, #532, #527, #583, #531, #529, #530, #599, #419, #508. Already fixed: #597, #600
+- First-pass rate: 21%→71% (10/14). Key fixes: grep exit-code-1 evidence (717fc8e0), evidence pre-validation (#598), test baseline diffing (#599)
+- RCA: 70% of failures were EVIDENCE_MISSING (Marcus correct 23/29 runs). Root cause was gate-executor dropping grep exit code 1
+- Retroactive compliance audit of 48 runs (1125 agent transcripts, 284MB):
+-   Marcus avg: 8.1/13 (62%). COMP-7 cat usage 90% ignored, COMP-12 grep-before-read 81%, COMP-9 tool count 75%, COMP-13 TDD 48%
+-   Key insight: brief-level rules alone fail at 80-90% rates — need mechanical enforcement (hooks/gates) for COMP-7, COMP-12
+-   Action: skipGrade=false for all future runs. Hill-climb Marcus brief using retroactive data
+- Suite: 1729 pass, 0 fail, 97 files. 23 issues remain open
+
 **Session 2026-09-26 session 15:**
 - 6-agent refactor shipped: batched agents, 7 spec-compliance tests fixed, undefined alreadyVerdict bug fixed
 - Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%)
@@ -107,13 +146,4 @@ Suite: 19/25 SCs done.
 - 5 issues shipped: #590 (40%), #592 (70%), #584 (67%), #594 (83%), #595 (83%)
 - Ship gate false positives: B1/B2/evidence-type-ratio checks fire on LIGHT (should be exempt)
 - Deep adversarial audit: 26/32 agents were bash wrappers, prove was 42% of runtime
-
-**Session 2026-09-27 session 17:**
-- M-size decomposition (c835bbb6) — batched Marcus for M/L issues with >5 ACs
-- ReferenceError fix (020fcb8c) — verify gate fails/results temporal dead zone. Root cause of all #547 failures
-- Auto-populate timeout (f794fb04) — 10s→300s for bun test evidence commands. Prevented AC verdicts
-- #547 ALREADY_SHIPPED (attempt 4) — prior work from attempts 1-2 satisfied all 3 ACs
-- #548 SHIP_FAILED — Marcus decomposed run-gate.ts to 353 lines but broke full test suite. Need more ACs for test updates
-- #582 SHIPPED (23 agents, 30m) — from previous session compaction
-- Suite: 1387 pass, 0 fail, 82 files. 4 pipeline runs. 2 critical gate bugs fixed
 

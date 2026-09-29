@@ -1,14 +1,24 @@
 {
   "updated": "2026-09-29",
   "priorities": [
-    "P0: Pipeline pass rate — 71% first-pass (10/14). Monitor for further improvements",
-    "P1: #512 (isolated execution), #510 (Playwright MCP), #507 (prove screenshots), #307 (doc hygiene)",
-    "P1: Further consolidation — 17 agents, target <10",
-    "P2: #508 (spec sync, shipping), #506 (Quinn brief), #477 (move gates/), #470 (gap detection), #469 (.pai-work), #342 (doc archival)",
-    "P2: Remaining SCs — SC-364/365/366 (scaffold), SC-367 (AgentBriefGuard), SC-377/378 (gate contracts)",
-    "P3: #533 (ADR auto-discover), #526 (skill wrappers), #503 (journal replay), 9 more"
+    "P0: Pipeline pass rate — 71% first-pass (10/14). Keep improving evidence quality and agent reliability",
+    "P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win",
+    "P1: #510 Wire Playwright MCP into Quinn's UI validation — enables real browser testing in prove",
+    "P1: #507 Prove must capture before/after screenshots to issue — visual proof of changes",
+    "P1: #307 Doc-hygiene: evolve from format stamping to content alignment",
+    "P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles",
+    "P2: #511 Evaluate Anthropic official plugins for PAI workflow",
+    "P2: #506 Quinn prove brief improvements — input mode and reproduction steps from issue",
+    "P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts",
+    "P2: #470 Mechanical gap detection — post-ship scanner for product and harness drift",
+    "P2: #469 Fix .pai-work lifecycle — archive-then-purge replaces file-level TTL",
+    "P2: #412 Per-project ceremony overrides with protected-checks",
+    "P2: #342 Doc archival — prune stale docs to reduce context load",
+    "P2: Remaining SCs — SC-364/365/366 (scaffold identical output, scanner importable, generators testable), SC-367 (AgentBriefGuard <50 lines), SC-377/378 (gate contracts testable, no implicit state)",
+    "P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility",
+    "P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter"
   ],
-  "notes": "Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.\n\nKey fixes:\n  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures\n  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements\n  - Test baseline diffing (#599) — only count NEW failures after Marcus\n  - Mechanical spec update on close (#419) — auto-patch governing spec status\n\nPipeline shipped (17):\n  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),\n  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),\n  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),\n  #530 (stale docs), #599 (test baseline), #419 (spec update on close)\n  Already fixed: #597, #600\n\nHousekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509\n\nFirst-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.\n24 issues remain open. #508 shipping now.\nSuite: 19/25 SCs done.",
+  "notes": "Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.\n\nKey fixes:\n  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures\n  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements\n  - Test baseline diffing (#599) — only count NEW failures after Marcus\n  - Mechanical spec update on close (#419) — auto-patch governing spec status\n\nPipeline shipped (17):\n  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),\n  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),\n  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),\n  #530 (stale docs), #599 (test baseline), #419 (spec update on close)\n  Already fixed: #597, #600\n\nHousekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509\n\nFirst-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.\n23 issues remain open.\n  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.\n  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).\n\nRetroactive compliance audit (48 runs, 1125 agent transcripts):\n  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.\n  Top violations (% of runs):\n    COMP-7  No cat/head via Bash (use Read)           — 90% ignored\n    COMP-12 Grep before Read for non-key files        — 81% ignored\n    COMP-9  Total tool calls <= 30                    — 75% ignored\n    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored\n    COMP-6  No duplicate file reads                   — 60% ignored\n    COMP-13 Write failing test before impl (TDD)      — 48% ignored\n    COMP-11 Coding/testing principles available        — 40% ignored\n  Action items:\n    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails\n    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate\n    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check\n    4. Run grading on EVERY ship going forward (skipGrade=false)\nSuite: 19/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -203,6 +213,20 @@
   ],
   "sessions": [
     {
+      "date": "2026-09-29 session 18",
+      "items": [
+        "AFK marathon: 18 issues shipped/closed through pipeline, 15 housekeeping closures (shipped-but-open cleanup)",
+        "Pipeline shipped: #540, #590, #542, #596, #535, #598, #515, #532, #527, #583, #531, #529, #530, #599, #419, #508. Already fixed: #597, #600",
+        "First-pass rate: 21%→71% (10/14). Key fixes: grep exit-code-1 evidence (717fc8e0), evidence pre-validation (#598), test baseline diffing (#599)",
+        "RCA: 70% of failures were EVIDENCE_MISSING (Marcus correct 23/29 runs). Root cause was gate-executor dropping grep exit code 1",
+        "Retroactive compliance audit of 48 runs (1125 agent transcripts, 284MB):",
+        "  Marcus avg: 8.1/13 (62%). COMP-7 cat usage 90% ignored, COMP-12 grep-before-read 81%, COMP-9 tool count 75%, COMP-13 TDD 48%",
+        "  Key insight: brief-level rules alone fail at 80-90% rates — need mechanical enforcement (hooks/gates) for COMP-7, COMP-12",
+        "  Action: skipGrade=false for all future runs. Hill-climb Marcus brief using retroactive data",
+        "Suite: 1729 pass, 0 fail, 97 files. 23 issues remain open"
+      ]
+    },
+    {
       "date": "2026-09-26 session 15",
       "items": [
         "6-agent refactor shipped: batched agents, 7 spec-compliance tests fixed, undefined alreadyVerdict bug fixed",
@@ -255,9 +279,9 @@
   "session": {
     "number": 18,
     "date": "2026-09-29",
-    "summary": "AFK marathon: 15 issues shipped/closed. Gate fix (grep exit-code-1), evidence pre-validation, scaffold decomposition. First-pass rate 21%→67%. RCA: 70% failures were EVIDENCE_MISSING. Filed 3 systemic issues (#597-600), all resolved.",
-    "suite": "1641 pass, 0 fail, 96 files",
-    "scs_done": "21/25",
+    "summary": "AFK marathon: 18 shipped/closed + 15 housekeeping. First-pass 21%→71%. Retroactive compliance audit: Marcus 62% avg (8.1/13). Top violations: cat usage 90%, grep-before-read 81%, tool count 75%. Brief rules alone don't work — need mechanical enforcement.",
+    "suite": "1729 pass, 0 fail, 97 files",
+    "scs_done": "19/25",
     "commits": 20
   }
 }
