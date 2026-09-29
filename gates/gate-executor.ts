@@ -127,7 +127,32 @@ function autoPopulateACs(state: Record<string, any>, sf: string): void {
       state.acs[i].evidence = { type: "command-output", content: lastLine };
       acUpdated = true;
     } catch (e: any) {
-      console.warn(`WARN: AC ${ac.id} evidence command failed: ${e.message?.slice(0, 100) || 'unknown'}`);
+      // grep returns exit 1 on zero matches — valid result, not an error
+      const stderr = e.stderr?.toString?.() || "";
+      const stdout = (e.stdout?.toString?.() || "").trim();
+      if (stdout !== "" || e.status === 1) {
+        const lastLine = stdout.split("\n").pop() || "0";
+        let verdict: "PASS" | "FAIL" = "FAIL";
+        const { op, value } = ac.threshold || {};
+        if (op && value !== undefined) {
+          const num = parseFloat(lastLine);
+          const exp = parseFloat(String(value));
+          switch (op) {
+            case "==": verdict = lastLine === String(value) || (!isNaN(num) && num === exp) ? "PASS" : "FAIL"; break;
+            case "!=": verdict = lastLine !== String(value) ? "PASS" : "FAIL"; break;
+            case ">=": verdict = !isNaN(num) && num >= exp ? "PASS" : "FAIL"; break;
+            case "<=": verdict = !isNaN(num) && num <= exp ? "PASS" : "FAIL"; break;
+            case ">": verdict = !isNaN(num) && num > exp ? "PASS" : "FAIL"; break;
+            case "<": verdict = !isNaN(num) && num < exp ? "PASS" : "FAIL"; break;
+            case "contains": verdict = stdout.includes(String(value)) ? "PASS" : "FAIL"; break;
+          }
+        }
+        state.acs[i].verdict = verdict;
+        state.acs[i].evidence = { type: "command-output", content: lastLine };
+        acUpdated = true;
+      } else {
+        console.warn(`WARN: AC ${ac.id} evidence command failed: ${e.message?.slice(0, 100) || 'unknown'}`);
+      }
     }
   }
   // #513 SC-A1: ACs without evidenceMethod.command get SKIP, not generic output

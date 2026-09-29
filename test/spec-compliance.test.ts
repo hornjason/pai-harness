@@ -340,6 +340,13 @@ describe("harness-fixes: ship.js and ship-and-heal.js structural checks", () => 
     const gateTS = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
     expect(gateTS).toContain('ac.verdict !== "FAIL"');
   });
+
+  test("gate-executor.ts handles grep exit code 1 (zero matches) as valid evidence", () => {
+    const gateTS = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
+    // grep returns exit 1 on zero matches — must capture stdout, not discard as error
+    expect(gateTS).toContain("e.status === 1");
+    expect(gateTS).toContain("e.stdout");
+  });
 });
 
 // ── #589: ship-and-heal grading, classification, and remediation ─────
