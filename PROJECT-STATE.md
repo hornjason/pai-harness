@@ -27,14 +27,16 @@ Shipped:
   #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines
   #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED
   #540: SHIPPED (manual merge after gate fix 717fc8e0) — scanner extracted
-  #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable
+  #590: SHIPPED (manual merge after workflow stall) — buildAgentMeta, DEFAULT_AGENT_META exported
 
 Session 18:
   Gate fix: grep exit-code-1 evidence capture (717fc8e0) — root cause of #540 3x failures
   #540 SHIPPED — lib/scanner.ts with ProjectScan, 36 tests, SC-358+SC-359 done
-  Filed #597: systemic grep evidence pattern documented
+  #590 SHIPPED — buildAgentMeta from config, no hardcoded meta in generator
+  RCA: 70% of failures are EVIDENCE_MISSING, Marcus correct 23/29 runs
+  Filed #597 (grep evidence), #598 (evidence pre-validation P1), #599 (test baseline diffing P2)
 
-17 issues shipped total, 22 closed. Suite: 1592+ pass, 0 fail, 91 files. 18/25 SCs done.
+19 issues shipped total, 23 closed. Suite: 1597 pass, 0 fail, 91 files. 18/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
