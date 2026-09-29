@@ -73,7 +73,7 @@
     {
       "name": "AES Quality Gate + Pipeline Optimization",
       "scs": [],
-      "note": "IN PROGRESS — 6-agent refactor shipped. Pipeline 32→19 agents (batching), 141→14 min. First-attempt pass rate: 21%. Council audit in progress to fix root causes. Canary module built (lib/canary.ts). B2 operators fixed. AES: 87 dry-run, 75% production (9/12 Marcus)."
+      "note": "IN PROGRESS — Pipeline 16 agents/20 min. First-pass rate: 71% (10/14). AES: 87 dry-run, 75% production. Marcus COMP avg: 8.1/13 (62%). Top violations: COMP-7 cat usage (90%), COMP-12 grep-before-read (81%), COMP-13 TDD (48%). Brief hill-climbed session 19."
     },
     {
       "name": "Scaffold Decomposition",

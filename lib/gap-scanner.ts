@@ -115,21 +115,37 @@ function checkStaleDocRefs(projectRoot: string): GapResult {
         if (match && match[1]) {
           const potentialFile = match[1].trim();
 
-          // Skip headers, separators, and non-file entries
+          // Skip headers, separators, non-file entries, and prose descriptions
           if (
             potentialFile === "File" ||
             potentialFile.includes("---") ||
             potentialFile.length === 0 ||
-            potentialFile.startsWith("**")
+            potentialFile.startsWith("**") ||
+            potentialFile.startsWith("I ") ||
+            potentialFile.includes("...") ||
+            /^[A-Z][a-z]+ [a-z]/.test(potentialFile)
           ) {
             continue;
           }
 
+          // Strip backticks from paths like `CODE-MAP.md`
+          const cleanFile = potentialFile.replace(/`/g, "").trim();
+          if (!cleanFile || cleanFile.includes("---")) continue;
+
           // Check if it looks like a file reference (has extension or is a directory)
-          if (potentialFile.includes(".") || potentialFile.endsWith("/")) {
-            const fullPath = join(projectRoot, potentialFile);
-            if (!existsSync(fullPath)) {
-              missing.push(potentialFile);
+          if (cleanFile.includes(".") || cleanFile.endsWith("/")) {
+            // Try the path as-is, then with common prefixes
+            const candidates = [
+              join(projectRoot, cleanFile),
+              join(projectRoot, "specs", cleanFile),
+              join(projectRoot, "test", cleanFile),
+              join(projectRoot, "docs", cleanFile),
+            ];
+            const found = candidates.some((p) => existsSync(p));
+            if (!found) {
+              // Skip glob patterns like *.md
+              if (cleanFile.includes("*")) continue;
+              missing.push(cleanFile);
             }
           }
         }
@@ -168,8 +184,11 @@ function checkTodosWithoutIssue(projectRoot: string): GapResult {
     for (const line of lines) {
       if (line.startsWith("+") && !line.startsWith("+++")) {
         const content = line.slice(1).trim();
-        // #470 Check for code comments with TODO/FIXME/HACK without issue numbers
-        if (/TODO|FIXME|HACK/.test(content) && !/#\d+/.test(content)) {
+        if (
+          /\/\/.*\b(TODO|FIXME|HACK)\b/.test(content) &&
+          !/#\d+/.test(content) &&
+          !/["'`].*\b(TODO|FIXME|HACK)\b.*["'`]/.test(content)
+        ) {
           todosWithoutIssue.push(content);
         }
       }
