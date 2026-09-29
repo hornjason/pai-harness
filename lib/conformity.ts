@@ -1271,6 +1271,87 @@ export function runDocHygiene(root: string) {
       expect(true).toBe(true);
     });
 
+    test("HYGIENE-11: Stale unreferenced files warn with archival suggestion", () => {
+      const index = getRefIndex();
+      // Load stalenessThreshold from rungate.json, default 90 days
+      const configPath = join(root, ".claude", "rungate.json");
+      let threshold = 90;
+      if (existsSync(configPath)) {
+        try {
+          const config = JSON.parse(readFileSync(configPath, "utf-8"));
+          if (typeof config.stalenessThreshold === "number") {
+            threshold = config.stalenessThreshold;
+          }
+        } catch {}
+      }
+
+      // Scan docs directories for markdown files — skip reference/ entirely (AC-2)
+      const scanTargets: string[] = [];
+      const docDirs = ["specs", "docs", "docs/adr", "docs/research", "docs/council", "docs/guides"];
+      for (const rel of docDirs) {
+        const dir = join(root, rel);
+        if (!existsSync(dir)) continue;
+        for (const f of readdirSync(dir).filter(f => f.endsWith(".md"))) {
+          const fullPath = join(dir, f);
+          try {
+            if (statSync(fullPath).isFile()) {
+              scanTargets.push(`${rel}/${f}`);
+            }
+          } catch {}
+        }
+      }
+
+      // Also scan root-level markdown (excluding reference/)
+      for (const f of readdirSync(root).filter(f => f.endsWith(".md"))) {
+        scanTargets.push(f);
+      }
+
+      // Filter out reference/ paths (AC-2)
+      const filtered = scanTargets.filter(f => !f.startsWith("reference/") && !f.includes("/reference/"));
+
+      const staleUnreferenced: { file: string; daysSince: number }[] = [];
+      for (const rel of filtered) {
+        // Check git age
+        try {
+          const result = spawnSync("git", ["-C", root, "log", "-1", "--format=%ci", "--", rel], { timeout: 5_000 });
+          const dateStr = result.stdout.toString().trim().split(" ")[0];
+          if (!dateStr) continue;
+          const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+          if (daysSince <= threshold) continue;
+
+          // Check cross-references: filename must appear somewhere in the codebase index
+          const basename = rel.split("/").pop()!;
+          if (index.includes(basename)) continue;
+
+          staleUnreferenced.push({ file: rel, daysSince: Math.floor(daysSince) });
+        } catch {}
+      }
+
+      // AC-3: Each warning includes git mv archival command
+      if (staleUnreferenced.length > 0) {
+        for (const entry of staleUnreferenced) {
+          const archiveDest = `reference/${entry.file.split("/").pop()}`;
+          addFinding({
+            ruleId: "HYGIENE-11",
+            severity: "WARN",
+            file: entry.file,
+            message: `Stale unreferenced file (${entry.daysSince}d, threshold=${threshold}d)`,
+            fixCommand: `git mv ${entry.file} ${archiveDest}`,
+          });
+          console.warn(`HYGIENE-11: ${entry.file} — stale (${entry.daysSince}d) and unreferenced. Fix: git mv ${entry.file} ${archiveDest}`);
+        }
+      }
+
+      // AC-1: At least 2 assertions
+      // 1. reference/ files were filtered out
+      const referenceFiles = scanTargets.filter(f => f.startsWith("reference/") || f.includes("/reference/"));
+      expect(filtered.every(f => !f.startsWith("reference/") && !f.includes("/reference/"))).toBe(true);
+
+      // 2. All stale unreferenced entries have git mv fix commands
+      const hygieneFindings = getFindings().filter(f => f.ruleId === "HYGIENE-11");
+      expect(hygieneFindings.every(f => f.fixCommand?.startsWith("git mv "))).toBe(true);
+    });
+
     test("HYGIENE-REPORT: Write unified findings report", () => {
       const findings = getFindings();
       const candidates = getCandidates();

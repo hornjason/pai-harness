@@ -60,6 +60,7 @@ const ProjectHarnessSchema = z.object({
   mcp: z.array(McpServerSchema).optional(),
   research: z.array(ResearchToolSchema).optional(),
   roles: z.record(RoleSchema).optional(),
+  stalenessThreshold: z.number().optional(),
   schemaVersion: z.number().default(1),
 });
 
