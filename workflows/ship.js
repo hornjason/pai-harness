@@ -1083,6 +1083,10 @@ const ENV_CHECK_SCHEMA = {
   required: ['apiStatus', 'uiStatus', 'testsStatus'],
 }
 
+// Determine push target — reuse prior branch name to prevent orphan branches (#515)
+const branchToReuse = priorBranchResult?.branch || null
+const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
+
 // Batched: commit + push + record state (was 3 agents, now 1)
 const commitResult = await agent(`
 Do ALL of these steps in order:
@@ -1091,7 +1095,7 @@ Do ALL of these steps in order:
    cd ${commitDir}
    git add -A
    git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
-   git push -u origin HEAD
+   git push -u origin ${pushTarget}
 
 2. Get branch info:
    branch=$(git branch --show-current)
@@ -1365,11 +1369,26 @@ Do BOTH tasks:
 1. Record env as SKIP:
    bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-2. Create PR (if not exists):
+2. Create or update PR:
    cd ${PROJECT_ROOT}
    existing=$(gh pr list --repo ${REPO} --head $(git branch --show-current) --json number -q '.[0].number' 2>/dev/null)
    if [ -z "$existing" ]; then
-     gh pr create --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
+     # Also check for existing PR by issue number to reuse on retry (#515)
+     existingByIssue=$(gh pr list --repo ${REPO} --state open --search "${ISSUE} in:title" --json number,headRefName -q '.[0].number' 2>/dev/null)
+     if [ -n "$existingByIssue" ]; then
+       gh pr edit "$existingByIssue" --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
+Fixes #${ISSUE}
+
+## Test plan
+- Unit tests: PASS
+- Container: deferred to CI
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+PREOF
+)" 2>&1 || echo "PR update failed"
+       echo "Updated existing PR: #$existingByIssue"
+     else
+       gh pr create --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
 Fixes #${ISSUE}
 
 ## Test plan
@@ -1379,8 +1398,19 @@ Fixes #${ISSUE}
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 PREOF
 )" 2>&1 || echo "PR creation failed (branches may already be merged)"
+     fi
    else
-     echo "PR already exists: #$existing"
+     gh pr edit "$existing" --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
+Fixes #${ISSUE}
+
+## Test plan
+- Unit tests: PASS
+- Container: deferred to CI
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+PREOF
+)" 2>&1 || echo "PR update failed"
+     echo "Updated existing PR: #$existing"
    fi
 
 Report both results.
