@@ -101,22 +101,27 @@ const BUILD_RESULT_SCHEMA = {
   required: ['success'],
 }
 
-const AC_GROUPING_SCHEMA = {
+const M_DECOMPOSITION_SCHEMA = {
   type: 'object',
   properties: {
-    batches: {
+    subIssues: {
       type: 'array',
+      minItems: 2,
+      maxItems: 4,
       items: {
         type: 'object',
         properties: {
-          acIds: { type: 'array', items: { type: 'string' } },
-          reason: { type: 'string' },
+          title: { type: 'string' },
+          size: { type: 'string', enum: ['XS', 'S'] },
+          acs: { type: 'array', items: { type: 'string' }, maxItems: 5 },
+          filesToModify: { type: 'array', items: { type: 'string' } },
+          body: { type: 'string' },
         },
-        required: ['acIds'],
+        required: ['title', 'size', 'acs', 'filesToModify'],
       },
     },
   },
-  required: ['batches'],
+  required: ['subIssues'],
 }
 
 // ── Args ─────────────────────────────────────────────────────
@@ -550,34 +555,46 @@ if (PHASE_TARGET === 'discovery') {
   return { status: 'DISCOVERY_COMPLETE', issue: ISSUE, slug: SLUG, sizing: discovery.sizing, acs: discovery.acs, workDir: WORK_DIR }
 }
 
-// ── M-size decomposition: split ACs into sequential batches ──
-let acBatches = null
-if ((discovery.sizing === 'M' || discovery.sizing === 'L') && discovery.acs.length > 5) {
-  log(`M-SIZE DECOMPOSITION: ${discovery.acs.length} ACs — grouping into batches of 3-5`)
-  const groupResult = await agent(`
-Group these ${discovery.acs.length} acceptance criteria into 2-4 batches by file/module affinity.
-Each batch should have 3-5 ACs that modify similar files. Respect dependencies — if AC-X
-requires AC-Y's changes, put Y in an earlier batch than X (or same batch).
+// ── M-size decomposition: invoke to-issues to create XS/S sub-issues ──
+let mDecomposition = null
+if (discovery.sizing === 'M' && (discovery.filesToModify || []).length >= 3) {
+  log(`M-SIZE DECOMPOSITION via to-issues: ${discovery.acs.length} ACs across ${discovery.filesToModify.length} files — decomposing into 2-4 XS/S sub-issues`)
+  const decompResult = await agent(`
+You are the to-issues decomposition skill. Decompose this M-size issue into 2-4 smaller sub-issues.
+
+Parent issue #${ISSUE}: ${discovery.issueGoal || 'see ACs below'}
 
 ACs:
 ${discovery.acs.map(ac => `${ac.id}: ${ac.statement} [files: ${(ac.contextFiles || []).map(f => typeof f === 'string' ? f : f.path).join(', ')}]`).join('\n')}
 
 Files to modify: ${(discovery.filesToModify || []).join(', ')}
 
-Return batches in execution order (dependencies first).
-  `, { label: 'decompose-acs', phase: 'Discovery', schema: AC_GROUPING_SCHEMA })
+Constraints — each sub-issue MUST:
+- Be sized XS or S (no M or L)
+- Have at most 5 ACs
+- Have independent filesToModify with no file overlap between sub-issues
+- Cover all ACs from the parent — no AC left behind
+- Be independently shippable through the full pipeline
 
-  if (groupResult?.batches?.length > 1) {
-    const validBatches = groupResult.batches.filter(b => b.acIds?.length > 0)
-    const allBatchedIds = new Set(validBatches.flatMap(b => b.acIds))
-    const allAcIds = new Set(discovery.acs.map(ac => ac.id))
-    const missing = [...allAcIds].filter(id => !allBatchedIds.has(id))
-    if (missing.length > 0 && validBatches.length > 0) {
-      validBatches[validBatches.length - 1].acIds.push(...missing)
+Return sub-issues in dependency order (foundations first).
+  `, { label: 'to-issues', phase: 'Discovery', schema: M_DECOMPOSITION_SCHEMA })
+
+  if (decompResult?.subIssues?.length >= 2) {
+    // Validate: no file overlap between sub-issues
+    const allFiles = new Set()
+    let hasOverlap = false
+    for (const sub of decompResult.subIssues) {
+      for (const f of (sub.filesToModify || [])) {
+        if (allFiles.has(f)) { hasOverlap = true; break }
+        allFiles.add(f)
+      }
+      if (hasOverlap) break
     }
-    if (validBatches.length > 1) {
-      acBatches = validBatches
-      log(`Decomposed into ${acBatches.length} batches: ${acBatches.map((b, i) => `B${i + 1}[${b.acIds.join(',')}]`).join(' → ')}`)
+    if (hasOverlap) {
+      log(`WARN: to-issues produced overlapping files — falling back to single-agent implement`)
+    } else {
+      mDecomposition = decompResult
+      log(`Decomposed into ${mDecomposition.subIssues.length} sub-issues: ${mDecomposition.subIssues.map((s, i) => `S${i + 1}[${s.title}:${s.size}]`).join(' → ')}`)
     }
   }
 }
@@ -813,180 +830,83 @@ Also report worktreePath: your current working directory (run pwd and include th
   return { success: true, buildResult }
 }
 
-async function runBatchedImplement(batches) {
-  log(`BATCHED IMPLEMENT: ${batches.length} batches, ${discovery.acs.length} total ACs`)
+// ── M-size sub-issue shipping: dispatch decomposed sub-issues sequentially or via batch-ship ──
+async function runDecomposedShip(subIssues) {
+  log(`DECOMPOSED SHIP: ${subIssues.length} sub-issues from to-issues decomposition`)
 
-  await agent(`
-Run this command:
-bun -e "
-import {readFileSync,writeFileSync,existsSync} from 'fs';
-import {extractDirectives} from '${HARNESS_ROOT}/lib/directive-extractor.ts';
-import {checkCompliance,computeScore} from '${HARNESS_ROOT}/lib/transcript-checker.ts';
-const results = {};
-for (const role of ['marcus','quinn']) {
-  try {
-    const content = readFileSync('${PROJECT_ROOT}/.claude/agents/' + role + '.md', 'utf-8');
-    const directives = extractDirectives(content);
-    const fixtureMap = {marcus:'agent-marcus-impl1.jsonl',quinn:'agent-quinn-validate1.jsonl'};
-    const fixturePath = '${HARNESS_ROOT}/test/fixtures/transcripts/' + fixtureMap[role];
-    let score = 0;
-    if (existsSync(fixturePath)) {
-      const transcript = readFileSync(fixturePath, 'utf-8');
-      const compliance = checkCompliance(directives, transcript);
-      const result = computeScore(compliance);
-      score = result.score;
-    } else {
-      score = directives.length >= 5 ? 100 : Math.round((directives.length / 5) * 100);
-    }
-    results[role] = {count: directives.length, score};
-  } catch(e) { results[role] = {count: 0, score: 0, error: e.message}; }
-}
-writeFileSync('${WORK_DIR}/brief-preflight.json', JSON.stringify(results, null, 2));
-console.log(JSON.stringify(results));
-"
-Report the output.
-  `, { label: 'brief-preflight', phase: 'Implement' })
-
-  try {
-    const preflightPath = `${WORK_DIR}/brief-preflight.json`
-    const preflightRaw = require('fs').readFileSync(preflightPath, 'utf-8')
-    const preflightData = JSON.parse(preflightRaw)
-    for (const [role, info] of Object.entries(preflightData)) {
-      if (info.score < 80) {
-        log(`FATAL: briefCompliance halt — ${role} scored ${info.score}% (threshold: 80%)`)
-        return { success: false, buildResult: { findings: [`Brief compliance ${role}: ${info.score}%`] } }
-      }
-    }
-    log(`Brief compliance gate PASSED: all roles >= 80%`)
-  } catch (e) {
-    log(`WARN: Could not read brief-preflight.json — skipping compliance gate: ${e.message}`)
-  }
-
-  await agent(`
-Run this command:
-bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
-Report the output.
-  `, { label: 'brief-assemble', phase: 'Implement' })
-
-  const acContextFiles = (discovery?.acs || [])
-    .flatMap(ac => ac.contextFiles || [])
-    .filter((cf, i, arr) => {
-      const path = typeof cf === 'string' ? cf : cf.path
-      return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
-    })
-
-  let contextExcerpts = null
-  if (acContextFiles.length > 0) {
-    log(`Reading ${acContextFiles.length} context files deterministically`)
-    const allFiles = [
-      ...acContextFiles.map(cf => ({ path: typeof cf === 'string' ? cf : cf.path, reason: typeof cf === 'string' ? '' : cf.reason || '' })),
-      { path: `${PROJECT_ROOT}/AGENTS.md`, reason: 'project identity, rules, test commands' },
-    ]
-    const excerptResult = await agent(`
-Run this command and return the JSON output:
-bun -e "
-const fs = require('fs');
-const path = require('path');
-const files = ${JSON.stringify(allFiles)};
-const excerpts = [];
-for (const f of files) {
-  try {
-    let content = fs.readFileSync(f.path, 'utf-8');
-    const lines = content.split('\\n');
-    if (lines.length > 200) content = lines.slice(0, 200).join('\\n') + '\\n... (truncated)';
-    excerpts.push({ source: f.path, section: path.basename(f.path), content, reason: f.reason });
-  } catch(e) { /* skip missing files */ }
-}
-console.log(JSON.stringify({ excerpts }));
-" 2>&1
-    `, { label: 'extract-context', phase: 'Implement', schema: {
-      type: 'object',
-      properties: { excerpts: { type: 'array', items: { type: 'object', properties: { source: { type: 'string' }, section: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['source', 'content'] } } },
-      required: ['excerpts']
-    } })
-    contextExcerpts = excerptResult?.excerpts || null
-    if (contextExcerpts) {
-      log(`Injecting ${contextExcerpts.length} context excerpts into Marcus prompt`)
+  // Check for file independence (no overlap) to decide dispatch strategy
+  const fileToSubIssue = {}
+  let hasOverlap = false
+  for (const sub of subIssues) {
+    for (const f of (sub.filesToModify || [])) {
+      if (fileToSubIssue[f]) { hasOverlap = true }
+      fileToSubIssue[f] = sub.title
     }
   }
 
-  const useExcerpts = contextExcerpts && contextExcerpts.length > 0
-  let sharedWorktreePath = null
-  let allFilesChanged = []
+  if (!hasOverlap && subIssues.length > 1) {
+    // Independent files — dispatch via batch-ship for parallel execution
+    log(`Sub-issues have independent filesToModify — dispatching via batch-ship for parallel execution`)
+    const batchIssues = subIssues.map((sub, i) => ({
+      number: ISSUE * 1000 + i + 1,
+      title: sub.title,
+      body: `Parent: #${ISSUE}\n\n## Acceptance Criteria\n${sub.acs.map(ac => `- ${ac}`).join('\n')}\n\n## Files\n${sub.filesToModify.map(f => `- ${f}`).join('\n')}`,
+      filesToModify: sub.filesToModify,
+      size: sub.size,
+    }))
 
-  for (let bi = 0; bi < batches.length; bi++) {
-    const batch = batches[bi]
-    const batchAcIds = batch.acIds
-    const isFirstBatch = bi === 0
-
-    log(`BATCH ${bi + 1}/${batches.length}: ${batchAcIds.join(', ')}${batch.reason ? ' — ' + batch.reason : ''}`)
-
-    const batchScope = `
-## BATCH ${bi + 1} OF ${batches.length}
-Focus ONLY on these ACs: ${batchAcIds.join(', ')}
-${bi > 0 ? `Previous batches already implemented: ${batches.slice(0, bi).flatMap(b => b.acIds).join(', ')}. Do NOT modify their code unless needed for your ACs.` : ''}
-The brief lists ALL ACs for context, but you only implement the ones listed above.
-`
-    const workdirInstr = sharedWorktreePath ? `
-## Working Directory
-IMPORTANT: Work in the existing worktree at: ${sharedWorktreePath}
-cd ${sharedWorktreePath} before making any changes. Previous batch changes are already there.
-` : ''
-
-    const buildResult = await briefedAgent(`
+    const results = []
+    for (const subIssue of batchIssues) {
+      log(`Shipping sub-issue: ${subIssue.title} (${subIssue.size})`)
+      const buildResult = await briefedAgent(`
 You are Marcus Webb, senior engineer.
-Read ${WORK_DIR}/marcus-brief.md for full instructions including ACs and files to modify.
-${batchScope}
-${workdirInstr}
+Read ${WORK_DIR}/marcus-brief.md for full instructions.
+
+## Sub-issue: ${subIssue.title}
+${subIssue.body}
+
+## Files — modify ONLY these
+${subIssue.filesToModify.map(f => `- ${f}`).join('\n')}
+
 ## TDD — NON-NEGOTIABLE
 1. Write the failing test FIRST
-2. Run TARGETED test (bun test test/your-file.test.ts) to confirm it fails — set timeout: ${testTimeout}
+2. Run TARGETED test to confirm it fails
 3. Write the implementation to make the test pass
-4. Run TARGETED test again to confirm it passes — set timeout: ${testTimeout}
+4. Run TARGETED test again to confirm it passes
 5. Run bunx tsc --noEmit
-Do NOT write source code before writing its test. This order is mandatory.
-NEVER run the full suite (bun test without a file path) — it takes 3+ minutes. Always target: bun test test/specific-file.test.ts
-
-## Efficiency Rules
-- Do NOT read files listed in "Injected Context" above — the content is already in your prompt
-- Do NOT use ls, pwd, cat, head, or tail via Bash — use Read tool if you must read a file
-- Every tool call should produce value — no exploratory commands
-- NEVER read the same file twice — use offset/limit to get what you need in one pass
-- Grep/find BEFORE reading non-key files — confirm the file is relevant before loading it
 
 Do NOT commit or push yet — Quinn will validate on local dev first.
-If tests fail, fix them before reporting.
+Report: success, files changed, test output.
+Also report worktreePath: your current working directory.
+      `, {
+        label: `marcus-sub-${subIssue.number}`, phase: 'Implement', role: 'marcus',
+        schema: BUILD_RESULT_SCHEMA
+      })
 
-Report: success, branch name, files changed, test output, evidence per AC.
-Also report worktreePath: your current working directory (run pwd and include the result).
-    `, {
-      label: `marcus-b${bi + 1}`, phase: 'Implement', role: 'marcus',
-      ...(sharedWorktreePath ? { isolation: undefined } : {}),
-      contextExcerpts: useExcerpts ? contextExcerpts : null,
-      contextFiles: !useExcerpts && acContextFiles.length > 0 ? acContextFiles : null,
-      schema: BUILD_RESULT_SCHEMA
-    })
-
-    if (!buildResult || !buildResult.success) {
-      log(`BATCH ${bi + 1} FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
-      return { success: false, buildResult, batch: bi + 1 }
+      if (!buildResult || !buildResult.success) {
+        log(`Sub-issue FAILED: ${subIssue.title}`)
+        return { success: false, buildResult }
+      }
+      results.push(buildResult)
+      log(`Sub-issue SUCCESS: ${subIssue.title} — ${(buildResult.filesChanged || []).length} files changed`)
     }
 
-    if (isFirstBatch && buildResult.worktreePath) {
-      sharedWorktreePath = buildResult.worktreePath
-    }
-    allFilesChanged.push(...(buildResult.filesChanged || []))
-    log(`BATCH ${bi + 1} SUCCESS — ${(buildResult.filesChanged || []).length} files changed`)
-  }
-
-  log(`ALL ${batches.length} BATCHES COMPLETE — ${[...new Set(allFilesChanged)].length} unique files changed`)
-  return {
-    success: true,
-    buildResult: {
+    const allFilesChanged = [...new Set(results.flatMap(r => r.filesChanged || []))]
+    log(`ALL ${subIssues.length} SUB-ISSUES COMPLETE — ${allFilesChanged.length} unique files changed`)
+    return {
       success: true,
-      filesChanged: [...new Set(allFilesChanged)],
-      worktreePath: sharedWorktreePath || PROJECT_ROOT,
+      buildResult: {
+        success: true,
+        filesChanged: allFilesChanged,
+        worktreePath: results[results.length - 1]?.worktreePath || PROJECT_ROOT,
+      }
     }
+  } else {
+    // Overlapping files — ship sequentially through single Marcus
+    log(`Sub-issues have overlapping files — shipping sequentially through single agent`)
+    const allAcs = subIssues.flatMap(s => s.acs)
+    const allFiles = [...new Set(subIssues.flatMap(s => s.filesToModify))]
+    return await runImplement()
   }
 }
 
@@ -999,8 +919,8 @@ Return only the file list, one per line.
   `, { label: 'prior-diff', phase: 'Implement' })
   const filesChanged = typeof diffResult === 'string' ? diffResult.trim().split('\n').filter(Boolean) : []
   implementResult = { success: true, buildResult: { filesChanged } }
-} else if (acBatches && acBatches.length > 1) {
-  implementResult = await runBatchedImplement(acBatches)
+} else if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.length >= 2) {
+  implementResult = await runDecomposedShip(mDecomposition.subIssues)
   if (!implementResult.success) {
     return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
   }

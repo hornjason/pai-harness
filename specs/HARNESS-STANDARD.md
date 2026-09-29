@@ -225,7 +225,7 @@ This artifact is durable — it survives context compaction and session boundari
 | Size | Ceremony | Skills invoked |
 |---|---|---|
 | **XS/S** | Write ACs → post to issue → go to EXECUTION | None — Ship SCOPE handles inline |
-| **M** | Stress-test approach first | `Skill("grill-with-docs")` → ACs → post to issue |
+| **M** | Decompose into XS/S sub-issues, stress-test approach | `Skill("grill-with-docs")` → `Skill("to-issues")` → 2-4 XS/S sub-issues → each ships through proven pipeline |
 | **L** | Full planning pipeline | `Skill("grill-with-docs")` → `Skill("to-prd")` → `Skill("council")` (debate the PRD) → `Skill("to-issues")` → each sub-issue re-enters at GOAL |
 
 **Output:**

@@ -157,23 +157,45 @@ describe("contract: negative cases", () => {
   });
 });
 
-describe("contract: M-size decomposition", () => {
-  test("ship.js contains AC grouping schema and batched implement", () => {
+describe("contract: M-size decomposition via to-issues", () => {
+  test("ship.js invokes to-issues for M-size with 3+ filesToModify", () => {
     const { readFileSync } = require("fs");
     const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
-    expect(shipContent).toContain("AC_GROUPING_SCHEMA");
-    expect(shipContent).toContain("runBatchedImplement");
-    expect(shipContent).toContain("decompose-acs");
-    expect(shipContent).toContain("BATCH");
+    // AC-1: M-size detection triggers to-issues decomposition
+    expect(shipContent).toContain("to-issues");
     expect(shipContent).toContain("discovery.sizing === 'M'");
+    expect(shipContent).toContain("filesToModify");
   });
 
-  test("batched implement loops over batches and scopes Marcus", () => {
+  test("decomposition produces 2-4 XS/S sub-issues with <=5 ACs and independent files", () => {
     const { readFileSync } = require("fs");
     const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
-    expect(shipContent).toContain("for (let bi = 0; bi < batches.length; bi++)");
-    expect(shipContent).toContain("marcus-b${bi + 1}");
-    expect(shipContent).toContain("sharedWorktreePath");
-    expect(shipContent).toContain("Focus ONLY on these ACs");
+    // AC-2: Sub-issue constraints enforced in schema and prompt
+    expect(shipContent).toContain("M_DECOMPOSITION_SCHEMA");
+    expect(shipContent).toMatch(/minItems.*2|"minItems":\s*2/);
+    expect(shipContent).toMatch(/maxItems.*4|"maxItems":\s*4/);
+    expect(shipContent).toContain("XS");
+    // <=5 ACs constraint
+    expect(shipContent).toMatch(/maxItems.*5|no more than 5 ACs|at most 5 ACs|5 ACs max|max.*5.*ACs/i);
+    // Independent files constraint
+    expect(shipContent).toMatch(/independent.*filesToModify|non-overlapping.*files|no file overlap/i);
+  });
+
+  test("sub-issues dispatch sequentially or via batch-ship", () => {
+    const { readFileSync } = require("fs");
+    const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
+    // AC-3: Sequential ship or batch-ship dispatch
+    expect(shipContent).toMatch(/batch-ship|runDecomposedShip|sub-issue.*ship|subIssues.*forEach|for.*subIssue/i);
+    // Must reference the ship pipeline for each sub-issue
+    expect(shipContent).toContain("subIssues");
+  });
+
+  test("old AC-batching patterns removed", () => {
+    const { readFileSync } = require("fs");
+    const shipContent = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
+    // AC-4: Old patterns should be gone
+    expect(shipContent).not.toContain("AC_GROUPING_SCHEMA");
+    expect(shipContent).not.toContain("runBatchedImplement");
+    expect(shipContent).not.toContain("acBatches");
   });
 });
