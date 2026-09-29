@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Scaffold Decomposition — 5 SCs open**
+**Current phase: Scaffold Decomposition — 4 SCs open**
 
 Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).
 
@@ -26,10 +26,15 @@ Shipped:
   #539: SHIPPED (17 agents, 32m) — brief validation
   #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines
   #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED
-  #540: SHIP_FAILED (DNS + evidence mismatch) — retriable
+  #540: SHIPPED (manual merge after gate fix 717fc8e0) — scanner extracted
   #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable
 
-16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 17/25 SCs done.
+Session 18:
+  Gate fix: grep exit-code-1 evidence capture (717fc8e0) — root cause of #540 3x failures
+  #540 SHIPPED — lib/scanner.ts with ProjectScan, 36 tests, SC-358+SC-359 done
+  Filed #597: systemic grep evidence pattern documented
+
+17 issues shipped total, 22 closed. Suite: 1592+ pass, 0 fail, 91 files. 18/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -61,7 +66,7 @@ Shipped:
 | Status | SC | What |
 |---|---|---|
 | ✅ | SC-358 | lib/scanner.ts with ProjectScan interface |
-| ⬜ | SC-359 | Scanner detects tech, specs, consumers, dirs |
+| ✅ | SC-359 | Scanner detects tech, specs, consumers, dirs |
 | ✅ | SC-360 | AGENTS.md generator from ProjectScan |
 | ✅ | SC-361 | Brief generator reads template files |
 | ✅ | SC-362 | CODE-MAP generator from ProjectScan |
