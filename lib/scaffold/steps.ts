@@ -625,6 +625,20 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
     }
   }
 
+  // Scan pages from dashboard/src/pages/*.tsx (file-based routing)
+  const dashboardPagesDir = join(root, "dashboard", "src", "pages");
+  if (existsSync(dashboardPagesDir)) {
+    const pageFiles = readdirSync(dashboardPagesDir).filter(f => f.endsWith(".tsx") || f.endsWith(".jsx"));
+    for (const f of pageFiles) {
+      const componentName = f.replace(/\.(tsx|jsx)$/, "");
+      // Convert CamelCase to kebab-case route path
+      const routePath = "/" + componentName
+        .replace(/([a-z])([A-Z])/g, "$1-$2")
+        .toLowerCase();
+      scannedPages[routePath] = componentName;
+    }
+  }
+
   // Scan test commands
   const pkgPath = join(root, "package.json");
   let testCmd = "bun test";
@@ -635,13 +649,24 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
     if (pkg.scripts?.typecheck) typeCheckCmd = pkg.scripts.typecheck;
   }
 
-  // Scan port
+  // Scan port from Makefile, docker-compose.yml, or .env.example
   const makefile = join(root, "Makefile");
   const detectedPort = (() => {
     if (existsSync(makefile)) {
       const content = readFileSync(makefile, "utf-8");
       const portMatch = content.match(/(?:--port\s+|PORT=|-p\s+|:)(\d{4,5})/);
       if (portMatch) return parseInt(portMatch[1]);
+    }
+    // Scan docker-compose.yml for port mappings
+    const dockerComposePaths = ["docker-compose.yml", "docker-compose.yaml"]
+      .map(f => join(root, f));
+    for (const dcPath of dockerComposePaths) {
+      if (existsSync(dcPath)) {
+        const content = readFileSync(dcPath, "utf-8");
+        // Match port mappings like "3001:3001" or "- 8080:8080"
+        const portMatch = content.match(/["']?(\d{4,5}):\d{4,5}["']?/);
+        if (portMatch) return parseInt(portMatch[1]);
+      }
     }
     const envExample = join(root, ".env.example");
     if (existsSync(envExample)) {
@@ -698,6 +723,16 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
     const missingPages = scannedPaths.filter(p => !declaredPages.some(d => existing.pages[d] === p || d === p));
     if (missingPages.length > 0) {
       issues.push(`PAGES: ${missingPages.length} routes in code not in rungate.json: ${missingPages.slice(0, 5).join(", ")}`);
+    }
+
+    // Audit consumers: flag declared consumers not found in source code as stale
+    const declaredConsumers = existing.consumers || [];
+    if (declaredConsumers.length > 0) {
+      const staleConsumers = declaredConsumers.filter((c: string) => !scannedConsumers.includes(c));
+      if (staleConsumers.length > 0) {
+        issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+        actions.push(`AUDIT: CONSUMERS — ${staleConsumers.length} stale consumers not in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+      }
     }
 
     if (issues.length > 0) {
