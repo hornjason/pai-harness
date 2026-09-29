@@ -52,6 +52,55 @@ export function parseTestResults(output: string): GateResult[] {
   return results;
 }
 
+// ── Test baseline functions (#599) ───────────────────────────────────────
+
+/**
+ * Extract the failure count from bun test output.
+ * Uses the last "N fail" line (bun may print intermediate summaries).
+ */
+export function extractTestFailureCount(testOutput: string): number {
+  const failMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
+  if (failMatches.length === 0) return 0;
+  return parseInt(failMatches[failMatches.length - 1][1]);
+}
+
+/**
+ * Subtract test baseline from total failures to get new-only failure count.
+ * Clamps to 0 — if baseline exceeds total (tests were fixed), result is 0.
+ */
+export function subtractTestBaseline(totalFailures: number, baseline: number): number {
+  return Math.max(0, totalFailures - baseline);
+}
+
+/**
+ * Capture test baseline by running the project test suite at scope time.
+ * Returns the number of pre-existing test failures.
+ */
+export function captureTestBaseline(state: Record<string, any>): number {
+  const projectRoot = state.projectRoot || process.cwd();
+  const harnessPath = join(projectRoot, ".claude", "rungate.json");
+  if (!existsSync(harnessPath)) return 0;
+
+  const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
+  const testCmd = harness.test?.command;
+  if (!testCmd) return 0;
+
+  const timeout = harness.test?.timeout || 300000;
+  console.log(`Test baseline: running "${testCmd}" to capture pre-existing failures...`);
+
+  try {
+    const output = execSync(`${testCmd} 2>&1`, {
+      encoding: "utf-8",
+      timeout,
+      cwd: projectRoot,
+    });
+    return extractTestFailureCount(output);
+  } catch (e: any) {
+    const stdout = e.stdout || "";
+    return extractTestFailureCount(stdout);
+  }
+}
+
 // ── Gate executor contract interfaces (SC-373, SC-376) ───────────────────
 
 export interface GateExecutorInput {
@@ -362,6 +411,17 @@ function runScopePreflights(state: Record<string, any>): void {
     const out = e.stdout || "";
     console.error(`SPEC DRIFT DETECTED: spec-compliance tests failed`);
     console.error(out.split("\n").filter((l: string) => l.includes("(fail)")).join("\n"));
+  }
+
+  // Capture test baseline — pre-existing failures (#599)
+  const testBaseline = captureTestBaseline(state);
+  state.gateContract = state.gateContract || {};
+  state.gateContract.baselines = state.gateContract.baselines || {};
+  state.gateContract.baselines.testBaseline = testBaseline;
+  if (testBaseline > 0) {
+    console.log(`Test baseline: ${testBaseline} pre-existing failure(s) captured — will be subtracted at verify`);
+  } else {
+    console.log(`Test baseline: 0 pre-existing failures — clean suite`);
   }
 
   // Track pre-existing failures (SC-33)
@@ -1035,6 +1095,16 @@ export function executeGate(input: GateExecutorInput): GateExecutorResult {
 
   // Parse results
   let { passes, fails, warns, results } = parseGateResults(testOutput, earlyResults, earlyFails);
+
+  // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
+  if (gate === "verify") {
+    const testBaseline = state.gateContract?.baselines?.testBaseline ?? 0;
+    if (testBaseline > 0) {
+      const originalFails = fails;
+      fails = subtractTestBaseline(fails, testBaseline);
+      console.log(`Test baseline subtraction: ${originalFails} total - ${testBaseline} baseline = ${fails} new failure(s)`);
+    }
+  }
 
   console.log(`\nTest results: ${passes} pass, ${fails} fail, ${warns} warn`);
 

@@ -3,6 +3,7 @@ import { readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
+import { extractTestFailureCount, subtractTestBaseline } from "./gate-executor";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -1053,5 +1054,68 @@ describe("prove checks", () => {
     const evidence = JSON.parse(readFileSync(evidencePath, "utf-8"));
     const VALID_VERDICTS = ["PROVEN", "UNPROVEN", "INCONCLUSIVE"];
     expect(VALID_VERDICTS.includes(evidence.verdict), `prove-evidence verdict must be PROVEN|UNPROVEN|INCONCLUSIVE, got "${evidence.verdict}" (ADR-009 B3)`).toBe(true);
+  });
+});
+
+// ═══ TEST BASELINE SUBTRACTION (#599) ═══════════════════════════════
+describe("test-baseline-subtraction", () => {
+  // AC-2: subtracts baseline from total test failures
+  test("subtracts baseline from total test failures", () => {
+    expect(subtractTestBaseline(5, 3)).toBe(2);
+    expect(subtractTestBaseline(10, 0)).toBe(10);
+    expect(subtractTestBaseline(0, 0)).toBe(0);
+  });
+
+  test("baseline diffing clamps to zero for negative values", () => {
+    // If baseline is higher than total (tests were fixed), new failures = 0
+    expect(subtractTestBaseline(2, 5)).toBe(0);
+    expect(subtractTestBaseline(0, 3)).toBe(0);
+  });
+
+  // AC-3: zero new failures = PASS
+  test("zero new failures when total equals baseline", () => {
+    const newFailures = subtractTestBaseline(3, 3);
+    expect(newFailures).toBe(0);
+    // 0 new failures should mean PASS
+    const resultVal: "PASS" | "FAIL" = newFailures > 0 ? "FAIL" : "PASS";
+    expect(resultVal).toBe("PASS");
+  });
+
+  test("pre-existing failures do not block when no new failures introduced", () => {
+    // Scenario: 7 pre-existing failures, Marcus introduces 0 new ones
+    const baseline = 7;
+    const totalAfterMarcus = 7;
+    const newFailures = subtractTestBaseline(totalAfterMarcus, baseline);
+    expect(newFailures).toBe(0);
+    const resultVal: "PASS" | "FAIL" = newFailures > 0 ? "FAIL" : "PASS";
+    expect(resultVal).toBe("PASS");
+  });
+
+  // extractTestFailureCount unit tests
+  test("extractTestFailureCount: parses failure count from bun test output", () => {
+    const output = `
+ 42 pass
+ 3 fail
+`;
+    expect(extractTestFailureCount(output)).toBe(3);
+  });
+
+  test("extractTestFailureCount: returns 0 when no failures in output", () => {
+    const output = `
+ 42 pass
+`;
+    expect(extractTestFailureCount(output)).toBe(0);
+  });
+
+  test("extractTestFailureCount: uses last fail line when multiple present", () => {
+    // bun test can print intermediate summaries
+    const output = `
+ 10 pass
+ 2 fail
+
+ 52 pass
+ 5 fail
+`;
+    expect(extractTestFailureCount(output)).toBe(5);
   });
 });
