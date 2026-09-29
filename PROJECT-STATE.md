@@ -36,7 +36,7 @@ Session 18:
   RCA: 70% of failures are EVIDENCE_MISSING, Marcus correct 23/29 runs
   Filed #597 (grep evidence), #598 (evidence pre-validation P1), #599 (test baseline diffing P2)
 
-28 issues shipped total, 32 closed. Suite: 1631 pass, 0 fail, 92 files. 19/25 SCs done.
+29 issues shipped total, 33 closed. Suite: 1631 pass, 0 fail, 92 files. 19/25 SCs done.
 
   #542 SHIPPED — scaffold-project.ts 1500→133 lines, lib/scaffold/ + lib/validators/ extracted. SC-363 done.
   #596 SHIPPED — first-pass! 0 regressions, 17 agents, 21 min. M-size to-issues decomposition.
@@ -48,7 +48,8 @@ Session 18:
   First-pass rate: 6/9 (67%), up from 21%.
   #527 SHIPPED — first-pass! Doc staleness detection. 5 consecutive first-pass wins.
   #583 SHIPPED — feature parity audit. 3 regressions (pre-existing test failures, not Marcus).
-  First-pass rate: 6/10 (60%). Pre-existing failures now #1 blocker — filed as systemic fix needed.
+  First-pass rate: 7/11 (64%). Pre-existing failures now #1 blocker — filed #600.
+  #531 SHIPPED — first-pass! README frontmatter leak fix. 6 consecutive first-pass (excl pre-existing).
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
