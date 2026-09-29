@@ -593,6 +593,38 @@ gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Issue closed by /prove â€
   `, { label: 'label-close', phase: 'Output' })
 
   log(String(chainMode).includes('CHAIN') ? 'Issue labeled + closed (chain mode)' : 'Issue labeled proven (standalone)')
+
+  // Auto-update governing spec decision table: ACCEPTED â†’ SHIPPED
+  const specUpdateResult = await agent(`
+Read ${GOAL_RECORD_PATH} (if it exists) and the issue body to extract D-NNN decision IDs and governingSpec.path.
+Then run this command to update the spec:
+
+bun -e "
+import { updateSpecStatus, extractDecisionIds } from '${HARNESS_ROOT}/lib/spec-updater.ts';
+import { readFileSync, existsSync } from 'fs';
+
+const goalPath = '${GOAL_RECORD_PATH}';
+let goalRecord = {};
+if (existsSync(goalPath)) {
+  try { goalRecord = JSON.parse(readFileSync(goalPath, 'utf-8')); } catch {}
+}
+
+// Extract D-NNN from issue body via gh
+const issueBody = await new Response(Bun.spawn(['gh', 'issue', 'view', '${ISSUE}', '--repo', '${ISSUE_REPO}', '--json', 'body', '-q', '.body']).stdout).text();
+const decisionIds = extractDecisionIds(issueBody + ' ' + JSON.stringify(goalRecord));
+
+const result = await updateSpecStatus({
+  goalRecord,
+  issueNumber: ${ISSUE},
+  decisionIds,
+});
+console.log(JSON.stringify(result));
+"
+
+Report the JSON result. If spec was updated, commit the changed spec file.
+  `, { label: 'spec-update', phase: 'Output' })
+
+  log(`Spec update: ${JSON.stringify(specUpdateResult)}`)
 } else if (verdict === 'UNPROVEN') {
   await agent(`
 Post a re-investigation comment:
