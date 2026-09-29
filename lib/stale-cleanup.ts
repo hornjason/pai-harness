@@ -4,10 +4,10 @@
  * Deep module: recursive file finder and TTL cleanup logic.
  * The hook file is a thin trigger that delegates here.
  *
- * Issue: #544
+ * Issue: #544, #469 (archive-then-purge)
  */
 
-import { readdirSync, readFileSync, statSync, unlinkSync, existsSync, rmdirSync } from 'fs';
+import { readdirSync, readFileSync, statSync, unlinkSync, existsSync, rmdirSync, renameSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 
 /**
@@ -34,8 +34,145 @@ export interface CleanupResult {
   logs: string[];
 }
 
+export interface ArchiveResult {
+  archived: number;
+  purged: number;
+  skipped: number;
+  logs: string[];
+}
+
 /**
- * Clean stale .ship-active and workflow-state.json files.
+ * Archive and purge work directories.
+ *
+ * Archive phase: Move directories to .archive/ after archiveTtlMs (default 4h)
+ * Purge phase: Delete archived directories after purgeTtlMs (default 30d)
+ * Migration: Move old _archived-* directories into .archive/
+ */
+export function archiveAndPurge(
+  workDir: string,
+  archiveTtlMs: number,
+  purgeTtlMs: number,
+): ArchiveResult {
+  const now = Date.now();
+  let archived = 0;
+  let purged = 0;
+  let skipped = 0;
+  const logs: string[] = [];
+
+  const archiveDir = join(workDir, '.archive');
+  const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+
+  // Create .archive/ if it doesn't exist
+  if (!existsSync(archiveDir)) {
+    try {
+      mkdirSync(archiveDir, { recursive: true });
+    } catch {}
+  }
+
+  // Migration: Move old _archived-* directories into .archive/
+  try {
+    for (const entry of readdirSync(workDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name.startsWith('_archived-')) {
+        try {
+          const srcPath = join(workDir, entry.name);
+          const destPath = join(archiveDir, entry.name);
+          renameSync(srcPath, destPath);
+          logs.push(`MIGRATED ${entry.name} to .archive/`);
+        } catch {}
+      }
+    }
+  } catch {}
+
+  // Archive phase: scan top-level directories
+  try {
+    for (const entry of readdirSync(workDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+
+      // Skip hidden directories (except .archive itself)
+      if (entry.name.startsWith('.')) continue;
+
+      const dirPath = join(workDir, entry.name);
+      const workflowStatePath = join(dirPath, 'workflow-state.json');
+
+      try {
+        let shouldArchive = false;
+        let reason = '';
+
+        if (existsSync(workflowStatePath)) {
+          const data = JSON.parse(readFileSync(workflowStatePath, 'utf-8'));
+          const phase = data.phase || '';
+          const isActivePhase = ['BUILD', 'VERIFY', 'SCOPE'].includes(phase);
+          const ageMs = now - statSync(workflowStatePath).mtimeMs;
+
+          if (isActivePhase && ageMs < sevenDaysMs) {
+            // Active work, skip
+            skipped++;
+            continue;
+          } else if (isActivePhase && ageMs >= sevenDaysMs) {
+            // Hard TTL exceeded
+            shouldArchive = true;
+            reason = `phase=${phase} age=${Math.floor(ageMs / 86400000)}d (7-day hard TTL)`;
+          } else if (ageMs > archiveTtlMs) {
+            // Non-active phase, exceeded archive TTL
+            shouldArchive = true;
+            reason = `phase=${phase} age=${Math.floor(ageMs / 60000)}m`;
+          }
+        } else {
+          // Orphaned directory (no workflow-state.json)
+          shouldArchive = true;
+          reason = 'orphaned (no workflow-state.json)';
+        }
+
+        if (shouldArchive) {
+          const destPath = join(archiveDir, entry.name);
+          renameSync(dirPath, destPath);
+          archived++;
+          logs.push(`ARCHIVED ${entry.name} reason=${reason}`);
+        }
+      } catch {}
+    }
+  } catch {}
+
+  // Purge phase: delete old archived directories
+  if (existsSync(archiveDir)) {
+    try {
+      for (const entry of readdirSync(archiveDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+
+        const archivedPath = join(archiveDir, entry.name);
+        try {
+          const ageMs = now - statSync(archivedPath).mtimeMs;
+          if (ageMs > purgeTtlMs) {
+            rmdirSync(archivedPath, { recursive: true });
+            purged++;
+            logs.push(`PURGED ${entry.name} age=${Math.floor(ageMs / 86400000)}d`);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  // Clean empty directories in .archive/
+  if (existsSync(archiveDir)) {
+    try {
+      for (const entry of readdirSync(archiveDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        try {
+          const archEntryPath = join(archiveDir, entry.name);
+          if (readdirSync(archEntryPath).length === 0) {
+            rmdirSync(archEntryPath);
+          }
+        } catch {}
+      }
+    } catch {}
+  }
+
+  return { archived, purged, skipped, logs };
+}
+
+/**
+ * Clean stale .ship-active files and archive work directories.
  * Returns count of deleted files and log messages.
  */
 export function cleanStaleFiles(
@@ -59,42 +196,12 @@ export function cleanStaleFiles(
     } catch {}
   }
 
-  // Clean workflow-state.json (preserve active phases for 4h, hard TTL 7d)
-  for (const f of findFiles(workDir, 'workflow-state.json')) {
-    try {
-      const ageMs = now - statSync(f).mtimeMs;
-      const data = JSON.parse(readFileSync(f, 'utf-8'));
-      const phase = data.phase || '';
-      const isActivePhase = ['BUILD', 'VERIFY', 'SCOPE'].includes(phase);
+  // Archive and purge work directories
+  const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000;
+  const archiveResult = archiveAndPurge(workDir, fourHoursMs, thirtyDaysMs);
 
-      if (isActivePhase && ageMs > sevenDaysMs) {
-        logs.push(`DELETED workflow-state.json age=${Math.floor(ageMs / 86400000)}d phase=${phase} (7-day hard TTL) path=${f}`);
-        unlinkSync(f);
-        deleted++;
-        continue;
-      }
-      if (isActivePhase) continue;
-      if (existsSync(join(dirname(f), 'goal-record.json'))) continue;
-
-      if (ageMs > fourHoursMs) {
-        logs.push(`DELETED workflow-state.json age=${Math.floor(ageMs / 60000)}m phase=${phase || 'unknown'} path=${f}`);
-        unlinkSync(f);
-        deleted++;
-      }
-    } catch {}
-  }
-
-  // Clean empty directories
-  try {
-    for (const d of readdirSync(workDir, { withFileTypes: true })) {
-      if (!d.isDirectory()) continue;
-      try {
-        if (readdirSync(join(workDir, d.name)).length === 0) {
-          rmdirSync(join(workDir, d.name));
-        }
-      } catch {}
-    }
-  } catch {}
+  // Merge logs
+  logs.push(...archiveResult.logs);
 
   return { deleted, logs };
 }
