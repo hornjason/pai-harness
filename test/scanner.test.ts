@@ -195,6 +195,74 @@ testable: true
   });
 });
 
+describe("README identity extraction edge cases", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `scanner-identity-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("identity strips YAML frontmatter with LF line endings", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "fm-proj" }));
+    mkdirSync(join(tmpDir, "src"));
+    writeFileSync(join(tmpDir, "README.md"),
+      "---\ndoc-type: readme\nstatus: active\n---\n\n# My Project\n\nThis is a real content paragraph describing the project in detail.\n"
+    );
+
+    const scan = scanProject(tmpDir);
+    expect(scan.identity).toBe("This is a real content paragraph describing the project in detail.");
+  });
+
+  test("identity strips YAML frontmatter with CRLF line endings", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "crlf-proj" }));
+    mkdirSync(join(tmpDir, "src"));
+    writeFileSync(join(tmpDir, "README.md"),
+      "---\r\ndoc-type: readme\r\nstatus: active\r\n---\r\n\r\n# My Project\r\n\r\nThis is a CRLF content paragraph describing the project.\r\n"
+    );
+
+    const scan = scanProject(tmpDir);
+    expect(scan.identity).toBe("This is a CRLF content paragraph describing the project.");
+  });
+
+  test("identity skips badge lines and shield images", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "badge-proj" }));
+    mkdirSync(join(tmpDir, "src"));
+    writeFileSync(join(tmpDir, "README.md"),
+      "# Badge Project\n\n[![Build Status](https://img.shields.io/badge/build-passing-green)](https://example.com)\n[![Coverage](https://shields.io/badge/coverage-90-blue)](https://example.com)\n\n![Logo](./assets/logo.png)\n\nThe actual project description starts here with enough words to pass the filter.\n"
+    );
+
+    const scan = scanProject(tmpDir);
+    expect(scan.identity).toBe("The actual project description starts here with enough words to pass the filter.");
+  });
+
+  test("identity handles mixed frontmatter plus template markers", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "mixed-proj" }));
+    mkdirSync(join(tmpDir, "src"));
+    writeFileSync(join(tmpDir, "README.md"),
+      "---\ndoc-type: readme\nstatus: draft\n---\n\n<!-- TODO: Add badges here -->\n\n# Mixed Template Project\n\n[![Build](https://img.shields.io/badge/build-ok-green)](https://example.com)\n\n![hero](./hero.png)\n\nThis is the real identity paragraph for a template-style README file.\n"
+    );
+
+    const scan = scanProject(tmpDir);
+    expect(scan.identity).toBe("This is the real identity paragraph for a template-style README file.");
+  });
+
+  test("identity skips image-only paragraphs", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "img-proj" }));
+    mkdirSync(join(tmpDir, "src"));
+    writeFileSync(join(tmpDir, "README.md"),
+      "# Image Project\n\n![Screenshot](./screenshot.png)\n\n![Another](https://example.com/img.jpg)\n\nA substantial description of the image project with enough detail.\n"
+    );
+
+    const scan = scanProject(tmpDir);
+    expect(scan.identity).toBe("A substantial description of the image project with enough detail.");
+  });
+});
+
 describe("AC-3: Scanner import isolation", () => {
   test("scanner.ts imports no generation modules", () => {
     const content = readFileSync(join(ROOT, "lib/scanner.ts"), "utf-8");

@@ -354,16 +354,25 @@ function detectIdentity(root: string, pkgDesc: string, type: ProjectType): strin
   if (existsSync(readmePath)) {
     try {
       let readme = readFileSync(readmePath, "utf-8");
+      // Normalize CRLF to LF for consistent parsing
+      readme = readme.replace(/\r\n/g, "\n");
       // Strip YAML frontmatter
       while (readme.startsWith("---\n")) {
         const endFm = readme.indexOf("\n---\n", 4);
         if (endFm > 0) { readme = readme.slice(endFm + 5); } else { break; }
       }
       readme = readme.replace(/<!--[\s\S]*?-->/g, "");
-      const paragraphs = readme.split(/\n\n+/).filter(p =>
-        !p.startsWith("#") && !p.startsWith("---") && !p.startsWith("<") &&
-        !/^[\s]*$/.test(p) && p.trim().length > 20
-      );
+      const paragraphs = readme.split(/\n\n+/).filter(p => {
+        const trimmed = p.trim();
+        if (!trimmed || trimmed.length <= 20) return false;
+        if (trimmed.startsWith("#") || trimmed.startsWith("---") || trimmed.startsWith("<")) return false;
+        // Skip badge lines (shield.io badges, linked images)
+        if (/^\[!\[.*\]\(.*\)\]\(.*\)/.test(trimmed)) return false;
+        // Skip image-only paragraphs (![alt](url) lines with nothing else)
+        const lines = trimmed.split("\n");
+        if (lines.every(l => /^\s*!\[.*\]\(.*\)\s*$/.test(l) || /^\s*$/.test(l))) return false;
+        return true;
+      });
       if (paragraphs.length > 0) return paragraphs[0].replace(/\n/g, " ").trim();
     } catch {}
   }
