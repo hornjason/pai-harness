@@ -36,7 +36,9 @@ Session 18:
   RCA: 70% of failures are EVIDENCE_MISSING, Marcus correct 23/29 runs
   Filed #597 (grep evidence), #598 (evidence pre-validation P1), #599 (test baseline diffing P2)
 
-19 issues shipped total, 23 closed. Suite: 1597 pass, 0 fail, 91 files. 19/25 SCs done.
+20 issues shipped total, 24 closed. Suite: 1631 pass, 0 fail, 92 files. 19/25 SCs done.
+
+  #542 SHIPPED — scaffold-project.ts 1500→133 lines, lib/scaffold/ + lib/validators/ extracted. SC-363 done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
