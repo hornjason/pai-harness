@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, existsSync
 import { join } from "path";
 import { execSync } from "child_process";
 import { mockProjectScan } from "../lib/generators/types";
-import { generateOrAuditProjectHarness } from "../lib/scaffold/steps";
+import { generateOrAuditProjectHarness, copySpecTemplateIfEmpty } from "../lib/scaffold/steps";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -214,5 +214,67 @@ describe("DDB-532 AC-4: >= 4 test cases covering harness generation and audit", 
     const routeTests = (content.match(/test\([^)]*page[^)]*filename[^)]*route/gi) || []).length;
     const total = dashboardTests + dockerTests + staleTests + routeTests;
     expect(total).toBeGreaterThanOrEqual(4);
+  });
+});
+
+// ── DDB-529: copySpecTemplateIfEmpty emptiness check ─────────────────────
+
+describe("DDB-529 AC-1: copySpecTemplateIfEmpty skips when specs/ has existing .md files", () => {
+  const tmpRoot = join(ROOT, "test", ".tmp-spec-template");
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  test("copySpecTemplateIfEmpty copies template when specs/ is empty", () => {
+    const specsDir = join(tmpRoot, "specs");
+    mkdirSync(specsDir, { recursive: true });
+
+    const actions: string[] = [];
+    copySpecTemplateIfEmpty(specsDir, actions);
+
+    expect(existsSync(join(specsDir, "SPEC-TEMPLATE.md"))).toBe(true);
+    expect(actions.some(a => a.includes("CREATED") && a.includes("SPEC-TEMPLATE.md"))).toBe(true);
+  });
+
+  test("copySpecTemplateIfEmpty skips when specs/ has existing .md files", () => {
+    const specsDir = join(tmpRoot, "specs");
+    mkdirSync(specsDir, { recursive: true });
+    writeFileSync(join(specsDir, "MY-SPEC.md"), "# My Spec\nSome content");
+
+    const actions: string[] = [];
+    copySpecTemplateIfEmpty(specsDir, actions);
+
+    // Should skip because non-template .md files exist
+    expect(actions.some(a => a.includes("SKIP"))).toBe(true);
+    expect(actions.some(a => a.includes("CREATED"))).toBe(false);
+  });
+
+  test("copySpecTemplateIfEmpty copies when only SPEC-TEMPLATE.md exists (not counted)", () => {
+    const specsDir = join(tmpRoot, "specs");
+    mkdirSync(specsDir, { recursive: true });
+    writeFileSync(join(specsDir, "SPEC-TEMPLATE.md"), "# Old template");
+
+    const actions: string[] = [];
+    copySpecTemplateIfEmpty(specsDir, actions);
+
+    // SPEC-TEMPLATE.md itself should not count as an existing spec
+    expect(existsSync(join(specsDir, "SPEC-TEMPLATE.md"))).toBe(true);
+    expect(actions.some(a => a.includes("CREATED") || a.includes("UPDATED"))).toBe(true);
+  });
+});
+
+describe("DDB-529 AC-2: SPEC-TEMPLATE.md has testable: false frontmatter", () => {
+  test("SPEC-TEMPLATE.md frontmatter includes testable: false", () => {
+    const templatePath = join(ROOT, "specs", "SPEC-TEMPLATE.md");
+    const content = readFileSync(templatePath, "utf-8");
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    expect(fmMatch).not.toBeNull();
+    expect(fmMatch![1]).toContain("testable: false");
   });
 });

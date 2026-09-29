@@ -929,6 +929,16 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
 
 export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): void {
   if (!existsSync(specsDir)) return;
+
+  // Skip if specs/ already has .md files (besides SPEC-TEMPLATE.md itself)
+  const existingSpecs = readdirSync(specsDir).filter(
+    f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md"
+  );
+  if (existingSpecs.length > 0) {
+    actions.push("SKIP: spec template (specs/ already has .md files)");
+    return;
+  }
+
   const templatePath = join(dirname(dirname(__dirname)), "specs", "SPEC-TEMPLATE.md");
   if (!existsSync(templatePath)) {
     actions.push("SKIP: spec template (SPEC-TEMPLATE.md not found in harness)");
