@@ -76,7 +76,7 @@ export function subtractTestBaseline(totalFailures: number, baseline: number): n
  * Capture test baseline by running the project test suite at scope time.
  * Returns the number of pre-existing test failures.
  */
-export function captureTestBaseline(state: Record<string, any>): number {
+function captureTestBaseline(state: Record<string, any>): number {
   const projectRoot = state.projectRoot || process.cwd();
   const harnessPath = join(projectRoot, ".claude", "rungate.json");
   if (!existsSync(harnessPath)) return 0;
