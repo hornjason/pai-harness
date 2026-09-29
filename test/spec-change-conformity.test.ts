@@ -11,6 +11,7 @@ import { tmpdir } from 'os';
 import {
   isSpecFile,
   runSpecChangeConformity,
+  syncSpecTests,
   type SpecChangeConformityResult,
 } from '../lib/spec-change-conformity';
 
@@ -95,6 +96,54 @@ describe('spec-change-conformity', () => {
       expect(result.flippedCount).toBe(0);
       // SC-998 should be in failing or unmatchable (not passing)
       expect(result.passing).not.toContain('SC-998');
+    });
+  });
+
+  // AC-1: syncSpecTests triggers regeneration for testable specs
+  describe('syncSpecTests', () => {
+    it('returns syncTriggered:true when spec has testable:true frontmatter', () => {
+      const specsDir = join(tempDir, 'specs');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(
+        join(specsDir, 'TESTABLE-SPEC.md'),
+        '---\ndoc-type: spec\ntestable: true\n---\n# Testable Spec\n\n4. **GATE: some gate check**\n'
+      );
+      const result = syncSpecTests(tempDir, join(specsDir, 'TESTABLE-SPEC.md'));
+      expect(result.syncTriggered).toBe(true);
+    });
+
+    it('returns syncTriggered:false when spec has testable:false', () => {
+      const specsDir = join(tempDir, 'specs');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(
+        join(specsDir, 'NON-TESTABLE.md'),
+        '---\ndoc-type: spec\ntestable: false\n---\n# Non-Testable\n'
+      );
+      const result = syncSpecTests(tempDir, join(specsDir, 'NON-TESTABLE.md'));
+      expect(result.syncTriggered).toBe(false);
+    });
+
+    it('returns syncTriggered:false when spec has no frontmatter', () => {
+      const specsDir = join(tempDir, 'specs');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(
+        join(specsDir, 'NO-FM.md'),
+        '# No Frontmatter Spec\n\nJust text.\n'
+      );
+      const result = syncSpecTests(tempDir, join(specsDir, 'NO-FM.md'));
+      expect(result.syncTriggered).toBe(false);
+    });
+
+    it('extracts claims from testable spec and returns claim count', () => {
+      const specsDir = join(tempDir, 'specs');
+      mkdirSync(specsDir, { recursive: true });
+      writeFileSync(
+        join(specsDir, 'CLAIMS-SPEC.md'),
+        '---\ndoc-type: spec\ntestable: true\n---\n# Claims Spec\n\n**GATE: some check passes**\n\nQuinn validates on local dev\n'
+      );
+      const result = syncSpecTests(tempDir, join(specsDir, 'CLAIMS-SPEC.md'));
+      expect(result.syncTriggered).toBe(true);
+      expect(result.claimsExtracted).toBeGreaterThan(0);
     });
   });
 });

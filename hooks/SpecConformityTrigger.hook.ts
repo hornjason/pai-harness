@@ -11,7 +11,7 @@
  */
 
 import { parseHookInput } from "./lib/parseStdin";
-import { isSpecFile, runSpecChangeConformity } from "../lib/spec-change-conformity";
+import { isSpecFile, runSpecChangeConformity, syncSpecTests } from "../lib/spec-change-conformity";
 
 async function main() {
   const input = await parseHookInput();
@@ -32,6 +32,12 @@ async function main() {
     }
     if (result.failing.length > 0) {
       console.error(`[SpecConformityTrigger] ${result.failing.length} SC(s) still failing`);
+    }
+
+    // AC-1 (#508): Trigger sync-spec-tests for testable specs
+    const syncResult = syncSpecTests(projectRoot, filePath);
+    if (syncResult.syncTriggered) {
+      console.error(`[SpecConformityTrigger] sync-spec-tests: ${syncResult.claimsExtracted} claim(s) extracted`);
     }
   } catch (err) {
     console.error(`[SpecConformityTrigger] Error: ${err}`);

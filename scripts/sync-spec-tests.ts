@@ -23,7 +23,7 @@ const SHIP_PATH = resolve(HARNESS_ROOT, "workflows/ship.js");
 const PROVE_PATH = resolve(HARNESS_ROOT, "workflows/prove.js");
 const OUTPUT_PATH = resolve(HARNESS_ROOT, "test/spec-compliance-auto.test.ts");
 
-function parseTestable(content: string): boolean | null {
+export function parseTestable(content: string): boolean | null {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fmMatch) return null;
   const testableMatch = fmMatch[1].match(/^testable:\s*(true|false)\s*$/m);
@@ -44,7 +44,7 @@ function discoverTestableSpecs(): { path: string; name: string }[] {
   return testable;
 }
 
-interface Claim {
+export interface Claim {
   id: string;
   spec_line: number;
   claim: string;
@@ -54,7 +54,7 @@ interface Claim {
   context: string;
 }
 
-function extractClaims(spec: string): Claim[] {
+export function extractClaims(spec: string): Claim[] {
   const claims: Claim[] = [];
   const lines = spec.split("\n");
   let claimCounter = 0;
@@ -149,7 +149,7 @@ function extractClaims(spec: string): Claim[] {
   });
 }
 
-function generateTest(claims: Claim[]): string {
+export function generateTest(claims: Claim[]): string {
   const shipClaims = claims.filter(c => c.target === "ship" || c.target === "both");
   const proveClaims = claims.filter(c => c.target === "prove" || c.target === "both");
 
@@ -209,7 +209,8 @@ function generateTest(claims: Claim[]): string {
   return lines.join("\n") + "\n";
 }
 
-// Main — glob scan all testable specs
+// Main — only run when executed directly as a script
+if (import.meta.main) {
 const testableSpecs = discoverTestableSpecs();
 const allFiles = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
 
@@ -234,3 +235,4 @@ console.log(`Written to: ${OUTPUT_PATH}`);
 for (const c of allClaims) {
   console.log(`  ${c.id} [${c.target}] L${c.spec_line}: ${c.claim}`);
 }
+} // end if (import.meta.main)
