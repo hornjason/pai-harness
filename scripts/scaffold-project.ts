@@ -16,6 +16,7 @@ import { generateAgentBriefs as buildAgentBriefsContent } from "../lib/generator
 import { generateCodeMap as buildCodeMapContent } from "../lib/generators/code-map";
 import { scanProject, detectProjectType } from "../lib/scanner";
 import type { ProjectScan, ProjectType, KeyFile, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../lib/generators/types";
+import { buildAgentMeta } from "../lib/create-brief";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -787,20 +788,8 @@ function generateAgentBriefs(root: string): void {
 
   const harnessTemplatesDir = join(__dirname, "..", "templates", "agent-briefs");
 
-  // Build agentMeta from harness?.roles config — generator merges with defaults
-  const agentMeta: Record<string, { description: string; tools: string; model: string; tiers?: Record<string, string[]> }> = {};
-  if (harness?.roles) {
-    for (const [roleName, roleConfig] of Object.entries(harness.roles as Record<string, any>)) {
-      if (roleConfig.description || roleConfig.tools || roleConfig.model) {
-        agentMeta[roleName] = {
-          description: roleConfig.description || `${roleName} agent`,
-          tools: roleConfig.tools || "[Bash, Read]",
-          model: roleConfig.model || "sonnet",
-          ...(roleConfig.tiers ? { tiers: roleConfig.tiers } : {}),
-        };
-      }
-    }
-  }
+  // Agent metadata for frontmatter generation — read exclusively from roles config
+  const agentMeta = buildAgentMeta(harness?.roles);
 
   // Build ProjectScan and delegate to generator (SCAFFOLD-DECOMPOSITION-SPEC D-2)
   const briefScan: ProjectScan = {
