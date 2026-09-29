@@ -15,6 +15,7 @@ import { generateAgentsMd as buildAgentsMdContent } from "../lib/generators/agen
 import { generateAgentBriefs as buildAgentBriefsContent } from "../lib/generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../lib/generators/code-map";
 import type { ProjectScan, KeyFile, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../lib/generators/types";
+import { detectProjectType } from "../lib/scanner";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
