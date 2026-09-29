@@ -140,6 +140,7 @@ function checkStaleDocRefs(projectRoot: string): GapResult {
               join(projectRoot, "specs", cleanFile),
               join(projectRoot, "test", cleanFile),
               join(projectRoot, "docs", cleanFile),
+              join(projectRoot, "reference", cleanFile),
             ];
             const found = candidates.some((p) => existsSync(p));
             if (!found) {
