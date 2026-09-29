@@ -3,6 +3,8 @@
  * AC-4: Tests generators with mock ProjectScan data
  */
 import { test, expect, describe } from "bun:test";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { generateAgentBriefs } from "../lib/generators/agent-briefs";
 import { mockProjectScan, type ProjectScan } from "../lib/generators/types";
 
@@ -92,5 +94,13 @@ describe("generateAgentBriefs with mock ProjectScan", () => {
     });
     const result = generateAgentBriefs(scan);
     expect(result.marcus).toContain("description: Custom description for marcus");
+  });
+
+  test("AC-4: DEFAULT_AGENT_META not defined in agent-briefs.ts — imported from create-brief", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "generators", "agent-briefs.ts"), "utf-8");
+    // Must not DEFINE DEFAULT_AGENT_META (no "const DEFAULT_AGENT_META" or "Record<string, AgentMeta> =")
+    expect(src).not.toContain("const DEFAULT_AGENT_META");
+    // Must import it from create-brief instead
+    expect(src).toContain("import { buildAgentMeta, DEFAULT_AGENT_META }");
   });
 });

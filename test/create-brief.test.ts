@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
-import { generateBriefTemplate, addRoleToConfig } from "../lib/create-brief";
+import { generateBriefTemplate, addRoleToConfig, buildAgentMeta } from "../lib/create-brief";
 
 const ROOT = join(import.meta.dir, "..");
 const TEMPLATES_DIR = join(ROOT, "templates", "agent-briefs");
@@ -132,6 +132,57 @@ describe("create-brief", () => {
       writeFileSync(tmpConfig, JSON.stringify(initialConfig, null, 2));
 
       expect(() => addRoleToConfig(tmpConfig, "tester3", "Test engineer")).toThrow(/already exists/);
+    });
+  });
+
+  describe("AC-4: buildAgentMeta reads from harness roles config", () => {
+    test("builds agentMeta record from roles config", () => {
+      const harnessConfig = {
+        roles: {
+          marcus: {
+            description: "Principal engineer",
+            tools: "[Bash, Read, Write, Edit]",
+            model: "sonnet",
+            tiers: { reinforcement: ["Testing Rules"] },
+          },
+          quinn: {
+            description: "QA engineer",
+            tools: "[Bash, Read]",
+            model: "sonnet",
+          },
+        },
+      };
+      const result = buildAgentMeta(harnessConfig);
+      expect(result.marcus).toBeDefined();
+      expect(result.marcus.description).toBe("Principal engineer");
+      expect(result.marcus.tools).toBe("[Bash, Read, Write, Edit]");
+      expect(result.marcus.model).toBe("sonnet");
+      expect(result.marcus.tiers?.reinforcement).toEqual(["Testing Rules"]);
+      expect(result.quinn).toBeDefined();
+      expect(result.quinn.description).toBe("QA engineer");
+    });
+
+    test("returns empty record when no roles in config", () => {
+      const result = buildAgentMeta({});
+      expect(Object.keys(result).length).toBe(0);
+    });
+
+    test("returns empty record for null config", () => {
+      const result = buildAgentMeta(null);
+      expect(Object.keys(result).length).toBe(0);
+    });
+
+    test("uses sensible defaults for missing fields", () => {
+      const harnessConfig = {
+        roles: {
+          custom: {
+            description: "Custom agent",
+          },
+        },
+      };
+      const result = buildAgentMeta(harnessConfig);
+      expect(result.custom.tools).toBe("[Bash, Read]");
+      expect(result.custom.model).toBe("sonnet");
     });
   });
 });

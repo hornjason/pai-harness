@@ -5,6 +5,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import type { AgentMeta } from "./generators/types";
 
 /**
  * Generate an agent brief markdown template with standard sections and variable placeholders.
@@ -96,4 +97,32 @@ export function addRoleToConfig(configPath: string, roleName: string, descriptio
     model: "sonnet",
   };
   writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+}
+
+export const DEFAULT_AGENT_META: Record<string, AgentMeta> = {
+  discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
+  marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
+  quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
+  rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
+  serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
+  aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
+};
+
+/**
+ * Build agentMeta record from harness roles config.
+ * Returns only config-sourced entries — callers merge with DEFAULT_AGENT_META if needed.
+ */
+export function buildAgentMeta(harnessConfig: Record<string, any> | null): Record<string, AgentMeta> {
+  const result: Record<string, AgentMeta> = {};
+  if (!harnessConfig?.roles) return result;
+
+  for (const [roleName, roleConfig] of Object.entries(harnessConfig.roles as Record<string, any>)) {
+    result[roleName] = {
+      description: roleConfig.description || `${roleName} agent`,
+      tools: roleConfig.tools || "[Bash, Read]",
+      model: roleConfig.model || "sonnet",
+      ...(roleConfig.tiers ? { tiers: roleConfig.tiers } : {}),
+    };
+  }
+  return result;
 }

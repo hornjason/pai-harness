@@ -8,18 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";
 import type { ProjectScan, AgentMeta } from "./types";
-
-/**
- * Default agent metadata — used when roles config is absent.
- */
-const DEFAULT_AGENT_META: Record<string, AgentMeta> = {
-  discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Discovery Rules"] } },
-  marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
-  quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
-  rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet" },
-  serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Bash, Read]", model: "sonnet" },
-  aditi: { description: "UX/UI designer — component specs, visual review, accessibility", tools: "[Bash, Read]", model: "sonnet", tiers: { reinforcement: ["Project Type Detection"] } },
-};
+import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 
 /**
  * Resolve the templates directory. Checks:
@@ -84,27 +73,9 @@ export function generateAgentBriefs(scan: ProjectScan): Record<string, string> {
       Object.entries(pages).map(([k, v]) => `| ${v} | ${k} |`).join("\n")
     : "";
 
-  // Merge agent metadata from roles config with defaults
-  const agentMeta: Record<string, AgentMeta> = { ...DEFAULT_AGENT_META };
-  if (scan.agentMeta) {
-    for (const [roleName, meta] of Object.entries(scan.agentMeta)) {
-      agentMeta[roleName] = { ...DEFAULT_AGENT_META[roleName], ...meta };
-    }
-  }
-  if (harness?.roles) {
-    for (const [roleName, roleConfig] of Object.entries(harness.roles as Record<string, any>)) {
-      if (roleConfig.description || roleConfig.tools || roleConfig.model) {
-        agentMeta[roleName] = {
-          description: roleConfig.description || agentMeta[roleName]?.description || `${roleName} agent`,
-          tools: roleConfig.tools || agentMeta[roleName]?.tools || "[Bash, Read]",
-          model: roleConfig.model || agentMeta[roleName]?.model || "sonnet",
-          ...(roleConfig.tiers || agentMeta[roleName]?.tiers
-            ? { tiers: roleConfig.tiers || agentMeta[roleName]?.tiers }
-            : {}),
-        };
-      }
-    }
-  }
+  // Agent metadata: config > scan > defaults (AC-4: no hardcoded meta in this file)
+  const harnessAgentMeta = buildAgentMeta(harness);
+  const agentMeta: Record<string, AgentMeta> = { ...DEFAULT_AGENT_META, ...harnessAgentMeta, ...(scan.agentMeta || {}) };
 
   // Discover template files (excludes _shared.md partial)
   const templateFiles = readdirSync(templatesDir)
