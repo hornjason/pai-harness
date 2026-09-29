@@ -2,64 +2,34 @@
 
 **Current phase: Scaffold Decomposition — 3 SCs open**
 
-Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).
+Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.
 
-11 fixes:
-  1. M-size decomposition (c835bbb6) — batched Marcus for >5 ACs
-  2. Verify gate ReferenceError (020fcb8c) — temporal dead zone crash
-  3. Auto-populate timeout (f794fb04) — 10s→300s for bun test
-  4. AC anchoring relaxed (6bdea4a1) — additional ACs for test/import coverage
-  5. Discovery brief consolidated (751d219d) — merged Never Do + reinforcement tier
-  6. Bun test output rule (3c170471) — prevents broken grep evidence commands
-  7. Spec-compliance test (d9f96db1) — ROOT CAUSE of all bun test AC failures
-  8. Circular dep fix (fd8c96ad) — parseTestResults post-#548 decomp
-  9. Project-state scope-out (582a5538) — prevents Marcus overwriting project state
-  10. AgentBriefGuard test fix (47b1f2b0) — stderr format changed post-#544 decomp
-  11. create-sc test fix (a10596ab) — Commands table moved to generators
+Key fixes:
+  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures
+  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements
+  - Test baseline diffing (#599) — only count NEW failures after Marcus
+  - Mechanical spec update on close (#419) — auto-patch governing spec status
 
-Shipped:
-  #541: SHIPPED M-SIZE (23 agents, 29m, batched B1+B2) — file generators extracted
-  #543: SHIPPED (22 agents, 35m) — AgentBriefGuard extracted
-  #544: SHIPPED (merged+fixes) — GateEnforcement extracted to lib/
-  #545: SHIPPED (17 agents, 24m) — hook SC traceability
-  #546: SHIPPED (17 agents, 23m) — gate contracts audited
-  #539: SHIPPED (17 agents, 32m) — brief validation
-  #548: SHIPPED (merged+fix) — run-gate.ts 1008→60 lines
-  #547, #579, #585, #587, #588, #594: ALREADY_SHIPPED
-  #540: SHIPPED (manual merge after gate fix 717fc8e0) — scanner extracted
-  #590: SHIPPED (manual merge after workflow stall) — buildAgentMeta, DEFAULT_AGENT_META exported
+Pipeline shipped (17):
+  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),
+  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),
+  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),
+  #530 (stale docs), #599 (test baseline), #419 (spec update on close)
+  Already fixed: #597, #600
 
-Session 18:
-  Gate fix: grep exit-code-1 evidence capture (717fc8e0) — root cause of #540 3x failures
-  #540 SHIPPED — lib/scanner.ts with ProjectScan, 36 tests, SC-358+SC-359 done
-  #590 SHIPPED — buildAgentMeta from config, no hardcoded meta in generator
-  RCA: 70% of failures are EVIDENCE_MISSING, Marcus correct 23/29 runs
-  Filed #597 (grep evidence), #598 (evidence pre-validation P1), #599 (test baseline diffing P2)
+Housekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509
 
-30 issues shipped total, 34 closed. Suite: 1631 pass, 0 fail, 92 files. 19/25 SCs done.
-
-  #542 SHIPPED — scaffold-project.ts 1500→133 lines, lib/scaffold/ + lib/validators/ extracted. SC-363 done.
-  #596 SHIPPED — first-pass! 0 regressions, 17 agents, 21 min. M-size to-issues decomposition.
-  #535 SHIPPED — first-pass! 0 regressions, 17 agents, 20 min. Rule health pipeline (L-size).
-  #598 SHIPPED — evidence pre-validation. 3 regressions (AC-5 threshold ==1 vs >=1), manual merge.
-  First-pass rate improved: 4/7 first-pass (57%), up from 21%.
-  #515 SHIPPED — first-pass! Branch reuse on ship retry.
-  #532 SHIPPED — first-pass! Auto-generate harness config. 4 consecutive first-pass wins.
-  First-pass rate: 6/9 (67%), up from 21%.
-  #527 SHIPPED — first-pass! Doc staleness detection. 5 consecutive first-pass wins.
-  #583 SHIPPED — feature parity audit. 3 regressions (pre-existing test failures, not Marcus).
-  First-pass rate: 7/11 (64%). Pre-existing failures now #1 blocker — filed #600.
-  #531 SHIPPED — first-pass! README frontmatter leak fix.
-  #529 SHIPPED — first-pass! Spec template on empty specs/. 7 consecutive first-pass.
-  First-pass rate: 8/12 (67%), up from 21%. Session total: 13 shipped.
+First-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.
+24 issues remain open. #508 shipping now.
+Suite: 19/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
-2. P1: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in ~40% of runs. Brief says TDD first but not mechanically enforced
-3. P1: Discovery cat usage — 6/8 compliance after consolidating Never Do sections + adding to reinforcement tier
-4. P1: Further consolidation — 17 agents, target <10
-5. P2: Navigability scoring (SC-236/237 still test.todo)
-6. P3: Scaffold Decomposition remaining issues
+1. P0: Pipeline pass rate — 71% first-pass (10/14). Monitor for further improvements
+2. P1: #512 (isolated execution), #510 (Playwright MCP), #507 (prove screenshots), #307 (doc hygiene)
+3. P1: Further consolidation — 17 agents, target <10
+4. P2: #508 (spec sync, shipping), #506 (Quinn brief), #477 (move gates/), #470 (gap detection), #469 (.pai-work), #342 (doc archival)
+5. P2: Remaining SCs — SC-364/365/366 (scaffold), SC-367 (AgentBriefGuard), SC-377/378 (gate contracts)
+6. P3: #533 (ADR auto-discover), #526 (skill wrappers), #503 (journal replay), 9 more
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
