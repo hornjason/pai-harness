@@ -116,10 +116,11 @@ describe("Agent Brief Template Tests", () => {
   });
 
   describe("AC-4: agentMeta read from roles config, not hardcoded", () => {
-    test("scaffold-project.ts reads agentMeta from roles config", () => {
-      const scaffoldSrc = readFileSync(join(import.meta.dir, "..", "scripts", "scaffold-project.ts"), "utf-8");
+    test("scaffold pipeline reads agentMeta from roles config", () => {
+      // After decomposition, this logic lives in lib/scaffold/steps.ts (the deep module)
+      const stepsSrc = readFileSync(join(import.meta.dir, "..", "lib", "scaffold", "steps.ts"), "utf-8");
       // Should read from harness roles config, not just use a hardcoded literal
-      expect(scaffoldSrc).toMatch(/harness\?\.roles|roles.*config|getAgentMeta/);
+      expect(stepsSrc).toMatch(/harness\?\.roles|roles.*config|getAgentMeta/);
     });
 
     test("rungate.json roles have description, tools, and model fields", () => {

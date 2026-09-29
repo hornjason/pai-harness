@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Scaffold Decomposition — 4 SCs open**
+**Current phase: Scaffold Decomposition — 3 SCs open**
 
 Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).
 
@@ -36,7 +36,7 @@ Session 18:
   RCA: 70% of failures are EVIDENCE_MISSING, Marcus correct 23/29 runs
   Filed #597 (grep evidence), #598 (evidence pre-validation P1), #599 (test baseline diffing P2)
 
-19 issues shipped total, 23 closed. Suite: 1597 pass, 0 fail, 91 files. 18/25 SCs done.
+19 issues shipped total, 23 closed. Suite: 1597 pass, 0 fail, 91 files. 19/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -72,7 +72,7 @@ Session 18:
 | ✅ | SC-360 | AGENTS.md generator from ProjectScan |
 | ✅ | SC-361 | Brief generator reads template files |
 | ✅ | SC-362 | CODE-MAP generator from ProjectScan |
-| ⬜ | SC-363 | scaffold-project.ts under 200 lines |
+| ✅ | SC-363 | scaffold-project.ts under 200 lines |
 | ⬜ | SC-364 | Identical output before and after |
 | ⬜ | SC-365 | Scanner importable without generation |
 | ⬜ | SC-366 | Generators testable with mock data |

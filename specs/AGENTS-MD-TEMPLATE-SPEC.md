@@ -119,7 +119,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-258: Universal rules loaded from config/universal-rules.yaml (behavioral)
 - [ ] SC-259: AGENTS.md template loaded from prompts/agents-md-template.md (behavioral)
 - [ ] SC-260: Scaffold fills template variables from project scan — template file has no scan logic (behavioral)
-- [ ] SC-261: config/universal-rules.yaml exists
+- [x] SC-261: config/universal-rules.yaml exists
 - [ ] SC-262: Universal rules count under 16 — sigmoid collapse threshold (behavioral)
 - [ ] SC-263: Re-scaffold on RunGate itself produces correct AGENTS.md with 0 warnings (behavioral)
 - [ ] SC-264: Fresh agent test — zero-context agent runs Phase 0 + Phase 1 using only scaffold output, navigability score tracked (behavioral)

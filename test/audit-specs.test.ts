@@ -373,22 +373,24 @@ governs: test
   // ── SC-394: Scaffold runs audit-specs post-generation ─────────
 
   describe("SC-394: scaffold wires audit-specs post-generation", () => {
-    test("scaffold-project.ts imports auditSpecs from audit-specs module", () => {
-      const scaffoldSrc = readFileSync(
-        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
+    test("scaffold pipeline imports auditSpecs from audit-specs module", () => {
+      // After decomposition, this logic lives in lib/scaffold/steps.ts
+      const stepsSrc = readFileSync(
+        join(import.meta.dir, "..", "lib", "scaffold", "steps.ts"),
         "utf-8"
       );
-      expect(scaffoldSrc).toContain("auditSpecs");
+      expect(stepsSrc).toContain("auditSpecs");
     });
 
-    test("scaffold-project.ts calls auditSpecs with fix mode after spec generation", () => {
-      const scaffoldSrc = readFileSync(
-        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
+    test("scaffold pipeline calls auditSpecs with fix mode after spec generation", () => {
+      // After decomposition, this logic lives in lib/scaffold/steps.ts
+      const stepsSrc = readFileSync(
+        join(import.meta.dir, "..", "lib", "scaffold", "steps.ts"),
         "utf-8"
       );
-      // The audit-specs call should happen after spec template copy and before commit
-      expect(scaffoldSrc).toContain("auditSpecs(");
-      expect(scaffoldSrc).toContain("fix: true");
+      // The audit-specs call should happen in runAuditSpecsFix
+      expect(stepsSrc).toContain("auditSpecs(");
+      expect(stepsSrc).toContain("fix: true");
     });
 
     test("audit-specs post-generation step appears after spec template copy", () => {

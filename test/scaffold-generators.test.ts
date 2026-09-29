@@ -1,6 +1,9 @@
 /**
- * AC-5: Verify scaffold-project.ts imports generators from lib/generators/
+ * AC-5: Verify scaffold pipeline uses generators from lib/generators/
  * AC-4: Verify >= 3 test files reference ProjectScan
+ *
+ * After SCAFFOLD-DECOMPOSITION-SPEC, scaffold-project.ts is orchestrator-only.
+ * Generator imports live in lib/scaffold/steps.ts (the deep module).
  */
 import { test, expect, describe } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
@@ -10,19 +13,25 @@ import { mockProjectScan } from "../lib/generators/types";
 
 const ROOT = join(import.meta.dir, "..");
 
-describe("AC-5: scaffold-project.ts imports from lib/generators/", () => {
+describe("AC-5: scaffold pipeline imports from lib/generators/", () => {
+  // After decomposition, generator imports live in lib/scaffold/steps.ts
+  const stepsSrc = readFileSync(join(ROOT, "lib/scaffold/steps.ts"), "utf-8");
   const scaffoldSrc = readFileSync(join(ROOT, "scripts/scaffold-project.ts"), "utf-8");
 
-  test("scaffold imports generateAgentsMd from lib/generators/", () => {
-    expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/generators/);
+  test("scaffold imports from lib/scaffold/ (orchestrator pattern)", () => {
+    expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/scaffold/);
   });
 
-  test("scaffold has >= 3 import statements from lib/generators/", () => {
-    const importMatches = scaffoldSrc.match(/from\s+["']\.\.\/lib\/generators[^"']*["']/g) || [];
+  test("scaffold imports from lib/validators/ (decomposed validators)", () => {
+    expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/validators/);
+  });
+
+  test("steps.ts has >= 3 import statements from lib/generators/", () => {
+    const importMatches = stepsSrc.match(/from\s+["']\.\.\/generators[^"']*["']/g) || [];
     expect(importMatches.length).toBeGreaterThanOrEqual(3);
   });
 
-  test("scaffold imports ProjectScan type from lib/generators/types", () => {
+  test("scaffold imports ProjectType from lib/generators/types", () => {
     expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/generators\/types["']/);
   });
 });

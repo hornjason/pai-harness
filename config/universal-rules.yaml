@@ -1,0 +1,15 @@
+# Universal rules — loaded by scaffold into every generated AGENTS.md
+# Consumer projects can override or extend via a `rules` array in .claude/rungate.json
+#
+# These were previously hardcoded in lib/generators/agents-md.ts.
+# Now loaded from config so they can be customized per-deployment.
+
+rules:
+  - "Verify before asserting — try it first, report what actually happened"
+  - "Never fake results or hide failures — if it fails, report it honestly"
+  - "Fix all test failures before reporting done — a green suite is the minimum bar"
+  - "Run full test suite and show real output — no summaries, no skipped files"
+  - "Read docs before writing code — routing table shows where"
+  - "Fix the source, not the output — fix generator, not generated files"
+  - "Commit all changes before reporting done — uncommitted work is lost work"
+  - "Read PROJECT-STATE.md first on session start — it's the session bridge"
