@@ -11,7 +11,8 @@ import { join } from "path";
 
 // AC-1: lib/scanner.ts exports ProjectScan interface and scanProject function
 // AC-3: Scanner importable without pulling in generation functions
-import { scanProject, type ProjectScan, type ProjectType } from "../../lib/scanner";
+import { scanProject } from "../../lib/scanner";
+import type { ProjectScan, ProjectType } from "../../lib/generators/types";
 
 function createTempDir(): string {
   const dir = join("/tmp", `scanner-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -56,8 +57,8 @@ describe("scanner: ProjectScan interface shape", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
     const scan = scanProject(tmpDir);
-    expect(scan).toHaveProperty("sourceDirectories");
-    expect(Array.isArray(scan.sourceDirectories)).toBe(true);
+    expect(scan).toHaveProperty("sourceDirs");
+    expect(Array.isArray(scan.sourceDirs)).toBe(true);
   });
 });
 
@@ -209,14 +210,14 @@ describe("scanner: source directory detection", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "src"));
     const scan = scanProject(tmpDir);
-    expect(scan.sourceDirectories).toContain("src");
+    expect(scan.sourceDirs).toContain("src");
   });
 
   test("detects lib/ when it exists", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "lib"));
     const scan = scanProject(tmpDir);
-    expect(scan.sourceDirectories).toContain("lib");
+    expect(scan.sourceDirs).toContain("lib");
   });
 
   test("detects multiple source directories", () => {
@@ -225,15 +226,15 @@ describe("scanner: source directory detection", () => {
     mkdirSync(join(tmpDir, "lib"));
     mkdirSync(join(tmpDir, "hooks"));
     const scan = scanProject(tmpDir);
-    expect(scan.sourceDirectories).toContain("src");
-    expect(scan.sourceDirectories).toContain("lib");
-    expect(scan.sourceDirectories).toContain("hooks");
+    expect(scan.sourceDirs).toContain("src");
+    expect(scan.sourceDirs).toContain("lib");
+    expect(scan.sourceDirs).toContain("hooks");
   });
 
   test("returns empty when no source directories exist", () => {
     tmpDir = createTempDir();
     const scan = scanProject(tmpDir);
-    expect(scan.sourceDirectories).toEqual([]);
+    expect(scan.sourceDirs).toEqual([]);
   });
 });
 
@@ -251,14 +252,14 @@ describe("scanner: project type detection", () => {
     mkdirSync(join(tmpDir, "src"));
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
     const scan = scanProject(tmpDir);
-    expect(scan.projectType).toBe("code");
+    expect(scan.type).toBe("code");
   });
 
   test("detects content project with only markdown", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "posts.md"), "# Posts");
     const scan = scanProject(tmpDir);
-    expect(scan.projectType).toBe("content");
+    expect(scan.type).toBe("content");
   });
 
   test("detects infra project with docker-compose", () => {
@@ -266,7 +267,7 @@ describe("scanner: project type detection", () => {
     mkdirSync(join(tmpDir, "scripts"));
     writeFileSync(join(tmpDir, "docker-compose.yml"), "version: '3'");
     const scan = scanProject(tmpDir);
-    expect(scan.projectType).toBe("infra");
+    expect(scan.type).toBe("infra");
   });
 });
 

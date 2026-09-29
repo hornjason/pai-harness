@@ -14,8 +14,8 @@ import { auditSpecs } from "./audit-specs";
 import { generateAgentsMd as buildAgentsMdContent } from "../lib/generators/agents-md";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../lib/generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../lib/generators/code-map";
-import type { ProjectScan, KeyFile, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../lib/generators/types";
-import { detectProjectType } from "../lib/scanner";
+import { scanProject, detectProjectType } from "../lib/scanner";
+import type { ProjectScan, ProjectType, KeyFile, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../lib/generators/types";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
