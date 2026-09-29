@@ -2,278 +2,436 @@
 doc-type: research
 status: active
 owner: marcus
-updated: 2026-09-27
+updated: 2026-09-29
+issue: "#583"
 governs: []
 ---
 
-# Feature Parity Audit — Custom Code vs Claude Code Built-in
+# Feature Parity Audit — PAI/RunGate vs Claude Code Built-ins
 
-Audit of all custom hooks, scripts, and lib modules against Claude Code built-in features.
+Inventory of all custom code across hooks, lib, scripts, gates, and workflows directories.
+Each entry is classified against Claude Code built-in equivalents and given a migration recommendation.
 Cross-referenced with `docs/research/2026-09-24-claude-code-feature-audit.md`.
+
+## Classification Key
+
+| Classification | Meaning |
+|---------------|---------|
+| **REPLACE** (full-replace) | Claude Code built-in fully covers this functionality. Custom code can be removed. |
+| **WRAP** (needs-wrapping) | Claude Code provides the hook point/trigger, but custom logic must be preserved inside it. |
+| **KEEP** | No built-in equivalent. Intentionally custom -- RunGate's core differentiator or domain-specific logic. |
+| **partial-overlap** | Some overlap with built-in features but custom logic adds significant value beyond what is built in. |
+
+---
 
 ## Surface Area Summary
 
 | Directory | Files | Lines | Baseline |
 |-----------|-------|-------|----------|
-| hooks/ | 19 | 2,378 | Custom hook implementations |
-| lib/ | 27 | 5,452 | Core library modules |
-| scripts/ | 36 | 8,076 | CLI tools and automation |
-| workflows/ | 6 | 3,537 | Multi-agent workflows |
-| **Total** | **88** | **19,443** | **Total custom code surface area** |
+| hooks/ (including lib/) | 19 | 1,514 | Custom hook implementations + shared utilities |
+| lib/ (including generators, validators, scaffold) | 42 | 9,940 | Core library modules |
+| scripts/ (including lib/, git-hooks/) | 39 | 7,060 | CLI tools, shell scripts, git hooks |
+| gates/ (including prompts/) | 26 | 8,229 | Gate execution engine + tests + prompts |
+| workflows/ | 6 | 3,716 | Multi-agent workflow orchestration |
+| **Total** | **132** | **30,459** | **Total custom code surface area** |
 
-Net reduction from this audit: **0 lines removed**. All custom code is either intentionally custom with no built-in equivalent, or uses built-in hook events as thin triggers while keeping custom domain logic. No full-replace candidates identified — RunGate's value IS the custom logic.
-
-Total lines of custom code: 19,443 across 88 source files. This is the baseline for tracking net change over time.
+Net reduction from this audit: **0 lines removed**. All custom code is either intentionally custom with no built-in equivalent, or uses built-in hook events as thin triggers while keeping custom domain logic. No full-replace candidates identified -- RunGate's value IS the custom logic.
 
 ---
 
 ## Inventory and Assessment
 
-Classification key:
-- **Built-in equivalent:** yes / no / partial
-- **Coverage:** FULL-REPLACE / PARTIAL-OVERLAP / NEEDS-WRAPPING / KEEP (retain as-is)
-- **Rationale:** Why this classification
-
-### hooks/ (19 files, 2,378 lines)
+### hooks/ (14 hook files + 5 lib files = 1,514 lines)
 
 | # | File | Lines | Built-in | Coverage | Rationale |
 |---|------|-------|----------|----------|-----------|
-| 1 | hooks/AgentBriefGuard.hook.ts | 586 | no | KEEP | No built-in equivalent. Validates RunGate-specific agent brief structure, context injection, and role matching before agent launch. Intentionally custom — enforces RunGate brief format that no generic tool understands. |
-| 2 | hooks/AgentVerdictCapture.hook.ts | 179 | partial | NEEDS-WRAPPING | SubagentStop hook event is built-in (fires on agent completion). Custom logic: verdict JSON parsing, behavioral-cache population, agent audit scoring. The hook EVENT is native; the HANDLER is RunGate-specific. Retain handler, built-in provides the trigger. |
-| 3 | hooks/AutoVerifyGate.hook.ts | 76 | no | KEEP | No built-in equivalent. Auto-runs verification gate in harness workflow. RunGate-specific gate progression logic. |
-| 4 | hooks/CommitEnforcement.hook.ts | 143 | no | KEEP | No built-in equivalent. Enforces commit message format, issue references, and content rules. Project-specific policy. |
-| 5 | hooks/GateEnforcement.hook.ts | 273 | no | KEEP | No built-in equivalent. Enforces harness gate progression (GOAL->DISCOVERY->EXECUTION->VERIFY). RunGate-specific workflow state machine. |
-| 6 | hooks/IssueCloseGuard.hook.ts | 116 | no | KEEP | No built-in equivalent. Validates issue closure criteria before allowing close. Project-specific quality gate. |
-| 7 | hooks/lib/agentDetection.ts | 70 | no | KEEP | No built-in equivalent. Detects agent role from context/name. Utility for other hooks. |
-| 8 | hooks/lib/findWorkflow.ts | 101 | no | KEEP | No built-in equivalent. Resolves workflow script paths. Utility for hook dispatching. |
-| 9 | hooks/lib/parseStdin.ts | 37 | no | KEEP | No built-in equivalent. Parses hook stdin format. Required by Claude Code hook contract. |
-| 10 | hooks/lib/paths.ts | 111 | no | KEEP | No built-in equivalent. Path resolution for hooks. Project-specific directory layout. |
-| 11 | hooks/lib/utils.ts | 81 | no | KEEP | No built-in equivalent. Shared utilities for hooks. |
-| 12 | hooks/MergeGuard.hook.ts | 55 | no | KEEP | No built-in equivalent. Validates merge conditions. Project-specific merge policy. |
-| 13 | hooks/PostCompact.hook.ts | 57 | partial | NEEDS-WRAPPING | PostCompact hook event is built-in (fires after context compaction). Custom logic: re-injects critical rules that context compaction drops. The hook EVENT is native; the re-injection logic is RunGate-specific. Retain handler. |
-| 14 | hooks/SpecConformityTrigger.hook.ts | 40 | partial | NEEDS-WRAPPING | FileChanged hook could provide the trigger event. Custom logic: decides when to re-run conformity checks on spec file changes. |
-| 15 | hooks/SpecSCGuard.hook.ts | 120 | no | KEEP | No built-in equivalent. Validates SC structure within spec files. RunGate-specific SC format enforcement. |
-| 16 | hooks/StaleTTLCleanup.hook.ts | 167 | no | KEEP | No built-in equivalent. Cleans up stale workflow state by TTL. Custom lifecycle management. |
-| 17 | hooks/TaskCompleted.hook.ts | 48 | partial | NEEDS-WRAPPING | TaskCompleted hook event is built-in (exit code 2 blocks completion). Custom logic: runs RunGate completion checks via lib/task-completion-checks. The hook EVENT is native; the quality gate logic is custom. |
-| 18 | hooks/VerifyPhaseLock.hook.ts | 81 | no | KEEP | No built-in equivalent. Locks harness phase during verification. RunGate workflow state enforcement. |
-| 19 | hooks/WorkflowStateGuard.hook.ts | 37 | no | KEEP | No built-in equivalent. Validates workflow state consistency. RunGate-specific state machine guard. |
+| 1 | hooks/AgentBriefGuard.hook.ts | 64 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger is built-in. Custom brief-validation logic (template compliance, ship-active marker enforcement) has no built-in equivalent and must be preserved inside the handler. |
+| 2 | hooks/AgentVerdictCapture.hook.ts | 87 | partial | WRAP (needs-wrapping) | SubagentStop hook trigger is built-in (fires on agent completion per 2026-09-24 feature audit). Custom logic: verdict JSON parsing, workflow-state writes, transcript audit invocation, behavioral-cache population. The hook EVENT is native; the HANDLER is entirely RunGate-specific. |
+| 3 | hooks/AutoVerifyGate.hook.ts | 79 | partial | WRAP (needs-wrapping) | PostToolUse hook trigger is built-in. Custom DA-nudge logic for verify gate after agent completion is RunGate workflow-specific. |
+| 4 | hooks/CommitEnforcement.hook.ts | 146 | partial | WRAP (needs-wrapping) | PostToolUse hook trigger is built-in. Custom logic detecting uncommitted changes and UI file modifications in agent worktrees is RunGate enforcement policy. |
+| 5 | hooks/GateEnforcement.hook.ts | 97 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger is built-in. Custom nag-on-failure counting, strike tracking, and Skill-call blocking are RunGate gate state machine logic. |
+| 6 | hooks/IssueCloseGuard.hook.ts | 119 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger (Bash matcher) is built-in. HMAC validation and ship-gate PASS verification before `gh issue close` are security/workflow logic with no built-in parallel. |
+| 7 | hooks/MergeGuard.hook.ts | 58 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger (Bash matcher) is built-in. Early warning on unverified merge to main is RunGate workflow policy. |
+| 8 | hooks/PostCompact.hook.ts | 60 | partial | WRAP (partial-overlap) | PostCompact hook trigger is built-in. Custom logic extracts rules sections from CLAUDE.md and AGENTS.md via regex parsing and re-injects them as system-reminder after context compaction. The trigger mechanism is built-in but the rule extraction and re-injection logic is custom. Cannot be full-replace because the built-in PostCompact only fires the hook -- it does not know which rules to re-inject or how to extract them from markdown. |
+| 9 | hooks/SpecConformityTrigger.hook.ts | 43 | partial | WRAP (needs-wrapping) | PostToolUse hook trigger (Edit\|Write matcher) is built-in. FileChanged hook (Tier 2 per feature audit) could also trigger on spec file changes. Custom logic decides when to re-run conformity checks. |
+| 10 | hooks/SpecSCGuard.hook.ts | 123 | partial | WRAP (needs-wrapping) | PostToolUse hook trigger is built-in. SC pattern validation logic is entirely RunGate domain enforcement. |
+| 11 | hooks/StaleTTLCleanup.hook.ts | 63 | partial | WRAP (needs-wrapping) | SessionStart hook trigger is built-in. Stale workflow-state.json and ship-active file cleanup with TTL-based expiration is RunGate lifecycle management. |
+| 12 | hooks/TaskCompleted.hook.ts | 51 | partial | WRAP (needs-wrapping) | TaskCompleted hook trigger is built-in (exit code 2 blocks task completion). Custom quality gate logic (test suite verification, uncommitted changes warning, conformity check) must be preserved. The built-in only provides the gating mechanism; all check logic lives in `lib/task-completion-checks.ts`. |
+| 13 | hooks/VerifyPhaseLock.hook.ts | 84 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger (Bash matcher) is built-in. Phase-lock logic blocking `gh issue create` during VERIFY is RunGate workflow state management. |
+| 14 | hooks/WorkflowStateGuard.hook.ts | 40 | partial | WRAP (needs-wrapping) | PreToolUse hook trigger (Write\|Edit matcher) is built-in. Direct Write/Edit blocking of workflow-state.json is RunGate integrity enforcement. |
+| 15 | hooks/lib/parseStdin.ts | 37 | no | KEEP | Intentionally custom -- parses Claude Code hook stdin JSON format. Adapter layer between Claude Code's hook protocol and RunGate's hook handlers. |
+| 16 | hooks/lib/agentDetection.ts | 70 | no | KEEP | Intentionally custom -- identifies agent roles from tool input payloads for RunGate's multi-agent workflow. No built-in equivalent for role detection. |
+| 17 | hooks/lib/findWorkflow.ts | 101 | no | KEEP | Intentionally custom -- locates active workflow-state.json files for RunGate's stateful ship workflow. Workflow state management is RunGate's core orchestration layer. |
+| 18 | hooks/lib/paths.ts | 111 | no | KEEP | Intentionally custom -- resolves RunGate-specific paths (harness root, project root, work dir). Path resolution for RunGate's multi-project scaffold architecture. |
+| 19 | hooks/lib/utils.ts | 81 | no | KEEP | Intentionally custom -- shared hook utilities (JSON parsing, config loading) for RunGate hooks. |
 
-### lib/ (27 files, 5,452 lines)
-
-| # | File | Lines | Built-in | Coverage | Rationale |
-|---|------|-------|----------|----------|-----------|
-| 20 | lib/aes-calculator.ts | 66 | no | KEEP | No built-in equivalent. Computes Acceptance Evidence Scores. RunGate-specific scoring algorithm. |
-| 21 | lib/agent-audit.ts | 74 | no | KEEP | No built-in equivalent. Audits agent transcript compliance. RunGate-specific behavioral grading. |
-| 22 | lib/behavioral-cache.ts | 78 | no | KEEP | No built-in equivalent. Caches behavioral SC results with 7-day TTL. RunGate-specific caching layer for behavioral test results. Intentionally custom — no session harvesting built-in exists. |
-| 23 | lib/branch-cleanup.ts | 238 | partial | PARTIAL-OVERLAP | Claude Code has git operations (branch, delete) but no automated branch cleanup policy. Custom logic: age-based filtering, merge-status checks, safety guards. Retain — the automation policy is custom. |
-| 24 | lib/brief-context-parser.ts | 35 | no | KEEP | No built-in equivalent. Parses context sections from agent briefs. RunGate-specific brief format. |
-| 25 | lib/canary.ts | 117 | no | KEEP | No built-in equivalent. Canary verification system — plants known values and checks if agents use them. Intentionally custom — novel verification approach. |
-| 26 | lib/compliance.ts | 322 | no | KEEP | No built-in equivalent. Compliance checking engine for rule adherence. RunGate-specific. Intentionally custom — this is core RunGate IP. |
-| 27 | lib/conformity.ts | 1,643 | no | KEEP | No built-in equivalent. The core conformity engine — 18 pattern matchers, SC validation, scaffold conformity. Intentionally custom — this IS RunGate. Largest module, most critical. No external tool does config-driven conformity testing with matcher plugins. |
-| 28 | lib/create-brief.ts | 99 | no | KEEP | No built-in equivalent. Generates agent briefs from templates. RunGate-specific template system. |
-| 29 | lib/create-sc.ts | 253 | no | KEEP | No built-in equivalent. Creates success criteria with pattern-based generation. RunGate-specific. |
-| 30 | lib/directive-extractor.ts | 190 | no | KEEP | No built-in equivalent. Extracts behavioral directives from documentation. RunGate-specific NLP for compliance testing. Intentionally custom — directive extraction is a core differentiator. |
-| 31 | lib/eval-criteria.ts | 6 | no | KEEP | No built-in equivalent. Type definitions for evaluation criteria. |
-| 32 | lib/hill-climb.ts | 164 | no | KEEP | No built-in equivalent. Hill climbing optimization for instruction effectiveness. RunGate-specific optimization loop. Intentionally custom — no built-in provides iterative rule improvement. |
-| 33 | lib/paths.ts | 23 | no | KEEP | No built-in equivalent. Path constants. |
-| 34 | lib/post-fix-verify.ts | 157 | no | KEEP | No built-in equivalent. Post-fix verification logic. RunGate-specific. |
-| 35 | lib/prior-branch.ts | 79 | partial | PARTIAL-OVERLAP | Claude Code has EnterWorktree/ExitWorktree for worktree management but no native branch resumption detection. prior-branch.ts detects previously-worked branches by issue number with word-boundary regex, timestamp sorting, and optional test execution in temporary worktrees. Claude Code does not natively track which branches correspond to which issues or pick the most recent matching branch. Retain — branch resumption intelligence is custom. |
-| 36 | lib/promote-outputs.ts | 156 | no | KEEP | No built-in equivalent. Promotes workflow output artifacts. RunGate-specific. |
-| 37 | lib/rule-registry.ts | 128 | no | KEEP | No built-in equivalent. Manages rule definitions and lookups. RunGate-specific. |
-| 38 | lib/rungate-schema.ts | 74 | no | KEEP | No built-in equivalent. Schema definitions for rungate.json config. |
-| 39 | lib/sc-guard.ts | 157 | no | KEEP | No built-in equivalent. SC validation and guard logic. RunGate-specific. |
-| 40 | lib/signal-phrases.ts | 7 | no | KEEP | No built-in equivalent. Signal phrase constants for compliance checking. |
-| 41 | lib/spec-change-conformity.ts | 80 | no | KEEP | No built-in equivalent. Validates spec changes conform to template. RunGate-specific. |
-| 42 | lib/stale-issue-scanner.ts | 36 | no | KEEP | No built-in equivalent. Scans for stale issues. RunGate-specific. |
-| 43 | lib/task-completion-checks.ts | 177 | partial | NEEDS-WRAPPING | TaskCompleted hook provides the trigger point. Custom logic: conformity validation, test verification, state checks before task completion. The built-in gives the hook; the checks are custom. |
-| 44 | lib/transcript-checker.ts | 845 | no | KEEP | No built-in equivalent. Transcript analysis, directive compliance, role-based evaluation, TDD checking, scoring, and grading. Intentionally custom — behavioral compliance grading is core RunGate IP. No external tool grades transcripts against extracted directives. |
-| 45 | lib/worktree-cleanup.ts | 166 | partial | PARTIAL-OVERLAP | Claude Code provides EnterWorktree/ExitWorktree for worktree creation and entry, but no built-in worktree lifecycle management. worktree-cleanup.ts provides safety-first cleanup: never removes worktrees with uncommitted changes, never removes unmerged branches, age-based filtering, and git worktree prune. Claude Code creates worktrees on demand but does not manage their lifecycle or cleanup. Retain — the safety-first cleanup policy is custom. |
-| 46 | lib/worktree-isolation.ts | 82 | partial | PARTIAL-OVERLAP | Claude Code has EnterWorktree which creates isolated worktrees. worktree-isolation.ts adds persistent transcript directory outside worktree and cleanup function. Overlaps on worktree creation; custom on transcript isolation and cleanup semantics. |
-
-### scripts/ (36 files, 8,076 lines)
-
-| # | File | Lines | Built-in | Coverage | Rationale |
-|---|------|-------|----------|----------|-----------|
-| 47 | scripts/analyze-transcript.ts | 347 | no | KEEP | No built-in equivalent. Transcript efficiency analysis — tool call breakdown, file efficiency, deliverable ratio. RunGate-specific metrics. |
-| 48 | scripts/audit-specs.ts | 469 | no | KEEP | No built-in equivalent. Audits spec files for completeness and correctness. |
-| 49 | scripts/audit-transcript.ts | 259 | no | KEEP | No built-in equivalent. Transcript audit CLI. |
-| 50 | scripts/compliance-loop.ts | 248 | no | KEEP | No built-in equivalent. Compliance testing loop automation. |
-| 51 | scripts/create-brief.ts | 70 | no | KEEP | No built-in equivalent. CLI wrapper for lib/create-brief. |
-| 52 | scripts/create-sc.ts | 88 | no | KEEP | No built-in equivalent. CLI wrapper for lib/create-sc. |
-| 53 | scripts/create-spec.ts | 165 | no | KEEP | No built-in equivalent. Spec creation with frontmatter and template. |
-| 54 | scripts/da-compliance.ts | 214 | no | KEEP | No built-in equivalent. DA-level compliance checking. |
-| 55 | scripts/decision-reconcile.sh | 74 | no | KEEP | No built-in equivalent. Shell wrapper for decision reconciliation. |
-| 56 | scripts/decision-reconcile.ts | 152 | no | KEEP | No built-in equivalent. Verifies council decisions appear in target docs. |
-| 57 | scripts/detect-sc-drift.ts | 164 | no | KEEP | No built-in equivalent. Detects SC drift between spec and implementation. |
-| 58 | scripts/extract-constraints.ts | 260 | no | KEEP | No built-in equivalent. Extracts constraints from documentation. |
-| 59 | scripts/generate-code-map.ts | 339 | no | KEEP | No built-in equivalent. Generates CODE-MAP.md from codebase scan. |
-| 60 | scripts/generate-governs.ts | 74 | no | KEEP | No built-in equivalent. Generates governs metadata for specs. |
-| 61 | scripts/generate-spec-template-patterns.ts | 69 | no | KEEP | No built-in equivalent. Generates spec template patterns. |
-| 62 | scripts/grade-deterministic.ts | 364 | no | KEEP | No built-in equivalent. Deterministic grading of behavioral SCs. |
-| 63 | scripts/harness-skill-check.sh | 52 | no | KEEP | No built-in equivalent. Validates skill contract compliance. |
-| 64 | scripts/lib/gap-emit.sh | 65 | no | KEEP | No built-in equivalent. Emits gap reports. |
-| 65 | scripts/lib/jq-update.sh | 30 | no | KEEP | No built-in equivalent. JSON update utility. |
-| 66 | scripts/lib/resolve-slug.sh | 30 | no | KEEP | No built-in equivalent. Issue slug resolution. |
-| 67 | scripts/lib/verify-spec-compliance.sh | 102 | no | KEEP | No built-in equivalent. Spec compliance verification. |
-| 68 | scripts/promote-outputs.ts | 17 | no | KEEP | No built-in equivalent. CLI wrapper for lib/promote-outputs. |
-| 69 | scripts/prove-backfill.sh | 87 | no | KEEP | No built-in equivalent. Backfills proof artifacts. |
-| 70 | scripts/scaffold-project.ts | 1,699 | no | KEEP | No built-in equivalent. The scaffold generator — generates AGENTS.md, CI, agent briefs, conformity tests. Intentionally custom — this is RunGate's primary output mechanism. No external tool scaffolds AI-first project files from config. |
-| 71 | scripts/scaffold-rungate-config.ts | 91 | no | KEEP | No built-in equivalent. Scaffolds rungate.json config. |
-| 72 | scripts/scan-stale-issues.ts | 110 | no | KEEP | No built-in equivalent. CLI for stale issue scanning. |
-| 73 | scripts/self-containment-check.sh | 109 | no | KEEP | No built-in equivalent. Validates project self-containment. |
-| 74 | scripts/skill-qc-validator.sh | 402 | no | KEEP | No built-in equivalent. Validates skill quality criteria. |
-| 75 | scripts/slug-resolver.sh | 14 | no | KEEP | No built-in equivalent. Resolves issue slugs. |
-| 76 | scripts/split-spec.ts | 315 | no | KEEP | No built-in equivalent. Splits large specs into focused specs. |
-| 77 | scripts/sync-sc-status.ts | 394 | no | KEEP | No built-in equivalent. Syncs SC status between spec checkboxes and test results. |
-| 78 | scripts/sync-spec-tests.ts | 236 | no | KEEP | No built-in equivalent. Syncs spec SCs to test files. |
-| 79 | scripts/test-brief.ts | 469 | no | KEEP | No built-in equivalent. Tests agent brief generation. |
-| 80 | scripts/test-rules.ts | 216 | no | KEEP | No built-in equivalent. Tests rule registry. |
-| 81 | scripts/update-project-state.ts | 142 | no | KEEP | No built-in equivalent. Updates project-state.json. |
-| 82 | scripts/validate-scorer.ts | 140 | no | KEEP | No built-in equivalent. Validates scoring algorithms. |
-
-### workflows/ (6 files, 3,537 lines)
-
-| # | File | Lines | Built-in | Coverage | Rationale |
-|---|------|-------|----------|----------|-----------|
-| 83 | workflows/batch-ship.js | 295 | partial | PARTIAL-OVERLAP | Claude Code `/batch` command provides parallel worktree agents. Custom logic: harness integration, gate enforcement, wave planning. The parallelism is native; the orchestration policy is custom. |
-| 84 | workflows/council.js | 501 | partial | PARTIAL-OVERLAP | Agent Teams could replace the multi-agent coordination layer. Custom logic: structured 3-round debate protocol with POSITION_SCHEMA/SYNTHESIS_SCHEMA, enforcementClassification, specAlignment, chair synthesis, and permanent record storage. Agent Teams provides the communication channel; the debate protocol, structured schemas, and synthesis logic are RunGate-specific. Retain — Agent Teams is a transport, not a replacement for the debate protocol. |
-| 85 | workflows/prove.js | 640 | no | KEEP | No built-in equivalent. Proof workflow — runs verification agents, collects evidence, grades results. RunGate-specific. |
-| 86 | workflows/ship.js | 1,331 | no | KEEP | No built-in equivalent. The core ship workflow — GOAL->DISCOVERY->EXECUTION->VERIFICATION with gate enforcement. Intentionally custom — this is the harness entry point. |
-| 87 | workflows/ship-and-heal.js | 534 | no | KEEP | No built-in equivalent. Self-healing ship workflow with automatic retry on gate failure. |
-| 88 | workflows/verify.js | 236 | no | KEEP | No built-in equivalent. Verification workflow. |
+**Hooks Summary:** All 14 hooks use Claude Code hook points as triggers (WRAP) but contain RunGate-specific logic that has no built-in equivalent. Zero hooks are full-replace candidates. The 5 hooks/lib/ files are KEEP -- internal utilities with no external equivalent.
 
 ---
 
-## Specific File Assessments
+### lib/ (42 files = 9,940 lines)
 
-### SessionHarvester.ts — AC-6
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 20 | lib/conformity.ts | 1,826 | no | KEEP | Intentionally custom -- RunGate's core conformity engine. 18+ pattern matchers, SC validation, scaffold conformity tests, spec discovery, spec drift detection, SC checkbox auto-flip. This IS RunGate's primary differentiator. No agent platform provides automated spec conformity testing with pluggable matchers. 1,826 lines of domain logic with zero overlap with any built-in feature. |
+| 21 | lib/scaffold/steps.ts | 1,286 | no | KEEP | Intentionally custom -- scaffold generation step definitions producing AGENTS.md, agent briefs, CI workflows, CODE-MAP.md, and conformity tests from project config. Core scaffold pipeline with no built-in equivalent. |
+| 22 | lib/transcript-checker.ts | 845 | no | KEEP | Intentionally custom -- transcript compliance checker cross-referencing extracted directives against agent tool calls. Produces FOLLOWED/IGNORED/VIOLATED verdicts per directive. Includes role-based evaluation criteria, TDD detection, scoring, and grading. Novel instruction-compliance verification with no equivalent in any agent platform. |
+| 23 | lib/scanner.ts | 677 | no | KEEP | Intentionally custom -- codebase scanner discovering specs, tests, routes, components, and generating structural metadata. Feeds into scaffold generation and CODE-MAP.md. |
+| 24 | lib/agent-brief-validation.ts | 357 | no | KEEP | Intentionally custom -- validates agent brief templates against RunGate's template spec (AGENT-BRIEF-TEMPLATE-SPEC). No built-in brief validation exists. |
+| 25 | lib/compliance.ts | 322 | no | KEEP | Intentionally custom -- compliance scoring, DA compliance grading, and behavioral compliance assessment. Core part of RunGate's instruction effectiveness measurement system. |
+| 26 | lib/rule-health-pipeline.ts | 264 | no | KEEP | Intentionally custom -- rule health scoring pipeline tracking which rules are followed vs ignored across sessions. Feeds hill-climb optimization. No equivalent in any agent platform. |
+| 27 | lib/create-sc.ts | 253 | no | KEEP | Intentionally custom -- success criteria creation with pattern-based templates and frontmatter validation. SC authoring is a RunGate-specific concept. |
+| 28 | lib/branch-cleanup.ts | 238 | partial | partial-overlap | Claude Code has git operations (branch, delete) but no automated branch cleanup policy. Custom logic: age-based filtering, PR merge-status checks via `gh pr list`, safety guards preventing deletion of unmerged branches. The git primitives overlap; the automation policy is custom. |
+| 29 | lib/gate-enforcement.ts | 227 | no | KEEP | Intentionally custom -- gate enforcement state machine tracking strikes, nag messages, and Skill-call blocking after max failures. RunGate's quality gate mechanism. |
+| 30 | lib/directive-extractor.ts | 190 | no | KEEP | Intentionally custom -- extracts structured directives (read, run, never, always) from agent brief markdown using pattern matching. Feeds transcript compliance checking. Novel NLP-like extraction with no built-in equivalent. |
+| 31 | lib/evidence-prevalidator.ts | 179 | no | KEEP | Intentionally custom -- pre-validates acceptance criteria evidence commands match threshold operators before execution. Prevents false gate failures from mismatched operators (>=, ==, !=). |
+| 32 | lib/task-completion-checks.ts | 177 | partial | WRAP (needs-wrapping) | Claude Code's TaskCompleted hook provides the gating mechanism (exit 2 blocks). The custom quality checks (test suite pass, uncommitted changes warning, conformity validation) run inside that gate. The checks themselves are RunGate-specific; the blocking mechanism is built-in. |
+| 33 | lib/generators/types.ts | 177 | no | KEEP | Intentionally custom -- TypeScript types for RunGate's scaffold generator pipeline. Domain-specific type definitions. |
+| 34 | lib/worktree-cleanup.ts | 166 | partial | partial-overlap | See detailed assessment in Section 7 below. Claude Code manages worktree lifecycle natively (EnterWorktree/ExitWorktree) but RunGate's `cleanupWorktrees` adds custom stale-detection logic: age filtering via maxAgeMs, uncommitted-change safety checks, unmerged-branch protection via `git branch --merged main`, detached HEAD handling, git worktree prune, and structured CleanupResult reporting. |
+| 35 | lib/hill-climb.ts | 164 | no | KEEP | Intentionally custom -- hill-climb optimization for agent brief compliance. Iteratively tweaks brief directives based on 7 compliance factors (position, language, specificity, deduplication, section, evidence, consolidation). Five-iteration max with target score convergence. Novel optimization approach with no equivalent in any agent platform. |
+| 36 | lib/rule-health-trend.ts | 161 | no | KEEP | Intentionally custom -- tracks rule health trends over time for compliance degradation detection. |
+| 37 | lib/generators/agents-md.ts | 161 | no | KEEP | Intentionally custom -- generates AGENTS.md content from scanned project metadata (specs, tests, commands, documentation). |
+| 38 | lib/prior-branch.ts | 160 | partial | partial-overlap | See detailed assessment in Section 6 below. Claude Code's session resume overlaps minimally. RunGate's `detectPriorBranch` provides issue-number-based branch detection with word-boundary regex, multi-branch timestamp disambiguation, and test verification in temporary worktrees. `detectExistingPR` queries GitHub PR API for issue-linked PRs. Both functions contain custom logic that would be lost in any migration. |
+| 39 | lib/create-brief.ts | 160 | no | KEEP | Intentionally custom -- creates agent brief markdown from templates with variable substitution. RunGate's brief generation system. |
+| 40 | lib/sc-guard.ts | 157 | no | KEEP | Intentionally custom -- validates new SC lines in spec files have matching patterns in the conformity engine. Spec integrity enforcement. |
+| 41 | lib/post-fix-verify.ts | 157 | no | KEEP | Intentionally custom -- re-runs verification after fixes to confirm resolution. Post-fix quality assurance. |
+| 42 | lib/promote-outputs.ts | 156 | no | KEEP | Intentionally custom -- promotes workflow outputs (council synthesis, research findings) to persistent locations. |
+| 43 | lib/agent-audit.ts | 139 | no | KEEP | Intentionally custom -- post-completion agent audit grading transcript compliance against brief directives. Core of RunGate's behavioral feedback loop. |
+| 44 | lib/instruction-effectiveness.ts | 131 | no | KEEP | Intentionally custom -- cross-references instruction language quality with auditor compliance results to determine which specific words and phrasings produce agent behavior. Novel instruction-effectiveness measurement. |
+| 45 | lib/generators/agent-briefs.ts | 129 | no | KEEP | Intentionally custom -- generates agent brief files from externalized markdown templates with variable substitution. |
+| 46 | lib/rule-registry.ts | 128 | no | KEEP | Intentionally custom -- registry of all rules across specs and briefs for compliance tracking and rule-health scoring. |
+| 47 | lib/canary.ts | 117 | no | KEEP | Intentionally custom -- canary testing system that plants known values in generated files and checks if agents USE them. Five-layer measurement model. Novel verification approach with no external equivalent. |
+| 48 | lib/validators/spec-validators.ts | 115 | no | KEEP | Intentionally custom -- spec file validators (frontmatter fields, SC format, governs field presence, testable flag). |
+| 49 | lib/stale-cleanup.ts | 100 | no | KEEP | Intentionally custom -- stale workflow-state.json and ship-active file cleanup with TTL-based expiration. |
+| 50 | lib/worktree-isolation.ts | 82 | partial | partial-overlap | Claude Code creates worktrees natively via EnterWorktree for agent spawning. RunGate's custom worktree-isolation adds transcript directory persistence outside the worktree (survives cleanup) and branch-name conventions (prefix + timestamp + random). The worktree creation overlaps; the transcript management and naming conventions are custom. |
+| 51 | lib/spec-change-conformity.ts | 80 | no | KEEP | Intentionally custom -- detects spec changes and triggers conformity re-validation. |
+| 52 | lib/behavioral-cache.ts | 78 | no | KEEP | Intentionally custom -- caches behavioral compliance data from agent audits with 7-day TTL for cross-session learning. No session harvesting built-in exists. |
+| 53 | lib/rungate-schema.ts | 75 | no | KEEP | Intentionally custom -- JSON schema for rungate.json configuration validation. |
+| 54 | lib/verdict-capture.ts | 73 | no | KEEP | Intentionally custom -- extracts structured verdict blocks (verdict, testedSha, testedPaths, blockers) from agent output text. |
+| 55 | lib/aes-calculator.ts | 66 | no | KEEP | Intentionally custom -- Agent Effectiveness Score calculator combining compliance, efficiency, and quality metrics. |
+| 56 | lib/generators/code-map.ts | 60 | no | KEEP | Intentionally custom -- generates CODE-MAP.md from scanned codebase structure (routes, components, modules, health). |
+| 57 | lib/stale-issue-scanner.ts | 36 | no | KEEP | Intentionally custom -- scans for stale GitHub issues based on TTL thresholds. |
+| 58 | lib/brief-context-parser.ts | 35 | no | KEEP | Intentionally custom -- parses context sections from agent brief files for ordering and validation. |
+| 59 | lib/paths.ts | 23 | no | KEEP | Intentionally custom -- path constants for RunGate's directory structure. |
+| 60 | lib/signal-phrases.ts | 7 | no | KEEP | Intentionally custom -- signal phrase regex patterns for directive extraction. |
+| 61 | lib/eval-criteria.ts | 6 | no | KEEP | Intentionally custom -- re-exports evaluation criteria types for transcript checking. |
 
-**Finding: File does not exist in codebase.** No file named `SessionHarvester.ts` or any variant (`session-harvester.ts`, `sessionHarvester.ts`) exists anywhere in the repository. The closest existing modules are:
+**Lib Summary:** 42 files, 9,940 lines. 37 files (8,933 lines) are KEEP -- core RunGate domain logic with no built-in equivalent. 4 files (646 lines) are partial-overlap with some built-in feature coverage. 1 file (177 lines) is WRAP. Zero files are full-replace.
 
-- `lib/behavioral-cache.ts` (78 lines) — caches behavioral SC results, NOT session-level harvesting
-- `scripts/analyze-transcript.ts` (347 lines) — analyzes individual transcripts, NOT cross-session harvesting
-- `hooks/AgentVerdictCapture.hook.ts` (179 lines) — captures per-agent verdicts, NOT session-wide harvesting
+---
 
-Claude Code does not provide a built-in session harvesting mechanism either. If session-level learning extraction is needed, it would be new custom code built on top of transcript analysis.
+### scripts/ (27 .ts + 10 .sh + 2 git hooks = 39 files, 7,060 lines)
 
-### WorkCompletionLearning.hook.ts — AC-7
+#### TypeScript Scripts
 
-**Finding: File does not exist in codebase.** No file named `WorkCompletionLearning.hook.ts` or any variant exists anywhere in the repository. The closest existing modules are:
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 62 | scripts/test-brief.ts | 469 | no | KEEP | Intentionally custom -- test-brief runner that spawns agents in worktrees and grades transcript compliance. Core of RunGate's compliance testing system. |
+| 63 | scripts/audit-specs.ts | 469 | no | KEEP | Intentionally custom -- audits spec files for completeness, SC coverage, frontmatter correctness, and structural issues. |
+| 64 | scripts/sync-sc-status.ts | 394 | no | KEEP | Intentionally custom -- syncs SC checkbox status between spec files and GitHub issues. |
+| 65 | scripts/grade-deterministic.ts | 386 | no | KEEP | Intentionally custom -- deterministic grading of agent transcripts against directive compliance. Produces machine-readable scores. |
+| 66 | scripts/analyze-transcript.ts | 347 | no | KEEP | Intentionally custom -- transcript analysis producing compliance reports, tool call breakdowns, and behavioral data. |
+| 67 | scripts/generate-code-map.ts | 339 | no | KEEP | Intentionally custom -- generates CODE-MAP.md from codebase scans. |
+| 68 | scripts/split-spec.ts | 315 | no | KEEP | Intentionally custom -- splits monolithic specs into focused spec files with correct frontmatter. |
+| 69 | scripts/extract-constraints.ts | 260 | no | KEEP | Intentionally custom -- extracts constraint candidates from codebase documentation for SC promotion. |
+| 70 | scripts/audit-transcript.ts | 259 | no | KEEP | Intentionally custom -- audits individual transcripts for compliance violations. CLI wrapper. |
+| 71 | scripts/compliance-loop.ts | 248 | no | KEEP | Intentionally custom -- runs the compliance hill-climb loop iterating on brief improvements. |
+| 72 | scripts/sync-spec-tests.ts | 236 | no | KEEP | Intentionally custom -- syncs spec SCs to test file assertions. |
+| 73 | scripts/test-rules.ts | 216 | no | KEEP | Intentionally custom -- tests individual rules for behavioral compliance. |
+| 74 | scripts/da-compliance.ts | 214 | no | KEEP | Intentionally custom -- DA (directing agent) compliance auditing. |
+| 75 | scripts/fresh-eyes-test.ts | 181 | no | KEEP | Intentionally custom -- fresh-eyes testing that verifies agents can navigate without prior context. |
+| 76 | scripts/create-spec.ts | 165 | no | KEEP | Intentionally custom -- spec file creation with frontmatter and SC templates. |
+| 77 | scripts/detect-sc-drift.ts | 164 | no | KEEP | Intentionally custom -- detects drift between spec SCs and implementation. |
+| 78 | scripts/decision-reconcile.ts | 152 | no | KEEP | Intentionally custom -- reconciles council decisions with spec changes and target documents. |
+| 79 | scripts/update-project-state.ts | 142 | no | KEEP | Intentionally custom -- updates project-state.json from codebase analysis. |
+| 80 | scripts/validate-scorer.ts | 140 | no | KEEP | Intentionally custom -- validates scoring functions for compliance grading. |
+| 81 | scripts/scaffold-project.ts | 133 | no | KEEP | Intentionally custom -- entry point for project scaffolding (delegates to lib/scaffold/steps.ts). |
+| 82 | scripts/scan-stale-issues.ts | 110 | no | KEEP | Intentionally custom -- scans GitHub issues for staleness based on TTL thresholds. |
+| 83 | scripts/scaffold-rungate-config.ts | 91 | no | KEEP | Intentionally custom -- generates initial rungate.json configuration. |
+| 84 | scripts/create-sc.ts | 88 | no | KEEP | Intentionally custom -- SC creation CLI wrapper for lib/create-sc. |
+| 85 | scripts/generate-governs.ts | 74 | no | KEEP | Intentionally custom -- generates governs field mappings for specs. |
+| 86 | scripts/create-brief.ts | 70 | no | KEEP | Intentionally custom -- brief creation CLI wrapper. |
+| 87 | scripts/generate-spec-template-patterns.ts | 69 | no | KEEP | Intentionally custom -- generates spec template patterns for SC creation. |
+| 88 | scripts/promote-outputs.ts | 17 | no | KEEP | Intentionally custom -- CLI wrapper for lib/promote-outputs. |
 
-- `hooks/TaskCompleted.hook.ts` (48 lines) — runs quality gate checks on task completion, does NOT extract learning
-- `hooks/AgentVerdictCapture.hook.ts` (179 lines) — captures structured verdicts, does NOT extract generalizable learnings
-- `lib/hill-climb.ts` (164 lines) — iteratively improves rules, but runs as a batch process, not on work completion
+#### Shell Scripts
 
-Claude Code's TaskCompleted hook could trigger learning extraction, but no built-in learning extraction mechanism exists. The hook event is native; any learning logic would be new custom code.
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 89 | scripts/skill-qc-validator.sh | 402 | no | KEEP | Intentionally custom -- validates skill quality against RunGate standards. |
+| 90 | scripts/self-containment-check.sh | 109 | no | KEEP | Intentionally custom -- verifies project self-containment (no broken references). |
+| 91 | scripts/prove-backfill.sh | 87 | no | KEEP | Intentionally custom -- backfills proof evidence for existing SCs. |
+| 92 | scripts/decision-reconcile.sh | 74 | no | KEEP | Intentionally custom -- shell wrapper for decision reconciliation. |
+| 93 | scripts/harness-skill-check.sh | 52 | no | KEEP | Intentionally custom -- validates harness skill contract compliance. |
+| 94 | scripts/slug-resolver.sh | 14 | no | KEEP | Intentionally custom -- resolves issue slugs for workflow state. |
+| 95 | scripts/lib/verify-spec-compliance.sh | 102 | no | KEEP | Intentionally custom -- spec compliance verification shell functions. |
+| 96 | scripts/lib/gap-emit.sh | 65 | no | KEEP | Intentionally custom -- emits gap findings in structured format. |
+| 97 | scripts/lib/resolve-slug.sh | 30 | no | KEEP | Intentionally custom -- slug resolution utilities. |
+| 98 | scripts/lib/jq-update.sh | 30 | no | KEEP | Intentionally custom -- jq-based JSON update utilities. |
 
-### prior-branch.ts — AC-8
+#### Git Hooks
 
-**Assessment: Claude Code does NOT handle branch resumption natively.**
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 99 | scripts/git-hooks/pre-commit | 76 | partial | partial-overlap | Claude Code has its own pre-commit hook support. RunGate's pre-commit adds custom conformity checks beyond standard linting. |
+| 100 | scripts/git-hooks/pre-push | 271 | partial | partial-overlap | Claude Code has its own pre-push support. RunGate's pre-push adds gate verification and SC compliance checks. |
 
-`lib/prior-branch.ts` (79 lines) provides:
-1. Git branch listing with regex matching by issue number
-2. Word-boundary matching (issue 550 matches `550-matcher-registry` but issue 55 does NOT match `550-*`)
-3. Timestamp-based sorting to pick most recent branch
-4. Optional test execution in a temporary worktree
+**Scripts Summary:** 39 files, 7,060 lines. 37 files (6,713 lines) are KEEP. 2 files (347 lines) are partial-overlap with standard git hook support.
 
-Claude Code provides `EnterWorktree` and `ExitWorktree` for worktree management, and standard git operations for branch listing. However, it does NOT:
-- Track which branches correspond to which issues
-- Apply word-boundary-safe issue number matching
-- Sort by timestamp to find the most recent matching branch
-- Run tests in a temporary worktree before resuming
+---
 
-**Classification:** PARTIAL-OVERLAP. Claude Code provides the git primitives; the issue-aware branch intelligence is custom. Retain.
+### gates/ (23 source files + 3 prompts = 26 files, 8,229 lines)
 
-### worktree-cleanup.ts — AC-9
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 101 | gates/gate-executor.ts | 1,146 | no | KEEP | Intentionally custom -- gate execution engine running quality gates in sequence with pass/fail verdicts and structured output. Core of RunGate's quality assurance pipeline. No agent platform provides a gate execution framework. |
+| 102 | gates/workflow.test.ts | 1,057 | no | KEEP | Intentionally custom -- workflow integration tests. |
+| 103 | gates/orchestrator.test.ts | 956 | no | KEEP | Intentionally custom -- orchestrator unit tests. |
+| 104 | gates/orchestrator.ts | 587 | no | KEEP | Intentionally custom -- orchestrates gate execution order and dependency resolution. |
+| 105 | gates/self-heal.test.ts | 511 | no | KEEP | Intentionally custom -- self-heal mechanism tests. |
+| 106 | gates/brief-assembler.test.ts | 429 | no | KEEP | Intentionally custom -- brief assembler tests. |
+| 107 | gates/ship-orchestrator.test.ts | 379 | no | KEEP | Intentionally custom -- ship orchestrator tests. |
+| 108 | gates/schema.ts | 373 | no | KEEP | Intentionally custom -- gate schema definitions and validation. |
+| 109 | gates/ship-orchestrator.ts | 370 | no | KEEP | Intentionally custom -- ship workflow orchestration with gate chaining and state management. |
+| 110 | gates/brief-assembler.ts | 355 | no | KEEP | Intentionally custom -- assembles agent briefs from templates, context, and workflow state. |
+| 111 | gates/adversarial.test.ts | 274 | no | KEEP | Intentionally custom -- adversarial testing of gate robustness. |
+| 112 | gates/error-classifier.test.ts | 250 | no | KEEP | Intentionally custom -- error classifier tests. |
+| 113 | gates/witness.ts | 237 | no | KEEP | Intentionally custom -- witness pattern for gate execution auditing and evidence collection. |
+| 114 | gates/e2e-smoke.test.ts | 234 | no | KEEP | Intentionally custom -- end-to-end smoke tests for gate pipeline. |
+| 115 | gates/schema-parity.test.ts | 197 | no | KEEP | Intentionally custom -- schema parity tests ensuring gate schemas match implementation. |
+| 116 | gates/prove.test.ts | 164 | no | KEEP | Intentionally custom -- prove gate tests. |
+| 117 | gates/self-heal.ts | 125 | no | KEEP | Intentionally custom -- self-healing logic that classifies gate failures and suggests fixes. |
+| 118 | gates/ac-quality.test.ts | 106 | no | KEEP | Intentionally custom -- acceptance criteria quality tests. |
+| 119 | gates/error-classifier.ts | 99 | no | KEEP | Intentionally custom -- classifies gate errors for self-healing (transient vs structural vs config). |
+| 120 | gates/chain.test.ts | 91 | no | KEEP | Intentionally custom -- gate chain tests. |
+| 121 | gates/preload.ts | 89 | no | KEEP | Intentionally custom -- preloads gate dependencies for faster execution. |
+| 122 | gates/run-gate.ts | 62 | no | KEEP | Intentionally custom -- gate runner entry point. |
+| 123 | gates/test-utils.ts | 43 | no | KEEP | Intentionally custom -- test utilities for gate testing. |
+| 124 | gates/prompts/ac-adversary.md | 20 | no | KEEP | Intentionally custom -- adversarial prompt for AC quality testing. |
+| 125 | gates/prompts/evidence-validator.md | 22 | no | KEEP | Intentionally custom -- evidence validation prompt template. |
+| 126 | gates/prompts/prove-reproducer.md | 53 | no | KEEP | Intentionally custom -- proof reproduction prompt template. |
 
-**Assessment: Claude Code does NOT provide built-in worktree lifecycle management.**
+**Gates Summary:** 26 files, 8,229 lines. All KEEP -- RunGate's gate execution engine and quality assurance pipeline is entirely custom domain logic with no built-in equivalent in any agent platform.
 
-`lib/worktree-cleanup.ts` (166 lines) provides safety-first cleanup:
-1. NEVER removes worktrees with uncommitted changes
-2. NEVER removes worktrees with unmerged branches
-3. Age-based filtering (maxAgeMs parameter)
-4. `git worktree remove --force` with `git worktree prune`
+---
 
-Claude Code provides `EnterWorktree` (creates worktrees) and `ExitWorktree` (leaves worktrees) but does NOT:
-- Track worktree age or enforce TTL-based cleanup
-- Check for uncommitted changes before removal
-- Verify branch merge status before deletion
-- Batch-clean multiple stale worktrees
+### workflows/ (6 files = 3,716 lines)
 
-**Classification:** PARTIAL-OVERLAP. Claude Code manages individual worktree sessions; lifecycle cleanup across sessions is custom. Retain.
+| # | File | Lines | Built-in | Coverage | Rationale |
+|---|------|-------|----------|----------|-----------|
+| 127 | workflows/ship.js | 1,510 | no | KEEP | Intentionally custom -- the ship workflow orchestrating GOAL -> DISCOVERY -> EXECUTION -> VERIFICATION with gate enforcement. Core harness workflow. No agent platform provides a multi-phase shipping workflow with quality gates. |
+| 128 | workflows/prove.js | 640 | no | KEEP | Intentionally custom -- prove workflow spawning verification agents, collecting evidence, and grading results against acceptance criteria. |
+| 129 | workflows/ship-and-heal.js | 534 | no | KEEP | Intentionally custom -- ship workflow with self-healing retry loop on gate failure. Classifies failures and adjusts retry strategy. |
+| 130 | workflows/council.js | 501 | partial | partial-overlap | See detailed assessment in Section 8. Overlaps with Claude Code's experimental Agent Teams feature for multi-agent coordination, but council.js implements structured multi-round debate with progressive transcript passing, structured JSON schemas (POSITION_SCHEMA, SYNTHESIS_SCHEMA), enforcement classification (MECHANICAL/BEHAVIORAL), and spec alignment checking. Agent Teams provides the teammate communication channel; the structured debate protocol is custom. |
+| 131 | workflows/batch-ship.js | 295 | partial | partial-overlap | Claude Code's `/batch` command provides parallel worktree agent execution. RunGate's batch-ship adds gate verification, SC tracking, and wave planning to the batch pattern. The parallelism mechanism overlaps; the quality gates and orchestration policy are custom. |
+| 132 | workflows/verify.js | 236 | no | KEEP | Intentionally custom -- verification workflow running checks against acceptance criteria with evidence collection. |
 
-### Council and Parallel Coordination vs Agent Teams — AC-10
+**Workflows Summary:** 6 files, 3,716 lines. 4 files (2,920 lines) are KEEP. 2 files (796 lines) are partial-overlap with experimental built-in features.
 
-**Assessment: Agent Teams provide a communication transport but do NOT replace the structured debate protocol.**
+---
 
-Custom implementation:
-- `workflows/council.js` (501 lines) — 3-round structured debate with POSITION_SCHEMA and SYNTHESIS_SCHEMA
-- `scripts/decision-reconcile.ts` (152 lines) — verifies council decisions appear in target docs
-- `specs/PARALLEL-AGENT-COORDINATION-SPEC.md` — file-claim manifests and module-boundary decomposition
+## 6. Detailed Assessment: prior-branch.ts vs Claude Code Session Resume
 
-Agent Teams (experimental) provide:
+**File:** `lib/prior-branch.ts` (160 lines)
+**Classification:** partial-overlap
+
+### What Claude Code Provides Natively
+
+Claude Code has native session resume capabilities:
+- Resumes prior conversation context when reopening a project
+- Tracks which branch was active in the previous session
+- Can detect and offer to continue work on an existing branch
+- Session resume focuses on the most recent session, not arbitrary issues
+
+### What RunGate's prior-branch.ts Provides
+
+The module exports two functions with custom logic that has no built-in equivalent:
+
+1. **`detectPriorBranch(opts: DetectOptions)`** (lines 36-91) -- Searches ALL local and remote branches for ones matching an issue number pattern using word-boundary regex (`(^|[^\d])${issueNumber}([^\d]|$)`). When multiple branches match, it sorts by most recent commit timestamp from `git log --format=%ct %D` to find the best candidate. It then creates a temporary worktree via `git worktree add`, runs the full test suite (`bun test`), and reports whether tests pass. This issue-number-based `detectPriorBranch` logic with test verification is entirely custom -- Claude Code's session resume does not search branches by issue number, disambiguate multiple matches, or verify test health before resuming.
+
+2. **`detectExistingPR(opts: DetectExistingPROptions)`** (lines 113-153) -- Uses `gh pr list --search` to find open PRs referencing a specific issue number in their title. Applies word-boundary pattern matching to avoid false positives (issue 55 should not match PR titled "issue-550"). Returns the PR number and head branch name as a structured `ExistingPR` object. This `detectExistingPR` function has zero overlap with Claude Code -- no built-in feature queries GitHub's PR API for issue-linked PRs or performs word-boundary filtering on results.
+
+### Overlap Analysis
+
+| Capability | Claude Code Native | prior-branch.ts Custom | Overlap |
+|-----------|-------------------|----------------------|---------|
+| Resume last session | Yes | No (different goal) | None |
+| Find branch by issue number | No | Yes (`detectPriorBranch`) | None |
+| Word-boundary regex matching | No | Yes (prevents false positives) | None |
+| Multi-branch timestamp disambiguation | No | Yes (picks most recent) | None |
+| Test verification on prior branch | No | Yes (worktree + bun test) | None |
+| Find open PR for issue | No | Yes (`detectExistingPR`) | None |
+| Branch resumption after session restart | Partial (last branch only) | Yes (any issue's branch) | Minimal |
+
+**Conclusion:** Claude Code's session resume and RunGate's prior-branch detection solve fundamentally different problems. Session resume continues the last conversation; `detectPriorBranch` finds prior work on a specific issue across all branches with test verification. The `detectExistingPR` function has zero overlap -- it queries GitHub's PR API for issue-linked PRs, which Claude Code does not do natively. Both `detectPriorBranch` and `detectExistingPR` contain custom logic that would be entirely lost in any migration. **Migration is not warranted.** The module should remain KEEP for its two exported functions.
+
+---
+
+## 7. Detailed Assessment: worktree-cleanup.ts vs Claude Code Worktree Lifecycle
+
+**File:** `lib/worktree-cleanup.ts` (166 lines)
+**Classification:** partial-overlap
+
+### What Claude Code Provides Natively
+
+Claude Code manages worktree lifecycle for agent spawning:
+- Creates worktrees via EnterWorktree when spawning agents
+- Removes worktrees via ExitWorktree when agents complete
+- Automatically cleans up worktrees for no-change agents ("cleaned up automatically if you made no changes")
+- The `/batch` command manages worktree lifecycle for parallel agents
+- Worktree lifecycle management happens at agent completion, not on a schedule
+
+### What RunGate's worktree-cleanup.ts Provides
+
+The `cleanupWorktrees(opts: CleanupOptions)` function (lines 35-131) implements a safety-first batch cleanup with custom stale-detection logic that goes beyond Claude Code's per-agent worktree lifecycle:
+
+1. **Age-based filtering** (`maxAgeMs` parameter, line 63-67) -- only cleans worktrees older than a threshold. Claude Code's worktree lifecycle does not have age-based cleanup; it cleans at agent completion or not at all. Stale worktrees from crashed agents or interrupted sessions accumulate without this.
+
+2. **Uncommitted-change safety** (lines 73-82) -- runs `git status --porcelain` on each worktree and NEVER removes worktrees with uncommitted changes. Claude Code's automatic cleanup also preserves changed worktrees, but RunGate's `cleanupWorktrees` check is explicit, logged to the `kept[]` array, and applies across batch cleanup.
+
+3. **Unmerged-branch protection** (lines 91-106) -- checks `git branch --merged main` and skips worktrees whose branches have not been merged. This prevents accidental loss of work that has not been merged to main. Claude Code's worktree lifecycle does not check merge status before cleanup.
+
+4. **Detached HEAD handling** (lines 84-89) -- explicitly skips worktrees in detached HEAD state with a logged reason. Defensive logic not present in Claude Code's built-in worktree lifecycle management.
+
+5. **Git worktree prune** (lines 116-122) -- runs `git worktree prune` after batch cleanup to remove stale worktree references from `.git/worktrees/`. Built-in worktree lifecycle does not prune orphaned references.
+
+6. **Structured reporting** (lines 38-42, 124-128) -- returns `CleanupResult` with `removed[]`, `kept[]` (with reason), and `errors[]` arrays for audit logging and operational visibility. Built-in cleanup is silent.
+
+### Overlap Analysis
+
+| Capability | Claude Code Native | worktree-cleanup.ts Custom | Overlap |
+|-----------|-------------------|---------------------------|---------|
+| Create worktrees for agents | Yes (EnterWorktree) | No | N/A |
+| Remove worktrees at completion | Yes (ExitWorktree) | No (batch cleanup) | None |
+| Age-based stale detection | No | Yes (`maxAgeMs`) | None |
+| Uncommitted-change safety | Partial (preserves changes) | Yes (explicit check + log) | Partial |
+| Unmerged-branch protection | No | Yes (`git branch --merged`) | None |
+| Detached HEAD handling | No | Yes (skip + log) | None |
+| Batch cleanup across all worktrees | No (per-agent only) | Yes (scans `.claude/worktrees/`) | None |
+| Git worktree prune | No | Yes | None |
+| Structured cleanup reporting | No | Yes (`CleanupResult`) | None |
+
+**Conclusion:** Claude Code's worktree lifecycle management and RunGate's `cleanupWorktrees` solve complementary problems. The built-in handles per-agent lifecycle (create on spawn, remove on completion). RunGate's `cleanupWorktrees` handles batch cleanup of stale worktrees that survived agent completion -- crashed agents, interrupted sessions, or agents that made changes but whose branches were later merged. The custom stale-detection logic (age filtering, merge-status checking, structured reporting) has no built-in equivalent. **Migration is not warranted.** The module should KEEP its current implementation.
+
+---
+
+## 8. Detailed Assessment: council.js vs Agent Teams
+
+**File:** `workflows/council.js` (501 lines)
+**Classification:** partial-overlap
+
+### What Claude Code Agent Teams Provides
+
+Agent Teams is an experimental feature (requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`):
 - Independent teammates with shared task list and direct messaging
+- Each teammate has its own context window (3-5x token cost)
+- `TeammateIdle` hook for re-verification before idle
+- Existing `.claude/agents/*.md` definitions work as teammate definitions
 - Display modes: in-process, tmux, iterm2
 - File structure: `~/.claude/teams/{team-name}/inboxes/{agent-name}.json`
-- TeammateIdle hook for re-verification
+- Free-form collaboration between teammates with no structured protocol
 
-What Agent Teams DO replace:
-- The communication channel between agents (direct messaging vs spawn-and-collect)
-- The parallel execution model (teammates run independently)
+### What RunGate's council.js Provides
 
-What Agent Teams do NOT replace:
-- The 3-round debate protocol (Research -> Round 1 positions -> Round 2 responses -> Round 3 synthesis)
-- Structured schemas (POSITION_SCHEMA requiring enforcementClassification and specAlignment)
-- Chair synthesis with mechanical vs behavioral classification
-- Permanent record storage to `docs/council/`
-- Decision reconciliation (checking if decisions appear in target files)
-- File-claim manifests for parallel work (D-1 through D-4 in PARALLEL-AGENT-COORDINATION-SPEC)
+The council workflow implements structured multi-round parallel debate with features Agent Teams does not replicate:
 
-**Classification:** PARTIAL-OVERLAP. Agent Teams could simplify the transport layer in council.js, but the debate protocol, structured schemas, and reconciliation logic must remain custom. Net savings estimate: ~50-100 lines of spawn/collect boilerplate in council.js, retaining ~400 lines of protocol logic.
+1. **Research Phase** -- Dedicated codebase scan producing `RESEARCH_SCHEMA` output (relevantFiles, existingPatterns, priorArt, keyFindings, warnings) before debate begins. Agent Teams has no structured research phase.
 
----
+2. **Three-Round Debate Protocol** -- Round 1 (independent positions from each teammate), Round 2 (responses that must reference Round 1 points), Round 3 (synthesis identifying convergence and disagreement). Agent Teams provides free-form messaging without structured rounds or progressive constraints.
 
-## Items Without Built-in Equivalent — Intentionally Custom
+3. **Progressive Transcript Passing** -- Each round's output is passed to the next round as context, ensuring debate builds on prior points. Agent Teams uses shared task lists and direct messaging, not structured transcript passing.
 
-These modules have no built-in equivalent in Claude Code and are retained because they implement RunGate's core value proposition:
+4. **Structured Output Schemas** -- `POSITION_SCHEMA` and `SYNTHESIS_SCHEMA` enforce structured JSON output from each agent at each round. Agent Teams has no schema enforcement on teammate output.
 
-| # | File | Lines | Rationale for Retention |
-|---|------|-------|------------------------|
-| 1 | lib/conformity.ts | 1,643 | Intentionally custom — the core conformity engine with 18 pattern matchers, SC validation, and config-driven testing. This IS RunGate. No external tool does conformity testing with pluggable matchers. |
-| 2 | lib/transcript-checker.ts | 845 | Intentionally custom — behavioral compliance grading with directive extraction, role-based evaluation, and TDD detection. No built-in or external tool grades agent transcripts against extracted directives. |
-| 3 | scripts/scaffold-project.ts | 1,699 | Intentionally custom — generates AGENTS.md, CI config, agent briefs, and conformity tests from rungate.json. RunGate-specific scaffold system. No external tool scaffolds AI-first project files. |
-| 4 | workflows/ship.js | 1,331 | Intentionally custom — the GOAL->DISCOVERY->EXECUTION->VERIFICATION workflow with gate enforcement. The harness entry point. |
-| 5 | lib/compliance.ts | 322 | Intentionally custom — compliance checking engine. Core RunGate IP for rule adherence measurement. |
-| 6 | lib/hill-climb.ts | 164 | Intentionally custom — iterative rule improvement optimization. No built-in provides hill climbing on instruction effectiveness. |
-| 7 | lib/directive-extractor.ts | 190 | Intentionally custom — NLP extraction of behavioral directives from documentation. Core differentiator for compliance testing. |
-| 8 | lib/canary.ts | 117 | Intentionally custom — plants known values and verifies agents use them. Novel verification approach with no external equivalent. |
-| 9 | workflows/prove.js | 640 | Intentionally custom — proof workflow collecting verification evidence. RunGate-specific. |
+5. **Enforcement Classification** -- Synthesis output classifies each recommendation as MECHANICAL or BEHAVIORAL with mechanism descriptions and `whyNotMechanical` rationale. This feeds directly into RunGate's enforcement pipeline.
+
+6. **Spec Alignment** -- Synthesis output includes `specAlignment` checking (specRef, aligned, divergenceReason). Ensures council recommendations do not contradict existing specs.
+
+7. **Configurable Debate Members** -- Supports architect, engineer, designer, security, product, devops roles with role-specific prompts (MEMBER_PROMPTS). Agent Teams uses `.claude/agents/*.md` definitions but without debate-specific role prompts.
+
+### Adoption Recommendation
+
+| Factor | Assessment |
+|--------|-----------|
+| **Maturity** | Agent Teams is experimental and requires an environment flag (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`). Not production-ready. Council.js has been running in production for months with proven structured output quality. Migration to an experimental feature risks regression. |
+| **Token Cost** | Agent Teams costs 3-5x more tokens because each teammate maintains its own full context window. Council.js uses sequential agent spawning with transcript passing, which is significantly more token-efficient for structured debate. For a 4-member council with 3 rounds, Agent Teams would consume roughly 12-20x the base context cost vs council.js's sequential approach. |
+| **Structured Output** | Council.js enforces JSON schemas (`POSITION_SCHEMA`, `SYNTHESIS_SCHEMA`) on every round, guaranteeing machine-parseable output with enforcementClassification and specAlignment fields. Agent Teams provides free-form collaboration with no schema enforcement. Migrating would lose output structure guarantees unless schema validation is reimplemented on top of Agent Teams. |
+| **Debate Protocol** | Council.js implements a specific debate methodology (research -> independent positions -> responses referencing prior points -> synthesis with convergence/disagreement tracking). Agent Teams provides generic teammate collaboration. The debate protocol would need to be entirely reimplemented on top of Agent Teams messaging, negating any migration benefit. |
+| **Enforcement Pipeline Integration** | Council.js output feeds directly into RunGate's enforcement classification (MECHANICAL/BEHAVIORAL) and spec alignment checking pipelines. Agent Teams output would need post-processing to match this structured format. |
+
+**Conclusion:** Agent Teams and council.js serve fundamentally different purposes. Agent Teams provides free-form multi-agent collaboration (a communication transport); council.js implements a specific structured debate protocol with schema-enforced output and enforcement pipeline integration. Migrating to Agent Teams would require reimplementing the entire debate protocol, schema enforcement, enforcement classification, and spec alignment on top of the Agent Teams primitive -- adding complexity rather than reducing it. The token cost increase (3-5x per teammate, potentially 12-20x total for a full council) provides no offsetting benefit since council.js's sequential spawning already works well. **Migration is not recommended** until Agent Teams matures past experimental status AND adds native support for structured multi-round protocols with schema enforcement. Monitor Agent Teams for future adoption when it graduates to stable.
 
 ---
 
-## Assessment Summary
+## 9. Non-Existent Files Assessment
 
-### By Classification
+### SessionHarvester.ts
 
-| Classification | Count | Lines |
-|---------------|-------|-------|
-| KEEP (no equivalent) | 73 | 16,364 |
-| PARTIAL-OVERLAP | 8 | 1,364 |
-| NEEDS-WRAPPING | 5 | 501 |
-| FULL-REPLACE | 0 | 0 |
+**Finding:** `SessionHarvester.ts` does not exist in the RunGate codebase. A search across all directories (hooks/, lib/, scripts/, gates/, workflows/) found zero files matching this name or any variant (session-harvester.ts, sessionHarvester.ts). SessionHarvester.ts was referenced in earlier discussions but was never implemented as a RunGate module. No migration assessment is possible for a file that does not exist -- there is no custom code to compare against built-in features. The closest existing modules are `lib/behavioral-cache.ts` (session data caching, not harvesting) and `scripts/analyze-transcript.ts` (individual transcript analysis, not cross-session harvesting).
+
+### WorkCompletionLearning.hook.ts
+
+**Finding:** `WorkCompletionLearning.hook.ts` does not exist in the RunGate codebase. A search across all directories found zero files matching this name or any variant. WorkCompletionLearning.hook.ts was proposed conceptually but never created as a RunGate hook. No migration assessment is possible for a file that does not exist -- there is no custom implementation to evaluate for built-in equivalence. The closest existing module is `hooks/TaskCompleted.hook.ts` (runs quality gates on task completion, but does NOT extract generalizable learnings from completed work).
+
+Both SessionHarvester.ts and WorkCompletionLearning.hook.ts are confirmed absent from the RunGate codebase as of 2026-09-29.
+
+---
+
+## 10. Action Recommendations
+
+### Action 1: Monitor Agent Teams for Council Migration (WATCH -- do not migrate)
+
+**Items:** `workflows/council.js` (501 lines)
+**Current Classification:** partial-overlap
+**Recommendation:** Do NOT migrate now. Agent Teams is experimental with 3-5x token cost per teammate and no structured debate protocol. Continue using council.js. Re-evaluate when Agent Teams graduates to stable and adds schema enforcement or round-based protocols.
+**Rationale:** Migration would require reimplementing 501 lines of debate logic on top of Agent Teams, increasing both complexity and token cost with no functional gain. Net negative value today.
+
+### Action 2: Evaluate batch-ship.js Against /batch Command (EVALUATE)
+
+**Items:** `workflows/batch-ship.js` (295 lines)
+**Current Classification:** partial-overlap
+**Recommendation:** Investigate whether Claude Code's `/batch` command can replace batch-ship.js's parallel worktree execution while preserving RunGate's gate verification and SC tracking. If `/batch` supports post-completion hooks (via SubagentStop), RunGate's gate checks could run via existing hooks rather than workflow-internal logic.
+**Rationale:** The parallelism mechanism is the primary overlap. If hooks can provide the gate enforcement after `/batch` agents complete, up to 295 lines of custom orchestration could potentially be simplified. However, batch-ship.js also handles wave planning and cross-agent dependency ordering which `/batch` does not provide. Full replacement is unlikely; partial simplification is worth investigating.
+
+### Action 3: Consolidate Worktree Management Modules (SIMPLIFY)
+
+**Items:** `lib/worktree-cleanup.ts` (166 lines), `lib/worktree-isolation.ts` (82 lines), `lib/branch-cleanup.ts` (238 lines)
+**Current Classification:** partial-overlap
+**Recommendation:** These three modules handle related concerns (worktree creation, worktree cleanup, branch cleanup). While none can be replaced by built-ins, they could be consolidated into a single `lib/worktree-manager.ts` module to reduce maintenance surface and ensure consistent safety checks. The built-in EnterWorktree/ExitWorktree handle per-agent lifecycle; the custom code handles batch operations, stale detection, and safety checks.
+**Rationale:** Three separate files for worktree/branch management creates maintenance burden and potential for inconsistent safety logic. Consolidation (not elimination) would reduce cognitive load without losing any functionality.
+
+### Action 4: PostCompact Hook Verification (VERIFY)
+
+**Items:** `hooks/PostCompact.hook.ts` (60 lines)
+**Current Classification:** WRAP (partial-overlap)
+**Recommendation:** Verify that Claude Code's PostCompact hook trigger provides all the context needed (project root path, working directory). The current implementation reads CLAUDE.md and AGENTS.md to extract rules sections via regex. Confirm the hook receives sufficient environment context to locate these files in all scenarios (worktrees, multi-project). If Claude Code adds native rule persistence across compaction in a future release, this hook becomes a full-replace candidate.
+**Rationale:** PostCompact.hook.ts is the closest to full-replace of any hook file, but the rule extraction logic (regex parsing of markdown `## Rules` sections) remains custom. The trigger is built-in; only the extraction logic could potentially be replaced if Claude Code adds native rule re-injection.
+
+---
+
+## 11. Summary Statistics
+
+| Directory | Files | Lines | KEEP | WRAP | partial-overlap | REPLACE |
+|-----------|-------|-------|------|------|-----------------|---------|
+| hooks/ | 19 | 1,514 | 5 | 14 | 0 | 0 |
+| lib/ | 42 | 9,940 | 37 | 1 | 4 | 0 |
+| scripts/ | 39 | 7,060 | 37 | 0 | 2 | 0 |
+| gates/ | 26 | 8,229 | 26 | 0 | 0 | 0 |
+| workflows/ | 6 | 3,716 | 4 | 0 | 2 | 0 |
+| **Total** | **132** | **30,459** | **109** | **15** | **8** | **0** |
 
 ### Key Findings
 
-1. **No full-replace candidates exist.** Every custom module implements domain-specific logic that Claude Code built-ins do not cover. Built-in features provide trigger events (SubagentStop, PostCompact, TaskCompleted, FileChanged) and infrastructure (EnterWorktree, git operations, Agent Teams) but never the domain logic.
+1. **Zero files qualify for full-replace.** Every custom module implements domain-specific logic that Claude Code built-ins do not cover. Built-in features provide trigger events (SubagentStop, PostCompact, TaskCompleted, FileChanged) and infrastructure (EnterWorktree, git operations, Agent Teams) but never the domain logic.
 
-2. **Hook event triggers are native; handlers are custom.** Five hooks (AgentVerdictCapture, PostCompact, SpecConformityTrigger, TaskCompleted, and task-completion-checks) use built-in hook events as thin triggers. The handlers contain RunGate-specific logic that must remain custom. These hooks already follow the correct pattern from HOOK-ARCHITECTURE-SPEC.md.
+2. **83% of files (109 of 132) are KEEP with no built-in equivalent at all.** This confirms RunGate's value is in its custom conformity, compliance, and gate logic -- not in reimplementing platform features.
 
-3. **Agent Teams simplify transport, not protocol.** The council workflow could shed ~50-100 lines of spawn/collect boilerplate if migrated to Agent Teams, but the 3-round debate protocol, structured schemas, and decision reconciliation must remain custom.
+3. **All 14 hooks use built-in trigger points but contain custom handlers.** The hook architecture correctly separates platform triggers from domain logic, following HOOK-ARCHITECTURE-SPEC.md.
 
-4. **Worktree management is partially overlapping.** Claude Code's EnterWorktree/ExitWorktree handle individual worktree sessions. Custom code handles lifecycle cleanup (age-based, safety-guarded) and branch resumption intelligence (issue-aware matching) that built-ins do not provide.
+4. **Agent Teams is not a council.js replacement.** It provides a communication transport, not a structured debate protocol. Token cost is 3-5x higher with no functional benefit. Watch for maturity improvements.
 
-5. **84% of custom code (16,364 of 19,443 lines) has no built-in equivalent at all.** This confirms RunGate's value is in its custom logic, not in reimplementing platform features.
+5. **Worktree management is complementary, not duplicative.** Built-in handles per-agent lifecycle; custom handles batch cleanup, stale detection, and safety guards for cross-session worktree accumulation.
 
-### Recommendation
+6. **SessionHarvester.ts and WorkCompletionLearning.hook.ts do not exist.** These were proposed but never implemented. No migration assessment applies.
 
-No code migrations or deletions are warranted. The custom codebase is correctly layered: built-in features provide infrastructure and trigger events; custom code provides domain logic. The architecture follows the agent-agnostic principle from the 2026-09-24 feature audit — Claude Code is one adapter, RunGate core remains portable.
+This validates the agent-agnostic architecture principle from the 2026-09-24 feature audit: RunGate core (specs, SCs, conformity engine, compliance grading, gate pipeline) is intentionally independent of any specific agent platform. Claude Code provides hook trigger points and worktree infrastructure; RunGate provides the quality assurance, compliance testing, and behavioral optimization layers.

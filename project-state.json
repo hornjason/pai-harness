@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-27",
+  "updated": "2026-09-29",
   "priorities": [
     "P0: TDD compliance — Marcus TDD_SEQUENCE_VIOLATED in 1/2 post-simplification runs. Brief says TDD first but Marcus still writes impl before tests sometimes",
     "P1: Discovery cat usage — 17-19 cat commands per run. Discovery brief needs efficiency rules similar to Marcus",
