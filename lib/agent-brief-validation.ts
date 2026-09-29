@@ -226,8 +226,10 @@ function validateBriefPolicies(baseDir: string, agent: AgentDef, prompt: string)
 
 // --- Signal Logging ---
 
-export function logBriefSignal(signalsDir: string, signalsFile: string, event: Record<string, unknown>): void {
+export function logBriefSignal(baseDir: string, event: Record<string, unknown>): void {
   try {
+    const signalsDir = join(baseDir, 'MEMORY', 'LEARNING', 'SIGNALS');
+    const signalsFile = join(signalsDir, 'signals.jsonl');
     if (!existsSync(signalsDir)) mkdirSync(signalsDir, { recursive: true });
     if (existsSync(signalsFile)) {
       appendFileSync(signalsFile, JSON.stringify(event) + '\n', 'utf-8');

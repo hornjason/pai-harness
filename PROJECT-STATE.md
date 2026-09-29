@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Scaffold Decomposition — 3 SCs open**
+**Current phase: All phases complete**
 
 Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.
 
@@ -39,7 +39,7 @@ Retroactive compliance audit (48 runs, 1125 agent transcripts):
     2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate
     3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check
     4. Run grading on EVERY ship going forward (skipGrade=false)
-Suite: 19/25 SCs done.
+Suite: 25/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — 71% first-pass (10/14). Keep improving evidence quality and agent reliability
@@ -76,7 +76,7 @@ Suite: 19/25 SCs done.
 
 ## ⬜ AES Quality Gate + Pipeline Optimization (NOT STARTED)
 
-## 🔄 Scaffold Decomposition (IN PROGRESS)
+## ✅ Scaffold Decomposition (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
@@ -86,22 +86,22 @@ Suite: 19/25 SCs done.
 | ✅ | SC-361 | Brief generator reads template files |
 | ✅ | SC-362 | CODE-MAP generator from ProjectScan |
 | ✅ | SC-363 | scaffold-project.ts under 200 lines |
-| ⬜ | SC-364 | Identical output before and after |
-| ⬜ | SC-365 | Scanner importable without generation |
-| ⬜ | SC-366 | Generators testable with mock data |
+| ✅ | SC-364 | Identical output before and after |
+| ✅ | SC-365 | Scanner importable without generation |
+| ✅ | SC-366 | Generators testable with mock data |
 
-## 🔄 Hook Architecture (IN PROGRESS)
+## ✅ Hook Architecture (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-367 | AgentBriefGuard under 50 lines |
+| ✅ | SC-367 | AgentBriefGuard under 50 lines |
 | ✅ | SC-368 | lib/brief-validator.ts independently testable |
 | ✅ | SC-369 | GateEnforcement under 100 lines |
 | ✅ | SC-370 | Every hook traces to an SC |
 | ✅ | SC-371 | No hook over 150 lines |
 | ✅ | SC-372 | Hook logic in lib/ has unit tests |
 
-## 🔄 Gate Contracts (IN PROGRESS)
+## ✅ Gate Contracts (COMPLETE)
 
 | Status | SC | What |
 |---|---|---|
@@ -109,8 +109,8 @@ Suite: 19/25 SCs done.
 | ✅ | SC-374 | Pass/fail criteria documented as SCs |
 | ✅ | SC-375 | Gate chain order documented |
 | ✅ | SC-376 | run-gate.ts under 400 lines |
-| ⬜ | SC-377 | Contracts testable by conformity engine |
-| ⬜ | SC-378 | No implicit state passing |
+| ✅ | SC-377 | Contracts testable by conformity engine |
+| ✅ | SC-378 | No implicit state passing |
 
 ---
 

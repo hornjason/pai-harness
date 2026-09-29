@@ -38,10 +38,10 @@ export function generateAgentsMd(scan: ProjectScan): string {
     ? specs.map(s => `| ${s.file} | ${s.governs} | ${s.testable} |`).join("\n")
     : "| (no specs found) | | |";
 
-  // Test files table
+  // Test files table (SC-364: use consistent label for idempotency)
   const testsTable = testFiles.length > 0
     ? testFiles.map(t => `| ${t.label} | ${t.file} | Auto-detected |`).join("\n")
-    : "| scaffold conformity | scaffold-conformity.test.ts | Structure validation |";
+    : "| scaffold conformity | scaffold-conformity.test.ts | Auto-detected |";
 
   // Doc routing table
   const docRoutingTable = docRouting.length > 0

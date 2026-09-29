@@ -43,12 +43,12 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 ## Success Criteria
 
-- [ ] SC-373: Every gate source file has a typed input/output interface exported (behavioral)
-- [ ] SC-374: Pass/fail criteria for each gate documented as SCs in this spec (behavioral)
-- [ ] SC-375: Gate chain order documented — which gates feed into which (behavioral)
+- [x] SC-373: Every gate source file has a typed input/output interface exported (behavioral)
+- [x] SC-374: Pass/fail criteria for each gate documented as SCs in this spec (behavioral)
+- [x] SC-375: Gate chain order documented — which gates feed into which (behavioral)
 - [x] SC-376: gates/run-gate.ts is under [400] lines
-- [ ] SC-377: Gate contracts testable by conformity engine (behavioral)
-- [ ] SC-378: No gate passes implicit state — all data flows through typed interfaces (behavioral)
+- [x] SC-377: Gate contracts testable by conformity engine (behavioral)
+- [x] SC-378: No gate passes implicit state — all data flows through typed interfaces (behavioral)
 
 ## Per-Gate Pass/Fail Criteria
 

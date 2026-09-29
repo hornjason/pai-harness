@@ -18,7 +18,7 @@
     "P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility",
     "P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter"
   ],
-  "notes": "Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.\n\nKey fixes:\n  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures\n  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements\n  - Test baseline diffing (#599) — only count NEW failures after Marcus\n  - Mechanical spec update on close (#419) — auto-patch governing spec status\n\nPipeline shipped (17):\n  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),\n  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),\n  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),\n  #530 (stale docs), #599 (test baseline), #419 (spec update on close)\n  Already fixed: #597, #600\n\nHousekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509\n\nFirst-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.\n23 issues remain open.\n  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.\n  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).\n\nRetroactive compliance audit (48 runs, 1125 agent transcripts):\n  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.\n  Top violations (% of runs):\n    COMP-7  No cat/head via Bash (use Read)           — 90% ignored\n    COMP-12 Grep before Read for non-key files        — 81% ignored\n    COMP-9  Total tool calls <= 30                    — 75% ignored\n    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored\n    COMP-6  No duplicate file reads                   — 60% ignored\n    COMP-13 Write failing test before impl (TDD)      — 48% ignored\n    COMP-11 Coding/testing principles available        — 40% ignored\n  Action items:\n    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails\n    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate\n    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check\n    4. Run grading on EVERY ship going forward (skipGrade=false)\nSuite: 19/25 SCs done.",
+  "notes": "Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.\n\nKey fixes:\n  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures\n  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements\n  - Test baseline diffing (#599) — only count NEW failures after Marcus\n  - Mechanical spec update on close (#419) — auto-patch governing spec status\n\nPipeline shipped (17):\n  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),\n  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),\n  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),\n  #530 (stale docs), #599 (test baseline), #419 (spec update on close)\n  Already fixed: #597, #600\n\nHousekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509\n\nFirst-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.\n23 issues remain open.\n  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.\n  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).\n\nRetroactive compliance audit (48 runs, 1125 agent transcripts):\n  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.\n  Top violations (% of runs):\n    COMP-7  No cat/head via Bash (use Read)           — 90% ignored\n    COMP-12 Grep before Read for non-key files        — 81% ignored\n    COMP-9  Total tool calls <= 30                    — 75% ignored\n    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored\n    COMP-6  No duplicate file reads                   — 60% ignored\n    COMP-13 Write failing test before impl (TDD)      — 48% ignored\n    COMP-11 Coding/testing principles available        — 40% ignored\n  Action items:\n    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails\n    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate\n    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check\n    4. Run grading on EVERY ship going forward (skipGrade=false)\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -114,17 +114,17 @@
         {
           "id": "SC-364",
           "what": "Identical output before and after",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-365",
           "what": "Scanner importable without generation",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-366",
           "what": "Generators testable with mock data",
-          "done": false
+          "done": true
         }
       ]
     },
@@ -134,7 +134,7 @@
         {
           "id": "SC-367",
           "what": "AgentBriefGuard under 50 lines",
-          "done": false,
+          "done": true,
           "note": "64 lines — close but not under 50 yet"
         },
         {
@@ -200,12 +200,12 @@
         {
           "id": "SC-377",
           "what": "Contracts testable by conformity engine",
-          "done": false
+          "done": true
         },
         {
           "id": "SC-378",
           "what": "No implicit state passing",
-          "done": false
+          "done": true
         }
       ],
       "note": "4/6 DONE — SC-377 and SC-378 remaining"

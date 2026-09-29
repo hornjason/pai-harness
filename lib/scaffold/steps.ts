@@ -188,15 +188,16 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
     { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
     { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
-  const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
+  const conditionalPatterns: Array<{ pattern: string; what: string; when: string }> = [
     { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
     { pattern: "Makefile", what: "Build/deploy commands", when: "Building or deploying" },
     { pattern: "tsconfig.json", what: "TypeScript configuration", when: "Changing TS settings" },
     { pattern: "Containerfile", what: "Container build definition", when: "Modifying container" },
     { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
-    { pattern: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" },
   ];
-  for (const kf of keyFilePatterns) {
+  // Always include .claude/rungate.json for idempotency (scaffold generates it, SC-364)
+  keyFiles.push({ file: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" });
+  for (const kf of conditionalPatterns) {
     if (existsSync(join(projectPath, kf.pattern))) {
       keyFiles.push({ file: kf.pattern, what: kf.what, when: kf.when });
     }
@@ -316,11 +317,12 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
   };
 
   const docRouting: Array<{ need: string; file: string }> = [];
-  if (existsSync(join(projectPath, "CODE-MAP.md"))) {
-    docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
-  }
+  // Always include scaffold-generated files for idempotency (SC-364)
+  docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
+  docRouting.push({ need: "Current project state, priorities, and session history", file: "PROJECT-STATE.md" });
+  // Conditionally include other root docs
   for (const [f, intent] of Object.entries(rootDocIntents)) {
-    if (existsSync(join(projectPath, f))) {
+    if (f !== "PROJECT-STATE.md" && existsSync(join(projectPath, f))) {
       docRouting.push({ need: intent, file: f });
     }
   }
@@ -381,7 +383,7 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
     docRouting: filteredRouting as DocRoute[],
     categories: categories as Category[],
     consumers,
-    hasCodeMap: existsSync(join(projectPath, "CODE-MAP.md")),
+    hasCodeMap: true, // Always true for idempotency — scaffold generates CODE-MAP.md (SC-364)
     makeTargets,
     sourceDirs: [],
     promptRouting: {},

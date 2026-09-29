@@ -57,14 +57,14 @@ lib/validators/
 ## Success Criteria
 
 - [x] SC-358: lib/scanner.ts exists
-- [ ] SC-359: Scanner detects tech stack, specs, consumers, source directories (behavioral)
+- [x] SC-359: Scanner detects tech stack, specs, consumers, source directories (behavioral)
 - [x] SC-360: lib/generators/agents-md.ts exists
 - [x] SC-361: lib/generators/agent-briefs.ts exists
 - [x] SC-362: lib/generators/code-map.ts exists
 - [x] SC-363: scripts/scaffold-project.ts is under [200] lines
-- [ ] SC-364: Re-scaffold produces identical output before and after decomposition (behavioral)
-- [ ] SC-365: Scanner is importable by other scripts without pulling in generation logic (behavioral)
-- [ ] SC-366: Each generator is independently testable with mock ProjectScan data (behavioral)
+- [x] SC-364: Re-scaffold produces identical output before and after decomposition (behavioral)
+- [x] SC-365: Scanner is importable by other scripts without pulling in generation logic (behavioral)
+- [x] SC-366: Each generator is independently testable with mock ProjectScan data (behavioral)
 - [x] SC-387: config/universal-rules.yaml exists
 - [ ] SC-388: .claude/rungate.json has field keyFiles
 - [ ] SC-389: .claude/rungate.json has field agentConfig

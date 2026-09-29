@@ -134,7 +134,7 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 
 ### Success Criteria (Three-Tier)
 
-- [ ] SC-423: .claude/agents/marcus.md frontmatter has tiers
+- [x] SC-423: .claude/agents/marcus.md frontmatter has tiers
 - [x] SC-424: lib/rule-registry.ts exists
 - [x] SC-425: workflows/ship.js contains [briefedAgent]
 - [x] SC-426: lib/rule-registry.ts contains [reinforcement]

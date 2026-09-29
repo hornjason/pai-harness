@@ -69,7 +69,7 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [x] SC-340: harness lib/conformity.ts contains [frontmatter-field]
 - [x] SC-341: Golden fixture staleness check — SCs referencing files not in fixture output = FAIL
 - [x] SC-342: Adding a new static SC to a testable spec and running `bun test` produces a test without editing any test file
-- [ ] SC-343: Phase-1.5 tests remain as conformity engine unit tests (behavioral)
+- [x] SC-343: Phase-1.5 tests remain as conformity engine unit tests (behavioral)
 - [x] SC-344: test/phase-1.test.ts is under [200] lines
 - [ ] SC-345: Every SC in testable specs classified as static or behavioral (behavioral)
 - [ ] SC-346: Behavioral SCs have verification: behavioral tag and route to SESSION-AUDIT-SPEC (behavioral)

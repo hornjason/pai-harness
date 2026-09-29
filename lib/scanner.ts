@@ -198,22 +198,26 @@ function detectSourceDirectories(root: string): string[] {
 // ── Key file scanning ──────────────────────────────────────────
 
 function scanKeyFiles(root: string): KeyFile[] {
+  // Always include scaffold-generated files for idempotency (SC-364)
   const keyFiles: KeyFile[] = [
     { file: "AGENTS.md", what: "Project entry point", when: "Always first" },
     { file: "PROJECT-STATE.md", what: "Live status + handoff (generated from project-state.json — don't edit directly)", when: "Session start, always first after AGENTS.md" },
     { file: "project-state.json", what: "Source of truth for project status", when: "When editing state" },
   ];
 
-  const keyFilePatterns: Array<{ pattern: string; what: string; when: string }> = [
+  // Conditionally included files (only if they exist)
+  const conditionalPatterns: Array<{ pattern: string; what: string; when: string }> = [
     { pattern: "package.json", what: "Dependencies and scripts", when: "Adding deps or scripts" },
     { pattern: "Makefile", what: "Build/deploy commands", when: "Building or deploying" },
     { pattern: "tsconfig.json", what: "TypeScript configuration", when: "Changing TS settings" },
     { pattern: "Containerfile", what: "Container build definition", when: "Modifying container" },
     { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
-    { pattern: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" },
   ];
 
-  for (const kf of keyFilePatterns) {
+  // Always include .claude/rungate.json for idempotency (scaffold generates it)
+  keyFiles.push({ file: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" });
+
+  for (const kf of conditionalPatterns) {
     if (existsSync(join(root, kf.pattern))) {
       keyFiles.push({ file: kf.pattern, what: kf.what, when: kf.when });
     }
@@ -275,17 +279,16 @@ function scanRefFiles(root: string): RefFile[] {
 function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
   const docRouting: DocRoute[] = [];
 
-  if (existsSync(join(root, "CODE-MAP.md"))) {
-    docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
-  }
+  // Always include scaffold-generated files for idempotency (SC-364)
+  docRouting.push({ need: "Codebase structure (routes, components, modules, health)", file: "CODE-MAP.md" });
+  docRouting.push({ need: "Current project state, priorities, and session history", file: "PROJECT-STATE.md" });
 
-  // Root-level docs with intent descriptions
+  // Root-level docs with intent descriptions (conditionally included)
   const rootDocIntents: Record<string, string> = {
     "ARCHITECTURE.md": "System architecture and design principles",
     "PRINCIPLES.md": "Core engineering principles and standards",
     "CONTRIBUTING.md": "How to contribute — workflow, conventions, review process",
     "MODEL.md": "Domain model and data relationships",
-    "PROJECT-STATE.md": "Current project state, priorities, and session history",
   };
 
   for (const [f, intent] of Object.entries(rootDocIntents)) {
@@ -669,7 +672,7 @@ export function scanProject(root: string): ProjectScan {
     docRouting: scanDocRouting(root, categories),
     categories,
     consumers: detectConsumers(root),
-    hasCodeMap: existsSync(join(root, "CODE-MAP.md")),
+    hasCodeMap: true, // Always true for idempotency — scaffold generates CODE-MAP.md (SC-364)
     makeTargets: scanMakeTargets(root),
     sourceDirs: detectSourceDirectories(root),
     promptRouting: scanPromptRouting(root, harness),

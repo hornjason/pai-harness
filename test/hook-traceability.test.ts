@@ -69,3 +69,22 @@ describe("HOOK-ARCHITECTURE-SPEC current state table (SC-370)", () => {
     }
   });
 });
+
+describe("Hook line count limits (SC-367, SC-371)", () => {
+  const hooksDir = join(HARNESS_ROOT, "hooks");
+
+  test("AgentBriefGuard.hook.ts is under 50 lines (SC-367)", () => {
+    const content = readFileSync(join(hooksDir, "AgentBriefGuard.hook.ts"), "utf-8");
+    const lineCount = content.split("\n").length;
+    expect(lineCount).toBeLessThan(50);
+  });
+
+  test("no hook file exceeds 150 lines (SC-371)", () => {
+    const hookFiles = readdirSync(hooksDir).filter(f => f.endsWith(".hook.ts"));
+    for (const file of hookFiles) {
+      const content = readFileSync(join(hooksDir, file), "utf-8");
+      const lineCount = content.split("\n").length;
+      expect(lineCount).toBeLessThanOrEqual(150);
+    }
+  });
+});
