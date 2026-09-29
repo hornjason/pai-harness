@@ -7,7 +7,7 @@
  * Used by: AgentVerdictCapture.hook.ts
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join } from 'path';
 import { auditAgent, type Role } from '../scripts/audit-transcript';
 import { writeCache, type BehavioralCache } from './behavioral-cache';
@@ -117,4 +117,23 @@ export function populateBehavioralCache(
     // Non-blocking
   }
   return 0;
+}
+
+/**
+ * Write AgentAuditResult to .rungate/audit-compliance.json.
+ * Creates the .rungate directory if it does not exist.
+ * Overwrites any previous audit-compliance.json with the new result.
+ *
+ * AC-1: writeAuditComplianceJSON export
+ */
+export function writeAuditComplianceJSON(
+  result: AgentAuditResult,
+  projectRoot: string,
+): void {
+  const rungateDir = join(projectRoot, '.rungate');
+  if (!existsSync(rungateDir)) {
+    mkdirSync(rungateDir, { recursive: true });
+  }
+  const outPath = join(rungateDir, 'audit-compliance.json');
+  writeFileSync(outPath, JSON.stringify(result, null, 2));
 }
