@@ -51,13 +51,11 @@ Suite: 25/25 SCs done.
 7. P2: #511 Evaluate Anthropic official plugins for PAI workflow
 8. P2: #506 Quinn prove brief improvements — input mode and reproduction steps from issue
 9. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
-10. P2: #470 Mechanical gap detection — post-ship scanner for product and harness drift
-11. P2: #469 Fix .pai-work lifecycle — archive-then-purge replaces file-level TTL
-12. P2: #412 Per-project ceremony overrides with protected-checks
-13. P2: #342 Doc archival — prune stale docs to reduce context load
-14. P2: Remaining SCs — SC-364/365/366 (scaffold identical output, scanner importable, generators testable), SC-367 (AgentBriefGuard <50 lines), SC-377/378 (gate contracts testable, no implicit state)
-15. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
-16. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
+10. P2: #412 Per-project ceremony overrides with protected-checks
+11. P2: #342 Doc archival — prune stale docs to reduce context load
+12. P2: Wire gap scanner into run-gate.ts as --gate gaps (follow-up from #470)
+13. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
+14. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -114,6 +112,17 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-09-29 session 19:**
+- AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed
+- 19 SCs verified — 13 already satisfied by existing tests, 6 needed new work
+- SC-364: scaffold idempotency test + fixed non-deterministic scanner. Caught Marcus when:kf.pattern bug
+- SC-367: AgentBriefGuard 64→38 lines. Signal constants moved to lib module
+- #469: archive-then-purge replaces file-level TTL. Directory-level lifecycle for .rungate
+- #470: gap scanner (lib/gap-scanner.ts) with 6 drift checks, 12 tests. Gate integration follow-up
+- Fixed RatingCapture hook timeout (30s→60s)
+- Cleaned 32 stale worktrees (171MB), 126 stale branches
+- Suite: 1729 pass, 0 fail, 100 files. 27 issues remain open
+
 **Session 2026-09-29 session 18:**
 - AFK marathon: 18 issues shipped/closed through pipeline, 15 housekeeping closures (shipped-but-open cleanup)
 - Pipeline shipped: #540, #590, #542, #596, #535, #598, #515, #532, #527, #583, #531, #529, #530, #599, #419, #508. Already fixed: #597, #600
@@ -133,17 +142,4 @@ Suite: 25/25 SCs done.
 - B2 evidence validator: added missing contains/exists/!=/< operators + NaN guards
 - AES prompt reinforcement: COMP-6/COMP-12 in Marcus prompt (still leaks — needs mechanical enforcement)
 - Council v2 launched with full forensic data: 10 runs, 37 gate attempts, agent-level transcripts
-
-**Session 2026-09-25 session 14:**
-- AES hill-climb: 32→87 in 3 dry-run iterations (TDD top, context injection, efficiency rules)
-- Pipeline optimization: 32 agents/141 min → 16 agents/20 min
-- Prove regression eliminated: LIGHT skips prove, no re-implementation loop
-- Agent batching: init+prior-branch, ac-prevalidation+prior-branch, brief-preflight+assemble, commit+env-check+record, merge+push, finalize (4→1)
-- Grading aligned to COMP-1 through COMP-13 with verdict + evidence
-- Context injection working: COMP-1/COMP-5/COMP-11 pass via prompt injection
-- Verify gate cwd fixed (EVIDENCE_CWD), merge guard added
-- bun test --parallel --no-isolate (209→176s), redundant test runs eliminated
-- 5 issues shipped: #590 (40%), #592 (70%), #584 (67%), #594 (83%), #595 (83%)
-- Ship gate false positives: B1/B2/evidence-type-ratio checks fire on LIGHT (should be exempt)
-- Deep adversarial audit: 26/32 agents were bash wrappers, prove was 42% of runtime
 

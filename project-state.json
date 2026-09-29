@@ -10,11 +10,9 @@
     "P2: #511 Evaluate Anthropic official plugins for PAI workflow",
     "P2: #506 Quinn prove brief improvements — input mode and reproduction steps from issue",
     "P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts",
-    "P2: #470 Mechanical gap detection — post-ship scanner for product and harness drift",
-    "P2: #469 Fix .pai-work lifecycle — archive-then-purge replaces file-level TTL",
     "P2: #412 Per-project ceremony overrides with protected-checks",
     "P2: #342 Doc archival — prune stale docs to reduce context load",
-    "P2: Remaining SCs — SC-364/365/366 (scaffold identical output, scanner importable, generators testable), SC-367 (AgentBriefGuard <50 lines), SC-377/378 (gate contracts testable, no implicit state)",
+    "P2: Wire gap scanner into run-gate.ts as --gate gaps (follow-up from #470)",
     "P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility",
     "P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter"
   ],
@@ -135,7 +133,7 @@
           "id": "SC-367",
           "what": "AgentBriefGuard under 50 lines",
           "done": true,
-          "note": "64 lines — close but not under 50 yet"
+          "note": "#602 — trimmed to 38 lines (session 19)"
         },
         {
           "id": "SC-368",
@@ -168,7 +166,7 @@
           "note": "#544 — gate-enforcement.test.ts with 359 lines"
         }
       ],
-      "note": "5/6 DONE — only SC-367 remaining (AgentBriefGuard 64 lines, needs 50)"
+      "note": "COMPLETE — all 6 SCs done. SC-367 trimmed to 38 lines (session 19)"
     },
     {
       "name": "Gate Contracts",
@@ -208,10 +206,24 @@
           "done": true
         }
       ],
-      "note": "4/6 DONE — SC-377 and SC-378 remaining"
+      "note": "COMPLETE — all 6 SCs done. SC-377/378 verified by existing gate-contracts.test.ts (session 19)"
     }
   ],
   "sessions": [
+    {
+      "date": "2026-09-29 session 19",
+      "items": [
+        "AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed",
+        "19 SCs verified — 13 already satisfied by existing tests, 6 needed new work",
+        "SC-364: scaffold idempotency test + fixed non-deterministic scanner. Caught Marcus when:kf.pattern bug",
+        "SC-367: AgentBriefGuard 64→38 lines. Signal constants moved to lib module",
+        "#469: archive-then-purge replaces file-level TTL. Directory-level lifecycle for .rungate",
+        "#470: gap scanner (lib/gap-scanner.ts) with 6 drift checks, 12 tests. Gate integration follow-up",
+        "Fixed RatingCapture hook timeout (30s→60s)",
+        "Cleaned 32 stale worktrees (171MB), 126 stale branches",
+        "Suite: 1729 pass, 0 fail, 100 files. 27 issues remain open"
+      ]
+    },
     {
       "date": "2026-09-29 session 18",
       "items": [
@@ -277,11 +289,11 @@
     }
   ],
   "session": {
-    "number": 18,
+    "number": 19,
     "date": "2026-09-29",
-    "summary": "AFK marathon: 18 shipped/closed + 15 housekeeping. First-pass 21%→71%. Retroactive compliance audit: Marcus 62% avg (8.1/13). Top violations: cat usage 90%, grep-before-read 81%, tool count 75%. Brief rules alone don't work — need mechanical enforcement.",
-    "suite": "1729 pass, 0 fail, 97 files",
-    "scs_done": "19/25",
-    "commits": 20
+    "summary": "AFK batch: 4 issues shipped, 3 phases closed (scaffold decomposition, hook architecture, gate contracts). 19 SCs verified. Caught 2 Marcus bugs in diff review. Cleaned 32 stale worktrees (171MB), 126 branches.",
+    "suite": "1729 pass, 0 fail, 100 files",
+    "scs_done": "25/25",
+    "commits": 4
   }
 }
