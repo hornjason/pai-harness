@@ -1,6 +1,6 @@
 # Project State
 
-**Current phase: Scaffold Decomposition — 6 SCs open**
+**Current phase: Scaffold Decomposition — 5 SCs open**
 
 Session 17 — 11 fixes, 8 shipped, 6 ALREADY_SHIPPED. First M-size ship (#541).
 
@@ -29,7 +29,7 @@ Shipped:
   #540: SHIP_FAILED (DNS + evidence mismatch) — retriable
   #590: SHIP_FAILED (AC-4 evidence mismatch) — retriable
 
-16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 16/25 SCs done.
+16 issues shipped total, 21 closed. Suite: 1550+ pass, 0 fail, 89 files. 17/25 SCs done.
 
 **Next priorities:**
 1. P0: Pipeline pass rate — broken spec-compliance test was silently failing ALL bun-test evidence ACs. Fixed. Retrying #544/#548
@@ -60,7 +60,7 @@ Shipped:
 
 | Status | SC | What |
 |---|---|---|
-| ⬜ | SC-358 | lib/scanner.ts with ProjectScan interface |
+| ✅ | SC-358 | lib/scanner.ts with ProjectScan interface |
 | ⬜ | SC-359 | Scanner detects tech, specs, consumers, dirs |
 | ✅ | SC-360 | AGENTS.md generator from ProjectScan |
 | ✅ | SC-361 | Brief generator reads template files |
