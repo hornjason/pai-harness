@@ -26,6 +26,7 @@ import {
   shouldRunCIVerification,
   requiresResearchEscalation,
 } from "./ship-orchestrator";
+import { prevalidateEvidence } from "../lib/evidence-prevalidator";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
 export function parseTestResults(output: string): GateResult[] {
@@ -366,6 +367,38 @@ function runScopePreflights(state: Record<string, any>): void {
   // Track pre-existing failures (SC-33)
   if (state.preExistingFailures?.length > 0) {
     trackPreExistingFailures(state.slug, state.preExistingFailures);
+  }
+
+  // Evidence command pre-validation (#598) — dry-run AC evidence commands
+  // to catch broken commands BEFORE Marcus runs
+  if (state.acs?.length > 0) {
+    const projectRoot = state.projectRoot || process.cwd();
+    prevalidateEvidence(state.acs, projectRoot).then((prevalidationResults) => {
+      const broken = prevalidationResults.filter((r) => r.status === "broken");
+      const empty = prevalidationResults.filter((r) => r.status === "empty");
+      const autoFixed = prevalidationResults.filter((r) => r.autoFixed);
+
+      if (broken.length > 0) {
+        console.error(`EVIDENCE PRE-VALIDATION: ${broken.length} AC(s) have broken evidence commands:`);
+        for (const r of broken) {
+          console.error(`  - ${r.id}: ${r.diagnostic}`);
+        }
+      }
+      if (empty.length > 0) {
+        console.warn(`EVIDENCE PRE-VALIDATION: ${empty.length} AC(s) have evidence commands that return empty output:`);
+        for (const r of empty) {
+          console.warn(`  - ${r.id}: command runs but produces no output`);
+        }
+      }
+      if (autoFixed.length > 0) {
+        console.log(`EVIDENCE PRE-VALIDATION: ${autoFixed.length} AC(s) auto-fixed: ${autoFixed.map((r) => r.id).join(", ")}`);
+      }
+      if (broken.length === 0 && empty.length === 0) {
+        console.log(`EVIDENCE PRE-VALIDATION: all ${prevalidationResults.filter((r) => r.status === "ok").length} evidence commands validated OK`);
+      }
+    }).catch((e) => {
+      console.warn(`WARN: Evidence pre-validation failed: ${e.message?.slice(0, 100) || "unknown"}`);
+    });
   }
 }
 
