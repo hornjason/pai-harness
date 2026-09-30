@@ -116,7 +116,9 @@ Suite: 25/25 SCs done.
 - Created /bootstrap and /spec skill wrappers (#526)
 - Auto hill-climb: brief-fixable COMPs (7,12,13,6,9,2) auto-patched after 3+ consecutive fails
 - #512 shipped: parallel-ship.ts with worktree isolation, port allocation, container naming
-- #295 in progress: council structured decisions output (Marcus agent running)
+- #295 shipped: council structured decisions[] + auto-reconcile
+- #525 shipped: --type workflow flag for scaffold-project.ts
+- #511 shipped: plugin evaluation — security-guidance ADOPTED, 5 others SKIP
 - Gap scanner wired into session-start hook (StaleTTLCleanup.hook.ts)
 - 21 stale issues closed (52→32): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), and more
 - Suite: 1769 pass, 0 fail, 105 files

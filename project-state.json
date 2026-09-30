@@ -216,7 +216,9 @@
         "Created /bootstrap and /spec skill wrappers (#526)",
         "Auto hill-climb: brief-fixable COMPs (7,12,13,6,9,2) auto-patched after 3+ consecutive fails",
         "#512 shipped: parallel-ship.ts with worktree isolation, port allocation, container naming",
-        "#295 in progress: council structured decisions output (Marcus agent running)",
+        "#295 shipped: council structured decisions[] + auto-reconcile",
+        "#525 shipped: --type workflow flag for scaffold-project.ts",
+        "#511 shipped: plugin evaluation — security-guidance ADOPTED, 5 others SKIP",
         "Gap scanner wired into session-start hook (StaleTTLCleanup.hook.ts)",
         "21 stale issues closed (52→32): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), and more",
         "Suite: 1769 pass, 0 fail, 105 files"
@@ -303,9 +305,9 @@
   "session": {
     "number": 20,
     "date": "2026-09-29",
-    "summary": "Grading pipeline overhaul + compliance report system + auto hill-climb + parallel ship script. Fixed: COMP-7/12 silently skipped, bold-prefix parsing, system-path false positives. Built: compliance-report.ts with JSONL trend tracking, auto hill-climb on 3+ consecutive fails, formatted output after every ship. Shipped #512 parallel-ship.ts with worktree isolation. Gap scanner wired into session-start hook. Closed 21 stale issues (52→32). Created /bootstrap and /spec skills.",
-    "suite": "1769 pass, 0 fail, 105 files",
+    "summary": "Major pipeline session: compliance self-improvement loop (report + trend + auto hill-climb), 6 issues shipped (#512, #295, #525, #526, #511, gap scanner hook), 31 issues closed (52→21). security-guidance plugin adopted. 3 compliance tests verified COMP-7/12/13 improvements.",
+    "suite": "1785 pass, 0 fail, 107 files",
     "scs_done": "25/25",
-    "commits": 9
+    "commits": 14
   }
 }
