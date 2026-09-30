@@ -34,6 +34,11 @@ The template was previously hardcoded in scaffold-project.ts, making it hard to 
 | D-11 | Routing table shows non-obvious mappings only | Agent can find specs/BOOTSTRAP-PHASE-0.md by name. Routing table is for non-inferrable connections only (ETH Zurich) |
 | D-12 | Split-spec directory name derived from filename, no LLM | `BOOTSTRAP-DATA-FLOW-SPEC.md` → `specs/bootstrap-data-flow/`. Deterministic. Human already named the file well |
 | D-13 | Routing table and create-table are the same list | Where to READ and where to WRITE should be mechanically linked. Same categories, two directions. One drifts = both drift |
+| D-14 | Three-tier context architecture | Tier 1 (hot, unconditional): AGENTS.md + `.claude/rules/` without `paths:`. Tier 2 (specialist, path-scoped): `.claude/rules/` with `paths:` + agent briefs. Tier 3 (cold, on-demand): prompts/, specs/, CODE-MAP (arXiv 2602.20478) |
+| D-15 | AGENTS.md capped at 100 lines | Sigmoid collapse (arXiv 2608.02639): follow rate drops 96%→20% at 16+ rules. AGENTS.md was 205 lines. Reference tables moved to `.claude/rules/` scoped files |
+| D-16 | Scoped rules use `paths:` YAML list frontmatter | Claude Code spec: `paths:` with YAML list format, not `globs:` JSON array. `alwaysApply` is not recognized. Rules without `paths:` load unconditionally |
+| D-17 | Shared agent principles in unconditional rule, not briefs | `${SHARED_RULES}` and `${PROJECT_IDENTITY}` removed from brief templates — agents inherit project rules automatically. Dedup: 526→427 brief lines (19% reduction) |
+| D-18 | Osmani test on every generated line | "Can the agent find this by reading code? Delete it." (ETH Zurich ICLR 2026). Tests table, reference files table removed — agents discover via `bun test` and `ls` |
 
 ## Three Content Types
 
@@ -43,23 +48,25 @@ The template was previously hardcoded in scaffold-project.ts, making it hard to 
 | Scanned (project-specific) | scaffold-project.ts reads project files | Always regenerated from current state | Change the project, re-scaffold |
 | User rules | CLAUDE.md (not in AGENTS.md) | Never touched by scaffold | User edits CLAUDE.md directly |
 
-## Template Sections
+## Template Sections — AGENTS.md (Tier 1, <100 lines)
 
 | Section | Type | Source |
 |---------|------|--------|
 | Project name | Scanned | package.json name |
 | Project Identity | Scanned | README.md first paragraph or package.json description |
-| Rules | Template | config/universal-rules.yaml |
-| Governing Spec Routing | Scanned | specs/*.md frontmatter governs: field |
-| Key Files | Scanned | File existence check (package.json, Makefile, tsconfig, src/, etc.) |
-| Documentation Routing | Scanned | docs/*.md filenames + docs/ subdirectories |
-| Where to Create Things | Template | Hardcoded doc types with frontmatter requirements |
-| Specs | Scanned | specs/*.md frontmatter (testable, governs) |
-| Tests | Scanned | test/*.test.ts filenames |
+| Rules | Template | Hardcoded in generator (7 rules, under sigmoid threshold) |
 | Commands | Template | Standard RunGate commands + scanned test command |
-| Environment | Scanned | rungate.json dev/prod sections (injected post-creation) |
 | Workflow | Scanned | git remote URL + Makefile targets |
-| Harness-Managed Files | Template | Static table of what not to edit |
+
+## Scoped Rules — `.claude/rules/` (Tier 1/2)
+
+| Rule File | Tier | Paths | Source |
+|-----------|------|-------|--------|
+| key-files.md | 1 (unconditional) | — | File existence check |
+| agent-principles.md | 1 (unconditional) | — | Shared Core Principles + Never Do |
+| docs-routing.md | 1 (unconditional) | — | docs/*.md filenames + categories |
+| specs-routing.md | 2 (scoped) | specs/**, lib/**, gates/**, hooks/**, scripts/** | specs/*.md frontmatter (governs, testable) |
+| harness-managed.md | 2 (scoped) | .github/workflows/**, .claude/agents/**, CODE-MAP.md | Static table of what not to edit |
 
 ## Universal Rules (current)
 

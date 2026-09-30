@@ -29,8 +29,9 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 | D-1 | Agent brief templates stored as markdown files with ${VAR} placeholders | Same pattern as AGENTS.md template (SC-259). Editing a brief = editing markdown |
 | D-2 | Templates live in `templates/agent-briefs/` | Separate from prompts/ (on-demand reference) and specs/ (constraints). Templates are scaffold inputs |
 | D-3 | Scaffold reads template files and fills variables from project scan | Scan logic stays in scaffold-project.ts, template content is data. Same separation as AGENTS.md |
-| D-4 | Each role has one template file: marcus.md, quinn.md, rook.md, serena.md, aditi.md | One file per role. Shared rules go in a `_shared.md` partial included by all |
-| D-5 | Shared rules in `templates/agent-briefs/_shared.md` | Rules like "No subagent spawning" and "No orientation calls" apply to all agents. Single source of truth |
+| D-4 | Each role has one template file: marcus.md, quinn.md, rook.md, serena.md, aditi.md | One file per role |
+| D-5 | Shared rules in `.claude/rules/agent-principles.md` (unconditional rule) | Core Principles and Never Do load for ALL agents via project rules, not injected per-brief. `_shared.md` kept empty for backwards compat |
+| D-8 | `${PROJECT_IDENTITY}` and `${SHARED_RULES}` removed from templates | Agents inherit AGENTS.md and `.claude/rules/` automatically — no duplication needed. 526→427 lines (19% reduction) |
 | D-6 | Generated briefs validated by conformity engine against this spec | Required sections, max lines, mandatory rules are testable SCs |
 | D-7 | Prompt routing table generated from scan, not template | The "Reference (read when needed)" section is dynamic (per-project prompts) — scaffold generates it, template doesn't include it |
 
@@ -38,23 +39,20 @@ The AGENTS-MD-TEMPLATE-SPEC solved this for AGENTS.md (D-3: template in `prompts
 
 | Variable | Source | Example |
 |----------|--------|---------|
-| `${PROJECT_NAME}` | rungate.json or package.json name | rungate |
-| `${TECH_STACK}` | package.json dependencies scan | Bun, ESM |
-| `${REPO_URL}` | rungate.json repo field | https://github.com/hornjason/pai-harness |
 | `${SOURCE_DIRS}` | Directory scan (lib/, src/, gates/, hooks/) | `- lib/\n- gates/` |
-| `${PROMPT_ROUTING_TABLE}` | Prompt files scan with keyword matching | Markdown table |
-| `${SHARED_RULES}` | Contents of `_shared.md` partial | Never Do items, Always Do items |
+| `${PROMPT_PREFIX}` | prompts/ directory path | prompts |
+| `${DEV_UI_LINE}` | rungate.json dev.uiBase | `- **Dev UI:** http://localhost:3000` |
+| `${DEV_API_LINE}` | rungate.json dev.apiBase | `- **Dev API:** http://localhost:8080` |
+| `${PAGES_TABLE}` | rungate.json pages map | Markdown table |
+| `${TEST_CMD}` | rungate.json or package.json | `bun test` |
+
+Removed (D-8): `${PROJECT_IDENTITY}` (in AGENTS.md), `${SHARED_RULES}` (in `.claude/rules/agent-principles.md`)
 
 ## Required Sections (every agent brief must have)
 
 1. Frontmatter (name, description, tools, model)
 2. Identity line ("You are X, role description")
-3. Project section (name, tech, repo)
-4. Core Principles
-5. Always Do
-6. Never Do (includes shared rules from `_shared.md`)
-7. Context (MANDATORY — read AGENTS.md FIRST)
-8. Reference (read when needed) — prompt routing table
+3. Agent-specific workflow or rules section (TDD, testing mode, scan methodology, etc.)
 
 ## Success Criteria
 
