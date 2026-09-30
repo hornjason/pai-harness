@@ -179,7 +179,7 @@ describe("AC-2: lib/generators/agent-briefs.ts", () => {
     }
   });
 
-  test("fills PROJECT_IDENTITY variable from scan data", async () => {
+  test("brief does not contain PROJECT_IDENTITY (moved to AGENTS.md)", async () => {
     const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({
@@ -187,16 +187,15 @@ describe("AC-2: lib/generators/agent-briefs.ts", () => {
       identity: "Ship harness for testing",
     });
     const result = generateAgentBriefs(scan);
-    expect(result.marcus).toContain("Ship harness for testing");
+    expect(result.marcus).not.toContain("${PROJECT_IDENTITY}");
   });
 
-  test("fills SHARED_RULES from _shared.md partial", async () => {
+  test("brief does not contain SHARED_RULES (moved to .claude/rules/)", async () => {
     const { generateAgentBriefs } = await import("../lib/generators/agent-briefs");
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({ name: "test-project" });
     const result = generateAgentBriefs(scan);
-    // _shared.md contains "Verify before asserting"
-    expect(result.marcus).toContain("Verify before asserting");
+    expect(result.marcus).not.toContain("${SHARED_RULES}");
   });
 });
 

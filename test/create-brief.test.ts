@@ -7,10 +7,10 @@ const ROOT = join(import.meta.dir, "..");
 const TEMPLATES_DIR = join(ROOT, "templates", "agent-briefs");
 
 describe("create-brief", () => {
-  describe("AC-1: generateBriefTemplate produces template with PROJECT_IDENTITY", () => {
-    test("generated template contains ${PROJECT_IDENTITY} variable placeholder", () => {
+  describe("AC-1: generateBriefTemplate produces lean template", () => {
+    test("generated template does NOT contain ${PROJECT_IDENTITY} (moved to AGENTS.md)", () => {
       const content = generateBriefTemplate("tester", "Test engineer who verifies changes");
-      expect(content).toContain("${PROJECT_IDENTITY}");
+      expect(content).not.toContain("${PROJECT_IDENTITY}");
     });
 
     test("generated template has standard frontmatter", () => {
@@ -22,13 +22,12 @@ describe("create-brief", () => {
 
     test("generated template has identity line with role name", () => {
       const content = generateBriefTemplate("tester", "Test engineer");
-      // Should have "You are Tester" (capitalized) identity line
       expect(content).toMatch(/You are.*Tester/i);
     });
 
-    test("generated template contains ${SHARED_RULES} variable placeholder", () => {
+    test("generated template does NOT contain ${SHARED_RULES} (moved to .claude/rules/)", () => {
       const content = generateBriefTemplate("tester", "Test engineer");
-      expect(content).toContain("${SHARED_RULES}");
+      expect(content).not.toContain("${SHARED_RULES}");
     });
   });
 

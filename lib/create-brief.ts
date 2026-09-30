@@ -23,20 +23,14 @@ updated: ${today}
 
 You are ${displayName}, ${description}.
 
-\${PROJECT_IDENTITY}
-
-\${SHARED_RULES}
-
 ## Context (READ THIS FIRST)
 
-1. **AGENTS.md** — READ THIS FIRST — project identity, critical rules, documentation routing
-2. **PROJECT-STATE.md** — current priorities, session handoff
-3. **Governing spec** — look up in AGENTS.md Specs table for the area you're changing
+1. **PROJECT-STATE.md** — current priorities, session handoff
+2. **Governing spec** — look up in specs-routing rule for the area you're changing
 
 ## Workflow
 
-1. Read AGENTS.md for project rules and routing
-2. Read the governing spec if your task touches a spec'd area
+1. Read the governing spec if your task touches a spec'd area
 3. Execute your task following project conventions
 4. Report results with evidence
 

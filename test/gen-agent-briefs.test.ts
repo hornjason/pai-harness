@@ -41,20 +41,19 @@ describe("generateAgentBriefs with mock ProjectScan", () => {
     }
   });
 
-  test("fills PROJECT_IDENTITY from scan.identity", () => {
+  test("briefs no longer contain PROJECT_IDENTITY (moved to AGENTS.md)", () => {
     const scan = mockProjectScan({
       name: "identity-test",
       identity: "Unique identity for AC4 testing",
     });
     const result = generateAgentBriefs(scan);
-    expect(result.marcus).toContain("Unique identity for AC4 testing");
+    expect(result.marcus).not.toContain("${PROJECT_IDENTITY}");
   });
 
-  test("fills SHARED_RULES from _shared.md partial", () => {
+  test("briefs no longer contain SHARED_RULES (moved to .claude/rules/agent-principles.md)", () => {
     const scan = mockProjectScan({ name: "shared-test" });
     const result = generateAgentBriefs(scan);
-    // _shared.md contains "Verify before asserting"
-    expect(result.marcus).toContain("Verify before asserting");
+    expect(result.marcus).not.toContain("${SHARED_RULES}");
   });
 
   test("includes source dirs when present", () => {

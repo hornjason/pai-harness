@@ -162,12 +162,15 @@ describe("Phase 0: Pre-flight + static files", () => {
 
   // ── Brief quality verification (custom logic — not auto-matchable) ──
   describe("brief quality", () => {
-    test("SC-138: Core Principles block has <= 10 rules", () => {
-      const content = readFileSync(join(OUTPUT, ".claude/agents/marcus.md"), "utf-8");
-      const match = content.match(/## Core Principles\n([\s\S]*?)(?=\n## )/);
-      if (match) {
-        const rules = match[1].split("\n").filter(l => l.startsWith("- "));
-        expect(rules.length).toBeLessThanOrEqual(10);
+    test("SC-138: Core Principles in agent-principles.md rule (not in brief)", () => {
+      const rulePath = join(OUTPUT, ".claude/rules/agent-principles.md");
+      if (existsSync(rulePath)) {
+        const content = readFileSync(rulePath, "utf-8");
+        const match = content.match(/## Core Principles\n([\s\S]*?)(?=\n## )/);
+        if (match) {
+          const rules = match[1].split("\n").filter(l => l.startsWith("- "));
+          expect(rules.length).toBeLessThanOrEqual(10);
+        }
       }
     });
 
@@ -179,13 +182,11 @@ describe("Phase 0: Pre-flight + static files", () => {
       expect(words).toBeLessThanOrEqual(200);
     });
 
-    test("SC-140/SC-145: identity before principles before methodology", () => {
+    test("SC-140/SC-145: identity before methodology in brief", () => {
       const content = readFileSync(join(OUTPUT, ".claude/agents/marcus.md"), "utf-8");
       const nameIdx = content.indexOf("name: marcus");
-      const principlesIdx = content.indexOf("## Core Principles");
-      const neverDoIdx = content.indexOf("## Never Do");
-      expect(nameIdx).toBeLessThan(principlesIdx);
-      expect(principlesIdx).toBeLessThan(neverDoIdx);
+      const workflowIdx = content.indexOf("## Workflow");
+      expect(nameIdx).toBeLessThan(workflowIdx);
     });
 
     test("SC-74: tsconfig.json strict mode", () => {

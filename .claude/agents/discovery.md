@@ -9,23 +9,6 @@ tiers:
 
 You are the Discovery agent. You read issues, size work, and produce structured ACs with evidence methods.
 
-## Project
-
-Ship harness — conformity tests, scaffold, and agent briefs for AI-first development
-**Tech:** Bun, ESM
-- **Repo:** https://github.com/hornjason/pai-harness
-
-
-## Core Principles
-- Verify before asserting — try it, then report what happened
-- Never report PASS with known gaps — list every gap
-
-## Never Do
-- Self-attest evidence (tier F)
-- Skip ACs without rationale
-- Commit secrets or credentials
-- Spawn subagents for single-file tasks — do the work directly
-
 ## Discovery Rules
 - Read PROJECT-STATE.md SECOND — it has current priorities and context
 - Grep before Read — never read a large file blind, find the line first
@@ -42,8 +25,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 
 ## Context (READ THIS FIRST)
 
-1. **AGENTS.md** — READ THIS FIRST — project identity, specs routing, key files
-2. **PROJECT-STATE.md** — current priorities, open work, session handoff
+1. **PROJECT-STATE.md** — current priorities, open work, session handoff
 3. **Governing spec** — look up in AGENTS.md Specs table based on issue area
 
 ## Discovery Workflow

@@ -50,27 +50,19 @@ describe("Agent Brief Template Tests", () => {
       expect(content).toMatch(/You are.*Marcus/i);
     });
 
-    test("has project section (name, tech, repo)", () => {
+    test("project identity NOT in brief (moved to AGENTS.md + rules)", () => {
       const content = readFileSync(briefPath, "utf-8");
-      // Project section should exist with tech stack info
-      expect(content).toMatch(/##?\s*Project/i);
-      expect(content).toMatch(/\*\*Tech:\*\*/i);
+      expect(content).not.toContain("${PROJECT_IDENTITY}");
     });
 
-    test("has Core Principles section", () => {
+    test("shared rules NOT in brief (moved to .claude/rules/agent-principles.md)", () => {
       const content = readFileSync(briefPath, "utf-8");
-      expect(content).toMatch(/##?\s*Coding Principles|##?\s*Core Principles/i);
+      expect(content).not.toContain("${SHARED_RULES}");
     });
 
-    test("has Always Do section", () => {
+    test("has agent-specific workflow or rules section", () => {
       const content = readFileSync(briefPath, "utf-8");
-      // May be implicit in workflow or explicit
-      expect(content).toMatch(/##?\s*(Always|Workflow|Testing Rules)/i);
-    });
-
-    test("has Never Do section", () => {
-      const content = readFileSync(briefPath, "utf-8");
-      expect(content).toMatch(/##?\s*Never Do/i);
+      expect(content).toMatch(/##?\s*(Workflow|Testing Rules|TDD)/i);
     });
 
     test("has Context section with AGENTS.md reference", () => {
@@ -96,10 +88,11 @@ describe("Agent Brief Template Tests", () => {
       expect(pkg.name).toBe("golden-fixture");
     });
 
-    test("PROJECT_NAME variable filled with actual project description", () => {
+    test("project description in AGENTS.md, not in brief", () => {
       const content = readFileSync(briefPath, "utf-8");
-      // Should contain description from package.json
-      expect(content).toContain("Test fixture for RunGate");
+      const agentsContent = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
+      expect(agentsContent).toContain("Test fixture for RunGate");
+      expect(content).not.toContain("${PROJECT_IDENTITY}");
     });
 
     test("TECH_STACK variable filled (mentions bun or dependencies)", () => {

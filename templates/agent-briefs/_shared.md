@@ -2,15 +2,8 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-09-27
+updated: 2026-09-30
 ---
 
-## Core Principles
-- Verify before asserting — try it, then report what happened
-- Never report PASS with known gaps — list every gap
-
-## Never Do
-- Self-attest evidence (tier F)
-- Skip ACs without rationale
-- Commit secrets or credentials
-- Spawn subagents for single-file tasks — do the work directly
+<!-- Shared agent principles moved to .claude/rules/agent-principles.md (unconditional rule) -->
+<!-- All agents inherit project rules, so shared content is no longer injected into briefs -->
