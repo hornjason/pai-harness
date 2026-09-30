@@ -32,6 +32,26 @@ const SYNTHESIS_SCHEMA = {
     rationale: { type: 'string' },
     risks: { type: 'array', items: { type: 'string' } },
     nextSteps: { type: 'array', items: { type: 'string' } },
+    decisions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          statement: { type: 'string' },
+          target: {
+            type: 'object',
+            properties: {
+              ref: { type: 'string' },
+              section: { type: 'string' },
+            },
+            required: ['ref'],
+          },
+          disposition: { type: 'string', enum: ['accepted', 'rejected', 'deferred'] },
+        },
+        required: ['id', 'statement', 'target', 'disposition'],
+      },
+    },
     enforcementClassification: {
       type: 'array',
       items: {
@@ -55,7 +75,7 @@ const SYNTHESIS_SCHEMA = {
       required: ['aligned'],
     },
   },
-  required: ['convergencePoints', 'disagreements', 'recommendation', 'rationale', 'enforcementClassification', 'specAlignment'],
+  required: ['convergencePoints', 'disagreements', 'recommendation', 'rationale', 'decisions', 'enforcementClassification', 'specAlignment'],
 }
 
 const RESEARCH_SCHEMA = {
@@ -300,10 +320,10 @@ ${round1Transcript}
 
 ${researchContext ? researchContext : ''}
 
-Identify: convergence points, disagreements, recommended path with rationale, risks, and next steps.
+Identify: convergence points, disagreements, recommended path with rationale, risks, next steps, and structured decisions (id, statement, target {ref, section}, disposition: accepted|rejected|deferred).
   `, { label: 'chair:synthesis', phase: 'Synthesis', schema: SYNTHESIS_SCHEMA })
 
-  return { rounds: 1, research: NO_RESEARCH ? null : researchContext, round1: round1.filter(Boolean), synthesis: synthesis }
+  return { rounds: 1, research: NO_RESEARCH ? null : researchContext, round1: round1.filter(Boolean), synthesis: synthesis, reconcileResults: null }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -360,10 +380,10 @@ ${round2Transcript}
 
 ${researchContext ? researchContext : ''}
 
-Identify: convergence points, remaining disagreements, recommended path, rationale, risks, next steps.
+Identify: convergence points, remaining disagreements, recommended path, rationale, risks, next steps, and structured decisions (id, statement, target {ref, section}, disposition: accepted|rejected|deferred).
   `, { label: 'chair:synthesis', phase: 'Synthesis', schema: SYNTHESIS_SCHEMA })
 
-  return { rounds: 2, research: NO_RESEARCH ? null : researchContext, round1: round1.filter(Boolean), round2: round2.filter(Boolean), synthesis: synthesis }
+  return { rounds: 2, research: NO_RESEARCH ? null : researchContext, round1: round1.filter(Boolean), round2: round2.filter(Boolean), synthesis: synthesis, reconcileResults: null }
 }
 
 // ════════════════════════════════════════════════════════════
@@ -441,11 +461,19 @@ ${researchContext ? researchContext : ''}
 4. **Rationale** — why this path, given the discussion? Reference specific member arguments.
 5. **Risks** — what could go wrong with this recommendation?
 6. **Next steps** — concrete, actionable items to implement the recommendation.
-7. **Enforcement classification** — for EACH recommendation and next step, classify:
+7. **Decisions** — structured decisions that need to be tracked and reconciled against target documents. For each decision:
+   - id: unique identifier (e.g., "DEC-001")
+   - statement: clear statement of the decision (one sentence)
+   - target: where this decision should be documented
+     - ref: file path (e.g., "specs/SOME-SPEC.md" or "CLAUDE.md")
+     - section: optional section within the file
+   - disposition: "accepted", "rejected", or "deferred"
+   Extract these from the recommendation, next steps, and key convergence points.
+8. **Enforcement classification** — for EACH recommendation and next step, classify:
    - MECHANICAL: can be enforced by code (gate check, hook, smoke test, schema validation). Specify the enforcement mechanism.
    - BEHAVIORAL: can only be enforced by a CLAUDE.md rule or human discipline. Explain why it can't be mechanical.
    The bar is: "mechanical-enforcement-over-rules" — behavioral rules get violated. If a recommendation CAN be a gate check, smoke test, or hook, it MUST be. Only recommend CLAUDE.md rules for things that genuinely can't be automated. If more than half of recommendations are BEHAVIORAL, flag this as a concern.
-8. **Spec alignment** — Does your recommendation align with or contradict any governing spec/ADR found in the research? If a governing spec exists:
+9. **Spec alignment** — Does your recommendation align with or contradict any governing spec/ADR found in the research? If a governing spec exists:
    - Set specRef to the spec path
    - Set aligned to true/false
    - If diverging, explain why and flag as "SPEC AMENDMENT REQUIRED" — the spec must be updated before implementation
@@ -457,16 +485,51 @@ Be decisive. The council debated — now someone needs to decide.
 log('Council complete')
 
 // Write council-synthesis.json with schema-compliant envelope
+let reconcileResults = null
 if (SLUG) {
   const synthEnvelope = {
     contractVersion: '1.0',
     topic: TOPIC,
-    decisions: [],
     capturedAt: '(set-by-caller)',
     ...synthesis,
   }
   await agent(`Write this JSON to ~/.rungate/${SLUG}/council-synthesis.json (create directory with mkdir -p if needed):\n${JSON.stringify(synthEnvelope)}`, { label: 'write-synthesis', phase: 'Synthesis' })
   log(`Council synthesis written to ~/.rungate/${SLUG}/council-synthesis.json`)
+
+  // Reconcile decisions against target documents
+  if (synthesis.decisions && synthesis.decisions.length > 0) {
+    log(`Reconciling ${synthesis.decisions.length} decisions against target documents...`)
+
+    const reconcileOutput = await agent(`
+Run the decision reconcile script to verify decisions are present in target documents.
+
+1. Run: bash ${PROJECT_ROOT}/scripts/decision-reconcile.sh ~/.rungate/${SLUG}/council-synthesis.json
+2. Capture the full output including FOUND/MISSING lines and the summary line
+3. Return the raw output as text
+
+If the script exits with code 1, that's expected when there are missing decisions — still return the output.
+    `, { label: 'reconcile-decisions', phase: 'Synthesis' })
+
+    // Parse reconcile output to extract counts
+    const summaryMatch = reconcileOutput.match(/Reconcile:\s*(\d+)\s+found,\s*(\d+)\s+missing/)
+    if (summaryMatch) {
+      const found = parseInt(summaryMatch[1], 10)
+      const missing = parseInt(summaryMatch[2], 10)
+      reconcileResults = { found, missing, total: found + missing }
+
+      if (missing > 0) {
+        log(`WARN: ${missing} of ${reconcileResults.total} decisions are missing from their target documents`)
+        log('Review the reconcile output above to see which decisions need to be added')
+      } else {
+        log(`All ${found} decisions found in their target documents`)
+      }
+    } else {
+      log('WARN: Could not parse reconcile output — manual verification recommended')
+      reconcileResults = { found: 0, missing: 0, total: 0, parseError: true }
+    }
+  } else {
+    log('No decisions to reconcile')
+  }
 
   // Save permanent record to docs/council/ in the repo
   const today = 'agent_fill_date'
@@ -498,4 +561,5 @@ return {
   round2: round2.filter(Boolean),
   round3: round3.filter(Boolean),
   synthesis: synthesis,
+  reconcileResults: reconcileResults,
 }
