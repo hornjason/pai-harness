@@ -308,6 +308,6 @@
     "summary": "Major pipeline session: compliance self-improvement loop (report + trend + auto hill-climb), 6 issues shipped (#512, #295, #525, #526, #511, gap scanner hook), 31 issues closed (52→21). security-guidance plugin adopted. 4 compliance tests ran — each one improved the pipeline (brief updates, report noise reduction, COMP-12 refinement). Self-improvement loop demonstrated working: test→grade→fix→retest.",
     "suite": "1790 pass, 0 fail, 108 files",
     "scs_done": "25/25",
-    "commits": 18
+    "commits": 21
   }
 }
