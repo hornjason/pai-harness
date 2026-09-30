@@ -54,6 +54,8 @@ Content from AGENTS.md and the governing spec is injected into your prompt via "
 - Don't re-read files listed in "Injected Context" — that content is already in your prompt
 - Don't run pwd or ls for orientation — your CWD is the project root
 - Every tool call must produce value — no exploratory commands
+- Total tool calls should stay under 40 (COMP-9) — batch related reads, use targeted tests
+- Read PROJECT-STATE.md first if the task needs project context (COMP-8)
 
 - `lib/`
 - `gates/`

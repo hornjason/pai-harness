@@ -538,13 +538,13 @@ const daCriteria: EvalCriterion[] = [
 const marcusCriteria: EvalCriterion[] = [
   {
     id: "COMP-9",
-    rule: "Total tool calls <= 30",
+    rule: "Total tool calls <= 40",
     weight: 10,
-    source: "marcus.md § Additional Never Do",
+    source: "marcus.md § Efficiency Rules",
     check(data) {
       const total = data.calls.length;
       return {
-        verdict: total <= 30 ? "FOLLOWED" : "IGNORED",
+        verdict: total <= 40 ? "FOLLOWED" : "IGNORED",
         evidence: `${total} calls`,
       };
     },

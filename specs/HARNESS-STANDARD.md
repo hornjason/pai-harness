@@ -290,7 +290,7 @@ Check DISCOVERY's answer to "Where does this run?":
 1. Every AC-N checked against evidence (→ ~/.claude/skills/ship/SKILL.md evidence types)
 2. Full test suite: `bun test` (all tests in test/ directory)
 3. Tests pass on test env — read project CLAUDE.md for test port (e.g., 7776 for DailyBriefDashboard). Do not assume port.
-4. If UI change (any `.tsx` file modified) → spawn Quinn (~/.claude/PAI/Testing/QUINN-STANDARD.md)
+4. If UI change (any `.tsx` file modified) → spawn Quinn with Playwright MCP tools (browser_navigate, browser_snapshot, browser_take_screenshot)
 5. If M+ size → spawn Rook (security scan on changed files)
 6. If consumer change (read project PRINCIPLES.md consumer list; if any changed file is in consumer list → mandatory) → Consumer 4-layer verification (→ ~/.claude/skills/ship/SKILL.md)
 7. Goal statement check (→ `project_application_mission.md`)
