@@ -56,8 +56,25 @@ try {
   }
 } catch (e) { log(`BRANCH cleanup error: ${e}`); }
 
-if (deletedCount > 0) {
-  console.log(`Stale TTL cleanup: removed ${deletedCount} files older than 4h`);
+// Gap scan — drift detection
+let gapWarns = 0;
+try {
+  const { scanGaps } = await import('../lib/gap-scanner.ts');
+  const projectRoot = process.cwd();
+  const gapResult = scanGaps(projectRoot, PAI_WORK);
+  for (const r of gapResult.results) {
+    if (r.status === 'WARN') {
+      gapWarns++;
+      log(`GAP ${r.check}: ${r.message}`);
+    }
+  }
+} catch (e) { log(`GAP scan error: ${e}`); }
+
+const parts: string[] = [];
+if (deletedCount > 0) parts.push(`${deletedCount} removed`);
+if (gapWarns > 0) parts.push(`${gapWarns} gap warnings`);
+if (parts.length > 0) {
+  console.log(`Stale TTL cleanup: ${parts.join(', ')}`);
 } else {
   console.log('Stale TTL cleanup: no stale files found');
 }
