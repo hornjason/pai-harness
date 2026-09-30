@@ -1,9 +1,5 @@
 ---
 description: Documentation routing and file creation conventions
-paths:
-  - "docs/**"
-  - "specs/**"
-  - "reference/**"
 ---
 
 ## Documentation Routing

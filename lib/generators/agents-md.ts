@@ -102,6 +102,26 @@ ${codeMapRef}
 `,
   });
 
+  rules.push({
+    filename: "agent-principles.md",
+    content: `---
+description: Shared behavioral principles for all agents working in this project
+---
+
+## Core Principles
+
+- Verify before asserting — try it, then report what happened
+- Never report PASS with known gaps — list every gap
+
+## Never Do
+
+- Self-attest evidence (tier F)
+- Skip ACs without rationale
+- Commit secrets or credentials
+- Spawn subagents for single-file tasks — do the work directly
+`,
+  });
+
   if (specs.length > 0) {
     const specsTable = specs.map(s => `| ${s.file} | ${s.governs} | ${s.testable} |`).join("\n");
     rules.push({
@@ -137,10 +157,6 @@ ${specsTable}
       filename: "docs-routing.md",
       content: `---
 description: Documentation routing and file creation conventions
-paths:
-  - "docs/**"
-  - "specs/**"
-  - "reference/**"
 ---
 
 ## Documentation Routing
