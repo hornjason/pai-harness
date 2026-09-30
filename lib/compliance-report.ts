@@ -102,6 +102,10 @@ export function generateComplianceReport(
     const passed = checkable.filter((v) => v === "FOLLOWED").length;
     const passRate = checkable.length > 0 ? passed / checkable.length : 0;
 
+    if (checkable.length < 2) {
+      compTrends.push({ compId, rule: COMP_RULES[compId] || compId, lastN: verdicts, passRate, direction: "stable" });
+      continue;
+    }
     const firstHalf = checkable.slice(0, Math.ceil(checkable.length / 2));
     const secondHalf = checkable.slice(Math.ceil(checkable.length / 2));
     const firstRate =
@@ -127,12 +131,13 @@ export function generateComplianceReport(
 
   const alerts: string[] = [];
   for (const ct of compTrends) {
+    if (!ct.compId.startsWith("COMP-")) continue;
     if (ct.passRate <= ALERT_THRESHOLD && ct.lastN.length >= 2) {
       alerts.push(
         `${ct.compId}: ${Math.round(ct.passRate * 100)}% pass rate — ${ct.rule} needs improvement`
       );
     }
-    if (ct.direction === "declining") {
+    if (ct.direction === "declining" && ct.lastN.length >= 3) {
       alerts.push(`${ct.compId}: declining trend — was passing, now failing`);
     }
   }
@@ -185,10 +190,13 @@ export function formatComplianceReport(report: ComplianceReport): string {
     );
   }
 
-  if (report.compTrends.length > 0) {
+  const compChecks = report.compTrends.filter((ct) => ct.compId.startsWith("COMP-"));
+  const dirChecks = report.compTrends.filter((ct) => ct.compId.startsWith("DIR-"));
+
+  if (compChecks.length > 0) {
     lines.push("");
     lines.push("Per-COMP breakdown:");
-    for (const ct of report.compTrends) {
+    for (const ct of compChecks) {
       const icon = ct.passRate >= 0.8 ? "✅" : ct.passRate >= 0.5 ? "⚠️" : "❌";
       const pctStr = Math.round(ct.passRate * 100);
       lines.push(
@@ -197,10 +205,20 @@ export function formatComplianceReport(report: ComplianceReport): string {
     }
   }
 
-  if (report.alerts.length > 0) {
+  if (dirChecks.length > 0) {
+    const dirPass = dirChecks.filter((ct) => ct.passRate >= 0.5).length;
+    lines.push(
+      `\nDirective checks: ${dirPass}/${dirChecks.length} passing (${dirChecks.length - dirPass} need attention)`
+    );
+  }
+
+  const compAlerts = report.alerts.filter(
+    (a) => a.startsWith("COMP-") || a.startsWith("Overall")
+  );
+  if (compAlerts.length > 0) {
     lines.push("");
     lines.push("ALERTS:");
-    for (const alert of report.alerts) {
+    for (const alert of compAlerts) {
       lines.push(`  ⚠️  ${alert}`);
     }
   }
