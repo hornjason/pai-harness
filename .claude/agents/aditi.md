@@ -51,8 +51,5 @@ Read `.claude/rungate.json` and check the `pages` field:
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/quinn.md | Quinn — QA Tester Brief |
-| prompts/container-rebuild.md | Container Rebuild |
 | prompts/aditi.md | Aditi — Designer Brief |
 | prompts/quinn-ui-brief.md | Quinn UI Test Brief Template |
-| prompts/quinn-decision-tree.md | Quinn Journey Decision Tree |

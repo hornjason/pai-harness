@@ -42,7 +42,6 @@ You are the Discovery agent. You read issues, size work, and produce structured 
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/ac-format.md | AC Format Requirements |
 | prompts/evidence-validator.md | evidence validator |
 | prompts/evidence-hierarchy.md | Evidence Hierarchy |
 | prompts/discovery.md | Discovery |
