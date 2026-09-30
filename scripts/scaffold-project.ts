@@ -41,10 +41,13 @@ import type { ProjectType } from "../lib/generators/types";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
-const projectPath = process.argv[2];
+const args = process.argv.slice(2);
+const projectPath = args.find(arg => !arg.startsWith('--'));
+const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
+                 (args.indexOf('--type') !== -1 ? args[args.indexOf('--type') + 1] : null);
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow]");
   process.exit(1);
 }
 
@@ -58,10 +61,16 @@ if (!statSync(projectPath).isDirectory()) {
   process.exit(1);
 }
 
+if (typeFlag && !['code', 'content', 'infra', 'workflow'].includes(typeFlag)) {
+  console.error(`ERROR: Invalid --type value: ${typeFlag}`);
+  console.error(`Valid values: code, content, infra, workflow`);
+  process.exit(1);
+}
+
 // ── Main ───────────────────────────────────────────────────────
 
 const actions: string[] = [];
-const projectType = detectProjectType(projectPath);
+const projectType: ProjectType = (typeFlag as ProjectType) || detectProjectType(projectPath);
 const projectName = basename(projectPath);
 
 console.log(`Detected project type: ${projectType}`);
@@ -101,6 +110,35 @@ addFrontmatterToSpecs(join(projectPath, "specs"), actions);
 addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
 detectOversizedSpecs(join(projectPath, "specs"), actions);
 checkGovernsAlignment(join(projectPath, "specs"), actions);
+
+// Phase 0.8: Workflow project setup
+if (projectType === "workflow") {
+  const workflowDef = `---
+doc-type: spec
+testable: no
+governs: workflow-definition
+---
+
+# Workflow Definition
+
+## Trigger
+
+When should this workflow run?
+
+## Inputs
+
+What inputs does this workflow require?
+
+## Process
+
+What steps does this workflow perform?
+
+## Output
+
+What does this workflow produce?
+`;
+  safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+}
 
 // Phase 1: Code project generation (config before briefs)
 if (projectType === "code") {

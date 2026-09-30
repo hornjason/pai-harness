@@ -5,7 +5,7 @@
  * No shared mutable state (D-5 from SCAFFOLD-DECOMPOSITION-SPEC).
  */
 
-export type ProjectType = "code" | "content" | "infra";
+export type ProjectType = "code" | "content" | "infra" | "workflow";
 
 export interface KeyFile {
   file: string;

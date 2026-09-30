@@ -45,10 +45,9 @@ Suite: 25/25 SCs done.
 1. P0: Pipeline pass rate — 71% first-pass. Compliance report + trend tracking now ships after every issue. COMP-7/12/13 verified improved. Next: ratchet threshold from 70% upward as scores improve
 2. P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win
 3. P1: #307 Doc-hygiene: evolve from format stamping to content alignment — needs council
-4. P2: #511 Evaluate Anthropic official plugins for PAI workflow
-5. P2: #295 Council workflow: output structured decisions[] + auto-reconcile
-6. P3: #525 workflow project type, #522 GitHub MCP, #418 Wave 10 decisions
-7. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
+4. P2: security-guidance plugin installed — ADOPT decision from #511 evaluation
+5. P3: #525 workflow project type, #522 GitHub MCP, #418 Wave 10 decisions
+6. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
