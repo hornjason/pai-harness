@@ -718,6 +718,8 @@ const marcusCriteria: EvalCriterion[] = [
           ["AGENTS.md", "PROJECT-STATE.md", "CLAUDE.md", "rungate.json", "SCHEMA-GUIDE.md"].includes(fn)
         )
           return false;
+        const readCall = data.calls[readIdx];
+        if (readCall?.input?.offset || readCall?.input?.limit) return false;
         const priorGrep = data.calls
           .slice(0, readIdx)
           .some((c) => c.name === "Bash" && (c.input.command || "").includes(basename(r)));
