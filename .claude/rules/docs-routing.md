@@ -1,7 +1,9 @@
 ---
 description: Documentation routing and file creation conventions
-globs: ["docs/**", "specs/**", "reference/**"]
-alwaysApply: false
+paths:
+  - "docs/**"
+  - "specs/**"
+  - "reference/**"
 ---
 
 ## Documentation Routing

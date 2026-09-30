@@ -91,8 +91,6 @@ export function generateScopedRules(scan: ProjectScan): GeneratedRule[] {
     filename: "key-files.md",
     content: `---
 description: Key files and documentation routing for this project
-globs: ["**/*"]
-alwaysApply: false
 ---
 
 ## Key Files
@@ -110,8 +108,12 @@ ${codeMapRef}
       filename: "specs-routing.md",
       content: `---
 description: Read the governing spec BEFORE making changes in spec-governed areas
-globs: ["specs/**", "lib/**", "gates/**", "hooks/**", "scripts/**"]
-alwaysApply: false
+paths:
+  - "specs/**"
+  - "lib/**"
+  - "gates/**"
+  - "hooks/**"
+  - "scripts/**"
 ---
 
 Read the governing spec BEFORE making changes in that area.
@@ -135,8 +137,10 @@ ${specsTable}
       filename: "docs-routing.md",
       content: `---
 description: Documentation routing and file creation conventions
-globs: ["docs/**", "specs/**", "reference/**"]
-alwaysApply: false
+paths:
+  - "docs/**"
+  - "specs/**"
+  - "reference/**"
 ---
 
 ## Documentation Routing
@@ -158,8 +162,11 @@ ${createRows.join("\n")}
     filename: "harness-managed.md",
     content: `---
 description: Files managed by rungate scaffold — do not edit directly
-globs: [".github/workflows/**", ".claude/agents/**", "CODE-MAP.md", "test/scaffold-conformity.test.ts"]
-alwaysApply: false
+paths:
+  - ".github/workflows/**"
+  - ".claude/agents/**"
+  - "CODE-MAP.md"
+  - "test/scaffold-conformity.test.ts"
 ---
 
 These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**

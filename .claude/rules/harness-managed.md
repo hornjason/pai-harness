@@ -1,7 +1,10 @@
 ---
 description: Files managed by rungate scaffold — do not edit directly
-globs: [".github/workflows/**", ".claude/agents/**", "CODE-MAP.md", "test/scaffold-conformity.test.ts"]
-alwaysApply: false
+paths:
+  - ".github/workflows/**"
+  - ".claude/agents/**"
+  - "CODE-MAP.md"
+  - "test/scaffold-conformity.test.ts"
 ---
 
 These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**

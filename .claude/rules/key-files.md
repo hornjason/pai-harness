@@ -1,7 +1,5 @@
 ---
 description: Key files and documentation routing for this project
-globs: ["**/*"]
-alwaysApply: false
 ---
 
 ## Key Files
