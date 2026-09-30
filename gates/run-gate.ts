@@ -31,8 +31,8 @@ for (let i = 0; i < args.length; i++) {
   if (args[i] === "--issue" && args[i + 1]) issue = parseInt(args[++i]);
 }
 
-if (!gate || !["scope", "verify", "ship", "merge", "prove"].includes(gate)) {
-  console.error("Usage: bun run gates/run-gate.ts --gate scope|verify|ship|merge|prove --slug SLUG [--issue NUM]");
+if (!gate || !["scope", "verify", "ship", "merge", "prove", "gaps"].includes(gate)) {
+  console.error("Usage: bun run gates/run-gate.ts --gate scope|verify|ship|merge|prove|gaps --slug SLUG [--issue NUM]");
   process.exit(1);
 }
 

@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-29",
+  "updated": "2026-09-30",
   "priorities": [
     "P0: Pipeline pass rate — 71% first-pass (10/14). Keep improving evidence quality and agent reliability",
     "P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win",

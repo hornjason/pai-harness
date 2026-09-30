@@ -27,6 +27,7 @@ import {
   requiresResearchEscalation,
 } from "./ship-orchestrator";
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
+import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
 export function parseTestResults(output: string): GateResult[] {
@@ -1043,6 +1044,41 @@ export function executeGate(input: GateExecutorInput): GateExecutorResult {
 
   // Auto-populate AC verdicts
   autoPopulateACs(state, sf);
+
+  // Gaps gate: WARN-only mechanical drift detection
+  if (gate === "gaps") {
+    const projectRoot = state.projectRoot || process.cwd();
+    const gapResults = scanGaps(projectRoot, workDir);
+
+    console.log("\n── GAP SCANNER ──");
+    console.log(`Drift checks: ${gapResults.warnings} WARN, ${gapResults.passes} PASS\n`);
+
+    const results: GateResult[] = [];
+    for (const gapResult of gapResults.results) {
+      // Map SKIP to PASS for GateResult (which only supports PASS|FAIL|WARN)
+      const mappedStatus = gapResult.status === "SKIP" ? "PASS" : gapResult.status;
+      results.push({
+        check: gapResult.check,
+        result: mappedStatus,
+        detail: gapResult.detail,
+      });
+      console.log(`${gapResult.status}: ${gapResult.check} — ${gapResult.detail}`);
+    }
+
+    // Gaps gate is WARN-only: never fails, never blocks ship
+    const { resultVal, attempt } = writeGateResult(sf, "gaps", gapResults.passes, 0, gapResults.warnings, results, projectRoot);
+    console.log(`\nGate gaps: ${resultVal} (attempt ${attempt}) — informational only, does not block ship`);
+
+    return {
+      resultVal: "PASS" as const,
+      passes: gapResults.passes,
+      fails: 0,
+      warns: gapResults.warnings,
+      results,
+      attempt,
+      exitCode: 0,
+    };
+  }
 
   // Early results accumulator
   let earlyResults: GateResult[] = [];

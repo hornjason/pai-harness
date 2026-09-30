@@ -375,12 +375,23 @@ Report the output.
       /ui|screenshot|visual|page|component|render|display|show/i.test(sc)
     ).join('\n')
 
+  // Extract reproduction context from issue body for Quinn (#506)
+  const issueBodyText = issueData.issueBody || ''
+  const reproStepsMatch = issueBodyText.match(/(?:reproduction|repro|steps to reproduce|how to reproduce)[:\s]*\n([\s\S]*?)(?:\n##|\n\*\*|$)/i)
+  const reproSteps = reproStepsMatch ? reproStepsMatch[1].trim() : ''
+  const inputModeMatch = issueBodyText.match(/\b(email\s*subject|freeform|url|manual\s*entry|csv\s*upload)\s*mode/i)
+  const inputMode = inputModeMatch ? inputModeMatch[0] : ''
+
   quinnResults = await agent(`
 You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
 
 ## Issue #${ISSUE}: ${issueData.issueTitle}
 Fix commit: ${COMMIT_SHA}
 
+## Issue Context (from issue body)
+${issueBodyText.slice(0, 1500)}
+
+${reproSteps ? `## Reproduction Steps (from issue)\n${reproSteps}\n` : ''}${inputMode ? `## Input Mode: ${inputMode}\nTest with THIS specific mode — do not use a different one.\n` : ''}
 ## Available Playwright MCP Tools (use these, NOT manual browser)
 - browser_navigate(url) — go to URL
 - browser_snapshot() — get accessibility tree (text, fast, preferred over screenshots)
@@ -408,6 +419,7 @@ ${quinnACs}
 4. Report PASS/FAIL per AC with tool output as evidence
 
 IMPORTANT: Test on the PROVE CONTAINER (config-driven URL above), NOT dev server.
+${reproSteps ? 'Follow the reproduction steps from the issue body EXACTLY.' : ''}
 Report verdict and criteriaResults.
   `, { label: 'quinn-prove', phase: 'Validate', schema: QUINN_SCHEMA })
 
