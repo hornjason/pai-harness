@@ -49,11 +49,11 @@ Suite: 25/25 SCs done.
 5. P1: #307 Doc-hygiene: evolve from format stamping to content alignment
 6. P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles
 7. P2: #511 Evaluate Anthropic official plugins for PAI workflow
-8. P2: #506 Quinn prove brief improvements — input mode and reproduction steps from issue
+8. P2: #506 Quinn prove brief improvements — SHIPPED (session 19)
 9. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
 10. P2: #412 Per-project ceremony overrides with protected-checks
 11. P2: #342 Doc archival — prune stale docs to reduce context load
-12. P2: Wire gap scanner into run-gate.ts as --gate gaps (follow-up from #470)
+12. P2: Gap scanner gate wired — SHIPPED (session 19). Next: add session-end trigger
 13. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
 14. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
 
