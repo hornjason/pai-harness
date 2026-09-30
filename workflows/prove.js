@@ -442,6 +442,41 @@ Report verdict and criteriaResults.
   log(`Quinn: ${quinnResults?.verdict || 'no result'}`)
 }
 
+// Upload Quinn screenshots to GitHub
+let screenshotMarkdown = ''
+if (needsQuinn) {
+  const screenshotUploadResult = await agent(`
+Find all screenshot files from Quinn's Playwright session and upload them to GitHub:
+
+bun -e "
+import { uploadScreenshotsToIssue } from '${HARNESS_ROOT}/lib/screenshot-upload.ts';
+import { readdirSync } from 'fs';
+import { join } from 'path';
+
+// Find all screenshot files in /tmp
+const tmpDir = '/tmp';
+const files = readdirSync(tmpDir);
+const screenshotFiles = files
+  .filter(f => f.match(/playwright-screenshot.*\\.png$|browser-screenshot.*\\.png$/))
+  .map(f => join(tmpDir, f));
+
+if (screenshotFiles.length === 0) {
+  console.log(JSON.stringify({ uploaded: [], failed: [], markdownLinks: [] }));
+} else {
+  const result = await uploadScreenshotsToIssue(${ISSUE}, '${ISSUE_REPO}', screenshotFiles);
+  console.log(JSON.stringify(result));
+}
+"
+
+Report the JSON result with uploaded, failed, and markdownLinks arrays.
+  `, { label: 'upload-screenshots', phase: 'Validate' })
+
+  if (screenshotUploadResult?.markdownLinks?.length > 0) {
+    screenshotMarkdown = '\n\n## Evidence Screenshots\n\n' + screenshotUploadResult.markdownLinks.join('\n\n')
+    log(`Uploaded ${screenshotUploadResult.markdownLinks.length} screenshots`)
+  }
+}
+
 // ════════════════════════════════════════════════════════════
 // PHASE 4: VERDICT — Mechanical computation + self-heal loop
 // ════════════════════════════════════════════════════════════
@@ -578,6 +613,7 @@ const proofComment = [
   ...allCriteriaResults.map(cr => `- **${cr.scId}:** ${cr.verdict}${cr.evidence ? ' — ' + cr.evidence.slice(0, 100) : ''}`),
   quinnResults ? `- **Quinn:** ${quinnResults.verdict}` : '',
   `- **Verdict:** ${verdict}`,
+  screenshotMarkdown,
 ].filter(Boolean).join('\n')
 
 await agent(`

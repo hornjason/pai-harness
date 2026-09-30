@@ -45,6 +45,15 @@ const RoleSchema = z.object({
 
 export type RoleConfig = z.infer<typeof RoleSchema>;
 
+const CeremonyTierOverrideSchema = z.object({
+  maxIterations: z.number().optional(),
+  checks: z.record(z.array(z.string())).optional(),
+  skipScopeGate: z.boolean().optional(),
+  githubComments: z.number().optional(),
+  stopMarkers: z.number().optional(),
+  agents: z.record(z.union([z.boolean(), z.string()])).optional(),
+}).passthrough();
+
 const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
@@ -61,6 +70,7 @@ const ProjectHarnessSchema = z.object({
   research: z.array(ResearchToolSchema).optional(),
   roles: z.record(RoleSchema).optional(),
   stalenessThreshold: z.number().optional(),
+  ceremonyOverrides: z.record(CeremonyTierOverrideSchema).optional(),
   schemaVersion: z.number().default(1),
 });
 

@@ -1,5 +1,5 @@
 import { execSync } from "child_process";
-import { readFileSync, writeFileSync, existsSync, unlinkSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import {
   writeGateResult,
@@ -28,6 +28,7 @@ import {
 } from "./ship-orchestrator";
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
+import { deepMerge } from "../lib/deep-merge";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
 export function parseTestResults(output: string): GateResult[] {
@@ -1027,12 +1028,89 @@ function runProvePostProcessing(state: Record<string, any>, workDir: string, iss
   process.exit(resultVal === "PASS" ? 0 : 1);
 }
 
+// ── Ceremony override support ───────────────────────────────────────────
+
+const PROTECTED_CHECKS = [
+  "tests-pass",
+  "tsc-pass",
+  "code-committed",
+  "all-acs-have-evidence",
+  "all-acs-pass",
+  "branch-merged",
+  "code-pushed",
+];
+
+/**
+ * Apply ceremony overrides from rungate.json and ensure protected checks are present.
+ * Returns path to the modified ceremony profile (written to temp location).
+ */
+export function applyCeremonyOverrides(
+  baseCeremonyPath: string,
+  harnessConfig: ProjectHarness | null,
+  projectRoot: string
+): string {
+  if (!existsSync(baseCeremonyPath)) {
+    return baseCeremonyPath;
+  }
+
+  const baseProfile = JSON.parse(readFileSync(baseCeremonyPath, "utf-8"));
+
+  // No overrides? Use base profile as-is
+  if (!harnessConfig?.ceremonyOverrides) {
+    return baseCeremonyPath;
+  }
+
+  // Deep merge overrides into base tiers
+  const mergedProfile = { ...baseProfile };
+  mergedProfile.tiers = deepMerge(baseProfile.tiers || {}, harnessConfig.ceremonyOverrides);
+
+  // Validate protected checks are present in all tiers
+  for (const [tierName, tierConfig] of Object.entries(mergedProfile.tiers)) {
+    const checks = (tierConfig as any)?.checks;
+    if (!checks || typeof checks !== "object") continue;
+
+    for (const [gateName, checkList] of Object.entries(checks)) {
+      if (!Array.isArray(checkList)) continue;
+
+      // Find which protected checks apply to this gate
+      const gateProtectedChecks = PROTECTED_CHECKS.filter(pc => {
+        // tests-pass, tsc-pass, code-committed, all-acs-* belong to verify gate
+        if (gateName === "verify" && ["tests-pass", "tsc-pass", "code-committed", "all-acs-have-evidence", "all-acs-pass"].includes(pc)) {
+          return true;
+        }
+        // branch-merged, code-pushed belong to ship gate
+        if (gateName === "ship" && ["branch-merged", "code-pushed"].includes(pc)) {
+          return true;
+        }
+        return false;
+      });
+
+      // Re-add any missing protected checks
+      const missing = gateProtectedChecks.filter(pc => !checkList.includes(pc));
+      if (missing.length > 0) {
+        console.warn(`WARN: Protected checks re-added to ${tierName}.${gateName}: ${missing.join(", ")}`);
+        (checks as any)[gateName] = [...checkList, ...missing];
+      }
+    }
+  }
+
+  // Write merged profile to temp location
+  const tempDir = join(projectRoot, ".rungate");
+  if (!existsSync(tempDir)) {
+    mkdirSync(tempDir, { recursive: true });
+  }
+  const tempProfilePath = join(tempDir, "ceremony-profile-merged.json");
+  writeFileSync(tempProfilePath, JSON.stringify(mergedProfile, null, 2));
+
+  return tempProfilePath;
+}
+
 // ── Main executor ───────────────────────────────────────────────────────
 
 export function executeGate(input: GateExecutorInput): GateExecutorResult {
   const { gate, slug, issue, workDir, stateFilePath: sf } = input;
 
-  const CEREMONY_PROFILE = existsSync(join(__dirname, "ceremony-profiles.json"))
+  const baseCeremonyProfile = existsSync(join(__dirname, "ceremony-profiles.json"))
     ? join(__dirname, "ceremony-profiles.json")
     : join(process.env.HOME || "", ".claude", "skills", "ship", "ceremony-profiles.json");
 
@@ -1040,7 +1118,14 @@ export function executeGate(input: GateExecutorInput): GateExecutorResult {
   const issueRepo = state.issueRepo || state.repo || "";
 
   // Validate rungate.json (SC-6)
-  loadAndValidateHarness(state.projectRoot || "");
+  const harnessConfig = loadAndValidateHarness(state.projectRoot || "");
+
+  // Apply ceremony overrides from rungate.json
+  const CEREMONY_PROFILE = applyCeremonyOverrides(
+    baseCeremonyProfile,
+    harnessConfig,
+    state.projectRoot || process.cwd()
+  );
 
   // Auto-populate AC verdicts
   autoPopulateACs(state, sf);

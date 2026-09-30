@@ -4,7 +4,7 @@ import { join, resolve } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
-const SPEC_HASH = "230dbd993b03bb8e";
+const SPEC_HASH = "6d103759bd5ffa90";
 
 // Auto-generated conformity tests from specs
 runScaffoldConformity(ROOT);
