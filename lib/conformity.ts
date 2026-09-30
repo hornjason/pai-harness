@@ -1445,33 +1445,25 @@ export function runAgentFileValidation(root: string) {
       expect(mismatched).toEqual([]);
     });
 
-    test("AGENT-5: Agent files reference AGENTS.md for context", () => {
-      if (!existsSync(agentsDir)) return;
-      const missing: string[] = [];
-      for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
-        const content = readFileSync(join(agentsDir, f), "utf-8");
-        if (!content.includes("AGENTS.md")) {
-          missing.push(f);
-        }
+    test("AGENT-5: Shared agent principles exist as unconditional rule", () => {
+      const rulesDir = join(root, ".claude", "rules");
+      if (!existsSync(rulesDir)) {
+        addFinding({ ruleId: "AGENT-5", severity: "FAIL", file: ".claude/rules/", message: "No rules directory found", fixCommand: "Re-scaffold to generate rules" });
+        expect(existsSync(rulesDir)).toBe(true);
+        return;
       }
-      if (missing.length > 0) {
-        console.warn(`Agent files not referencing AGENTS.md (won't read project context):\n  ${missing.join("\n  ")}`);
-      }
-      expect(missing).toEqual([]);
+      const principlesFile = join(rulesDir, "agent-principles.md");
+      expect(existsSync(principlesFile)).toBe(true);
+      const content = readFileSync(principlesFile, "utf-8");
+      expect(content).toContain("Core Principles");
     });
 
     test("AGENT-7: All agent briefs have required sections", () => {
       if (!existsSync(agentsDir)) return;
-      // 8 required sections per AGENT-BRIEF-TEMPLATE-SPEC.md
       const sectionChecks: Array<{ name: string; pattern: RegExp }> = [
         { name: "frontmatter", pattern: /^---\n[\s\S]*?\n---/ },
         { name: "identity", pattern: /You are\s+\w+/i },
-        { name: "project", pattern: /^##\s+Project/im },
-        { name: "core-principles", pattern: /^##\s+(Core\s+Principles|Coding\s+Principles)/im },
-        { name: "always-do", pattern: /^##\s+(Always|Workflow|Rules|Testing|Discovery|What you|TDD|CLI|UI|Project Type|Efficiency|Design|Architecture)/im },
-        { name: "never-do", pattern: /^##\s+Never Do/im },
-        { name: "context", pattern: /^##\s+Context/im },
-        { name: "reference", pattern: /^##\s+Reference/im },
+        { name: "agent-specific-section", pattern: /^##\s+(Workflow|Rules|Testing|Discovery|What you|TDD|CLI|UI|Project Type|Efficiency|Design|Architecture|Context|Report)/im },
       ];
       const missing: string[] = [];
       for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
