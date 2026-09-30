@@ -92,10 +92,12 @@ export function extractDirectives(briefContent: string): Directive[] {
 
     const sectionLower = currentSection.toLowerCase();
     const trimmedLine = line.trim().replace(/^[-\d.]+\s*/, "");
+    const plainLine = trimmedLine.replace(/^\*{1,2}/, "");
 
     // ── Never classification (HIGHEST PRIORITY — before all content patterns) ──
     // Priority 1: Lines starting with "Never" regardless of section or content
-    if (/^never\b/i.test(trimmedLine) && !directives.some(d => d.line === lineNum)) {
+    // Strip leading bold markers (**) so "**NEVER use cat..." still matches
+    if (/^never\b/i.test(plainLine) && !directives.some(d => d.line === lineNum)) {
       directives.push({ text: trimmedLine, type: "never", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       continue;
     }
@@ -171,7 +173,7 @@ export function extractDirectives(briefContent: string): Directive[] {
     }
 
     // Rules section — treat bullet points as "always"
-    if (sectionLower === "rules" && line.trim().startsWith("- ")) {
+    if (sectionLower.includes("rules") && line.trim().startsWith("- ")) {
       if (!directives.some(d => d.line === lineNum)) {
         directives.push({ text: trimmedLine, type: "always", category: getCategory(trimmedLine), line: lineNum, section: currentSection });
       }

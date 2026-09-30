@@ -228,10 +228,12 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>,
     }
   }
 
-  // Fallback: hardcoded criteria when no projectRoot (backward compat)
-  if (!projectRoot) {
-    const results = evaluateCriteria(role, data);
-    for (const r of results) {
+  // Always run hardcoded COMP checks — they have mechanical precision
+  // Directive-based checks supplement but don't replace COMP checks
+  const compResults = evaluateCriteria(role, data);
+  const existingIds = new Set(rules.map(r => r.id));
+  for (const r of compResults) {
+    if (!existingIds.has(r.id)) {
       rules.push({ id: r.id, rule: r.rule, verdict: r.verdict, evidence: r.evidence });
       if (r.verdict === "IGNORED") {
         flagged.push(`${r.id}: ${r.rule}`);
