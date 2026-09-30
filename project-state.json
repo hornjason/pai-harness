@@ -1,16 +1,14 @@
 {
   "updated": "2026-09-30",
   "priorities": [
-    "P0: Pipeline pass rate — 71% first-pass. Grading pipeline fixed (COMP-7/12 now graded). Next: mechanical enforcement hooks",
+    "P0: Pipeline pass rate — 71% first-pass. Compliance report + trend tracking now ships after every issue. COMP-7/12/13 verified improved. Next: ratchet threshold from 70% upward as scores improve",
     "P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win",
     "P1: #307 Doc-hygiene: evolve from format stamping to content alignment — needs council",
-    "P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles",
     "P2: #511 Evaluate Anthropic official plugins for PAI workflow",
-    "P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts",
-    "P2: #342 Doc archival — prune stale docs to reduce context load",
+    "P2: #295 Council workflow: output structured decisions[] + auto-reconcile",
     "P2: Gap scanner — add session-end trigger",
-    "P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility",
-    "P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter"
+    "P3: #533 ADR auto-discover, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #418 Wave 10 decisions",
+    "P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry"
   ],
   "notes": "Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.\n\nKey fixes:\n  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures\n  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements\n  - Test baseline diffing (#599) — only count NEW failures after Marcus\n  - Mechanical spec update on close (#419) — auto-patch governing spec status\n\nPipeline shipped (17):\n  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),\n  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),\n  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),\n  #530 (stale docs), #599 (test baseline), #419 (spec update on close)\n  Already fixed: #597, #600\n\nHousekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509\n\nFirst-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.\n23 issues remain open.\n  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.\n  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).\n\nRetroactive compliance audit (48 runs, 1125 agent transcripts):\n  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.\n  Top violations (% of runs):\n    COMP-7  No cat/head via Bash (use Read)           — 90% ignored\n    COMP-12 Grep before Read for non-key files        — 81% ignored\n    COMP-9  Total tool calls <= 30                    — 75% ignored\n    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored\n    COMP-6  No duplicate file reads                   — 60% ignored\n    COMP-13 Write failing test before impl (TDD)      — 48% ignored\n    COMP-11 Coding/testing principles available        — 40% ignored\n  Action items:\n    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails\n    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate\n    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check\n    4. Run grading on EVERY ship going forward (skipGrade=false)\nSuite: 25/25 SCs done.",
   "antipatterns": [
@@ -207,6 +205,21 @@
   ],
   "sessions": [
     {
+      "date": "2026-09-29 session 20",
+      "items": [
+        "Grading pipeline overhaul: COMP-7/12 were silently skipped (only ran as fallback). Fixed to always run mechanical COMP checks",
+        "Directive extractor: bold-prefixed **NEVER lines now parsed, 'Efficiency Rules' section matched via includes('rules')",
+        "COMP-7/12 false positives: excluded system paths (/tmp/claude-*), own-file reads, task output files",
+        "Compliance report system (lib/compliance-report.ts): JSONL history, per-COMP trend lines, threshold alerts, formatted output",
+        "Wired into ship.js: report displayed after every issue with 70% threshold, declining-trend detection, improvement alerts",
+        "Compliance test verified: COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Agent score 10/19→13/19",
+        "Marcus brief updated: piped head explicitly banned for COMP-7",
+        "18 stale issues closed (52→36 open): #386, #337, #330, #415, #82-86, #2, #29, #40, #41, #129, #130, #206, #300, #312, #225, #455, #526",
+        "Created /bootstrap and /spec skill wrappers (#526)",
+        "Suite: 1718 pass, 0 fail, 105 files"
+      ]
+    },
+    {
       "date": "2026-09-29 session 19",
       "items": [
         "AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed",
@@ -287,9 +300,9 @@
   "session": {
     "number": 20,
     "date": "2026-09-29",
-    "summary": "Grading pipeline fix + compliance verification. COMP-7/12 now graded (were silently skipped). Directive extractor fixed for bold-prefixed rules. Compliance test: COMP-12 81%→0%, COMP-13 48%→0%, COMP-7 partial (piped head). Marcus brief updated. Priorities cleaned.",
-    "suite": "1750 pass, 0 fail, 104 files",
+    "summary": "Grading pipeline overhaul + compliance report system. Fixed: COMP-7/12 silently skipped, bold-prefix parsing, system-path false positives. Built: compliance-report.ts with JSONL trend tracking, per-COMP pass rates, threshold alerts, formatted output after every ship. Verified: COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Closed 18 stale issues (52→36). Created /bootstrap and /spec skills.",
+    "suite": "1718 pass, 0 fail, 105 files",
     "scs_done": "25/25",
-    "commits": 2
+    "commits": 5
   }
 }

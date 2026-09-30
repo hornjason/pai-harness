@@ -42,16 +42,14 @@ Retroactive compliance audit (48 runs, 1125 agent transcripts):
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — 71% first-pass. Grading pipeline fixed (COMP-7/12 now graded). Next: mechanical enforcement hooks
+1. P0: Pipeline pass rate — 71% first-pass. Compliance report + trend tracking now ships after every issue. COMP-7/12/13 verified improved. Next: ratchet threshold from 70% upward as scores improve
 2. P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win
 3. P1: #307 Doc-hygiene: evolve from format stamping to content alignment — needs council
-4. P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles
-5. P2: #511 Evaluate Anthropic official plugins for PAI workflow
-6. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
-7. P2: #342 Doc archival — prune stale docs to reduce context load
-8. P2: Gap scanner — add session-end trigger
-9. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
-10. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
+4. P2: #511 Evaluate Anthropic official plugins for PAI workflow
+5. P2: #295 Council workflow: output structured decisions[] + auto-reconcile
+6. P2: Gap scanner — add session-end trigger
+7. P3: #533 ADR auto-discover, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #418 Wave 10 decisions
+8. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -108,6 +106,18 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-09-29 session 20:**
+- Grading pipeline overhaul: COMP-7/12 were silently skipped (only ran as fallback). Fixed to always run mechanical COMP checks
+- Directive extractor: bold-prefixed **NEVER lines now parsed, 'Efficiency Rules' section matched via includes('rules')
+- COMP-7/12 false positives: excluded system paths (/tmp/claude-*), own-file reads, task output files
+- Compliance report system (lib/compliance-report.ts): JSONL history, per-COMP trend lines, threshold alerts, formatted output
+- Wired into ship.js: report displayed after every issue with 70% threshold, declining-trend detection, improvement alerts
+- Compliance test verified: COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Agent score 10/19→13/19
+- Marcus brief updated: piped head explicitly banned for COMP-7
+- 18 stale issues closed (52→36 open): #386, #337, #330, #415, #82-86, #2, #29, #40, #41, #129, #130, #206, #300, #312, #225, #455, #526
+- Created /bootstrap and /spec skill wrappers (#526)
+- Suite: 1718 pass, 0 fail, 105 files
+
 **Session 2026-09-29 session 19:**
 - AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed
 - 19 SCs verified — 13 already satisfied by existing tests, 6 needed new work
@@ -129,13 +139,4 @@ Suite: 25/25 SCs done.
 -   Key insight: brief-level rules alone fail at 80-90% rates — need mechanical enforcement (hooks/gates) for COMP-7, COMP-12
 -   Action: skipGrade=false for all future runs. Hill-climb Marcus brief using retroactive data
 - Suite: 1729 pass, 0 fail, 97 files. 23 issues remain open
-
-**Session 2026-09-26 session 15:**
-- 6-agent refactor shipped: batched agents, 7 spec-compliance tests fixed, undefined alreadyVerdict bug fixed
-- Pipeline run #595: 19 agents, 14 min, SHIPPED. All 3 ACs PASS. Marcus 9/12 compliance (75%)
-- Root cause analysis: 21% first-attempt pass rate. Evidence-path worktree mismatch + ceremony gaps
-- Canary testing module: lib/canary.ts + 13 tests (generateCanaryPhrase, plantCanaries, checkCanaries)
-- B2 evidence validator: added missing contains/exists/!=/< operators + NaN guards
-- AES prompt reinforcement: COMP-6/COMP-12 in Marcus prompt (still leaks — needs mechanical enforcement)
-- Council v2 launched with full forensic data: 10 runs, 37 gate attempts, agent-level transcripts
 
