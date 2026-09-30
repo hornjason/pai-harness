@@ -47,9 +47,8 @@ Suite: 25/25 SCs done.
 3. P1: #307 Doc-hygiene: evolve from format stamping to content alignment — needs council
 4. P2: #511 Evaluate Anthropic official plugins for PAI workflow
 5. P2: #295 Council workflow: output structured decisions[] + auto-reconcile
-6. P2: Gap scanner — add session-end trigger
-7. P3: #533 ADR auto-discover, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #418 Wave 10 decisions
-8. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
+6. P3: #525 workflow project type, #522 GitHub MCP, #418 Wave 10 decisions
+7. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
