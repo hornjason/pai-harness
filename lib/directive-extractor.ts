@@ -2,10 +2,12 @@
  * Directive extractor — parses agent brief markdown for actionable instructions.
  *
  * Extracts Read X, Run Y, Never Z, Always W patterns mechanically
- * from brief markdown content. No manual directive list required.
+ * from brief markdown content and applicable .claude/rules/ files.
  *
  * SC-401: Directive extractor parses brief mechanically
  */
+import { existsSync, readFileSync, readdirSync } from "fs";
+import { join } from "path";
 
 export type DirectiveType = "read" | "run" | "never" | "always";
 export type DirectiveCategory = "quality" | "process";
@@ -189,4 +191,20 @@ export function extractDirectives(briefContent: string): Directive[] {
   }
 
   return directives;
+}
+
+export function extractDirectivesWithRules(briefContent: string, projectRoot: string): Directive[] {
+  const rulesDir = join(projectRoot, ".claude", "rules");
+  let combined = briefContent;
+  if (existsSync(rulesDir)) {
+    for (const f of readdirSync(rulesDir).filter(f => f.endsWith(".md"))) {
+      const content = readFileSync(join(rulesDir, f), "utf-8");
+      const hasPaths = /^paths:/m.test(content);
+      if (!hasPaths) {
+        const body = content.replace(/^---[\s\S]*?---\n*/, "");
+        combined += "\n" + body;
+      }
+    }
+  }
+  return extractDirectives(combined);
 }

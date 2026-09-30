@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
-import { extractDirectives } from "../lib/directive-extractor.js";
+import { extractDirectives, extractDirectivesWithRules } from "../lib/directive-extractor.js";
 import { checkCompliance, computeScore } from "../lib/transcript-checker.js";
 import { createWorktree, type WorktreeConfig } from "../lib/worktree-isolation.js";
 import { MAX_ITERATIONS, DEFAULT_TARGET_SCORE, buildIteration, isTargetReached, canContinue } from "../lib/hill-climb.js";
@@ -31,11 +31,11 @@ describe("test-brief-roles", () => {
     expect(SUPPORTED_ROLES).toHaveLength(6);
   });
 
-  test("each brief extracts at least 3 directives", () => {
+  test("each brief + rules extracts at least 3 directives", () => {
     for (const role of SUPPORTED_ROLES) {
       const briefPath = join(ROOT, ".claude/agents", `${role}.md`);
       const content = readFileSync(briefPath, "utf-8");
-      const directives = extractDirectives(content);
+      const directives = extractDirectivesWithRules(content, ROOT);
 
       expect(directives.length).toBeGreaterThanOrEqual(3);
     }

@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractDirectives, type Directive } from "../lib/directive-extractor.js";
+import { extractDirectives, extractDirectivesWithRules, type Directive } from "../lib/directive-extractor.js";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -165,10 +165,10 @@ describe("directive-extractor", () => {
     expect(lines.length).toBe(uniqueLines.length);
   });
 
-  test("all directive types are present in marcus.md", () => {
+  test("all directive types are present in marcus.md + rules", () => {
     const briefPath = join(ROOT, ".claude/agents/marcus.md");
     const content = readFileSync(briefPath, "utf-8");
-    const directives = extractDirectives(content);
+    const directives = extractDirectivesWithRules(content, ROOT);
 
     const types = new Set(directives.map((d) => d.type));
     expect(types.has("never")).toBe(true);
@@ -339,9 +339,9 @@ process_overrides:
     const briefPath = join(ROOT, ".claude/agents/marcus.md");
     const content = readFileSync(briefPath, "utf-8");
     const directives = extractDirectives(content);
-    const comp7 = directives.find((d) => d.text.includes("NEVER use cat"));
+    const comp7 = directives.find((d) => d.text.includes("cat") && d.text.includes("Read tool"));
     expect(comp7).toBeDefined();
-    expect(comp7!.type).toBe("never");
+    expect(comp7!.type).toBe("always");
   });
 
   // ── Category on real briefs ──
