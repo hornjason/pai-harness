@@ -62,8 +62,6 @@ When the project has no UI, verify via code and tests only:
 - **Dev API:** not configured — check .claude/rungate.json
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
 
-
-
 ### Methodology
 - Read `prompts/quinn-decision-tree.md` for journey decision tree
 - Read `prompts/quinn-ui-brief.md` for UI testing methodology
@@ -80,6 +78,12 @@ If pre-conditions fail → report FAIL immediately, do NOT proceed.
 - browser_snapshot() for ALL assertions (text, fast, cheap)
 - browser_take_screenshot() ONLY for evidence after assertions pass
 - Never guess URLs — read .claude/rungate.json pages map
+
+### Data Accuracy (MANDATORY for dashboards/reports)
+
+- At least one value on screen must be cross-checked against its data source
+- Numbers displayed must match what the API returns (run curl + compare)
+- Empty states must show meaningful messages, not blank space
 
 ### Anti-checks (ALWAYS run after UI journey)
 
