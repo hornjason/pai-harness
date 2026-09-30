@@ -69,7 +69,7 @@
     {
       "name": "AES Quality Gate + Pipeline Optimization",
       "scs": [],
-      "note": "IN PROGRESS — Pipeline 16 agents/20 min. First-pass rate: 71%. Marcus COMP avg: 8.1/13 (62%). Compliance test (session 20): COMP-12 81%→0% fail, COMP-13 48%→0% fail, COMP-7 still partial (piped head). Grading pipeline fixed: COMP checks now always run, directive extractor parses bold-prefixed rules."
+      "note": "IN PROGRESS — Pipeline 16 agents/20 min. First-pass rate: 71%. Compliance test (session 20): COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Grading refined: system-path exclusions, bold-prefix parsing, COMP checks always run. Agent score improved 10/19→13/19."
     },
     {
       "name": "Scaffold Decomposition",
