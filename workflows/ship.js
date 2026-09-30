@@ -1353,6 +1353,47 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   } catch (e) {
     log(`WARN: Could not persist compliance data: ${e.message}`)
   }
+
+  // Generate and display compliance report with trend tracking
+  try {
+    const { appendComplianceHistory, loadComplianceHistory, generateComplianceReport, formatComplianceReport } = require(`${HARNESS_ROOT}/lib/compliance-report.ts`)
+    const historyPath = require('path').join(WORK_DIR, '..', 'compliance-history.jsonl')
+    const COMPLIANCE_THRESHOLD = 70
+
+    for (const g of (gradeResult?.grades || [])) {
+      const entry = {
+        timestamp: new Date().toISOString(),
+        issue: `#${ISSUE}`,
+        role: g.role,
+        scores: {},
+        total: g.total,
+        followed: g.followed,
+        pct: g.total > 0 ? Math.round(100 * g.followed / g.total) : 0,
+        flagged: g.flagged || []
+      }
+      // Build scores map from flagged (IGNORED) vs total rules
+      if (g.rules) {
+        for (const r of g.rules) {
+          if (r.id) entry.scores[r.id] = r.verdict || 'N/A'
+        }
+      }
+
+      appendComplianceHistory(historyPath, entry)
+      const history = loadComplianceHistory(historyPath).slice(0, -1)
+      const report = generateComplianceReport(entry, history, COMPLIANCE_THRESHOLD)
+      const formatted = formatComplianceReport(report)
+      log('\n' + formatted)
+
+      if (report.belowThreshold) {
+        log(`⚠️  ${g.role} compliance ${entry.pct}% is below ${COMPLIANCE_THRESHOLD}% threshold — brief improvement needed`)
+      }
+      if (report.alerts.length > 0) {
+        log(`📋 ${report.alerts.length} compliance alert(s) for ${g.role} — check report above`)
+      }
+    }
+  } catch (e) {
+    log(`WARN: Compliance report failed: ${e.message}`)
+  }
 } else {
   log('GRADE: skipped (skipGrade=true)')
 }
