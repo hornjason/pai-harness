@@ -42,20 +42,16 @@ Retroactive compliance audit (48 runs, 1125 agent transcripts):
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — 71% first-pass (10/14). Keep improving evidence quality and agent reliability
+1. P0: Pipeline pass rate — 71% first-pass. Grading pipeline fixed (COMP-7/12 now graded). Next: mechanical enforcement hooks
 2. P1: #512 Isolated per-issue execution (worktree-based parallel ships) — biggest pipeline scalability win
-3. P1: #510 Wire Playwright MCP into Quinn's UI validation — enables real browser testing in prove
-4. P1: #507 Prove must capture before/after screenshots to issue — visual proof of changes
-5. P1: #307 Doc-hygiene: evolve from format stamping to content alignment
-6. P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles
-7. P2: #511 Evaluate Anthropic official plugins for PAI workflow
-8. P2: #506 Quinn prove brief improvements — SHIPPED (session 19)
-9. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
-10. P2: #412 Per-project ceremony overrides with protected-checks
-11. P2: #342 Doc archival — prune stale docs to reduce context load
-12. P2: Gap scanner gate wired — SHIPPED (session 19). Next: add session-end trigger
-13. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #416/#415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
-14. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
+3. P1: #307 Doc-hygiene: evolve from format stamping to content alignment — needs council
+4. P1: Agent consolidation — 17 agents, target <10. Merge overlapping roles
+5. P2: #511 Evaluate Anthropic official plugins for PAI workflow
+6. P2: #477 Move gates/ out of ~/.claude/ — eliminates sensitive-file permission prompts
+7. P2: #342 Doc archival — prune stale docs to reduce context load
+8. P2: Gap scanner — add session-end trigger
+9. P3: #533 ADR auto-discover, #526 skill wrappers, #525 workflow project type, #522 GitHub MCP, #503 journal replay, #466 AC refresh, #455 worktree security ADR, #418 Wave 10 decisions, #415 gate output, #386 regex precision, #337 /audit skill, #330 L3 compatibility
+10. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry, #312 council frontmatter
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

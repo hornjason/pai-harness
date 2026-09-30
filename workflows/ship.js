@@ -1333,6 +1333,26 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
       log(`TIMING: ${t.agent} = ${t.seconds}s`)
     }
   }
+
+  // Persist grade data into workflow-state.json for cross-run tracking
+  try {
+    const wsPath = `${WORK_DIR}/workflow-state.json`
+    const ws = JSON.parse(require('fs').readFileSync(wsPath, 'utf-8'))
+    ws.compliance = {
+      grades: gradeResult?.grades?.map(g => ({
+        role: g.role, followed: g.followed, total: g.total,
+        pct: g.total > 0 ? Math.round(100 * g.followed / g.total) : 0,
+        flagged: g.flagged || []
+      })) || [],
+      efficiency: gradeResult?.efficiency || null,
+      timing: gradeResult?.timing || []
+    }
+    const { writeWorkflowState } = require(`${HARNESS_ROOT}/gates/orchestrator.ts`)
+    writeWorkflowState(wsPath, ws)
+    log('Compliance data persisted to workflow-state.json')
+  } catch (e) {
+    log(`WARN: Could not persist compliance data: ${e.message}`)
+  }
 } else {
   log('GRADE: skipped (skipGrade=true)')
 }

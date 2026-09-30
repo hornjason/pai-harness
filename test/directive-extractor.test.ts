@@ -309,6 +309,41 @@ process_overrides:
     }
   });
 
+  // ── Bold-prefixed directives ──
+
+  test("bold-prefixed NEVER lines are extracted as never directives", () => {
+    const brief = `## Efficiency Rules
+- **NEVER use cat, head, or tail via Bash** — use the Read tool instead
+- **Grep BEFORE Read** for non-key files. Find the section first
+- Read each file ONCE — use offset/limit
+`;
+    const directives = extractDirectives(brief);
+    const nevers = directives.filter((d) => d.type === "never");
+    expect(nevers.length).toBeGreaterThanOrEqual(1);
+    expect(nevers.some((d) => d.text.includes("NEVER use cat"))).toBe(true);
+  });
+
+  test("Efficiency Rules section bullets are extracted", () => {
+    const brief = `## Efficiency Rules — GRADED
+- **NEVER use cat, head, or tail via Bash** — use Read tool
+- **Grep BEFORE Read** for non-key files
+- Read each file ONCE
+- Don't re-read injected files
+- Total tool calls should stay under 40
+`;
+    const directives = extractDirectives(brief);
+    expect(directives.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("marcus.md COMP-7 rule is extracted", () => {
+    const briefPath = join(ROOT, ".claude/agents/marcus.md");
+    const content = readFileSync(briefPath, "utf-8");
+    const directives = extractDirectives(content);
+    const comp7 = directives.find((d) => d.text.includes("NEVER use cat"));
+    expect(comp7).toBeDefined();
+    expect(comp7!.type).toBe("never");
+  });
+
   // ── Category on real briefs ──
 
   test("marcus.md has both quality and process directives", () => {
