@@ -1356,7 +1356,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
 
   // Generate and display compliance report with trend tracking
   try {
-    const { appendComplianceHistory, loadComplianceHistory, generateComplianceReport, formatComplianceReport } = require(`${HARNESS_ROOT}/lib/compliance-report.ts`)
+    const { appendComplianceHistory, loadComplianceHistory, generateComplianceReport, formatComplianceReport, detectHillClimbNeeds, applyHillClimb } = require(`${HARNESS_ROOT}/lib/compliance-report.ts`)
     const historyPath = require('path').join(WORK_DIR, '..', 'compliance-history.jsonl')
     const COMPLIANCE_THRESHOLD = 70
 
@@ -1389,6 +1389,21 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
       }
       if (report.alerts.length > 0) {
         log(`📋 ${report.alerts.length} compliance alert(s) for ${g.role} — check report above`)
+      }
+
+      // Auto hill-climb: if a COMP has failed 3+ consecutive runs, reinforce the brief
+      const hillClimbActions = detectHillClimbNeeds(report)
+      if (hillClimbActions.length > 0) {
+        const briefPaths = require(`${HARNESS_ROOT}/scripts/grade-deterministic.ts`).loadRoleBriefPaths(HARNESS_ROOT)
+        const briefPath = briefPaths[g.role]
+        if (briefPath) {
+          const { applied, skipped } = applyHillClimb(briefPath, hillClimbActions)
+          for (const a of applied) log(`🔧 HILL-CLIMB: ${a}`)
+          for (const s of skipped) log(`⏭️  HILL-CLIMB: ${s}`)
+          if (applied.length > 0) {
+            log(`📝 Brief updated for ${g.role} — ${applied.length} reinforcement(s) applied automatically`)
+          }
+        }
       }
     }
   } catch (e) {

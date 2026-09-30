@@ -6,6 +6,8 @@ import {
   loadComplianceHistory,
   generateComplianceReport,
   formatComplianceReport,
+  detectHillClimbNeeds,
+  applyHillClimb,
   type ComplianceEntry,
   type ComplianceReport,
 } from "../lib/compliance-report.js";
@@ -172,6 +174,101 @@ describe("compliance-report", () => {
       };
       const output = formatComplianceReport(report);
       expect(output).toContain("BELOW THRESHOLD");
+    });
+  });
+
+  describe("auto hill-climb", () => {
+    test("detectHillClimbNeeds returns actions for 3+ consecutive fails", () => {
+      const report: ComplianceReport = {
+        role: "marcus",
+        issue: "#100",
+        current: { followed: 8, total: 13, pct: 62 },
+        threshold: 70,
+        belowThreshold: true,
+        trend: { pcts: [62], direction: "stable" },
+        compTrends: [
+          { compId: "COMP-7", rule: "No cat/head via Bash", lastN: ["IGNORED", "IGNORED", "IGNORED"], passRate: 0, direction: "stable" },
+          { compId: "COMP-13", rule: "TDD ordering", lastN: ["FOLLOWED", "FOLLOWED", "FOLLOWED"], passRate: 1, direction: "stable" },
+          { compId: "COMP-12", rule: "Grep before Read", lastN: ["IGNORED", "FOLLOWED", "IGNORED"], passRate: 0.33, direction: "stable" },
+        ],
+        alerts: [],
+      };
+      const actions = detectHillClimbNeeds(report);
+      expect(actions.length).toBe(1);
+      expect(actions[0].compId).toBe("COMP-7");
+      expect(actions[0].consecutiveFails).toBe(3);
+    });
+
+    test("detectHillClimbNeeds ignores non-brief-fixable COMPs", () => {
+      const report: ComplianceReport = {
+        role: "marcus",
+        issue: "#100",
+        current: { followed: 8, total: 13, pct: 62 },
+        threshold: 70,
+        belowThreshold: true,
+        trend: { pcts: [62], direction: "stable" },
+        compTrends: [
+          { compId: "COMP-1", rule: "AGENTS.md context", lastN: ["IGNORED", "IGNORED", "IGNORED"], passRate: 0, direction: "stable" },
+          { compId: "COMP-5", rule: "Governing spec", lastN: ["IGNORED", "IGNORED", "IGNORED"], passRate: 0, direction: "stable" },
+        ],
+        alerts: [],
+      };
+      const actions = detectHillClimbNeeds(report);
+      expect(actions.length).toBe(0);
+    });
+
+    test("applyHillClimb adds reinforcement to brief", () => {
+      const briefPath = join(TMP, "marcus.md");
+      writeFileSync(briefPath, `---
+name: marcus
+---
+
+## Core Principles
+- Verify before asserting
+
+## Efficiency Rules
+- Don't run pwd
+
+## Workflow
+1. Write test first
+`);
+      const actions = [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+        consecutiveFails: 3,
+      }];
+      const result = applyHillClimb(briefPath, actions);
+      expect(result.applied.length).toBe(1);
+      expect(result.applied[0]).toContain("COMP-7");
+
+      const updated = readFileSync(briefPath, "utf-8");
+      expect(updated).toContain("REINFORCED (auto)");
+      expect(updated).toContain("NEVER use cat");
+    });
+
+    test("applyHillClimb skips if reinforcement already present", () => {
+      const briefPath = join(TMP, "marcus.md");
+      writeFileSync(briefPath, `---
+name: marcus
+---
+
+## Efficiency Rules
+- NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.
+
+## Workflow
+1. Write test first
+`);
+      const actions = [{
+        compId: "COMP-7",
+        rule: "No cat/head via Bash",
+        reinforcement: "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+        consecutiveFails: 4,
+      }];
+      const result = applyHillClimb(briefPath, actions);
+      expect(result.applied.length).toBe(0);
+      expect(result.skipped.length).toBe(1);
+      expect(result.skipped[0]).toContain("already present");
     });
   });
 });

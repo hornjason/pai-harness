@@ -1,5 +1,5 @@
-import { appendFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { dirname } from "path";
+import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { dirname, join } from "path";
 
 export interface ComplianceEntry {
   timestamp: string;
@@ -207,4 +207,125 @@ export function formatComplianceReport(report: ComplianceReport): string {
 
   lines.push(bar);
   return lines.join("\n");
+}
+
+// ── Auto hill-climb ──────────────────────────────────────
+
+export interface HillClimbAction {
+  compId: string;
+  rule: string;
+  reinforcement: string;
+  consecutiveFails: number;
+}
+
+const BRIEF_REINFORCEMENTS: Record<string, string> = {
+  "COMP-7":
+    "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+  "COMP-12":
+    "Grep BEFORE Read for any file not in Key Files. Find the section, then Read with offset/limit.",
+  "COMP-13":
+    "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
+  "COMP-6":
+    "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",
+  "COMP-9":
+    "Total tool calls must stay under 40. Batch related reads, use targeted tests.",
+  "COMP-2":
+    "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
+};
+
+const CONSECUTIVE_FAIL_THRESHOLD = 3;
+
+function countConsecutiveFails(verdicts: string[]): number {
+  let count = 0;
+  for (let i = verdicts.length - 1; i >= 0; i--) {
+    if (verdicts[i] === "IGNORED" || verdicts[i] === "VIOLATED") count++;
+    else break;
+  }
+  return count;
+}
+
+export function detectHillClimbNeeds(report: ComplianceReport): HillClimbAction[] {
+  const actions: HillClimbAction[] = [];
+  for (const ct of report.compTrends) {
+    if (!BRIEF_REINFORCEMENTS[ct.compId]) continue;
+    const consecutiveFails = countConsecutiveFails(ct.lastN);
+    if (consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
+      actions.push({
+        compId: ct.compId,
+        rule: ct.rule,
+        reinforcement: BRIEF_REINFORCEMENTS[ct.compId],
+        consecutiveFails,
+      });
+    }
+  }
+  return actions;
+}
+
+export function applyHillClimb(
+  briefPath: string,
+  actions: HillClimbAction[]
+): { applied: string[]; skipped: string[] } {
+  if (!existsSync(briefPath) || actions.length === 0)
+    return { applied: [], skipped: [] };
+
+  let content = readFileSync(briefPath, "utf-8");
+  const applied: string[] = [];
+  const skipped: string[] = [];
+
+  for (const action of actions) {
+    const normalizedReinforcement = action.reinforcement
+      .toLowerCase()
+      .replace(/[`*"']/g, "");
+    const normalizedContent = content.toLowerCase().replace(/[`*"']/g, "");
+
+    if (normalizedContent.includes(normalizedReinforcement.slice(0, 40))) {
+      skipped.push(
+        `${action.compId}: reinforcement already present in brief`
+      );
+      continue;
+    }
+
+    const efficiencyIdx = content.indexOf("## Efficiency Rules");
+    const testingIdx = content.indexOf("## Testing Rules");
+    const neverIdx = content.indexOf("## Never Do");
+
+    let insertIdx = -1;
+    let prefix = "\n- ";
+
+    if (
+      action.compId === "COMP-2" &&
+      testingIdx !== -1
+    ) {
+      const nextSection = content.indexOf("\n## ", testingIdx + 1);
+      insertIdx = nextSection !== -1 ? nextSection : content.length;
+      prefix = "\n- **REINFORCED (auto):** ";
+    } else if (efficiencyIdx !== -1) {
+      const nextSection = content.indexOf("\n## ", efficiencyIdx + 1);
+      insertIdx = nextSection !== -1 ? nextSection : content.length;
+      prefix = "\n- **REINFORCED (auto):** ";
+    } else if (neverIdx !== -1) {
+      const nextSection = content.indexOf("\n## ", neverIdx + 1);
+      insertIdx = nextSection !== -1 ? nextSection : content.length;
+      prefix = "\n- **REINFORCED (auto):** ";
+    }
+
+    if (insertIdx === -1) {
+      skipped.push(`${action.compId}: no suitable section found in brief`);
+      continue;
+    }
+
+    content =
+      content.slice(0, insertIdx) +
+      `${prefix}${action.reinforcement}` +
+      content.slice(insertIdx);
+    applied.push(
+      `${action.compId}: added reinforcement (${action.consecutiveFails} consecutive fails)`
+    );
+  }
+
+  if (applied.length > 0) {
+    writeFileSync(briefPath, content);
+  }
+
+  return { applied, skipped };
 }
