@@ -75,18 +75,5 @@ If pre-conditions fail → report FAIL immediately, do NOT proceed.
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/prevention.md | Prevention-Oriented Fixes |
-| prompts/environment.md | Environment Setup Verification |
-| prompts/ac-adversary.md | ac adversary |
-| prompts/serena.md | Serena — Architect Brief |
-| prompts/container-verify.md | Container Verification |
-| prompts/escalation-decision-tree.md | Escalation Decision Tree |
-| prompts/blast-radius.md | Blast Radius Assessment |
-| prompts/aditi.md | Aditi — Designer Brief |
-| prompts/regression.md | Regression Test Requirements |
-| prompts/rook.md | Rook — Security Reviewer Brief |
-| prompts/marcus.md | Marcus — Engineer Brief |
-| prompts/rca.md | Root Cause Analysis |
-| prompts/read-before-write.md | Read-Before-Write Protocol |
+| prompts/quinn.md | Quinn — QA Tester Brief |
 | prompts/testing-strategy.md | Testing Strategy |
-| prompts/prove-reproducer.md | prove reproducer |

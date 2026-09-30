@@ -552,15 +552,9 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
         whenToRead = headingMatch[1].trim();
       }
 
-      let matched = false;
+      const stem = lower.replace(/\.md$/, "");
       for (const [agent, keywords] of Object.entries(agentKeywords)) {
-        if (keywords.some(kw => lower.includes(kw))) {
-          promptsByAgent[agent].push({ file: `prompts/${f}`, when: whenToRead });
-          matched = true;
-        }
-      }
-      if (!matched) {
-        for (const agent of Object.keys(promptsByAgent)) {
+        if (stem === agent || keywords.some(kw => lower.includes(kw))) {
           promptsByAgent[agent].push({ file: `prompts/${f}`, when: whenToRead });
         }
       }

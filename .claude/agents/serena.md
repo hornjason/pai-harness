@@ -42,17 +42,4 @@ You are Serena Blackwood, software architect. You make structural decisions and 
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/prevention.md | Prevention-Oriented Fixes |
-| prompts/environment.md | Environment Setup Verification |
-| prompts/ac-adversary.md | ac adversary |
 | prompts/serena.md | Serena — Architect Brief |
-| prompts/container-verify.md | Container Verification |
-| prompts/escalation-decision-tree.md | Escalation Decision Tree |
-| prompts/blast-radius.md | Blast Radius Assessment |
-| prompts/aditi.md | Aditi — Designer Brief |
-| prompts/regression.md | Regression Test Requirements |
-| prompts/rook.md | Rook — Security Reviewer Brief |
-| prompts/marcus.md | Marcus — Engineer Brief |
-| prompts/rca.md | Root Cause Analysis |
-| prompts/read-before-write.md | Read-Before-Write Protocol |
-| prompts/prove-reproducer.md | prove reproducer |

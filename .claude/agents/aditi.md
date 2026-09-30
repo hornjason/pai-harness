@@ -51,21 +51,8 @@ Read `.claude/rungate.json` and check the `pages` field:
 
 | Prompt | When to Read |
 |--------|-------------|
-| prompts/prevention.md | Prevention-Oriented Fixes |
-| prompts/environment.md | Environment Setup Verification |
-| prompts/ac-adversary.md | ac adversary |
 | prompts/quinn.md | Quinn — QA Tester Brief |
-| prompts/serena.md | Serena — Architect Brief |
 | prompts/container-rebuild.md | Container Rebuild |
-| prompts/container-verify.md | Container Verification |
-| prompts/escalation-decision-tree.md | Escalation Decision Tree |
-| prompts/blast-radius.md | Blast Radius Assessment |
 | prompts/aditi.md | Aditi — Designer Brief |
-| prompts/regression.md | Regression Test Requirements |
-| prompts/rook.md | Rook — Security Reviewer Brief |
 | prompts/quinn-ui-brief.md | Quinn UI Test Brief Template |
 | prompts/quinn-decision-tree.md | Quinn Journey Decision Tree |
-| prompts/marcus.md | Marcus — Engineer Brief |
-| prompts/rca.md | Root Cause Analysis |
-| prompts/read-before-write.md | Read-Before-Write Protocol |
-| prompts/prove-reproducer.md | prove reproducer |
