@@ -5,7 +5,7 @@ testable: no
 owner: jason
 updated: 2026-09-22
 created: 2026-09-25
-governs: TODO
+governs: DA compliance evaluation — role-specific grading criteria for DA, Marcus, and Quinn agents with scoring dashboard
 ---
 
 # DA Compliance Spec

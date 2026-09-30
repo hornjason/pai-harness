@@ -1,8 +1,8 @@
 ---
+doc-type: reference
 status: split
-testable: false
-created: 2026-09-21
-governs: TODO
+owner: jason
+updated: 2026-09-30
 ---
 
 This file has been split. See:

@@ -1,10 +1,10 @@
 ---
 doc-type: spec
 status: draft
-owner: TODO
+owner: jason
 created: 2026-09-22
 updated: 2026-09-22
-governs: TODO — describe what this spec governs
+governs: Project state management — how project-state.json drives PROJECT-STATE.md generation and session handoff
 testable: false
 ---
 
