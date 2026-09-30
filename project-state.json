@@ -215,7 +215,12 @@
         "Marcus brief updated: piped head explicitly banned for COMP-7",
         "18 stale issues closed (52→36 open): #386, #337, #330, #415, #82-86, #2, #29, #40, #41, #129, #130, #206, #300, #312, #225, #455, #526",
         "Created /bootstrap and /spec skill wrappers (#526)",
-        "Suite: 1718 pass, 0 fail, 105 files"
+        "Auto hill-climb: brief-fixable COMPs (7,12,13,6,9,2) auto-patched after 3+ consecutive fails",
+        "#512 shipped: parallel-ship.ts with worktree isolation, port allocation, container naming",
+        "#295 in progress: council structured decisions output (Marcus agent running)",
+        "Gap scanner wired into session-start hook (StaleTTLCleanup.hook.ts)",
+        "21 stale issues closed (52→32): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), and more",
+        "Suite: 1769 pass, 0 fail, 105 files"
       ]
     },
     {
@@ -299,9 +304,9 @@
   "session": {
     "number": 20,
     "date": "2026-09-29",
-    "summary": "Grading pipeline overhaul + compliance report system. Fixed: COMP-7/12 silently skipped, bold-prefix parsing, system-path false positives. Built: compliance-report.ts with JSONL trend tracking, per-COMP pass rates, threshold alerts, formatted output after every ship. Verified: COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Closed 18 stale issues (52→36). Created /bootstrap and /spec skills.",
-    "suite": "1718 pass, 0 fail, 105 files",
+    "summary": "Grading pipeline overhaul + compliance report system + auto hill-climb + parallel ship script. Fixed: COMP-7/12 silently skipped, bold-prefix parsing, system-path false positives. Built: compliance-report.ts with JSONL trend tracking, auto hill-climb on 3+ consecutive fails, formatted output after every ship. Shipped #512 parallel-ship.ts with worktree isolation. Gap scanner wired into session-start hook. Closed 21 stale issues (52→32). Created /bootstrap and /spec skills.",
+    "suite": "1769 pass, 0 fail, 105 files",
     "scs_done": "25/25",
-    "commits": 5
+    "commits": 9
   }
 }

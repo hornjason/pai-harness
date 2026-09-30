@@ -115,7 +115,12 @@ Suite: 25/25 SCs done.
 - Marcus brief updated: piped head explicitly banned for COMP-7
 - 18 stale issues closed (52→36 open): #386, #337, #330, #415, #82-86, #2, #29, #40, #41, #129, #130, #206, #300, #312, #225, #455, #526
 - Created /bootstrap and /spec skill wrappers (#526)
-- Suite: 1718 pass, 0 fail, 105 files
+- Auto hill-climb: brief-fixable COMPs (7,12,13,6,9,2) auto-patched after 3+ consecutive fails
+- #512 shipped: parallel-ship.ts with worktree isolation, port allocation, container naming
+- #295 in progress: council structured decisions output (Marcus agent running)
+- Gap scanner wired into session-start hook (StaleTTLCleanup.hook.ts)
+- 21 stale issues closed (52→32): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), and more
+- Suite: 1769 pass, 0 fail, 105 files
 
 **Session 2026-09-29 session 19:**
 - AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed
