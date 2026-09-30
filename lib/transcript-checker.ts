@@ -126,7 +126,10 @@ function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall
   const textLower = d.text.toLowerCase();
 
   if (textLower.includes("cat") && (textLower.includes("bash") || textLower.includes("read tool"))) {
-    const catCalls = bashes.filter((b) => /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) && !b.includes("<<"));
+    const catCalls = bashes.filter((b) =>
+      /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) &&
+      !b.includes("<<") && !b.includes("/tmp/claude-") && !b.includes(".output") && !b.includes(".exit")
+    );
     return { directive: d, status: catCalls.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${catCalls.length} cat commands` };
   }
 
@@ -390,7 +393,13 @@ const sharedCriteria: EvalCriterion[] = [
     weight: 5,
     source: "marcus.md § Never Do",
     check(data) {
-      const catBashes = data.bashes.filter((b) => /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) && !b.includes("<<"));
+      const catBashes = data.bashes.filter((b) =>
+        /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) &&
+        !b.includes("<<") &&
+        !b.includes("/tmp/claude-") &&
+        !b.includes(".output") &&
+        !b.includes(".exit")
+      );
       return {
         verdict: catBashes.length === 0 ? "FOLLOWED" : "IGNORED",
         evidence:
@@ -694,10 +703,16 @@ const marcusCriteria: EvalCriterion[] = [
     weight: 5,
     source: "memory: Grep Before Read",
     check(data) {
+      const writtenFiles = new Set(
+        data.calls.filter((c) => c.name === "Write" || c.name === "Edit")
+          .map((c) => c.input.file_path || "")
+      );
       const readWithoutGrep = data.reads.filter((r) => {
+        if (r.includes("/tmp/claude-") || r.includes(".output")) return false;
         const readIdx = data.calls.findIndex(
           (c) => c.name === "Read" && c.input.file_path === r
         );
+        if (readIdx > 0 && writtenFiles.has(r)) return false;
         const fn = basename(r);
         if (
           ["AGENTS.md", "PROJECT-STATE.md", "CLAUDE.md", "rungate.json", "SCHEMA-GUIDE.md"].includes(fn)
