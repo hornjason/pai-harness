@@ -69,7 +69,7 @@ Each skill's gateOut must satisfy the next skill's gateIn:
 /ship gateOut: "verify-gate PASS, code on main, mergeCommitSha set"
   -> /prove gateIn: "Code merged to main (mergeCommitSha exists)"
 
-/prove gateOut: "prove-evidence.json with verdict"
+/prove gateOut: "prove-evidence.json with verdict (Quinn uses Playwright MCP for UI validation)"
   -> /release gateIn: "main is clean"
 ```
 

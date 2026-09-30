@@ -263,7 +263,7 @@ Monthly audit: query telemetry, find skills with low success rates, council on i
 
 1. ~~Should PROVE be a separate skill or integrated into ship's VERIFY phase?~~ **RESOLVED: Separate skill.** /prove is standalone, produces prove-evidence.json. (ADR-007)
 2. ~~Should /release be a skill or a Makefile-only step?~~ **RESOLVED: Separate skill.** /release validates, generates changelog, monitors Gate 4. (ADR-007)
-3. How does Quinn capture screenshots programmatically? (Playwright? Browser agent?) **OPEN**
+3. ~~How does Quinn capture screenshots programmatically?~~ **RESOLVED: Playwright MCP.** Quinn uses `mcp__playwright__*` tools (browser_navigate, browser_snapshot, browser_take_screenshot) for UI validation. Wired into prove.js and ship.js.
 4. Where do before/after evidence files live long-term? (workflow-state.json gets TTL'd) **OPEN** — GoalRecords are TTL-exempt per ADR-007; evidence files need similar treatment
 5. Should the convergence loop have a budget cap? **OPEN**
 
