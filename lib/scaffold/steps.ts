@@ -555,7 +555,10 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
       const stem = lower.replace(/\.md$/, "");
       const segments = stem.split(/[-_]/);
       for (const [agent, keywords] of Object.entries(agentKeywords)) {
-        if (stem === agent || keywords.some(kw => segments.includes(kw))) {
+        const matches = stem === agent || keywords.some(kw =>
+          kw.includes("-") ? stem.includes(kw) : segments.includes(kw)
+        );
+        if (matches) {
           promptsByAgent[agent].push({ file: `prompts/${f}`, when: whenToRead });
         }
       }
