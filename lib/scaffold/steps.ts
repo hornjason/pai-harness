@@ -10,7 +10,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
-import { generateAgentsMd as buildAgentsMdContent } from "../generators/agents-md";
+import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta } from "../create-brief";
@@ -397,6 +397,15 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
     harnessTemplatesDir: "",
     promptPrefix: "",
   };
+
+  // Write scoped rules to .claude/rules/
+  const rulesDir = join(projectPath, ".claude", "rules");
+  if (!existsSync(rulesDir)) mkdirSync(rulesDir, { recursive: true });
+  const scopedRules = generateScopedRules(scan);
+  for (const rule of scopedRules) {
+    writeFileSync(join(rulesDir, rule.filename), rule.content);
+    actions.push(`GENERATED: .claude/rules/${rule.filename}`);
+  }
 
   return buildAgentsMdContent(scan);
 }

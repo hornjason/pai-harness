@@ -22,7 +22,7 @@ jobs:
         run: bun test test/scaffold-conformity.test.ts
       - name: Secret scan
         run: |
-          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|passwords*=)' 2>/dev/null; then
+          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|password\s*=)' 2>/dev/null; then
             echo "::error::Potential secrets detected in staged files"
             exit 1
           fi

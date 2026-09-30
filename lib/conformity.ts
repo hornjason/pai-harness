@@ -1540,6 +1540,22 @@ export function runAgentFileValidation(root: string) {
       expect(over).toEqual([]);
     });
 
+    test("AGENT-11: AGENTS.md is under 100 lines (sigmoid collapse prevention)", () => {
+      const agentsMdPath = join(root, "AGENTS.md");
+      if (!existsSync(agentsMdPath)) return;
+      const content = readFileSync(agentsMdPath, "utf-8");
+      const lineCount = content.trimEnd().split("\n").length;
+      if (lineCount > 100) {
+        addFinding({
+          ruleId: "AGENTS-MD-LINECOUNT",
+          severity: "FAIL",
+          file: "AGENTS.md",
+          message: `AGENTS.md is ${lineCount} lines, exceeds 100-line cap (sigmoid collapse threshold). Move reference tables to .claude/rules/`,
+        });
+      }
+      expect(lineCount).toBeLessThanOrEqual(100);
+    });
+
     test("AGENT-10: No unfilled template variables in agent briefs", () => {
       if (!existsSync(agentsDir)) return;
       const unfilled: string[] = [];

@@ -53,8 +53,8 @@ describe("AC-1: lib/generators/agents-md.ts", () => {
     expect(result).toContain("**Tech:** Bun, ESM");
   });
 
-  test("output contains key files table", async () => {
-    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+  test("output contains key files table in scoped rules", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({
       name: "my-app",
@@ -63,20 +63,24 @@ describe("AC-1: lib/generators/agents-md.ts", () => {
         { file: "package.json", what: "Dependencies", when: "Adding deps" },
       ],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("| AGENTS.md | Project entry point | Always first |");
-    expect(result).toContain("| package.json | Dependencies | Adding deps |");
+    const rules = generateScopedRules(scan);
+    const keyFilesRule = rules.find(r => r.filename === "key-files.md");
+    expect(keyFilesRule).toBeDefined();
+    expect(keyFilesRule!.content).toContain("| AGENTS.md | Project entry point | Always first |");
+    expect(keyFilesRule!.content).toContain("| package.json | Dependencies | Adding deps |");
   });
 
-  test("output contains specs table", async () => {
-    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+  test("output contains specs table in scoped rules", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({
       name: "my-app",
       specs: [{ file: "MY-SPEC.md", governs: "Test governance", testable: "yes" }],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("| MY-SPEC.md | Test governance | yes |");
+    const rules = generateScopedRules(scan);
+    const specsRule = rules.find(r => r.filename === "specs-routing.md");
+    expect(specsRule).toBeDefined();
+    expect(specsRule!.content).toContain("| MY-SPEC.md | Test governance | yes |");
   });
 
   test("output contains repo URL", async () => {
@@ -99,16 +103,18 @@ describe("AC-1: lib/generators/agents-md.ts", () => {
     expect(result).toContain("Verify before asserting");
   });
 
-  test("output contains doc routing table", async () => {
-    const { generateAgentsMd } = await import("../lib/generators/agents-md");
+  test("output contains doc routing table in scoped rules", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
     const { mockProjectScan } = await import("../lib/generators/types");
     const scan = mockProjectScan({
       name: "my-app",
       docRouting: [{ need: "Codebase structure", file: "CODE-MAP.md" }],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("## Documentation Routing");
-    expect(result).toContain("Codebase structure");
+    const rules = generateScopedRules(scan);
+    const docsRule = rules.find(r => r.filename === "docs-routing.md");
+    expect(docsRule).toBeDefined();
+    expect(docsRule!.content).toContain("## Documentation Routing");
+    expect(docsRule!.content).toContain("Codebase structure");
   });
 });
 

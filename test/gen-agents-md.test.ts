@@ -3,7 +3,7 @@
  * AC-4: Tests generators with mock ProjectScan data
  */
 import { test, expect, describe } from "bun:test";
-import { generateAgentsMd } from "../lib/generators/agents-md";
+import { generateAgentsMd, generateScopedRules } from "../lib/generators/agents-md";
 import { mockProjectScan, type ProjectScan } from "../lib/generators/types";
 
 describe("generateAgentsMd with mock ProjectScan", () => {
@@ -29,7 +29,7 @@ describe("generateAgentsMd with mock ProjectScan", () => {
     expect(result).toContain("**Tech:** Node.js, ESM, React");
   });
 
-  test("includes key files table rows", () => {
+  test("includes key files table rows in scoped rules", () => {
     const scan = mockProjectScan({
       name: "gamma",
       keyFiles: [
@@ -37,20 +37,24 @@ describe("generateAgentsMd with mock ProjectScan", () => {
         { file: "Makefile", what: "Build commands", when: "Deploying" },
       ],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("| AGENTS.md | Entry point | Always |");
-    expect(result).toContain("| Makefile | Build commands | Deploying |");
+    const rules = generateScopedRules(scan);
+    const keyFilesRule = rules.find(r => r.filename === "key-files.md");
+    expect(keyFilesRule).toBeDefined();
+    expect(keyFilesRule!.content).toContain("| AGENTS.md | Entry point | Always |");
+    expect(keyFilesRule!.content).toContain("| Makefile | Build commands | Deploying |");
   });
 
-  test("includes specs table", () => {
+  test("includes specs table in scoped rules", () => {
     const scan = mockProjectScan({
       name: "delta",
       specs: [
         { file: "AUTH-SPEC.md", governs: "Authentication flow", testable: "yes" },
       ],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("| AUTH-SPEC.md | Authentication flow | yes |");
+    const rules = generateScopedRules(scan);
+    const specsRule = rules.find(r => r.filename === "specs-routing.md");
+    expect(specsRule).toBeDefined();
+    expect(specsRule!.content).toContain("| AUTH-SPEC.md | Authentication flow | yes |");
   });
 
   test("includes repo URL", () => {
@@ -62,15 +66,17 @@ describe("generateAgentsMd with mock ProjectScan", () => {
     expect(result).toContain("https://github.com/org/epsilon");
   });
 
-  test("includes doc routing entries", () => {
+  test("includes doc routing entries in scoped rules", () => {
     const scan = mockProjectScan({
       name: "zeta",
       docRouting: [
         { need: "API reference", file: "docs/api.md" },
       ],
     });
-    const result = generateAgentsMd(scan);
-    expect(result).toContain("API reference");
+    const rules = generateScopedRules(scan);
+    const docsRule = rules.find(r => r.filename === "docs-routing.md");
+    expect(docsRule).toBeDefined();
+    expect(docsRule!.content).toContain("API reference");
   });
 
   test("includes consumers section when present", () => {
