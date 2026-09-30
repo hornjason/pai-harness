@@ -2,43 +2,28 @@
 
 **Current phase: All phases complete**
 
-Session 18 (2026-09-28/29) — AFK marathon. 17 issues shipped/closed through pipeline. 15 shipped-but-open housekeeping closures. First-pass rate 21%→71%.
+Session 20 (2026-09-29/30) — Compliance self-improvement loop built and demonstrated.
 
-Key fixes:
-  - grep exit-code-1 evidence capture (717fc8e0) — root cause of 70% EVIDENCE_MISSING failures
-  - Evidence pre-validation (#598) — dry-run AC commands at SCOPE before Marcus implements
-  - Test baseline diffing (#599) — only count NEW failures after Marcus
-  - Mechanical spec update on close (#419) — auto-patch governing spec status
+Key deliverables:
+  - Compliance report system (lib/compliance-report.ts): JSONL trend tracking, per-COMP pass rates, threshold alerts at 70%
+  - Auto hill-climb: briefs auto-patched when COMP dimensions fail 3+ consecutive runs
+  - Grading pipeline fixed: COMP-7/12 were silently skipped, now always run
+  - COMP-7/12 false positive reduction: system paths excluded, offset/limit reads exempt
+  - Report noise reduction: DIR-L* collapsed to summary, declining alerts require 3+ data points
 
-Pipeline shipped (17):
-  #540 (scanner), #590 (buildAgentMeta), #542 (scaffold decomposition), #596 (to-issues),
-  #535 (rule health), #598 (evidence pre-validation), #515 (branch reuse), #532 (harness config),
-  #527 (doc staleness), #583 (feature parity), #531 (README fix), #529 (spec template),
-  #530 (stale docs), #599 (test baseline), #419 (spec update on close)
-  Already fixed: #597, #600
+4 controlled compliance tests this session — each improved the pipeline:
+  Test 1: found piped head violation → updated brief
+  Test 2: COMP-7 FOLLOWED (fix worked) → verified
+  Test 3: COMP-12 at 67% → refined check (offset/limit exclusion)
+  Test 4: found piped tail violation → updated brief, fixed noisy report
 
-Housekeeping (15 closed): #516, #504, #502, #501, #500, #498, #496, #487, #482, #409, #505, #495, #497, #457, #509
+Issues shipped (6): #512 (parallel ship), #295 (council decisions), #525 (workflow type), #526 (skill wrappers), #511 (plugin eval), gap scanner hook
+Issues closed (31 total, 52→21): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), AgentGrit (#338-341), and more
 
-First-pass rate: 10/14 (71%), up from 21%. Suite: 1729 pass, 0 fail, 97 files.
-23 issues remain open.
-  #508 SHIPPED — closed-loop spec sync. M-size, 1 regression, 21 agents, ~33 min.
-  Session 18 final: 18 shipped/closed through pipeline, 15 housekeeping. First-pass: 10/14 (71%).
+Pipeline state: first-pass rate 71%. COMP-7 90%→FOLLOWED, COMP-12 81%→50%, COMP-13 48%→FOLLOWED.
+Suite: 1790 pass, 0 fail, 108 files. 21 issues remain (mostly DDB/NLM/Control Plane).
 
-Retroactive compliance audit (48 runs, 1125 agent transcripts):
-  Marcus avg: 8.1/13 (62%). Min 5/13, Max 11/13.
-  Top violations (% of runs):
-    COMP-7  No cat/head via Bash (use Read)           — 90% ignored
-    COMP-12 Grep before Read for non-key files        — 81% ignored
-    COMP-9  Total tool calls <= 30                    — 75% ignored
-    COMP-8  Read PROJECT-STATE if task needs context   — 65% ignored
-    COMP-6  No duplicate file reads                   — 60% ignored
-    COMP-13 Write failing test before impl (TDD)      — 48% ignored
-    COMP-11 Coding/testing principles available        — 40% ignored
-  Action items:
-    1. COMP-7/COMP-12 need mechanical enforcement (hook or gate), not brief rules — 90%/81% ignore rate proves brief reinforcement alone fails
-    2. COMP-9 tool-call limit may be too tight (75% exceed) — evaluate raising to 40 or enforcing at gate
-    3. COMP-13 TDD improved from 60% to 48% violation but needs mechanical pre-check
-    4. Run grading on EVERY ship going forward (skipGrade=false)
+Remaining rungate work: #307 doc-hygiene (needs council), #512 Mac Mini integration, #522 GitHub MCP.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
