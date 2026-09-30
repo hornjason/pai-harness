@@ -882,7 +882,7 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
         return;
       }
       const content = readFileSync(join(root, "AGENTS.md"), "utf-8");
-      const required = ["Project Identity", "Key Files", "Specs", "Tests", "Workflow"];
+      const required = ["Project Identity", "Rules", "Commands", "Workflow"];
       const missing = required.filter(s => !content.toLowerCase().includes(s.toLowerCase()));
       if (missing.length > 0) {
         addFinding({ ruleId: "SCAFFOLD-AGENTS-SECTIONS", severity: "FAIL", file: "AGENTS.md", message: `Missing sections: ${missing.join(", ")}`, fixCommand: "Re-run scaffold to regenerate AGENTS.md" });
