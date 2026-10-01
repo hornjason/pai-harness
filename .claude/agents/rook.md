@@ -3,6 +3,7 @@ name: rook
 description: Security engineer — scans changed files for vulnerabilities
 tools: [Bash, Read]
 model: sonnet
+omitClaudeMd: true
 effort: low
 disallowedTools: [Write, Edit]
 ---
