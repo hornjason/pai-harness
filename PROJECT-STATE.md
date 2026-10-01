@@ -2,31 +2,33 @@
 
 **Current phase: All phases complete**
 
-Session 21 (2026-09-30) — Platform adoption + plugin eval framework.
+Session 22 (2026-10-01) — Eval-driven brief hill-climbing.
 
 Key deliverables:
-  - Three-tier context architecture validated (3/4 checks pass), docs-routing rule conflict fixed
-  - Platform audit: 70+ features across 26 doc pages (docs/research/claude-code-platform-audit.md)
-  - Phase 1 adopted: cache TTL 1h, agent memory, maxTurns, effort, disallowedTools, worktreeinclude, omitClaudeMd, isolation, Stop hook, output style, /ship-issue command
-  - Plugin eval framework: 7 cases across 4 agents, 100% pass, Vertex auth solved
-  - Δ baseline scoring: mean +0.06 — most cases Claude passes natively, Quinn +0.40 is the differentiated case
-  - Scaffold generator updated: emits all platform-native frontmatter fields (consumers get them on re-scaffold)
-  - AGENT-BRIEF-TEMPLATE-SPEC updated: SC-410 through SC-413 for platform fields
-  - GitHub MCP server added (#25 partially done)
-  - eval-to-hillclimb bridge script created
-  - 3 stale PRs closed, 16 commits, all pushed
+  - Hard eval cases revealed briefs too heavy: marcus-tdd-vs-speed Δ -0.67 (timeout regression)
+  - Marcus brief trimmed 35% (82→53 lines): removed Efficiency/Surgical/Simplicity sections that overlap CC defaults
+  - After trim: marcus-tdd-vs-speed reversed to Δ +0.67 — brief now helps instead of hurting
+  - Quinn brief restructured: Core Rule first, removed Project Type Detection overhead, added write restriction
+  - Quinn Δ improved from -0.50 to 0.00 — no-writes fixed, evidence quality still a gap
+  - Scaffold fixed: DEFAULT_AGENT_META now merges with config (platform fields were missing from generated briefs)
+  - eval-to-hillclimb bridge fixed: parses ablation arms format, comment syntax error resolved
+  - Prior-branch test made self-contained (creates/cleans temp branch)
+  - Full eval scorecard: marcus-ambiguous +0.57→0.00 (variance), marcus-tdd +0.67, quinn 0.00, serena 0.00
 
-Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
+Key insight: brief overhead hurts when eval prompts are already specific. Briefs help most with ambiguous tasks.
+
+Previous session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases, Δ baseline scoring.
+
+Suite: 1788 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Harder eval cases → brief improvements → prove pipeline works. Current Δ +0.06 means easy cases — need multi-file, ambiguous, competing-priority cases where briefs actually differentiate
-2. P0: Use eval Δ results to hill-climb briefs — fix what fails, validate what passes, wire eval-to-hillclimb bridge into ship workflow
-3. P1: Three-tier context validation through evals — do rules loading at right scope actually improve eval scores?
-4. P1: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
-5. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
-6. P3: /goal adoption — replaces verify gate (~300 lines)
-7. P3: Agent teams investigation — experimental but could change pipeline coordination
+1. P0: Continue eval-driven hill-climb loop — quinn evidence quality still failing, need harder evals with runs>1 for statistical significance
+2. P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
+3. P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules
+4. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
+5. P3: /goal adoption — replaces verify gate (~300 lines)
+6. P3: Agent teams investigation — experimental but could change pipeline coordination
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
