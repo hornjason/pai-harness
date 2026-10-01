@@ -333,7 +333,7 @@ Ship succeeds → Grade (always) →
 - [x] SC-467: lib/directive-extractor.ts contains [sectionCategory, quality]
 - [x] SC-468: lib/directive-extractor.ts contains [parseProcessOverrides, process_overrides]
 - [x] SC-469: extractPromptContent concatenates all user messages — not just first — to detect AGENTS.md injection in workflow relay transcripts
-- [ ] SC-470: scripts/test-brief.ts contains [--prompt, promptFile, replayPrompt]
+- [x] SC-470: scripts/test-brief.ts contains [--prompt, promptFile, replayPrompt]
 - [ ] SC-471: test-brief --prompt runs COMP-level grading alongside directive grading and compares against baseline (behavioral)
 - [ ] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
 
