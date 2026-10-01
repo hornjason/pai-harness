@@ -335,13 +335,12 @@ process_overrides:
     expect(directives.length).toBeGreaterThanOrEqual(3);
   });
 
-  test("marcus.md COMP-7 rule is extracted", () => {
+  test("marcus.md run-suite directive is extracted", () => {
     const briefPath = join(ROOT, ".claude/agents/marcus.md");
     const content = readFileSync(briefPath, "utf-8");
     const directives = extractDirectives(content);
-    const comp7 = directives.find((d) => d.text.includes("cat") && d.text.includes("Read tool"));
-    expect(comp7).toBeDefined();
-    expect(comp7!.type).toBe("always");
+    const runSuite = directives.find((d) => d.text.includes("bun test") && d.type === "run");
+    expect(runSuite).toBeDefined();
   });
 
   // ── Category on real briefs ──

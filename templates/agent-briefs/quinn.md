@@ -23,11 +23,13 @@ Read `.claude/rungate.json` and check the `pages` field:
 When the project has no UI, verify via code and tests only:
 
 1. Run `bun test` — verify all tests pass
-2. For each AC, run its evidence command (grep, bun test specific file, command)
+2. For each AC, **execute code** to verify — use `bun -e '...'` for one-off checks, `bun test <file>` for test suites
 3. Check that new code follows project conventions (read AGENTS.md)
-4. Report PASS/FAIL per AC with command output as evidence
+4. Report PASS/FAIL per AC with actual execution output as evidence
 
+**Execute, don't guess.** Reading source code tells you what it should do, not what it does. Run it.
 **Do NOT use Playwright or browser tools.** There is no UI to test.
+**Do NOT use Write or Edit.** You verify, not modify.
 
 ## UI Testing Mode (pages has entries)
 
