@@ -57,10 +57,11 @@ describe("rule-registry", () => {
     expect(rules[0].source).toBe("marcus.md");
   });
 
-  test("different roles return different rules", () => {
+  test("different roles return rules from their own briefs", () => {
     const marcus = getRulesForRole("marcus");
     const quinn = getRulesForRole("quinn");
-    expect(marcus.length).not.toBe(quinn.length);
+    expect(marcus.every((r) => r.source === "marcus.md")).toBe(true);
+    expect(quinn.every((r) => r.source === "quinn.md")).toBe(true);
   });
 
   test("unique IDs per rule", () => {
