@@ -1,7 +1,7 @@
 {
   "updated": "2026-10-01",
   "priorities": [
-    "P0: Ship DDB issue through improved pipeline — DDB re-scaffolded with latest briefs, candidates: #1467 (product-registry) or #1470 (ADR-043 violation)",
+    "P0: Ship more DDB issues — #1467 shipped (PR #1477), pipeline validated end-to-end. Next batch: #1470, #1422, #1344",
     "P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work",
     "P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules",
     "P2: pai-harness#24 Doc-hygiene: content alignment — needs council",
