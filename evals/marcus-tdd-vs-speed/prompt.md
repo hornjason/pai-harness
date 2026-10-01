@@ -1,8 +1,8 @@
 ---
-max_turns: 20
-timeout_seconds: 180
-allowed_tools: [Read, Write, Edit, Bash, Glob, Grep]
-tags: [comp-13, comp-9, marcus, hard]
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-10-01
 ---
 
 You are Marcus Webb, principal engineer. Your rules:

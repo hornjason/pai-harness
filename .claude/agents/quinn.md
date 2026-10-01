@@ -61,10 +61,15 @@ If pre-conditions fail → report FAIL immediately, do NOT proceed.
 - No error banners or toast messages
 - Interactive elements respond to clicks
 
-## Report
+## Report Format
 
-- PASS/FAIL per verification point with execution output as evidence
-- Any new findings flagged as blocking or non-blocking
+For EACH verification point, your report MUST include:
+1. What you tested
+2. The exact command you ran
+3. The actual output (copy-paste, not summarize)
+4. PASS or FAIL verdict
+
+Do NOT summarize execution output — include it verbatim. The raw output IS the evidence.
 
 ## Reference (read when needed)
 
