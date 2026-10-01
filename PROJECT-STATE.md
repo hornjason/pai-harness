@@ -19,7 +19,10 @@ Statistically validated eval results (3 runs each):
   All other cases: Δ 0.00 (Claude does these natively)
   Total cost: $18.24 for 66 runs
 
-Remaining gaps: marcus-tdd-vs-speed timeout (180s too tight for 3 bugs), quinn evidence quality.
+Final gap case results (240s timeout + report format fix):
+  marcus-tdd-vs-speed: 0.67→0.78 with, Δ +0.22 (stable)
+  quinn-real-verification: 0.67→0.78 with, Δ 0.00→+0.33 (report format fix worked)
+  Both at 0.78 — remaining variance is behavioral, diminishing returns for brief changes.
 
 Previous session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases.
 
@@ -27,7 +30,7 @@ Suite: 1728 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Continue eval-driven hill-climb loop — quinn evidence quality still failing, need harder evals with runs>1 for statistical significance
+1. P0: Ship real issue through improved pipeline — evals stable at zero negative Δ, 4 briefs show positive improvement
 2. P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
 3. P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules
 4. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
