@@ -1,14 +1,14 @@
 {
   "updated": "2026-10-01",
   "priorities": [
-    "P0: Fix persistent COMP violations — COMP-1 (inject AGENTS.md), COMP-7 (block cat/head via hook). Prompt trim didn't help — these are behavioral, need mechanical enforcement",
-    "P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work",
-    "P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules",
+    "P0: Deploy BashToolGuard hook to project settings (not just rungate.json) — COMP-7 validated in replay (0 cat) but still failing in pipeline (11 cat). Hook fires for project settings, not harness config",
+    "P0: Implement SC-470/471 (--prompt flag in test-brief.ts) — fast inner loop for brief iteration. Replay prototype validated approach: extract failing prompt → replay → grade → tweak → repeat (30s vs 20min)",
+    "P0: Brief reinforcement for COMP-6/8/9/11 — Marcus scored 60% on issue #26 (55 tool calls, 3 dup reads, no PROJECT-STATE, no coding principles)",
+    "P1: SC-472 scaffold deploys hooks to consumer .claude/settings.local.json — config-driven from rungate.json hooks[].deployToConsumers",
     "P2: pai-harness#24 Doc-hygiene: content alignment — needs council",
-    "P3: /goal adoption — replaces verify gate (~300 lines)",
-    "P3: Agent teams investigation — experimental but could change pipeline coordination"
+    "P3: /goal adoption — replaces verify gate (~300 lines)"
   ],
-  "notes": "Session 22 (2026-10-01) — Eval-driven brief hill-climbing.\n\nKey deliverables:\n  - Full 66-run eval suite (11 cases × 3 runs × 2 arms): ZERO negative deltas, 82% pass rate\n  - Marcus brief trimmed 35% (82→53 lines): reversed marcus-tdd-vs-speed from Δ -0.67 to Δ +0.22\n  - Quinn brief restructured: Core Rule first, Project Type Detection removed. Δ improved from -0.50 to 0.00\n  - Scaffold fixed: DEFAULT_AGENT_META merges with config for platform-native frontmatter\n  - eval-to-hillclimb bridge fixed: parses ablation format, generates actionable recommendations\n\nStatistically validated eval results (3 runs each):\n  marcus-ambiguous-spec: Δ +0.19 (brief helps with judgment)\n  marcus-tdd-vs-speed: Δ +0.22 (brief helps with TDD, 180s timeout still flaky)\n  quinn-qa-only: Δ +0.13 (brief helps with verification quality)\n  quinn-real-verification: Δ 0.00 (neutral — evidence quality gap remains)\n  All other cases: Δ 0.00 (Claude does these natively)\n  Total cost: $18.24 for 66 runs\n\nFinal gap case results (240s timeout + report format fix):\n  marcus-tdd-vs-speed: 0.67→0.78 with, Δ +0.22 (stable)\n  quinn-real-verification: 0.67→0.78 with, Δ 0.00→+0.33 (report format fix worked)\n  Both at 0.78 — remaining variance is behavioral, diminishing returns for brief changes.\n\nPrevious session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases.\n\nSuite: 1728 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).\nSuite: 25/25 SCs done.",
+  "notes": "Session 23 (2026-10-01) — Compliance grader fix + mechanical enforcement validation.\n\nKey deliverables:\n  - COMP-1 grader false negative FIXED: extractPromptContent() now checks all user messages, not just first. Was only reading relay header, missing AGENTS.md injection in task prompt. All 3 baseline runs now pass COMP-1 (was 0/3)\n  - BashToolGuard hook VALIDATED: replay with hook active scored 0 cat commands (was 1-11). Hook blocks cat/head/tail at PreToolUse level\n  - Issue #26 shipped through full pipeline: Marcus 9/15 (60%). COMP-1 ✅ COMP-13 ✅ (first time!). COMP-7 ❌ (hook not in project settings)\n  - SCs created: SC-469 (grader fix, done), SC-470 (--prompt flag), SC-471 (COMP grading), SC-472 (scaffold hook deployment)\n  - Course correction: stopped hardcoding, created SCs before implementation, removed replay-prompt.ts (belongs in test-brief.ts per SC-470)\n\nCompliance score trend:\n  Bloated baseline:   62% / 69%\n  Trimmed baseline:   54% / 69% / 69%\n  Re-graded baseline: 77% / 69% / 77% (grader fix alone: +8-15%)\n  Replay w/ hook:     85% (grader fix + hook: +16-31%)\n  Issue #26 pipeline: 60% (15 checks vs 13, new violations: COMP-6/8/9/11)\n\nPersistent violations needing fast loop iteration:\n  COMP-7: Hook not active in pipeline (needs project settings deployment)\n  COMP-6: 3 files read multiple times (test-brief.ts 7x)\n  COMP-9: 55 tool calls (limit 40)\n  COMP-8: PROJECT-STATE not read\n  COMP-11: Coding principles not read\n  DIR-L29: 5 full suite runs (limit 2)\n\nPrevious session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.\n\nSuite: 25/25 SCs done. 4 issues remain (#23, #24, #25, #26).",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -203,6 +203,31 @@
   ],
   "sessions": [
     {
+      "date": "2026-10-01 session 23",
+      "items": [
+        "COMP-1 grader false negative FIXED: extractPromptContent() was only checking first user message (relay header), missing AGENTS.md injection in second message (task prompt). All 3 baseline runs now FOLLOWED. 2 tests added",
+        "BashToolGuard hook VALIDATED: replay with hook scored 0 cat commands (baseline: 1-11 per run). Tier 3 mechanical enforcement works",
+        "Issue #26 shipped through pipeline: Marcus 9/15 (60%). COMP-1 ✅, COMP-13 ✅ (TDD passed first time!). COMP-7 ❌ (hook in rungate.json but not project settings)",
+        "SCs created: SC-469 (grader fix, done), SC-470 (test-brief --prompt flag), SC-471 (COMP-level grading in fast loop), SC-472 (scaffold hook deployment to consumers)",
+        "Course correction: user flagged non-spec-driven work. Removed replay-prompt.ts (belongs in test-brief per SC-400/470). Created SCs before further implementation",
+        "DDB-1344 re-graded with fixed grader: 77%/69%/77% (was 69%/54%/69% — +8-15% from grader fix alone)",
+        "Replay validated end-to-end: 85% with grader fix + BashToolGuard (vs 74% baseline avg)",
+        "Project state updated, issue #26 created for SC-470/471/472 implementation"
+      ]
+    },
+    {
+      "date": "2026-09-30 session 22",
+      "items": [
+        "Eval-driven brief hill-climbing: 66-run suite, ZERO negative deltas, 82% pass rate",
+        "Marcus brief trimmed 35%: reversed marcus-tdd-vs-speed from Δ -0.67 to Δ +0.22",
+        "Quinn brief restructured: Core Rule first. Δ improved from -0.50 to 0.00",
+        "Three-tier promotion: BashToolGuard hook, AGENTS.md injection in briefedAgent(), detectHillClimbNeeds() promotes at 5+ fails",
+        "Ship.js duplicated rules removed (30+ lines hardcoded in 3 Marcus prompts)",
+        "Ship workflow rule deployed to all consumers via scaffold (ship-workflow.md)",
+        "DDB-1344 shipped through pipeline: Marcus 62%/69% compliance. Persistent: COMP-1, COMP-7"
+      ]
+    },
+    {
       "date": "2026-09-30 session 21",
       "items": [
         "Three-tier context architecture validated: 3/4 checks pass. docs-routing rule conflict fixed with trust directive",
@@ -321,11 +346,11 @@
     }
   ],
   "session": {
-    "number": 20,
-    "date": "2026-09-29",
-    "summary": "Major pipeline session: compliance self-improvement loop (report + trend + auto hill-climb), 6 issues shipped (#512, #295, #525, #526, #511, gap scanner hook), 31 issues closed (52→21). security-guidance plugin adopted. 4 compliance tests ran — each one improved the pipeline (brief updates, report noise reduction, COMP-12 refinement). Self-improvement loop demonstrated working: test→grade→fix→retest.",
-    "suite": "1790 pass, 0 fail, 108 files",
-    "scs_done": "25/25",
-    "commits": 21
+    "number": 23,
+    "date": "2026-10-01",
+    "summary": "COMP-1 grader false negative fixed (extractPromptContent all user messages). BashToolGuard hook validated (replay 0 cat). Issue #26 shipped: Marcus 60% (COMP-1 ✅, COMP-13 ✅ first time, COMP-7 ❌ hook not deployed). SCs 469-472 created for fast loop + hook scaffold. Course corrected: specs before code.",
+    "suite": "1728 pass, 0 fail, 108 files",
+    "scs_done": "25/25 + 4 new (1 done, 3 pending)",
+    "commits": 4
   }
 }

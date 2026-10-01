@@ -2,40 +2,41 @@
 
 **Current phase: All phases complete**
 
-Session 22 (2026-10-01) — Eval-driven brief hill-climbing.
+Session 23 (2026-10-01) — Compliance grader fix + mechanical enforcement validation.
 
 Key deliverables:
-  - Full 66-run eval suite (11 cases × 3 runs × 2 arms): ZERO negative deltas, 82% pass rate
-  - Marcus brief trimmed 35% (82→53 lines): reversed marcus-tdd-vs-speed from Δ -0.67 to Δ +0.22
-  - Quinn brief restructured: Core Rule first, Project Type Detection removed. Δ improved from -0.50 to 0.00
-  - Scaffold fixed: DEFAULT_AGENT_META merges with config for platform-native frontmatter
-  - eval-to-hillclimb bridge fixed: parses ablation format, generates actionable recommendations
+  - COMP-1 grader false negative FIXED: extractPromptContent() now checks all user messages, not just first. Was only reading relay header, missing AGENTS.md injection in task prompt. All 3 baseline runs now pass COMP-1 (was 0/3)
+  - BashToolGuard hook VALIDATED: replay with hook active scored 0 cat commands (was 1-11). Hook blocks cat/head/tail at PreToolUse level
+  - Issue #26 shipped through full pipeline: Marcus 9/15 (60%). COMP-1 ✅ COMP-13 ✅ (first time!). COMP-7 ❌ (hook not in project settings)
+  - SCs created: SC-469 (grader fix, done), SC-470 (--prompt flag), SC-471 (COMP grading), SC-472 (scaffold hook deployment)
+  - Course correction: stopped hardcoding, created SCs before implementation, removed replay-prompt.ts (belongs in test-brief.ts per SC-470)
 
-Statistically validated eval results (3 runs each):
-  marcus-ambiguous-spec: Δ +0.19 (brief helps with judgment)
-  marcus-tdd-vs-speed: Δ +0.22 (brief helps with TDD, 180s timeout still flaky)
-  quinn-qa-only: Δ +0.13 (brief helps with verification quality)
-  quinn-real-verification: Δ 0.00 (neutral — evidence quality gap remains)
-  All other cases: Δ 0.00 (Claude does these natively)
-  Total cost: $18.24 for 66 runs
+Compliance score trend:
+  Bloated baseline:   62% / 69%
+  Trimmed baseline:   54% / 69% / 69%
+  Re-graded baseline: 77% / 69% / 77% (grader fix alone: +8-15%)
+  Replay w/ hook:     85% (grader fix + hook: +16-31%)
+  Issue #26 pipeline: 60% (15 checks vs 13, new violations: COMP-6/8/9/11)
 
-Final gap case results (240s timeout + report format fix):
-  marcus-tdd-vs-speed: 0.67→0.78 with, Δ +0.22 (stable)
-  quinn-real-verification: 0.67→0.78 with, Δ 0.00→+0.33 (report format fix worked)
-  Both at 0.78 — remaining variance is behavioral, diminishing returns for brief changes.
+Persistent violations needing fast loop iteration:
+  COMP-7: Hook not active in pipeline (needs project settings deployment)
+  COMP-6: 3 files read multiple times (test-brief.ts 7x)
+  COMP-9: 55 tool calls (limit 40)
+  COMP-8: PROJECT-STATE not read
+  COMP-11: Coding principles not read
+  DIR-L29: 5 full suite runs (limit 2)
 
-Previous session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases.
+Previous session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.
 
-Suite: 1728 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
-Suite: 25/25 SCs done.
+Suite: 25/25 SCs done. 4 issues remain (#23, #24, #25, #26).
 
 **Next priorities:**
-1. P0: Fix persistent COMP violations — COMP-1 (inject AGENTS.md), COMP-7 (block cat/head via hook). Prompt trim didn't help — these are behavioral, need mechanical enforcement
-2. P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
-3. P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules
-4. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
-5. P3: /goal adoption — replaces verify gate (~300 lines)
-6. P3: Agent teams investigation — experimental but could change pipeline coordination
+1. P0: Deploy BashToolGuard hook to project settings (not just rungate.json) — COMP-7 validated in replay (0 cat) but still failing in pipeline (11 cat). Hook fires for project settings, not harness config
+2. P0: Implement SC-470/471 (--prompt flag in test-brief.ts) — fast inner loop for brief iteration. Replay prototype validated approach: extract failing prompt → replay → grade → tweak → repeat (30s vs 20min)
+3. P0: Brief reinforcement for COMP-6/8/9/11 — Marcus scored 60% on issue #26 (55 tool calls, 3 dup reads, no PROJECT-STATE, no coding principles)
+4. P1: SC-472 scaffold deploys hooks to consumer .claude/settings.local.json — config-driven from rungate.json hooks[].deployToConsumers
+5. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
+6. P3: /goal adoption — replaces verify gate (~300 lines)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -92,6 +93,25 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-10-01 session 23:**
+- COMP-1 grader false negative FIXED: extractPromptContent() was only checking first user message (relay header), missing AGENTS.md injection in second message (task prompt). All 3 baseline runs now FOLLOWED. 2 tests added
+- BashToolGuard hook VALIDATED: replay with hook scored 0 cat commands (baseline: 1-11 per run). Tier 3 mechanical enforcement works
+- Issue #26 shipped through pipeline: Marcus 9/15 (60%). COMP-1 ✅, COMP-13 ✅ (TDD passed first time!). COMP-7 ❌ (hook in rungate.json but not project settings)
+- SCs created: SC-469 (grader fix, done), SC-470 (test-brief --prompt flag), SC-471 (COMP-level grading in fast loop), SC-472 (scaffold hook deployment to consumers)
+- Course correction: user flagged non-spec-driven work. Removed replay-prompt.ts (belongs in test-brief per SC-400/470). Created SCs before further implementation
+- DDB-1344 re-graded with fixed grader: 77%/69%/77% (was 69%/54%/69% — +8-15% from grader fix alone)
+- Replay validated end-to-end: 85% with grader fix + BashToolGuard (vs 74% baseline avg)
+- Project state updated, issue #26 created for SC-470/471/472 implementation
+
+**Session 2026-09-30 session 22:**
+- Eval-driven brief hill-climbing: 66-run suite, ZERO negative deltas, 82% pass rate
+- Marcus brief trimmed 35%: reversed marcus-tdd-vs-speed from Δ -0.67 to Δ +0.22
+- Quinn brief restructured: Core Rule first. Δ improved from -0.50 to 0.00
+- Three-tier promotion: BashToolGuard hook, AGENTS.md injection in briefedAgent(), detectHillClimbNeeds() promotes at 5+ fails
+- Ship.js duplicated rules removed (30+ lines hardcoded in 3 Marcus prompts)
+- Ship workflow rule deployed to all consumers via scaffold (ship-workflow.md)
+- DDB-1344 shipped through pipeline: Marcus 62%/69% compliance. Persistent: COMP-1, COMP-7
+
 **Session 2026-09-30 session 21:**
 - Three-tier context architecture validated: 3/4 checks pass. docs-routing rule conflict fixed with trust directive
 - Platform audit: 70+ features across 26 Claude Code doc pages (docs/research/claude-code-platform-audit.md)
@@ -106,34 +126,4 @@ Suite: 25/25 SCs done.
 - rungate.json config synced: serena/aditi tools=[Read], disallowedTools added
 - 3 stale PRs closed (#2, #5, #6), 16 commits pushed. 4 test failures fixed → 0
 - Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25)
-
-**Session 2026-09-29 session 20:**
-- Grading pipeline overhaul: COMP-7/12 were silently skipped (only ran as fallback). Fixed to always run mechanical COMP checks
-- Directive extractor: bold-prefixed **NEVER lines now parsed, 'Efficiency Rules' section matched via includes('rules')
-- COMP-7/12 false positives: excluded system paths (/tmp/claude-*), own-file reads, task output files
-- Compliance report system (lib/compliance-report.ts): JSONL history, per-COMP trend lines, threshold alerts, formatted output
-- Wired into ship.js: report displayed after every issue with 70% threshold, declining-trend detection, improvement alerts
-- Compliance test verified: COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Agent score 10/19→13/19
-- Marcus brief updated: piped head explicitly banned for COMP-7
-- 18 stale issues closed (52→36 open): #386, #337, #330, #415, #82-86, #2, #29, #40, #41, #129, #130, #206, #300, #312, #225, #455, #526
-- Created /bootstrap and /spec skill wrappers (#526)
-- Auto hill-climb: brief-fixable COMPs (7,12,13,6,9,2) auto-patched after 3+ consecutive fails
-- #512 shipped: parallel-ship.ts with worktree isolation, port allocation, container naming
-- #295 shipped: council structured decisions[] + auto-reconcile
-- #525 shipped: --type workflow flag for scaffold-project.ts
-- #511 shipped: plugin evaluation — security-guidance ADOPTED, 5 others SKIP
-- Gap scanner wired into session-start hook (StaleTTLCleanup.hook.ts)
-- 21 stale issues closed (52→32): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), and more
-- Suite: 1769 pass, 0 fail, 105 files
-
-**Session 2026-09-29 session 19:**
-- AFK batch: 4 issues shipped (#601, #602, #469, #470), 3 phases closed
-- 19 SCs verified — 13 already satisfied by existing tests, 6 needed new work
-- SC-364: scaffold idempotency test + fixed non-deterministic scanner. Caught Marcus when:kf.pattern bug
-- SC-367: AgentBriefGuard 64→38 lines. Signal constants moved to lib module
-- #469: archive-then-purge replaces file-level TTL. Directory-level lifecycle for .rungate
-- #470: gap scanner (lib/gap-scanner.ts) with 6 drift checks, 12 tests. Gate integration follow-up
-- Fixed RatingCapture hook timeout (30s→60s)
-- Cleaned 32 stale worktrees (171MB), 126 stale branches
-- Suite: 1729 pass, 0 fail, 100 files. 27 issues remain open
 
