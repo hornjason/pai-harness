@@ -30,7 +30,7 @@ POV bootstrap session uncovered 4 gaps: #27 spec conversion CLI, #28 extractor m
 
 Previous session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.
 
-Suite: 25/25 SCs done. 8 issues remain (#23-30). #26 SHIPPED.
+Suite: 25/25 SCs done. 6 issues remain (#23, #24, #26-28, #30). #25 closed (already shipped), #29 closed (consumer concern).
 
 **Next priorities:**
 1. P0: BashToolGuard DEPLOYED to project settings ✅ — run fast loop to validate COMP-7 passes in next pipeline
@@ -41,9 +41,7 @@ Suite: 25/25 SCs done. 8 issues remain (#23-30). #26 SHIPPED.
 6. P1: #27 Spec conversion CLI — convert existing freeform docs (numbered rules, MUST/SHOULD) to RunGate spec format with frontmatter and SCs
 7. P1: SC-472 scaffold deploys hooks to consumer settings.local.json — config-driven from rungate.json hooks[].deployToConsumers
 8. P2: #24 Doc-hygiene: content alignment — needs council
-9. P2: #29 Document Drive API workaround for HTML-to-Doc conversion — Google Workspace MCP doesn't convert HTML
-10. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
-11. P3: #25 GitHub MCP server for structured tool calls
+9. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
