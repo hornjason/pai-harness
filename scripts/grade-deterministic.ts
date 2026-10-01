@@ -110,19 +110,21 @@ export function inferRole(metaPath: string, transcriptPath: string, validRoles: 
 }
 
 function extractPromptContent(transcriptContent: string): string {
+  const parts: string[] = [];
   for (const line of transcriptContent.split("\n").filter(Boolean)) {
     try {
       const entry = JSON.parse(line);
       if (entry.type === "human" || entry.type === "user" || entry.role === "user") {
         const content = entry.message?.content || entry.content || "";
-        if (typeof content === "string") return content;
-        if (Array.isArray(content)) {
-          return content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n");
+        if (typeof content === "string") {
+          parts.push(content);
+        } else if (Array.isArray(content)) {
+          parts.push(content.filter((b: any) => b.type === "text").map((b: any) => b.text).join("\n"));
         }
       }
     } catch { /* skip */ }
   }
-  return "";
+  return parts.join("\n");
 }
 
 function buildTranscriptData(calls: any[], promptContent: string): TranscriptData {

@@ -228,4 +228,60 @@ describe("grade-deterministic", () => {
       rmSync(workDir, { recursive: true, force: true });
     });
   });
+
+  describe("COMP-1 injection detection", () => {
+    test("detects AGENTS.md in second user message (workflow relay pattern)", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp1_inject");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "[Workflow relay] user request" } }),
+          JSON.stringify({ type: "user", message: { content: "### AGENTS.md (from /path/AGENTS.md)\nProject rules here" } }),
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/path/marcus.md" } }] } }),
+          JSON.stringify({ type: "tool_result", content: "brief content" }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp1 = result!.rules.find(r => r.id === "COMP-1");
+        expect(comp1).toBeDefined();
+        expect(comp1!.verdict).toBe("FOLLOWED");
+        expect(comp1!.evidence).toContain("injected");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("fails COMP-1 when AGENTS.md not in any user message", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp1_missing");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "[Workflow relay] user request" } }),
+          JSON.stringify({ type: "user", message: { content: "Just do the task" } }),
+          JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "/path/marcus.md" } }] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp1 = result!.rules.find(r => r.id === "COMP-1");
+        expect(comp1).toBeDefined();
+        expect(comp1!.verdict).toBe("IGNORED");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
