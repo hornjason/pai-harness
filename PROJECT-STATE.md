@@ -5,21 +5,25 @@
 Session 22 (2026-10-01) — Eval-driven brief hill-climbing.
 
 Key deliverables:
-  - Hard eval cases revealed briefs too heavy: marcus-tdd-vs-speed Δ -0.67 (timeout regression)
-  - Marcus brief trimmed 35% (82→53 lines): removed Efficiency/Surgical/Simplicity sections that overlap CC defaults
-  - After trim: marcus-tdd-vs-speed reversed to Δ +0.67 — brief now helps instead of hurting
-  - Quinn brief restructured: Core Rule first, removed Project Type Detection overhead, added write restriction
-  - Quinn Δ improved from -0.50 to 0.00 — no-writes fixed, evidence quality still a gap
-  - Scaffold fixed: DEFAULT_AGENT_META now merges with config (platform fields were missing from generated briefs)
-  - eval-to-hillclimb bridge fixed: parses ablation arms format, comment syntax error resolved
-  - Prior-branch test made self-contained (creates/cleans temp branch)
-  - Full eval scorecard: marcus-ambiguous +0.57→0.00 (variance), marcus-tdd +0.67, quinn 0.00, serena 0.00
+  - Full 66-run eval suite (11 cases × 3 runs × 2 arms): ZERO negative deltas, 82% pass rate
+  - Marcus brief trimmed 35% (82→53 lines): reversed marcus-tdd-vs-speed from Δ -0.67 to Δ +0.22
+  - Quinn brief restructured: Core Rule first, Project Type Detection removed. Δ improved from -0.50 to 0.00
+  - Scaffold fixed: DEFAULT_AGENT_META merges with config for platform-native frontmatter
+  - eval-to-hillclimb bridge fixed: parses ablation format, generates actionable recommendations
 
-Key insight: brief overhead hurts when eval prompts are already specific. Briefs help most with ambiguous tasks.
+Statistically validated eval results (3 runs each):
+  marcus-ambiguous-spec: Δ +0.19 (brief helps with judgment)
+  marcus-tdd-vs-speed: Δ +0.22 (brief helps with TDD, 180s timeout still flaky)
+  quinn-qa-only: Δ +0.13 (brief helps with verification quality)
+  quinn-real-verification: Δ 0.00 (neutral — evidence quality gap remains)
+  All other cases: Δ 0.00 (Claude does these natively)
+  Total cost: $18.24 for 66 runs
 
-Previous session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases, Δ baseline scoring.
+Remaining gaps: marcus-tdd-vs-speed timeout (180s too tight for 3 bugs), quinn evidence quality.
 
-Suite: 1788 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
+Previous session 21: Platform adoption, plugin eval framework, Vertex auth, 11 eval cases.
+
+Suite: 1728 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
 Suite: 25/25 SCs done.
 
 **Next priorities:**
