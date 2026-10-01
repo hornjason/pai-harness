@@ -17,3 +17,4 @@ credentials.json/
 service-account/
 .claude/worktrees/
 evals/results/
+evals/.gcp-adc.json
