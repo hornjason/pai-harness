@@ -238,6 +238,14 @@ async function briefedAgent(prompt, opts = {}) {
       fullPrompt += `CRITICAL PROCESS RULES (follow in every task):\n${reinforcement.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`
     }
 
+    // Tier 2: Ensure AGENTS.md is always available (COMP-1 mechanical enforcement)
+    // In read-step mode, add it if not already in the read list
+    // In excerpt mode, callers should include it — this is a safety net
+    if (!taskContextExcerpts) {
+      const agentsMdPath = `${PROJECT_ROOT}/AGENTS.md`
+      fullPrompt += `If you haven't read ${agentsMdPath} yet from the steps above, read it now before starting work.\n\n`
+    }
+
     fullPrompt += prompt
     return agent(fullPrompt, opts)
   }

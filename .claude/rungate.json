@@ -89,6 +89,14 @@
   },
   "hooks": [
     {
+      "name": "BashToolGuard",
+      "hookFor": "PreToolUse",
+      "command": "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
+      "enabled": true,
+      "matcher": "Bash",
+      "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
+    },
+    {
       "name": "AgentBriefGuard",
       "hookFor": "PreToolUse",
       "command": "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",

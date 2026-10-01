@@ -234,6 +234,8 @@ export interface HillClimbAction {
   rule: string;
   reinforcement: string;
   consecutiveFails: number;
+  tier: 1 | 2 | 3;
+  promotion?: string;
 }
 
 const BRIEF_REINFORCEMENTS: Record<string, string> = {
@@ -252,6 +254,45 @@ const BRIEF_REINFORCEMENTS: Record<string, string> = {
 };
 
 const CONSECUTIVE_FAIL_THRESHOLD = 3;
+const TIER_PROMOTION_THRESHOLD = 5;
+
+const TIER_PROMOTIONS: Record<string, { tier: 2 | 3; promotion: string }> = {
+  "COMP-7": {
+    tier: 3,
+    promotion:
+      "Deploy BashToolGuard hook (PreToolUse on Bash) to mechanically block cat/head/tail commands",
+  },
+  "COMP-1": {
+    tier: 2,
+    promotion:
+      "Inject AGENTS.md read instruction into briefedAgent() fallback when taskContextExcerpts is missing",
+  },
+  "COMP-12": {
+    tier: 2,
+    promotion:
+      "Add grep-before-read reinforcement rule to agent brief frontmatter tiers.reinforcement[]",
+  },
+  "COMP-13": {
+    tier: 2,
+    promotion:
+      "Add TDD-sequence reinforcement to brief frontmatter and inject ordering reminder in briefedAgent()",
+  },
+  "COMP-6": {
+    tier: 2,
+    promotion:
+      "Add duplicate-read detection reinforcement to brief frontmatter tiers.reinforcement[]",
+  },
+  "COMP-9": {
+    tier: 3,
+    promotion:
+      "Deploy tool-call budget hook (PostToolUse) to warn at 30 calls, block at 50",
+  },
+  "COMP-2": {
+    tier: 3,
+    promotion:
+      "Deploy test-run limiter hook (PreToolUse on Bash) to block 3rd+ full suite run",
+  },
+};
 
 function countConsecutiveFails(verdicts: string[]): number {
   let count = 0;
@@ -267,12 +308,23 @@ export function detectHillClimbNeeds(report: ComplianceReport): HillClimbAction[
   for (const ct of report.compTrends) {
     if (!BRIEF_REINFORCEMENTS[ct.compId]) continue;
     const consecutiveFails = countConsecutiveFails(ct.lastN);
-    if (consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
+    if (consecutiveFails >= TIER_PROMOTION_THRESHOLD && TIER_PROMOTIONS[ct.compId]) {
+      const promo = TIER_PROMOTIONS[ct.compId];
       actions.push({
         compId: ct.compId,
         rule: ct.rule,
         reinforcement: BRIEF_REINFORCEMENTS[ct.compId],
         consecutiveFails,
+        tier: promo.tier,
+        promotion: promo.promotion,
+      });
+    } else if (consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
+      actions.push({
+        compId: ct.compId,
+        rule: ct.rule,
+        reinforcement: BRIEF_REINFORCEMENTS[ct.compId],
+        consecutiveFails,
+        tier: 1,
       });
     }
   }
@@ -291,6 +343,13 @@ export function applyHillClimb(
   const skipped: string[] = [];
 
   for (const action of actions) {
+    if (action.tier >= 2) {
+      skipped.push(
+        `${action.compId}: TIER ${action.tier} PROMOTION needed — ${action.promotion}`
+      );
+      continue;
+    }
+
     const normalizedReinforcement = action.reinforcement
       .toLowerCase()
       .replace(/[`*"']/g, "");
