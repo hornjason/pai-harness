@@ -956,53 +956,18 @@ if (discovery.ceremonyTier !== 'LIGHT') {
     log(`Quinn local dev — attempt ${validateAttempt}/3`)
 
     quinnLocalResult = await briefedAgent(`
-Read ${HARNESS_ROOT}/prompts/quinn-ui-brief.md for your testing methodology.
-Read ${PROJECT_ROOT}/AGENTS.md for project context.
-
-You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
-
 ## Working Directory
 IMPORTANT: Validate against Marcus's worktree at: ${marcusWorktreePath}
 Run all file checks, tests, and validations from that directory (cd ${marcusWorktreePath}).
 This is where Marcus made the code changes — do NOT validate against the main branch.
 
-## Environment
-- **Config:** Read ${PROJECT_ROOT}/.claude/rungate.json for dev URLs, page paths, and API endpoints
-- **Viewport:** 1280x720 (set via browser_resize FIRST)
-- **Test as:** Brand-new user — no prior session state
-- **Pages map:** Read ${PROJECT_ROOT}/.claude/rungate.json for exact URL paths
+## Config
+Read ${PROJECT_ROOT}/.claude/rungate.json for dev URLs, page paths, and API endpoints.
 
-## Pre-conditions (GATE — stop if any fail)
-1. browser_resize(1280, 720)
-2. browser_navigate to target URL from rungate.json pages map
-3. browser_snapshot() — verify page loaded (no error banners, data present)
-If pre-conditions fail → report FAIL immediately, do NOT proceed.
+## ACs to Verify for #${ISSUE}
+${discovery.acs.map((ac, i) => `- ${ac.id}: ${ac.statement}`).join('\n')}
 
-## User Journey for #${ISSUE}
-Follow this structured test plan — each step maps to an AC:
-
-${discovery.acs.map((ac, i) => `Step ${i + 1}: Verify ${ac.id}: ${ac.statement}
-  → ACTION: navigate/click/type as needed
-  → VERIFY: browser_snapshot() — check expected state
-  → SCREENSHOT: browser_take_screenshot() if state changed`).join('\n\n')}
-
-## Anti-checks (ALWAYS run after journey)
-- [ ] No "undefined" or "null" rendered as visible text
-- [ ] No stuck loading spinners
-- [ ] No error banners or toast messages
-- [ ] Interactive elements respond to clicks
-
-Any anti-check failure = FAIL even if all ACs pass.
-
-## Screenshot Strategy
-- page-load.png — after navigation, before interaction
-- After each state-changing action
-- final-state.png — end of journey
-Do NOT screenshot after every browser_snapshot().
-
-## Verdict
-- PASS: all pre-conditions + all ACs + all anti-checks pass
-- FAIL: any failure — report which AC or anti-check failed with evidence
+Report PASS or FAIL with evidence per AC.
     `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: 'quinn', isolation: undefined, schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {
@@ -1173,30 +1138,17 @@ ${hostChecks}
 
     if (testHost) {
       await briefedAgent(`
-You are Quinn Torres, QA specialist. You have Playwright MCP tools available.
-
 ## COMMIT SHA VERIFICATION (MANDATORY)
 Read ${WORK_DIR}/workflow-state.json and get the buildCommit value.
 Run: cd ${PROJECT_ROOT} && git rev-parse --short HEAD
 Verify HEAD matches buildCommit from workflow-state.json.
 If mismatch, FAIL with "Container running wrong version — HEAD {actual} != buildCommit {expected}."
 
-## Available Playwright MCP Tools (use these, NOT manual browser)
-- browser_navigate(url) — go to URL
-- browser_snapshot() — get accessibility tree (text, fast, preferred over screenshots)
-- browser_click(element) — click by ref from snapshot
-- browser_type(element, text) — type text into element
-- browser_take_screenshot() — capture PNG evidence
-- browser_verify_text_visible(text) — assert text on page
-
 ## Test Plan for #${ISSUE} on CONTAINER — http://${testHost}:${containerPort}
 Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 1. browser_navigate("http://${testHost}:${containerPort}" + page path from rungate.json)
 2. browser_snapshot() — verify page loaded
-3. For each AC:
-   a. Perform the action (browser_click, browser_type, etc.)
-   b. browser_snapshot() or browser_verify_text_visible() to verify
-   c. browser_take_screenshot() for evidence
+3. For each AC: perform action, verify with browser_snapshot(), capture evidence with browser_take_screenshot()
 4. Report PASS/FAIL per AC. Include verified commit SHA.
 
 ### ACs to Verify
