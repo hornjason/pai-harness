@@ -1,7 +1,7 @@
 {
   "updated": "2026-10-01",
   "priorities": [
-    "P0: Ship more DDB issues — #1467 shipped (PR #1477), pipeline validated end-to-end. Next batch: #1470, #1422, #1344",
+    "P0: Ship more DDB issues — 2 shipped (#1467 PR#1477, #1344 PR#1479), pipeline validated. #1470 is too large for single session, #1422 needs UI investigation",
     "P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work",
     "P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules",
     "P2: pai-harness#24 Doc-hygiene: content alignment — needs council",
