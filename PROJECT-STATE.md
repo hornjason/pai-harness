@@ -2,28 +2,19 @@
 
 **Current phase: All phases complete**
 
-Session 20 (2026-09-29/30) — Compliance self-improvement loop built and demonstrated.
+Session 21 (2026-09-30) — Three-tier architecture validation + platform audit.
 
 Key deliverables:
-  - Compliance report system (lib/compliance-report.ts): JSONL trend tracking, per-COMP pass rates, threshold alerts at 70%
-  - Auto hill-climb: briefs auto-patched when COMP dimensions fail 3+ consecutive runs
-  - Grading pipeline fixed: COMP-7/12 were silently skipped, now always run
-  - COMP-7/12 false positive reduction: system paths excluded, offset/limit reads exempt
-  - Report noise reduction: DIR-L* collapsed to summary, declining alerts require 3+ data points
+  - Three-tier context architecture validated (3/4 checks pass): scoped rules, agent brief dedup, prompt routing all working
+  - Root cause: docs-routing rule conflict with verify-before-asserting — fixed with trust directive
+  - 4 test failures fixed: stale spec hashes, scaffold section expectations, agent fixture transcripts
+  - transcript-checker.ts: added never-patterns for implementation code + build/test/deploy
+  - Comprehensive platform audit: 70+ features across 26 Claude Code doc pages
+  - Key finding: plugin evals could replace ~1700 lines of compliance grading code
+  - 3 stale PRs closed (#2, #5, #6), 2 remaining (#21, #22) reviewed
+  - Priorities updated: dropped shipped items, added three-tier context + platform adoption
 
-4 controlled compliance tests this session — each improved the pipeline:
-  Test 1: found piped head violation → updated brief
-  Test 2: COMP-7 FOLLOWED (fix worked) → verified
-  Test 3: COMP-12 at 67% → refined check (offset/limit exclusion)
-  Test 4: found piped tail violation → updated brief, fixed noisy report
-
-Issues shipped (6): #512 (parallel ship), #295 (council decisions), #525 (workflow type), #526 (skill wrappers), #511 (plugin eval), gap scanner hook
-Issues closed (31 total, 52→21): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), AgentGrit (#338-341), and more
-
-Pipeline state: first-pass rate 71%. COMP-7 90%→FOLLOWED, COMP-12 81%→50%, COMP-13 48%→FOLLOWED.
-Suite: 1790 pass, 0 fail, 108 files. 21 issues remain (mostly DDB/NLM/Control Plane).
-
-Remaining rungate work: #307 doc-hygiene (needs council), #512 Mac Mini integration, #522 GitHub MCP.
+Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
 Suite: 25/25 SCs done.
 
 **Next priorities:**
@@ -87,6 +78,17 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-09-30 session 21:**
+- Three-tier context architecture validated: 3/4 checks pass (scoped rules, brief dedup, prompt routing)
+- Check 1 fail diagnosed: docs-routing vs verify-before-asserting rule conflict. Fixed with trust directive
+- 4 test failures fixed: stale BOOTSTRAP-DATA-FLOW-SPEC hash, scaffold section expectations, serena/aditi fixtures
+- transcript-checker.ts: added never-patterns for implementation code writes + build/test/deploy commands
+- Comprehensive Claude Code platform audit: 70+ features across 26 doc pages (docs/research/claude-code-platform-audit.md)
+- Top findings: plugin evals (replaces ~1700 lines compliance code), agent memory, .worktreeinclude, Stop hooks, /goal, cache TTL
+- 3 stale PRs closed (#2, #5, #6). 2 remaining (#21 feature parity, #22 spec sync) reviewed
+- Priorities updated: dropped shipped/closed items, added three-tier context + platform adoption
+- Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25)
+
 **Session 2026-09-29 session 20:**
 - Grading pipeline overhaul: COMP-7/12 were silently skipped (only ran as fallback). Fixed to always run mechanical COMP checks
 - Directive extractor: bold-prefixed **NEVER lines now parsed, 'Efficiency Rules' section matched via includes('rules')
@@ -116,15 +118,4 @@ Suite: 25/25 SCs done.
 - Fixed RatingCapture hook timeout (30s→60s)
 - Cleaned 32 stale worktrees (171MB), 126 stale branches
 - Suite: 1729 pass, 0 fail, 100 files. 27 issues remain open
-
-**Session 2026-09-29 session 18:**
-- AFK marathon: 18 issues shipped/closed through pipeline, 15 housekeeping closures (shipped-but-open cleanup)
-- Pipeline shipped: #540, #590, #542, #596, #535, #598, #515, #532, #527, #583, #531, #529, #530, #599, #419, #508. Already fixed: #597, #600
-- First-pass rate: 21%→71% (10/14). Key fixes: grep exit-code-1 evidence (717fc8e0), evidence pre-validation (#598), test baseline diffing (#599)
-- RCA: 70% of failures were EVIDENCE_MISSING (Marcus correct 23/29 runs). Root cause was gate-executor dropping grep exit code 1
-- Retroactive compliance audit of 48 runs (1125 agent transcripts, 284MB):
--   Marcus avg: 8.1/13 (62%). COMP-7 cat usage 90% ignored, COMP-12 grep-before-read 81%, COMP-9 tool count 75%, COMP-13 TDD 48%
--   Key insight: brief-level rules alone fail at 80-90% rates — need mechanical enforcement (hooks/gates) for COMP-7, COMP-12
--   Action: skipGrade=false for all future runs. Hill-climb Marcus brief using retroactive data
-- Suite: 1729 pass, 0 fail, 97 files. 23 issues remain open
 

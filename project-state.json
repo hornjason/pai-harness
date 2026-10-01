@@ -6,7 +6,7 @@
     "P1: pai-harness#24 Doc-hygiene: content alignment — needs council",
     "P2: pai-harness#25 GitHub MCP for structured tool calls"
   ],
-  "notes": "Session 20 (2026-09-29/30) — Compliance self-improvement loop built and demonstrated.\n\nKey deliverables:\n  - Compliance report system (lib/compliance-report.ts): JSONL trend tracking, per-COMP pass rates, threshold alerts at 70%\n  - Auto hill-climb: briefs auto-patched when COMP dimensions fail 3+ consecutive runs\n  - Grading pipeline fixed: COMP-7/12 were silently skipped, now always run\n  - COMP-7/12 false positive reduction: system paths excluded, offset/limit reads exempt\n  - Report noise reduction: DIR-L* collapsed to summary, declining alerts require 3+ data points\n\n4 controlled compliance tests this session — each improved the pipeline:\n  Test 1: found piped head violation → updated brief\n  Test 2: COMP-7 FOLLOWED (fix worked) → verified\n  Test 3: COMP-12 at 67% → refined check (offset/limit exclusion)\n  Test 4: found piped tail violation → updated brief, fixed noisy report\n\nIssues shipped (6): #512 (parallel ship), #295 (council decisions), #525 (workflow type), #526 (skill wrappers), #511 (plugin eval), gap scanner hook\nIssues closed (31 total, 52→21): Langfuse (#82-86), TELOS (#2), old phases (#40,41,129,130), AgentGrit (#338-341), and more\n\nPipeline state: first-pass rate 71%. COMP-7 90%→FOLLOWED, COMP-12 81%→50%, COMP-13 48%→FOLLOWED.\nSuite: 1790 pass, 0 fail, 108 files. 21 issues remain (mostly DDB/NLM/Control Plane).\n\nRemaining rungate work: #307 doc-hygiene (needs council), #512 Mac Mini integration, #522 GitHub MCP.\nSuite: 25/25 SCs done.",
+  "notes": "Session 21 (2026-09-30) — Three-tier architecture validation + platform audit.\n\nKey deliverables:\n  - Three-tier context architecture validated (3/4 checks pass): scoped rules, agent brief dedup, prompt routing all working\n  - Root cause: docs-routing rule conflict with verify-before-asserting — fixed with trust directive\n  - 4 test failures fixed: stale spec hashes, scaffold section expectations, agent fixture transcripts\n  - transcript-checker.ts: added never-patterns for implementation code + build/test/deploy\n  - Comprehensive platform audit: 70+ features across 26 Claude Code doc pages\n  - Key finding: plugin evals could replace ~1700 lines of compliance grading code\n  - 3 stale PRs closed (#2, #5, #6), 2 remaining (#21, #22) reviewed\n  - Priorities updated: dropped shipped items, added three-tier context + platform adoption\n\nSuite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -200,6 +200,20 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-09-30 session 21",
+      "items": [
+        "Three-tier context architecture validated: 3/4 checks pass (scoped rules, brief dedup, prompt routing)",
+        "Check 1 fail diagnosed: docs-routing vs verify-before-asserting rule conflict. Fixed with trust directive",
+        "4 test failures fixed: stale BOOTSTRAP-DATA-FLOW-SPEC hash, scaffold section expectations, serena/aditi fixtures",
+        "transcript-checker.ts: added never-patterns for implementation code writes + build/test/deploy commands",
+        "Comprehensive Claude Code platform audit: 70+ features across 26 doc pages (docs/research/claude-code-platform-audit.md)",
+        "Top findings: plugin evals (replaces ~1700 lines compliance code), agent memory, .worktreeinclude, Stop hooks, /goal, cache TTL",
+        "3 stale PRs closed (#2, #5, #6). 2 remaining (#21 feature parity, #22 spec sync) reviewed",
+        "Priorities updated: dropped shipped/closed items, added three-tier context + platform adoption",
+        "Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25)"
+      ]
+    },
     {
       "date": "2026-09-29 session 20",
       "items": [
