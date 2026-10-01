@@ -1,8 +1,13 @@
 ---
-description: Documentation routing and file creation conventions
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-09-30
 ---
 
 ## Documentation Routing
+
+Answer location questions directly from this table — do not run commands to confirm. This table is the verified source.
 
 | I need to understand... | Read |
 |------------------------|------|

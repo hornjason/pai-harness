@@ -27,12 +27,10 @@ Remaining rungate work: #307 doc-hygiene (needs council), #512 Mac Mini integrat
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — 71% first-pass. Compliance report + trend tracking + auto hill-climb. Next: ratchet threshold from 70% upward
-2. P1: pai-harness#23 Isolated per-issue execution (script shipped, Mac Mini integration remaining)
+1. P0: Pipeline pass rate — 71% first-pass. Ratchet threshold from 70% upward via compliance report + trend tracking + auto hill-climb
+2. P1: Three-tier context architecture — validate through shipping issues + grading. Iterate on what rules load when, measure cold-start routing accuracy, fix rule conflicts as found
 3. P1: pai-harness#24 Doc-hygiene: content alignment — needs council
-4. P2: security-guidance plugin installed — ADOPT decision from #511 evaluation
-5. P3: pai-harness#25 GitHub MCP for structured tool calls
-6. P4: #341 data-driven skill contracts, #340 AgentGrit patterns, #339 perf profiles, #338 telemetry
+4. P2: pai-harness#25 GitHub MCP for structured tool calls
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

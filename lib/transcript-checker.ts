@@ -159,6 +159,16 @@ function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall
     return { directive: d, status: rebuilds.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${rebuilds.length} rebuild calls` };
   }
 
+  if (textLower.includes("implementation code") || textLower.includes("modify source code")) {
+    const writes = toolCalls.filter((c) => (c.name === "Write" || c.name === "Edit") && /\.(ts|js|tsx|jsx)$/.test(c.input.file_path || ""));
+    return { directive: d, status: writes.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${writes.length} source file writes` };
+  }
+
+  if (textLower.includes("run builds") || textLower.includes("run tests") || (textLower.includes("builds") && textLower.includes("deployments"))) {
+    const buildRuns = bashes.filter((b) => /\b(bun test|bun run|npm test|npm run build|make build|make deploy)\b/.test(b));
+    return { directive: d, status: buildRuns.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${buildRuns.length} build/test/deploy commands` };
+  }
+
   return { directive: d, status: "N/A", evidence: "Cannot verify mechanically" };
 }
 

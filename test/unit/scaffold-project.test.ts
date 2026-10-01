@@ -118,12 +118,9 @@ describe("scaffold-project: AGENTS.md generation", () => {
     const content = readFileSync(agentsPath, "utf-8");
     const requiredSections = [
       "Project Identity",
-      "Key Files",
-      "Specs",
-      "Tests",
+      "Rules",
       "Commands",
       "Workflow",
-      "Harness-Managed Files",
     ];
     for (const section of requiredSections) {
       expect(content.toLowerCase()).toContain(section.toLowerCase());
