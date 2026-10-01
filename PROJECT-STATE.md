@@ -26,17 +26,24 @@ Persistent violations needing fast loop iteration:
   COMP-11: Coding principles not read
   DIR-L29: 5 full suite runs (limit 2)
 
+POV bootstrap session uncovered 4 gaps: #27 spec conversion CLI, #28 extractor misses root files, #29 Drive HTML-to-Doc workaround, #30 post-scaffold auto-organize. All P1-P2.
+
 Previous session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.
 
-Suite: 25/25 SCs done. 4 issues remain (#23, #24, #25, #26).
+Suite: 25/25 SCs done. 8 issues remain (#23-30). #26 SHIPPED.
 
 **Next priorities:**
-1. P0: Deploy BashToolGuard hook to project settings (not just rungate.json) — COMP-7 validated in replay (0 cat) but still failing in pipeline (11 cat). Hook fires for project settings, not harness config
-2. P0: Implement SC-470/471 (--prompt flag in test-brief.ts) — fast inner loop for brief iteration. Replay prototype validated approach: extract failing prompt → replay → grade → tweak → repeat (30s vs 20min)
-3. P0: Brief reinforcement for COMP-6/8/9/11 — Marcus scored 60% on issue #26 (55 tool calls, 3 dup reads, no PROJECT-STATE, no coding principles)
-4. P1: SC-472 scaffold deploys hooks to consumer .claude/settings.local.json — config-driven from rungate.json hooks[].deployToConsumers
-5. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
-6. P3: /goal adoption — replaces verify gate (~300 lines)
+1. P0: BashToolGuard DEPLOYED to project settings ✅ — run fast loop to validate COMP-7 passes in next pipeline
+2. P0: Fast loop iteration on remaining COMPs — COMP-6/8/9/11 failing, Marcus prompt extracted, test-brief --prompt ready (SC-470 done)
+3. P0: SC-471 COMP-level grading in fast loop — validate replay produces same grades as pipeline
+4. P1: #28 extract-constraints.ts misses root-level markdown — POV bootstrap showed 40 rules invisible to scanner
+5. P1: #30 Post-scaffold auto-organize — scaffold creates empty dirs but user has to manually move specs/research/docs into them
+6. P1: #27 Spec conversion CLI — convert existing freeform docs (numbered rules, MUST/SHOULD) to RunGate spec format with frontmatter and SCs
+7. P1: SC-472 scaffold deploys hooks to consumer settings.local.json — config-driven from rungate.json hooks[].deployToConsumers
+8. P2: #24 Doc-hygiene: content alignment — needs council
+9. P2: #29 Document Drive API workaround for HTML-to-Doc conversion — Google Workspace MCP doesn't convert HTML
+10. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
+11. P3: #25 GitHub MCP server for structured tool calls
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
