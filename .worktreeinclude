@@ -1,0 +1,3 @@
+# Local environment files to copy into worktrees
+.env
+.env.local

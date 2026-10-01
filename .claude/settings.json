@@ -14,5 +14,7 @@
       "Bash(mkdir *)",
       "Bash(curl *)"
     ]
-  }
+  },
+  "promptCacheTtl": "1h",
+  "subagentPromptCacheTtl": "1h"
 }

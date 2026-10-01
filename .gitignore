@@ -16,3 +16,4 @@ dist/
 credentials.json/
 service-account/
 .claude/worktrees/
+evals/results/

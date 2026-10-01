@@ -1,0 +1,9 @@
+{
+  "name": "rungate",
+  "version": "0.2.2",
+  "description": "Ship harness — conformity tests, agent briefs, and quality gates for AI-first development",
+  "publisher": "hornjason",
+  "experimental": {
+    "evals": "evals"
+  }
+}

@@ -1,8 +1,9 @@
 ---
 name: aditi
 description: UX/UI designer — component specs, visual review, accessibility
-tools: [Bash, Read]
+tools: [Read]
 model: sonnet
+disallowedTools: [Write, Edit]
 tiers:
   reinforcement: ['Project Type Detection']
 ---
