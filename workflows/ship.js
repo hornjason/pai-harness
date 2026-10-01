@@ -791,26 +791,10 @@ console.log(JSON.stringify({ excerpts }));
 
   const useExcerpts = contextExcerpts && contextExcerpts.length > 0
   const buildResult = await briefedAgent(`
-You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions including ACs and files to modify.
 
-## TDD — NON-NEGOTIABLE
-1. Write the failing test FIRST
-2. Run TARGETED test (bun test test/your-file.test.ts) to confirm it fails — set timeout: ${testTimeout}
-3. Write the implementation to make the test pass
-4. Run TARGETED test again to confirm it passes — set timeout: ${testTimeout}
-5. Run bunx tsc --noEmit
-Do NOT write source code before writing its test. This order is mandatory.
-NEVER run the full suite (bun test without a file path) — it takes 3+ minutes. Always target: bun test test/specific-file.test.ts
-
-## Efficiency Rules
-- Do NOT read files listed in "Injected Context" above — the content is already in your prompt
-- Do NOT use ls, pwd, cat, head, or tail via Bash — use Read tool if you must read a file
-- Every tool call should produce value — no exploratory commands
-- NEVER read the same file twice — use offset/limit to get what you need in one pass
-- Grep/find BEFORE reading non-key files — confirm the file is relevant before loading it
-
-Do NOT commit or push yet — Quinn will validate on local dev first.
+Use TARGETED tests only: bun test test/specific-file.test.ts (timeout: ${testTimeout}). Never run the full suite.
+Do NOT commit or push yet — Quinn will validate first.
 If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
@@ -859,7 +843,6 @@ async function runDecomposedShip(subIssues) {
     for (const subIssue of batchIssues) {
       log(`Shipping sub-issue: ${subIssue.title} (${subIssue.size})`)
       const buildResult = await briefedAgent(`
-You are Marcus Webb, senior engineer.
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
 
 ## Sub-issue: ${subIssue.title}
@@ -868,14 +851,7 @@ ${subIssue.body}
 ## Files — modify ONLY these
 ${subIssue.filesToModify.map(f => `- ${f}`).join('\n')}
 
-## TDD — NON-NEGOTIABLE
-1. Write the failing test FIRST
-2. Run TARGETED test to confirm it fails
-3. Write the implementation to make the test pass
-4. Run TARGETED test again to confirm it passes
-5. Run bunx tsc --noEmit
-
-Do NOT commit or push yet — Quinn will validate on local dev first.
+Do NOT commit or push yet — Quinn will validate first.
 Report: success, files changed, test output.
 Also report worktreePath: your current working directory.
       `, {
@@ -1047,15 +1023,13 @@ Do NOT screenshot after every browser_snapshot().
 
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
     const fixResult = await briefedAgent(`
-You are Marcus Webb, senior engineer.
 IMPORTANT: Work in the worktree at: ${marcusWorktreePath}
 cd ${marcusWorktreePath} before making any changes.
 
-Quinn found issues on local dev for issue #${ISSUE}:
+Quinn found issues for issue #${ISSUE}:
 ${(quinnLocalResult?.failures || []).join('\n')}
 
-Read the failing AC details. Fix the code. Run unit tests again.
-Do NOT commit — Quinn will retest.
+Fix the code. Run targeted tests again. Do NOT commit — Quinn will retest.
 Report what you fixed.
     `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: 'marcus', isolation: undefined })
   }
