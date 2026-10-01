@@ -332,6 +332,10 @@ Ship succeeds → Grade (always) →
 - [x] SC-466: lib/directive-extractor.ts contains [PROCESS_SECTIONS, context, always do, ask first]
 - [x] SC-467: lib/directive-extractor.ts contains [sectionCategory, quality]
 - [x] SC-468: lib/directive-extractor.ts contains [parseProcessOverrides, process_overrides]
+- [x] SC-469: extractPromptContent concatenates all user messages — not just first — to detect AGENTS.md injection in workflow relay transcripts
+- [ ] SC-470: scripts/test-brief.ts contains [--prompt, promptFile, replayPrompt]
+- [ ] SC-471: test-brief --prompt runs COMP-level grading alongside directive grading and compares against baseline (behavioral)
+- [ ] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
 
 SCs for #588 (config-driven grading) and #589 (remediation pass) will be added when those issues are built. See design decisions D-8 through D-12 and the Remediation Flow section above for the design.
 

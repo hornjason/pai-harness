@@ -55,6 +55,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [x] SC-372: Hook logic in lib/ has unit tests independent of hook trigger mechanism (behavioral)
 - [x] SC-391: Hook registrations in settings.json contain hookFor and command fields (behavioral)
 - [x] SC-392: Hook activation controlled by config enabled field (behavioral)
+- [ ] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
 
 ## Implementation
 
