@@ -15,8 +15,8 @@ STOP. Do NOT read source code, edit files, or write code until all 4 steps are d
 
 1. Run `bun test` — confirm 0 failures. If any fail, fix them first.
 2. Find the governing spec in the Specs table in AGENTS.md. Read it.
-3. Invoke `Skill("harness")` — it orchestrates the implementation. You do not implement directly.
-4. The harness delegates to named agents: Marcus codes, Quinn tests, Rook scans. You must NOT use Edit/Write on files in lib/, test/, scripts/, gates/, hooks/.
+3. Use `Skill("ship")` with the issue number — it runs the full pipeline via `workflows/ship.js`. **NEVER spawn Marcus, Quinn, or Rook directly with the Agent tool** — direct spawns bypass compliance grading, gates, and transcript capture.
+4. If `Skill("ship")` is unavailable, invoke `Workflow({ scriptPath: "~/Projects/rungate/workflows/ship.js" })` with issue args. See `.claude/rules/ship-workflow.md` for details.
 
 If you skip any step, the session is invalid.
 
