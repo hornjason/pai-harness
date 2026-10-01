@@ -3,7 +3,7 @@ doc-type: spec
 status: draft
 owner: jason
 created: 2026-09-21
-updated: 2026-09-21
+updated: 2026-09-30
 governs: Agent brief templates — externalized markdown templates with variable substitution, not hardcoded TypeScript strings
 testable: true
 compliance: strict
@@ -50,9 +50,23 @@ Removed (D-8): `${PROJECT_IDENTITY}` (in AGENTS.md), `${SHARED_RULES}` (in `.cla
 
 ## Required Sections (every agent brief must have)
 
-1. Frontmatter (name, description, tools, model)
+1. Frontmatter (name, description, tools, model + platform-native fields below)
 2. Identity line ("You are X, role description")
 3. Agent-specific workflow or rules section (TDD, testing mode, scan methodology, etc.)
+
+## Platform-Native Frontmatter Fields (Claude Code)
+
+These fields are emitted by the scaffold generator and leverage Claude Code's native capabilities. Non-Claude-Code consumers ignore them. See `docs/research/claude-code-platform-audit.md` for alternatives.
+
+| Field | Default by role | Purpose |
+|-------|----------------|---------|
+| `memory: project` | Marcus | Cross-session learning via `.claude/agent-memory/` |
+| `maxTurns: 30` | Marcus | Spiral prevention — mechanical turn limit |
+| `effort: high/low` | Marcus/Quinn high, Rook/Discovery low | Per-agent effort level |
+| `isolation: worktree` | Marcus | Always run in isolated git worktree |
+| `disallowedTools` | Quinn/Rook/Discovery/Serena/Aditi: [Write, Edit] | Mechanical write restriction |
+| `omitClaudeMd: true` | Quinn/Rook/Discovery | Skip global CLAUDE.md — saves ~2K tokens |
+| `hooks.Stop` | Marcus: exit 2 if tests fail | Mechanical test enforcement |
 
 ## Success Criteria
 
@@ -68,6 +82,10 @@ Removed (D-8): `${PROJECT_IDENTITY}` (in AGENTS.md), `${SHARED_RULES}` (in `.cla
 - [x] SC-357: Template variables filled from project scan match actual project values (behavioral)
 - [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold (behavioral)
 - [ ] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
+- [x] SC-410: `lib/generators/types.ts` AgentMeta interface contains [memory, maxTurns, effort, disallowedTools, omitClaudeMd, isolation, hooks]
+- [x] SC-411: `lib/create-brief.ts` DEFAULT_AGENT_META has `memory: "project"` for marcus
+- [x] SC-412: `lib/create-brief.ts` DEFAULT_AGENT_META has `disallowedTools` for non-coding agents
+- [x] SC-413: `lib/generators/agent-briefs.ts` emits all AgentMeta fields in frontmatter
 
 ## Implementation
 

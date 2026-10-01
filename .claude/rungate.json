@@ -62,16 +62,18 @@
       "isolation": "worktree",
       "standardTask": "Review the scaffold-project.ts architecture and propose decomposition into modules",
       "description": "Software architect — structural decisions, ADRs, module boundary review",
-      "tools": "[Bash, Read]",
-      "model": "sonnet"
+      "tools": "[Read]",
+      "model": "sonnet",
+      "disallowedTools": ["Write", "Edit"]
     },
     "aditi": {
       "brief": ".claude/agents/aditi.md",
       "isolation": "worktree",
       "standardTask": "Design the CLI output format for test-brief compliance report with accessibility",
       "description": "UX/UI designer — component specs, visual review, accessibility",
-      "tools": "[Bash, Read]",
+      "tools": "[Read]",
       "model": "sonnet",
+      "disallowedTools": ["Write", "Edit"],
       "tiers": {
         "reinforcement": [
           "Project Type Detection"
