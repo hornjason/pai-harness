@@ -2,17 +2,19 @@
 
 **Current phase: All phases complete**
 
-Session 21 (2026-09-30) — Three-tier architecture validation + platform audit.
+Session 21 (2026-09-30) — Platform adoption + plugin eval framework.
 
 Key deliverables:
-  - Three-tier context architecture validated (3/4 checks pass): scoped rules, agent brief dedup, prompt routing all working
-  - Root cause: docs-routing rule conflict with verify-before-asserting — fixed with trust directive
-  - 4 test failures fixed: stale spec hashes, scaffold section expectations, agent fixture transcripts
-  - transcript-checker.ts: added never-patterns for implementation code + build/test/deploy
-  - Comprehensive platform audit: 70+ features across 26 Claude Code doc pages
-  - Key finding: plugin evals could replace ~1700 lines of compliance grading code
-  - 3 stale PRs closed (#2, #5, #6), 2 remaining (#21, #22) reviewed
-  - Priorities updated: dropped shipped items, added three-tier context + platform adoption
+  - Three-tier context architecture validated (3/4 checks pass), docs-routing rule conflict fixed
+  - Platform audit: 70+ features across 26 doc pages (docs/research/claude-code-platform-audit.md)
+  - Phase 1 adopted: cache TTL 1h, agent memory, maxTurns, effort, disallowedTools, worktreeinclude, omitClaudeMd, isolation, Stop hook, output style, /ship-issue command
+  - Plugin eval framework: 7 cases across 4 agents, 100% pass, Vertex auth solved
+  - Δ baseline scoring: mean +0.06 — most cases Claude passes natively, Quinn +0.40 is the differentiated case
+  - Scaffold generator updated: emits all platform-native frontmatter fields (consumers get them on re-scaffold)
+  - AGENT-BRIEF-TEMPLATE-SPEC updated: SC-410 through SC-413 for platform fields
+  - GitHub MCP server added (#25 partially done)
+  - eval-to-hillclimb bridge script created
+  - 3 stale PRs closed, 16 commits, all pushed
 
 Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open (#21, #22).
 Suite: 25/25 SCs done.
@@ -21,7 +23,10 @@ Suite: 25/25 SCs done.
 1. P0: Pipeline pass rate — 71% first-pass. Ratchet threshold from 70% upward via compliance report + trend tracking + auto hill-climb
 2. P1: Three-tier context architecture — validate through shipping issues + grading. Iterate on what rules load when, measure cold-start routing accuracy, fix rule conflicts as found
 3. P1: pai-harness#24 Doc-hygiene: content alignment — needs council
-4. P2: pai-harness#25 GitHub MCP for structured tool calls
+4. P2: Harder eval cases — current Δ baseline shows Claude passes natively on easy tasks. Need complex multi-file cases where briefs differentiate
+5. P2: Ship a real DDB issue through improved pipeline — prove the improvements work on a consumer project
+6. P3: /goal adoption — replaces verify gate (~300 lines)
+7. P3: Agent teams investigation — experimental but could change pipeline coordination
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -79,14 +84,18 @@ Suite: 25/25 SCs done.
 ---
 
 **Session 2026-09-30 session 21:**
-- Three-tier context architecture validated: 3/4 checks pass (scoped rules, brief dedup, prompt routing)
-- Check 1 fail diagnosed: docs-routing vs verify-before-asserting rule conflict. Fixed with trust directive
-- 4 test failures fixed: stale BOOTSTRAP-DATA-FLOW-SPEC hash, scaffold section expectations, serena/aditi fixtures
-- transcript-checker.ts: added never-patterns for implementation code writes + build/test/deploy commands
-- Comprehensive Claude Code platform audit: 70+ features across 26 doc pages (docs/research/claude-code-platform-audit.md)
-- Top findings: plugin evals (replaces ~1700 lines compliance code), agent memory, .worktreeinclude, Stop hooks, /goal, cache TTL
-- 3 stale PRs closed (#2, #5, #6). 2 remaining (#21 feature parity, #22 spec sync) reviewed
-- Priorities updated: dropped shipped/closed items, added three-tier context + platform adoption
+- Three-tier context architecture validated: 3/4 checks pass. docs-routing rule conflict fixed with trust directive
+- Platform audit: 70+ features across 26 Claude Code doc pages (docs/research/claude-code-platform-audit.md)
+- Phase 1 adopted: cache TTL 1h, agent memory, maxTurns 30, effort per-agent, disallowedTools, worktreeinclude, omitClaudeMd, isolation, Stop hook on Marcus
+- Plugin eval framework: 7 cases, 4 agents, 100% pass rate, $1.38 per suite, 188s
+- Vertex eval auth fix: copy ADC to evals/.gcp-adc.json + GOOGLE_APPLICATION_CREDENTIALS + env scrub off
+- Δ baseline scoring: mean +0.06 — 6/7 cases Claude passes natively, Quinn Δ +0.40 (brief matters for QA quality)
+- Scaffold generator updated: emits all platform-native frontmatter fields (memory, effort, disallowedTools, etc)
+- AGENT-BRIEF-TEMPLATE-SPEC: SC-410 through SC-413 for platform fields
+- GitHub MCP server added (.mcp.json), /ship-issue command created, output style created
+- eval-to-hillclimb bridge: maps eval results to COMP dimensions for auto-improvement
+- rungate.json config synced: serena/aditi tools=[Read], disallowedTools added
+- 3 stale PRs closed (#2, #5, #6), 16 commits pushed. 4 test failures fixed → 0
 - Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25)
 
 **Session 2026-09-29 session 20:**
