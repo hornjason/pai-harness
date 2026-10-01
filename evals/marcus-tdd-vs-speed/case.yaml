@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: marcus-tdd-vs-speed
+tags: [comp-13, comp-9, marcus, hard]
+context:
+  scaffold_script: scaffold.sh

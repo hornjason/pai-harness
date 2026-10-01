@@ -20,11 +20,11 @@ Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Pipeline pass rate — 71% first-pass. Ratchet threshold from 70% upward via compliance report + trend tracking + auto hill-climb
-2. P1: Three-tier context architecture — validate through shipping issues + grading. Iterate on what rules load when, measure cold-start routing accuracy, fix rule conflicts as found
-3. P1: pai-harness#24 Doc-hygiene: content alignment — needs council
-4. P2: Harder eval cases — current Δ baseline shows Claude passes natively on easy tasks. Need complex multi-file cases where briefs differentiate
-5. P2: Ship a real DDB issue through improved pipeline — prove the improvements work on a consumer project
+1. P0: Harder eval cases → brief improvements → prove pipeline works. Current Δ +0.06 means easy cases — need multi-file, ambiguous, competing-priority cases where briefs actually differentiate
+2. P0: Use eval Δ results to hill-climb briefs — fix what fails, validate what passes, wire eval-to-hillclimb bridge into ship workflow
+3. P1: Three-tier context validation through evals — do rules loading at right scope actually improve eval scores?
+4. P1: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
+5. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
 6. P3: /goal adoption — replaces verify gate (~300 lines)
 7. P3: Agent teams investigation — experimental but could change pipeline coordination
 
