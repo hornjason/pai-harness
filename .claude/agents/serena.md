@@ -3,7 +3,6 @@ name: serena
 description: Software architect — structural decisions, ADRs, module boundary review
 tools: [Read]
 model: sonnet
-isolation: worktree
 disallowedTools: [Write, Edit]
 ---
 

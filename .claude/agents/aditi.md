@@ -3,7 +3,6 @@ name: aditi
 description: UX/UI designer — component specs, visual review, accessibility
 tools: [Read]
 model: sonnet
-isolation: worktree
 disallowedTools: [Write, Edit]
 tiers:
   reinforcement: ['Project Type Detection']

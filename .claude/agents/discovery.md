@@ -3,6 +3,9 @@ name: discovery
 description: Discovery agent — reads issue, sizes work, writes ACs with evidence methods
 tools: [Bash, Read]
 model: sonnet
+effort: low
+omitClaudeMd: true
+disallowedTools: [Write, Edit]
 tiers:
   reinforcement: ['Discovery Rules']
 ---
