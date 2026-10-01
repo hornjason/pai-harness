@@ -5,7 +5,7 @@
  * and produces hill-climb recommendations for failing dimensions.
  * 
  * Usage: bun scripts/eval-to-hillclimb.ts [results-dir]
- * Default: reads latest evals/results/*/aggregate-result.json
+ * Default: reads latest results dir under evals/results/
  */
 import { readFileSync, readdirSync, existsSync } from "fs";
 import { join } from "path";
@@ -58,17 +58,27 @@ function main() {
     const tags = c.tags || [];
     const compTag = tags.find((t: string) => t.startsWith("comp-"));
     const comp = compTag ? TAG_TO_COMP[compTag] || compTag : "behavioral";
-    const score = c.withScore ?? c.score ?? 0;
-    const passed = score >= 0.8;
-    
-    const failedGraders = (c.runs || []).flatMap((r: any) => 
-      (r.graders || []).filter((g: any) => !g.passed).map((g: any) => g.name)
-    );
 
-    console.log(`${passed ? "✓" : "✗"} ${c.name}: ${score.toFixed(2)} ${comp}${failedGraders.length > 0 ? ` (failed: ${failedGraders.join(", ")})` : ""}`);
-    
+    // Handle both ablation (arms.with/without) and simple (runs) formats
+    const withRuns = c.arms?.with || c.runs || [];
+    const withoutRuns = c.arms?.without || [];
+    const withScore = withRuns.length > 0 ? withRuns.reduce((s: number, r: any) => s + (r.score ?? 0), 0) / withRuns.length : 0;
+    const withoutScore = withoutRuns.length > 0 ? withoutRuns.reduce((s: number, r: any) => s + (r.score ?? 0), 0) / withoutRuns.length : null;
+    const delta = withoutScore !== null ? withScore - withoutScore : null;
+    const passed = withScore >= 0.8;
+
+    const failedGraders = withRuns.flatMap((r: any) =>
+      (r.graders || []).filter((g: any) => !g.passed).map((g: any) => g.name)
+    ).filter((v: string, i: number, a: string[]) => a.indexOf(v) === i);
+
+    let line = `${passed ? "✓" : "✗"} ${c.name}: ${withScore.toFixed(2)}`;
+    if (withoutScore !== null) line += ` (without: ${withoutScore.toFixed(2)}, Δ ${delta! > 0 ? "+" : ""}${delta!.toFixed(2)})`;
+    line += ` ${comp}`;
+    if (failedGraders.length > 0) line += ` [failed: ${failedGraders.join(", ")}]`;
+    console.log(line);
+
     if (!passed) {
-      failing.push({ case: c.name, comp, score, graders: failedGraders });
+      failing.push({ case: c.name, comp, score: withScore, graders: failedGraders });
     }
   }
 
