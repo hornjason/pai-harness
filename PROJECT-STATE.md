@@ -30,7 +30,7 @@ Suite: 1728 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25). 2 PRs open
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Ship real issue through improved pipeline — evals stable at zero negative Δ, 4 briefs show positive improvement
+1. P0: Ship DDB issue through improved pipeline — DDB re-scaffolded with latest briefs, candidates: #1467 (product-registry) or #1470 (ADR-043 violation)
 2. P0: Ship DDB issue through improved pipeline — prove pass rate improvement with real consumer work
 3. P1: Three-tier context validation through eval scores — currently no eval tests scope-specific rules
 4. P2: pai-harness#24 Doc-hygiene: content alignment — needs council
