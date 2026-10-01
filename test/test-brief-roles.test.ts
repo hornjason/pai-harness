@@ -142,4 +142,28 @@ describe("test-brief-roles", () => {
     // Should contain fallback logic that reads standardTask from roleConfig
     expect(scriptContent).toMatch(/roleConfig.*standardTask|standardTask.*fallback|task\s*=\s*.*standardTask/);
   });
+
+  test("test-brief parses --prompt flag with promptFile and replayPrompt logic (SC-471, AC-1)", () => {
+    const scriptContent = readFileSync(join(ROOT, "scripts/test-brief.ts"), "utf-8");
+    // Must parse --prompt flag
+    expect(scriptContent).toContain("--prompt");
+    // Must have promptFile variable
+    expect(scriptContent).toContain("promptFile");
+    // Must have replayPrompt logic
+    expect(scriptContent).toContain("replayPrompt");
+    // At least 3 keyword matches total
+    const keywords = ["--prompt", "promptFile", "replayPrompt"];
+    const matches = keywords.filter(kw => scriptContent.includes(kw));
+    expect(matches.length).toBeGreaterThanOrEqual(3);
+  });
+
+  test("test-brief --prompt mode runs evaluateCriteria for COMP grading alongside directives (SC-471, AC-2)", () => {
+    const scriptContent = readFileSync(join(ROOT, "scripts/test-brief.ts"), "utf-8");
+    // Must import evaluateCriteria
+    expect(scriptContent).toContain("evaluateCriteria");
+    // Must reference compliance-grade.json for baseline comparison
+    expect(scriptContent).toContain("compliance-grade.json");
+    // Must have COMP grading logic alongside directive grading
+    expect(scriptContent).toMatch(/evaluateCriteria.*role|role.*evaluateCriteria/);
+  });
 });

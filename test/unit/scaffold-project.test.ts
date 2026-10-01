@@ -424,3 +424,89 @@ describe("scaffold-project: per-type staleness thresholds", () => {
     expect(classifyStale("docs/GUIDE.md", 179)).toBe(false);
   });
 });
+
+// ── Test 14: Consumer hook deployment (SC-472) ──────────────
+
+describe("scaffold-project: consumer hook deployment", () => {
+  let tmpDir: string;
+  let consumerDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+    if (consumerDir && existsSync(consumerDir)) rmSync(consumerDir, { recursive: true });
+  });
+
+  test("deploys hooks with deployToConsumers:true to consumer settings.local.json (SC-472)", () => {
+    tmpDir = createTempDir();
+    consumerDir = createTempDir();
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
+    mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+    mkdirSync(join(tmpDir, "hooks"), { recursive: true });
+    writeFileSync(join(tmpDir, "hooks", "TestHook.hook.ts"), "// test hook");
+    writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({
+      project: "test",
+      roles: {},
+      consumers: [consumerDir],
+      hooks: [
+        {
+          name: "TestHook",
+          hookFor: "PreToolUse",
+          command: "bun ${RUNGATE_HOOKS_DIR}/TestHook.hook.ts",
+          enabled: true,
+          matcher: "Bash",
+          deployToConsumers: true,
+        },
+        {
+          name: "LocalOnly",
+          hookFor: "PostToolUse",
+          command: "bun ${RUNGATE_HOOKS_DIR}/LocalOnly.hook.ts",
+          enabled: true,
+          matcher: "Write",
+          deployToConsumers: false,
+        },
+      ],
+    }));
+    runScaffold(tmpDir);
+
+    const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
+    expect(existsSync(consumerSettings)).toBe(true);
+    const settings = JSON.parse(readFileSync(consumerSettings, "utf-8"));
+    // deployToConsumers:true hook should be deployed
+    expect(settings.hooks?.PreToolUse).toBeDefined();
+    expect(settings.hooks.PreToolUse.length).toBeGreaterThanOrEqual(1);
+    // deployToConsumers:false hook should NOT be deployed
+    expect(settings.hooks?.PostToolUse).toBeUndefined();
+  });
+
+  test("consumer hook has correct hookFor and resolved command path", () => {
+    tmpDir = createTempDir();
+    consumerDir = createTempDir();
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
+    mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+    mkdirSync(join(tmpDir, "hooks"), { recursive: true });
+    writeFileSync(join(tmpDir, "hooks", "TestHook.hook.ts"), "// test hook");
+    writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({
+      project: "test",
+      roles: {},
+      consumers: [consumerDir],
+      hooks: [
+        {
+          name: "TestHook",
+          hookFor: "PreToolUse",
+          command: "bun ${RUNGATE_HOOKS_DIR}/TestHook.hook.ts",
+          enabled: true,
+          matcher: "Bash",
+          deployToConsumers: true,
+        },
+      ],
+    }));
+    runScaffold(tmpDir);
+
+    const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
+    const settings = JSON.parse(readFileSync(consumerSettings, "utf-8"));
+    const hook = settings.hooks.PreToolUse[0];
+    // Command should be resolved (no ${RUNGATE_HOOKS_DIR})
+    expect(hook.command).not.toContain("${RUNGATE_HOOKS_DIR}");
+    expect(hook.command).toContain("hooks/TestHook.hook.ts");
+  });
+});

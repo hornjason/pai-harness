@@ -1203,6 +1203,77 @@ jobs:
   actions.push("CREATED: .github/workflows/gates.yml (harness-owned)");
 }
 
+// ── Consumer hook deployment ─────────────────────────────────
+
+/**
+ * Deploy hooks marked deployToConsumers:true from rungate.json to consumer
+ * projects' .claude/settings.local.json with correct hookFor and command paths.
+ * SC-472: scaffold deploys consumer-facing hooks
+ */
+export function deployHooksToConsumers(root: string, actions: string[]): void {
+  const harnessPath = join(root, ".claude", "rungate.json");
+  if (!existsSync(harnessPath)) return;
+
+  let harness: any;
+  try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+
+  if (!harness?.hooks || !Array.isArray(harness.hooks)) return;
+  if (!harness?.consumers || !Array.isArray(harness.consumers) || harness.consumers.length === 0) return;
+
+  const hooksDir = join(root, "hooks");
+
+  for (const consumer of harness.consumers) {
+    const consumerRoot = consumer.startsWith("/") ? consumer : join(root, consumer);
+    if (!existsSync(consumerRoot)) {
+      actions.push(`SKIP: Consumer ${consumer} — directory not found`);
+      continue;
+    }
+
+    const claudeDir = join(consumerRoot, ".claude");
+    if (!existsSync(claudeDir)) {
+      mkdirSync(claudeDir, { recursive: true });
+    }
+
+    const settingsPath = join(consumerRoot, ".claude", "settings.local.json");
+    let settings: any = {};
+    if (existsSync(settingsPath)) {
+      try { settings = JSON.parse(readFileSync(settingsPath, "utf-8")); } catch {}
+    }
+
+    if (!settings.hooks) settings.hooks = {};
+
+    let deployed = 0;
+    for (const hook of harness.hooks) {
+      if (!hook.enabled || !hook.hookFor || !hook.command) continue;
+      if (hook.deployToConsumers !== true) continue;
+
+      const resolvedCommand = hook.command.replace("${RUNGATE_HOOKS_DIR}", hooksDir);
+      const hookType = hook.hookFor as string;
+
+      if (!settings.hooks[hookType]) settings.hooks[hookType] = [];
+
+      // Check if this hook is already deployed
+      const existing = settings.hooks[hookType].find(
+        (h: any) => h.command === resolvedCommand || (h.command && h.command.includes(hook.name))
+      );
+      if (existing) continue;
+
+      const hookEntry: any = { command: resolvedCommand };
+      if (hook.matcher) hookEntry.matcher = hook.matcher;
+
+      settings.hooks[hookType].push(hookEntry);
+      deployed++;
+    }
+
+    if (deployed > 0) {
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");
+      actions.push(`DEPLOYED: ${deployed} hooks to ${consumer}/.claude/settings.local.json`);
+    } else {
+      actions.push(`SKIP: All hooks already deployed to ${consumer}`);
+    }
+  }
+}
+
 export function createGitHooks(root: string, actions: string[]): void {
   const hooksDir = join(root, ".git", "hooks");
   if (!existsSync(hooksDir)) return;

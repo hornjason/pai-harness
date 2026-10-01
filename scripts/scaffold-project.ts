@@ -27,6 +27,7 @@ import {
   createClaudeMdBridge,
   createCiWorkflows,
   createGitHooks,
+  deployHooksToConsumers,
   addPaiHarnessDevDep,
   runAuditSpecsFix,
   postScaffoldCommit,
@@ -160,6 +161,7 @@ addPaiHarnessDevDep(projectPath, actions);
 createClaudeMdBridge(projectPath, actions);
 createCiWorkflows(projectPath, actions);
 createGitHooks(projectPath, actions);
+deployHooksToConsumers(projectPath, actions);
 postScaffoldCommit(projectPath, actions);
 
 // ── Report ─────────────────────────────────────────────────────

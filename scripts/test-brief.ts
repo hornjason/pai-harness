@@ -11,8 +11,10 @@
  *   bun scripts/test-brief.ts marcus "task" --hill-climb --target=90
  *   bun scripts/test-brief.ts marcus "task" --score-only
  *   bun scripts/test-brief.ts marcus "task" <transcript-dir>
+ *   bun scripts/test-brief.ts marcus --prompt=path/to/prompt.md
  *
  * SC-400: test-brief CLI: isolated worktree compliance test
+ * SC-471: --prompt flag for replay prompt with COMP grading
  */
 import { readFileSync, existsSync, readdirSync, writeFileSync } from "fs";
 import { join, basename, resolve } from "path";
@@ -85,6 +87,8 @@ const isScoreOnly = flags.includes("--score-only");
 const isHillClimb = flags.includes("--hill-climb");
 const targetFlag = flags.find((f) => f.startsWith("--target="));
 const targetScore = targetFlag ? parseInt(targetFlag.split("=")[1], 10) : DEFAULT_TARGET_SCORE;
+const promptFlag = flags.find((f) => f.startsWith("--prompt=") || f === "--prompt");
+const promptFile = promptFlag?.startsWith("--prompt=") ? promptFlag.split("=")[1] : undefined;
 
 if (!role) {
   console.error("Usage: bun scripts/test-brief.ts <role> [task] [options]");
@@ -96,6 +100,7 @@ if (!role) {
   console.error("  --score-only    Output only the compliance score");
   console.error("  --hill-climb    Run up to 5 iterations to improve score");
   console.error("  --target=N      Set target score (default: 80)");
+  console.error("  --prompt=FILE   Replay exact prompt file for COMP grading");
   console.error("");
   console.error("When task is omitted, standardTask from rungate.json is used as fallback.");
   console.error("");
@@ -316,6 +321,98 @@ function writeBehavioralResults(agentRole: string, transcriptContent: string): v
   } catch (err) {
     console.error(`  Behavioral cache write failed: ${err}`);
   }
+}
+
+// ── Replay prompt mode (--prompt) ───────────────────────
+
+/**
+ * replayPrompt — runs COMP-level grading alongside directive grading
+ * using an exact prompt file instead of generating a new task.
+ * Loads compliance-grade.json baseline for comparison when available.
+ */
+function replayPrompt(promptFilePath: string): void {
+  const resolvedPrompt = resolve(promptFilePath);
+  if (!existsSync(resolvedPrompt)) {
+    console.error(`Prompt file not found: ${resolvedPrompt}`);
+    process.exit(1);
+  }
+
+  const promptContent = readFileSync(resolvedPrompt, "utf-8");
+  console.log(`\nReplay prompt mode: ${resolvedPrompt}`);
+  console.log(`Prompt length: ${promptContent.length} chars`);
+
+  // Build transcript data from prompt for COMP-level evaluation
+  const calls = parseToolCalls(promptContent);
+  const reads = calls.filter(c => c.name === "Read").map(c => c.input.file_path || "");
+  const bashes = calls.filter(c => c.name === "Bash").map(c => c.input.command || "");
+  const edits = calls.filter(c => c.name === "Edit").map(c => c.input.file_path || "");
+  const writes = calls.filter(c => c.name === "Write").map(c => c.input.file_path || "");
+  const readCounts: Record<string, number> = {};
+  for (const r of reads) { readCounts[r] = (readCounts[r] || 0) + 1; }
+  const duplicateReads: Record<string, number> = {};
+  for (const [path, count] of Object.entries(readCounts)) {
+    if (count > 1) duplicateReads[path] = count;
+  }
+
+  const data = {
+    calls,
+    reads,
+    bashes,
+    edits,
+    writes,
+    duplicateReads,
+    firstThreeReads: reads.slice(0, 3).map(r => basename(r)),
+    promptContent,
+  };
+
+  // Directive-level grading
+  const directiveResults = checkCompliance(directives, promptContent);
+  const { score: directiveScore, grade: directiveGrade } = computeScore(directiveResults);
+  console.log(`\nDirective compliance: ${directiveGrade} (${directiveScore}%)`);
+
+  // COMP-level grading via evaluateCriteria
+  const compRole = role as Role;
+  const criteriaResults = evaluateCriteria(compRole, data);
+  const compFollowed = criteriaResults.filter(c => c.verdict === "FOLLOWED").length;
+  const compTotal = criteriaResults.length;
+  const compScore = compTotal > 0 ? Math.round((compFollowed / compTotal) * 100) : 0;
+
+  console.log(`\nCOMP-level grading for ${role}:`);
+  for (const c of criteriaResults) {
+    const icon = c.verdict === "FOLLOWED" ? "PASS" : "FAIL";
+    console.log(`  [${icon}] ${c.id}: ${c.rule} — ${c.evidence}`);
+  }
+  console.log(`COMP score: ${compFollowed}/${compTotal} (${compScore}%)`);
+
+  // Load compliance-grade.json baseline for comparison if available
+  const baselinePath = join(ROOT, "compliance-grade.json");
+  if (existsSync(baselinePath)) {
+    try {
+      const baseline = JSON.parse(readFileSync(baselinePath, "utf-8"));
+      const baselineGrade = baseline.grades?.find((g: any) => g.role === role);
+      if (baselineGrade) {
+        const baselinePct = baselineGrade.total > 0
+          ? Math.round((baselineGrade.followed / baselineGrade.total) * 100) : 0;
+        const delta = compScore - baselinePct;
+        const arrow = delta > 0 ? "+" : delta < 0 ? "" : "=";
+        console.log(`\nBaseline comparison (compliance-grade.json):`);
+        console.log(`  Previous: ${baselinePct}% | Current: ${compScore}% | Delta: ${arrow}${delta}%`);
+      }
+    } catch {
+      console.log(`\nBaseline: compliance-grade.json found but could not be parsed`);
+    }
+  } else {
+    console.log(`\nNo baseline: compliance-grade.json not found`);
+  }
+
+  // Combined score
+  const combined = Math.round((directiveScore + compScore) / 2);
+  console.log(`\nCombined score: ${combined}% (directive: ${directiveScore}%, COMP: ${compScore}%)`);
+}
+
+if (promptFile) {
+  replayPrompt(promptFile);
+  process.exit(0);
 }
 
 // ── Hill climb mode ──────────────────────────────────────
