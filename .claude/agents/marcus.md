@@ -5,6 +5,13 @@ tools: [Bash, Read, Write, Edit]
 model: sonnet
 memory: project
 maxTurns: 30
+effort: high
+isolation: worktree
+hooks:
+  Stop:
+    - hooks:
+        - type: command
+          command: "bun test 2>&1 | tail -3 | grep -q '0 fail' || (echo 'Tests failing — keep working' && exit 2)"
 tiers:
   reinforcement: ['Testing Rules']
   mechanical: ['Workflow']

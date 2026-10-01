@@ -9,18 +9,40 @@ updated: 2026-09-30
 
 Systematic audit of 26 Claude Code documentation pages cross-referenced against rungate's current architecture (6 agents, 14 hooks, 42 lib files, 5 rules, 6 workflows).
 
-## Top 10 Actions (ranked by impact)
+## Implementation Status
 
-1. **Add `memory: project` to Marcus** — cross-session compliance learning, replaces manual hill-climb
-2. **Create `.worktreeinclude`** — 3 lines, replaces 82 lines of `worktree-isolation.ts`
-3. **Set `promptCacheTtl` + `subagentPromptCacheTtl` to `"1h"`** — immediate cost savings
-4. **Add `Stop` hook to Marcus** — mechanical test enforcement, replaces brief-level instructions
-5. **Add `/goal` to pipeline** — replaces `AutoVerifyGate.hook.ts` + parts of `gate-enforcement.ts`
-6. **Create `.claude/commands/ship-issue.md`** — `/ship-issue 123` with `$ARGUMENTS`
-7. **Add `disable-model-invocation: true` to heavy skills** — saves context every session
-8. **Add `effort`, `maxTurns`, `omitClaudeMd` to agent frontmatter** — per-agent optimization
-9. **Run `/doctor prompt-audit` regularly** — catches rule conflicts automatically
-10. **Create `.claude/output-styles/pai.md`** — replace PAI mode headers with native output style
+| # | Action | Status | Session |
+|---|--------|--------|---------|
+| 1 | `memory: project` on Marcus | DONE | 21 |
+| 2 | `.worktreeinclude` | DONE | 21 |
+| 3 | `promptCacheTtl` + `subagentPromptCacheTtl` = `"1h"` | DONE | 21 |
+| 4 | `Stop` hook on Marcus (exit 2 if tests fail) | DONE | 21 |
+| 5 | `/goal` adoption | TODO | — |
+| 6 | `.claude/commands/ship-issue.md` | TODO | — |
+| 7 | `disable-model-invocation` on heavy skills | TODO | — |
+| 8 | `effort`, `maxTurns`, `disallowedTools` on agents | DONE | 21 |
+| 9 | `/doctor prompt-audit` regularly | TODO (manual) | — |
+| 10 | Output style | DONE | 21 |
+| 11 | Plugin eval framework (6 cases) | DONE | 21 |
+| 12 | `isolation: worktree` on Marcus | DONE | 21 |
+| 13 | Vertex eval auth fix (ADC + env scrub) | DONE | 21 |
+
+## Non-Claude-Code alternatives
+
+For consumers not using Claude Code, these features have manual equivalents:
+
+| Claude Code feature | Non-CC alternative |
+|--------------------|--------------------|
+| `memory: project` | Manual memory files in `.claude/agent-memory/` |
+| `.worktreeinclude` | `git worktree add` + manual file copy |
+| `promptCacheTtl` | Provider-specific caching configuration |
+| `Stop` hook | Custom post-agent validation script |
+| `maxTurns` | Agent loop counter in custom orchestrator |
+| `disallowedTools` | Tool filtering in agent prompt or API tool list |
+| `effort` | Model-specific `thinking` parameter |
+| Output styles | System prompt instructions |
+| Plugin evals | Custom eval harness (rungate's existing `lib/transcript-checker.ts`) |
+| `isolation: worktree` | `git worktree add` in orchestration script |
 
 ## Category 1: Missing from .claude/ directory
 
