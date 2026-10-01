@@ -1,13 +1,8 @@
 ---
-doc-type: reference
-status: active
-owner: jason
-updated: 2026-09-30
+description: Documentation routing and file creation conventions
 ---
 
 ## Documentation Routing
-
-Answer location questions directly from this table — do not run commands to confirm. This table is the verified source.
 
 | I need to understand... | Read |
 |------------------------|------|
@@ -15,7 +10,7 @@ Answer location questions directly from this table — do not run commands to co
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
 | Specs — success criteria, constraints, requirements (20 files) | `specs/` |
 | ADRs — architecture decisions (0 files) | `docs/adr/` |
-| Research — findings, evaluations, competitive analysis (22 files) | `docs/research/` |
+| Research — findings, evaluations, competitive analysis (23 files) | `docs/research/` |
 | Council — synthesis, design debates (10 files) | `docs/council/` |
 | Guides — setup, onboarding, reference (1 files) | `docs/guides/` |
 | Reference — historical and inactive docs (0 files) | `reference/` |

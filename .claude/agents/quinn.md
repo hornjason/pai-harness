@@ -3,9 +3,7 @@ name: quinn
 description: QA engineer — tests as a brand-new user using Playwright MCP tools
 tools: [Bash, Read, mcp__playwright__*]
 model: sonnet
-omitClaudeMd: true
-effort: high
-disallowedTools: [Write, Edit]
+isolation: worktree
 tiers:
   reinforcement: ['Project Type Detection', 'CLI Testing Mode']
 ---

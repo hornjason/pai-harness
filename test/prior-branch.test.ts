@@ -1,10 +1,23 @@
-import { describe, test, expect } from 'bun:test'
+import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { detectPriorBranch, detectExistingPR, type PriorBranch, type DetectOptions, type ExistingPR, type PRCommandExecutor } from '../lib/prior-branch'
 import { resolve } from 'path'
+import { spawnSync } from 'child_process'
 
 const PROJECT_ROOT = resolve(__dirname, '..')
+const TEST_BRANCH = '550-matcher-registry'
 
 describe('prior-branch', () => {
+  beforeAll(() => {
+    const exists = spawnSync('git', ['rev-parse', '--verify', TEST_BRANCH], { cwd: PROJECT_ROOT, encoding: 'utf-8' })
+    if (exists.status !== 0) {
+      spawnSync('git', ['branch', TEST_BRANCH], { cwd: PROJECT_ROOT })
+    }
+  })
+
+  afterAll(() => {
+    spawnSync('git', ['branch', '-D', TEST_BRANCH], { cwd: PROJECT_ROOT })
+  })
+
   test('detectPriorBranch function exists and is importable', () => {
     expect(typeof detectPriorBranch).toBe('function')
   })
