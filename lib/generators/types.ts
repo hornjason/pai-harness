@@ -68,6 +68,13 @@ export interface AgentMeta {
   tools: string;
   model: string;
   tiers?: Record<string, string[]>;
+  memory?: string;
+  maxTurns?: number;
+  effort?: string;
+  disallowedTools?: string[];
+  omitClaudeMd?: boolean;
+  isolation?: string;
+  hooks?: Record<string, unknown>;
 }
 
 export interface ProjectScan {

@@ -105,6 +105,13 @@ export function generateAgentBriefs(scan: ProjectScan): Record<string, string> {
     const meta = agentMeta[agentName];
     if (meta) {
       let fm = `---\nname: ${agentName}\ndescription: ${meta.description}\ntools: ${meta.tools}\nmodel: ${meta.model}`;
+      if (meta.memory) fm += `\nmemory: ${meta.memory}`;
+      if (meta.maxTurns) fm += `\nmaxTurns: ${meta.maxTurns}`;
+      if (meta.effort) fm += `\neffort: ${meta.effort}`;
+      if (meta.isolation) fm += `\nisolation: ${meta.isolation}`;
+      if (meta.omitClaudeMd) fm += `\nomitClaudeMd: true`;
+      if (meta.disallowedTools?.length) fm += `\ndisallowedTools: [${meta.disallowedTools.join(", ")}]`;
+      if (meta.hooks) fm += `\nhooks:\n${JSON.stringify(meta.hooks, null, 2).split("\n").map((l, i) => i === 0 ? "" : `  ${l}`).filter(Boolean).join("\n")}`;
       if (meta.tiers) {
         fm += `\ntiers:`;
         for (const [tier, sections] of Object.entries(meta.tiers)) {
