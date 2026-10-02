@@ -448,6 +448,16 @@ Project root: ${PROJECT_ROOT}
     }
   }
 
+  // Fix grep -c + contains mismatch: grep -c returns a count, not text
+  for (const ac of discovery.acs) {
+    const cmd = (ac.evidenceMethod?.command || '')
+    if (cmd.includes('grep -c') && ac.threshold?.op === 'contains') {
+      ac.threshold.op = '>='
+      ac.threshold.value = 1
+      log(`Fixed ${ac.id} threshold: grep -c returns count, changed 'contains' → '>= 1'`)
+    }
+  }
+
   setupResult = await agent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 
