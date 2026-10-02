@@ -592,9 +592,20 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
     agentMeta[name] = { ...DEFAULT_AGENT_META[name], ...configMeta[name] };
   }
 
+  // Detect project type for accurate briefs
+  let detectedType: ProjectType = "code";
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      if (pkg.name === "rungate" || pkg.keywords?.includes("harness")) detectedType = "infra";
+    } catch {}
+  } else if (!existsSync(join(root, "src")) && !existsSync(join(root, "lib"))) {
+    detectedType = "infra";
+  }
+
   const briefScan: ProjectScan = {
     name: basename(root),
-    type: "code",
+    type: detectedType,
     root,
     identity: projectIdentity,
     techStack: [],

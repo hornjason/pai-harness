@@ -141,17 +141,15 @@ What does this workflow produce?
   safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
 }
 
-// Phase 1: Code project generation (config before briefs)
+// Phase 1: Code-specific generation
 if (projectType === "code") {
   generateCodeMapStep(projectPath, actions);
-  generateOrAuditProjectHarness(projectPath, actions);
-  injectEnvironmentSection(projectPath, actions);
 }
 
-// Phase 2: Briefs after config
-if (projectType === "code") {
-  generateAgentBriefsStep(projectPath, actions);
-}
+// Phase 1.5: Harness config + briefs for ALL project types
+generateOrAuditProjectHarness(projectPath, actions);
+injectEnvironmentSection(projectPath, actions);
+generateAgentBriefsStep(projectPath, actions);
 
 // Phase 3: Final setup
 copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
