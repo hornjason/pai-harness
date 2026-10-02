@@ -81,7 +81,7 @@ These fields are emitted by the scaffold generator and leverage Claude Code's na
 - [x] SC-356: scripts/scaffold-project.ts contains [routing]
 - [x] SC-357: Template variables filled from project scan match actual project values (behavioral)
 - [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold (behavioral)
-- [ ] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
+- [x] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
 - [x] SC-410: `lib/generators/types.ts` AgentMeta interface contains [memory, maxTurns, effort, disallowedTools, omitClaudeMd, isolation, hooks]
 - [x] SC-411: `lib/create-brief.ts` DEFAULT_AGENT_META has `memory: "project"` for marcus
 - [x] SC-412: `lib/create-brief.ts` DEFAULT_AGENT_META has `disallowedTools` for non-coding agents

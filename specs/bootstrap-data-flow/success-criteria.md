@@ -169,7 +169,7 @@ testable: true
 - [x] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
 
 - [x] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
-- [ ] SC-202: New rules include provenance comment: source incident and date recurred
+- [x] SC-202: New rules include provenance comment: source incident and date recurred
 - [ ] SC-232: Constraint extraction enforces second-occurrence rule — rules promoted to Hard Constraints only after recurring in 2+ incidents (Anthropic best practice)
 
 - [ ] SC-203: Postinstall checks .rungate-version stamp — re-scaffolds only when version changes
