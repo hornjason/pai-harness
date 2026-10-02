@@ -1,14 +1,14 @@
 {
   "updated": "2026-10-02",
   "priorities": [
-    "P0: Hill-climb loop validated — hooks fire in worktrees (COMP-7 blocked cat, TestSuiteGuard blocked at 6/2), compliance grading ran",
-    "P1: Fix Discovery AC threshold authoring — grep -c returns count but ACs use 'contains' operator, causes false verify failures",
-    "P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs",
+    "DONE: Hill-climb loop validated — hooks fire in worktrees, compliance grading ran",
+    "DONE: Discovery AC threshold bug fixed — grep -c + contains normalized to >= 1 in ship.js",
+    "DONE: Scaffold generates briefs+config for all project types",
     "P2: #24 Doc-hygiene: content alignment — needs council",
     "P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow",
     "P3: #23 Isolated per-issue execution — worktree-based parallel ship runs"
   ],
-  "notes": "Session 25 (2026-10-02) — #31 closed, hill-climb loop validated, Discovery AC bug identified.\n\nKey deliverables:\n  - #31 CLOSED: All 14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC done (SC-474 through SC-487)\n  - SC-484/SC-485 implemented: scaffold now generates .claude/rungate/ directory for new projects; re-scaffold splits existing monolith\n  - Helper functions updated: loadHarnessConfig(), injectEnvironmentSection() check directory before monolith\n  - Phase-0 golden fixture tests updated to read from .claude/rungate/config.json\n  - Repo config fixed: issueRepo corrected from hornjason/pai-config to hornjason/pai-harness\n\nHill-climb loop validation:\n  - COMP-7 (BashToolGuard): Fired — blocked cat via Bash, enforced Read tool usage\n  - DIR-L29 (TestSuiteGuard): Fired — blocked full suite at 6/2 count\n  - Compliance grading ran: Marcus 8/15 (53%) across 2 runs. Discovery 4/6 (67%)\n  - Persistent violations: COMP-5 (no governing spec context), COMP-8 (no PROJECT-STATE), COMP-9 (tool call budget), COMP-11 (no coding principles)\n  - These are BRIEF CONTENT gaps, not code bugs — hill-climb should auto-fix via tier 1 (reinforce-brief)\n\nDiscovery AC bug found:\n  - Discovery authored ACs with grep -c evidence methods (return counts) but 'contains' thresholds (check for substring)\n  - grep -c returns '5' but threshold checks if '5' contains 'loadFromDirectory' → always FAIL\n  - This caused false verify failures on AC-2, AC-3, AC-5 even though code is correct\n  - Root cause: Discovery brief doesn't constrain threshold-type alignment with evidence-method return type\n  - Fix needed: either Discovery brief or AC validation gate should enforce type alignment\n\nSuite: 1779 pass (99 phase-0), 0 fail.\nSuite: 25/25 SCs done.",
+  "notes": "Session 25 (2026-10-02) — #31 closed, hill-climb validated, 3 pipeline fixes shipped.\n\nKey deliverables:\n  - #31 CLOSED: All 14/14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC\n  - SC-484/SC-485: scaffold generates .claude/rungate/ directory; re-scaffold splits monolith\n  - Helper functions (loadHarnessConfig, injectEnvironmentSection) support directory structure\n  - Phase-0 golden fixture tests updated for directory config\n  - Repo config fixed: issueRepo corrected to hornjason/pai-harness\n  - Ship.js: grep -c + contains threshold mismatch auto-normalized to >= 1\n  - Scaffold: briefs+config generated for ALL project types (not just code)\n\nHill-climb loop validated end-to-end:\n  - BashToolGuard fired in worktree, TestSuiteGuard blocked at 6/2\n  - Compliance grading ran: Marcus 53%, Discovery 67%\n  - Persistent brief content gaps identified for hill-climb tier 1\n\nSuite: 1779 pass, 0 fail, 111 files. 7 commits.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -202,6 +202,20 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-10-02 session 25",
+      "items": [
+        "#31 CLOSED: all 14 SCs done. SC-484/SC-485 implemented (scaffold directory generation + monolith split)",
+        "Ship workflow ran for #31: Discovery, Marcus (worktree), Verify, Grade — 27 agents, 77 min",
+        "Hill-climb loop validated: BashToolGuard blocked cat, TestSuiteGuard blocked at 6/2, compliance grading ran",
+        "9 phase-0 test failures fixed: golden fixture tests updated for .claude/rungate/config.json",
+        "Helper functions (loadHarnessConfig, injectEnvironmentSection) now check directory before monolith",
+        "Discovery AC threshold bug fixed: grep -c + contains mismatch auto-normalized to >= 1 in ship.js",
+        "Scaffold generates briefs+config for ALL project types (was code-only, POV was type:infra)",
+        "Repo config corrected: issueRepo from hornjason/pai-config to hornjason/pai-harness",
+        "Suite: 1779 pass, 0 fail, 111 files. 7 commits pushed"
+      ]
+    },
     {
       "date": "2026-10-02 session 24",
       "items": [
