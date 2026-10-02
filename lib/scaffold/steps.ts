@@ -727,46 +727,46 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
     }
   }
 
-  if (existsSync(harnessPath)) {
+  const rungateDir = join(root, ".claude", "rungate");
+  const hasDirectory = existsSync(join(rungateDir, "config.json"));
+
+  if (hasDirectory) {
+    // Directory structure already exists — audit it
+    const existing = JSON.parse(readFileSync(join(rungateDir, "config.json"), "utf-8"));
+    auditExistingConfig(existing, scannedPages, scannedConsumers, actions);
+  } else if (existsSync(harnessPath)) {
+    // Monolith exists — split into directory structure
     const existing = JSON.parse(readFileSync(harnessPath, "utf-8"));
-    const issues: string[] = [];
 
-    const declaredPages = Object.keys(existing.pages || {});
-    const scannedPaths = Object.keys(scannedPages);
-    const missingPages = scannedPaths.filter(p => !declaredPages.some(d => existing.pages[d] === p || d === p));
-    if (missingPages.length > 0) {
-      issues.push(`PAGES: ${missingPages.length} routes in code not in rungate.json: ${missingPages.slice(0, 5).join(", ")}`);
-    }
-
-    // Audit consumers: flag declared consumers not found in source code as stale
-    const declaredConsumers = existing.consumers || [];
-    if (declaredConsumers.length > 0) {
-      const staleConsumers = declaredConsumers.filter((c: string) => !scannedConsumers.includes(c));
-      if (staleConsumers.length > 0) {
-        issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
-        actions.push(`AUDIT: CONSUMERS — ${staleConsumers.length} stale consumers not in source: ${staleConsumers.slice(0, 5).join(", ")}`);
-      }
-    }
-
-    if (issues.length > 0) {
-      console.log("\n  rungate.json audit:");
-      for (const issue of issues) console.log(`    ⚠ ${issue}`);
-      actions.push(`AUDITED: rungate.json (${issues.length} gaps)`);
+    // Check if monolith has roles/hooks/compliance to split
+    if (existing.roles || existing.hooks || existing.compliance) {
+      splitMonolithToDirectory(root, existing, actions);
     } else {
-      actions.push("AUDITED: rungate.json (aligned with code)");
+      // Simple monolith without split-worthy content — audit only
+      auditExistingConfig(existing, scannedPages, scannedConsumers, actions);
     }
   } else {
+    // No config exists — create directory structure
     let harnessVersion = "unknown";
     try {
       const harnessPkg = JSON.parse(readFileSync(join(dirname(dirname(__dirname)), "package.json"), "utf-8"));
       harnessVersion = harnessPkg.version || "unknown";
     } catch {}
 
+    // Prefer package.json name, fall back to directory basename
+    let projectName = basename(root);
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        if (pkg.name) projectName = pkg.name;
+      } catch {}
+    }
+
     const config = {
       "$schema": "rungate",
       harnessVersion,
       scaffoldedAt: new Date().toISOString(),
-      project: basename(root),
+      project: projectName,
       repo,
       issueRepo: repo,
       dev: {
@@ -789,14 +789,91 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
         branches: ["main"],
       },
       contextDocs: {},
+      test: {
+        command: testCmd,
+        timeout: 300000,
+      },
     };
 
-    const dir = join(root, ".claude");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const targetPath = join(root, ".claude", "rungate.json");
-    writeFileSync(targetPath, JSON.stringify(config, null, 2) + "\n");
-    actions.push(`CREATED: .claude/rungate.json (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
+    writeDirectoryStructure(root, config, {}, [], undefined, actions);
+    actions.push(`CREATED: .claude/rungate/ (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
   }
+}
+
+function auditExistingConfig(
+  existing: any,
+  scannedPages: Record<string, string>,
+  scannedConsumers: string[],
+  actions: string[]
+): void {
+  const issues: string[] = [];
+
+  const declaredPages = Object.keys(existing.pages || {});
+  const scannedPaths = Object.keys(scannedPages);
+  const missingPages = scannedPaths.filter(p => !declaredPages.some(d => existing.pages[d] === p || d === p));
+  if (missingPages.length > 0) {
+    issues.push(`PAGES: ${missingPages.length} routes in code not in rungate.json: ${missingPages.slice(0, 5).join(", ")}`);
+  }
+
+  // Audit consumers: flag declared consumers not found in source code as stale
+  const declaredConsumers = existing.consumers || [];
+  if (declaredConsumers.length > 0) {
+    const staleConsumers = declaredConsumers.filter((c: string) => !scannedConsumers.includes(c));
+    if (staleConsumers.length > 0) {
+      issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+      actions.push(`AUDIT: CONSUMERS — ${staleConsumers.length} stale consumers not in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+    }
+  }
+
+  if (issues.length > 0) {
+    console.log("\n  rungate.json audit:");
+    for (const issue of issues) console.log(`    ⚠ ${issue}`);
+    actions.push(`AUDITED: rungate.json (${issues.length} gaps)`);
+  } else {
+    actions.push("AUDITED: rungate.json (aligned with code)");
+  }
+}
+
+function splitMonolithToDirectory(
+  root: string,
+  monolith: any,
+  actions: string[]
+): void {
+  // Extract split-worthy fields
+  const { roles, hooks, compliance, ...configFields } = monolith;
+
+  writeDirectoryStructure(
+    root,
+    configFields,
+    roles || {},
+    hooks || [],
+    compliance,
+    actions
+  );
+  actions.push(`SPLIT: .claude/rungate.json → .claude/rungate/ (config.json, roles.json, hooks.json, compliance.json)`);
+}
+
+function writeDirectoryStructure(
+  root: string,
+  config: any,
+  roles: any,
+  hooks: any[],
+  compliance: any | undefined,
+  actions: string[]
+): void {
+  const rungateDir = join(root, ".claude", "rungate");
+  if (!existsSync(rungateDir)) mkdirSync(rungateDir, { recursive: true });
+
+  writeFileSync(join(rungateDir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+  writeFileSync(join(rungateDir, "roles.json"), JSON.stringify(roles, null, 2) + "\n");
+  writeFileSync(join(rungateDir, "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
+
+  const defaultCompliance = compliance || {
+    rules: {},
+    defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+    organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] },
+  };
+  writeFileSync(join(rungateDir, "compliance.json"), JSON.stringify(defaultCompliance, null, 2) + "\n");
 }
 
 // ── Code map generation ────────────────────────────────────────

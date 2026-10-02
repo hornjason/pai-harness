@@ -12,10 +12,16 @@ if (!projectRoot) {
   process.exit(1);
 }
 
-const target = join(projectRoot, ".claude", "rungate.json");
+const dirTarget = join(projectRoot, ".claude", "rungate");
+const monolithTarget = join(projectRoot, ".claude", "rungate.json");
 
-if (existsSync(target)) {
-  console.log(`EXISTS: ${target} — not overwriting`);
+// Skip if directory structure or monolith already exists
+if (existsSync(join(dirTarget, "config.json"))) {
+  console.log(`EXISTS: ${dirTarget}/config.json — not overwriting`);
+  process.exit(0);
+}
+if (existsSync(monolithTarget)) {
+  console.log(`EXISTS: ${monolithTarget} — not overwriting`);
   process.exit(0);
 }
 
@@ -75,7 +81,7 @@ if (existsSync(join(projectRoot, ".git"))) {
   }
 }
 
-mkdirSync(join(projectRoot, ".claude"), { recursive: true });
+mkdirSync(dirTarget, { recursive: true });
 
 const config = {
   description: "Auto-generated project harness config",
@@ -86,6 +92,18 @@ const config = {
   prod: { rebuild: rebuildCmd },
 };
 
-writeFileSync(target, JSON.stringify(config, null, 2) + "\n");
-console.log(`CREATED: ${target}`);
-console.log(readFileSync(target, "utf-8"));
+// Write split directory structure instead of monolith
+writeFileSync(join(dirTarget, "config.json"), JSON.stringify(config, null, 2) + "\n");
+writeFileSync(join(dirTarget, "roles.json"), JSON.stringify({}, null, 2) + "\n");
+writeFileSync(join(dirTarget, "hooks.json"), JSON.stringify([], null, 2) + "\n");
+writeFileSync(join(dirTarget, "compliance.json"), JSON.stringify({
+  rules: {},
+  defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+  organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] },
+}, null, 2) + "\n");
+
+console.log(`CREATED: ${dirTarget}/`);
+for (const f of ["config.json", "roles.json", "hooks.json", "compliance.json"]) {
+  console.log(`  ${f}`);
+}
+console.log(readFileSync(join(dirTarget, "config.json"), "utf-8"));
