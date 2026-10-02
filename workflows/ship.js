@@ -462,6 +462,42 @@ Project root: ${PROJECT_ROOT}
     }
   }
 
+  // DECOMPOSE_REQUIRED gate: if >6 ACs, issue must be split into sub-issues
+  const MAX_ACS_PER_ISSUE = 6
+  if (discovery.acs.length > MAX_ACS_PER_ISSUE) {
+    const specPath = discovery.governingSpec || ''
+    log(`DECOMPOSE_REQUIRED: ${discovery.acs.length} ACs exceeds limit of ${MAX_ACS_PER_ISSUE}. Creating sub-issues from spec phases.`)
+
+    const decomposeResult = await agent(`
+You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX_ACS_PER_ISSUE} AC limit per ship run. Decompose into sub-issues.
+
+1. Read the governing spec at ${PROJECT_ROOT}/${specPath} — find phase headers (### Phase N or similar groupings)
+2. Group the ACs by phase (max ${MAX_ACS_PER_ISSUE} per group). If no phases exist, split sequentially.
+3. For each group AFTER the first, create a sub-issue using mcp__github__create_issue:
+   owner: "${ISSUE_REPO.split('/')[0]}"
+   repo: "${ISSUE_REPO.split('/')[1]}"
+   title: "#${ISSUE} Phase N: [phase description]"
+   body: "Parent: #${ISSUE}\\nSpec: ${specPath} — Phase N\\n\\n## Success Criteria\\n[list the SCs for this phase]\\n\\n## Dependencies\\n- Requires previous phase"
+4. Update the parent issue (#${ISSUE}) body to say "Rescoped to Phase 1 only" and list sub-issue numbers using mcp__github__update_issue
+5. Return the Phase 1 AC IDs (the first ${MAX_ACS_PER_ISSUE} or fewer)
+
+Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}] }
+`, { label: 'decompose', phase: 'Discovery', schema: {
+      type: 'object',
+      properties: {
+        phase1AcIds: { type: 'array', items: { type: 'string' } },
+        subIssues: { type: 'array', items: { type: 'object', properties: { number: { type: 'number' }, phase: { type: 'string' }, acIds: { type: 'array', items: { type: 'string' } } } } }
+      },
+      required: ['phase1AcIds']
+    }})
+
+    if (decomposeResult?.phase1AcIds?.length > 0) {
+      const keepIds = new Set(decomposeResult.phase1AcIds)
+      discovery.acs = discovery.acs.filter(ac => keepIds.has(ac.id))
+      log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created.`)
+    }
+  }
+
   setupResult = await agent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 

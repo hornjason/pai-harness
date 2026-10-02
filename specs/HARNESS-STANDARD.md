@@ -228,6 +228,19 @@ This artifact is durable — it survives context compaction and session boundari
 | **M** | Decompose into XS/S sub-issues, stress-test approach | `Skill("grill-with-docs")` → `Skill("to-issues")` → 2-4 XS/S sub-issues → each ships through proven pipeline |
 | **L** | Full planning pipeline | `Skill("grill-with-docs")` → `Skill("to-prd")` → `Skill("council")` (debate the PRD) → `Skill("to-issues")` → each sub-issue re-enters at GOAL |
 
+**Decomposition gate (mechanical — enforced by ship.js after Discovery):**
+
+If Discovery returns >6 ACs, the issue MUST be decomposed before implementation:
+1. Read the governing spec's phase headers (`### Phase N`)
+2. Group ACs by spec phase (≤6 per group)
+3. Create sub-issues — one per phase, each referencing the parent issue and spec section
+4. Rescope the parent issue to Phase 1 only
+5. Continue shipping Phase 1; subsequent phases ship as separate `/ship N` runs
+
+This is not a judgment call. If AC count > 6, decomposition is mandatory and automatic.
+
+- [x] SC-503: workflows/ship.js contains [DECOMPOSE_REQUIRED, sub-issue, ac.length, 6]
+
 **Output:**
 - ACs posted to GitHub issue via `gh issue comment` (BEFORE execution starts)
 - Marcus brief prepared (from ~/.claude/PAI/BRIEF-TEMPLATES.md)
