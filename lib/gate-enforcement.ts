@@ -214,13 +214,14 @@ export function buildGatePending(
 
 /**
  * Log an enforcement signal event to the signals file.
+ *
+ * SC-504: appendFileSync creates the file if absent — the previous
+ * existence guard silently dropped signals on first write.
  */
 export function logSignal(signalsDir: string, signalsFile: string, event: Record<string, unknown>): void {
   try {
     if (!existsSync(signalsDir)) mkdirSync(signalsDir, { recursive: true });
-    if (existsSync(signalsFile)) {
-      appendFileSync(signalsFile, JSON.stringify(event) + '\n', 'utf-8');
-    }
+    appendFileSync(signalsFile, JSON.stringify(event) + '\n', 'utf-8');
   } catch (err) {
     console.error(`[GateEnforcement] Signal log write failed: ${err}`);
   }

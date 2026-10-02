@@ -41,6 +41,7 @@ import {
   logSignal,
   makeEnforcementDecision,
 } from '../lib/gate-enforcement';
+import { checkDocHygiene } from '../lib/doc-hygiene';
 
 const SIGNALS_DIR = join(BASE_DIR, 'MEMORY', 'LEARNING', 'SIGNALS');
 const SIGNALS_FILE = join(SIGNALS_DIR, 'signals.jsonl');
@@ -87,6 +88,22 @@ async function main() {
       gate: pending.gate, issue: pending.issue,
       strike: decision.newStrikeCount, tool: toolName, action: 'nag',
     });
+
+    // SC-508: doc-hygiene signal check — log findings for promotion tracking
+    try {
+      const projectRoot = join(BASE_DIR, '..');
+      const hygieneResult = checkDocHygiene(projectRoot);
+      if (!hygieneResult.pass) {
+        for (const finding of hygieneResult.findings) {
+          logSignal(SIGNALS_DIR, SIGNALS_FILE, {
+            ts: new Date().toISOString(), type: 'doc-hygiene',
+            checkId: finding.checkId, file: finding.file,
+            level: finding.level, message: finding.message,
+          });
+        }
+      }
+    } catch { /* doc-hygiene signals are best-effort */ }
+
     process.exit(0);
   } catch (err) {
     console.error(`[GateEnforcement] Error: ${err}`);

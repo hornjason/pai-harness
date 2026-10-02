@@ -341,12 +341,15 @@ describe('gate-enforcement', () => {
       expect(content).toContain('"type":"test"');
     });
 
-    it('creates signals directory if missing', () => {
+    it('creates signals directory and file if missing (SC-504: no silent drop)', () => {
       const signalsDir = join(tempDir, 'new-signals');
       const signalsFile = join(signalsDir, 'signals.jsonl');
 
-      // Should not throw, even though file doesn't exist
+      // SC-504: logSignal must create the file when it doesn't exist
       logSignal(signalsDir, signalsFile, { type: 'test' });
+
+      const content = require('fs').readFileSync(signalsFile, 'utf-8');
+      expect(content).toContain('"type":"test"');
     });
 
     it('does not throw on write failure', () => {
