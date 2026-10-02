@@ -1,3 +1,10 @@
+---
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-10-02
+---
+
 # rungate
 
 ## Project Identity
@@ -25,6 +32,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Conformity | `bun test test/scaffold-conformity.test.ts` |
 | Create spec | `bunx rungate create-spec "title"` |
 | Create SC | `bunx rungate create-sc --pattern <name> --params '<json>'` |
+| Convert spec | `bun scripts/convert-spec.ts <file> [--dry-run] [--title "..."] [--governs "..."]` |
 | Re-scaffold | `bun ~/Projects/rungate/scripts/scaffold-project.ts .` |
 
 

@@ -8,6 +8,7 @@
     "prompts/",
     "scripts/scaffold-project.ts",
     "scripts/extract-constraints.ts",
+    "scripts/convert-spec.ts",
     "scripts/sync-spec-tests.ts",
     "scripts/generate-code-map.ts",
     "scripts/audit-specs.ts",
