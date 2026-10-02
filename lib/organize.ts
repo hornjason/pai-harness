@@ -384,31 +384,30 @@ function scanExternalSources(projectRoot: string, sources: OrganizeExternalSourc
 // ── Execute proposals (move files) ───────────────────────────────
 
 function executeProposals(root: string, proposals: OrganizeProposal[]): void {
-  // Collect all source->target mappings for reference updating
   const moveMap = new Map<string, string>();
 
   for (const proposal of proposals) {
-    const srcPath = join(root, proposal.source);
+    const isAbsolute = proposal.source.startsWith("/");
+    const srcPath = isAbsolute ? proposal.source : join(root, proposal.source);
     const tgtPath = join(root, proposal.target);
 
     if (!existsSync(srcPath)) continue;
 
-    // Ensure target directory exists
     const tgtDir = dirname(tgtPath);
     if (!existsSync(tgtDir)) {
       mkdirSync(tgtDir, { recursive: true });
     }
 
-    // Check if source is a symlink
-    const isSymlink = lstatSync(srcPath).isSymbolicLink();
-
-    if (isSymlink) {
-      // Preserve symlink: read target, create new symlink, remove old
+    if (isAbsolute) {
+      // External source: create symlink, don't move
+      if (!existsSync(tgtPath)) {
+        symlinkSync(srcPath, tgtPath);
+      }
+    } else if (lstatSync(srcPath).isSymbolicLink()) {
       const linkTarget = readlinkSync(srcPath);
       unlinkSync(srcPath);
       symlinkSync(linkTarget, tgtPath);
     } else {
-      // Regular file: move it
       renameSync(srcPath, tgtPath);
     }
 
