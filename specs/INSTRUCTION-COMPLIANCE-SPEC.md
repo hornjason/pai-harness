@@ -334,7 +334,7 @@ Ship succeeds → Grade (always) →
 - [x] SC-468: lib/directive-extractor.ts contains [parseProcessOverrides, process_overrides]
 - [x] SC-469: extractPromptContent concatenates all user messages — not just first — to detect AGENTS.md injection in workflow relay transcripts
 - [x] SC-470: scripts/test-brief.ts contains [--prompt, promptFile, replayPrompt]
-- [ ] SC-471: test-brief --prompt runs COMP-level grading alongside directive grading and compares against baseline (behavioral)
+- [x] SC-471: test-brief --prompt runs COMP-level grading alongside directive grading and compares against baseline (behavioral)
 
 SCs for #588 (config-driven grading) and #589 (remediation pass) will be added when those issues are built. See design decisions D-8 through D-12 and the Remediation Flow section above for the design.
 
