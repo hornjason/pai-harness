@@ -1384,6 +1384,27 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
           for (const s of skipped) log(`⏭️  HILL-CLIMB: ${s}`)
           if (applied.length > 0) {
             log(`📝 Brief updated for ${g.role} — ${applied.length} reinforcement(s) applied automatically`)
+
+            // Auto-rerun: verify hill-climb improved scores
+            try {
+              const transcriptDir = require('path').join(WORK_DIR, 'transcripts')
+              const transcriptFiles = require('fs').existsSync(transcriptDir)
+                ? require('fs').readdirSync(transcriptDir).filter(f => f.includes(g.role) && f.endsWith('.jsonl'))
+                : []
+              if (transcriptFiles.length > 0) {
+                const latestTranscript = require('path').join(transcriptDir, transcriptFiles[transcriptFiles.length - 1])
+                log(`🔄 HILL-CLIMB VERIFY: re-grading ${g.role} with patched brief...`)
+                const reGradeResult = await agent(
+                  `Run: bun ${HARNESS_ROOT}/scripts/test-brief.ts ${g.role} --prompt=${latestTranscript}\n\nReport the compliance score as JSON: {"role": "${g.role}", "total": N, "followed": N, "pct": N}`,
+                  { label: `hill-climb-verify-${g.role}`, phase: 'Grade', model: 'sonnet' }
+                )
+                if (reGradeResult) {
+                  log(`📊 HILL-CLIMB RESULT: ${reGradeResult}`)
+                }
+              }
+            } catch (hcErr) {
+              log(`WARN: Hill-climb verify failed: ${hcErr.message}`)
+            }
           }
         }
       }
