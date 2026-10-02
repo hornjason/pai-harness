@@ -1,0 +1,15 @@
+{
+  "project": "rungate",
+  "repo": "hornjason/rungate",
+  "issueRepo": "hornjason/pai-config",
+  "contextDocs": {
+    "harness": "HARNESS.md",
+    "agents": "AGENTS.md"
+  },
+  "consumers": [],
+  "pages": {},
+  "test": {
+    "command": "bun test --parallel --no-isolate",
+    "timeout": 300000
+  }
+}

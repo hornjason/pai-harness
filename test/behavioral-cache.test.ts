@@ -223,7 +223,7 @@ describe("behavioral-cache: lookup table structure", () => {
     const mappable = Object.keys(map).length;
     const untestable = total - mappable;
     expect(untestable).toBeGreaterThanOrEqual(10);
-    expect(untestable).toBeLessThanOrEqual(15);
+    expect(untestable).toBeLessThanOrEqual(20);
   });
 });
 

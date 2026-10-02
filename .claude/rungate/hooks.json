@@ -1,0 +1,126 @@
+[
+  {
+    "name": "BashToolGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Bash",
+    "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
+  },
+  {
+    "name": "TestSuiteGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Bash",
+    "description": "Blocks full test suite (bun test) after 2 runs — enforces DIR-L29 mechanically (Tier 3)"
+  },
+  {
+    "name": "AgentBriefGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Agent",
+    "description": "Validates agent brief templates and enforces ship-active marker"
+  },
+  {
+    "name": "AgentVerdictCapture",
+    "hookFor": "SubagentStop",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
+    "enabled": true,
+    "description": "Captures agent verdicts and writes to workflow-state.json"
+  },
+  {
+    "name": "AutoVerifyGate",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
+    "enabled": true,
+    "matcher": "Agent",
+    "description": "Nudges DA to run verify gate after agent completion"
+  },
+  {
+    "name": "CommitEnforcement",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
+    "enabled": true,
+    "matcher": "Agent",
+    "description": "Detects uncommitted changes and UI file changes in agent worktrees"
+  },
+  {
+    "name": "GateEnforcement",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
+    "enabled": true,
+    "matcher": ".*",
+    "description": "Nags on gate failures and blocks Skill calls after max strikes"
+  },
+  {
+    "name": "IssueCloseGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Bash",
+    "description": "Blocks gh issue close without ship-gate PASS and HMAC validation"
+  },
+  {
+    "name": "MergeGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/MergeGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Bash",
+    "description": "Early warning on git merge to main without verify-gate passing"
+  },
+  {
+    "name": "PostCompact",
+    "hookFor": "PostCompact",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
+    "enabled": true,
+    "description": "Re-injects critical rules after context window compaction"
+  },
+  {
+    "name": "SpecConformityTrigger",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/SpecConformityTrigger.hook.ts",
+    "enabled": true,
+    "matcher": "Edit|Write",
+    "description": "Auto-runs conformity when spec files are modified"
+  },
+  {
+    "name": "SpecSCGuard",
+    "hookFor": "PostToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/SpecSCGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Edit|Write",
+    "description": "Validates new SC lines in spec files have matching patterns"
+  },
+  {
+    "name": "StaleTTLCleanup",
+    "hookFor": "SessionStart",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
+    "enabled": true,
+    "description": "Cleans up stale workflow-state.json and ship-active files"
+  },
+  {
+    "name": "TaskCompleted",
+    "hookFor": "TaskCompleted",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/TaskCompleted.hook.ts",
+    "enabled": true,
+    "description": "Quality gates before task completion (tests, uncommitted changes, conformity)"
+  },
+  {
+    "name": "VerifyPhaseLock",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/VerifyPhaseLock.hook.ts",
+    "enabled": true,
+    "matcher": "Bash",
+    "description": "Blocks gh issue create during VERIFY phase"
+  },
+  {
+    "name": "WorkflowStateGuard",
+    "hookFor": "PreToolUse",
+    "command": "bun ${RUNGATE_HOOKS_DIR}/WorkflowStateGuard.hook.ts",
+    "enabled": true,
+    "matcher": "Write|Edit",
+    "description": "Blocks direct Write/Edit of workflow-state.json"
+  }
+]

@@ -143,6 +143,7 @@ created: ${today}
 updated: ${today}
 governs: ${governs}
 testable: true
+compliance: strict
 ---
 
 # ${title}

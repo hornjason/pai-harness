@@ -1,0 +1,98 @@
+{
+  "rules": {
+    "COMP-2": {
+      "description": "Full test suite run limit",
+      "directives": ["DIR-L29"],
+      "reinforcement": "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "3": { "action": "deploy-hook", "hook": "TestSuiteGuard" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    },
+    "COMP-6": {
+      "description": "Read each file once",
+      "directives": ["DIR-L31", "DIR-L23"],
+      "reinforcement": "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "2": { "action": "reinforce-agents-md" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    },
+    "COMP-7": {
+      "description": "No cat/head/tail via Bash",
+      "directives": ["DIR-L25"],
+      "reinforcement": "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "3": { "action": "deploy-hook", "hook": "BashToolGuard" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    },
+    "COMP-9": {
+      "description": "Tool call budget limit",
+      "directives": [],
+      "reinforcement": "Total tool calls must stay under 40. Batch related reads, use targeted tests.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "3": { "action": "deploy-hook", "hook": "ToolBudgetGuard" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    },
+    "COMP-12": {
+      "description": "Grep before Read",
+      "directives": [],
+      "reinforcement": "Grep BEFORE Read for any file not in Key Files. Find the section, then Read with offset/limit.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "2": { "action": "reinforce-agents-md" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    },
+    "COMP-13": {
+      "description": "TDD test-first ordering",
+      "directives": [],
+      "reinforcement": "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
+      "tiers": {
+        "1": { "action": "reinforce-brief" },
+        "2": { "action": "reinforce-agents-md" }
+      },
+      "threshold": { "consecutive": 3, "promote": 5 }
+    }
+  },
+  "defaults": {
+    "consecutiveFailThreshold": 3,
+    "tierPromotionThreshold": 5
+  },
+  "organize": {
+    "fileTypes": [".md", ".html", ".pdf"],
+    "artifactClassification": {
+      ".html": "reference",
+      ".pdf": "reference"
+    },
+    "externalSources": [
+      {
+        "path": "~/.claude/MEMORY/RESEARCH/",
+        "type": "research",
+        "target": "docs/research",
+        "method": "symlink",
+        "matchBy": "project-name"
+      },
+      {
+        "path": "~/.claude/PAI/Specs/",
+        "type": "spec",
+        "target": "reference",
+        "method": "symlink",
+        "matchBy": "content-reference"
+      },
+      {
+        "path": "~/.claude/PAI/CONTEXT_ROUTING.md",
+        "type": "routing",
+        "target": null,
+        "method": "discover",
+        "matchBy": "directory-match"
+      }
+    ]
+  }
+}

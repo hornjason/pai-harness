@@ -8,9 +8,11 @@ import {
   formatComplianceReport,
   detectHillClimbNeeds,
   applyHillClimb,
+  setComplianceProjectRoot,
   type ComplianceEntry,
   type ComplianceReport,
 } from "../lib/compliance-report.js";
+import { loadRungateConfig } from "../lib/config-loader.js";
 
 const TMP = "/tmp/rungate-compliance-test";
 
@@ -309,6 +311,86 @@ name: marcus
       expect(actions.length).toBe(1);
       expect(actions[0].compId).toBe("COMP-7");
       expect(actions[0].tier).toBe(3);
+    });
+
+    test("detectHillClimbNeeds reads from compliance.json when available", () => {
+      const configDir = join(TMP, "project", ".claude", "rungate");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "compliance.json"), JSON.stringify({
+        rules: {
+          "COMP-99": {
+            description: "Custom test rule from config",
+            directives: ["DIR-L99"],
+            reinforcement: "Custom reinforcement from compliance.json",
+            tiers: { "1": { "action": "reinforce-brief" }, "3": { "action": "deploy-hook", "hook": "CustomGuard" } },
+            threshold: { consecutive: 2, promote: 4 }
+          }
+        },
+        defaults: { consecutiveFailThreshold: 2, tierPromotionThreshold: 4 },
+        organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] }
+      }));
+
+      setComplianceProjectRoot(join(TMP, "project"));
+
+      const report: ComplianceReport = {
+        role: "marcus",
+        issue: "#100",
+        current: { followed: 8, total: 13, pct: 62 },
+        threshold: 70,
+        belowThreshold: true,
+        trend: { pcts: [62], direction: "stable" },
+        compTrends: [
+          { compId: "DIR-L99", rule: "Custom rule", lastN: ["VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED"], passRate: 0, direction: "stable" },
+        ],
+        alerts: [],
+      };
+      const actions = detectHillClimbNeeds(report);
+      expect(actions.length).toBe(1);
+      expect(actions[0].compId).toBe("COMP-99");
+      expect(actions[0].reinforcement).toBe("Custom reinforcement from compliance.json");
+      expect(actions[0].tier).toBe(3);
+      expect(actions[0].promotion).toContain("CustomGuard");
+
+      setComplianceProjectRoot("");
+    });
+  });
+
+  describe("config loader", () => {
+    test("loadRungateConfig reads .claude/rungate/ directory", () => {
+      const projectDir = join(TMP, "loader-test");
+      const configDir = join(projectDir, ".claude", "rungate");
+      mkdirSync(configDir, { recursive: true });
+      writeFileSync(join(configDir, "config.json"), JSON.stringify({
+        project: "test-project", repo: "test/repo", issueRepo: "test/repo",
+        contextDocs: {}, consumers: [], pages: {}, test: { command: "bun test", timeout: 30000 }
+      }));
+      writeFileSync(join(configDir, "roles.json"), JSON.stringify({ marcus: { brief: "m.md" } }));
+      writeFileSync(join(configDir, "hooks.json"), JSON.stringify([]));
+      writeFileSync(join(configDir, "compliance.json"), JSON.stringify({
+        rules: { "COMP-99": { description: "test", directives: [], reinforcement: "test", tiers: {}, threshold: { consecutive: 3, promote: 5 } } },
+        defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+        organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] }
+      }));
+
+      const config = loadRungateConfig(projectDir);
+      expect(config.project).toBe("test-project");
+      expect(config.roles).toHaveProperty("marcus");
+      expect(config.hooks).toEqual([]);
+      expect(config.compliance).toBeDefined();
+      expect(config.compliance!.rules["COMP-99"].description).toBe("test");
+    });
+
+    test("loadRungateConfig falls back to rungate.json", () => {
+      const projectDir = join(TMP, "fallback-test");
+      mkdirSync(join(projectDir, ".claude"), { recursive: true });
+      writeFileSync(join(projectDir, ".claude", "rungate.json"), JSON.stringify({
+        project: "fallback-project", repo: "x/y", issueRepo: "x/y",
+        contextDocs: {}, consumers: [], pages: {}, test: { command: "bun test", timeout: 30000 },
+        roles: {}, hooks: []
+      }));
+
+      const config = loadRungateConfig(projectDir);
+      expect(config.project).toBe("fallback-project");
     });
   });
 });

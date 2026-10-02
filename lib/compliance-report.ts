@@ -227,19 +227,81 @@ export function formatComplianceReport(report: ComplianceReport): string {
   return lines.join("\n");
 }
 
-// ── DIR-L → COMP mapping ─────────────────────────────────
-// The grader assigns DIR-LN IDs (line N of the brief). The hill-climb
-// system uses COMP-N IDs. This mapping connects them so escalation
-// fires on directive-level violations, not just structural COMP checks.
-const DIR_TO_COMP: Record<string, string> = {
-  "DIR-L29": "COMP-2",   // bun test run limit
-  "DIR-L25": "COMP-7",   // cat/head/tail via Bash
-  "DIR-L31": "COMP-6",   // read each file once
-  "DIR-L23": "COMP-6",   // duplicate reads (discovery)
-};
+// ── Config-driven compliance maps ────────────────────────
+// All mappings (DIR→COMP, reinforcements, tier promotions) are read
+// from .claude/rungate/compliance.json. Hardcoded fallbacks exist only
+// for backward compatibility when the config directory doesn't exist.
+import {
+  loadComplianceConfig,
+  buildDirToCompMap,
+  buildReinforcementMap,
+  buildTierPromotionMap,
+  type ComplianceConfig,
+} from "./config-loader.js";
+
+let _complianceCache: ComplianceConfig | null | undefined;
+let _projectRoot: string | undefined;
+
+export function setComplianceProjectRoot(root: string): void {
+  _projectRoot = root;
+  _complianceCache = undefined;
+}
+
+function getComplianceConfig(): ComplianceConfig | null {
+  if (_complianceCache !== undefined) return _complianceCache;
+  if (_projectRoot) {
+    _complianceCache = loadComplianceConfig(_projectRoot);
+  } else {
+    _complianceCache = null;
+  }
+  return _complianceCache;
+}
+
+function getDirToComp(): Record<string, string> {
+  const config = getComplianceConfig();
+  if (config) return buildDirToCompMap(config);
+  return {
+    "DIR-L29": "COMP-2",
+    "DIR-L25": "COMP-7",
+    "DIR-L31": "COMP-6",
+    "DIR-L23": "COMP-6",
+  };
+}
+
+function getReinforcementMap(): Record<string, string> {
+  const config = getComplianceConfig();
+  if (config) return buildReinforcementMap(config);
+  return {
+    "COMP-7": "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+    "COMP-12": "Grep BEFORE Read for any file not in Key Files. Find the section, then Read with offset/limit.",
+    "COMP-13": "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
+    "COMP-6": "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",
+    "COMP-9": "Total tool calls must stay under 40. Batch related reads, use targeted tests.",
+    "COMP-2": "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
+  };
+}
+
+function getTierPromotions(): Record<string, { tier: 2 | 3; promotion: string }> {
+  const config = getComplianceConfig();
+  if (config) return buildTierPromotionMap(config);
+  return {
+    "COMP-7": { tier: 3, promotion: "Deploy BashToolGuard hook" },
+    "COMP-12": { tier: 2, promotion: "Add grep-before-read reinforcement" },
+    "COMP-13": { tier: 2, promotion: "Add TDD-sequence reinforcement" },
+    "COMP-6": { tier: 2, promotion: "Add duplicate-read detection reinforcement" },
+    "COMP-9": { tier: 3, promotion: "Deploy tool-call budget hook" },
+    "COMP-2": { tier: 3, promotion: "Deploy test-run limiter hook" },
+  };
+}
+
+function getThresholds(): { consecutive: number; promote: number } {
+  const config = getComplianceConfig();
+  if (config) return { consecutive: config.defaults.consecutiveFailThreshold, promote: config.defaults.tierPromotionThreshold };
+  return { consecutive: 3, promote: 5 };
+}
 
 function normalizeDirToComp(id: string): string {
-  return DIR_TO_COMP[id] || id;
+  return getDirToComp()[id] || id;
 }
 
 // ── Auto hill-climb ──────────────────────────────────────
@@ -252,62 +314,6 @@ export interface HillClimbAction {
   tier: 1 | 2 | 3;
   promotion?: string;
 }
-
-const BRIEF_REINFORCEMENTS: Record<string, string> = {
-  "COMP-7":
-    "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
-  "COMP-12":
-    "Grep BEFORE Read for any file not in Key Files. Find the section, then Read with offset/limit.",
-  "COMP-13":
-    "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
-  "COMP-6":
-    "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",
-  "COMP-9":
-    "Total tool calls must stay under 40. Batch related reads, use targeted tests.",
-  "COMP-2":
-    "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
-};
-
-const CONSECUTIVE_FAIL_THRESHOLD = 3;
-const TIER_PROMOTION_THRESHOLD = 5;
-
-const TIER_PROMOTIONS: Record<string, { tier: 2 | 3; promotion: string }> = {
-  "COMP-7": {
-    tier: 3,
-    promotion:
-      "Deploy BashToolGuard hook (PreToolUse on Bash) to mechanically block cat/head/tail commands",
-  },
-  "COMP-1": {
-    tier: 2,
-    promotion:
-      "Inject AGENTS.md read instruction into briefedAgent() fallback when taskContextExcerpts is missing",
-  },
-  "COMP-12": {
-    tier: 2,
-    promotion:
-      "Add grep-before-read reinforcement rule to agent brief frontmatter tiers.reinforcement[]",
-  },
-  "COMP-13": {
-    tier: 2,
-    promotion:
-      "Add TDD-sequence reinforcement to brief frontmatter and inject ordering reminder in briefedAgent()",
-  },
-  "COMP-6": {
-    tier: 2,
-    promotion:
-      "Add duplicate-read detection reinforcement to brief frontmatter tiers.reinforcement[]",
-  },
-  "COMP-9": {
-    tier: 3,
-    promotion:
-      "Deploy tool-call budget hook (PostToolUse) to warn at 30 calls, block at 50",
-  },
-  "COMP-2": {
-    tier: 3,
-    promotion:
-      "Deploy test-run limiter hook (PreToolUse on Bash) to block 3rd+ full suite run",
-  },
-};
 
 function countConsecutiveFails(verdicts: string[]): number {
   let count = 0;
@@ -325,23 +331,26 @@ export function detectHillClimbNeeds(report: ComplianceReport): HillClimbAction[
     const compId = normalizeDirToComp(ct.compId);
     if (seen.has(compId)) continue;
     seen.add(compId);
-    if (!BRIEF_REINFORCEMENTS[compId]) continue;
+    const reinforcements = getReinforcementMap();
+    const promotions = getTierPromotions();
+    const thresholds = getThresholds();
+    if (!reinforcements[compId]) continue;
     const consecutiveFails = countConsecutiveFails(ct.lastN);
-    if (consecutiveFails >= TIER_PROMOTION_THRESHOLD && TIER_PROMOTIONS[compId]) {
-      const promo = TIER_PROMOTIONS[compId];
+    if (consecutiveFails >= thresholds.promote && promotions[compId]) {
+      const promo = promotions[compId];
       actions.push({
         compId,
         rule: ct.rule,
-        reinforcement: BRIEF_REINFORCEMENTS[compId],
+        reinforcement: reinforcements[compId],
         consecutiveFails,
         tier: promo.tier,
         promotion: promo.promotion,
       });
-    } else if (consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
+    } else if (consecutiveFails >= thresholds.consecutive) {
       actions.push({
         compId,
         rule: ct.rule,
-        reinforcement: BRIEF_REINFORCEMENTS[compId],
+        reinforcement: reinforcements[compId],
         consecutiveFails,
         tier: 1,
       });

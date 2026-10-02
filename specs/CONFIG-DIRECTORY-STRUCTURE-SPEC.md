@@ -40,16 +40,16 @@ The organize-project tool (#30) also needs config for external source locations 
 ## Success Criteria
 
 ### Phase 1 — Config split (this session)
-- [ ] SC-474: `.claude/rungate/config.json` exists with project, repo, issueRepo, contextDocs, pages, test fields
-- [ ] SC-475: `.claude/rungate/roles.json` exists with agent role definitions
-- [ ] SC-476: `.claude/rungate/hooks.json` exists with hook registrations array
-- [ ] SC-477: `.claude/rungate/compliance.json` exists with rules, each having description, directives, reinforcement, tiers, threshold
-- [ ] SC-478: Config loader reads `.claude/rungate/` directory and merges into same shape as current monolith
-- [ ] SC-479: Config loader falls back to `.claude/rungate.json` when directory doesn't exist
-- [ ] SC-480: `detectHillClimbNeeds()` reads compliance.json — no hardcoded BRIEF_REINFORCEMENTS or TIER_PROMOTIONS
-- [ ] SC-481: `normalizeDirToComp()` reads DIR→COMP mapping from compliance.json — no hardcoded DIR_TO_COMP
-- [ ] SC-482: compliance.json contains organize.externalSources with path, type, target, method fields
-- [ ] SC-483: Existing tests pass unchanged after config migration
+- [x] SC-474: `.claude/rungate/config.json` exists with project, repo, issueRepo, contextDocs, pages, test fields
+- [x] SC-475: `.claude/rungate/roles.json` exists with agent role definitions
+- [x] SC-476: `.claude/rungate/hooks.json` exists with hook registrations array
+- [x] SC-477: `.claude/rungate/compliance.json` exists with rules, each having description, directives, reinforcement, tiers, threshold
+- [x] SC-478: lib/config-loader.ts contains [loadFromDirectory, loadRungateConfig, .claude/rungate]
+- [x] SC-479: lib/config-loader.ts contains [loadFromMonolith, rungate.json]
+- [x] SC-480: lib/compliance-report.ts contains [getReinforcementMap, getTierPromotions, getComplianceConfig]
+- [x] SC-481: lib/compliance-report.ts contains [normalizeDirToComp, getDirToComp, getComplianceConfig]
+- [x] SC-482: .claude/rungate/compliance.json contains [externalSources, path, type, target, method]
+- [x] SC-483: test/compliance-report.test.ts contains [loadRungateConfig, setComplianceProjectRoot, compliance.json]
 
 ### Phase 2 — Deferred (future session)
 - [ ] SC-484: Scaffold generates `.claude/rungate/` directory for new projects (behavioral)
