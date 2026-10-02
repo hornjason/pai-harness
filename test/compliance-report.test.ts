@@ -270,5 +270,45 @@ name: marcus
       expect(result.skipped.length).toBe(1);
       expect(result.skipped[0]).toContain("already present");
     });
+
+    test("detectHillClimbNeeds maps DIR-L29 to COMP-2 for escalation", () => {
+      const report: ComplianceReport = {
+        role: "marcus",
+        issue: "#100",
+        current: { followed: 8, total: 13, pct: 62 },
+        threshold: 70,
+        belowThreshold: true,
+        trend: { pcts: [62], direction: "stable" },
+        compTrends: [
+          { compId: "DIR-L29", rule: "bun test at most TWICE", lastN: ["VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED"], passRate: 0, direction: "stable" },
+        ],
+        alerts: [],
+      };
+      const actions = detectHillClimbNeeds(report);
+      expect(actions.length).toBe(1);
+      expect(actions[0].compId).toBe("COMP-2");
+      expect(actions[0].consecutiveFails).toBe(6);
+      expect(actions[0].tier).toBe(3);
+      expect(actions[0].promotion).toContain("test-run limiter");
+    });
+
+    test("detectHillClimbNeeds maps DIR-L25 to COMP-7 for escalation", () => {
+      const report: ComplianceReport = {
+        role: "discovery",
+        issue: "#100",
+        current: { followed: 3, total: 6, pct: 50 },
+        threshold: 70,
+        belowThreshold: true,
+        trend: { pcts: [50], direction: "stable" },
+        compTrends: [
+          { compId: "DIR-L25", rule: "cat via Bash", lastN: ["VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED", "VIOLATED"], passRate: 0, direction: "stable" },
+        ],
+        alerts: [],
+      };
+      const actions = detectHillClimbNeeds(report);
+      expect(actions.length).toBe(1);
+      expect(actions[0].compId).toBe("COMP-7");
+      expect(actions[0].tier).toBe(3);
+    });
   });
 });

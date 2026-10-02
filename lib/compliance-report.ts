@@ -131,7 +131,7 @@ export function generateComplianceReport(
 
   const alerts: string[] = [];
   for (const ct of compTrends) {
-    if (!ct.compId.startsWith("COMP-")) continue;
+    if (!ct.compId.startsWith("COMP-") && !ct.compId.startsWith("DIR-")) continue;
     if (ct.passRate <= ALERT_THRESHOLD && ct.lastN.length >= 2) {
       alerts.push(
         `${ct.compId}: ${Math.round(ct.passRate * 100)}% pass rate — ${ct.rule} needs improvement`
@@ -227,6 +227,21 @@ export function formatComplianceReport(report: ComplianceReport): string {
   return lines.join("\n");
 }
 
+// ── DIR-L → COMP mapping ─────────────────────────────────
+// The grader assigns DIR-LN IDs (line N of the brief). The hill-climb
+// system uses COMP-N IDs. This mapping connects them so escalation
+// fires on directive-level violations, not just structural COMP checks.
+const DIR_TO_COMP: Record<string, string> = {
+  "DIR-L29": "COMP-2",   // bun test run limit
+  "DIR-L25": "COMP-7",   // cat/head/tail via Bash
+  "DIR-L31": "COMP-6",   // read each file once
+  "DIR-L23": "COMP-6",   // duplicate reads (discovery)
+};
+
+export function normalizeDirToComp(id: string): string {
+  return DIR_TO_COMP[id] || id;
+}
+
 // ── Auto hill-climb ──────────────────────────────────────
 
 export interface HillClimbAction {
@@ -305,24 +320,28 @@ function countConsecutiveFails(verdicts: string[]): number {
 
 export function detectHillClimbNeeds(report: ComplianceReport): HillClimbAction[] {
   const actions: HillClimbAction[] = [];
+  const seen = new Set<string>();
   for (const ct of report.compTrends) {
-    if (!BRIEF_REINFORCEMENTS[ct.compId]) continue;
+    const compId = normalizeDirToComp(ct.compId);
+    if (seen.has(compId)) continue;
+    seen.add(compId);
+    if (!BRIEF_REINFORCEMENTS[compId]) continue;
     const consecutiveFails = countConsecutiveFails(ct.lastN);
-    if (consecutiveFails >= TIER_PROMOTION_THRESHOLD && TIER_PROMOTIONS[ct.compId]) {
-      const promo = TIER_PROMOTIONS[ct.compId];
+    if (consecutiveFails >= TIER_PROMOTION_THRESHOLD && TIER_PROMOTIONS[compId]) {
+      const promo = TIER_PROMOTIONS[compId];
       actions.push({
-        compId: ct.compId,
+        compId,
         rule: ct.rule,
-        reinforcement: BRIEF_REINFORCEMENTS[ct.compId],
+        reinforcement: BRIEF_REINFORCEMENTS[compId],
         consecutiveFails,
         tier: promo.tier,
         promotion: promo.promotion,
       });
     } else if (consecutiveFails >= CONSECUTIVE_FAIL_THRESHOLD) {
       actions.push({
-        compId: ct.compId,
+        compId,
         rule: ct.rule,
-        reinforcement: BRIEF_REINFORCEMENTS[ct.compId],
+        reinforcement: BRIEF_REINFORCEMENTS[compId],
         consecutiveFails,
         tier: 1,
       });
