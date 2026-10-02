@@ -2,29 +2,36 @@
 
 **Current phase: All phases complete**
 
-Session 24 (2026-10-02) — AFK batch: 4 issues closed, compliance loop gaps fixed.
+Session 24 (2026-10-02) — AFK batch + config architecture + POV validation.
 
 Key deliverables:
-  - 4 P0/P1 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize)
-  - TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29 (100% violation rate → mechanically blocked)
-  - Hill-climb escalation bug: DIR-L violations were invisible to detectHillClimbNeeds (ID namespace mismatch). Fixed with DIR→COMP mapping
-  - #31 created: directory-based config split to replace hardcoded compliance maps
+  - 5 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize), #31 Phase 1+2 (12/14 SCs)
+  - #31: .claude/rungate/ directory with config.json, roles.json, hooks.json, compliance.json. Config loader with fallback. Hill-climb reads from config.
+  - organize-project: now handles .html/.pdf via config, scans external sources (MEMORY/RESEARCH), symlinks external dirs
+  - POV project fully organized: 7 files moved/symlinked, POV-SPEC.md converted to RunGate format (43 SCs), rungate.json + agent briefs created
+  - TestSuiteGuard hook (SC-473): Tier 3 for DIR-L29. Hill-climb DIR→COMP mapping fixed.
+  - create-spec.ts now includes compliance:strict
+  - Stale PRs #21, #22 closed
 
-Compliance scores this session:
-  #28 Marcus: 12/15 (80%). #27 Marcus: 11-12/15 (73-80%). #30 Marcus: 11/15 (73%)
-  Persistent violations: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced via TestSuiteGuard)
+POV validation:
+  organize-project: 7 proposals (HTML, PDF, MD, research vault) — all applied correctly
+  convert-spec: 43 SCs extracted from POV-SPEC.md, zero duplicates
+  extract-constraints: 46 candidates from root + specs
 
-Remaining issues: #23 (P3 parallel exec), #24 (P2 doc-hygiene, needs council), #25 (P3 MCP in ship), #31 (P1 config split)
+Gap found: scaffold only generates briefs/config for projectType=code, not infra. POV was type:infra → no briefs.
 
-Next: validate new tools against POV project, then ship #25 or #31.
+Next P0: worktree hook propagation + auto-rerun after escalation (closes the hill-climb loop).
+Suite: 1786 pass, 0 fail.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P1: #31 Directory-based rungate config + self-describing compliance policy — needs interactive session (.claude/ permissions)
-2. P1: Validate new tools (convert-spec, organize-project, extract-constraints) against POV project
-3. P2: #24 Doc-hygiene: content alignment — needs council
-4. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow — structured calls, less shell overhead
-5. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
+1. P0: Worktree hook propagation — briefedAgent() copies hooks to worktree settings before spawn (~20 lines in ship.js)
+2. P0: Auto-rerun after escalation — grade → patch brief → re-test → compare → commit if improved (~50 lines in ship.js)
+3. P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs
+4. P1: #31 SC-484/485 — scaffold generates .claude/rungate/ directory, re-scaffold splits monolith
+5. P2: #24 Doc-hygiene: content alignment — needs council
+6. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow
+7. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
