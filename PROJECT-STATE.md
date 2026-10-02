@@ -2,32 +2,31 @@
 
 **Current phase: All phases complete**
 
-Session 26 (2026-10-02) — Starting #25 GitHub API migration implementation.
+Session 25 continued (2026-10-02) — GitHub API migration complete, council done.
 
-Branch 25-github-api-phase1 exists with 3 unmerged commits (818 additions):
-  - lib/github.ts created (197 lines) — Octokit wrapper with all 8 exports
-  - test/github-client.test.ts created (243 lines) — mock-based tests
-  - @octokit/rest added to package.json
-  - gates/gate-executor.ts migrated — no more execSync gh
-  - gates/orchestrator.ts migrated — no more execSync gh
-  - hooks/IssueCloseGuard.hook.ts migrated — Bun.spawnSync removed (comments remain)
-  - lib/prior-branch.ts migrated to Octokit listPRs
-  - lib/branch-cleanup.ts migrated to Octokit listPRs
-  - workflows/prove.js migrated to MCP tools
-  - workflows/ship.js cleaned up
+Key deliverables:
+  - #25/#32/#33/#34 ALL CLOSED: Full Octokit + MCP two-layer migration
+  - lib/github.ts (197 lines): 8 exports, POST-additive labels, GITHUB_TOKEN auth
+  - test/github-client.test.ts (243 lines): 13 mock-based tests
+  - Infrastructure migrated: gates/gate-executor, gates/orchestrator, hooks/IssueCloseGuard, lib/prior-branch, lib/branch-cleanup
+  - Agent prompts migrated: prove.js → MCP, ship.js → MCP
+  - Decomposition gate added to ship.js (SC-503): >6 ACs auto-splits into sub-issues
+  - GITHUB-API-MIGRATION-SPEC created: 15 SCs, 4 phases, 7 design decisions
+  - Council for #24 (doc-hygiene) completed: 12 decisions, 3 rounds, 3 members
 
-Verify gate failed on:
-  - AC-7: false positive — grep matched 'gh issue' in comments/strings, not CLI calls
-  - AC-16: full test suite needs to pass after merge
-  - Schema warnings: low keyword coverage, missing evidenceValidator/adversary
+Pipeline stats this session:
+  Ship #31: 27 agents, 77 min, 909K tokens (pre-TestSuiteGuard)
+  Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)
+  Ship #25 run 2: 25 agents, 75 min, 1M tokens (Discovery ignored rescoping — decomposition gate not yet active)
+  Council #24: 13 agents, 14 min, 577K tokens
 
-Next: fix AC-7 evidence pattern, run tests on branch, merge to main.
+Suite: 1866 pass, 0 fail, 114 files.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #25 — Fix verify gate failures and merge 25-github-api-phase1 branch (all 4 phases implemented, AC-7 false positive + test suite)
-2. P2: #24 Doc-hygiene: content alignment — needs council
-3. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. DONE: #25/#32/#33/#34 GitHub API migration — Octokit + MCP two-layer, all phases merged
+2. P1: #24 Doc-hygiene — council DONE (12 decisions), needs spec + sub-issues + ship
+3. P2: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
