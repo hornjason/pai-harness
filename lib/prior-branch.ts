@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process'
+import { createGitHubClient, listPRs, type GitHubClient } from './github'
 
 export interface PriorBranch {
   branch: string;
@@ -102,57 +103,40 @@ export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranc
 
 // ── detectExistingPR ────────────────────────────────────────
 
-function defaultPRExecutor(cmd: string, args: readonly string[]): PRCommandResult {
-  const result = spawnSync(cmd, [...args], {
-    encoding: 'utf-8',
-    timeout: 15_000,
-  })
-  return {
-    stdout: result.stdout ?? '',
-    stderr: result.stderr ?? '',
-    status: result.status ?? 1,
-  }
+export interface DetectExistingPROctokitOptions {
+  issueNumber: number;
+  repo: string;
+  client?: GitHubClient;
 }
 
 /**
  * Find an open PR for the given issue number.
  *
- * Uses `gh pr list` to search for PRs referencing the issue.
+ * Uses Octokit listPRs to search for PRs referencing the issue.
  * Returns the PR number and head branch name, or null if none found.
- *
- * Follows the hasOpenPR pattern from branch-cleanup.ts.
  */
-export function detectExistingPR(opts: DetectExistingPROptions): ExistingPR | null {
-  const { issueNumber, repo, executor = defaultPRExecutor } = opts
-
-  const result = executor('gh', [
-    'pr', 'list',
-    '--repo', repo,
-    '--state', 'open',
-    '--search', `${issueNumber} in:title`,
-    '--json', 'number,headRefName',
-    '--limit', '10',
-  ])
-
-  if (result.status !== 0) return null
-
-  const output = result.stdout.trim()
-  if (!output || output === '[]') return null
+export async function detectExistingPR(opts: DetectExistingPROptions | DetectExistingPROctokitOptions): Promise<ExistingPR | null> {
+  const { issueNumber, repo } = opts
 
   try {
-    const prs = JSON.parse(output) as Array<{ number: number; headRefName: string }>
+    const client = ('client' in opts && opts.client) ? opts.client : createGitHubClient();
+    const prs = await listPRs(client, repo, { state: 'open', per_page: 10 });
+
     if (!Array.isArray(prs) || prs.length === 0) return null
 
     // Filter to PRs whose title/branch actually references this issue number
     // (not a superset like 5150 matching search for 515)
     const issuePattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
-    const match = prs.find(pr => issuePattern.test(pr.headRefName) || issuePattern.test(String(pr.number)))
+    const match = prs.find((pr: any) => {
+      const headRef = pr.head?.ref || pr.headRefName || ''
+      return issuePattern.test(headRef) || issuePattern.test(String(pr.number))
+    })
 
     if (!match) return null
 
     return {
       prNumber: match.number,
-      branch: match.headRefName,
+      branch: match.head?.ref || match.headRefName || '',
     }
   } catch {
     return null

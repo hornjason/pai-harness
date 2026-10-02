@@ -185,8 +185,12 @@ phase('Goal')
 log(`Prove #${ISSUE}: reading issue and chain context`)
 
 const issueData = await agent(`
-Read this GitHub issue and extract the goal:
-gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels
+Read this GitHub issue and extract the goal.
+
+Use the mcp__github__get_issue tool to retrieve the issue:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
 
 Also check for chain artifacts:
 1. test -f ${GOAL_RECORD_PATH} && echo "GOAL_RECORD: exists" || echo "GOAL_RECORD: none"
@@ -195,7 +199,7 @@ Also check for chain artifacts:
 If goal-record.json exists, read it and extract the structured SCs.
 If ship-evidence.json exists, read it and extract mergeCommitSha.
 
-Extract:
+Extract from the mcp__github__get_issue result:
 1. issueGoal — main goal statement
 2. issueTitle — the title
 3. issueBody — full body text
@@ -617,8 +621,11 @@ const proofComment = [
 ].filter(Boolean).join('\n')
 
 await agent(`
-Post this comment to issue #${ISSUE}:
-gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body ${JSON.stringify(proofComment)}
+Post this comment to issue #${ISSUE} using mcp__github__add_issue_comment:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  body: ${JSON.stringify(proofComment)}
 `, { label: 'post-comment', phase: 'Output' })
 
 log('Proof comment posted')
@@ -630,13 +637,27 @@ test -f ${GOAL_RECORD_PATH} && echo "CHAIN" || echo "STANDALONE"
   `, { label: 'chain-check', phase: 'Output' })
 
   await agent(`
-Add the "proven" label to issue #${ISSUE}:
-gh issue edit ${ISSUE} --repo ${ISSUE_REPO} --add-label "proven" 2>&1 || echo "label add failed"
+Add the "proven" label to issue #${ISSUE} using MCP tools (do NOT use gh CLI):
+
+Use mcp__github__update_issue to add the label:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  labels: ["proven"]
 
 ${String(chainMode).includes('CHAIN') ? `
 Also close the issue (chain mode — goal-record.json exists):
-gh issue close ${ISSUE} --repo ${ISSUE_REPO} 2>&1 || echo "close failed"
-gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Issue closed by /prove — verdict: PROVEN"
+Use mcp__github__update_issue to close:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  state: "closed"
+
+Then use mcp__github__add_issue_comment:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  body: "Issue closed by /prove — verdict: PROVEN"
 ` : '# Standalone mode — do NOT close the issue'}
   `, { label: 'label-close', phase: 'Output' })
 
@@ -645,7 +666,13 @@ gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Issue closed by /prove �
   // Auto-update governing spec decision table: ACCEPTED → SHIPPED
   const specUpdateResult = await agent(`
 Read ${GOAL_RECORD_PATH} (if it exists) and the issue body to extract D-NNN decision IDs and governingSpec.path.
-Then run this command to update the spec:
+
+First, get the issue body using mcp__github__get_issue:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+
+Then run this command to update the spec (pass the issue body text you retrieved):
 
 bun -e "
 import { updateSpecStatus, extractDecisionIds } from '${HARNESS_ROOT}/lib/spec-updater.ts';
@@ -657,8 +684,7 @@ if (existsSync(goalPath)) {
   try { goalRecord = JSON.parse(readFileSync(goalPath, 'utf-8')); } catch {}
 }
 
-// Extract D-NNN from issue body via gh
-const issueBody = await new Response(Bun.spawn(['gh', 'issue', 'view', '${ISSUE}', '--repo', '${ISSUE_REPO}', '--json', 'body', '-q', '.body']).stdout).text();
+const issueBody = process.argv[1] || '';
 const decisionIds = extractDecisionIds(issueBody + ' ' + JSON.stringify(goalRecord));
 
 const result = await updateSpecStatus({
@@ -667,22 +693,29 @@ const result = await updateSpecStatus({
   decisionIds,
 });
 console.log(JSON.stringify(result));
-"
+" "ISSUE_BODY_FROM_MCP"
 
+Replace ISSUE_BODY_FROM_MCP with the actual issue body you retrieved from mcp__github__get_issue.
 Report the JSON result. If spec was updated, commit the changed spec file.
   `, { label: 'spec-update', phase: 'Output' })
 
   log(`Spec update: ${JSON.stringify(specUpdateResult)}`)
 } else if (verdict === 'UNPROVEN') {
   await agent(`
-Post a re-investigation comment:
-gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Prove verdict: UNPROVEN — issue remains open for re-investigation"
+Post a re-investigation comment using mcp__github__add_issue_comment:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  body: "Prove verdict: UNPROVEN — issue remains open for re-investigation"
   `, { label: 'unproven-comment', phase: 'Output' })
   log('UNPROVEN — issue remains open')
 } else {
   await agent(`
-Post an inconclusive comment:
-gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Prove verdict: INCONCLUSIVE — could not reproduce. Manual investigation needed."
+Post an inconclusive comment using mcp__github__add_issue_comment:
+  owner: "${ISSUE_REPO.split('/')[0]}"
+  repo: "${ISSUE_REPO.split('/')[1]}"
+  issue_number: ${ISSUE}
+  body: "Prove verdict: INCONCLUSIVE — could not reproduce. Manual investigation needed."
   `, { label: 'inconclusive-comment', phase: 'Output' })
   log('INCONCLUSIVE — manual investigation needed')
 }

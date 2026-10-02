@@ -4,6 +4,7 @@ import { createHash, createHmac, randomBytes } from "crypto";
 import { execSync } from "child_process";
 import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASONS } from "./schema";
 import { ZodError } from "zod";
+import { createGitHubClient, addLabels, addComment, type GitHubClient } from "../lib/github";
 
 export interface GateResult {
   check: string;
@@ -332,36 +333,29 @@ export function generateShipEvidence(
   const evidencePath = join(workDir, "ship-evidence.json");
   writeFileSync(evidencePath, JSON.stringify(evidence, null, 2));
 
-  // GitHub: add shipped label + post comment (best-effort)
+  // GitHub: add shipped label + post comment via Octokit (best-effort, fire-and-forget)
+  // Uses POST additive label strategy (D-5) — never PUT/replace
   if (issueRepo && issue > 0) {
     try {
-      execSync(`gh issue edit ${issue} --repo ${issueRepo} --add-label shipped`, {
-        timeout: 15000,
-        stdio: "pipe",
-      });
-    } catch {}
+      const github = createGitHubClient();
+      addLabels(github, issueRepo, issue, ["shipped"]).catch(() => {});
 
-    const scTable = (state.acs || [])
-      .map((ac: any) => `| ${ac.id} | ${ac.verdict || "SKIP"} | ${ac.evidence?.content || "—"} |`)
-      .join("\n");
+      const scTable = (state.acs || [])
+        .map((ac: any) => `| ${ac.id} | ${ac.verdict || "SKIP"} | ${ac.evidence?.content || "—"} |`)
+        .join("\n");
 
-    const comment = [
-      "## Ship Complete (automated)\n",
-      `**Commit:** ${sha}`,
-      `**Gate:** ${passes} pass, ${fails} fail, ${warns} warn\n`,
-      "### SC Results",
-      "| SC | Verdict | Evidence |",
-      "|---|---|---|",
-      scTable,
-      "\nChain mode — issue stays open for /prove.",
-    ].join("\n");
+      const commentBody = [
+        "## Ship Complete (automated)\n",
+        `**Commit:** ${sha}`,
+        `**Gate:** ${passes} pass, ${fails} fail, ${warns} warn\n`,
+        "### SC Results",
+        "| SC | Verdict | Evidence |",
+        "|---|---|---|",
+        scTable,
+        "\nChain mode — issue stays open for /prove.",
+      ].join("\n");
 
-    try {
-      execSync(`gh issue comment ${issue} --repo ${issueRepo} --body-file -`, {
-        input: comment,
-        timeout: 15000,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+      addComment(github, issueRepo, issue, commentBody).catch(() => {});
     } catch {}
 
     // Auto-push
