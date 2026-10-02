@@ -158,5 +158,13 @@
   "SC-420": {
     "criterionId": "M-01",
     "description": "Dashboard output shows per-rule compliance rate as percentage"
+  },
+  "SC-A1": {
+    "criterionId": "Q-01",
+    "description": "No LLM/AI model calls in lib/doc-hygiene.ts or lib/spec-registry.ts"
+  },
+  "SC-A2": {
+    "criterionId": "Q-01",
+    "description": "No FAIL-level content checks without 10+ cycle precision data"
   }
 }

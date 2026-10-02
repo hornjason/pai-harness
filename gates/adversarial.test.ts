@@ -2,6 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { writeWitness, verifyWitness, verifyWitnessChain } from "./witness";
+import { gateSaltPath } from "../lib/paths";
 
 // HOME_DIR is set so workDir resolves correctly via RUNGATE_WORK_DIR
 const HOME_DIR = `/tmp/adversarial-home-${process.pid}`;
@@ -40,8 +41,8 @@ function createSignedWitness(
   commitSha: string,
   overrides: Partial<Record<string, unknown>> = {},
 ): string {
-  // Use the real writeWitness path by writing directly with known salt
-  const saltPath = join(origHome!, ".claude", "hooks", "lib", ".gate-salt");
+  // Use the same salt path that verifyWitness uses (gateSaltPath → repo/gates/.gate-salt)
+  const saltPath = gateSaltPath();
   const salt = readFileSync(saltPath, "utf-8").trim();
   const { createHmac } = require("crypto");
 
