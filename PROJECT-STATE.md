@@ -22,10 +22,12 @@ Suite: 1779 pass, 0 fail, 111 files. 7 commits.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. DONE: #25 partial MCP migration shipped (goal read + prove/close) — 29 min, 17 agents
-2. P1: #25 remaining — research audit of all gh CLI usage vs MCP gaps before further migration
-3. P2: #24 Doc-hygiene: content alignment — needs council
-4. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. P0: #25 Phase 1 — lib/github.ts + @octokit/rest foundation (SC-488 to SC-493)
+2. P0: #25 Phase 2 — Migrate hooks/gates/lib from execSync gh to Octokit (SC-494 to SC-498)
+3. P1: #25 Phase 3 — Migrate prove.js agent prompts to MCP (SC-499, SC-500)
+4. P1: #25 Phase 4 — ship.js PR update via Octokit helper (SC-501, SC-502)
+5. P2: #24 Doc-hygiene: content alignment — needs council
+6. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
