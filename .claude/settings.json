@@ -15,6 +15,23 @@
       "Bash(curl *)"
     ]
   },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun /Users/jhorn/Projects/rungate/hooks/BashToolGuard.hook.ts"
+          },
+          {
+            "type": "command",
+            "command": "bun /Users/jhorn/Projects/rungate/hooks/TestSuiteGuard.hook.ts"
+          }
+        ]
+      }
+    ]
+  },
   "promptCacheTtl": "1h",
   "subagentPromptCacheTtl": "1h"
 }
