@@ -44,6 +44,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | TaskCompleted | TaskCompleted.hook.ts | 51 | SC-370, SC-372 | Good — logic in lib/task-completion-checks.ts |
 | SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
 | WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
+| TestSuiteGuard | TestSuiteGuard.hook.ts | 55 | SC-473, SC-370 | Tier 3 for DIR-L29 |
 
 ## Success Criteria
 
@@ -56,6 +57,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [x] SC-391: Hook registrations in settings.json contain hookFor and command fields (behavioral)
 - [x] SC-392: Hook activation controlled by config enabled field (behavioral)
 - [x] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
+- [x] SC-473: TestSuiteGuard blocks full test suite (bun test) after 2 runs per session — Tier 3 enforcement for DIR-L29
 
 ## Implementation
 
