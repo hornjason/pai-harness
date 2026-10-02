@@ -493,7 +493,15 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
 
     if (decomposeResult?.phase1AcIds?.length > 0) {
       const keepIds = new Set(decomposeResult.phase1AcIds)
-      discovery.acs = discovery.acs.filter(ac => keepIds.has(ac.id))
+      const originalAcs = [...discovery.acs]
+      // Match on ac.id (AC-N) OR ac.specElement (SC-N) — decompose agent may return either format
+      const filtered = originalAcs.filter(ac => keepIds.has(ac.id) || keepIds.has(ac.specElement) || (ac.specElement && ac.specElement.split(',').some(s => keepIds.has(s.trim()))))
+      if (filtered.length === 0) {
+        log(`WARN: decompose filter matched 0 ACs (keepIds=${[...keepIds].join(',')} vs acIds=${originalAcs.map(a=>a.id+'/'+a.specElement).join(',')}). Falling back to first ${MAX_ACS_PER_ISSUE}.`)
+        discovery.acs = originalAcs.slice(0, MAX_ACS_PER_ISSUE)
+      } else {
+        discovery.acs = filtered
+      }
       log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created.`)
     }
   }
