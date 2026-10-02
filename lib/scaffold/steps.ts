@@ -791,12 +791,70 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
       contextDocs: {},
     };
 
-    const dir = join(root, ".claude");
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const targetPath = join(root, ".claude", "rungate.json");
-    writeFileSync(targetPath, JSON.stringify(config, null, 2) + "\n");
-    actions.push(`CREATED: .claude/rungate.json (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
+    // Write as directory structure instead of monolith
+    const rungateDir = join(root, ".claude", "rungate");
+    if (!existsSync(rungateDir)) mkdirSync(rungateDir, { recursive: true });
+
+    // config.json — project identity, dev/prod, pages, consumers
+    writeFileSync(join(rungateDir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+    // roles.json — empty object for new projects (populated by harness setup)
+    writeFileSync(join(rungateDir, "roles.json"), JSON.stringify({}, null, 2) + "\n");
+    // hooks.json — empty array for new projects
+    writeFileSync(join(rungateDir, "hooks.json"), JSON.stringify([], null, 2) + "\n");
+    // compliance.json — empty compliance config
+    writeFileSync(join(rungateDir, "compliance.json"), JSON.stringify({
+      rules: {},
+      defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+      organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] },
+    }, null, 2) + "\n");
+
+    actions.push(`CREATED: .claude/rungate/ directory (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
   }
+}
+
+// ── Monolith → directory split ───────────────────────────────────
+
+export function splitMonolithToDirectory(root: string, actions: string[]): void {
+  const rungateDir = join(root, ".claude", "rungate");
+  const monolithPath = join(root, ".claude", "rungate.json");
+
+  // Skip if directory already exists with config.json
+  if (existsSync(join(rungateDir, "config.json"))) {
+    actions.push("SKIP: .claude/rungate/ directory already exists");
+    return;
+  }
+
+  // Nothing to split if no monolith
+  if (!existsSync(monolithPath)) {
+    actions.push("SKIP: no .claude/rungate.json to split");
+    return;
+  }
+
+  const monolith = JSON.parse(readFileSync(monolithPath, "utf-8"));
+
+  // Extract concerns
+  const roles = monolith.roles || {};
+  const hooks = monolith.hooks || [];
+  const compliance = monolith.compliance || {
+    rules: {},
+    defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+    organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] },
+  };
+
+  // Config gets everything except roles, hooks, compliance
+  const config = { ...monolith };
+  delete config.roles;
+  delete config.hooks;
+  delete config.compliance;
+
+  // Write directory structure
+  if (!existsSync(rungateDir)) mkdirSync(rungateDir, { recursive: true });
+  writeFileSync(join(rungateDir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+  writeFileSync(join(rungateDir, "roles.json"), JSON.stringify(roles, null, 2) + "\n");
+  writeFileSync(join(rungateDir, "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
+  writeFileSync(join(rungateDir, "compliance.json"), JSON.stringify(compliance, null, 2) + "\n");
+
+  actions.push(`SPLIT: .claude/rungate.json → .claude/rungate/ directory (4 files)`);
 }
 
 // ── Code map generation ────────────────────────────────────────

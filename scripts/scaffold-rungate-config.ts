@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// scaffold-rungate-config.ts -- Generate starter .claude/rungate.json
+// scaffold-rungate-config.ts -- Generate starter .claude/rungate/ directory
 // Usage: scaffold-rungate-config.ts /path/to/project
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
@@ -12,10 +12,18 @@ if (!projectRoot) {
   process.exit(1);
 }
 
-const target = join(projectRoot, ".claude", "rungate.json");
+const rungateDir = join(projectRoot, ".claude", "rungate");
+const monolithPath = join(projectRoot, ".claude", "rungate.json");
 
-if (existsSync(target)) {
-  console.log(`EXISTS: ${target} — not overwriting`);
+// Skip if directory already exists
+if (existsSync(join(rungateDir, "config.json"))) {
+  console.log(`EXISTS: ${rungateDir}/config.json — not overwriting`);
+  process.exit(0);
+}
+
+// Skip if monolith exists (use splitMonolithToDirectory from steps.ts instead)
+if (existsSync(monolithPath)) {
+  console.log(`EXISTS: ${monolithPath} — not overwriting (use re-scaffold to split)`);
   process.exit(0);
 }
 
@@ -75,7 +83,7 @@ if (existsSync(join(projectRoot, ".git"))) {
   }
 }
 
-mkdirSync(join(projectRoot, ".claude"), { recursive: true });
+mkdirSync(rungateDir, { recursive: true });
 
 const config = {
   description: "Auto-generated project harness config",
@@ -86,6 +94,16 @@ const config = {
   prod: { rebuild: rebuildCmd },
 };
 
-writeFileSync(target, JSON.stringify(config, null, 2) + "\n");
-console.log(`CREATED: ${target}`);
-console.log(readFileSync(target, "utf-8"));
+// Write split directory structure
+writeFileSync(join(rungateDir, "config.json"), JSON.stringify(config, null, 2) + "\n");
+writeFileSync(join(rungateDir, "roles.json"), JSON.stringify({}, null, 2) + "\n");
+writeFileSync(join(rungateDir, "hooks.json"), JSON.stringify([], null, 2) + "\n");
+writeFileSync(join(rungateDir, "compliance.json"), JSON.stringify({
+  rules: {},
+  defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+  organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] },
+}, null, 2) + "\n");
+
+console.log(`CREATED: ${rungateDir}/`);
+console.log("  config.json, roles.json, hooks.json, compliance.json");
+console.log(readFileSync(join(rungateDir, "config.json"), "utf-8"));

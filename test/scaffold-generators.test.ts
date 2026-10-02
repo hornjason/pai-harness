@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync, existsSync
 import { join } from "path";
 import { execSync } from "child_process";
 import { mockProjectScan } from "../lib/generators/types";
-import { generateOrAuditProjectHarness, copySpecTemplateIfEmpty } from "../lib/scaffold/steps";
+import { generateOrAuditProjectHarness, copySpecTemplateIfEmpty, splitMonolithToDirectory } from "../lib/scaffold/steps";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -83,10 +83,10 @@ describe("DDB-532 AC-1: dashboard page scanning and docker-compose port scanning
     const actions: string[] = [];
     generateOrAuditProjectHarness(tmpRoot, actions);
 
-    // Verify the generated rungate.json has pages from dashboard
-    const harnessPath = join(tmpRoot, ".claude", "rungate.json");
-    expect(existsSync(harnessPath)).toBe(true);
-    const config = JSON.parse(readFileSync(harnessPath, "utf-8"));
+    // Verify the generated config has pages from dashboard
+    const configPath = join(tmpRoot, ".claude", "rungate", "config.json");
+    expect(existsSync(configPath)).toBe(true);
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
     expect(Object.keys(config.pages).length).toBeGreaterThanOrEqual(2);
     // Pages should be keyed by derived route path from filename
     expect(config.pages).toHaveProperty("/settings");
@@ -111,9 +111,9 @@ services:
     const actions: string[] = [];
     generateOrAuditProjectHarness(tmpRoot, actions);
 
-    const harnessPath = join(tmpRoot, ".claude", "rungate.json");
-    expect(existsSync(harnessPath)).toBe(true);
-    const config = JSON.parse(readFileSync(harnessPath, "utf-8"));
+    const configPath = join(tmpRoot, ".claude", "rungate", "config.json");
+    expect(existsSync(configPath)).toBe(true);
+    const config = JSON.parse(readFileSync(configPath, "utf-8"));
     // Should detect port from docker-compose.yml
     expect(config.dev.apiBase).toContain("3001");
   });
@@ -184,7 +184,7 @@ describe("DDB-532 AC-3: page components from dashboard produce route-keyed entri
     const actions: string[] = [];
     generateOrAuditProjectHarness(tmpRoot, actions);
 
-    const config = JSON.parse(readFileSync(join(tmpRoot, ".claude", "rungate.json"), "utf-8"));
+    const config = JSON.parse(readFileSync(join(tmpRoot, ".claude", "rungate", "config.json"), "utf-8"));
     expect(config.pages["/settings"]).toBe("Settings");
   });
 
@@ -198,7 +198,7 @@ describe("DDB-532 AC-3: page components from dashboard produce route-keyed entri
     const actions: string[] = [];
     generateOrAuditProjectHarness(tmpRoot, actions);
 
-    const config = JSON.parse(readFileSync(join(tmpRoot, ".claude", "rungate.json"), "utf-8"));
+    const config = JSON.parse(readFileSync(join(tmpRoot, ".claude", "rungate", "config.json"), "utf-8"));
     // CamelCase filenames should produce kebab-case route paths
     expect(config.pages["/user-profile"]).toBe("UserProfile");
     expect(config.pages["/analytics"]).toBe("Analytics");
@@ -276,5 +276,147 @@ describe("DDB-529 AC-2: SPEC-TEMPLATE.md has testable: false frontmatter", () =>
     const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
     expect(fmMatch).not.toBeNull();
     expect(fmMatch![1]).toContain("testable: false");
+  });
+});
+
+// ── #31 AC-6: Scaffold generates .claude/rungate/ directory structure ──────
+
+describe("#31 AC-6: scaffold generates directory structure for new projects", () => {
+  const tmpRoot = join(ROOT, "test", ".tmp-dir-scaffold");
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  test("generateOrAuditProjectHarness creates .claude/rungate/ directory with split files", () => {
+    writeFileSync(join(tmpRoot, "package.json"), JSON.stringify({ name: "test-project", scripts: { test: "bun test" } }));
+
+    const actions: string[] = [];
+    generateOrAuditProjectHarness(tmpRoot, actions);
+
+    // Should create directory structure, not monolith
+    const rungateDir = join(tmpRoot, ".claude", "rungate");
+    expect(existsSync(join(rungateDir, "config.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "roles.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "hooks.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "compliance.json"))).toBe(true);
+
+    // Verify config.json has project identity fields (project uses basename of root)
+    const config = JSON.parse(readFileSync(join(rungateDir, "config.json"), "utf-8"));
+    expect(config.project).toBe(".tmp-dir-scaffold");
+    expect(config).toHaveProperty("pages");
+    expect(config).toHaveProperty("consumers");
+    expect(config).toHaveProperty("dev");
+  });
+
+  test("scaffold creates .claude/rungate/ not .claude/rungate.json for new projects", () => {
+    writeFileSync(join(tmpRoot, "package.json"), JSON.stringify({ name: "fresh-project" }));
+
+    const actions: string[] = [];
+    generateOrAuditProjectHarness(tmpRoot, actions);
+
+    // Monolith should NOT be created
+    expect(existsSync(join(tmpRoot, ".claude", "rungate.json"))).toBe(false);
+    // Directory should be created
+    expect(existsSync(join(tmpRoot, ".claude", "rungate", "config.json"))).toBe(true);
+  });
+});
+
+// ── #31 AC-7: Re-scaffold splits existing monolith into directory ──────
+
+describe("#31 AC-7: re-scaffold splits monolith into directory", () => {
+  const tmpRoot = join(ROOT, "test", ".tmp-split-scaffold");
+
+  beforeEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+    mkdirSync(tmpRoot, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  test("splitMonolithToDirectory splits rungate.json into four files", () => {
+    const claudeDir = join(tmpRoot, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    const monolith = {
+      project: "split-test",
+      repo: "test/repo",
+      issueRepo: "test/repo",
+      contextDocs: {},
+      consumers: ["api"],
+      pages: { "/home": "Home" },
+      test: { command: "bun test", timeout: 30000 },
+      roles: { marcus: { brief: "m.md" } },
+      hooks: [{ name: "TestHook", hookFor: "PreToolUse", enabled: true }],
+      compliance: {
+        rules: { "COMP-1": { description: "test rule", directives: [], reinforcement: "r", tiers: {}, threshold: { consecutive: 3, promote: 5 } } },
+        defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
+        organize: { fileTypes: [".md"], artifactClassification: {}, externalSources: [] }
+      }
+    };
+    writeFileSync(join(claudeDir, "rungate.json"), JSON.stringify(monolith, null, 2));
+
+    const actions: string[] = [];
+    splitMonolithToDirectory(tmpRoot, actions);
+
+    // Verify directory was created with all four files
+    const rungateDir = join(claudeDir, "rungate");
+    expect(existsSync(join(rungateDir, "config.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "roles.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "hooks.json"))).toBe(true);
+    expect(existsSync(join(rungateDir, "compliance.json"))).toBe(true);
+
+    // Verify config.json has identity fields but not roles/hooks/compliance
+    const config = JSON.parse(readFileSync(join(rungateDir, "config.json"), "utf-8"));
+    expect(config.project).toBe("split-test");
+    expect(config.consumers).toEqual(["api"]);
+    expect(config).not.toHaveProperty("roles");
+    expect(config).not.toHaveProperty("hooks");
+    expect(config).not.toHaveProperty("compliance");
+
+    // Verify roles.json has roles
+    const roles = JSON.parse(readFileSync(join(rungateDir, "roles.json"), "utf-8"));
+    expect(roles).toHaveProperty("marcus");
+
+    // Verify hooks.json has hooks
+    const hooks = JSON.parse(readFileSync(join(rungateDir, "hooks.json"), "utf-8"));
+    expect(hooks.length).toBe(1);
+    expect(hooks[0].name).toBe("TestHook");
+
+    // Verify compliance.json has compliance rules
+    const compliance = JSON.parse(readFileSync(join(rungateDir, "compliance.json"), "utf-8"));
+    expect(compliance.rules["COMP-1"].description).toBe("test rule");
+  });
+
+  test("splitMonolithToDirectory reports split action", () => {
+    const claudeDir = join(tmpRoot, ".claude");
+    mkdirSync(claudeDir, { recursive: true });
+    writeFileSync(join(claudeDir, "rungate.json"), JSON.stringify({
+      project: "test", repo: "", issueRepo: "", contextDocs: {},
+      consumers: [], pages: {}, test: { command: "bun test", timeout: 30000 },
+      roles: {}, hooks: []
+    }, null, 2));
+
+    const actions: string[] = [];
+    splitMonolithToDirectory(tmpRoot, actions);
+
+    expect(actions.some(a => a.includes("split") || a.includes("SPLIT"))).toBe(true);
+  });
+
+  test("splitMonolithToDirectory skips when directory already exists", () => {
+    const rungateDir = join(tmpRoot, ".claude", "rungate");
+    mkdirSync(rungateDir, { recursive: true });
+    writeFileSync(join(rungateDir, "config.json"), JSON.stringify({ project: "existing" }));
+
+    const actions: string[] = [];
+    splitMonolithToDirectory(tmpRoot, actions);
+
+    expect(actions.some(a => a.includes("SKIP"))).toBe(true);
   });
 });
