@@ -1498,49 +1498,28 @@ Do BOTH tasks:
 1. Record env as SKIP:
    bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-2. Create or update PR:
-   cd ${PROJECT_ROOT}
-   existing=$(gh pr list --repo ${REPO} --head $(git branch --show-current) --json number -q '.[0].number' 2>/dev/null)
-   if [ -z "$existing" ]; then
-     # Also check for existing PR by issue number to reuse on retry (#515)
-     existingByIssue=$(gh pr list --repo ${REPO} --state open --search "${ISSUE} in:title" --json number,headRefName -q '.[0].number' 2>/dev/null)
-     if [ -n "$existingByIssue" ]; then
-       gh pr edit "$existingByIssue" --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
-Fixes #${ISSUE}
+2. Create or update PR using MCP tools (do NOT use gh CLI):
+   First, check for existing PRs using mcp__github__list_pull_requests:
+     owner: "${REPO.split('/')[0]}"
+     repo: "${REPO.split('/')[1]}"
+     state: "open"
 
-## Test plan
-- Unit tests: PASS
-- Container: deferred to CI
+   Look through the results for a PR with head branch matching the current branch or title containing #${ISSUE}.
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-PREOF
-)" 2>&1 || echo "PR update failed"
-       echo "Updated existing PR: #$existingByIssue"
-     else
-       gh pr create --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
-Fixes #${ISSUE}
+   If an existing PR is found, update it using mcp__github__update_pull_request:
+     owner: "${REPO.split('/')[0]}"
+     repo: "${REPO.split('/')[1]}"
+     pull_number: <the PR number found>
+     title: "fix(#${ISSUE}): ${goalData.issueTitle}"
+     body: "Fixes #${ISSUE}\\n\\n## Test plan\\n- Unit tests: PASS\\n- Container: deferred to CI\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
-## Test plan
-- Unit tests: PASS
-- Container: deferred to CI
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-PREOF
-)" 2>&1 || echo "PR creation failed (branches may already be merged)"
-     fi
-   else
-     gh pr edit "$existing" --repo ${REPO} --title "fix(#${ISSUE}): ${goalData.issueTitle}" --body "$(cat <<'PREOF'
-Fixes #${ISSUE}
-
-## Test plan
-- Unit tests: PASS
-- Container: deferred to CI
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-PREOF
-)" 2>&1 || echo "PR update failed"
-     echo "Updated existing PR: #$existing"
-   fi
+   If no existing PR is found, create one using mcp__github__create_pull_request:
+     owner: "${REPO.split('/')[0]}"
+     repo: "${REPO.split('/')[1]}"
+     title: "fix(#${ISSUE}): ${goalData.issueTitle}"
+     head: <current branch name from: cd ${PROJECT_ROOT} && git branch --show-current>
+     base: "main"
+     body: "Fixes #${ISSUE}\\n\\n## Test plan\\n- Unit tests: PASS\\n- Container: deferred to CI\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 
 Report both results.
   `, { label: 'record-env-and-pr', phase: 'Ship' })

@@ -14,6 +14,7 @@ import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput, findWorkflowState, HARNESS_ROOT } from './lib/utils';
+import { createGitHubClient, getIssue } from '../lib/github';
 
 const TEMPLATE_RULES = [
   { marker: '## AC-', required: ['Type:', 'Metric:', 'Threshold:', 'Baseline:', 'Evidence Method:', 'Pass Criteria:'] },
@@ -91,10 +92,11 @@ async function main() {
   const wf = findWorkflowState(issueNum);
   if (!wf) {
     try {
-      const result = Bun.spawnSync(['gh', 'issue', 'view', issueNum, '--repo', repo, '--json', 'labels', '--jq', '.labels[].name']);
-      const labels = result.stdout.toString().trim();
-      if (labels.includes('p1-ship-next') || labels.includes('p2-this-week')) {
-        block(`Cannot close #${issueNum} — has ${labels.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
+      const github = createGitHubClient();
+      const issueData = await getIssue(github, repo, parseInt(issueNum, 10));
+      const labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
+      if (labelNames.includes('p1-ship-next') || labelNames.includes('p2-this-week')) {
+        block(`Cannot close #${issueNum} — has ${labelNames.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
       }
     } catch {}
     console.log(`<system-reminder>\nWARNING: Closing #${issueNum} but no workflow-state.json found.\nIf this issue went through ship, gates may not have been run.\n</system-reminder>`);

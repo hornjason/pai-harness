@@ -29,6 +29,7 @@ import {
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
+import { createGitHubClient, getIssue, addLabels } from "../lib/github";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
 export function parseTestResults(output: string): GateResult[] {
@@ -241,7 +242,7 @@ function checkVerifyPendingACs(state: Record<string, any>): { results: GateResul
 
 // ── Prove reproducer (B3) ───────────────────────────────────────────────
 
-function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string): void {
+async function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string): Promise<void> {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier === "LIGHT") {
     console.log("prove gate: LIGHT tier — skipping reproducer (API check only)");
@@ -252,13 +253,10 @@ function runProveReproducer(state: Record<string, any>, issue: number, issueRepo
   let issueTitle = "";
   if (issue && issueRepo) {
     try {
-      const ghOut = execSync(
-        `gh issue view ${issue} --repo ${issueRepo} --json body,title`,
-        { encoding: "utf-8", timeout: 15000 }
-      );
-      const parsed = JSON.parse(ghOut);
-      issueBody = parsed.body || "";
-      issueTitle = parsed.title || "";
+      const github = createGitHubClient();
+      const issueData = await getIssue(github, issueRepo, issue);
+      issueBody = issueData.body || "";
+      issueTitle = issueData.title || "";
       console.log(`prove gate: read issue #${issue} from GitHub (${issueTitle.slice(0, 60)})`);
     } catch (e: any) {
       console.error(`prove gate: FAIL — could not read issue from GitHub: ${e.message?.slice(0, 200)}`);
@@ -1005,17 +1003,16 @@ function runMergeGate(state: Record<string, any>, sf: string): never {
 
 // ── Prove gate post-processing ──────────────────────────────────────────
 
-function runProvePostProcessing(state: Record<string, any>, workDir: string, issue: number, issueRepo: string, resultVal: string): never {
+async function runProvePostProcessing(state: Record<string, any>, workDir: string, issue: number, issueRepo: string, resultVal: string): Promise<never> {
   const proveEvidencePath = join(workDir, "prove-evidence.json");
   if (existsSync(proveEvidencePath)) {
     try {
       const proveEvidence = JSON.parse(readFileSync(proveEvidencePath, "utf-8"));
       if (proveEvidence.verdict === "PROVEN" && issue && issueRepo) {
         try {
-          execSync(`gh issue edit ${issue} --repo ${issueRepo} --add-label "proven"`, {
-            encoding: "utf-8",
-            timeout: 15000,
-          });
+          // Use Octokit addLabels (POST additive — D-5) instead of gh CLI
+          const github = createGitHubClient();
+          await addLabels(github, issueRepo, issue, ["proven"]);
           console.log(`prove gate: added "proven" label to #${issue}`);
         } catch (e: any) {
           console.warn(`WARN: prove gate — failed to add proven label: ${e.message?.slice(0, 200)}`);
@@ -1026,6 +1023,7 @@ function runProvePostProcessing(state: Record<string, any>, workDir: string, iss
     }
   }
   process.exit(resultVal === "PASS" ? 0 : 1);
+  throw new Error("unreachable");
 }
 
 // ── Ceremony override support ───────────────────────────────────────────
@@ -1107,7 +1105,7 @@ export function applyCeremonyOverrides(
 
 // ── Main executor ───────────────────────────────────────────────────────
 
-export function executeGate(input: GateExecutorInput): GateExecutorResult {
+export async function executeGate(input: GateExecutorInput): Promise<GateExecutorResult> {
   const { gate, slug, issue, workDir, stateFilePath: sf } = input;
 
   const baseCeremonyProfile = existsSync(join(__dirname, "ceremony-profiles.json"))
@@ -1178,7 +1176,7 @@ export function executeGate(input: GateExecutorInput): GateExecutorResult {
 
   // B3: Prove Reproducer
   if (gate === "prove") {
-    runProveReproducer(state, issue, issueRepo, workDir);
+    await runProveReproducer(state, issue, issueRepo, workDir);
   }
 
   // Scope pre-flight checks
@@ -1304,7 +1302,7 @@ export function executeGate(input: GateExecutorInput): GateExecutorResult {
   }
 
   if (gate === "prove") {
-    runProvePostProcessing(state, workDir, issue, issueRepo, resultVal);
+    await runProvePostProcessing(state, workDir, issue, issueRepo, resultVal);
   }
 
   // Ship-specific: HMAC + evidence

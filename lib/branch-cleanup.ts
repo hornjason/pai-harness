@@ -9,12 +9,13 @@
  * Safety:
  * - NEVER deletes protected branches (main, master)
  * - NEVER deletes branches with open PRs
- * - When gh pr list fails, refuses to delete (safety default)
+ * - When PR check fails, refuses to delete (safety default)
  *
  * GitHub issue #516
  */
 
 import { spawnSync } from "child_process";
+import { createGitHubClient, listPRs, type GitHubClient } from "./github";
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -33,6 +34,8 @@ export interface CleanupBranchOptions {
   readonly branch: string;
   readonly projectRoot: string;
   readonly executor?: CommandExecutor;
+  readonly githubClient?: GitHubClient;
+  readonly repo?: string;
 }
 
 export interface CleanupBranchResult {
@@ -45,6 +48,8 @@ export interface CleanupStaleBranchesOptions {
   readonly projectRoot: string;
   readonly maxAgeDays?: number;
   readonly executor?: CommandExecutor;
+  readonly githubClient?: GitHubClient;
+  readonly repo?: string;
 }
 
 export interface CleanupStaleBranchesResult {
@@ -72,32 +77,21 @@ function defaultExecutor(cmd: string, args: readonly string[]): CommandResult {
   };
 }
 
-// ── Core: check for open PRs ────────────────────────────────
+// ── Core: check for open PRs via Octokit ────────────────────
 
-function hasOpenPR(
+async function hasOpenPR(
   branch: string,
-  exec: CommandExecutor
-): { hasPR: boolean; error?: string } {
-  const result = exec("gh", [
-    "pr",
-    "list",
-    "--head",
-    branch,
-    "--state",
-    "open",
-    "--json",
-    "number",
-    "--limit",
-    "1",
-  ]);
-
-  if (result.status !== 0) {
-    return { hasPR: false, error: `gh pr list failed: ${result.stderr}` };
+  client?: GitHubClient,
+  repo?: string,
+): Promise<{ hasPR: boolean; error?: string }> {
+  try {
+    const github = client || createGitHubClient();
+    const repoSlug = repo || "hornjason/pai-harness";
+    const prs = await listPRs(github, repoSlug, { state: "open", head: branch, per_page: 1 });
+    return { hasPR: Array.isArray(prs) && prs.length > 0 };
+  } catch (e: any) {
+    return { hasPR: false, error: `listPRs failed: ${e.message?.slice(0, 200)}` };
   }
-
-  // Non-empty stdout means at least one open PR exists
-  const output = result.stdout.trim();
-  return { hasPR: output.length > 0 && output !== "[]" };
 }
 
 // ── cleanupBranch ───────────────────────────────────────────
@@ -107,16 +101,16 @@ function hasOpenPR(
  *
  * Used by the prove workflow when verdict is UNPROVEN.
  */
-export function cleanupBranch(opts: CleanupBranchOptions): CleanupBranchResult {
-  const { branch, projectRoot, executor = defaultExecutor } = opts;
+export async function cleanupBranch(opts: CleanupBranchOptions): Promise<CleanupBranchResult> {
+  const { branch, projectRoot, executor = defaultExecutor, githubClient, repo } = opts;
 
   // Guard: never delete protected branches
   if (PROTECTED_BRANCHES.has(branch)) {
     return { deleted: false, reason: `${branch} is a protected branch` };
   }
 
-  // Check for open PRs
-  const prCheck = hasOpenPR(branch, executor);
+  // Check for open PRs via Octokit
+  const prCheck = await hasOpenPR(branch, githubClient, repo);
   if (prCheck.error) {
     return {
       deleted: false,
@@ -145,13 +139,15 @@ export function cleanupBranch(opts: CleanupBranchOptions): CleanupBranchResult {
  *
  * Used by StaleTTLCleanup hook on session start.
  */
-export function cleanupStaleBranches(
+export async function cleanupStaleBranches(
   opts: CleanupStaleBranchesOptions
-): CleanupStaleBranchesResult {
+): Promise<CleanupStaleBranchesResult> {
   const {
     projectRoot,
     maxAgeDays = DEFAULT_MAX_AGE_DAYS,
     executor = defaultExecutor,
+    githubClient,
+    repo,
   } = opts;
 
   const result: CleanupStaleBranchesResult = {
@@ -199,8 +195,8 @@ export function cleanupStaleBranches(
     const ageSeconds = nowUnix - ts;
     if (ageSeconds < maxAgeSeconds) continue;
 
-    // Check for open PRs
-    const prCheck = hasOpenPR(branchName, executor);
+    // Check for open PRs via Octokit
+    const prCheck = await hasOpenPR(branchName, githubClient, repo);
     if (prCheck.error) {
       (result.errors as string[]).push(
         `Cannot check PRs for ${branchName}: ${prCheck.error}`
