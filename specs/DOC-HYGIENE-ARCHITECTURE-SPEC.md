@@ -49,9 +49,9 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 
 - [ ] SC-504: lib/gate-enforcement.ts not contains [existsSync(signalsFile)]
 - [ ] SC-505: lib/spec-registry.ts exports [getGoverningSpecs, getGovernedFiles, getUngoverned]
-- [ ] SC-506: lib/spec-registry.ts contains [governs, frontmatter, specs/, invertedIndex]
-- [ ] SC-507: test/spec-registry.test.ts contains [getGoverningSpecs, getGovernedFiles, getUngoverned, mock]
-- [ ] SC-508: hooks/GateEnforcement.hook.ts contains [doc-hygiene, signals, signal]
+- [x] SC-506: lib/spec-registry.ts contains [governs, frontmatter, specs/, invertedIndex]
+- [x] SC-507: test/spec-registry.test.ts contains [getGoverningSpecs, getGovernedFiles, getUngoverned, mock]
+- [x] SC-508: hooks/GateEnforcement.hook.ts contains [doc-hygiene, signals, signal]
 - [ ] SC-509: lib/doc-hygiene.ts exports [runContentAlignment, checkDocHygiene]
 
 ### Phase 1 — Content alignment checks (follow-up)
