@@ -45,10 +45,11 @@ function surroundingContext(lines: string[], lineIdx: number): string {
 function collectScanTargets(projectPath: string): string[] {
   const targets: string[] = [];
 
-  const rootFiles = ["ARCHITECTURE.md", "PRINCIPLES.md", "CONTRIBUTING.md", "CLAUDE.md"];
-  for (const f of rootFiles) {
+  // Scan all root-level .md files (not just hardcoded names)
+  for (const f of readdirSync(projectPath)) {
+    if (!f.endsWith(".md")) continue;
     const p = join(projectPath, f);
-    if (existsSync(p)) targets.push(p);
+    targets.push(p);
   }
 
   const docsDir = join(projectPath, "docs");
