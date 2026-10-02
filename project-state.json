@@ -1,11 +1,9 @@
 {
   "updated": "2026-10-02",
   "priorities": [
-    "DONE: Hill-climb loop validated — hooks fire in worktrees, compliance grading ran",
-    "DONE: Discovery AC threshold bug fixed — grep -c + contains normalized to >= 1 in ship.js",
-    "DONE: Scaffold generates briefs+config for all project types",
+    "DONE: #25 partial MCP migration shipped (goal read + prove/close) — 29 min, 17 agents",
+    "P1: #25 remaining — research audit of all gh CLI usage vs MCP gaps before further migration",
     "P2: #24 Doc-hygiene: content alignment — needs council",
-    "P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow",
     "P3: #23 Isolated per-issue execution — worktree-based parallel ship runs"
   ],
   "notes": "Session 25 (2026-10-02) — #31 closed, hill-climb validated, 3 pipeline fixes shipped.\n\nKey deliverables:\n  - #31 CLOSED: All 14/14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC\n  - SC-484/SC-485: scaffold generates .claude/rungate/ directory; re-scaffold splits monolith\n  - Helper functions (loadHarnessConfig, injectEnvironmentSection) support directory structure\n  - Phase-0 golden fixture tests updated for directory config\n  - Repo config fixed: issueRepo corrected to hornjason/pai-harness\n  - Ship.js: grep -c + contains threshold mismatch auto-normalized to >= 1\n  - Scaffold: briefs+config generated for ALL project types (not just code)\n\nHill-climb loop validated end-to-end:\n  - BashToolGuard fired in worktree, TestSuiteGuard blocked at 6/2\n  - Compliance grading ran: Marcus 53%, Discovery 67%\n  - Persistent brief content gaps identified for hill-climb tier 1\n\nSuite: 1779 pass, 0 fail, 111 files. 7 commits.\nSuite: 25/25 SCs done.",

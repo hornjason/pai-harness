@@ -22,12 +22,10 @@ Suite: 1779 pass, 0 fail, 111 files. 7 commits.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. DONE: Hill-climb loop validated — hooks fire in worktrees, compliance grading ran
-2. DONE: Discovery AC threshold bug fixed — grep -c + contains normalized to >= 1 in ship.js
-3. DONE: Scaffold generates briefs+config for all project types
-4. P2: #24 Doc-hygiene: content alignment — needs council
-5. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow
-6. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. DONE: #25 partial MCP migration shipped (goal read + prove/close) — 29 min, 17 agents
+2. P1: #25 remaining — research audit of all gh CLI usage vs MCP gaps before further migration
+3. P2: #24 Doc-hygiene: content alignment — needs council
+4. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
