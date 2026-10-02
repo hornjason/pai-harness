@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 /**
  * TestSuiteGuard.hook.ts -- PreToolUse on Bash
+ * SC-473, SC-370
  * Tier 3 mechanical enforcement for DIR-L29.
  *
  * Blocks `bun test` (full suite) after 2 invocations per session.
