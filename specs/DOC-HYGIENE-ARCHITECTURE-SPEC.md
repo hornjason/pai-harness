@@ -47,12 +47,12 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 
 ### Phase 0 — Enforcement infrastructure (#24)
 
-- [ ] SC-504: lib/gate-enforcement.ts not contains [existsSync(signalsFile)]
-- [ ] SC-505: lib/spec-registry.ts exports [getGoverningSpecs, getGovernedFiles, getUngoverned]
+- [x] SC-504: lib/gate-enforcement.ts must NOT contain [existsSync(signalsFile)]
+- [x] SC-505: lib/spec-registry.ts contains [export, getGoverningSpecs, getGovernedFiles, getUngoverned]
 - [x] SC-506: lib/spec-registry.ts contains [governs, frontmatter, specs/, invertedIndex]
 - [x] SC-507: test/spec-registry.test.ts contains [getGoverningSpecs, getGovernedFiles, getUngoverned, mock]
 - [x] SC-508: hooks/GateEnforcement.hook.ts contains [doc-hygiene, signals, signal]
-- [ ] SC-509: lib/doc-hygiene.ts exports [runContentAlignment, checkDocHygiene]
+- [x] SC-509: lib/doc-hygiene.ts contains [export, runContentAlignment, checkDocHygiene]
 
 ### Phase 1 — Content alignment checks (follow-up)
 
@@ -76,5 +76,5 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 
 ## Anti-Criteria
 
-- [ ] SC-A1: No LLM/AI model calls in lib/doc-hygiene.ts or lib/spec-registry.ts
-- [ ] SC-A2: No FAIL-level content checks without 10+ cycle precision data
+- [ ] SC-A1: No LLM/AI model calls in lib/doc-hygiene.ts or lib/spec-registry.ts (behavioral)
+- [ ] SC-A2: No FAIL-level content checks without 10+ cycle precision data (behavioral)
