@@ -62,52 +62,52 @@ describe("Phase 0: Pre-flight + static files", () => {
   // ── Config-driven output verification (relationship checks) ──
   describe("config-driven verification", () => {
     test("SC-101: rungate.json has detected port from Makefile (3000)", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(config.harnessVersion).toMatch(/^\d+\.\d+\.\d+$/);
       expect(new Date(config.scaffoldedAt).getTime()).toBeGreaterThan(0);
       expect(config.dev.apiBase).toBe("http://localhost:3000");
     });
 
     test("SC-101: rungate.json has envVars from .env.example", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(config.envVars).toContain("API_PORT");
       expect(config.envVars).toContain("DATABASE_URL");
       expect(config.envVars).toContain("SECRET_KEY");
     });
 
     test("SC-6: no hardcoded project names", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(config.project).not.toContain("DailyBriefDashboard");
       expect(config.project).not.toContain("asaCommandCenter");
     });
 
     test("SC-15: fields without source are null, not guessed", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(config.dev.start).toBeDefined();
       expect(config.dev.uiBase).toBeNull();
       expect(config.dev).toHaveProperty("uiBase");
     });
 
     test("SC-21: no hardcoded port defaults (5173, 7778)", () => {
-      const raw = readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8");
+      const raw = readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8");
       expect(raw).not.toContain("5173");
       expect(raw).not.toContain("7778");
     });
 
     test("SC-86: ci.yml uses runner and bunVersion from rungate.json", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       const ci = readFileSync(join(OUTPUT, ".github/workflows/ci.yml"), "utf-8");
       expect(ci).toContain(config.ci.runner);
       expect(ci).toContain(config.ci.bunVersion);
     });
 
     test("SC-107: prod.apiBase null (not in Makefile)", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(config.prod.apiBase).toBeNull();
     });
 
     test("SC-2: rungate.json consumers from CODE-MAP scan", () => {
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       expect(Array.isArray(config.consumers)).toBe(true);
       expect(config.consumers.length).toBeGreaterThan(0);
       expect(config.consumers).toContain("index");
@@ -115,7 +115,7 @@ describe("Phase 0: Pre-flight + static files", () => {
 
     test("SC-3: AGENTS.md environment shows config values", () => {
       const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
-      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate.json"), "utf-8"));
+      const config = JSON.parse(readFileSync(join(OUTPUT, ".claude/rungate/config.json"), "utf-8"));
       if (config.dev?.apiBase) expect(content).toContain(config.dev.apiBase);
       if (config.dev?.start) expect(content).toContain(config.dev.start);
     });

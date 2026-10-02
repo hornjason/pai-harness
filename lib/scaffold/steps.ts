@@ -41,6 +41,10 @@ export function safeDir(dirPath: string, label: string, actions: string[]): void
 }
 
 function loadHarnessConfig(root: string): any {
+  const dirConfig = join(root, ".claude", "rungate", "config.json");
+  if (existsSync(dirConfig)) {
+    try { return JSON.parse(readFileSync(dirConfig, "utf-8")); } catch {}
+  }
   const p = join(root, ".claude", "rungate.json");
   if (!existsSync(p)) return null;
   try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
@@ -84,11 +88,18 @@ export function updateSpecsTable(agentsMdPath: string, actions: string[]): void 
 
 export function injectEnvironmentSection(root: string, actions: string[]): void {
   const agentsMdPath = join(root, "AGENTS.md");
-  const harnessPath = join(root, ".claude", "rungate.json");
-  if (!existsSync(agentsMdPath) || !existsSync(harnessPath)) return;
+  if (!existsSync(agentsMdPath)) return;
 
   let harness: any;
-  try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+  const dirConfig = join(root, ".claude", "rungate", "config.json");
+  const harnessPath = join(root, ".claude", "rungate.json");
+  if (existsSync(dirConfig)) {
+    try { harness = JSON.parse(readFileSync(dirConfig, "utf-8")); } catch { return; }
+  } else if (existsSync(harnessPath)) {
+    try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+  } else {
+    return;
+  }
 
   const lines: string[] = [];
   if (harness.dev) {
@@ -195,8 +206,12 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
     { pattern: "Containerfile", what: "Container build definition", when: "Modifying container" },
     { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
   ];
-  // Always include .claude/rungate.json for idempotency (scaffold generates it, SC-364)
-  keyFiles.push({ file: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" });
+  // Include rungate config reference — check directory first, fall back to monolith
+  if (existsSync(join(projectPath, ".claude", "rungate", "config.json"))) {
+    keyFiles.push({ file: ".claude/rungate/", what: "Harness project config (directory)", when: "Shipping through harness" });
+  } else {
+    keyFiles.push({ file: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" });
+  }
   for (const kf of conditionalPatterns) {
     if (existsSync(join(projectPath, kf.pattern))) {
       keyFiles.push({ file: kf.pattern, what: kf.what, when: kf.when });
