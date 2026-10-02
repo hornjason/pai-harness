@@ -1,18 +1,13 @@
 {
   "updated": "2026-10-02",
   "priorities": [
-    "P0: BashToolGuard DEPLOYED to project settings ✅ — run fast loop to validate COMP-7 passes in next pipeline",
-    "P0: Fast loop iteration on remaining COMPs — COMP-6/8/9/11 failing, Marcus prompt extracted, test-brief --prompt ready (SC-470 done)",
-    "P0: SC-471 COMP-level grading in fast loop — validate replay produces same grades as pipeline",
-    "P1: #28 extract-constraints.ts misses root-level markdown — POV bootstrap showed 40 rules invisible to scanner",
-    "P1: #30 Post-scaffold auto-organize — scaffold creates empty dirs but user has to manually move specs/research/docs into them",
-    "P1: #27 Spec conversion CLI — convert existing freeform docs (numbered rules, MUST/SHOULD) to RunGate spec format with frontmatter and SCs",
-    "P1: SC-472 scaffold deploys hooks to consumer settings.local.json — config-driven from rungate.json hooks[].deployToConsumers",
+    "P1: #31 Directory-based rungate config + self-describing compliance policy — needs interactive session (.claude/ permissions)",
+    "P1: Validate new tools (convert-spec, organize-project, extract-constraints) against POV project",
     "P2: #24 Doc-hygiene: content alignment — needs council",
     "P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow — structured calls, less shell overhead",
     "P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs"
   ],
-  "notes": "Session 23 (2026-10-01) — Compliance grader fix + mechanical enforcement validation.\n\nKey deliverables:\n  - COMP-1 grader false negative FIXED: extractPromptContent() now checks all user messages, not just first. Was only reading relay header, missing AGENTS.md injection in task prompt. All 3 baseline runs now pass COMP-1 (was 0/3)\n  - BashToolGuard hook VALIDATED: replay with hook active scored 0 cat commands (was 1-11). Hook blocks cat/head/tail at PreToolUse level\n  - Issue #26 shipped through full pipeline: Marcus 9/15 (60%). COMP-1 ✅ COMP-13 ✅ (first time!). COMP-7 ❌ (hook not in project settings)\n  - SCs created: SC-469 (grader fix, done), SC-470 (--prompt flag), SC-471 (COMP grading), SC-472 (scaffold hook deployment)\n  - Course correction: stopped hardcoding, created SCs before implementation, removed replay-prompt.ts (belongs in test-brief.ts per SC-470)\n\nCompliance score trend:\n  Bloated baseline:   62% / 69%\n  Trimmed baseline:   54% / 69% / 69%\n  Re-graded baseline: 77% / 69% / 77% (grader fix alone: +8-15%)\n  Replay w/ hook:     85% (grader fix + hook: +16-31%)\n  Issue #26 pipeline: 60% (15 checks vs 13, new violations: COMP-6/8/9/11)\n\nPersistent violations needing fast loop iteration:\n  COMP-7: Hook not active in pipeline (needs project settings deployment)\n  COMP-6: 3 files read multiple times (test-brief.ts 7x)\n  COMP-9: 55 tool calls (limit 40)\n  COMP-8: PROJECT-STATE not read\n  COMP-11: Coding principles not read\n  DIR-L29: 5 full suite runs (limit 2)\n\nPOV bootstrap session uncovered 4 gaps: #27 spec conversion CLI, #28 extractor misses root files, #29 Drive HTML-to-Doc workaround, #30 post-scaffold auto-organize. All P1-P2.\n\nPrevious session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.\n\nSuite: 25/25 SCs done. 7 issues remain (#23-28, #30). #25 reopened (use MCP instead of CLI), #29 closed (consumer concern).",
+  "notes": "Session 24 (2026-10-02) — AFK batch: 4 issues closed, compliance loop gaps fixed.\n\nKey deliverables:\n  - 4 P0/P1 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize)\n  - TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29 (100% violation rate → mechanically blocked)\n  - Hill-climb escalation bug: DIR-L violations were invisible to detectHillClimbNeeds (ID namespace mismatch). Fixed with DIR→COMP mapping\n  - #31 created: directory-based config split to replace hardcoded compliance maps\n\nCompliance scores this session:\n  #28 Marcus: 12/15 (80%). #27 Marcus: 11-12/15 (73-80%). #30 Marcus: 11/15 (73%)\n  Persistent violations: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced via TestSuiteGuard)\n\nRemaining issues: #23 (P3 parallel exec), #24 (P2 doc-hygiene, needs council), #25 (P3 MCP in ship), #31 (P1 config split)\n\nNext: validate new tools against POV project, then ship #25 or #31.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -207,6 +202,23 @@
   ],
   "sessions": [
     {
+      "date": "2026-10-02 session 24",
+      "items": [
+        "AFK batch: 4 issues closed (#26, #27, #28, #30), all P0/P1 priorities cleared",
+        "#26 ALREADY_SHIPPED: SC-470/471/472 all implemented in prior sessions. Specs marked done, issue closed",
+        "#28 SHIPPED via pipeline: Marcus 12/15 (80%). Root-level .md scanning + numbered bold rule pattern added to extract-constraints.ts",
+        "#27 SHIP_FAILED then fixed directly: convert-spec.ts dedup bug (trailing punctuation in seenTexts keys). 10 tests, CLI registered in AGENTS.md",
+        "#30 SHIPPED via pipeline: Marcus 11/15 (73%). organize-project.ts with classification heuristics, --apply mode, docs-routing update",
+        "TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29. Blocks full bun test after 2 runs. 100% violation rate across 6 prior runs",
+        "Hill-climb escalation bug FOUND AND FIXED: detectHillClimbNeeds only tracked COMP-* IDs, DIR-L* violations silently fell through. Added DIR→COMP mapping",
+        "Alert filter also fixed: was skipping DIR-L violations entirely (line 134: !compId.startsWith('COMP-') → continue)",
+        "Pre-flight: fixed 3 test failures (duplicate SC-472 across specs, HELP-SPEC.md stub missing compliance:strict, behavioral SC count)",
+        "#31 created: directory-based rungate config + self-describing compliance policy (.claude/rungate/ replaces monolith)",
+        "Compliance scores this session: Marcus 73-80%, Discovery 50-67%. Persistent: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced)",
+        "Suite: 1745+ pass, 0 fail across session. 8 commits pushed"
+      ]
+    },
+    {
       "date": "2026-10-01 session 23",
       "items": [
         "COMP-1 grader false negative FIXED: extractPromptContent() was only checking first user message (relay header), missing AGENTS.md injection in second message (task prompt). All 3 baseline runs now FOLLOWED. 2 tests added",
@@ -350,11 +362,11 @@
     }
   ],
   "session": {
-    "number": 23,
-    "date": "2026-10-01",
-    "summary": "COMP-1 grader false negative fixed (extractPromptContent all user messages). BashToolGuard hook validated (replay 0 cat). Issue #26 shipped: Marcus 60% (COMP-1 ✅, COMP-13 ✅ first time, COMP-7 ❌ hook not deployed). SCs 469-472 created for fast loop + hook scaffold. Course corrected: specs before code.",
-    "suite": "1728 pass, 0 fail, 108 files",
-    "scs_done": "25/25 + 4 new (1 done, 3 pending)",
-    "commits": 4
+    "number": 24,
+    "date": "2026-10-02",
+    "summary": "AFK batch: 4 issues closed (#26-28, #30). TestSuiteGuard hook (SC-473) for DIR-L29. Hill-climb escalation bug fixed (DIR→COMP mapping). #31 created for config directory split. Compliance: Marcus 73-80%.",
+    "suite": "1745+ pass, 0 fail, 108 files",
+    "scs_done": "25/25 + SC-473 done",
+    "commits": 8
   }
 }

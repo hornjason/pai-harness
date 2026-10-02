@@ -2,47 +2,29 @@
 
 **Current phase: All phases complete**
 
-Session 23 (2026-10-01) — Compliance grader fix + mechanical enforcement validation.
+Session 24 (2026-10-02) — AFK batch: 4 issues closed, compliance loop gaps fixed.
 
 Key deliverables:
-  - COMP-1 grader false negative FIXED: extractPromptContent() now checks all user messages, not just first. Was only reading relay header, missing AGENTS.md injection in task prompt. All 3 baseline runs now pass COMP-1 (was 0/3)
-  - BashToolGuard hook VALIDATED: replay with hook active scored 0 cat commands (was 1-11). Hook blocks cat/head/tail at PreToolUse level
-  - Issue #26 shipped through full pipeline: Marcus 9/15 (60%). COMP-1 ✅ COMP-13 ✅ (first time!). COMP-7 ❌ (hook not in project settings)
-  - SCs created: SC-469 (grader fix, done), SC-470 (--prompt flag), SC-471 (COMP grading), SC-472 (scaffold hook deployment)
-  - Course correction: stopped hardcoding, created SCs before implementation, removed replay-prompt.ts (belongs in test-brief.ts per SC-470)
+  - 4 P0/P1 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize)
+  - TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29 (100% violation rate → mechanically blocked)
+  - Hill-climb escalation bug: DIR-L violations were invisible to detectHillClimbNeeds (ID namespace mismatch). Fixed with DIR→COMP mapping
+  - #31 created: directory-based config split to replace hardcoded compliance maps
 
-Compliance score trend:
-  Bloated baseline:   62% / 69%
-  Trimmed baseline:   54% / 69% / 69%
-  Re-graded baseline: 77% / 69% / 77% (grader fix alone: +8-15%)
-  Replay w/ hook:     85% (grader fix + hook: +16-31%)
-  Issue #26 pipeline: 60% (15 checks vs 13, new violations: COMP-6/8/9/11)
+Compliance scores this session:
+  #28 Marcus: 12/15 (80%). #27 Marcus: 11-12/15 (73-80%). #30 Marcus: 11/15 (73%)
+  Persistent violations: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced via TestSuiteGuard)
 
-Persistent violations needing fast loop iteration:
-  COMP-7: Hook not active in pipeline (needs project settings deployment)
-  COMP-6: 3 files read multiple times (test-brief.ts 7x)
-  COMP-9: 55 tool calls (limit 40)
-  COMP-8: PROJECT-STATE not read
-  COMP-11: Coding principles not read
-  DIR-L29: 5 full suite runs (limit 2)
+Remaining issues: #23 (P3 parallel exec), #24 (P2 doc-hygiene, needs council), #25 (P3 MCP in ship), #31 (P1 config split)
 
-POV bootstrap session uncovered 4 gaps: #27 spec conversion CLI, #28 extractor misses root files, #29 Drive HTML-to-Doc workaround, #30 post-scaffold auto-organize. All P1-P2.
-
-Previous session 22: Eval-driven brief hill-climbing. 66-run suite, ZERO negative deltas.
-
-Suite: 25/25 SCs done. 7 issues remain (#23-28, #30). #25 reopened (use MCP instead of CLI), #29 closed (consumer concern).
+Next: validate new tools against POV project, then ship #25 or #31.
+Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: BashToolGuard DEPLOYED to project settings ✅ — run fast loop to validate COMP-7 passes in next pipeline
-2. P0: Fast loop iteration on remaining COMPs — COMP-6/8/9/11 failing, Marcus prompt extracted, test-brief --prompt ready (SC-470 done)
-3. P0: SC-471 COMP-level grading in fast loop — validate replay produces same grades as pipeline
-4. P1: #28 extract-constraints.ts misses root-level markdown — POV bootstrap showed 40 rules invisible to scanner
-5. P1: #30 Post-scaffold auto-organize — scaffold creates empty dirs but user has to manually move specs/research/docs into them
-6. P1: #27 Spec conversion CLI — convert existing freeform docs (numbered rules, MUST/SHOULD) to RunGate spec format with frontmatter and SCs
-7. P1: SC-472 scaffold deploys hooks to consumer settings.local.json — config-driven from rungate.json hooks[].deployToConsumers
-8. P2: #24 Doc-hygiene: content alignment — needs council
-9. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow — structured calls, less shell overhead
-10. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
+1. P1: #31 Directory-based rungate config + self-describing compliance policy — needs interactive session (.claude/ permissions)
+2. P1: Validate new tools (convert-spec, organize-project, extract-constraints) against POV project
+3. P2: #24 Doc-hygiene: content alignment — needs council
+4. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow — structured calls, less shell overhead
+5. P3: #23 Isolated per-issue execution — devcontainer or worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -99,6 +81,20 @@ Suite: 25/25 SCs done. 7 issues remain (#23-28, #30). #25 reopened (use MCP inst
 
 ---
 
+**Session 2026-10-02 session 24:**
+- AFK batch: 4 issues closed (#26, #27, #28, #30), all P0/P1 priorities cleared
+- #26 ALREADY_SHIPPED: SC-470/471/472 all implemented in prior sessions. Specs marked done, issue closed
+- #28 SHIPPED via pipeline: Marcus 12/15 (80%). Root-level .md scanning + numbered bold rule pattern added to extract-constraints.ts
+- #27 SHIP_FAILED then fixed directly: convert-spec.ts dedup bug (trailing punctuation in seenTexts keys). 10 tests, CLI registered in AGENTS.md
+- #30 SHIPPED via pipeline: Marcus 11/15 (73%). organize-project.ts with classification heuristics, --apply mode, docs-routing update
+- TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29. Blocks full bun test after 2 runs. 100% violation rate across 6 prior runs
+- Hill-climb escalation bug FOUND AND FIXED: detectHillClimbNeeds only tracked COMP-* IDs, DIR-L* violations silently fell through. Added DIR→COMP mapping
+- Alert filter also fixed: was skipping DIR-L violations entirely (line 134: !compId.startsWith('COMP-') → continue)
+- Pre-flight: fixed 3 test failures (duplicate SC-472 across specs, HELP-SPEC.md stub missing compliance:strict, behavioral SC count)
+- #31 created: directory-based rungate config + self-describing compliance policy (.claude/rungate/ replaces monolith)
+- Compliance scores this session: Marcus 73-80%, Discovery 50-67%. Persistent: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced)
+- Suite: 1745+ pass, 0 fail across session. 8 commits pushed
+
 **Session 2026-10-01 session 23:**
 - COMP-1 grader false negative FIXED: extractPromptContent() was only checking first user message (relay header), missing AGENTS.md injection in second message (task prompt). All 3 baseline runs now FOLLOWED. 2 tests added
 - BashToolGuard hook VALIDATED: replay with hook scored 0 cat commands (baseline: 1-11 per run). Tier 3 mechanical enforcement works
@@ -117,19 +113,4 @@ Suite: 25/25 SCs done. 7 issues remain (#23-28, #30). #25 reopened (use MCP inst
 - Ship.js duplicated rules removed (30+ lines hardcoded in 3 Marcus prompts)
 - Ship workflow rule deployed to all consumers via scaffold (ship-workflow.md)
 - DDB-1344 shipped through pipeline: Marcus 62%/69% compliance. Persistent: COMP-1, COMP-7
-
-**Session 2026-09-30 session 21:**
-- Three-tier context architecture validated: 3/4 checks pass. docs-routing rule conflict fixed with trust directive
-- Platform audit: 70+ features across 26 Claude Code doc pages (docs/research/claude-code-platform-audit.md)
-- Phase 1 adopted: cache TTL 1h, agent memory, maxTurns 30, effort per-agent, disallowedTools, worktreeinclude, omitClaudeMd, isolation, Stop hook on Marcus
-- Plugin eval framework: 7 cases, 4 agents, 100% pass rate, $1.38 per suite, 188s
-- Vertex eval auth fix: copy ADC to evals/.gcp-adc.json + GOOGLE_APPLICATION_CREDENTIALS + env scrub off
-- Δ baseline scoring: mean +0.06 — 6/7 cases Claude passes natively, Quinn Δ +0.40 (brief matters for QA quality)
-- Scaffold generator updated: emits all platform-native frontmatter fields (memory, effort, disallowedTools, etc)
-- AGENT-BRIEF-TEMPLATE-SPEC: SC-410 through SC-413 for platform fields
-- GitHub MCP server added (.mcp.json), /ship-issue command created, output style created
-- eval-to-hillclimb bridge: maps eval results to COMP dimensions for auto-improvement
-- rungate.json config synced: serena/aditi tools=[Read], disallowedTools added
-- 3 stale PRs closed (#2, #5, #6), 16 commits pushed. 4 test failures fixed → 0
-- Suite: 1749 pass, 0 fail, 108 files. 3 issues remain (#23, #24, #25)
 
