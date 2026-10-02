@@ -238,7 +238,7 @@ const DIR_TO_COMP: Record<string, string> = {
   "DIR-L23": "COMP-6",   // duplicate reads (discovery)
 };
 
-export function normalizeDirToComp(id: string): string {
+function normalizeDirToComp(id: string): string {
   return DIR_TO_COMP[id] || id;
 }
 
