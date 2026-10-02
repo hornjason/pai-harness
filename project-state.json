@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-01",
+  "updated": "2026-10-02",
   "priorities": [
     "P0: BashToolGuard DEPLOYED to project settings ✅ — run fast loop to validate COMP-7 passes in next pipeline",
     "P0: Fast loop iteration on remaining COMPs — COMP-6/8/9/11 failing, Marcus prompt extracted, test-brief --prompt ready (SC-470 done)",

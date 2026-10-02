@@ -122,6 +122,55 @@ describe("extract-constraints: output structure", () => {
   });
 });
 
+describe("extract-constraints: root-level scanning", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("scans arbitrary root-level .md files beyond hardcoded list", async () => {
+    tmpDir = createTempDir();
+    // Create a root .md file that is NOT in the hardcoded list
+    writeFileSync(
+      join(tmpDir, "POV-SPEC.md"),
+      "# POV Spec\n\nThis behavior is intentional and by design for the POV pipeline.\n"
+    );
+    writeFileSync(
+      join(tmpDir, "CUSTOM-RULES.md"),
+      "# Custom Rules\n\nDo not remove the validation gate under any circumstances.\n"
+    );
+    const result = await extractConstraints(tmpDir);
+    // Should find candidates from root .md files not in the hardcoded list
+    const povFound = result.candidates.some((c) => c.source.includes("POV-SPEC.md"));
+    const customFound = result.candidates.some((c) => c.source.includes("CUSTOM-RULES.md"));
+    expect(povFound).toBe(true);
+    expect(customFound).toBe(true);
+  });
+});
+
+describe("extract-constraints: numbered bold rule extraction", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("recognizes numbered bold rules as constraint candidates", async () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "docs"), { recursive: true });
+    writeFileSync(
+      join(tmpDir, "docs", "PRINCIPLES.md"),
+      "# Principles\n\n1. **Never commit secrets to the repository**\n2. **Always run tests before merging**\n3. **Verify before asserting any claim**\n"
+    );
+    const result = await extractConstraints(tmpDir);
+    const found = result.candidates.some((c) => /never commit secrets/i.test(c.rule));
+    expect(found).toBe(true);
+    // Should find at least one numbered bold rule candidate
+    expect(result.candidates.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("extract-constraints: ADR staleness exemption", () => {
   let tmpDir: string;
 
