@@ -85,12 +85,12 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 
 ### Phase 1 — Foundation (lib/github.ts + Octokit)
 
-- [ ] SC-488: `bun add @octokit/rest` in package.json dependencies
-- [ ] SC-489: lib/github.ts exports [createGitHubClient, getIssue, addComment, addLabels]
-- [ ] SC-490: lib/github.ts exports [createPR, updatePR, listPRs, closeIssue]
+- [x] SC-488: package.json contains [@octokit/rest]
+- [x] SC-489: lib/github.ts contains [createGitHubClient, getIssue, addComment, addLabels]
+- [x] SC-490: lib/github.ts contains [createPR, updatePR, listPRs, closeIssue]
 - [x] SC-491: lib/github.ts contains [GITHUB_TOKEN, Octokit, issues.addLabels]
 - [x] SC-492: test/github-client.test.ts contains [createGitHubClient, addLabels, updatePR, mock]
-- [x] SC-493: lib/github.ts contains [POST, additive, labels] in comments or implementation
+- [x] SC-493: lib/github.ts contains [POST, additive, labels]
 
 ### Phase 2 — Migrate infrastructure code (hooks, gates, lib)
 
@@ -107,8 +107,8 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 
 ### Phase 4 — Handle remaining ship.js gaps
 
-- [ ] SC-501: workflows/ship.js PR update uses Octokit helper (behavioral — agent calls lib/github.ts updatePR instead of gh pr edit)
-- [ ] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
+- [x] SC-501: workflows/ship.js contains [mcp__github__create_pull_request, mcp__github__update_pull_request] and not contains [gh pr edit, gh pr create, gh pr list]
+- [x] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
 
 ## Constraints
 
@@ -120,5 +120,5 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 
 ## Anti-Criteria
 
-- [ ] SC-A1: No `gh` CLI calls remain in lib/, hooks/, or gates/ after Phase 2 complete
-- [ ] SC-A2: No `PUT /labels` (replace-all) used anywhere — only POST (additive)
+- [x] SC-A1: No `gh` CLI calls remain in lib/, hooks/, or gates/ after Phase 2 complete (behavioral)
+- [x] SC-A2: No `PUT /labels` (replace-all) used anywhere — only POST (additive) (behavioral)
