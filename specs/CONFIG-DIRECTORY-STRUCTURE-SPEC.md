@@ -51,8 +51,8 @@ The organize-project tool (#30) also needs config for external source locations 
 - [x] SC-482: .claude/rungate/compliance.json contains [externalSources, path, type, target, method]
 - [x] SC-483: test/compliance-report.test.ts contains [loadRungateConfig, setComplianceProjectRoot, compliance.json]
 
-### Phase 2 — Deferred (future session)
+### Phase 2 — External source scanning + file types (this session)
 - [ ] SC-484: Scaffold generates `.claude/rungate/` directory for new projects (behavioral)
 - [ ] SC-485: Re-scaffold splits existing `rungate.json` into directory structure (behavioral)
-- [ ] SC-486: organize-project reads externalSources from compliance.json and scans listed paths (behavioral)
-- [ ] SC-487: organize-project handles `.html` and `.pdf` files at root using config-driven classification (behavioral)
+- [x] SC-486: lib/organize.ts contains [scanExternalSources, loadComplianceConfig, externalSources, matchBy]
+- [x] SC-487: lib/organize.ts contains [artifactClassification, .html, .pdf, artifact]

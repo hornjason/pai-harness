@@ -15,6 +15,8 @@ const args = process.argv.slice(2);
 const projectPath = args.find((arg) => !arg.startsWith("--"));
 const applyMode = args.includes("--apply");
 const dryRun = !applyMode; // default to dry-run
+const harnessRootIdx = args.indexOf("--harness-root");
+const harnessRoot = harnessRootIdx >= 0 ? args[harnessRootIdx + 1] : import.meta.dir.replace("/scripts", "");
 
 if (!projectPath) {
   console.error("Usage: organize-project.ts /path/to/project [--dry-run] [--apply]");
@@ -31,7 +33,7 @@ if (!statSync(projectPath).isDirectory()) {
   process.exit(1);
 }
 
-const proposals = organizeProject(projectPath, { apply: applyMode, dryRun });
+const proposals = organizeProject(projectPath, { apply: applyMode, dryRun, harnessRoot });
 
 if (proposals.length === 0) {
   console.log("No unorganized files found.");

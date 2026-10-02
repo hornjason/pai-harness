@@ -20,6 +20,7 @@ import {
   unlinkSync,
 } from "fs";
 import { join, relative, dirname, basename } from "path";
+import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -59,6 +60,8 @@ export interface OrganizeOptions {
   apply?: boolean;
   /** If true, only return proposals without executing */
   dryRun?: boolean;
+  /** Path to the harness project root (for loading compliance.json config) */
+  harnessRoot?: string;
 }
 
 // ── Well-known root files to skip ────────────────────────────────
@@ -97,19 +100,23 @@ const DOC_TYPE_MAP: Record<string, string> = {
 
 // ── Scan for unorganized files ───────────────────────────────────
 
-export function scanUnorganized(root: string): UnorganizedCandidate[] {
+export function scanUnorganized(root: string, fileTypes: string[] = [".md"]): UnorganizedCandidate[] {
   const candidates: UnorganizedCandidate[] = [];
 
-  // Scan root-level markdown files
   try {
     for (const f of readdirSync(root)) {
-      if (!f.endsWith(".md")) continue;
+      const ext = f.substring(f.lastIndexOf(".")).toLowerCase();
+      if (!fileTypes.includes(ext)) continue;
       if (WELL_KNOWN_ROOT_FILES.has(f)) continue;
       const fullPath = join(root, f);
       try {
         if (lstatSync(fullPath).isDirectory()) continue;
-        const content = readFileSync(fullPath, "utf-8");
-        candidates.push({ source: f, content });
+        if (ext === ".md") {
+          const content = readFileSync(fullPath, "utf-8");
+          candidates.push({ source: f, content });
+        } else {
+          candidates.push({ source: f, content: "" });
+        }
       } catch {}
     }
   } catch {}
@@ -122,7 +129,19 @@ export function scanUnorganized(root: string): UnorganizedCandidate[] {
 export function classifyDocument(
   filename: string,
   content: string,
+  artifactClassification: Record<string, string> = {},
 ): ClassificationResult {
+  // 0. Non-markdown files: classify by extension from config
+  const ext = filename.substring(filename.lastIndexOf(".")).toLowerCase();
+  if (ext !== ".md" && artifactClassification[ext]) {
+    return {
+      targetDir: artifactClassification[ext],
+      classification: "artifact",
+      reasoning: `non-markdown file type ${ext} classified as ${artifactClassification[ext]} by config`,
+      confidence: 0.85,
+    };
+  }
+
   // 1. Check frontmatter doc-type (highest confidence)
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
   if (fmMatch) {
@@ -270,13 +289,19 @@ export function classifyDocument(
 // ── Main organize function ───────────────────────────────────────
 
 export function organizeProject(root: string, options: OrganizeOptions = {}): OrganizeProposal[] {
-  const candidates = scanUnorganized(root);
+  const complianceConfig = options.harnessRoot
+    ? loadComplianceConfig(options.harnessRoot)
+    : null;
+  const organizeConfig = complianceConfig?.organize;
+  const fileTypes = organizeConfig?.fileTypes || [".md"];
+  const artifactClassification = organizeConfig?.artifactClassification || {};
+
+  const candidates = scanUnorganized(root, fileTypes);
   const proposals: OrganizeProposal[] = [];
 
   for (const candidate of candidates) {
-    const classification = classifyDocument(candidate.source, candidate.content);
+    const classification = classifyDocument(candidate.source, candidate.content, artifactClassification);
 
-    // Check if already in correct directory
     const currentDir = dirname(candidate.source);
     if (currentDir === classification.targetDir) continue;
 
@@ -291,9 +316,66 @@ export function organizeProject(root: string, options: OrganizeOptions = {}): Or
     });
   }
 
-  // Execute moves if --apply
+  // Scan external sources from config
+  if (organizeConfig?.externalSources) {
+    const externalProposals = scanExternalSources(root, organizeConfig.externalSources);
+    proposals.push(...externalProposals);
+  }
+
   if (options.apply && !options.dryRun) {
     executeProposals(root, proposals);
+  }
+
+  return proposals;
+}
+
+// ── External source scanning ────────────────────────────────────
+
+function scanExternalSources(projectRoot: string, sources: OrganizeExternalSource[]): OrganizeProposal[] {
+  const proposals: OrganizeProposal[] = [];
+  const projectName = basename(projectRoot).toLowerCase();
+
+  for (const source of sources) {
+    const expandedPath = source.path.replace("~", process.env.HOME || "");
+    if (!existsSync(expandedPath)) continue;
+    if (source.target === null) continue;
+
+    if (lstatSync(expandedPath).isDirectory()) {
+      try {
+        for (const entry of readdirSync(expandedPath)) {
+          const entryPath = join(expandedPath, entry);
+          if (!lstatSync(entryPath).isDirectory() && !entry.endsWith(".md")) continue;
+
+          let matches = false;
+          if (source.matchBy === "project-name") {
+            matches = entry.toLowerCase().includes(projectName) ||
+              (lstatSync(entryPath).isDirectory() && readdirSync(entryPath).some(f =>
+                f.toLowerCase().includes(projectName)));
+          } else if (source.matchBy === "content-reference") {
+            if (entry.endsWith(".md")) {
+              try {
+                const content = readFileSync(entryPath, "utf-8");
+                matches = content.toLowerCase().includes(projectName);
+              } catch {}
+            }
+          }
+
+          if (matches) {
+            const targetPath = join(source.target, entry);
+            const targetFull = join(projectRoot, targetPath);
+            if (existsSync(targetFull)) continue;
+
+            proposals.push({
+              source: entryPath,
+              target: targetPath,
+              classification: source.type,
+              reasoning: `external ${source.type} matched by ${source.matchBy} in ${source.path}`,
+              confidence: 0.7,
+            });
+          }
+        }
+      } catch {}
+    }
   }
 
   return proposals;
