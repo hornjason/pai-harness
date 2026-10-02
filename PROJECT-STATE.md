@@ -2,36 +2,37 @@
 
 **Current phase: All phases complete**
 
-Session 24 (2026-10-02) — AFK batch + config architecture + POV validation.
+Session 24 (2026-10-02) — AFK batch + config architecture + hill-climb loop closed.
 
 Key deliverables:
   - 5 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize), #31 Phase 1+2 (12/14 SCs)
   - #31: .claude/rungate/ directory with config.json, roles.json, hooks.json, compliance.json. Config loader with fallback. Hill-climb reads from config.
-  - organize-project: now handles .html/.pdf via config, scans external sources (MEMORY/RESEARCH), symlinks external dirs
-  - POV project fully organized: 7 files moved/symlinked, POV-SPEC.md converted to RunGate format (43 SCs), rungate.json + agent briefs created
-  - TestSuiteGuard hook (SC-473): Tier 3 for DIR-L29. Hill-climb DIR→COMP mapping fixed.
+  - organize-project: handles .html/.pdf via config, scans external sources (MEMORY/RESEARCH), symlinks external dirs
+  - POV project fully organized + consumable: 7 files moved/symlinked, POV-SPEC.md converted (43 SCs), rungate.json + agent briefs created
+  - TestSuiteGuard hook (SC-473): Tier 3 for DIR-L29
+  - Hill-climb escalation bug fixed: DIR→COMP mapping, alert filter
+  - WORKTREE HOOK PROPAGATION: hooks moved from untracked settings.local.json to tracked settings.json. Root cause of 100% COMP-7 violation rate.
+  - AUTO-RERUN AFTER ESCALATION: ship.js grade phase now re-tests with test-brief --prompt after applyHillClimb patches a brief. The loop is closed.
   - create-spec.ts now includes compliance:strict
   - Stale PRs #21, #22 closed
 
-POV validation:
-  organize-project: 7 proposals (HTML, PDF, MD, research vault) — all applied correctly
-  convert-spec: 43 SCs extracted from POV-SPEC.md, zero duplicates
-  extract-constraints: 46 candidates from root + specs
+Hill-climb loop status: CLOSED
+  grade → detect violations → escalate (DIR→COMP mapping) → patch brief → re-test → compare
+  Mechanical enforcement: BashToolGuard (COMP-7), TestSuiteGuard (DIR-L29) — both in tracked settings.json
 
-Gap found: scaffold only generates briefs/config for projectType=code, not infra. POV was type:infra → no briefs.
+Gap found: scaffold only generates briefs/config for projectType=code, not infra.
 
-Next P0: worktree hook propagation + auto-rerun after escalation (closes the hill-climb loop).
+Next: validate loop end-to-end with a real ship run.
 Suite: 1786 pass, 0 fail.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Worktree hook propagation — briefedAgent() copies hooks to worktree settings before spawn (~20 lines in ship.js)
-2. P0: Auto-rerun after escalation — grade → patch brief → re-test → compare → commit if improved (~50 lines in ship.js)
-3. P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs
-4. P1: #31 SC-484/485 — scaffold generates .claude/rungate/ directory, re-scaffold splits monolith
-5. P2: #24 Doc-hygiene: content alignment — needs council
-6. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow
-7. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. P0: Validate hill-climb loop end-to-end — ship an issue and confirm hooks fire in worktree, auto-rerun triggers on violation
+2. P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs
+3. P1: #31 SC-484/485 — scaffold generates .claude/rungate/ directory, re-scaffold splits monolith
+4. P2: #24 Doc-hygiene: content alignment — needs council
+5. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow
+6. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
