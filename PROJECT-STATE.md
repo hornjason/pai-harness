@@ -2,34 +2,36 @@
 
 **Current phase: All phases complete**
 
-Session 24 (2026-10-02) — AFK batch + config architecture + hill-climb loop closed.
+Session 25 (2026-10-02) — #31 closed, hill-climb loop validated, Discovery AC bug identified.
 
 Key deliverables:
-  - 5 issues closed: #26 (already shipped), #27 (convert-spec CLI), #28 (root scanning), #30 (auto-organize), #31 Phase 1+2 (12/14 SCs)
-  - #31: .claude/rungate/ directory with config.json, roles.json, hooks.json, compliance.json. Config loader with fallback. Hill-climb reads from config.
-  - organize-project: handles .html/.pdf via config, scans external sources (MEMORY/RESEARCH), symlinks external dirs
-  - POV project fully organized + consumable: 7 files moved/symlinked, POV-SPEC.md converted (43 SCs), rungate.json + agent briefs created
-  - TestSuiteGuard hook (SC-473): Tier 3 for DIR-L29
-  - Hill-climb escalation bug fixed: DIR→COMP mapping, alert filter
-  - WORKTREE HOOK PROPAGATION: hooks moved from untracked settings.local.json to tracked settings.json. Root cause of 100% COMP-7 violation rate.
-  - AUTO-RERUN AFTER ESCALATION: ship.js grade phase now re-tests with test-brief --prompt after applyHillClimb patches a brief. The loop is closed.
-  - create-spec.ts now includes compliance:strict
-  - Stale PRs #21, #22 closed
+  - #31 CLOSED: All 14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC done (SC-474 through SC-487)
+  - SC-484/SC-485 implemented: scaffold now generates .claude/rungate/ directory for new projects; re-scaffold splits existing monolith
+  - Helper functions updated: loadHarnessConfig(), injectEnvironmentSection() check directory before monolith
+  - Phase-0 golden fixture tests updated to read from .claude/rungate/config.json
+  - Repo config fixed: issueRepo corrected from hornjason/pai-config to hornjason/pai-harness
 
-Hill-climb loop status: CLOSED
-  grade → detect violations → escalate (DIR→COMP mapping) → patch brief → re-test → compare
-  Mechanical enforcement: BashToolGuard (COMP-7), TestSuiteGuard (DIR-L29) — both in tracked settings.json
+Hill-climb loop validation:
+  - COMP-7 (BashToolGuard): Fired — blocked cat via Bash, enforced Read tool usage
+  - DIR-L29 (TestSuiteGuard): Fired — blocked full suite at 6/2 count
+  - Compliance grading ran: Marcus 8/15 (53%) across 2 runs. Discovery 4/6 (67%)
+  - Persistent violations: COMP-5 (no governing spec context), COMP-8 (no PROJECT-STATE), COMP-9 (tool call budget), COMP-11 (no coding principles)
+  - These are BRIEF CONTENT gaps, not code bugs — hill-climb should auto-fix via tier 1 (reinforce-brief)
 
-Gap found: scaffold only generates briefs/config for projectType=code, not infra.
+Discovery AC bug found:
+  - Discovery authored ACs with grep -c evidence methods (return counts) but 'contains' thresholds (check for substring)
+  - grep -c returns '5' but threshold checks if '5' contains 'loadFromDirectory' → always FAIL
+  - This caused false verify failures on AC-2, AC-3, AC-5 even though code is correct
+  - Root cause: Discovery brief doesn't constrain threshold-type alignment with evidence-method return type
+  - Fix needed: either Discovery brief or AC validation gate should enforce type alignment
 
-Next: validate loop end-to-end with a real ship run.
-Suite: 1786 pass, 0 fail.
+Suite: 1779 pass (99 phase-0), 0 fail.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: Validate hill-climb loop end-to-end — ship an issue and confirm hooks fire in worktree, auto-rerun triggers on violation
-2. P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs
-3. P1: #31 SC-484/485 — scaffold generates .claude/rungate/ directory, re-scaffold splits monolith
+1. P0: Hill-climb loop validated — hooks fire in worktrees (COMP-7 blocked cat, TestSuiteGuard blocked at 6/2), compliance grading ran
+2. P1: Fix Discovery AC threshold authoring — grep -c returns count but ACs use 'contains' operator, causes false verify failures
+3. P1: Scaffold generates briefs+config for all project types (not just code) — POV was type:infra, skipped briefs
 4. P2: #24 Doc-hygiene: content alignment — needs council
 5. P3: #25 Use GitHub MCP server instead of gh CLI in ship workflow
 6. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
