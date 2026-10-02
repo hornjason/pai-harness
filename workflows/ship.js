@@ -301,8 +301,9 @@ phase('Goal')
 log(`Ship #${ISSUE}: reading issue`)
 
 const goalData = await agent(`
-Read this GitHub issue and extract the goal and success criteria:
-gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels
+Read this GitHub issue and extract the goal and success criteria.
+
+Use the mcp__github__get_issue tool with owner="${ISSUE_REPO.split('/')[0]}", repo="${ISSUE_REPO.split('/')[1]}", issue_number=${ISSUE} to fetch the issue data (title, body, labels).
 
 Extract verbatim:
 1. issueGoal — main goal statement (first paragraph of body, or title if short)
@@ -1570,9 +1571,9 @@ log(`Prove: ${proveVerdict}`)
 await agent(`
 Do ALL of these tasks in order:
 
-1. Post prove result:
-   gh issue comment ${ISSUE} --repo ${ISSUE_REPO} --body "Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
-   ${proveVerdict === 'PROVEN' ? `gh issue edit ${ISSUE} --repo ${ISSUE_REPO} --add-label "proven" && gh issue close ${ISSUE} --repo ${ISSUE_REPO}` : ''}
+1. Post prove result using MCP tools (do NOT use gh CLI):
+   Use mcp__github__add_issue_comment with owner="${ISSUE_REPO.split('/')[0]}", repo="${ISSUE_REPO.split('/')[1]}", issue_number=${ISSUE}, body="Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
+   ${proveVerdict === 'PROVEN' ? `Then use mcp__github__update_issue with owner="${ISSUE_REPO.split('/')[0]}", repo="${ISSUE_REPO.split('/')[1]}", issue_number=${ISSUE}, labels=["proven"], state="closed"` : ''}
 
 2. Log telemetry:
    mkdir -p ${HOME}/.claude/MEMORY/LEARNING/SIGNALS
