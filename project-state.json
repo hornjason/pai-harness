@@ -1,11 +1,12 @@
 {
   "updated": "2026-10-02",
   "priorities": [
-    "DONE: #25/#32/#33/#34 GitHub API migration — Octokit + MCP two-layer, all phases merged",
-    "P1: #24 Doc-hygiene — council DONE (12 decisions), needs spec + sub-issues + ship",
+    "DONE: #24 Doc-hygiene Phase 0 — spec-registry, doc-hygiene module, logSignal fix, signal enforcement",
+    "P1: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 alignment checks (SC-510 to SC-513)",
+    "P1: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion (SC-514, SC-515)",
     "P2: #23 Isolated per-issue execution — worktree-based parallel ship runs"
   ],
-  "notes": "Session 25 continued (2026-10-02) — GitHub API migration complete, council done.\n\nKey deliverables:\n  - #25/#32/#33/#34 ALL CLOSED: Full Octokit + MCP two-layer migration\n  - lib/github.ts (197 lines): 8 exports, POST-additive labels, GITHUB_TOKEN auth\n  - test/github-client.test.ts (243 lines): 13 mock-based tests\n  - Infrastructure migrated: gates/gate-executor, gates/orchestrator, hooks/IssueCloseGuard, lib/prior-branch, lib/branch-cleanup\n  - Agent prompts migrated: prove.js → MCP, ship.js → MCP\n  - Decomposition gate added to ship.js (SC-503): >6 ACs auto-splits into sub-issues\n  - GITHUB-API-MIGRATION-SPEC created: 15 SCs, 4 phases, 7 design decisions\n  - Council for #24 (doc-hygiene) completed: 12 decisions, 3 rounds, 3 members\n\nPipeline stats this session:\n  Ship #31: 27 agents, 77 min, 909K tokens (pre-TestSuiteGuard)\n  Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)\n  Ship #25 run 2: 25 agents, 75 min, 1M tokens (Discovery ignored rescoping — decomposition gate not yet active)\n  Council #24: 13 agents, 14 min, 577K tokens\n\nSuite: 1866 pass, 0 fail, 114 files.\nSuite: 25/25 SCs done.",
+  "notes": "Session 25 (2026-10-02) — 7 issues closed, 2 specs, council, 3 pipeline improvements.\n\nClosed issues: #31 (config dir), #25/#32/#33/#34 (GitHub API migration), #24 (doc-hygiene Phase 0)\nNew modules: lib/github.ts (Octokit, 197 lines), lib/spec-registry.ts (133 lines), lib/doc-hygiene.ts (74 lines)\nNew tests: github-client (13), spec-registry (179 lines), doc-hygiene (119 lines)\nSpecs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs from council)\n\nPipeline improvements:\n  - Decomposition gate (SC-503): >6 ACs auto-splits into sub-issues\n  - grep -c + contains threshold normalization\n  - Scaffold generates briefs+config for ALL project types\n  - Decompose ID-format bug found and fixed (SC vs AC IDs)\n\nPipeline stats:\n  Ship #31: 27 agents, 77 min, 909K tokens\n  Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)\n  Ship #25 run 2: 25 agents, 75 min, 1M tokens (overscoped)\n  Ship #24: 20 agents, 71 min, 621K tokens (decompose gate fired but ID bug)\n  Council #24: 13 agents, 14 min, 577K tokens\n  Parallel: Ship #25 + Council #24 ran simultaneously, zero contention\n\nSuite: 1866+ pass, 0 fail, 114+ files.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",

@@ -2,31 +2,35 @@
 
 **Current phase: All phases complete**
 
-Session 25 continued (2026-10-02) — GitHub API migration complete, council done.
+Session 25 (2026-10-02) — 7 issues closed, 2 specs, council, 3 pipeline improvements.
 
-Key deliverables:
-  - #25/#32/#33/#34 ALL CLOSED: Full Octokit + MCP two-layer migration
-  - lib/github.ts (197 lines): 8 exports, POST-additive labels, GITHUB_TOKEN auth
-  - test/github-client.test.ts (243 lines): 13 mock-based tests
-  - Infrastructure migrated: gates/gate-executor, gates/orchestrator, hooks/IssueCloseGuard, lib/prior-branch, lib/branch-cleanup
-  - Agent prompts migrated: prove.js → MCP, ship.js → MCP
-  - Decomposition gate added to ship.js (SC-503): >6 ACs auto-splits into sub-issues
-  - GITHUB-API-MIGRATION-SPEC created: 15 SCs, 4 phases, 7 design decisions
-  - Council for #24 (doc-hygiene) completed: 12 decisions, 3 rounds, 3 members
+Closed issues: #31 (config dir), #25/#32/#33/#34 (GitHub API migration), #24 (doc-hygiene Phase 0)
+New modules: lib/github.ts (Octokit, 197 lines), lib/spec-registry.ts (133 lines), lib/doc-hygiene.ts (74 lines)
+New tests: github-client (13), spec-registry (179 lines), doc-hygiene (119 lines)
+Specs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs from council)
 
-Pipeline stats this session:
-  Ship #31: 27 agents, 77 min, 909K tokens (pre-TestSuiteGuard)
+Pipeline improvements:
+  - Decomposition gate (SC-503): >6 ACs auto-splits into sub-issues
+  - grep -c + contains threshold normalization
+  - Scaffold generates briefs+config for ALL project types
+  - Decompose ID-format bug found and fixed (SC vs AC IDs)
+
+Pipeline stats:
+  Ship #31: 27 agents, 77 min, 909K tokens
   Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)
-  Ship #25 run 2: 25 agents, 75 min, 1M tokens (Discovery ignored rescoping — decomposition gate not yet active)
+  Ship #25 run 2: 25 agents, 75 min, 1M tokens (overscoped)
+  Ship #24: 20 agents, 71 min, 621K tokens (decompose gate fired but ID bug)
   Council #24: 13 agents, 14 min, 577K tokens
+  Parallel: Ship #25 + Council #24 ran simultaneously, zero contention
 
-Suite: 1866 pass, 0 fail, 114 files.
+Suite: 1866+ pass, 0 fail, 114+ files.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. DONE: #25/#32/#33/#34 GitHub API migration — Octokit + MCP two-layer, all phases merged
-2. P1: #24 Doc-hygiene — council DONE (12 decisions), needs spec + sub-issues + ship
-3. P2: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. DONE: #24 Doc-hygiene Phase 0 — spec-registry, doc-hygiene module, logSignal fix, signal enforcement
+2. P1: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 alignment checks (SC-510 to SC-513)
+3. P1: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion (SC-514, SC-515)
+4. P2: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
