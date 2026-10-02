@@ -1,14 +1,11 @@
 {
   "updated": "2026-10-02",
   "priorities": [
-    "P0: #25 Phase 1 — lib/github.ts + @octokit/rest foundation (SC-488 to SC-493)",
-    "P0: #25 Phase 2 — Migrate hooks/gates/lib from execSync gh to Octokit (SC-494 to SC-498)",
-    "P1: #25 Phase 3 — Migrate prove.js agent prompts to MCP (SC-499, SC-500)",
-    "P1: #25 Phase 4 — ship.js PR update via Octokit helper (SC-501, SC-502)",
+    "P0: #25 — Fix verify gate failures and merge 25-github-api-phase1 branch (all 4 phases implemented, AC-7 false positive + test suite)",
     "P2: #24 Doc-hygiene: content alignment — needs council",
     "P3: #23 Isolated per-issue execution — worktree-based parallel ship runs"
   ],
-  "notes": "Session 25 (2026-10-02) — #31 closed, hill-climb validated, 3 pipeline fixes shipped.\n\nKey deliverables:\n  - #31 CLOSED: All 14/14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC\n  - SC-484/SC-485: scaffold generates .claude/rungate/ directory; re-scaffold splits monolith\n  - Helper functions (loadHarnessConfig, injectEnvironmentSection) support directory structure\n  - Phase-0 golden fixture tests updated for directory config\n  - Repo config fixed: issueRepo corrected to hornjason/pai-harness\n  - Ship.js: grep -c + contains threshold mismatch auto-normalized to >= 1\n  - Scaffold: briefs+config generated for ALL project types (not just code)\n\nHill-climb loop validated end-to-end:\n  - BashToolGuard fired in worktree, TestSuiteGuard blocked at 6/2\n  - Compliance grading ran: Marcus 53%, Discovery 67%\n  - Persistent brief content gaps identified for hill-climb tier 1\n\nSuite: 1779 pass, 0 fail, 111 files. 7 commits.\nSuite: 25/25 SCs done.",
+  "notes": "Session 26 (2026-10-02) — Starting #25 GitHub API migration implementation.\n\nBranch 25-github-api-phase1 exists with 3 unmerged commits (818 additions):\n  - lib/github.ts created (197 lines) — Octokit wrapper with all 8 exports\n  - test/github-client.test.ts created (243 lines) — mock-based tests\n  - @octokit/rest added to package.json\n  - gates/gate-executor.ts migrated — no more execSync gh\n  - gates/orchestrator.ts migrated — no more execSync gh\n  - hooks/IssueCloseGuard.hook.ts migrated — Bun.spawnSync removed (comments remain)\n  - lib/prior-branch.ts migrated to Octokit listPRs\n  - lib/branch-cleanup.ts migrated to Octokit listPRs\n  - workflows/prove.js migrated to MCP tools\n  - workflows/ship.js cleaned up\n\nVerify gate failed on:\n  - AC-7: false positive — grep matched 'gh issue' in comments/strings, not CLI calls\n  - AC-16: full test suite needs to pass after merge\n  - Schema warnings: low keyword coverage, missing evidenceValidator/adversary\n\nNext: fix AC-7 evidence pattern, run tests on branch, merge to main.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -377,11 +374,11 @@
     }
   ],
   "session": {
-    "number": 25,
+    "number": 26,
     "date": "2026-10-02",
-    "summary": "#31 closed (14/14 SCs). Hill-climb loop validated: BashToolGuard + TestSuiteGuard fire in worktrees. Discovery AC threshold bug identified — grep -c + contains mismatch.",
-    "suite": "1779 pass, 0 fail, 111 files",
-    "scs_done": "SC-484 + SC-485 done",
-    "commits": 4
+    "summary": "Starting #25 GitHub API migration. Branch 25-github-api-phase1 has all 4 phases implemented (818 additions, 16 files). Verify gate failed on AC-7 false positive and test suite. Fixing and merging.",
+    "suite": "pending",
+    "scs_done": "SC-488 to SC-502 in progress on branch",
+    "commits": 0
   }
 }

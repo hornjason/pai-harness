@@ -2,32 +2,32 @@
 
 **Current phase: All phases complete**
 
-Session 25 (2026-10-02) — #31 closed, hill-climb validated, 3 pipeline fixes shipped.
+Session 26 (2026-10-02) — Starting #25 GitHub API migration implementation.
 
-Key deliverables:
-  - #31 CLOSED: All 14/14 SCs in CONFIG-DIRECTORY-STRUCTURE-SPEC
-  - SC-484/SC-485: scaffold generates .claude/rungate/ directory; re-scaffold splits monolith
-  - Helper functions (loadHarnessConfig, injectEnvironmentSection) support directory structure
-  - Phase-0 golden fixture tests updated for directory config
-  - Repo config fixed: issueRepo corrected to hornjason/pai-harness
-  - Ship.js: grep -c + contains threshold mismatch auto-normalized to >= 1
-  - Scaffold: briefs+config generated for ALL project types (not just code)
+Branch 25-github-api-phase1 exists with 3 unmerged commits (818 additions):
+  - lib/github.ts created (197 lines) — Octokit wrapper with all 8 exports
+  - test/github-client.test.ts created (243 lines) — mock-based tests
+  - @octokit/rest added to package.json
+  - gates/gate-executor.ts migrated — no more execSync gh
+  - gates/orchestrator.ts migrated — no more execSync gh
+  - hooks/IssueCloseGuard.hook.ts migrated — Bun.spawnSync removed (comments remain)
+  - lib/prior-branch.ts migrated to Octokit listPRs
+  - lib/branch-cleanup.ts migrated to Octokit listPRs
+  - workflows/prove.js migrated to MCP tools
+  - workflows/ship.js cleaned up
 
-Hill-climb loop validated end-to-end:
-  - BashToolGuard fired in worktree, TestSuiteGuard blocked at 6/2
-  - Compliance grading ran: Marcus 53%, Discovery 67%
-  - Persistent brief content gaps identified for hill-climb tier 1
+Verify gate failed on:
+  - AC-7: false positive — grep matched 'gh issue' in comments/strings, not CLI calls
+  - AC-16: full test suite needs to pass after merge
+  - Schema warnings: low keyword coverage, missing evidenceValidator/adversary
 
-Suite: 1779 pass, 0 fail, 111 files. 7 commits.
+Next: fix AC-7 evidence pattern, run tests on branch, merge to main.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #25 Phase 1 — lib/github.ts + @octokit/rest foundation (SC-488 to SC-493)
-2. P0: #25 Phase 2 — Migrate hooks/gates/lib from execSync gh to Octokit (SC-494 to SC-498)
-3. P1: #25 Phase 3 — Migrate prove.js agent prompts to MCP (SC-499, SC-500)
-4. P1: #25 Phase 4 — ship.js PR update via Octokit helper (SC-501, SC-502)
-5. P2: #24 Doc-hygiene: content alignment — needs council
-6. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. P0: #25 — Fix verify gate failures and merge 25-github-api-phase1 branch (all 4 phases implemented, AC-7 false positive + test suite)
+2. P2: #24 Doc-hygiene: content alignment — needs council
+3. P3: #23 Isolated per-issue execution — worktree-based parallel ship runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
