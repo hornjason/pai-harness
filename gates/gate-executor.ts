@@ -657,8 +657,11 @@ function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string): v
 
 function checkDevServerLiveness(state: Record<string, any>, results: GateResult[]): number {
   let addedFails = 0;
-  const hasOutcomeACs = (state.acs || []).some((ac: any) => ac.type === "OUTCOME");
-  if (hasOutcomeACs && state.projectRoot) {
+  const hasServerDependentOutcomeACs = (state.acs || []).some((ac: any) =>
+    ac.type === "OUTCOME" && ac.evidenceMethod?.type &&
+    ["PLAYWRIGHT", "HTTP", "CURL", "SCREENSHOT"].includes(ac.evidenceMethod.type.toUpperCase())
+  );
+  if (hasServerDependentOutcomeACs && state.projectRoot) {
     const harnessPath = join(state.projectRoot, ".claude", "rungate.json");
     if (existsSync(harnessPath)) {
       const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
