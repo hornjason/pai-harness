@@ -56,10 +56,10 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 
 ### Phase 1 — Content alignment checks (follow-up)
 
-- [ ] SC-510: lib/doc-hygiene.ts contains [CONTENT-1, governs, resolve, existsSync]
-- [ ] SC-511: lib/doc-hygiene.ts contains [CONTENT-2, hash, drift, manifest]
-- [ ] SC-512: .claude/rungate/compliance.json contains [docHygiene, specDirs]
-- [ ] SC-513: test/doc-hygiene.test.ts contains [CONTENT-1, CONTENT-2, WARN, governs]
+- [x] SC-510: lib/doc-hygiene.ts contains [CONTENT-1, governs, resolve, existsSync]
+- [x] SC-511: lib/doc-hygiene.ts contains [CONTENT-2, hash, drift, manifest]
+- [x] SC-512: .claude/rungate/compliance.json contains [docHygiene, specDirs]
+- [x] SC-513: test/doc-hygiene.test.ts contains [CONTENT-1, CONTENT-2, WARN, governs]
 
 ### Phase 2 — Integration + promotion tracking (follow-up)
 
