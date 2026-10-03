@@ -9,6 +9,8 @@ import {
   detectHillClimbNeeds,
   applyHillClimb,
   setComplianceProjectRoot,
+  calculatePromotionPrecision,
+  getPromotionCandidates,
   type ComplianceEntry,
   type ComplianceReport,
 } from "../lib/compliance-report.js";
@@ -352,6 +354,81 @@ name: marcus
       expect(actions[0].promotion).toContain("CustomGuard");
 
       setComplianceProjectRoot("");
+    });
+  });
+
+  describe("WARN-to-FAIL promotion tracking", () => {
+    test("calculatePromotionPrecision returns precision above 80 percent threshold for promotion", () => {
+      // 9 out of 10 WARN findings were true positives = 90% precision
+      const findings = [
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'FALSE_POSITIVE' },
+      ];
+
+      const result = calculatePromotionPrecision('CONTENT-1', findings);
+      expect(result.precision).toBe(90);
+      expect(result.total).toBe(10);
+      expect(result.truePositives).toBe(9);
+      expect(result.eligible).toBe(true); // >= 80% precision and >= 10 samples
+    });
+
+    test("calculatePromotionPrecision blocks promotion below 80 percent threshold", () => {
+      // 6 out of 10 = 60% precision — below 80% threshold
+      const findings = [
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'FALSE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'FALSE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'FALSE_POSITIVE' },
+        { checkId: 'CONTENT-2', verdict: 'FALSE_POSITIVE' },
+      ];
+
+      const result = calculatePromotionPrecision('CONTENT-2', findings);
+      expect(result.precision).toBe(60);
+      expect(result.eligible).toBe(false); // below 80% threshold
+    });
+
+    test("calculatePromotionPrecision requires minimum 10 cycles for promotion eligibility", () => {
+      // 5 out of 5 = 100% precision but only 5 samples
+      const findings = [
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+        { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
+      ];
+
+      const result = calculatePromotionPrecision('CONTENT-1', findings);
+      expect(result.precision).toBe(100);
+      expect(result.eligible).toBe(false); // not enough samples despite high precision
+    });
+
+    test("getPromotionCandidates returns only checks meeting WARN-to-FAIL promotion criteria", () => {
+      const allFindings = [
+        // CONTENT-1: 10 samples, 90% precision — eligible
+        ...Array(9).fill({ checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' }),
+        { checkId: 'CONTENT-1', verdict: 'FALSE_POSITIVE' },
+        // CONTENT-2: 10 samples, 50% precision — not eligible
+        ...Array(5).fill({ checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' }),
+        ...Array(5).fill({ checkId: 'CONTENT-2', verdict: 'FALSE_POSITIVE' }),
+      ];
+
+      const candidates = getPromotionCandidates(allFindings);
+      expect(candidates.length).toBe(1);
+      expect(candidates[0].checkId).toBe('CONTENT-1');
+      expect(candidates[0].precision).toBeGreaterThanOrEqual(80);
     });
   });
 

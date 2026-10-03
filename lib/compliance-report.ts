@@ -434,3 +434,67 @@ export function applyHillClimb(
 
   return { applied, skipped };
 }
+
+// --- WARN-to-FAIL promotion tracking (SC-515, DEC-012) ---
+
+export interface PromotionFinding {
+  checkId: string;
+  verdict: 'TRUE_POSITIVE' | 'FALSE_POSITIVE';
+}
+
+export interface PromotionPrecision {
+  checkId: string;
+  /** Precision percentage — ratio of true positives to total findings */
+  precision: number;
+  total: number;
+  truePositives: number;
+  /** Eligible for WARN-to-FAIL promotion: precision >= 80% AND total >= 10 cycles */
+  eligible: boolean;
+}
+
+const PROMOTION_PRECISION_THRESHOLD = 80;
+const PROMOTION_MIN_CYCLES = 10;
+
+/**
+ * Calculate promotion precision for a specific check ID.
+ *
+ * WARN checks are promoted to FAIL only when mechanical precision tracking
+ * shows >80% precision over 10+ cycles (DEC-005, DEC-012).
+ *
+ * Filters findings by checkId, computes the ratio of TRUE_POSITIVE verdicts,
+ * and determines eligibility based on the 80% threshold and minimum sample size.
+ */
+export function calculatePromotionPrecision(
+  checkId: string,
+  findings: PromotionFinding[],
+): PromotionPrecision {
+  const relevant = findings.filter(f => f.checkId === checkId);
+  const total = relevant.length;
+  const truePositives = relevant.filter(f => f.verdict === 'TRUE_POSITIVE').length;
+  const precision = total > 0 ? Math.round((truePositives / total) * 100) : 0;
+  const eligible = precision >= PROMOTION_PRECISION_THRESHOLD && total >= PROMOTION_MIN_CYCLES;
+
+  return { checkId, precision, total, truePositives, eligible };
+}
+
+/**
+ * Get all check IDs that are candidates for WARN-to-FAIL promotion.
+ *
+ * Scans all findings, groups by checkId, and returns those meeting the
+ * promotion criteria: >= 80% precision over >= 10 cycles.
+ */
+export function getPromotionCandidates(
+  findings: PromotionFinding[],
+): PromotionPrecision[] {
+  const checkIds = new Set(findings.map(f => f.checkId));
+  const candidates: PromotionPrecision[] = [];
+
+  for (const checkId of checkIds) {
+    const result = calculatePromotionPrecision(checkId, findings);
+    if (result.eligible) {
+      candidates.push(result);
+    }
+  }
+
+  return candidates;
+}

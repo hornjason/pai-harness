@@ -179,6 +179,49 @@ export function checkDriftHashes(
 }
 
 /**
+ * SC-514: Get governed specs whose targets overlap with changed files from git diff.
+ *
+ * Used for fast-exit scoping — if no governed files changed since the last
+ * signal, skip the full content alignment check. Accepts a list of changed
+ * file paths (from git diff --name-only) and returns only the SpecEntry
+ * objects whose governs targets intersect with the changed set.
+ *
+ * Directory governs targets (e.g. "lib/") match any changed file under
+ * that prefix. Prose-style governs are excluded from path matching.
+ */
+export function getChangedGoverned(
+  root: string,
+  changedFiles: string[],
+): import('./spec-registry').SpecEntry[] {
+  const specs = getGoverningSpecs(root);
+  const matched: import('./spec-registry').SpecEntry[] = [];
+
+  for (const spec of specs) {
+    const governs = spec.governs.trim();
+
+    // Skip prose-style governs — only match path-like targets
+    if (!isPathLike(governs)) continue;
+
+    // Check if any changed file matches this governs target
+    const isDir = governs.endsWith('/');
+    const hit = changedFiles.some(changed => {
+      if (isDir) {
+        // Directory target: any diff under that prefix counts
+        return changed.startsWith(governs);
+      }
+      // Exact file match
+      return changed === governs;
+    });
+
+    if (hit) {
+      matched.push(spec);
+    }
+  }
+
+  return matched;
+}
+
+/**
  * Run the full doc-hygiene check suite and return a pass/fail result.
  *
  * Wraps runContentAlignment with a structured result for gate enforcement.

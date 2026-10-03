@@ -16,6 +16,7 @@ import {
   checkDeadReferences,
   generateDriftHashes,
   checkDriftHashes,
+  getChangedGoverned,
 } from '../lib/doc-hygiene';
 
 describe('doc-hygiene', () => {
@@ -312,6 +313,74 @@ describe('doc-hygiene', () => {
       expect(Object.keys(manifest).length).toBe(2);
       expect(manifest['A-SPEC.md']).toBeDefined();
       expect(manifest['B-SPEC.md']).toBeDefined();
+    });
+  });
+
+  describe('SC-514: git-diff-based changed-file scoping', () => {
+    it('getChangedGoverned returns changed governed files from git diff output', () => {
+      // Create specs that govern paths
+      mkdirSync(join(mockRoot, 'lib'), { recursive: true });
+      writeFileSync(join(mockRoot, 'lib', 'scanner.ts'), 'export {}');
+      writeFileSync(join(mockRoot, 'lib', 'other.ts'), 'export {}');
+
+      writeFileSync(join(specsDir, 'SCANNER-SPEC.md'), [
+        '---',
+        'governs: lib/scanner.ts',
+        'testable: true',
+        '---',
+        '# Scanner Spec',
+      ].join('\n'));
+
+      writeFileSync(join(specsDir, 'OTHER-SPEC.md'), [
+        '---',
+        'governs: lib/other.ts',
+        'testable: true',
+        '---',
+        '# Other Spec',
+      ].join('\n'));
+
+      // Simulate git diff output — only scanner.ts changed
+      const changedFiles = ['lib/scanner.ts'];
+      const result = getChangedGoverned(mockRoot, changedFiles);
+
+      expect(result.length).toBe(1);
+      expect(result[0].file).toContain('SCANNER-SPEC.md');
+    });
+
+    it('getChangedGoverned returns empty when no governed files changed — skip fast-exit', () => {
+      writeFileSync(join(specsDir, 'LIB-SPEC.md'), [
+        '---',
+        'governs: lib/module.ts',
+        'testable: true',
+        '---',
+        '# Lib Spec',
+      ].join('\n'));
+
+      // Changed files do not overlap with any governed targets
+      const changedFiles = ['README.md', 'package.json'];
+      const result = getChangedGoverned(mockRoot, changedFiles);
+
+      expect(result).toEqual([]);
+    });
+
+    it('getChangedGoverned matches directory governs targets', () => {
+      mkdirSync(join(mockRoot, 'lib'), { recursive: true });
+      writeFileSync(join(mockRoot, 'lib', 'foo.ts'), 'export {}');
+
+      writeFileSync(join(specsDir, 'DIR-SPEC.md'), [
+        '---',
+        'governs: lib/',
+        'testable: true',
+        '---',
+        '# Dir Spec',
+      ].join('\n'));
+
+      // A file under lib/ changed
+      const changedFiles = ['lib/foo.ts'];
+      const result = getChangedGoverned(mockRoot, changedFiles);
+
+      expect(result.length).toBe(1);
+      expect(result[0].file).toContain('DIR-SPEC.md');
     });
   });
 });
