@@ -63,8 +63,8 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 
 ### Phase 2 — Integration + promotion tracking (follow-up)
 
-- [ ] SC-514: lib/doc-hygiene.ts contains [git, diff, changed, skip]
-- [ ] SC-515: lib/compliance-report.ts contains [promotion, precision, WARN, FAIL, 80]
+- [x] SC-514: lib/doc-hygiene.ts contains [git, diff, changed, skip]
+- [x] SC-515: lib/compliance-report.ts contains [promotion, precision, WARN, FAIL, 80]
 
 ## Constraints
 
