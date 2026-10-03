@@ -65,6 +65,15 @@
     "consecutiveFailThreshold": 3,
     "tierPromotionThreshold": 5
   },
+  "docHygiene": {
+    "specDirs": ["specs"],
+    "driftManifest": "drift-hashes.json",
+    "checks": {
+      "GOVERNS-MISSING": { "level": "WARN" },
+      "CONTENT-1": { "level": "WARN", "description": "Dead-reference lint — governs targets resolve to real files" },
+      "CONTENT-2": { "level": "WARN", "description": "Hash drift detection — drift-hashes.json manifest" }
+    }
+  },
   "organize": {
     "fileTypes": [".md", ".html", ".pdf"],
     "artifactClassification": {
