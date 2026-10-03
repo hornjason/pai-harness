@@ -578,10 +578,14 @@ if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
 const projectConfigResult = setupResult?.config || {}
 const projectConfig = projectConfigResult || {}
+// Flatten nested dev config for consumer projects (dev.apiBase → apiUrl, dev.uiBase → uiUrl)
+if (!projectConfig.apiUrl && projectConfig.dev?.apiBase) projectConfig.apiUrl = projectConfig.dev.apiBase
+if (!projectConfig.uiUrl && projectConfig.dev?.uiBase) projectConfig.uiUrl = projectConfig.dev.uiBase
+if (!projectConfig.test && projectConfig.dev?.testCmd) projectConfig.test = { command: projectConfig.dev.testCmd }
 const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)
-const testCommand = projectConfig.test?.command || 'bun test'
+const testCommand = projectConfig.test?.command || projectConfig.dev?.testCmd || 'bun test'
 const testTimeout = projectConfig.test?.timeout || 120000
 
 if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
@@ -1117,6 +1121,13 @@ Report what you fixed.
 
 phase('Commit')
 log('Committing code')
+
+// Pre-populate environments.local with SKIP defaults so gates degrade gracefully if COMMIT fails
+try {
+  await agent(`Run this command:
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); if (!s.environments) s.environments = {}; if (!s.environments.local) s.environments.local = {api: 'SKIP', apiSkipReason: 'pre-commit default', ui: 'SKIP', uiSkipReason: 'pre-commit default', tests: 'SKIP', testsSkipReason: 'pre-commit default'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+Report: done`, { label: 'env-defaults', phase: 'Commit' })
+} catch (e) { log('WARN: env defaults pre-population failed: ' + e.message) }
 
 const commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
 
