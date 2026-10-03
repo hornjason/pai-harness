@@ -197,11 +197,14 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>,
   // For Marcus, also check TDD (behavioral — not directive-based)
   if (role === "marcus") {
     const tddResult = checkTDD(transcriptContent);
-    if (tddResult.verdict !== "TDD") {
-      flagged.push(`TDD_SEQUENCE_VIOLATED: ${tddResult.evidence}`);
-      rules.push({ id: "COMP-13", rule: "Write failing test before implementation (TDD)", verdict: "IGNORED", evidence: tddResult.evidence });
+    const tddRule = "Write failing test before implementation (TDD)";
+    if (tddResult.verdict === "TDD") {
+      rules.push({ id: "COMP-13", rule: tddRule, verdict: "FOLLOWED", evidence: tddResult.evidence });
+    } else if (tddResult.verdict === "NO_TESTS" || tddResult.verdict === "NO_SOURCE") {
+      rules.push({ id: "COMP-13", rule: tddRule, verdict: "N/A", evidence: tddResult.evidence });
     } else {
-      rules.push({ id: "COMP-13", rule: "Write failing test before implementation (TDD)", verdict: "FOLLOWED", evidence: tddResult.evidence });
+      flagged.push(`TDD_SEQUENCE_VIOLATED: ${tddResult.evidence}`);
+      rules.push({ id: "COMP-13", rule: tddRule, verdict: "IGNORED", evidence: tddResult.evidence });
     }
   }
 

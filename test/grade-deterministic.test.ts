@@ -229,6 +229,195 @@ describe("grade-deterministic", () => {
     });
   });
 
+  describe("COMP-13 TDD N/A for non-code tasks", () => {
+    test("COMP-13 returns N/A when no test or source files written", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp13_na");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Update config file" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Edit", input: { file_path: "/path/config.json" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp13 = result!.rules.find(r => r.id === "COMP-13");
+        expect(comp13).toBeDefined();
+        expect(comp13!.verdict).toBe("N/A");
+        expect(comp13!.evidence).toContain("No test files written");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("COMP-13 returns N/A when only test files written (NO_SOURCE)", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp13_nosource");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Write tests" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/test/foo.test.ts" } },
+          ] } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Bash", input: { command: "bun test test/foo.test.ts" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp13 = result!.rules.find(r => r.id === "COMP-13");
+        expect(comp13).toBeDefined();
+        expect(comp13!.verdict).toBe("N/A");
+        expect(comp13!.evidence).toContain("No source files written");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("COMP-13 returns IGNORED for TEST_AFTER (source before test)", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp13_testafter");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Implement feature" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/feature.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/test/feature.test.ts" } },
+            { type: "tool_use", name: "Bash", input: { command: "bun test test/feature.test.ts" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp13 = result!.rules.find(r => r.id === "COMP-13");
+        expect(comp13).toBeDefined();
+        expect(comp13!.verdict).toBe("IGNORED");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("COMP-13 N/A verdicts are excluded from total score", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp13_scoring");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Update config" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Edit", input: { file_path: "/path/config.json" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp13 = result!.rules.find(r => r.id === "COMP-13");
+        expect(comp13!.verdict).toBe("N/A");
+        // N/A rules should not count toward total
+        const checkableRules = result!.rules.filter(r => r.verdict !== "N/A");
+        expect(result!.total).toBe(checkableRules.length);
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe("COMP-8 injection detection", () => {
+    test("COMP-8 FOLLOWED when PROJECT-STATE injected in prompt", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp8_inject");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Implement feature X" } }),
+          JSON.stringify({ type: "user", message: { content: "### PROJECT-STATE.md\nCurrent phase: All phases complete\nSuite: 1866+ pass" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/a.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/b.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/c.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/d.ts" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp8 = result!.rules.find(r => r.id === "COMP-8");
+        expect(comp8).toBeDefined();
+        expect(comp8!.verdict).toBe("FOLLOWED");
+        expect(comp8!.evidence).toContain("injected");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("COMP-8 IGNORED when neither read nor injected on multi-file task", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp8_missing");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-test.meta.json");
+        const transcriptPath = join(tmpDir, "agent-test.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ agentType: "marcus" }));
+
+        const transcript = [
+          JSON.stringify({ type: "user", message: { content: "Implement feature X" } }),
+          JSON.stringify({ type: "assistant", message: { content: [
+            { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/a.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/b.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/c.ts" } },
+            { type: "tool_use", name: "Write", input: { file_path: "/path/lib/d.ts" } },
+          ] } }),
+        ].join("\n");
+        writeFileSync(transcriptPath, transcript);
+
+        const result = gradeTranscript(transcriptPath, validRoles);
+        expect(result).not.toBeNull();
+
+        const comp8 = result!.rules.find(r => r.id === "COMP-8");
+        expect(comp8).toBeDefined();
+        expect(comp8!.verdict).toBe("IGNORED");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe("COMP-1 injection detection", () => {
     test("detects AGENTS.md in second user message (workflow relay pattern)", () => {
       const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_comp1_inject");

@@ -426,18 +426,25 @@ const sharedCriteria: EvalCriterion[] = [
       const found = data.reads.some(
         (r) => r.includes("PROJECT-STATE") || r.includes("project-state.json")
       );
+      if (found) {
+        return { verdict: "FOLLOWED", evidence: "Project state read" };
+      }
+      const injected = data.promptContent.includes("PROJECT-STATE") ||
+        data.promptContent.includes("project-state.json") ||
+        data.promptContent.includes("Current phase:");
+      if (injected) {
+        return { verdict: "FOLLOWED", evidence: "PROJECT-STATE content injected in prompt" };
+      }
       const touchesMultipleFiles = data.edits.length + data.writes.length > 3;
-      if (!touchesMultipleFiles && !found) {
+      if (!touchesMultipleFiles) {
         return {
           verdict: "FOLLOWED",
           evidence: "Small task — PROJECT-STATE read not required",
         };
       }
       return {
-        verdict: found ? "FOLLOWED" : "IGNORED",
-        evidence: found
-          ? "Project state read"
-          : "PROJECT-STATE not read (multi-file task)",
+        verdict: "IGNORED",
+        evidence: "PROJECT-STATE not read or injected (multi-file task)",
       };
     },
   },
