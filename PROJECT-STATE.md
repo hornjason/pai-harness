@@ -2,35 +2,34 @@
 
 **Current phase: All phases complete**
 
-Session 25 (2026-10-02) — 7 issues closed, 2 specs, council, 3 pipeline improvements.
+Session 25 (2026-10-02) — 9 issues closed, 2 specs, council, pipeline 77→15 min.
 
-Closed issues: #31 (config dir), #25/#32/#33/#34 (GitHub API migration), #24 (doc-hygiene Phase 0)
-New modules: lib/github.ts (Octokit, 197 lines), lib/spec-registry.ts (133 lines), lib/doc-hygiene.ts (74 lines)
-New tests: github-client (13), spec-registry (179 lines), doc-hygiene (119 lines)
-Specs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs from council)
+Closed: #31, #25, #32, #33, #34, #24, #35, #36 (+dupes #37, #38)
+New modules: lib/github.ts (197), lib/spec-registry.ts (133), lib/doc-hygiene.ts (74+)
+Specs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs)
 
 Pipeline improvements:
-  - Decomposition gate (SC-503): >6 ACs auto-splits into sub-issues
+  - Decomposition gate (SC-503): >6 ACs auto-splits, ID-format bug fixed
   - grep -c + contains threshold normalization
-  - Scaffold generates briefs+config for ALL project types
-  - Decompose ID-format bug found and fixed (SC vs AC IDs)
+  - Scaffold briefs for ALL project types
+  - Octokit + MCP two-layer GitHub architecture
+  - Doc-hygiene: spec-registry, content alignment, git-diff scoping, WARN→FAIL promotion
 
-Pipeline stats:
-  Ship #31: 27 agents, 77 min, 909K tokens
-  Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)
-  Ship #25 run 2: 25 agents, 75 min, 1M tokens (overscoped)
-  Ship #24: 20 agents, 71 min, 621K tokens (decompose gate fired but ID bug)
-  Council #24: 13 agents, 14 min, 577K tokens
-  Parallel: Ship #25 + Council #24 ran simultaneously, zero contention
+Pipeline trend (properly scoped issues):
+  #31: 27 agents, 77 min → FAIL
+  #25 r1: 17 agents, 29 min → SHIPPED (62% faster)
+  #35: 17 agents, 15 min → SHIPPED (80% faster, first-pass)
+  #36: 17 agents, 18 min → SHIPPED (first-pass)
 
-Suite: 1866+ pass, 0 fail, 114+ files.
+Next: #23 — research Mac Mini remote execution (devcontainer vs worktree).
+User wants laptop-off AFK: pipeline runs on Mini, triggered by webhook/cron.
+Suite: 1866+ pass, 0 fail.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. DONE: #24 Doc-hygiene Phase 0 — spec-registry, doc-hygiene module, logSignal fix, signal enforcement
-2. P1: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 alignment checks (SC-510 to SC-513)
-3. P1: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion (SC-514, SC-515)
-4. P2: #23 Isolated per-issue execution — worktree-based parallel ship runs
+1. DONE: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 shipped in 15 min, first-pass
+2. DONE: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion shipped in 18 min
+3. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

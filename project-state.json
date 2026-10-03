@@ -1,12 +1,11 @@
 {
   "updated": "2026-10-03",
   "priorities": [
-    "DONE: #24 Doc-hygiene Phase 0 — spec-registry, doc-hygiene module, logSignal fix, signal enforcement",
-    "P1: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 alignment checks (SC-510 to SC-513)",
-    "P1: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion (SC-514, SC-515)",
-    "P2: #23 Isolated per-issue execution — worktree-based parallel ship runs"
+    "DONE: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 shipped in 15 min, first-pass",
+    "DONE: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion shipped in 18 min",
+    "P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs"
   ],
-  "notes": "Session 25 (2026-10-02) — 7 issues closed, 2 specs, council, 3 pipeline improvements.\n\nClosed issues: #31 (config dir), #25/#32/#33/#34 (GitHub API migration), #24 (doc-hygiene Phase 0)\nNew modules: lib/github.ts (Octokit, 197 lines), lib/spec-registry.ts (133 lines), lib/doc-hygiene.ts (74 lines)\nNew tests: github-client (13), spec-registry (179 lines), doc-hygiene (119 lines)\nSpecs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs from council)\n\nPipeline improvements:\n  - Decomposition gate (SC-503): >6 ACs auto-splits into sub-issues\n  - grep -c + contains threshold normalization\n  - Scaffold generates briefs+config for ALL project types\n  - Decompose ID-format bug found and fixed (SC vs AC IDs)\n\nPipeline stats:\n  Ship #31: 27 agents, 77 min, 909K tokens\n  Ship #25 run 1: 17 agents, 29 min, 474K tokens (62% faster)\n  Ship #25 run 2: 25 agents, 75 min, 1M tokens (overscoped)\n  Ship #24: 20 agents, 71 min, 621K tokens (decompose gate fired but ID bug)\n  Council #24: 13 agents, 14 min, 577K tokens\n  Parallel: Ship #25 + Council #24 ran simultaneously, zero contention\n\nSuite: 1866+ pass, 0 fail, 114+ files.\nSuite: 25/25 SCs done.",
+  "notes": "Session 25 (2026-10-02) — 9 issues closed, 2 specs, council, pipeline 77→15 min.\n\nClosed: #31, #25, #32, #33, #34, #24, #35, #36 (+dupes #37, #38)\nNew modules: lib/github.ts (197), lib/spec-registry.ts (133), lib/doc-hygiene.ts (74+)\nSpecs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs)\n\nPipeline improvements:\n  - Decomposition gate (SC-503): >6 ACs auto-splits, ID-format bug fixed\n  - grep -c + contains threshold normalization\n  - Scaffold briefs for ALL project types\n  - Octokit + MCP two-layer GitHub architecture\n  - Doc-hygiene: spec-registry, content alignment, git-diff scoping, WARN→FAIL promotion\n\nPipeline trend (properly scoped issues):\n  #31: 27 agents, 77 min → FAIL\n  #25 r1: 17 agents, 29 min → SHIPPED (62% faster)\n  #35: 17 agents, 15 min → SHIPPED (80% faster, first-pass)\n  #36: 17 agents, 18 min → SHIPPED (first-pass)\n\nNext: #23 — research Mac Mini remote execution (devcontainer vs worktree).\nUser wants laptop-off AFK: pipeline runs on Mini, triggered by webhook/cron.\nSuite: 1866+ pass, 0 fail.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
