@@ -234,8 +234,13 @@ async function briefedAgent(prompt, opts = {}) {
     }
 
     const reinforcement = await loadReinforcementRules(role, briefPath)
-    if (reinforcement.length) {
-      fullPrompt += `CRITICAL PROCESS RULES (follow in every task):\n${reinforcement.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`
+    const complianceRules = role === 'marcus' ? [
+      'NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit instead. This is mechanically checked.',
+      'Read each file exactly ONCE. Use offset/limit to get what you need in one pass. Duplicate reads are tracked and penalized.',
+    ] : []
+    const allRules = [...reinforcement, ...complianceRules]
+    if (allRules.length) {
+      fullPrompt += `CRITICAL PROCESS RULES (follow in every task):\n${allRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`
     }
 
     // Tier 2: Ensure AGENTS.md is always available (COMP-1 mechanical enforcement)
@@ -825,6 +830,8 @@ Report the output.
     const allFiles = [
       ...acContextFiles.map(cf => ({ path: typeof cf === 'string' ? cf : cf.path, reason: typeof cf === 'string' ? '' : cf.reason || '' })),
       { path: `${PROJECT_ROOT}/AGENTS.md`, reason: 'project identity, rules, test commands' },
+      { path: `${PROJECT_ROOT}/PROJECT-STATE.md`, reason: 'current priorities, session context', maxLines: 50 },
+      { path: `${PROJECT_ROOT}/prompts/coding-principles.md`, reason: 'coding and testing standards', maxLines: 100 },
     ]
     const filePaths = allFiles.map(f => f.path).join(' ')
     const excerptResult = await agent(`
@@ -838,7 +845,8 @@ for (const f of files) {
   try {
     let content = fs.readFileSync(f.path, 'utf-8');
     const lines = content.split('\\n');
-    if (lines.length > 200) content = lines.slice(0, 200).join('\\n') + '\\n... (truncated)';
+    const limit = f.maxLines || 200;
+    if (lines.length > limit) content = lines.slice(0, limit).join('\\n') + '\\n... (truncated)';
     excerpts.push({ source: f.path, section: path.basename(f.path), content, reason: f.reason });
   } catch(e) { /* skip missing files */ }
 }
@@ -1431,8 +1439,20 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
         log(`📋 ${report.alerts.length} compliance alert(s) for ${g.role} — check report above`)
       }
 
+      // Grader accuracy gate: skip hill-climb for COMPs where >50% of failures are N/A-eligible
+      // Prevents patching briefs to fix grader false positives
+      const graderAccuracySkips = new Set()
+      for (const ct of report.compTrends) {
+        const naCount = ct.lastN.filter(v => v === 'N/A').length
+        const ignoredCount = ct.lastN.filter(v => v === 'IGNORED').length
+        if (naCount > 0 && ignoredCount > 0 && naCount / (naCount + ignoredCount) > 0.5) {
+          graderAccuracySkips.add(ct.compId)
+          log(`⚠️  GRADER-GATE: Skipping hill-climb for ${ct.compId} — ${naCount}/${naCount + ignoredCount} recent verdicts are N/A (possible grader false positive)`)
+        }
+      }
+
       // Auto hill-climb: if a COMP has failed 3+ consecutive runs, reinforce the brief
-      const hillClimbActions = detectHillClimbNeeds(report)
+      const hillClimbActions = detectHillClimbNeeds(report).filter(a => !graderAccuracySkips.has(a.compId))
       if (hillClimbActions.length > 0) {
         const briefPaths = require(`${HARNESS_ROOT}/scripts/grade-deterministic.ts`).loadRoleBriefPaths(HARNESS_ROOT)
         const briefPath = briefPaths[g.role]
