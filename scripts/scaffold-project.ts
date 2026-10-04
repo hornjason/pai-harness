@@ -31,6 +31,7 @@ import {
   addPaiHarnessDevDep,
   runAuditSpecsFix,
   postScaffoldCommit,
+  reportGaps,
 } from "../lib/scaffold/steps";
 import {
   addFrontmatterToSpecs,
@@ -86,70 +87,14 @@ console.log("---");
 
 if (dryRun) {
   // ── Dry-run mode: report gaps without modifying anything ──────
-  // Check directories
-  for (const dir of ["specs", "reference", ".github", ".github/workflows", "scripts", "docs", "docs/adr"]) {
-    if (!existsSync(join(projectPath, dir))) {
-      actions.push(`GAP: ${dir}/ does not exist`);
-    }
-  }
-  const testDir = existsSync(join(projectPath, "test")) ? "test" : existsSync(join(projectPath, "tests")) ? "tests" : null;
-  if (!testDir) actions.push("GAP: test/ or tests/ does not exist");
-
-  // Check AGENTS.md
-  if (!existsSync(join(projectPath, "AGENTS.md"))) {
-    actions.push("GAP: AGENTS.md does not exist");
-  }
-
-  // Check copilot instructions
-  if (!existsSync(join(projectPath, ".github", "copilot-instructions.md"))) {
-    actions.push("GAP: .github/copilot-instructions.md does not exist");
-  }
-
-  // Check conformity test
-  const testDirForCheck = testDir || "tests";
-  if (!existsSync(join(projectPath, testDirForCheck, "scaffold-conformity.test.ts"))) {
-    actions.push(`GAP: ${testDirForCheck}/scaffold-conformity.test.ts does not exist`);
-  }
-
-  // Validate specs (report-only, no writes)
-  addFrontmatterToSpecs(join(projectPath, "specs"), actions, { fix: false });
-  addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions, { fix: false });
-  detectOversizedSpecs(join(projectPath, "specs"), actions);
-  checkGovernsAlignment(join(projectPath, "specs"), actions);
-  detectMisplacedSpecs(projectPath, actions);
-  detectUnconvertedSpecs(join(projectPath, "specs"), actions);
-
-  // Check CODE-MAP.md for code projects
-  if (projectType === "code") {
-    if (!existsSync(join(projectPath, "CODE-MAP.md"))) {
-      actions.push("GAP: CODE-MAP.md does not exist");
-    }
-  }
-
-  // Check harness config
-  if (!existsSync(join(projectPath, ".claude", "rungate.json")) && !existsSync(join(projectPath, ".claude", "rungate", "config.json"))) {
-    actions.push("GAP: .claude/rungate.json does not exist");
-  }
-
-  // Check CLAUDE.md bridge
-  if (!existsSync(join(projectPath, "CLAUDE.md"))) {
-    actions.push("GAP: CLAUDE.md does not exist");
-  } else {
-    const claudeContent = readFileSync(join(projectPath, "CLAUDE.md"), "utf-8");
-    if (!claudeContent.includes("@AGENTS.md")) {
-      actions.push("GAP: CLAUDE.md missing @AGENTS.md bridge");
-    }
-  }
-
-  // Check .gitignore
-  if (!existsSync(join(projectPath, ".gitignore"))) {
-    actions.push("GAP: .gitignore does not exist");
-  }
-
-  // Check docs-routing rule
-  if (!existsSync(join(projectPath, ".claude", "rules", "docs-routing.md"))) {
-    actions.push("GAP: .claude/rules/docs-routing.md does not exist");
-  }
+  reportGaps(projectPath, projectType, actions, {
+    addFrontmatterToSpecs,
+    addFrontmatterToAdrs,
+    detectOversizedSpecs,
+    checkGovernsAlignment,
+    detectMisplacedSpecs,
+    detectUnconvertedSpecs,
+  });
 } else {
   // ── Fix mode: apply all changes ───────────────────────────────
 
