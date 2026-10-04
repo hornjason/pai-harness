@@ -577,8 +577,7 @@ describe("verify checks", () => {
   });
 
   // acHash consistency: verify gate checks scope's AC hash (ADR-009)
-  // Downgraded to WARN: heal agents and evidence collection can legitimately modify AC fields
-  // between scope and verify. Root cause investigation tracked separately.
+  // Hash auto-recomputed by writeWorkflowState on authorized modifications
   test("acHash-consistency-verify: ACs unchanged since scope", () => {
     if (!isVerifyPlus()) return;
     const acHash = sf("gates")?.scope?.acHash;
@@ -589,9 +588,7 @@ describe("verify checks", () => {
       evidenceMethod: ac.evidenceMethod,
     }));
     const currentHash = require("crypto").createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
-    if (currentHash !== acHash) {
-      console.warn(`WARN: acHash mismatch — scope: ${acHash.slice(0, 12)}... current: ${currentHash.slice(0, 12)}... (ADR-009 integrity check)`);
-    }
+    expect(currentHash).toBe(acHash);
   });
 
   // spec-decision-compliance (#409, Decision #9: WARN tier — console.warn only, no expect failures)

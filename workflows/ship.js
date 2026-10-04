@@ -642,6 +642,15 @@ console.log('ACs written: ' + s.acs.length);
 
 if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
 
+// ADR-009: Freeze AC definitions at discovery time for cross-gate integrity
+// Heal agents may modify ACs in workflow-state.json; this snapshot is the authority
+const FROZEN_AC_DEFS = discovery.acs.map(ac => ({
+  id: ac.id, type: ac.type, statement: ac.statement,
+  specElement: ac.specElement, threshold: ac.threshold,
+  evidenceMethod: ac.evidenceMethod,
+}))
+const FROZEN_AC_HASH = JSON.stringify(FROZEN_AC_DEFS)
+
 const projectConfigResult = setupResult?.config || {}
 const projectConfig = projectConfigResult || {}
 // Flatten nested dev config for consumer projects (dev.apiBase → apiUrl, dev.uiBase → uiUrl)

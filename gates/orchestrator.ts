@@ -444,6 +444,20 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
     }
     throw err;
   }
+
+  // ADR-009: Recompute acHash when ACs are modified through writeWorkflowState
+  // This keeps the hash in sync with authorized modifications (heal agents)
+  const gates = state.gates as Record<string, any> | undefined;
+  const acs = state.acs as Array<Record<string, unknown>> | undefined;
+  if (gates?.scope?.acHash && acs?.length) {
+    const acDefs = acs.map((ac) => ({
+      id: ac.id, type: ac.type, statement: ac.statement,
+      specElement: ac.specElement, threshold: ac.threshold,
+      evidenceMethod: ac.evidenceMethod,
+    }));
+    gates.scope.acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+  }
+
   writeState(sf, state as WorkflowState);
 }
 
