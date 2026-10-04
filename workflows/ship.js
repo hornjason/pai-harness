@@ -824,9 +824,11 @@ phase('Implement')
 async function runImplement() {
   log('IMPLEMENT: brief preflight + compliance gate + assemble + spawn Marcus')
 
-  // Step 1: Brief pre-flight with compliance scoring
+  // Step 1+2: Brief pre-flight + assemble (batched into single agent)
   await agent(`
-Run this command:
+Run these TWO commands in order and report the output of each:
+
+1. Brief pre-flight:
 bun -e "
 import {readFileSync,writeFileSync,existsSync} from 'fs';
 import {extractDirectives} from '${HARNESS_ROOT}/lib/directive-extractor.ts';
@@ -853,8 +855,10 @@ for (const role of ['marcus','quinn']) {
 writeFileSync('${WORK_DIR}/brief-preflight.json', JSON.stringify(results, null, 2));
 console.log(JSON.stringify(results));
 "
-Report the output.
-  `, { label: 'brief-preflight', phase: 'Implement' })
+
+2. Assemble brief:
+bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
+  `, { label: 'brief-preflight-assemble', phase: 'Implement' })
 
   // Compliance gate: preflightScore check — halt if any role scores below 80%
   function preflightScore(data) {
@@ -878,13 +882,6 @@ Report the output.
     log(`WARN: Could not read brief-preflight.json — skipping compliance gate: ${e.message}`)
   }
 
-  // Step 2: Assemble brief
-  await agent(`
-Run this command:
-bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
-Report the output.
-  `, { label: 'brief-assemble', phase: 'Implement' })
-
   // Collect task-specific context files from Discovery ACs
   const acContextFiles = (discovery?.acs || [])
     .flatMap(ac => ac.contextFiles || [])
@@ -893,7 +890,7 @@ Report the output.
       return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
     })
 
-  // Extract context excerpts deterministically (no LLM needed — just read and truncate)
+  // Extract context excerpts deterministically (direct file reads — no LLM agent)
   let contextExcerpts = null
   if (acContextFiles.length > 0) {
     log(`Reading ${acContextFiles.length} context files deterministically`)
@@ -903,33 +900,22 @@ Report the output.
       { path: `${PROJECT_ROOT}/PROJECT-STATE.md`, reason: 'current priorities, session context', maxLines: 50 },
       { path: `${PROJECT_ROOT}/prompts/coding-principles.md`, reason: 'coding and testing standards', maxLines: 100 },
     ]
-    const filePaths = allFiles.map(f => f.path).join(' ')
-    const excerptResult = await agent(`
-Run this command and return the JSON output:
-bun -e "
-const fs = require('fs');
-const path = require('path');
-const files = ${JSON.stringify(allFiles)};
-const excerpts = [];
-for (const f of files) {
-  try {
-    let content = fs.readFileSync(f.path, 'utf-8');
-    const lines = content.split('\\n');
-    const limit = f.maxLines || 200;
-    if (lines.length > limit) content = lines.slice(0, limit).join('\\n') + '\\n... (truncated)';
-    excerpts.push({ source: f.path, section: path.basename(f.path), content, reason: f.reason });
-  } catch(e) { /* skip missing files */ }
-}
-console.log(JSON.stringify({ excerpts }));
-" 2>&1
-    `, { label: 'extract-context', phase: 'Implement', schema: {
-      type: 'object',
-      properties: { excerpts: { type: 'array', items: { type: 'object', properties: { source: { type: 'string' }, section: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['source', 'content'] } } },
-      required: ['excerpts']
-    } })
-    contextExcerpts = excerptResult?.excerpts || null
-    if (contextExcerpts) {
+    const fs = require('fs')
+    const pathModule = require('path')
+    contextExcerpts = []
+    for (const f of allFiles) {
+      try {
+        let content = fs.readFileSync(f.path, 'utf-8')
+        const lines = content.split('\n')
+        const limit = f.maxLines || 200
+        if (lines.length > limit) content = lines.slice(0, limit).join('\n') + '\n... (truncated)'
+        contextExcerpts.push({ source: f.path, section: pathModule.basename(f.path), content, reason: f.reason })
+      } catch (e) { /* skip missing files */ }
+    }
+    if (contextExcerpts.length > 0) {
       log(`Injecting ${contextExcerpts.length} context excerpts into Marcus prompt`)
+    } else {
+      contextExcerpts = null
     }
   }
 
