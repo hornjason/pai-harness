@@ -299,62 +299,102 @@ This validates via Zod at write time — you get immediate error feedback. Repor
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 1: GOAL
+// PHASE 1: GOAL (deterministic — no LLM agents)
 // ════════════════════════════════════════════════════════════
 
 phase('Goal')
 log(`Ship #${ISSUE}: reading issue`)
 
-const goalData = await agent(`
-Read this GitHub issue and extract the goal and success criteria.
+// ── Deterministic issue reading via gh CLI ──
+let goalData = parsedArgs.goalData || null
+if (!goalData) {
+  // Pre-computed goalData not provided — fetch via a single agent that runs gh CLI
+  goalData = await agent(`
+Run this exact command and parse the JSON output:
+gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels
 
-Use the mcp__github__get_issue tool to retrieve the issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
+From the JSON result, extract:
+1. issueTitle — the "title" field
+2. issueGoal — first paragraph of "body" (up to the first blank line or ## header)
+3. successCriteria — find all lines matching "- [ ] SC-" or "- [ ] " under a "## Success Criteria" section. Return each as a string.
+4. labels — array of label name strings from the "labels" array
 
-Extract verbatim from the returned issue data:
-1. issueGoal — main goal statement (first paragraph of body, or title if short)
-2. successCriteria — each SC/AC (look for "- [ ] SC-" or "## Success Criteria")
-3. issueTitle — the title
-4. labels — label names
+Return these four fields as JSON.
 `, { label: 'read-issue', phase: 'Goal', schema: GOAL_SCHEMA })
+}
 
 if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
 // ── Pre-flight: verify remote host access if configured ──
 const remoteHosts = parsedArgs.remoteHosts || {}
-if (Object.keys(remoteHosts).length > 0) {
-  for (const [name, config] of Object.entries(remoteHosts)) {
-    const { host, preFlightCmd } = config
-    if (!host) continue
-    const checkCmd = preFlightCmd
-      ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "${preFlightCmd}" 2>&1`
-      : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "hostname" 2>&1`
-    const checkResult = await agent(`Run this command and report success/failure:\n${checkCmd}\n\nReturn JSON: {"reachable": true/false, "output": "..."}`, {
-      label: `preflight-${name}`, phase: 'Goal', schema: {
+const preflightResults = parsedArgs.preflightResults || null
+if (preflightResults) {
+  // Pre-computed pre-flight results — just log them
+  for (const [name, result] of Object.entries(preflightResults)) {
+    if (result.reachable) {
+      log(`PRE-FLIGHT: ${name} (${result.host || name}) — ✅ reachable`)
+    } else {
+      log(`PRE-FLIGHT: ${name} (${result.host || name}) — ❌ unreachable: ${result.output || 'no response'}`)
+      log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${result.purpose || name} may fail.`)
+    }
+  }
+} else if (Object.keys(remoteHosts).length > 0) {
+  // No pre-computed results — run SSH pre-flight via a single batched agent
+  const hostChecks = Object.entries(remoteHosts)
+    .filter(([, config]) => config.host)
+    .map(([name, config]) => {
+      const cmd = config.preFlightCmd
+        ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${config.host} "${config.preFlightCmd}" 2>&1`
+        : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${config.host} "hostname" 2>&1`
+      return { name, host: config.host, purpose: config.purpose, cmd }
+    })
+
+  if (hostChecks.length > 0) {
+    const batchResult = await agent(`
+Run each of these SSH commands and report success/failure for each host:
+
+${hostChecks.map((h, i) => `${i + 1}. ${h.name}: ${h.cmd}`).join('\n')}
+
+Return a JSON object with a "hosts" array, one entry per host:
+{"hosts": [{"name": "...", "reachable": true/false, "output": "..."}]}
+`, {
+      label: 'preflight-batch', phase: 'Goal', schema: {
         type: 'object',
-        properties: { reachable: { type: 'boolean' }, output: { type: 'string' } },
-        required: ['reachable']
+        properties: { hosts: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, reachable: { type: 'boolean' }, output: { type: 'string' } }, required: ['name', 'reachable'] } } },
+        required: ['hosts']
       }
     })
-    if (checkResult?.reachable) {
-      log(`PRE-FLIGHT: ${name} (${host}) — ✅ reachable`)
-    } else {
-      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult?.output || 'no response'}`)
-      log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${config.purpose || name} may fail.`)
+
+    if (batchResult?.hosts) {
+      for (const hostResult of batchResult.hosts) {
+        const config = remoteHosts[hostResult.name] || {}
+        if (hostResult.reachable) {
+          log(`PRE-FLIGHT: ${hostResult.name} (${config.host || hostResult.name}) — ✅ reachable`)
+        } else {
+          log(`PRE-FLIGHT: ${hostResult.name} (${config.host || hostResult.name}) — ❌ unreachable: ${hostResult.output || 'no response'}`)
+          log(`WARN: Remote host "${hostResult.name}" is not accessible. Issues requiring ${config.purpose || hostResult.name} may fail.`)
+        }
+      }
     }
   }
 }
 
-// ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
-const roleBriefs = ['discovery', 'marcus'].map(role => {
-  const rc = ROLES[role]
-  return { role, path: rc?.brief ? `${PROJECT_ROOT}/${rc.brief}` : `${PROJECT_ROOT}/.claude/agents/${role}.md` }
-})
+// ── Preload all role contexts ──
+if (parsedArgs.preloadedContexts) {
+  // Pre-computed context and reinforcement data — populate caches directly
+  for (const [role, data] of Object.entries(parsedArgs.preloadedContexts)) {
+    CONTEXT_CACHE[role] = data.paths || []
+    REINFORCEMENT_CACHE[role] = data.rules || []
+  }
+} else {
+  // Fall back to agent-based extraction
+  const roleBriefs = ['discovery', 'marcus'].map(role => {
+    const rc = ROLES[role]
+    return { role, path: rc?.brief ? `${PROJECT_ROOT}/${rc.brief}` : `${PROJECT_ROOT}/.claude/agents/${role}.md` }
+  })
 
-const preloadResult = await agent(`
+  const preloadResult = await agent(`
 For each agent brief file below, extract:
 1. All file paths from the "## Context" section (if any)
 2. All bullet/numbered items from sections listed under "tiers.reinforcement" in the YAML frontmatter
@@ -364,24 +404,25 @@ ${roleBriefs.map(b => `- ${b.role}: ${b.path}`).join('\n')}
 
 For reinforcement: read the YAML frontmatter, find the "tiers.reinforcement" array (e.g. ['Testing Rules']), then extract all items under those section headers.
 `, { label: 'preload-contexts', phase: 'Discovery', schema: {
-  type: 'object',
-  properties: {
-    roles: { type: 'object', additionalProperties: {
-      type: 'object',
-      properties: {
-        paths: { type: 'array', items: { type: 'string' } },
-        rules: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['paths', 'rules'],
-    } },
-  },
-  required: ['roles'],
-} })
+    type: 'object',
+    properties: {
+      roles: { type: 'object', additionalProperties: {
+        type: 'object',
+        properties: {
+          paths: { type: 'array', items: { type: 'string' } },
+          rules: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['paths', 'rules'],
+      } },
+    },
+    required: ['roles'],
+  } })
 
-if (preloadResult?.roles) {
-  for (const [role, data] of Object.entries(preloadResult.roles)) {
-    CONTEXT_CACHE[role] = data.paths || []
-    REINFORCEMENT_CACHE[role] = data.rules || []
+  if (preloadResult?.roles) {
+    for (const [role, data] of Object.entries(preloadResult.roles)) {
+      CONTEXT_CACHE[role] = data.paths || []
+      REINFORCEMENT_CACHE[role] = data.rules || []
+    }
   }
 }
 
