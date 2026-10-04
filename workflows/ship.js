@@ -323,6 +323,31 @@ Extract verbatim from the returned issue data:
 if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
+// ── Pre-flight: verify remote host access if configured ──
+const remoteHosts = parsedArgs.remoteHosts || {}
+if (Object.keys(remoteHosts).length > 0) {
+  for (const [name, config] of Object.entries(remoteHosts)) {
+    const { host, preFlightCmd } = config
+    if (!host) continue
+    const checkCmd = preFlightCmd
+      ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "${preFlightCmd}" 2>&1`
+      : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "hostname" 2>&1`
+    const checkResult = await agent(`Run this command and report success/failure:\n${checkCmd}\n\nReturn JSON: {"reachable": true/false, "output": "..."}`, {
+      label: `preflight-${name}`, phase: 'Goal', schema: {
+        type: 'object',
+        properties: { reachable: { type: 'boolean' }, output: { type: 'string' } },
+        required: ['reachable']
+      }
+    })
+    if (checkResult?.reachable) {
+      log(`PRE-FLIGHT: ${name} (${host}) — ✅ reachable`)
+    } else {
+      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult?.output || 'no response'}`)
+      log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${config.purpose || name} may fail.`)
+    }
+  }
+}
+
 // ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
 const roleBriefs = ['discovery', 'marcus'].map(role => {
   const rc = ROLES[role]
