@@ -868,26 +868,34 @@ console.log(JSON.stringify(results));
 bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
   `, { label: 'brief-preflight-assemble', phase: 'Implement' })
 
-  // Compliance gate: preflightScore check — halt if any role scores below 80%
-  function preflightScore(data) {
-    for (const [role, info] of Object.entries(data)) {
-      if (info.score < 80) return { pass: false, role, score: info.score }
-    }
-    return { pass: true }
+  // Compliance gate: read brief-preflight.json via agent and check scores
+  const complianceCheck = await agent(`
+Run this command and return the JSON:
+bun -e "
+const fs = require('fs');
+try {
+  const data = JSON.parse(fs.readFileSync('${WORK_DIR}/brief-preflight.json', 'utf-8'));
+  let pass = true, failRole = '', failScore = 0;
+  for (const [role, info] of Object.entries(data)) {
+    if (info.score < 80) { pass = false; failRole = role; failScore = info.score; break; }
   }
+  console.log(JSON.stringify({ pass, failRole, failScore, data }));
+} catch(e) { console.log(JSON.stringify({ pass: true, skipped: true, reason: e.message })); }
+" 2>&1
+  `, { label: 'compliance-check', phase: 'Implement', schema: {
+    type: 'object',
+    properties: { pass: { type: 'boolean' }, failRole: { type: 'string' }, failScore: { type: 'number' }, skipped: { type: 'boolean' } },
+    required: ['pass']
+  }})
 
-  try {
-    const preflightPath = `${WORK_DIR}/brief-preflight.json`
-    const preflightRaw = require('fs').readFileSync(preflightPath, 'utf-8')
-    const preflightData = JSON.parse(preflightRaw)
-    const briefCompliance = preflightScore(preflightData)
-    if (!briefCompliance.pass) {
-      log(`FATAL: briefCompliance halt — ${briefCompliance.role} scored ${briefCompliance.score}% (threshold: 80%)`)
-      return { status: 'COMPLIANCE_GATE_FAILED', message: `Brief compliance score ${briefCompliance.score}% for ${briefCompliance.role} is below 80% threshold` }
-    }
+  if (complianceCheck && !complianceCheck.pass && !complianceCheck.skipped) {
+    log(`FATAL: briefCompliance halt — ${complianceCheck.failRole} scored ${complianceCheck.failScore}% (threshold: 80%)`)
+    return { status: 'COMPLIANCE_GATE_FAILED', message: `Brief compliance score ${complianceCheck.failScore}% for ${complianceCheck.failRole} is below 80% threshold` }
+  }
+  if (complianceCheck?.skipped) {
+    log(`WARN: brief-preflight.json not readable — skipping compliance gate`)
+  } else {
     log(`Brief compliance gate PASSED: all roles >= 80%`)
-  } catch (e) {
-    log(`WARN: Could not read brief-preflight.json — skipping compliance gate: ${e.message}`)
   }
 
   // Collect task-specific context files from Discovery ACs
@@ -898,32 +906,42 @@ bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WOR
       return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
     })
 
-  // Extract context excerpts deterministically (direct file reads — no LLM agent)
+  // Extract context excerpts via lightweight agent (workflow sandbox has no fs access)
   let contextExcerpts = null
   if (acContextFiles.length > 0) {
-    log(`Reading ${acContextFiles.length} context files deterministically`)
+    log(`Reading ${acContextFiles.length} context files`)
     const allFiles = [
       ...acContextFiles.map(cf => ({ path: typeof cf === 'string' ? cf : cf.path, reason: typeof cf === 'string' ? '' : cf.reason || '' })),
       { path: `${PROJECT_ROOT}/AGENTS.md`, reason: 'project identity, rules, test commands' },
       { path: `${PROJECT_ROOT}/PROJECT-STATE.md`, reason: 'current priorities, session context', maxLines: 50 },
       { path: `${PROJECT_ROOT}/prompts/coding-principles.md`, reason: 'coding and testing standards', maxLines: 100 },
     ]
-    const fs = require('fs')
-    const pathModule = require('path')
-    contextExcerpts = []
-    for (const f of allFiles) {
-      try {
-        let content = fs.readFileSync(f.path, 'utf-8')
-        const lines = content.split('\n')
-        const limit = f.maxLines || 200
-        if (lines.length > limit) content = lines.slice(0, limit).join('\n') + '\n... (truncated)'
-        contextExcerpts.push({ source: f.path, section: pathModule.basename(f.path), content, reason: f.reason })
-      } catch (e) { /* skip missing files */ }
-    }
-    if (contextExcerpts.length > 0) {
+    const excerptResult = await agent(`
+Run this command and return the JSON output:
+bun -e "
+const fs = require('fs');
+const path = require('path');
+const files = ${JSON.stringify(allFiles)};
+const excerpts = [];
+for (const f of files) {
+  try {
+    let content = fs.readFileSync(f.path, 'utf-8');
+    const lines = content.split('\\n');
+    const limit = f.maxLines || 200;
+    if (lines.length > limit) content = lines.slice(0, limit).join('\\n') + '\\n... (truncated)';
+    excerpts.push({ source: f.path, section: path.basename(f.path), content, reason: f.reason });
+  } catch(e) { /* skip missing files */ }
+}
+console.log(JSON.stringify({ excerpts }));
+" 2>&1
+    `, { label: 'extract-context', phase: 'Implement', schema: {
+      type: 'object',
+      properties: { excerpts: { type: 'array', items: { type: 'object', properties: { source: { type: 'string' }, section: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, required: ['source', 'content'] } } },
+      required: ['excerpts']
+    } })
+    contextExcerpts = excerptResult?.excerpts || null
+    if (contextExcerpts) {
       log(`Injecting ${contextExcerpts.length} context excerpts into Marcus prompt`)
-    } else {
-      contextExcerpts = null
     }
   }
 
