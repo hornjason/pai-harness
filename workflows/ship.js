@@ -305,25 +305,80 @@ This validates via Zod at write time — you get immediate error feedback. Repor
 phase('Goal')
 log(`Ship #${ISSUE}: reading issue`)
 
-const goalData = await agent(`
-Read this GitHub issue and extract the goal and success criteria.
+// ── Deterministic helpers (no LLM agents) ──
 
-Use the mcp__github__get_issue tool to retrieve the issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
+function exec(cmd) {
+  const result = Bun.spawnSync(['sh', '-c', cmd])
+  return {
+    stdout: result.stdout?.toString?.() || '',
+    stderr: result.stderr?.toString?.() || '',
+    exitCode: result.exitCode,
+  }
+}
 
-Extract verbatim from the returned issue data:
-1. issueGoal — main goal statement (first paragraph of body, or title if short)
-2. successCriteria — each SC/AC (look for "- [ ] SC-" or "## Success Criteria")
-3. issueTitle — the title
-4. labels — label names
-`, { label: 'read-issue', phase: 'Goal', schema: GOAL_SCHEMA })
+function extractSuccessCriteria(body) {
+  if (!body) return []
+  const lines = body.split('\n')
+  const criteria = []
+  const SC_CHECKBOX = /^[-*]\s*\[[ x]\]\s*((?:SC|AC)-\d+.*)/
+  const SC_NUMBERED = /^\d+\.\s*((?:SC|AC)-\d+.*)/
+  const SC_DASH = /^[-*]\s*((?:SC|AC)-\d+.*)/
+  for (const line of lines) {
+    const trimmed = line.trim()
+    const m = SC_CHECKBOX.exec(trimmed) || SC_NUMBERED.exec(trimmed) || SC_DASH.exec(trimmed)
+    if (m) criteria.push(m[1].trim())
+  }
+  return criteria
+}
+
+function extractGoal(body, title) {
+  if (!body) return title
+  const lines = body.split('\n')
+  const paragraphLines = []
+  let foundContent = false
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (trimmed.startsWith('#')) {
+      if (foundContent && paragraphLines.length > 0) break
+      continue
+    }
+    if (!trimmed && !foundContent) continue
+    if (/^([-*]\s*\[|[-*]\s*(?:SC|AC)-|\d+\.\s*(?:SC|AC)-)/.test(trimmed)) break
+    if (trimmed) {
+      foundContent = true
+      paragraphLines.push(trimmed)
+    } else if (foundContent) {
+      break
+    }
+  }
+  const goal = paragraphLines.join(' ').trim()
+  return goal || title
+}
+
+// ── Fetch issue via gh CLI (deterministic, no LLM) ──
+const ghResult = exec(`gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels 2>&1`)
+if (ghResult.exitCode !== 0) {
+  return { status: 'GOAL_FAILED', message: `gh issue view failed: ${ghResult.stderr || ghResult.stdout}` }
+}
+
+let issueJson
+try {
+  issueJson = JSON.parse(ghResult.stdout)
+} catch (e) {
+  return { status: 'GOAL_FAILED', message: `Failed to parse issue JSON: ${e.message}` }
+}
+
+const goalData = {
+  issueGoal: extractGoal(issueJson.body, issueJson.title),
+  successCriteria: extractSuccessCriteria(issueJson.body || ''),
+  issueTitle: issueJson.title,
+  labels: (issueJson.labels || []).map(l => typeof l === 'string' ? l : l.name),
+}
 
 if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
-// ── Pre-flight: verify remote host access if configured ──
+// ── Pre-flight: verify remote host access via exec (deterministic, no LLM) ──
 const remoteHosts = parsedArgs.remoteHosts || {}
 if (Object.keys(remoteHosts).length > 0) {
   for (const [name, config] of Object.entries(remoteHosts)) {
@@ -332,23 +387,23 @@ if (Object.keys(remoteHosts).length > 0) {
     const checkCmd = preFlightCmd
       ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "${preFlightCmd}" 2>&1`
       : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "hostname" 2>&1`
-    const checkResult = await agent(`Run this command and report success/failure:\n${checkCmd}\n\nReturn JSON: {"reachable": true/false, "output": "..."}`, {
-      label: `preflight-${name}`, phase: 'Goal', schema: {
-        type: 'object',
-        properties: { reachable: { type: 'boolean' }, output: { type: 'string' } },
-        required: ['reachable']
-      }
-    })
-    if (checkResult?.reachable) {
-      log(`PRE-FLIGHT: ${name} (${host}) — ✅ reachable`)
+    const sshResult = exec(checkCmd)
+    const reachable = sshResult.exitCode === 0
+    const output = sshResult.stdout || sshResult.stderr || ''
+    if (reachable) {
+      log(`PRE-FLIGHT: ${name} (${host}) — reachable`)
     } else {
-      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult?.output || 'no response'}`)
+      log(`PRE-FLIGHT: ${name} (${host}) — unreachable: ${output || 'no response'}`)
       log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${config.purpose || name} may fail.`)
     }
   }
 }
 
-// ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
+// ════════════════════════════════════════════════════════════
+// PHASE 2: DISCOVERY (with regression support + prior work)
+// ════════════════════════════════════════════════════════════
+
+// ── Preload all role contexts (moved from Goal phase — uses agent for file parsing) ──
 const roleBriefs = ['discovery', 'marcus'].map(role => {
   const rc = ROLES[role]
   return { role, path: rc?.brief ? `${PROJECT_ROOT}/${rc.brief}` : `${PROJECT_ROOT}/.claude/agents/${role}.md` }
@@ -384,10 +439,6 @@ if (preloadResult?.roles) {
     REINFORCEMENT_CACHE[role] = data.rules || []
   }
 }
-
-// ════════════════════════════════════════════════════════════
-// PHASE 2: DISCOVERY (with regression support + prior work)
-// ════════════════════════════════════════════════════════════
 
 let discovery = null
 let setupResult = null
