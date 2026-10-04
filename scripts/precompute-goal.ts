@@ -148,7 +148,28 @@ if (existsSync(configPath)) {
     preloadedContexts[role] = { paths, rules };
   }
 
-  console.log(JSON.stringify({ goalData, preflightResults, preloadedContexts }, null, 2));
+  // ── 4. Prior branch detection ──
+  let priorBranch: { branch: string; commitCount: number } | undefined;
+  try {
+    const priorResult = execSync(
+      `bun -e "import {detectPriorBranch} from '${resolve(projectRoot)}/node_modules/@anthropic-ai/claude-code/lib/prior-branch.ts'; void 0;" 2>/dev/null || echo '{}'`,
+      { encoding: "utf-8", timeout: 10000, cwd: projectRoot }
+    ).trim();
+    // Prior branch detection requires harness lib — try direct import
+    const harnessRoot = getArg("harness-root") || resolve(projectRoot);
+    const detectResult = execSync(
+      `bun -e "import {detectPriorBranch} from '${harnessRoot}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${issue},projectRoot:'${resolve(projectRoot)}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'`,
+      { encoding: "utf-8", timeout: 15000, cwd: projectRoot }
+    ).trim();
+    const parsed = JSON.parse(detectResult);
+    if (parsed.branch) {
+      priorBranch = { branch: parsed.branch, commitCount: parsed.commitCount || 0 };
+    }
+  } catch {
+    // Prior branch detection failed — workflow will fall back to agent
+  }
+
+  console.log(JSON.stringify({ goalData, preflightResults, preloadedContexts, priorBranch }, null, 2));
 } else {
   console.log(JSON.stringify({ goalData }, null, 2));
 }

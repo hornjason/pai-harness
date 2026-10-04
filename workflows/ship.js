@@ -775,26 +775,40 @@ if (DRY_RUN) {
   }
 }
 
-// Batched: AC evidence/threshold pre-validation + prior-branch detection (was 2-3 agents, now 1)
-let priorBranchResult = null
-const preflightResult = await agent(`
-Do BOTH tasks and report results:
+// Prior branch detection: pre-computed via args or agent
+let priorBranchResult = parsedArgs.priorBranch || null
+if (!priorBranchResult) {
+  const priorResult = await agent(`
+Run this command and report the result:
+bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
 
-TASK 1 — AC pre-validation (evidence/threshold type checking):
+If a prior branch exists (non-empty branch field), merge it:
+  cd ${PROJECT_ROOT} && git merge <branch> --no-edit
+
+Return: priorBranch (string, empty if none), priorCommitCount (number).
+`, { label: 'prior-branch', phase: 'Scope', schema: {
+    type: 'object',
+    properties: { priorBranch: { type: 'string' }, priorCommitCount: { type: 'number' } },
+    required: ['priorBranch']
+  }})
+  if (priorResult?.priorBranch) {
+    priorBranchResult = { branch: priorResult.priorBranch, commitCount: priorResult.priorCommitCount || 0 }
+    log(`Prior branch merged: ${priorBranchResult.branch}`)
+  }
+} else if (priorBranchResult.branch) {
+  log(`Prior branch (pre-computed): ${priorBranchResult.branch}`)
+}
+
+// AC evidence/threshold pre-validation
+const preflightResult = await agent(`
+AC pre-validation (evidence/threshold type checking):
 Read ${WORK_DIR}/workflow-state.json. For each AC with evidenceMethod.command:
   Run the command (timeout 10s, allow non-zero exit). Check if threshold can evaluate output:
   - Numeric ops (>=, <=, ==, !=): output must be numeric (parseFloat succeeds)
   - String ops (op:"contains"): output must be non-empty string
-  If mismatch (numeric threshold vs string output): fix via writeWorkflowState.
+  If mismatch (numeric threshold vs string output): fix via writeWorkflowState():
+  bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* fix */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 Report: totalACs, validated, fixed, fixes array.
-
-TASK 2 — Prior branch detection:
-bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
-
-If a prior branch exists, merge it:
-  cd ${PROJECT_ROOT} && git merge <branch> --no-edit
-
-Report both results.
 `, { label: 'ac-prevalidation', phase: 'Scope', schema: {
   type: 'object',
   properties: {
@@ -802,17 +816,11 @@ Report both results.
     validated: { type: 'number' },
     fixed: { type: 'number' },
     fixes: { type: 'array', items: { type: 'string' } },
-    priorBranch: { type: 'string' },
-    priorCommitCount: { type: 'number' },
   },
   required: ['totalACs', 'validated', 'fixed']
 }})
 if (preflightResult?.fixed > 0) {
   log(`AC pre-validation: fixed ${preflightResult.fixed}/${preflightResult.totalACs}`)
-}
-if (preflightResult?.priorBranch) {
-  log(`Prior branch merged: ${preflightResult.priorBranch}`)
-  priorBranchResult = { branch: preflightResult.priorBranch, commitCount: preflightResult.priorCommitCount || 0 }
 }
 
 // ════════════════════════════════════════════════════════════
