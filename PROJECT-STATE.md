@@ -2,34 +2,40 @@
 
 **Current phase: All phases complete**
 
-Session 25 (2026-10-02) — 9 issues closed, 2 specs, council, pipeline 77→15 min.
+Session 26 (2026-10-04) — Pipeline optimization prioritized. Consumer gate bugs fixed. Grader accuracy improved.
 
-Closed: #31, #25, #32, #33, #34, #24, #35, #36 (+dupes #37, #38)
-New modules: lib/github.ts (197), lib/spec-registry.ts (133), lib/doc-hygiene.ts (74+)
-Specs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs)
+Key decisions:
+  - User: 'I wouldn't start shipping issues until we had this worked out' — pipeline optimization is P0
+  - DDB #1450 ON HOLD until #47 pipeline optimization completes
+  - #47 created: phased plan with 19 SCs, 5 phases, measurable success criteria per phase
 
-Pipeline improvements:
-  - Decomposition gate (SC-503): >6 ACs auto-splits, ID-format bug fixed
-  - grep -c + contains threshold normalization
-  - Scaffold briefs for ALL project types
-  - Octokit + MCP two-layer GitHub architecture
-  - Doc-hygiene: spec-registry, content alignment, git-diff scoping, WARN→FAIL promotion
+Session 26 work:
+  - COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED)
+  - COMP-8 grader false positive fixed: added promptContent injection check
+  - Retroactive re-grade: 28/50 runs affected, avg 57.7% → 69.8%
+  - 8 consumer gate bugs found and fixed (dev config flattening, env defaults, acHash, dev-server liveness)
+  - Remote host pre-flight added to ship pipeline
+  - DDB re-scaffolded with latest harness changes
+  - 8 new issues created (#39-#46)
 
-Pipeline trend (properly scoped issues):
-  #31: 27 agents, 77 min → FAIL
-  #25 r1: 17 agents, 29 min → SHIPPED (62% faster)
-  #35: 17 agents, 15 min → SHIPPED (80% faster, first-pass)
-  #36: 17 agents, 18 min → SHIPPED (first-pass)
+Pipeline trend:
+  Rungate: #35 17 agents/15min, #36 17 agents/18min (first-pass)
+  DDB: #1452 26-36 agents/34min (consumer gate bugs), #1450 stopped (pipeline optimization)
 
-Next: #23 — research Mac Mini remote execution (devcontainer vs worktree).
-User wants laptop-off AFK: pipeline runs on Mini, triggered by webhook/cron.
 Suite: 1866+ pass, 0 fail.
+
+Next: #47 — replace ceremony agents with deterministic bash. Then #23 Mac Mini isolation.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. DONE: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 shipped in 15 min, first-pass
-2. DONE: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion shipped in 18 min
-3. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+1. P0: #47 Pipeline optimization — replace LLM ceremony agents with deterministic bash (BLOCKING all issue shipping)
+2. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+3. P2: #45 BashToolGuard in worktrees (COMP-7 persistent gap)
+4. P2: #43 acHash integrity root cause investigation
+5. P3: #41 Scaffold: detect and migrate specs from docs/specs/ to specs/
+6. HOLD: DDB #1450 — blocked on #47 pipeline optimization
+7. DONE: #39 Fix grader false positives (COMP-13 + COMP-8)
+8. DONE: #40 Compliance improvements (context injection + reinforcement + grader accuracy gate)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -86,6 +92,18 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-10-04 session 26:**
+- COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED). COMP-8 injection check added
+- Retroactive re-grade: 28/50 runs corrected, avg 57.7% → 69.8%. 8 new grader tests
+- Consumer gate bugs: 8 fixes — dev config flattening, env defaults, acHash WARN, dev-server liveness, remote pre-flight
+- DDB re-scaffolded with latest harness. conformity: test.skip for no specs, HYGIENE-10 WARN, AGENT-11 dynamic cap
+- DDB #1452 shipped pipeline (consumer gate bugs found). DDB #1450 stopped — pipeline optimization first
+- Pipeline optimization P0: user directive 'I wouldn't start shipping issues until we had this worked out'
+- #47 created: 5-phase plan, 19 SCs — replace ceremony agents with deterministic bash
+- Issues created: #39 (grader fix), #40 (compliance), #41-#46 (scaffold/gate/CI), #47 (pipeline opt)
+- Compliance: context injection (PROJECT-STATE.md, coding-principles.md), COMP-7/COMP-6 reinforcement rules
+- Suite: 1866+ pass, 0 fail. 8 commits pushed
+
 **Session 2026-10-02 session 25:**
 - #31 CLOSED: all 14 SCs done. SC-484/SC-485 implemented (scaffold directory generation + monolith split)
 - Ship workflow ran for #31: Discovery, Marcus (worktree), Verify, Grade — 27 agents, 77 min
@@ -110,14 +128,4 @@ Suite: 25/25 SCs done.
 - #31 created: directory-based rungate config + self-describing compliance policy (.claude/rungate/ replaces monolith)
 - Compliance scores this session: Marcus 73-80%, Discovery 50-67%. Persistent: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced)
 - Suite: 1745+ pass, 0 fail across session. 8 commits pushed
-
-**Session 2026-10-01 session 23:**
-- COMP-1 grader false negative FIXED: extractPromptContent() was only checking first user message (relay header), missing AGENTS.md injection in second message (task prompt). All 3 baseline runs now FOLLOWED. 2 tests added
-- BashToolGuard hook VALIDATED: replay with hook scored 0 cat commands (baseline: 1-11 per run). Tier 3 mechanical enforcement works
-- Issue #26 shipped through pipeline: Marcus 9/15 (60%). COMP-1 ✅, COMP-13 ✅ (TDD passed first time!). COMP-7 ❌ (hook in rungate.json but not project settings)
-- SCs created: SC-469 (grader fix, done), SC-470 (test-brief --prompt flag), SC-471 (COMP-level grading in fast loop), SC-472 (scaffold hook deployment to consumers)
-- Course correction: user flagged non-spec-driven work. Removed replay-prompt.ts (belongs in test-brief per SC-400/470). Created SCs before further implementation
-- DDB-1344 re-graded with fixed grader: 77%/69%/77% (was 69%/54%/69% — +8-15% from grader fix alone)
-- Replay validated end-to-end: 85% with grader fix + BashToolGuard (vs 74% baseline avg)
-- Project state updated, issue #26 created for SC-470/471/472 implementation
 

@@ -1,11 +1,16 @@
 {
   "updated": "2026-10-04",
   "priorities": [
-    "DONE: #35 Doc-hygiene Phase 1 — CONTENT-1/CONTENT-2 shipped in 15 min, first-pass",
-    "DONE: #36 Doc-hygiene Phase 2 — git-diff scoping + WARN→FAIL promotion shipped in 18 min",
-    "P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs"
+    "P0: #47 Pipeline optimization — replace LLM ceremony agents with deterministic bash (BLOCKING all issue shipping)",
+    "P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
+    "P2: #45 BashToolGuard in worktrees (COMP-7 persistent gap)",
+    "P2: #43 acHash integrity root cause investigation",
+    "P3: #41 Scaffold: detect and migrate specs from docs/specs/ to specs/",
+    "HOLD: DDB #1450 — blocked on #47 pipeline optimization",
+    "DONE: #39 Fix grader false positives (COMP-13 + COMP-8)",
+    "DONE: #40 Compliance improvements (context injection + reinforcement + grader accuracy gate)"
   ],
-  "notes": "Session 25 (2026-10-02) — 9 issues closed, 2 specs, council, pipeline 77→15 min.\n\nClosed: #31, #25, #32, #33, #34, #24, #35, #36 (+dupes #37, #38)\nNew modules: lib/github.ts (197), lib/spec-registry.ts (133), lib/doc-hygiene.ts (74+)\nSpecs: GITHUB-API-MIGRATION-SPEC (15 SCs), DOC-HYGIENE-ARCHITECTURE-SPEC (12 SCs)\n\nPipeline improvements:\n  - Decomposition gate (SC-503): >6 ACs auto-splits, ID-format bug fixed\n  - grep -c + contains threshold normalization\n  - Scaffold briefs for ALL project types\n  - Octokit + MCP two-layer GitHub architecture\n  - Doc-hygiene: spec-registry, content alignment, git-diff scoping, WARN→FAIL promotion\n\nPipeline trend (properly scoped issues):\n  #31: 27 agents, 77 min → FAIL\n  #25 r1: 17 agents, 29 min → SHIPPED (62% faster)\n  #35: 17 agents, 15 min → SHIPPED (80% faster, first-pass)\n  #36: 17 agents, 18 min → SHIPPED (first-pass)\n\nNext: #23 — research Mac Mini remote execution (devcontainer vs worktree).\nUser wants laptop-off AFK: pipeline runs on Mini, triggered by webhook/cron.\nSuite: 1866+ pass, 0 fail.\nSuite: 25/25 SCs done.",
+  "notes": "Session 26 (2026-10-04) — Pipeline optimization prioritized. Consumer gate bugs fixed. Grader accuracy improved.\n\nKey decisions:\n  - User: 'I wouldn't start shipping issues until we had this worked out' — pipeline optimization is P0\n  - DDB #1450 ON HOLD until #47 pipeline optimization completes\n  - #47 created: phased plan with 19 SCs, 5 phases, measurable success criteria per phase\n\nSession 26 work:\n  - COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED)\n  - COMP-8 grader false positive fixed: added promptContent injection check\n  - Retroactive re-grade: 28/50 runs affected, avg 57.7% → 69.8%\n  - 8 consumer gate bugs found and fixed (dev config flattening, env defaults, acHash, dev-server liveness)\n  - Remote host pre-flight added to ship pipeline\n  - DDB re-scaffolded with latest harness changes\n  - 8 new issues created (#39-#46)\n\nPipeline trend:\n  Rungate: #35 17 agents/15min, #36 17 agents/18min (first-pass)\n  DDB: #1452 26-36 agents/34min (consumer gate bugs), #1450 stopped (pipeline optimization)\n\nSuite: 1866+ pass, 0 fail.\n\nNext: #47 — replace ceremony agents with deterministic bash. Then #23 Mac Mini isolation.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -62,7 +67,7 @@
     {
       "name": "AES Quality Gate + Pipeline Optimization",
       "scs": [],
-      "note": "IN PROGRESS — Pipeline 16 agents/20 min. First-pass rate: 71%. Compliance test (session 20): COMP-7 90%→FOLLOWED, COMP-12 81%→33%, COMP-13 48%→FOLLOWED. Grading refined: system-path exclusions, bold-prefix parsing, COMP checks always run. Agent score improved 10/19→13/19."
+      "note": "P0 PRIORITY — #47 created with 5-phase plan, 19 SCs. Grader accuracy fixed (COMP-13/COMP-8 false positives, retrograde 57.7→69.8%). Consumer gate bugs fixed (8 checks). Remaining: replace ceremony agents with deterministic bash (5-8 agents, ~6-10 min savings). Blocked: DDB shipping, #1450."
     },
     {
       "name": "Scaffold Decomposition",
@@ -199,6 +204,21 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-10-04 session 26",
+      "items": [
+        "COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED). COMP-8 injection check added",
+        "Retroactive re-grade: 28/50 runs corrected, avg 57.7% → 69.8%. 8 new grader tests",
+        "Consumer gate bugs: 8 fixes — dev config flattening, env defaults, acHash WARN, dev-server liveness, remote pre-flight",
+        "DDB re-scaffolded with latest harness. conformity: test.skip for no specs, HYGIENE-10 WARN, AGENT-11 dynamic cap",
+        "DDB #1452 shipped pipeline (consumer gate bugs found). DDB #1450 stopped — pipeline optimization first",
+        "Pipeline optimization P0: user directive 'I wouldn't start shipping issues until we had this worked out'",
+        "#47 created: 5-phase plan, 19 SCs — replace ceremony agents with deterministic bash",
+        "Issues created: #39 (grader fix), #40 (compliance), #41-#46 (scaffold/gate/CI), #47 (pipeline opt)",
+        "Compliance: context injection (PROJECT-STATE.md, coding-principles.md), COMP-7/COMP-6 reinforcement rules",
+        "Suite: 1866+ pass, 0 fail. 8 commits pushed"
+      ]
+    },
     {
       "date": "2026-10-02 session 25",
       "items": [
@@ -375,10 +395,11 @@
   ],
   "session": {
     "number": 26,
-    "date": "2026-10-02",
-    "summary": "Starting #25 GitHub API migration. Branch 25-github-api-phase1 has all 4 phases implemented (818 additions, 16 files). Verify gate failed on AC-7 false positive and test suite. Fixing and merging.",
-    "suite": "pending",
-    "scs_done": "SC-488 to SC-502 in progress on branch",
-    "commits": 0
+    "date": "2026-10-04",
+    "summary": "Grader accuracy fixed (COMP-13/COMP-8), consumer gate bugs fixed (8 checks), DDB re-scaffolded, pipeline optimization prioritized as P0. Created #47 with 5-phase plan. DDB #1450 on hold.",
+    "suite": "1866+ pass, 0 fail",
+    "scs_done": "COMP-13/COMP-8 grader fixes, consumer gate compatibility (dev config, env defaults, acHash, dev-server liveness, remote pre-flight)",
+    "commits": 8,
+    "issues_created": "#39, #40, #41, #42, #43, #44, #45, #46, #47"
   }
 }
