@@ -299,54 +299,67 @@ This validates via Zod at write time — you get immediate error feedback. Repor
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 1: GOAL
+// PHASE 1: GOAL — deterministic (no LLM agents, #47)
 // ════════════════════════════════════════════════════════════
 
 phase('Goal')
-log(`Ship #${ISSUE}: reading issue`)
+log(`Ship #${ISSUE}: reading issue (deterministic)`)
 
-const goalData = await agent(`
-Read this GitHub issue and extract the goal and success criteria.
+// ── Read issue via gh CLI + deterministic parsing ──
+let goalData = null
+try {
+  const { execSync } = require('child_process')
+  const issueOwner = ISSUE_REPO.split('/')[0]
+  const issueRepoName = ISSUE_REPO.split('/')[1]
+  const issueRaw = execSync(
+    `gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels`,
+    { encoding: 'utf-8', timeout: 30000 }
+  )
+  const issueJson = JSON.parse(issueRaw)
+  const { parseIssueGoal } = require(`${HARNESS_ROOT}/lib/goal-parser.ts`)
+  goalData = parseIssueGoal(issueJson)
+} catch (e) {
+  log(`GOAL ERROR: ${e.message}`)
+  return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}: ${e.message}` }
+}
 
-Use the mcp__github__get_issue tool to retrieve the issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-
-Extract verbatim from the returned issue data:
-1. issueGoal — main goal statement (first paragraph of body, or title if short)
-2. successCriteria — each SC/AC (look for "- [ ] SC-" or "## Success Criteria")
-3. issueTitle — the title
-4. labels — label names
-`, { label: 'read-issue', phase: 'Goal', schema: GOAL_SCHEMA })
-
-if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
+if (!goalData || !goalData.issueTitle) return { status: 'GOAL_FAILED', message: `Could not parse issue #${ISSUE}` }
+// Validate all GOAL_SCHEMA fields are populated: issueGoal, successCriteria, issueTitle, labels
+if (!goalData.issueGoal) goalData.issueGoal = goalData.issueTitle
+if (!goalData.labels) goalData.labels = []
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
-// ── Pre-flight: verify remote host access if configured ──
+// ── Pre-flight: verify remote host access via exec (no LLM agent) ──
 const remoteHosts = parsedArgs.remoteHosts || {}
 if (Object.keys(remoteHosts).length > 0) {
+  const { execSync: execSyncPf } = require('child_process')
   for (const [name, config] of Object.entries(remoteHosts)) {
     const { host, preFlightCmd } = config
     if (!host) continue
     const checkCmd = preFlightCmd
       ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "${preFlightCmd}" 2>&1`
       : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "hostname" 2>&1`
-    const checkResult = await agent(`Run this command and report success/failure:\n${checkCmd}\n\nReturn JSON: {"reachable": true/false, "output": "..."}`, {
-      label: `preflight-${name}`, phase: 'Goal', schema: {
-        type: 'object',
-        properties: { reachable: { type: 'boolean' }, output: { type: 'string' } },
-        required: ['reachable']
-      }
-    })
-    if (checkResult?.reachable) {
-      log(`PRE-FLIGHT: ${name} (${host}) — ✅ reachable`)
+    let reachable = false
+    let output = ''
+    try {
+      output = execSyncPf(checkCmd, { encoding: 'utf-8', timeout: 15000 }).trim()
+      reachable = true
+    } catch (e) {
+      output = e.stderr || e.message || 'connection failed'
+      reachable = false
+    }
+    if (reachable) {
+      log(`PRE-FLIGHT: ${name} (${host}) — reachable`)
     } else {
-      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult?.output || 'no response'}`)
+      log(`PRE-FLIGHT: ${name} (${host}) — unreachable: ${output}`)
       log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${config.purpose || name} may fail.`)
     }
   }
 }
+
+// ════════════════════════════════════════════════════════════
+// PHASE 2: DISCOVERY (with regression support + prior work)
+// ════════════════════════════════════════════════════════════
 
 // ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
 const roleBriefs = ['discovery', 'marcus'].map(role => {
@@ -384,10 +397,6 @@ if (preloadResult?.roles) {
     REINFORCEMENT_CACHE[role] = data.rules || []
   }
 }
-
-// ════════════════════════════════════════════════════════════
-// PHASE 2: DISCOVERY (with regression support + prior work)
-// ════════════════════════════════════════════════════════════
 
 let discovery = null
 let setupResult = null
