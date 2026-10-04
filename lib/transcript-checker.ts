@@ -369,7 +369,7 @@ const sharedCriteria: EvalCriterion[] = [
         );
         return { verdict: "FOLLOWED", evidence: `AGENTS.md read at position ${pos + 1}` };
       }
-      const injected = data.promptContent.includes("AGENTS.md");
+      const injected = data.promptContent?.includes("AGENTS.md");
       if (injected) {
         return { verdict: "FOLLOWED", evidence: "AGENTS.md content injected in prompt" };
       }
@@ -429,9 +429,9 @@ const sharedCriteria: EvalCriterion[] = [
       if (found) {
         return { verdict: "FOLLOWED", evidence: "Project state read" };
       }
-      const injected = data.promptContent.includes("PROJECT-STATE") ||
-        data.promptContent.includes("project-state.json") ||
-        data.promptContent.includes("Current phase:");
+      const injected = data.promptContent?.includes("PROJECT-STATE") ||
+        data.promptContent?.includes("project-state.json") ||
+        data.promptContent?.includes("Current phase:");
       if (injected) {
         return { verdict: "FOLLOWED", evidence: "PROJECT-STATE content injected in prompt" };
       }
@@ -661,7 +661,7 @@ const marcusCriteria: EvalCriterion[] = [
       if (specRead) {
         return { verdict: "FOLLOWED", evidence: "Spec read before edits" };
       }
-      const specInjected = data.promptContent.includes("specs/") || data.promptContent.includes("Governing spec");
+      const specInjected = data.promptContent?.includes("specs/") || data.promptContent?.includes("Governing spec");
       if (specInjected) {
         return { verdict: "FOLLOWED", evidence: "Spec content injected in prompt" };
       }
@@ -694,9 +694,9 @@ const marcusCriteria: EvalCriterion[] = [
           evidence: `${promptReads.length} prompt(s) read: ${promptReads.map((r) => basename(r)).join(", ")}`,
         };
       }
-      const principlesInjected = data.promptContent.includes("prompts/") ||
-        data.promptContent.includes("Coding Principles") ||
-        data.promptContent.includes("coding-principles");
+      const principlesInjected = data.promptContent?.includes("prompts/") ||
+        data.promptContent?.includes("Coding Principles") ||
+        data.promptContent?.includes("coding-principles");
       if (principlesInjected) {
         return { verdict: "FOLLOWED", evidence: "Coding/testing principles injected in prompt" };
       }
