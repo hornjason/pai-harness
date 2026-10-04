@@ -37,6 +37,8 @@ import {
   addFrontmatterToAdrs,
   detectOversizedSpecs,
   checkGovernsAlignment,
+  detectMisplacedSpecs,
+  detectUnconvertedSpecs,
 } from "../lib/validators/spec-validators";
 import type { ProjectType } from "../lib/generators/types";
 
@@ -111,6 +113,8 @@ addFrontmatterToSpecs(join(projectPath, "specs"), actions);
 addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
 detectOversizedSpecs(join(projectPath, "specs"), actions);
 checkGovernsAlignment(join(projectPath, "specs"), actions);
+detectMisplacedSpecs(projectPath, actions);
+detectUnconvertedSpecs(join(projectPath, "specs"), actions);
 
 // Phase 0.8: Workflow project setup
 if (projectType === "workflow") {

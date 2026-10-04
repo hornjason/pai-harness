@@ -82,6 +82,42 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void
 }
 
 /**
+ * Issue #41: Detect spec files in docs/specs/ and suggest migration to specs/.
+ * Takes a project root (not specs dir) since it needs to check docs/specs/.
+ */
+export function detectMisplacedSpecs(projectRoot: string, actions: string[]): void {
+  const docsSpecsDir = join(projectRoot, "docs", "specs");
+  if (!existsSync(docsSpecsDir)) return;
+  const specFiles = readdirSync(docsSpecsDir).filter(f => f.endsWith(".md"));
+  if (specFiles.length === 0) return;
+  for (const file of specFiles) {
+    actions.push(
+      `WARN: docs/specs/${file} should be in specs/ — run \`bun scripts/migrate-specs.ts .\` to migrate`
+    );
+  }
+}
+
+/**
+ * Issue #41: Detect specs in specs/ that lack SC checkbox lines and suggest conversion.
+ */
+export function detectUnconvertedSpecs(specsDir: string, actions: string[]): void {
+  if (!existsSync(specsDir)) return;
+  for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md")) {
+    const content = readFileSync(join(specsDir, file), "utf-8");
+    // Check if this spec has frontmatter with testable field
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) continue;
+    // Check if file has any SC checkbox lines
+    const hasSCLines = /^- \[[ x]\] SC-\d+:/m.test(content);
+    if (!hasSCLines) {
+      actions.push(
+        `WARN: specs/${file} has no SC checkboxes — run \`bun scripts/convert-spec.ts specs/${file}\` to convert`
+      );
+    }
+  }
+}
+
+/**
  * Add or complete frontmatter on ADR files.
  * Injects doc-type, created fields if missing.
  */
