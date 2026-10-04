@@ -514,7 +514,12 @@ Project root: ${PROJECT_ROOT}
     for (const ac of toUpgrade) {
       const cmd = ac.evidenceMethod.command
       ac.evidenceMethod.type = 'COMMAND'
-      ac.evidenceMethod.command = `${cmd} | wc -l | tr -d ' '`
+      // grep -c already outputs a count — don't pipe through wc -l (produces always-1 bug)
+      if (cmd.includes('grep -c')) {
+        ac.evidenceMethod.command = cmd
+      } else {
+        ac.evidenceMethod.command = `${cmd} | wc -l | tr -d ' '`
+      }
       if (ac.threshold?.op === 'contains') {
         ac.threshold.op = '>='
         ac.threshold.value = 1
@@ -838,10 +843,19 @@ if (preflightResult?.fixed > 0) {
 
 phase('Implement')
 
-async function runImplement() {
-  log('IMPLEMENT: brief preflight + compliance gate + assemble + spawn Marcus')
+// ── Ceremony cache: run once, reuse on retries ──
+// These agents produce identical results across Marcus iterations — no need to re-run
+let CACHED_CEREMONY = null
 
-  // Step 1+2: Brief pre-flight + assemble (batched into single agent)
+async function runCeremonyOnce() {
+  if (CACHED_CEREMONY) {
+    log('IMPLEMENT: using cached ceremony (brief + compliance + context)')
+    return CACHED_CEREMONY
+  }
+
+  log('IMPLEMENT: brief preflight + compliance gate + assemble + context extraction')
+
+  // Step 1: Brief pre-flight + assemble (batched into single agent)
   await agent(`
 Run these TWO commands in order and report the output of each:
 
@@ -877,7 +891,7 @@ console.log(JSON.stringify(results));
 bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WORK_DIR} --project-root ${PROJECT_ROOT} 2>&1
   `, { label: 'brief-preflight-assemble', phase: 'Implement' })
 
-  // Compliance gate: read brief-preflight.json via agent and check scores
+  // Step 2: Compliance gate
   const complianceCheck = await agent(`
 Run this command and return the JSON:
 bun -e "
@@ -899,7 +913,7 @@ try {
 
   if (complianceCheck && !complianceCheck.pass && !complianceCheck.skipped) {
     log(`FATAL: briefCompliance halt — ${complianceCheck.failRole} scored ${complianceCheck.failScore}% (threshold: 80%)`)
-    return { status: 'COMPLIANCE_GATE_FAILED', message: `Brief compliance score ${complianceCheck.failScore}% for ${complianceCheck.failRole} is below 80% threshold` }
+    return null
   }
   if (complianceCheck?.skipped) {
     log(`WARN: brief-preflight.json not readable — skipping compliance gate`)
@@ -907,7 +921,7 @@ try {
     log(`Brief compliance gate PASSED: all roles >= 80%`)
   }
 
-  // Collect task-specific context files from Discovery ACs
+  // Step 3: Extract context excerpts (workflow sandbox has no fs access)
   const acContextFiles = (discovery?.acs || [])
     .flatMap(ac => ac.contextFiles || [])
     .filter((cf, i, arr) => {
@@ -915,7 +929,6 @@ try {
       return arr.findIndex(c => (typeof c === 'string' ? c : c.path) === path) === i
     })
 
-  // Extract context excerpts via lightweight agent (workflow sandbox has no fs access)
   let contextExcerpts = null
   if (acContextFiles.length > 0) {
     log(`Reading ${acContextFiles.length} context files`)
@@ -954,6 +967,17 @@ console.log(JSON.stringify({ excerpts }));
     }
   }
 
+  CACHED_CEREMONY = { contextExcerpts, acContextFiles }
+  return CACHED_CEREMONY
+}
+
+async function runImplement() {
+  const ceremony = await runCeremonyOnce()
+  if (!ceremony) {
+    return { status: 'COMPLIANCE_GATE_FAILED', message: 'Brief compliance below 80% threshold' }
+  }
+
+  const { contextExcerpts, acContextFiles } = ceremony
   const useExcerpts = contextExcerpts && contextExcerpts.length > 0
   const buildResult = await briefedAgent(`
 Read ${WORK_DIR}/marcus-brief.md for full instructions including ACs and files to modify.
