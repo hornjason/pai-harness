@@ -299,31 +299,63 @@ This validates via Zod at write time — you get immediate error feedback. Repor
 }
 
 // ════════════════════════════════════════════════════════════
-// PHASE 1: GOAL
+// PHASE 1: GOAL — deterministic (no LLM agents)
 // ════════════════════════════════════════════════════════════
 
 phase('Goal')
 log(`Ship #${ISSUE}: reading issue`)
 
-const goalData = await agent(`
-Read this GitHub issue and extract the goal and success criteria.
+// Deterministic issue retrieval via gh CLI
+const { execSync } = require('child_process')
 
-Use the mcp__github__get_issue tool to retrieve the issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
+function goalParseIssue(issueJson) {
+  const title = issueJson.title || ''
+  const body = issueJson.body || ''
 
-Extract verbatim from the returned issue data:
-1. issueGoal — main goal statement (first paragraph of body, or title if short)
-2. successCriteria — each SC/AC (look for "- [ ] SC-" or "## Success Criteria")
-3. issueTitle — the title
-4. labels — label names
-`, { label: 'read-issue', phase: 'Goal', schema: GOAL_SCHEMA })
+  // Extract goal: first non-empty, non-heading paragraph
+  let issueGoal = title
+  if (body.trim().length > 0) {
+    const paragraphs = body.split(/\n\n+/).filter(p => {
+      const t = p.trim()
+      return t.length > 0 && !t.startsWith('#')
+    })
+    if (paragraphs.length > 0) issueGoal = paragraphs[0].trim()
+  }
+
+  // Extract SC/AC lines via regex
+  const successCriteria = []
+  for (const line of body.split('\n')) {
+    const trimmed = line.trim()
+    const cbMatch = trimmed.match(/^-\s*\[[ x]\]\s*((?:SC|AC)-\d+:\s*.+)$/i)
+    if (cbMatch) { successCriteria.push(cbMatch[1].trim()); continue }
+    const numMatch = trimmed.match(/^\d+\.\s*((?:SC|AC)-\d+:\s*.+)$/i)
+    if (numMatch) { successCriteria.push(numMatch[1].trim()) }
+  }
+
+  // Labels: handle both object and string formats
+  const labels = (issueJson.labels || []).map(l => typeof l === 'string' ? l : (l.name || ''))
+
+  return { issueGoal, successCriteria, issueTitle: title, labels }
+}
+
+let goalData
+try {
+  const owner = ISSUE_REPO.split('/')[0]
+  const repo = ISSUE_REPO.split('/')[1]
+  const ghOutput = execSync(
+    `gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels`,
+    { encoding: 'utf-8', timeout: 30000 }
+  )
+  const issueJson = JSON.parse(ghOutput)
+  goalData = goalParseIssue(issueJson)
+} catch (err) {
+  return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}: ${err.message}` }
+}
 
 if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
-// ── Pre-flight: verify remote host access if configured ──
+// ── Pre-flight: verify remote host access via exec ──
 const remoteHosts = parsedArgs.remoteHosts || {}
 if (Object.keys(remoteHosts).length > 0) {
   for (const [name, config] of Object.entries(remoteHosts)) {
@@ -332,21 +364,25 @@ if (Object.keys(remoteHosts).length > 0) {
     const checkCmd = preFlightCmd
       ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "${preFlightCmd}" 2>&1`
       : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${host} "hostname" 2>&1`
-    const checkResult = await agent(`Run this command and report success/failure:\n${checkCmd}\n\nReturn JSON: {"reachable": true/false, "output": "..."}`, {
-      label: `preflight-${name}`, phase: 'Goal', schema: {
-        type: 'object',
-        properties: { reachable: { type: 'boolean' }, output: { type: 'string' } },
-        required: ['reachable']
-      }
-    })
-    if (checkResult?.reachable) {
+    let checkResult = { reachable: false, output: '' }
+    try {
+      const sshOutput = execSync(checkCmd, { encoding: 'utf-8', timeout: 15000 })
+      checkResult = { reachable: true, output: sshOutput.trim() }
+    } catch (sshErr) {
+      checkResult = { reachable: false, output: sshErr.stderr || sshErr.message || 'connection failed' }
+    }
+    if (checkResult.reachable) {
       log(`PRE-FLIGHT: ${name} (${host}) — ✅ reachable`)
     } else {
-      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult?.output || 'no response'}`)
+      log(`PRE-FLIGHT: ${name} (${host}) — ❌ unreachable: ${checkResult.output}`)
       log(`WARN: Remote host "${name}" is not accessible. Issues requiring ${config.purpose || name} may fail.`)
     }
   }
 }
+
+// ════════════════════════════════════════════════════════════
+// PHASE 2: DISCOVERY (with regression support + prior work)
+// ════════════════════════════════════════════════════════════
 
 // ── Preload all role contexts (saves 2-3 agents vs lazy loading) ──
 const roleBriefs = ['discovery', 'marcus'].map(role => {
@@ -384,10 +420,6 @@ if (preloadResult?.roles) {
     REINFORCEMENT_CACHE[role] = data.rules || []
   }
 }
-
-// ════════════════════════════════════════════════════════════
-// PHASE 2: DISCOVERY (with regression support + prior work)
-// ════════════════════════════════════════════════════════════
 
 let discovery = null
 let setupResult = null
