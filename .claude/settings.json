@@ -9,10 +9,14 @@
       "Bash(git *)",
       "Bash(gh *)",
       "Bash(make *)",
-      "Bash(cat *)",
       "Bash(ls *)",
       "Bash(mkdir *)",
       "Bash(curl *)"
+    ],
+    "deny": [
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)"
     ]
   },
   "hooks": {
