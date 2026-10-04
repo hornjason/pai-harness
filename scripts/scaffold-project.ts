@@ -48,9 +48,10 @@ const args = process.argv.slice(2);
 const projectPath = args.find(arg => !arg.startsWith('--'));
 const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
                  (args.indexOf('--type') !== -1 ? args[args.indexOf('--type') + 1] : null);
+const fix = args.includes('--fix');
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow]");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix]");
   process.exit(1);
 }
 
@@ -79,46 +80,52 @@ const projectName = basename(projectPath);
 console.log(`Detected project type: ${projectType}`);
 console.log(`Project: ${projectName}`);
 console.log(`Path: ${projectPath}`);
+if (!fix) console.log(`Mode: audit (pass --fix to apply changes)`);
 console.log("---");
 
-// Phase 0: Security and directory setup
-createGitignore(projectPath, actions);
-safeDir(join(projectPath, "specs"), "specs", actions);
-safeDir(join(projectPath, "reference"), "reference", actions);
-safeDir(join(projectPath, ".github"), ".github", actions);
-safeDir(join(projectPath, ".github", "workflows"), ".github/workflows", actions);
-safeDir(join(projectPath, "scripts"), "scripts", actions);
-safeDir(join(projectPath, "docs"), "docs", actions);
-safeDir(join(projectPath, "docs", "adr"), "docs/adr", actions);
+if (fix) {
+  // Phase 0: Security and directory setup
+  createGitignore(projectPath, actions);
+  safeDir(join(projectPath, "specs"), "specs", actions);
+  safeDir(join(projectPath, "reference"), "reference", actions);
+  safeDir(join(projectPath, ".github"), ".github", actions);
+  safeDir(join(projectPath, ".github", "workflows"), ".github/workflows", actions);
+  safeDir(join(projectPath, "scripts"), "scripts", actions);
+  safeDir(join(projectPath, "docs"), "docs", actions);
+  safeDir(join(projectPath, "docs", "adr"), "docs/adr", actions);
 
-const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
-const testDirName = existingTestDir || "tests";
-safeDir(join(projectPath, testDirName), testDirName, actions);
+  const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
+  const testDirName = existingTestDir || "tests";
+  safeDir(join(projectPath, testDirName), testDirName, actions);
 
-// Phase 0.5: Generate AGENTS.md
-const agentsMd = generateAgentsMdContent(projectPath, projectType, actions);
-writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
-actions.push("REGENERATED: AGENTS.md");
-refreshAgentsMd(projectPath, projectType, actions);
-updateSpecsTable(join(projectPath, "AGENTS.md"), actions);
+  // Phase 0.5: Generate AGENTS.md
+  const agentsMd = generateAgentsMdContent(projectPath, projectType, actions);
+  writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
+  actions.push("REGENERATED: AGENTS.md");
+  refreshAgentsMd(projectPath, projectType, actions);
+  updateSpecsTable(join(projectPath, "AGENTS.md"), actions);
 
-// Phase 0.6: Create copilot instructions
-const copilotInstructions = `# Copilot Instructions\n\nRead [AGENTS.md](../AGENTS.md) for project context, key files, specs, and workflow.\n\nAll project knowledge lives in AGENTS.md. Start there.\n`;
-safeWrite(join(projectPath, ".github", "copilot-instructions.md"), copilotInstructions, ".github/copilot-instructions.md", actions);
+  // Phase 0.6: Create copilot instructions
+  const copilotInstructions = `# Copilot Instructions\n\nRead [AGENTS.md](../AGENTS.md) for project context, key files, specs, and workflow.\n\nAll project knowledge lives in AGENTS.md. Start there.\n`;
+  safeWrite(join(projectPath, ".github", "copilot-instructions.md"), copilotInstructions, ".github/copilot-instructions.md", actions);
 
-// Phase 0.7: Create conformity test + validate specs
-const conformityTest = generateConformityTest();
-safeWrite(join(projectPath, testDirName, "scaffold-conformity.test.ts"), conformityTest, `${testDirName}/scaffold-conformity.test.ts`, actions);
-addFrontmatterToSpecs(join(projectPath, "specs"), actions);
-addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
+  // Phase 0.7: Create conformity test
+  const conformityTest = generateConformityTest();
+  safeWrite(join(projectPath, testDirName, "scaffold-conformity.test.ts"), conformityTest, `${testDirName}/scaffold-conformity.test.ts`, actions);
+}
+
+// Validators always run — only write when --fix is passed
+addFrontmatterToSpecs(join(projectPath, "specs"), actions, { fix });
+addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions, { fix });
 detectOversizedSpecs(join(projectPath, "specs"), actions);
 checkGovernsAlignment(join(projectPath, "specs"), actions);
 detectMisplacedSpecs(projectPath, actions);
 detectUnconvertedSpecs(join(projectPath, "specs"), actions);
 
-// Phase 0.8: Workflow project setup
-if (projectType === "workflow") {
-  const workflowDef = `---
+if (fix) {
+  // Phase 0.8: Workflow project setup
+  if (projectType === "workflow") {
+    const workflowDef = `---
 doc-type: spec
 testable: no
 governs: workflow-definition
@@ -142,29 +149,44 @@ What steps does this workflow perform?
 
 What does this workflow produce?
 `;
-  safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+    safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+  }
+
+  // Phase 1: Code-specific generation
+  if (projectType === "code") {
+    generateCodeMapStep(projectPath, actions);
+  }
+
+  // Phase 1.5: Harness config + briefs for ALL project types
+  generateOrAuditProjectHarness(projectPath, actions);
+  injectEnvironmentSection(projectPath, actions);
+  generateAgentBriefsStep(projectPath, actions);
+
+  // Phase 3: Final setup
+  copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
+  generateProjectState(projectPath, actions);
+  runAuditSpecsFix(projectPath, actions);
+  addPaiHarnessDevDep(projectPath, actions);
+  createClaudeMdBridge(projectPath, actions);
+  createCiWorkflows(projectPath, actions);
+  createGitHooks(projectPath, actions);
+  deployHooksToConsumers(projectPath, actions);
+  postScaffoldCommit(projectPath, actions);
+} else {
+  // Dry-run: report gaps for items that --fix would generate
+  if (projectType === "code" && !existsSync(join(projectPath, "CODE-MAP.md"))) {
+    actions.push("GAP: CODE-MAP.md missing — run with --fix to generate");
+  }
+  if (!existsSync(join(projectPath, ".claude", "rules", "docs-routing.md"))) {
+    actions.push("GAP: .claude/rules/docs-routing.md missing — run with --fix to generate");
+  }
+  if (!existsSync(join(projectPath, "AGENTS.md"))) {
+    actions.push("GAP: AGENTS.md missing — run with --fix to generate");
+  }
+  if (!existsSync(join(projectPath, "specs"))) {
+    actions.push("GAP: specs/ directory missing — run with --fix to create");
+  }
 }
-
-// Phase 1: Code-specific generation
-if (projectType === "code") {
-  generateCodeMapStep(projectPath, actions);
-}
-
-// Phase 1.5: Harness config + briefs for ALL project types
-generateOrAuditProjectHarness(projectPath, actions);
-injectEnvironmentSection(projectPath, actions);
-generateAgentBriefsStep(projectPath, actions);
-
-// Phase 3: Final setup
-copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
-generateProjectState(projectPath, actions);
-runAuditSpecsFix(projectPath, actions);
-addPaiHarnessDevDep(projectPath, actions);
-createClaudeMdBridge(projectPath, actions);
-createCiWorkflows(projectPath, actions);
-createGitHooks(projectPath, actions);
-deployHooksToConsumers(projectPath, actions);
-postScaffoldCommit(projectPath, actions);
 
 // ── Report ─────────────────────────────────────────────────────
 
