@@ -904,8 +904,17 @@ function writeDirectoryStructure(
 
 // ── Code map generation ────────────────────────────────────────
 
-export function generateCodeMapStep(root: string, actions: string[]): void {
+export function generateCodeMapStep(root: string, actions: string[], opts?: { fix?: boolean; dryRun?: boolean }): void {
+  const fixMode = opts?.fix ?? !opts?.dryRun;
   const codeMapPath = join(root, "CODE-MAP.md");
+
+  // In dry-run/non-fix mode, only report gaps
+  if (!fixMode) {
+    if (!existsSync(codeMapPath)) {
+      actions.push("GAP: CODE-MAP.md missing — run with --fix to generate");
+    }
+    return;
+  }
 
   // Check staleness
   if (existsSync(codeMapPath)) {

@@ -19,9 +19,12 @@ function createTempDir(): string {
   return dir;
 }
 
-function runScaffold(projectPath: string, opts?: { expectFail?: boolean }): string {
+function runScaffold(projectPath: string, opts?: { expectFail?: boolean; fix?: boolean; args?: string[] }): string {
+  const extraArgs: string[] = opts?.args || [];
+  if (opts?.fix) extraArgs.push("--fix");
+  const argStr = extraArgs.length > 0 ? " " + extraArgs.join(" ") : "";
   try {
-    return execSync(`bun ${SCRIPT} ${projectPath}`, {
+    return execSync(`bun ${SCRIPT} ${projectPath}${argStr}`, {
       encoding: "utf-8",
       timeout: 15000,
     });
@@ -44,7 +47,7 @@ describe("scaffold-project: project type detection", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "src"), { recursive: true });
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-code", dependencies: {} }));
-    const output = runScaffold(tmpDir);
+    const output = runScaffold(tmpDir, { fix: true });
     expect(output).toContain("code");
   });
 
@@ -52,7 +55,7 @@ describe("scaffold-project: project type detection", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "posts.md"), "# Posts\n\nSome content.");
     writeFileSync(join(tmpDir, "README.md"), "# readme");
-    const output = runScaffold(tmpDir);
+    const output = runScaffold(tmpDir, { fix: true });
     expect(output).toContain("content");
   });
 
@@ -60,7 +63,7 @@ describe("scaffold-project: project type detection", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "scripts"), { recursive: true });
     writeFileSync(join(tmpDir, "docker-compose.yml"), "version: '3'");
-    const output = runScaffold(tmpDir);
+    const output = runScaffold(tmpDir, { fix: true });
     expect(output).toContain("infra");
   });
 });
@@ -77,7 +80,7 @@ describe("scaffold-project: directory creation", () => {
   test("creates specs/, reference/, tests/, .github/ when missing", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     expect(existsSync(join(tmpDir, "specs"))).toBe(true);
     expect(existsSync(join(tmpDir, "reference"))).toBe(true);
@@ -91,7 +94,7 @@ describe("scaffold-project: directory creation", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "specs"), { recursive: true });
     writeFileSync(join(tmpDir, "specs", "existing.md"), "---\ntestable: true\n---\n# Existing");
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     // specs/ still exists, existing file still there
     expect(existsSync(join(tmpDir, "specs", "existing.md"))).toBe(true);
@@ -110,7 +113,7 @@ describe("scaffold-project: AGENTS.md generation", () => {
   test("generates AGENTS.md with all standard sections", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "my-project" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const agentsPath = join(tmpDir, "AGENTS.md");
     expect(existsSync(agentsPath)).toBe(true);
@@ -130,7 +133,7 @@ describe("scaffold-project: AGENTS.md generation", () => {
   test("AGENTS.md is ≤150 lines", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "AGENTS.md"), "utf-8");
     expect(content.split("\n").length).toBeLessThanOrEqual(150);
@@ -139,7 +142,7 @@ describe("scaffold-project: AGENTS.md generation", () => {
   test("AGENTS.md contains TODO markers for customization", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "AGENTS.md"), "utf-8");
     expect(content).toContain("TODO");
@@ -159,7 +162,7 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     tmpDir = createTempDir();
     const existingContent = "# My Custom AGENTS.md\n\nThis should be regenerated.";
     writeFileSync(join(tmpDir, "AGENTS.md"), existingContent);
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "AGENTS.md"), "utf-8");
     expect(content).not.toBe(existingContent);
@@ -171,7 +174,7 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     mkdirSync(join(tmpDir, ".github"), { recursive: true });
     const existing = "# Custom instructions\nDo not touch.";
     writeFileSync(join(tmpDir, ".github", "copilot-instructions.md"), existing);
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, ".github", "copilot-instructions.md"), "utf-8");
     expect(content).toBe(existing);
@@ -182,7 +185,7 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     mkdirSync(join(tmpDir, "tests"), { recursive: true });
     const existing = "// my custom test\n";
     writeFileSync(join(tmpDir, "tests", "scaffold-conformity.test.ts"), existing);
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "tests", "scaffold-conformity.test.ts"), "utf-8");
     expect(content).toBe(existing);
@@ -201,7 +204,7 @@ describe("scaffold-project: copilot instructions", () => {
   test("creates .github/copilot-instructions.md with pointer to AGENTS.md", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const path = join(tmpDir, ".github", "copilot-instructions.md");
     expect(existsSync(path)).toBe(true);
@@ -222,7 +225,7 @@ describe("scaffold-project: conformity test file", () => {
   test("creates scaffold-conformity.test.ts in tests/", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     // Should create in tests/ (or test/ if that already exists)
     const testDir = existsSync(join(tmpDir, "test")) ? "test" : "tests";
@@ -249,7 +252,7 @@ describe("scaffold-project: spec frontmatter injection", () => {
     mkdirSync(join(tmpDir, "specs"), { recursive: true });
     // Write a spec file WITHOUT frontmatter
     writeFileSync(join(tmpDir, "specs", "bare-spec.md"), "# My Spec\n\nSome content here.");
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "specs", "bare-spec.md"), "utf-8");
     expect(content).toMatch(/^---\n/);
@@ -262,7 +265,7 @@ describe("scaffold-project: spec frontmatter injection", () => {
     mkdirSync(join(tmpDir, "specs"), { recursive: true });
     const existing = "---\ndoc-type: spec\ntestable: true\ncreated: 2026-01-01\ngoverns: test\n---\n# Already Good";
     writeFileSync(join(tmpDir, "specs", "good-spec.md"), existing);
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "specs", "good-spec.md"), "utf-8");
     expect(content).toBe(existing);
@@ -273,7 +276,7 @@ describe("scaffold-project: spec frontmatter injection", () => {
     mkdirSync(join(tmpDir, "specs"), { recursive: true });
     const partial = "---\ndoc-type: spec\n---\n# Partial";
     writeFileSync(join(tmpDir, "specs", "partial-spec.md"), partial);
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "specs", "partial-spec.md"), "utf-8");
     expect(content).toContain("testable:");
@@ -293,7 +296,7 @@ describe("scaffold-project: package.json devDeps", () => {
   test("adds rungate to package.json devDependencies when package.json exists", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test", dependencies: {} }, null, 2));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const pkg = JSON.parse(readFileSync(join(tmpDir, "package.json"), "utf-8"));
     expect(pkg.devDependencies).toBeDefined();
@@ -304,7 +307,7 @@ describe("scaffold-project: package.json devDeps", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "docs"), { recursive: true });
     writeFileSync(join(tmpDir, "docs", "notes.md"), "# Notes");
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     // Content project — no package.json should be created
     expect(existsSync(join(tmpDir, "package.json"))).toBe(false);
@@ -323,7 +326,7 @@ describe("scaffold-project: report output", () => {
   test("reports what it created and what it skipped", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    const output = runScaffold(tmpDir);
+    const output = runScaffold(tmpDir, { fix: true });
 
     expect(output).toContain("CREATED");
     // Should report at least AGENTS.md creation
@@ -334,7 +337,7 @@ describe("scaffold-project: report output", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "AGENTS.md"), "# Existing");
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    const output = runScaffold(tmpDir);
+    const output = runScaffold(tmpDir, { fix: true });
 
     expect(output).toMatch(/SKIP|AUDITED/);
     expect(output).toContain("AGENTS.md");
@@ -379,7 +382,7 @@ describe("scaffold-project: respects existing test/ directory name", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "test"), { recursive: true });
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test" }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     // Should place conformity test in existing test/ dir
     expect(existsSync(join(tmpDir, "test", "scaffold-conformity.test.ts"))).toBe(true);
@@ -466,7 +469,7 @@ describe("scaffold-project: consumer hook deployment", () => {
         },
       ],
     }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
     expect(existsSync(consumerSettings)).toBe(true);
@@ -500,7 +503,7 @@ describe("scaffold-project: consumer hook deployment", () => {
         },
       ],
     }));
-    runScaffold(tmpDir);
+    runScaffold(tmpDir, { fix: true });
 
     const consumerSettings = join(consumerDir, ".claude", "settings.local.json");
     const settings = JSON.parse(readFileSync(consumerSettings, "utf-8"));
@@ -508,5 +511,103 @@ describe("scaffold-project: consumer hook deployment", () => {
     // Command should be resolved (no ${RUNGATE_HOOKS_DIR})
     expect(hook.command).not.toContain("${RUNGATE_HOOKS_DIR}");
     expect(hook.command).toContain("hooks/TestHook.hook.ts");
+  });
+});
+
+// ── Test 15: Dry-run mode (no --fix) ─────────────────────────
+
+describe("scaffold-project: dry-run mode", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("dry-run: reports gaps without modifying spec frontmatter", () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "specs"), { recursive: true });
+    const original = "# Bare Spec\n\nNo frontmatter.";
+    writeFileSync(join(tmpDir, "specs", "bare.md"), original);
+    const output = runScaffold(tmpDir); // no --fix
+    // Should report the gap
+    expect(output).toMatch(/GAP|WARN/);
+    // Should NOT modify the file
+    const content = readFileSync(join(tmpDir, "specs", "bare.md"), "utf-8");
+    expect(content).toBe(original);
+  });
+
+  test("dry-run: does not create directories or files", () => {
+    tmpDir = createTempDir();
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-dry" }));
+    const output = runScaffold(tmpDir); // no --fix
+    // Should NOT create specs/ or other scaffold dirs
+    expect(existsSync(join(tmpDir, "specs"))).toBe(false);
+    expect(existsSync(join(tmpDir, "AGENTS.md"))).toBe(false);
+    // Should report gaps
+    expect(output).toMatch(/GAP|audit/i);
+  });
+
+  test("dry-run: reports missing CODE-MAP.md as gap for code projects", () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-codemap" }));
+    const output = runScaffold(tmpDir); // no --fix
+    expect(output).toMatch(/GAP.*CODE-MAP/);
+    expect(existsSync(join(tmpDir, "CODE-MAP.md"))).toBe(false);
+  });
+
+  test("dry-run: reports missing docs-routing rule as gap", () => {
+    tmpDir = createTempDir();
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-routing" }));
+    const output = runScaffold(tmpDir); // no --fix
+    expect(output).toMatch(/GAP.*docs-routing/);
+  });
+
+  test("dry-run: exits with code 0", () => {
+    tmpDir = createTempDir();
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-exit" }));
+    // If it doesn't throw, exit code is 0
+    const output = runScaffold(tmpDir);
+    expect(output).toBeDefined();
+  });
+});
+
+// ── Test 16: Fix mode preserves existing content ─────────────
+
+describe("scaffold-project: fix mode preserves existing content", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
+  });
+
+  test("fix mode preserves existing frontmatter values when adding missing fields", () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "specs"), { recursive: true });
+    const partial = "---\ndoc-type: spec\nstatus: approved\nowner: alice\n---\n# My Spec\n\nContent here.";
+    writeFileSync(join(tmpDir, "specs", "owned.md"), partial);
+    runScaffold(tmpDir, { fix: true });
+
+    const content = readFileSync(join(tmpDir, "specs", "owned.md"), "utf-8");
+    // Existing values preserved
+    expect(content).toContain("status: approved");
+    expect(content).toContain("owner: alice");
+    // Missing fields added
+    expect(content).toContain("testable:");
+    expect(content).toContain("created:");
+  });
+
+  test("fix mode never overwrites existing governs value", () => {
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "specs"), { recursive: true });
+    const existing = "---\ndoc-type: spec\ntestable: true\ncreated: 2026-01-01\ngoverns: my-custom-scope\n---\n# Scoped Spec";
+    writeFileSync(join(tmpDir, "specs", "scoped.md"), existing);
+    runScaffold(tmpDir, { fix: true });
+
+    const content = readFileSync(join(tmpDir, "specs", "scoped.md"), "utf-8");
+    expect(content).toContain("governs: my-custom-scope");
+    // Should NOT have a second governs field
+    const governsCount = (content.match(/governs:/g) || []).length;
+    expect(governsCount).toBe(1);
   });
 });
