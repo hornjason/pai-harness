@@ -12,7 +12,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { join } from "path";
 
 // ── Argument parsing ──────────────────────────────────────────
@@ -89,7 +89,7 @@ for (const file of specFiles) {
 
   // Use git mv to preserve history
   try {
-    execSync(`git mv "${join("docs", "specs", file)}" "${join("specs", file)}"`, {
+    execFileSync("git", ["mv", join("docs", "specs", file), join("specs", file)], {
       cwd: projectPath,
       stdio: "pipe",
     });
