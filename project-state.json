@@ -1,16 +1,16 @@
 {
   "updated": "2026-10-04",
   "priorities": [
-    "P0: #47 Pipeline optimization — replace LLM ceremony agents with deterministic bash (BLOCKING all issue shipping)",
     "P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
+    "P1: DDB #1450 — UNBLOCKED, ready to ship (was blocked on #47)",
     "P2: #45 BashToolGuard in worktrees (COMP-7 persistent gap)",
     "P2: #43 acHash integrity root cause investigation",
     "P3: #41 Scaffold: detect and migrate specs from docs/specs/ to specs/",
-    "HOLD: DDB #1450 — blocked on #47 pipeline optimization",
+    "DONE: #47 Pipeline optimization — 5 phases shipped, ~7 ceremony agents eliminated, ~50% pre-Marcus speedup",
     "DONE: #39 Fix grader false positives (COMP-13 + COMP-8)",
     "DONE: #40 Compliance improvements (context injection + reinforcement + grader accuracy gate)"
   ],
-  "notes": "Session 26 (2026-10-04) — Pipeline optimization prioritized. Consumer gate bugs fixed. Grader accuracy improved.\n\nKey decisions:\n  - User: 'I wouldn't start shipping issues until we had this worked out' — pipeline optimization is P0\n  - DDB #1450 ON HOLD until #47 pipeline optimization completes\n  - #47 created: phased plan with 19 SCs, 5 phases, measurable success criteria per phase\n\nSession 26 work:\n  - COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED)\n  - COMP-8 grader false positive fixed: added promptContent injection check\n  - Retroactive re-grade: 28/50 runs affected, avg 57.7% → 69.8%\n  - 8 consumer gate bugs found and fixed (dev config flattening, env defaults, acHash, dev-server liveness)\n  - Remote host pre-flight added to ship pipeline\n  - DDB re-scaffolded with latest harness changes\n  - 8 new issues created (#39-#46)\n\nPipeline trend:\n  Rungate: #35 17 agents/15min, #36 17 agents/18min (first-pass)\n  DDB: #1452 26-36 agents/34min (consumer gate bugs), #1450 stopped (pipeline optimization)\n\nSuite: 1866+ pass, 0 fail.\n\nNext: #47 — replace ceremony agents with deterministic bash. Then #23 Mac Mini isolation.\nSuite: 25/25 SCs done.",
+  "notes": "Session 27 (2026-10-04) — Pipeline optimization SHIPPED. All 5 phases complete.\n\nKey results:\n  - ~7 ceremony agents eliminated per run (read-issue, preload-contexts, preflight, extract-context, prior-branch; brief-preflight+assemble batched)\n  - Goal→Scope: 2 agents / 193s (was ~7 agents / 5-8 min)\n  - precompute-goal.ts handles all deterministic pre-computation in <0.5s\n  - DDB #1450 UNBLOCKED — pipeline optimization was the blocker\n\nPipeline trend:\n  Rungate: #35 17 agents/15min, #36 17 agents/18min, #41 dry-run 2 agents/3.2min (optimized)\n\nSuite: 1880+ pass, 0 fail.\n\nNext: #23 Mac Mini isolation. Then DDB #1450.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -205,6 +205,23 @@
   ],
   "sessions": [
     {
+      "date": "2026-10-04 session 27",
+      "items": [
+        "#47 pipeline optimization COMPLETE: all 5 phases shipped (sub-issues #48-#52)",
+        "Phase 1: Goal determinism — read-issue agent replaced with gh CLI pre-computation, preflight agents batched",
+        "Phase 2: Context preloading — preloadedContexts arg skips preload-contexts agent, <0.4s vs ~3 min",
+        "Phase 3: Implement ceremony — brief-preflight + brief-assemble batched to 1 agent, extract-context replaced with inline require('fs')",
+        "Phase 4: Scope ceremony — prior branch detection moved to precompute script, ac-prevalidation simplified",
+        "Phase 5: Validation dry-run — 2 agents / 193s for Goal→Scope (was ~7 agents / 5-8 min)",
+        "precompute-goal.ts script: extracts issue data, SSH pre-flights, brief contexts, prior branches deterministically",
+        "Security fix: SSH pre-flight uses execFileSync with arg arrays (no shell injection)",
+        "transcript-checker.ts: fixed 4 unguarded data.promptContent accesses (optional chaining)",
+        "ship skill updated: documents pre-computation step + new args",
+        "DDB #1450 UNBLOCKED — pipeline optimization was the blocker",
+        "Suite: 1880+ pass, 0 fail. 6 commits pushed"
+      ]
+    },
+    {
       "date": "2026-10-04 session 26",
       "items": [
         "COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED). COMP-8 injection check added",
@@ -394,12 +411,13 @@
     }
   ],
   "session": {
-    "number": 26,
+    "number": 27,
     "date": "2026-10-04",
-    "summary": "Grader accuracy fixed (COMP-13/COMP-8), consumer gate bugs fixed (8 checks), DDB re-scaffolded, pipeline optimization prioritized as P0. Created #47 with 5-phase plan. DDB #1450 on hold.",
-    "suite": "1866+ pass, 0 fail",
-    "scs_done": "COMP-13/COMP-8 grader fixes, consumer gate compatibility (dev config, env defaults, acHash, dev-server liveness, remote pre-flight)",
-    "commits": 8,
-    "issues_created": "#39, #40, #41, #42, #43, #44, #45, #46, #47"
+    "summary": "#47 pipeline optimization shipped — all 5 phases complete. Ceremony agents replaced with deterministic pre-computation. ~7 agents eliminated per run, ~50% pre-Marcus speedup. DDB #1450 unblocked.",
+    "suite": "1880+ pass, 0 fail",
+    "scs_done": "#47 pipeline optimization (5 phases: goal determinism, context preloading, implement ceremony, scope ceremony, validation)",
+    "commits": 5,
+    "issues_created": "#48, #49, #50, #51, #52",
+    "issues_closed": "#47, #48, #49, #50, #51, #52"
   }
 }

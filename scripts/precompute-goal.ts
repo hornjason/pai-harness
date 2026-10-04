@@ -64,11 +64,14 @@ if (existsSync(configPath)) {
     preflightResults = {};
     for (const [name, hostConfig] of Object.entries(remoteHosts) as [string, any][]) {
       if (!hostConfig.host) continue;
-      const cmd = hostConfig.preFlightCmd
-        ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${hostConfig.host} "${hostConfig.preFlightCmd}" 2>&1`
-        : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${hostConfig.host} "hostname" 2>&1`;
+      const sshArgs = [
+        "-o", "ConnectTimeout=5",
+        "-o", "StrictHostKeyChecking=accept-new",
+        hostConfig.host,
+        hostConfig.preFlightCmd || "hostname",
+      ];
       try {
-        const output = execSync(cmd, { encoding: "utf-8", timeout: 10000 }).trim();
+        const output = execFileSync("ssh", sshArgs, { encoding: "utf-8", timeout: 10000 }).trim();
         preflightResults[name] = { reachable: true, output, host: hostConfig.host, purpose: hostConfig.purpose };
       } catch (e: any) {
         preflightResults[name] = { reachable: false, output: e.stderr || e.message, host: hostConfig.host, purpose: hostConfig.purpose };

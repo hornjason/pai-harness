@@ -2,38 +2,29 @@
 
 **Current phase: All phases complete**
 
-Session 26 (2026-10-04) — Pipeline optimization prioritized. Consumer gate bugs fixed. Grader accuracy improved.
+Session 27 (2026-10-04) — Pipeline optimization SHIPPED. All 5 phases complete.
 
-Key decisions:
-  - User: 'I wouldn't start shipping issues until we had this worked out' — pipeline optimization is P0
-  - DDB #1450 ON HOLD until #47 pipeline optimization completes
-  - #47 created: phased plan with 19 SCs, 5 phases, measurable success criteria per phase
-
-Session 26 work:
-  - COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED)
-  - COMP-8 grader false positive fixed: added promptContent injection check
-  - Retroactive re-grade: 28/50 runs affected, avg 57.7% → 69.8%
-  - 8 consumer gate bugs found and fixed (dev config flattening, env defaults, acHash, dev-server liveness)
-  - Remote host pre-flight added to ship pipeline
-  - DDB re-scaffolded with latest harness changes
-  - 8 new issues created (#39-#46)
+Key results:
+  - ~7 ceremony agents eliminated per run (read-issue, preload-contexts, preflight, extract-context, prior-branch; brief-preflight+assemble batched)
+  - Goal→Scope: 2 agents / 193s (was ~7 agents / 5-8 min)
+  - precompute-goal.ts handles all deterministic pre-computation in <0.5s
+  - DDB #1450 UNBLOCKED — pipeline optimization was the blocker
 
 Pipeline trend:
-  Rungate: #35 17 agents/15min, #36 17 agents/18min (first-pass)
-  DDB: #1452 26-36 agents/34min (consumer gate bugs), #1450 stopped (pipeline optimization)
+  Rungate: #35 17 agents/15min, #36 17 agents/18min, #41 dry-run 2 agents/3.2min (optimized)
 
-Suite: 1866+ pass, 0 fail.
+Suite: 1880+ pass, 0 fail.
 
-Next: #47 — replace ceremony agents with deterministic bash. Then #23 Mac Mini isolation.
+Next: #23 Mac Mini isolation. Then DDB #1450.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #47 Pipeline optimization — replace LLM ceremony agents with deterministic bash (BLOCKING all issue shipping)
-2. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+1. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+2. P1: DDB #1450 — UNBLOCKED, ready to ship (was blocked on #47)
 3. P2: #45 BashToolGuard in worktrees (COMP-7 persistent gap)
 4. P2: #43 acHash integrity root cause investigation
 5. P3: #41 Scaffold: detect and migrate specs from docs/specs/ to specs/
-6. HOLD: DDB #1450 — blocked on #47 pipeline optimization
+6. DONE: #47 Pipeline optimization — 5 phases shipped, ~7 ceremony agents eliminated, ~50% pre-Marcus speedup
 7. DONE: #39 Fix grader false positives (COMP-13 + COMP-8)
 8. DONE: #40 Compliance improvements (context injection + reinforcement + grader accuracy gate)
 
@@ -92,6 +83,20 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-10-04 session 27:**
+- #47 pipeline optimization COMPLETE: all 5 phases shipped (sub-issues #48-#52)
+- Phase 1: Goal determinism — read-issue agent replaced with gh CLI pre-computation, preflight agents batched
+- Phase 2: Context preloading — preloadedContexts arg skips preload-contexts agent, <0.4s vs ~3 min
+- Phase 3: Implement ceremony — brief-preflight + brief-assemble batched to 1 agent, extract-context replaced with inline require('fs')
+- Phase 4: Scope ceremony — prior branch detection moved to precompute script, ac-prevalidation simplified
+- Phase 5: Validation dry-run — 2 agents / 193s for Goal→Scope (was ~7 agents / 5-8 min)
+- precompute-goal.ts script: extracts issue data, SSH pre-flights, brief contexts, prior branches deterministically
+- Security fix: SSH pre-flight uses execFileSync with arg arrays (no shell injection)
+- transcript-checker.ts: fixed 4 unguarded data.promptContent accesses (optional chaining)
+- ship skill updated: documents pre-computation step + new args
+- DDB #1450 UNBLOCKED — pipeline optimization was the blocker
+- Suite: 1880+ pass, 0 fail. 6 commits pushed
+
 **Session 2026-10-04 session 26:**
 - COMP-13 grader false positive fixed: N/A for NO_TESTS/NO_SOURCE (was IGNORED). COMP-8 injection check added
 - Retroactive re-grade: 28/50 runs corrected, avg 57.7% → 69.8%. 8 new grader tests
@@ -114,18 +119,4 @@ Suite: 25/25 SCs done.
 - Scaffold generates briefs+config for ALL project types (was code-only, POV was type:infra)
 - Repo config corrected: issueRepo from hornjason/pai-config to hornjason/pai-harness
 - Suite: 1779 pass, 0 fail, 111 files. 7 commits pushed
-
-**Session 2026-10-02 session 24:**
-- AFK batch: 4 issues closed (#26, #27, #28, #30), all P0/P1 priorities cleared
-- #26 ALREADY_SHIPPED: SC-470/471/472 all implemented in prior sessions. Specs marked done, issue closed
-- #28 SHIPPED via pipeline: Marcus 12/15 (80%). Root-level .md scanning + numbered bold rule pattern added to extract-constraints.ts
-- #27 SHIP_FAILED then fixed directly: convert-spec.ts dedup bug (trailing punctuation in seenTexts keys). 10 tests, CLI registered in AGENTS.md
-- #30 SHIPPED via pipeline: Marcus 11/15 (73%). organize-project.ts with classification heuristics, --apply mode, docs-routing update
-- TestSuiteGuard hook (SC-473): Tier 3 enforcement for DIR-L29. Blocks full bun test after 2 runs. 100% violation rate across 6 prior runs
-- Hill-climb escalation bug FOUND AND FIXED: detectHillClimbNeeds only tracked COMP-* IDs, DIR-L* violations silently fell through. Added DIR→COMP mapping
-- Alert filter also fixed: was skipping DIR-L violations entirely (line 134: !compId.startsWith('COMP-') → continue)
-- Pre-flight: fixed 3 test failures (duplicate SC-472 across specs, HELP-SPEC.md stub missing compliance:strict, behavioral SC count)
-- #31 created: directory-based rungate config + self-describing compliance policy (.claude/rungate/ replaces monolith)
-- Compliance scores this session: Marcus 73-80%, Discovery 50-67%. Persistent: COMP-7 (worktree hook gap), DIR-L29 (now mechanically enforced)
-- Suite: 1745+ pass, 0 fail across session. 8 commits pushed
 
