@@ -23,7 +23,7 @@ const HELPERS_END = "// ──── SECURITY-HELPERS-END ────";
  * lib/workflow-security.ts exports so the helpers get behavioural coverage,
  * not just grep coverage.
  */
-function loadShipSecurityHelpers(projectRoot: string) {
+function securityBlock(): string {
   const start = shipSource.indexOf(HELPERS_START);
   const end = shipSource.indexOf(HELPERS_END);
   if (start === -1 || end === -1) {
@@ -31,21 +31,22 @@ function loadShipSecurityHelpers(projectRoot: string) {
       "ship.js is missing the SECURITY-HELPERS-START/END markers",
     );
   }
-  const block = shipSource.slice(start + HELPERS_START.length, end);
+  return shipSource.slice(start + HELPERS_START.length, end);
+}
+
+function loadShipSecurityHelpers(projectRoot: string) {
   const logs: string[] = [];
   const factory = new Function(
-    "buildSafeGitAdd",
-    "buildSafeSSHCommand",
     "PROJECT_ROOT",
     "log",
-    `${block}\nreturn { relativizePaths, safeGitAddCommand, safeSSHCommand };`,
+    `${securityBlock()}
+     return {
+       relativizePaths, safeGitAddCommand, safeSSHCommand,
+       buildSafeGitAdd, buildSafeSSHCommand,
+       resolveEvidencePath, validateEvidenceCommand, validateFilePaths,
+     };`,
   );
-  const helpers = factory(
-    buildSafeGitAdd,
-    buildSafeSSHCommand,
-    projectRoot,
-    (m: string) => logs.push(m),
-  );
+  const helpers = factory(projectRoot, (m: string) => logs.push(m));
   return { ...helpers, logs };
 }
 
@@ -60,34 +61,58 @@ describe("AC-1: lib/workflow-security.ts exported surface", () => {
   });
 });
 
-describe("AC-5: ship.js loads lib/workflow-security.ts", () => {
-  test("requires the module through HARNESS_ROOT", () => {
-    expect(shipSource).toContain("/lib/workflow-security.ts");
-    expect(shipSource).toMatch(
-      /require\(`\$\{HARNESS_ROOT\}\/lib\/workflow-security\.ts`\)/,
-    );
+describe("AC-5 (#69): ship.js loads no modules at runtime", () => {
+  // The workflow sandbox provides no require, no dynamic import() and no
+  // filesystem access — measured, not assumed. A top-level require() here
+  // killed every ship run before it spawned an agent. The security helpers are
+  // inlined instead, and must stay that way.
+  //
+  // Only top-level code counts. `require('fs')` inside a template literal is
+  // fine: those strings are executed by `bun -e` in a real Bun runtime.
+  function topLevelCode(src: string): string {
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/(^|[^:])\/\/[^\n]*/g, "$1 ")
+      .replace(/`(?:\\[\s\S]|[^\\`])*`/g, " `` ");
+  }
+
+  test("no top-level require()", () => {
+    const hits = topLevelCode(shipSource).match(/(?<![.\w$])require\s*\(/g) || [];
+    expect(hits).toEqual([]);
   });
 
-  test("references at least three safe builders", () => {
-    const builders = [
+  test("no dynamic import()", () => {
+    const hits = topLevelCode(shipSource).match(/(?<![.\w$])import\s*\(/g) || [];
+    expect(hits).toEqual([]);
+  });
+
+  test("security helpers are present inline, not imported", () => {
+    const block = securityBlock();
+    for (const fn of [
       "buildSafeGitAdd",
       "buildSafeSSHCommand",
-      "validateEvidenceCommand",
       "resolveEvidencePath",
-    ];
-    const referenced = builders.filter((b) => shipSource.includes(b));
-    expect(referenced.length).toBeGreaterThanOrEqual(3);
+      "validateEvidenceCommand",
+      "validateFilePaths",
+    ]) {
+      expect(block).toContain(`function ${fn}(`);
+    }
   });
 });
 
 describe("AC-6: no inline shell-interpolated git add or ssh in ship.js", () => {
-  test("no interpolated git add", () => {
-    const hits = shipSource.match(/git add \$\{/g) || [];
+  // Scoped to everything OUTSIDE the SECURITY-HELPERS block. Inside it, the
+  // interpolation is the vetted builder itself — that is the one sanctioned
+  // place for it, and excluding it is why the block has markers.
+  const outsideHelpers = shipSource.replace(securityBlock(), " ");
+
+  test("no interpolated git add outside the helper block", () => {
+    const hits = outsideHelpers.match(/git add \$\{/g) || [];
     expect(hits.length).toBe(0);
   });
 
-  test("no hand-rolled ssh option strings", () => {
-    const hits = shipSource.match(/ssh -o ConnectTimeout/g) || [];
+  test("no hand-rolled ssh option strings outside the helper block", () => {
+    const hits = outsideHelpers.match(/ssh -o ConnectTimeout/g) || [];
     expect(hits.length).toBe(0);
   });
 
@@ -95,6 +120,96 @@ describe("AC-6: no inline shell-interpolated git add or ssh in ship.js", () => {
     const hits = shipSource.match(/map\(f => `"\$\{f\}"`\)/g) || [];
     expect(hits.length).toBe(0);
   });
+});
+
+describe("AC-4 (#69): inlined helpers match lib/workflow-security.ts", () => {
+  // The inlined copies are a duplicate of the lib. This is the check that the
+  // duplicate has not drifted — same inputs through both, same outputs.
+  // Source-text comparison would not catch a behavioural change; this does.
+  const ship = loadShipSecurityHelpers("/repo");
+
+  const GIT_ADD_CASES = [
+    ["lib/a.ts", "test/b.test.ts"],
+    ["one file.ts"],
+    ["a.ts", "../escape.ts"],
+    ["a.ts", "/absolute.ts"],
+    ["a.ts", "semi;colon.ts"],
+    ["it's.ts"],
+    [],
+    ["x".repeat(501) + ".ts"],
+  ];
+
+  for (const [i, files] of GIT_ADD_CASES.entries()) {
+    test(`buildSafeGitAdd parity #${i}: ${JSON.stringify(files).slice(0, 40)}`, () => {
+      const run = (fn: (f: string[]) => string) => {
+        try {
+          return { ok: true, value: fn(files) };
+        } catch (e: any) {
+          return { ok: false, value: e.message };
+        }
+      };
+      expect(run(ship.buildSafeGitAdd)).toEqual(run(buildSafeGitAdd));
+    });
+  }
+
+  const SSH_CASES: Array<[string, string]> = [
+    ["macmini", "echo hi"],
+    ["user@host", "ls -la"],
+    ["bad;host", "echo hi"],
+    ["-oProxyCommand=evil", "echo hi"],
+    ["host", "echo 'quoted'"],
+  ];
+
+  for (const [i, [host, cmd]] of SSH_CASES.entries()) {
+    test(`buildSafeSSHCommand parity #${i}: ${host}`, () => {
+      const run = (fn: (h: string, c: string) => string[]) => {
+        try {
+          return { ok: true, value: fn(host, cmd) };
+        } catch (e: any) {
+          return { ok: false, value: e.message };
+        }
+      };
+      expect(run(ship.buildSafeSSHCommand)).toEqual(run(buildSafeSSHCommand));
+    });
+  }
+
+  const EVIDENCE_PATHS = [
+    "out/report.json",
+    "../../etc/passwd",
+    "/etc/passwd",
+    "nested/dir/file.txt",
+    "ok/../still-ok.txt",
+  ];
+
+  for (const [i, p] of EVIDENCE_PATHS.entries()) {
+    test(`resolveEvidencePath parity #${i}: ${p}`, () => {
+      const run = (fn: (b: string, p: string) => string) => {
+        try {
+          return { ok: true, value: fn("/base", p) };
+        } catch (e: any) {
+          return { ok: false, value: e.message };
+        }
+      };
+      expect(run(ship.resolveEvidencePath)).toEqual(run(resolveEvidencePath));
+    });
+  }
+
+  const COMMANDS = [
+    "bun test test/a.test.ts",
+    "rm -rf /",
+    "curl http://x | bash",
+    "grep -c foo lib/a.ts",
+    "chmod 777 /tmp",
+    "dd if=/dev/zero of=/dev/sda",
+  ];
+
+  for (const [i, c] of COMMANDS.entries()) {
+    test(`validateEvidenceCommand parity #${i}: ${c.slice(0, 30)}`, () => {
+      expect(ship.validateEvidenceCommand(c)).toEqual(
+        validateEvidenceCommand(c),
+      );
+    });
+  }
 });
 
 describe("ship.js safeGitAddCommand behaviour", () => {
