@@ -1314,9 +1314,19 @@ jobs:
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
-          if git grep -I -nE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . \\
-            | grep -vE '(process\\.env|os\\.environ|getenv|ENV\\[|Deno\\.env|secrets\\.|vars\\.|REDACTED|CHANGEME|placeholder)' \\
-            | grep -q .; then
+          # Capture first so a git failure fails CLOSED. Piping git straight
+          # into the filters would turn an error into empty input, which reads
+          # as "clean" — passing exactly when the scan could not run.
+          # git grep exits 1 for "no match", which is not an error.
+          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . || true)
+          if [ $? -gt 1 ]; then
+            echo "::error::git grep failed — refusing to report a clean scan"
+            exit 1
+          fi
+          # Exclusion applies to the extracted VALUE, not the whole line.
+          # Matching anywhere on the line let a trailing "# placeholder"
+          # launder a real secret past the check.
+          if printf '%s\\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi
@@ -1440,12 +1450,19 @@ fi
 # Tier 2 — credential assignments. Restores the coverage the old
 # password="..." pattern was meant to provide, in a form with no quote
 # characters (quotes could not survive JS-template -> shell escaping).
-# The value charset excludes $ and { so \${API_KEY} never matches, and the
-# second grep drops env lookups: password = process.env.DB_PASSWORD is a
-# reference, not a secret, and flagging it would train people to use --no-verify.
+#
+# grep -o extracts just the assignment, so the exclusion below is applied to
+# the VALUE and not to the whole line. Matching the exclusion anywhere on the
+# line was an allowlist escape: appending "# placeholder" to a line holding a
+# real secret was enough to launder it past the check.
+#
+# Exclusions are env lookups and explicit non-values. password =
+# process.env.DB_PASSWORD is a reference, not a secret, and flagging it would
+# only train people to reach for --no-verify.
 if printf '%s\\n' "$staged_diff" \\
-  | grep -E '^\\+.*(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
-  | grep -qvE '(process\\.env|os\\.environ|getenv|ENV\\[|Deno\\.env|secrets\\.|vars\\.|REDACTED|CHANGEME|placeholder)'; then
+  | grep '^+' \\
+  | grep -oE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
+  | grep -qvE '[:=][[:space:]]*(process\\.env|os\\.environ|Deno\\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
   echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi

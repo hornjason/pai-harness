@@ -53,6 +53,26 @@ describe('AGENTS.md frontmatter (#63)', () => {
     expect(out).toContain(`updated: ${new Date().toISOString().slice(0, 10)}`);
   });
 
+  it('drops a value that would terminate the block early', () => {
+    // Re-emitted verbatim, so a delimiter in a value could split the file
+    // into two documents and smuggle keys past the parser next round-trip.
+    const out = withRoot(root => {
+      writeFileSync(join(root, 'AGENTS.md'), '---\nowner: jason\nevil: "x\n---\ninjected: true\n---\n\n# demo\n');
+      return generateAgentsMd(scanAt(root));
+    });
+    expect(out).not.toContain('injected: true');
+    expect(out.split(/^---$/m).length - 1).toBe(2);
+  });
+
+  it('drops an absurdly long value', () => {
+    const out = withRoot(root => {
+      writeFileSync(join(root, 'AGENTS.md'), `---\nowner: jason\nbloat: ${'x'.repeat(500)}\n---\n\n# demo\n`);
+      return generateAgentsMd(scanAt(root));
+    });
+    expect(out).not.toContain('x'.repeat(500));
+    expect(out).toContain('owner: jason');
+  });
+
   it('produces exactly one frontmatter block', () => {
     const out = withRoot(root => {
       writeFileSync(join(root, 'AGENTS.md'), '---\nowner: jason\n---\n\n# demo\n');

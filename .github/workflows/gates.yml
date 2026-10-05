@@ -34,9 +34,19 @@ jobs:
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
-          if git grep -I -nE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . \
-            | grep -vE '(process\.env|os\.environ|getenv|ENV\[|Deno\.env|secrets\.|vars\.|REDACTED|CHANGEME|placeholder)' \
-            | grep -q .; then
+          # Capture first so a git failure fails CLOSED. Piping git straight
+          # into the filters would turn an error into empty input, which reads
+          # as "clean" — passing exactly when the scan could not run.
+          # git grep exits 1 for "no match", which is not an error.
+          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . || true)
+          if [ $? -gt 1 ]; then
+            echo "::error::git grep failed — refusing to report a clean scan"
+            exit 1
+          fi
+          # Exclusion applies to the extracted VALUE, not the whole line.
+          # Matching anywhere on the line let a trailing "# placeholder"
+          # launder a real secret past the check.
+          if printf '%s\n' "$tier2" | grep -qvE '^$|[:=][[:space:]]*(process\.env|os\.environ|Deno\.env|getenv|REDACTED|CHANGEME|placeholder)'; then
             echo "::error::Potential credential assignment in tracked files"
             exit 1
           fi

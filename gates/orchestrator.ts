@@ -5,6 +5,31 @@ import { execSync } from "child_process";
 import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASONS } from "./schema";
 import { ZodError } from "zod";
 import { createGitHubClient, addLabels, addComment, type GitHubClient } from "../lib/github";
+import { computeACHash } from "../lib/workflow-security";
+
+/**
+ * ADR-009 acHash over AC *definition* fields only.
+ *
+ * This projection + hash was duplicated verbatim at the scope-PASS site and
+ * the writeWorkflowState site. #43 was an acHash bug; having two copies is
+ * how a fix lands in one of them and not the other. Both now call this, and
+ * this delegates to lib/workflow-security.ts so the shipped helper and the
+ * production path cannot diverge (they previously did — the lib sorts, these
+ * did not, so the "extracted" function computed a different hash than the
+ * code it was extracted from).
+ *
+ * Verdict and evidence fields are excluded on purpose: gates populate them
+ * after scope, and including them caused false mismatches.
+ */
+export function hashAcDefinitions(acs: Array<Record<string, unknown>>): string {
+  return computeACHash(
+    acs.map((ac) => ({
+      id: ac.id, type: ac.type, statement: ac.statement,
+      specElement: ac.specElement, threshold: ac.threshold,
+      evidenceMethod: ac.evidenceMethod,
+    })) as any,
+  );
+}
 
 export interface GateResult {
   check: string;
@@ -133,13 +158,7 @@ export function writeGateResult(
   // ADR-009: Record AC hash at scope PASS for cross-gate consistency
   // Hash only AC definitions (inputs), not verdicts/evidence (outputs populated by gates)
   if (gate === "scope" && resultVal === "PASS") {
-    const acDefs = (state.acs || []).map((ac: any) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
-    const acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
-    state.gates.scope.acHash = acHash;
+    state.gates.scope.acHash = hashAcDefinitions(state.acs || []);
   }
 
   if (gate === "ship" && resultVal === "PASS") {
@@ -511,12 +530,7 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
   const gates = state.gates as Record<string, any> | undefined;
   const acs = state.acs as Array<Record<string, unknown>> | undefined;
   if (gates?.scope?.acHash && acs?.length) {
-    const acDefs = acs.map((ac) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
-    gates.scope.acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+    gates.scope.acHash = hashAcDefinitions(acs);
   }
 
   writeState(sf, state as WorkflowState);

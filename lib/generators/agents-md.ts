@@ -35,7 +35,15 @@ function buildFrontmatter(root: string): string {
     if (match) {
       for (const line of match[1].split("\n")) {
         const kv = line.match(/^([\w-]+):\s*(.*)$/);
-        if (kv) existing[kv[1]] = kv[2];
+        if (!kv) continue;
+        const value = kv[2].trim();
+        // Carry forward only simple scalars. The block is re-emitted verbatim,
+        // so a value holding a delimiter or control character could terminate
+        // the frontmatter early and turn the rest of the file into a second
+        // document — or smuggle keys past this loop on the next round-trip.
+        if (value.includes("---") || /[\x00-\x1f]/.test(value)) continue;
+        if (value.length > 200) continue;
+        existing[kv[1]] = value;
       }
     }
   }

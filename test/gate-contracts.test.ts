@@ -141,9 +141,17 @@ describe("gate contracts: acHash integrity (#43)", () => {
   });
 
   test("acHash-dual-computation: acHash computed in both writeGateResult and writeWorkflowState", () => {
+    // The intent is that BOTH paths hash the ACs. This used to be checked by
+    // counting two identical inline createHash calls, which required the
+    // duplication to stay — the same duplication that makes an acHash fix
+    // (#43) land in one site and not the other. Both now delegate to the
+    // shared hashAcDefinitions helper, so assert on the call sites instead.
     const src = readFileSync(join(GATES_DIR, "orchestrator.ts"), "utf-8");
-    const hashSites = src.match(/createHash\("sha256"\)\.update\(JSON\.stringify\(acDefs\)\)/g);
-    expect(hashSites?.length ?? 0).toBeGreaterThanOrEqual(2);
+    const callSites = src.match(/=\s*hashAcDefinitions\(/g);
+    expect(callSites?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(src).toMatch(/import \{ computeACHash \} from "\.\.\/lib\/workflow-security"/);
+    // And no inline copy has crept back in.
+    expect(src).not.toMatch(/createHash\("sha256"\)\.update\(JSON\.stringify\(acDefs\)\)/);
   });
 
   test("acHash-ship-assert: ship gate acHash check uses expect not console.warn", () => {
