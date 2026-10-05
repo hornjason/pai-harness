@@ -2,31 +2,36 @@
 
 **Current phase: All phases complete**
 
-Session 27 (2026-10-04) — Pipeline optimization SHIPPED. All 5 phases complete.
+Session 27 (2026-10-04/05) — Pipeline optimization shipped, then deep audit found 8 systemic issues.
 
 Key results:
-  - ~7 ceremony agents eliminated per run (read-issue, preload-contexts, preflight, extract-context, prior-branch; brief-preflight+assemble batched)
-  - Goal→Scope: 2 agents / 193s (was ~7 agents / 5-8 min)
-  - precompute-goal.ts handles all deterministic pre-computation in <0.5s
-  - DDB #1450 UNBLOCKED — pipeline optimization was the blocker
+  - #47 pipeline optimization: ceremony agents eliminated, precompute-goal.ts, ceremony caching
+  - #41 SHIPPED via optimized pipeline (17 agents/20 min, first-pass)
+  - #42 SHIP_FAILED 2x: root cause = Discovery invents test filenames Marcus doesn't create (unwinnable ACs)
+  - Pipeline audit found: env-defaults redundant (170s), commit runs tests (431s), ac-completion-check duplicates verify, git add -A unsafe, hill-climb dead code
+  - #53 created: pipeline hardening (fix evidence paths, delete dead agents, safety guards)
+  - permissions.deny reduced COMP-7 cat usage 80% but not eliminated in worktrees
+  - DDB #1450 still OPEN — CI still failing, not yet tested
 
 Pipeline trend:
-  Rungate: #35 17 agents/15min, #36 17 agents/18min, #41 dry-run 2 agents/3.2min (optimized)
+  #41: 17 agents/20min SHIPPED (optimized, first-pass)
+  #42 attempt 1: 27 agents/57min SHIP_FAILED (evidence corruption)
+  #42 attempt 2: 19 agents/34min SHIP_FAILED (ceremony caching worked, Marcus researched instead of implementing)
 
 Suite: 1880+ pass, 0 fail.
 
-Next: #23 Mac Mini isolation. Then DDB #1450.
+Next: #53 pipeline hardening → DDB #1450 CI fix → #23 Mac Mini isolation.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
-2. P1: DDB #1450 — UNBLOCKED, ready to ship (was blocked on #47)
-3. P2: #45 BashToolGuard in worktrees (COMP-7 persistent gap)
-4. P2: #43 acHash integrity root cause investigation
-5. P3: #41 Scaffold: detect and migrate specs from docs/specs/ to specs/
-6. DONE: #47 Pipeline optimization — 5 phases shipped, ~7 ceremony agents eliminated, ~50% pre-Marcus speedup
-7. DONE: #39 Fix grader false positives (COMP-13 + COMP-8)
-8. DONE: #40 Compliance improvements (context injection + reinforcement + grader accuracy gate)
+1. P0: #53 Pipeline hardening — fix evidence paths, eliminate dead agents, add safety guards (BLOCKS all shipping)
+2. P1: DDB #1450 — Fix CI checks on Mac Mini runner (5 failures, still OPEN, CI still red)
+3. P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+4. P2: #45 BashToolGuard in worktrees — permissions.deny reduced cat 80% but not eliminated
+5. P2: #43 acHash integrity — code written (writeWorkflowState recompute), needs pipeline proof
+6. DONE: #47 Pipeline optimization — ceremony agents eliminated, ~50% pre-Marcus speedup
+7. DONE: #41 Scaffold: detect and migrate specs — SHIPPED via pipeline session 27
+8. DONE: #42 Scaffold auto-fix — code merged but SHIP_FAILED 2x (evidence path mismatch, tracked in #53)
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
