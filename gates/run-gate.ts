@@ -55,8 +55,11 @@ if (!process.argv.includes("--force") && state.gates?.[gate]?.result === "PASS")
   process.exit(0);
 }
 
-// Delegate to gate executor
-const result = executeGate({ gate, slug, issue, workDir: WORK_DIR, stateFilePath: SF });
+// Delegate to gate executor.
+// executeGate is async — without the await, result.exitCode was undefined and
+// process.exit(undefined) exited 0, so every gate reported PASS and the
+// executor was killed mid-flight.
+const result = await executeGate({ gate, slug, issue, workDir: WORK_DIR, stateFilePath: SF });
 
 process.exit(result.exitCode);
 } // end if (import.meta.main)

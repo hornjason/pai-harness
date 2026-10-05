@@ -49,7 +49,7 @@ try {
 try {
   const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts');
   const projectRoot = process.cwd();
-  const br = cleanupStaleBranches({ projectRoot, maxAgeDays: 7 });
+  const br = await cleanupStaleBranches({ projectRoot, maxAgeDays: 7 });
   if (br.deleted.length) {
     deletedCount += br.deleted.length;
     log(`BRANCH cleanup [${projectRoot}]: deleted ${br.deleted.length} stale remote branches`);
@@ -65,7 +65,7 @@ try {
   for (const r of gapResult.results) {
     if (r.status === 'WARN') {
       gapWarns++;
-      log(`GAP ${r.check}: ${r.message}`);
+      log(`GAP ${r.check}: ${r.detail}`);
     }
   }
 } catch (e) { log(`GAP scan error: ${e}`); }

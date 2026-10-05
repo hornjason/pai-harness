@@ -67,38 +67,6 @@ export function writeBriefTemplate(templatesDir: string, roleName: string, descr
   return filePath;
 }
 
-/** Agent metadata shape used for frontmatter generation */
-export type AgentMeta = {
-  description: string;
-  tools: string;
-  model: string;
-  tiers?: Record<string, string[]>;
-};
-
-/**
- * Build agent metadata map exclusively from rungate.json roles config.
- * No hardcoded defaults — all metadata comes from config.
- * Falls back to sensible per-field defaults only when a config entry omits a field.
- */
-export function buildAgentMeta(
-  roles: Record<string, any> | undefined,
-): Record<string, AgentMeta> {
-  const agentMeta: Record<string, AgentMeta> = {};
-  if (!roles) return agentMeta;
-
-  for (const [roleName, roleConfig] of Object.entries(roles)) {
-    const cfg = roleConfig as any;
-    agentMeta[roleName] = {
-      description: cfg.description || `${roleName} agent`,
-      tools: cfg.tools || "[Bash, Read]",
-      model: cfg.model || "sonnet",
-      ...(cfg.tiers ? { tiers: cfg.tiers } : {}),
-    };
-  }
-
-  return agentMeta;
-}
-
 /**
  * Add a new role to the project's rungate.json config.
  * Adds brief path, isolation: worktree, and a standardTask.

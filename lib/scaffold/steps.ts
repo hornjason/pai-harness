@@ -586,7 +586,10 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
   // Resolve templates directory relative to this module
   const harnessTemplatesDir = join(dirname(dirname(__dirname)), "templates", "agent-briefs");
 
-  const configMeta = buildAgentMeta(harness?.roles);
+  // buildAgentMeta takes the whole harness config and reads .roles itself.
+  // Passing harness?.roles made it look for roles.roles, so every consumer's
+  // role config was silently dropped and DEFAULT_AGENT_META always won.
+  const configMeta = buildAgentMeta(harness ?? null);
   const agentMeta: Record<string, any> = {};
   for (const name of Object.keys({ ...DEFAULT_AGENT_META, ...configMeta })) {
     agentMeta[name] = { ...DEFAULT_AGENT_META[name], ...configMeta[name] };
