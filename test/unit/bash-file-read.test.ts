@@ -41,6 +41,13 @@ describe('detectBashFileRead — stdin filters and clean commands (allowed)', ()
     'echo "test" | wc -l',
     'bun test test/unit/foo.test.ts',
     'git commit -m "docs: explain grep | head -80 blocking"',
+    // Redirections write; they are not file operands.
+    "cat > /tmp/msg.txt <<'EOF'\nhello\nEOF",
+    'cat >/tmp/msg.txt',
+    'cat >> /tmp/log.txt',
+    'bun test | tail -30 > /tmp/out.txt',
+    'bun test 2>&1 | tail -20',
+    'echo hi | cat > out.txt',
   ];
 
   for (const cmd of allowed) {
@@ -52,6 +59,16 @@ describe('detectBashFileRead — stdin filters and clean commands (allowed)', ()
 });
 
 describe('detectBashFileRead — operator and flag parsing', () => {
+  it('still blocks input redirection — that really does read a file', () => {
+    expect(isBashFileRead('cat < package.json')).toBe(true);
+    expect(isBashFileRead('cat </etc/hosts')).toBe(true);
+  });
+
+  it('blocks a real operand even alongside an output redirect', () => {
+    expect(isBashFileRead('cat package.json > /tmp/copy.json')).toBe(true);
+    expect(isBashFileRead('head -20 src/index.ts >> /tmp/log')).toBe(true);
+  });
+
   it('treats || as one operator, not two pipes', () => {
     expect(isBashFileRead('test -f x || head -5')).toBe(false);
     expect(isBashFileRead('test -f x || cat x')).toBe(true);

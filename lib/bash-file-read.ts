@@ -41,8 +41,20 @@ function stripPrefixes(tokens: string[]): string[] {
 }
 
 /**
+ * A redirection operator, with an optional leading fd and an optionally
+ * attached target: `>`, `>>`, `2>`, `&>`, `>/tmp/x`, `2>&1`, `<`, `<>`.
+ */
+const REDIRECT = /^(\d*)(&?>>?\|?|<>?)(.*)$/;
+
+/**
  * True when the token list (argv-style, command first) includes a file operand
- * — i.e. a non-flag argument that is not the value of a preceding flag.
+ * — i.e. a non-flag argument that is not the value of a preceding flag and not
+ * part of a redirection.
+ *
+ * Redirections are not operands. `cat > out.txt <<EOF` WRITES a file; it reads
+ * stdin, so the Read tool cannot replace it and blocking it is a false
+ * positive. Input redirection is the exception — `cat < file` genuinely reads
+ * a file and should still be blocked.
  */
 function hasFileOperand(tokens: string[]): boolean {
   for (let i = 1; i < tokens.length; i++) {
@@ -52,6 +64,16 @@ function hasFileOperand(tokens: string[]): boolean {
       continue;
     }
     if (tok.startsWith('-')) continue; // -20, -n20, --lines=20, -f
+
+    const redirect = tok.match(REDIRECT);
+    if (redirect) {
+      const [, , op, attached] = redirect;
+      // An unattached target (`> out.txt`) sits in the next token.
+      if (!attached) i++;
+      if (op.startsWith('<')) return true; // `cat < file` does read a file
+      continue;
+    }
+
     return true;
   }
   return false;
