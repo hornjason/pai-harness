@@ -1302,17 +1302,25 @@ jobs:
         run: bun test test/scaffold-conformity.test.ts
       - name: Secret scan
         run: |
-          # CI has nothing staged, so --cached scanned zero files and the bare
-          # xargs/grep read stdin instead. Scan tracked files, NUL-delimited so
-          # paths with spaces are not split into unscannable fragments.
-          # High-confidence anchored patterns only: the pre-commit hook also
-          # matches password="..." , which is too noisy for a whole-repo scan
-          # (it fires on fixtures and docs). That narrowing is deliberate.
-          tracked_count=$(git ls-files | wc -l)
-          if [ "$tracked_count" -gt 0 ] && git ls-files -z | xargs -0 grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
+          # CI has nothing staged, so the old --cached scan examined zero files
+          # on every run — a green check that verified nothing.
+          # git grep handles paths with spaces natively, skips binaries with -I,
+          # and surfaces real errors instead of hiding them behind 2>/dev/null,
+          # so this cannot fail open the way the xargs pipeline could.
+          # git grep exits 1 when nothing matches, which is the pass case.
+          # Two tiers matching the pre-commit hook, so local and CI cannot
+          # disagree about what counts as a secret.
+          if git grep -I -lE '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' -- .; then
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
+          if git grep -I -nE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . \\
+            | grep -vE '(process\\.env|os\\.environ|getenv|ENV\\[|Deno\\.env|secrets\\.|vars\\.|REDACTED|CHANGEME|placeholder)' \\
+            | grep -q .; then
+            echo "::error::Potential credential assignment in tracked files"
+            exit 1
+          fi
+          echo "Secret scan clean"
 `;
 
   writeFileSync(join(workflowsDir, "ci.yml"), ciYml);
@@ -1403,28 +1411,56 @@ export function createGitHooks(root: string, actions: string[]): void {
   if (!existsSync(preCommit)) {
     writeFileSync(preCommit, `#!/bin/sh
 # Managed by rungate — secret scan + PROJECT-STATE update
-# Guard on a non-empty file list: with nothing staged (any --amend), xargs
-# still runs grep with no file operands, grep reads stdin, and exits 0 —
-# reporting a secret that is not there and blocking every amend.
-# NUL-delimited: a path containing a space would otherwise be split into two
-# bogus paths, grep would error, 2>/dev/null would hide it, and the file
-# would never be scanned — a silent miss in exactly the direction that hurts.
-# The former password="..." pattern is gone on purpose. Its quote characters
-# could not survive JS-template -> single-quoted-shell escaping: it rendered as
-# the malformed class ["\] and matched ordinary YAML, so the hook rejected
-# clean commits. The three anchored key formats contain no quotes and are
-# high-confidence on their own.
-staged_count=$(git diff --cached --name-only --diff-filter=ACM | wc -l)
-if [ "$staged_count" -gt 0 ] && git diff --cached --name-only --diff-filter=ACM -z | xargs -0 grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
-  echo "ERROR: Potential secrets detected in staged files"
+#
+# Scans the staged DIFF, not files on disk. This is deliberate and fixes four
+# failure modes the file-list approach had:
+#   - nothing staged: the list was empty, xargs ran grep with no operands,
+#     grep read stdin and exited 0, so every --amend was rejected
+#   - paths with spaces: split into nonexistent fragments, grep errored,
+#     2>/dev/null hid it, and the file was silently never scanned
+#   - 2>/dev/null masked every real error, so the scan failed open
+#   - grep read the WORKING TREE, so a secret staged and then edited out of
+#     the file on disk was committed unseen
+# Matching only added lines (^+) also means pre-existing matches elsewhere in
+# a touched file do not block unrelated commits.
+#
+# Capturing the diff first makes a git failure fail CLOSED. Piping git
+# straight into grep would swallow a git error as empty input, which grep
+# reads as "no secrets" — the scan would pass precisely when it could not run.
+staged_diff=$(git diff --cached --diff-filter=ACM -U0) || {
+  echo "ERROR: could not read staged diff — refusing to commit unscanned"
+  exit 1
+}
+# Tier 1 — anchored key formats. Unambiguous, so no exceptions.
+if printf '%s\\n' "$staged_diff" | grep -qE '^\\+.*(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})'; then
+  echo "ERROR: Potential secrets detected in staged changes"
+  exit 1
+fi
+
+# Tier 2 — credential assignments. Restores the coverage the old
+# password="..." pattern was meant to provide, in a form with no quote
+# characters (quotes could not survive JS-template -> shell escaping).
+# The value charset excludes $ and { so \${API_KEY} never matches, and the
+# second grep drops env lookups: password = process.env.DB_PASSWORD is a
+# reference, not a secret, and flagging it would train people to use --no-verify.
+if printf '%s\\n' "$staged_diff" \\
+  | grep -E '^\\+.*(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' \\
+  | grep -qvE '(process\\.env|os\\.environ|getenv|ENV\\[|Deno\\.env|secrets\\.|vars\\.|REDACTED|CHANGEME|placeholder)'; then
+  echo "ERROR: Potential credential assignment in staged changes"
   exit 1
 fi
 
 # Update PROJECT-STATE if it exists
 if [ -f "project-state.json" ]; then
-  bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null
-  git add PROJECT-STATE.md project-state.json 2>/dev/null
+  bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
+  git add PROJECT-STATE.md project-state.json 2>/dev/null || true
 fi
+
+# A script's exit status is its last command's. Without this, the [ -f ] test
+# failing (no project-state.json) or git add failing (no PROJECT-STATE.md yet)
+# made the hook exit non-zero and reject a perfectly good commit. Everything
+# that should block has already exited 1 above.
+exit 0
 `);
     chmodSync(preCommit, 0o755);
     actions.push("CREATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)");

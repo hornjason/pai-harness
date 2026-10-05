@@ -22,7 +22,22 @@ jobs:
         run: bun test test/scaffold-conformity.test.ts
       - name: Secret scan
         run: |
-          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|password\s*=)' 2>/dev/null; then
-            echo "::error::Potential secrets detected in staged files"
+          # CI has nothing staged, so the old --cached scan examined zero files
+          # on every run — a green check that verified nothing.
+          # git grep handles paths with spaces natively, skips binaries with -I,
+          # and surfaces real errors instead of hiding them behind 2>/dev/null,
+          # so this cannot fail open the way the xargs pipeline could.
+          # git grep exits 1 when nothing matches, which is the pass case.
+          # Two tiers matching the pre-commit hook, so local and CI cannot
+          # disagree about what counts as a secret.
+          if git grep -I -lE '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' -- .; then
+            echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
+          if git grep -I -nE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . \
+            | grep -vE '(process\.env|os\.environ|getenv|ENV\[|Deno\.env|secrets\.|vars\.|REDACTED|CHANGEME|placeholder)' \
+            | grep -q .; then
+            echo "::error::Potential credential assignment in tracked files"
+            exit 1
+          fi
+          echo "Secret scan clean"

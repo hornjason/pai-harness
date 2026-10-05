@@ -122,23 +122,53 @@ describe("ship.js safeGitAddCommand behaviour", () => {
     );
   });
 
-  test("falls back to a static command when a path is unsafe", () => {
+  // Rejection must fail CLOSED. Falling back to `git add .` would broaden a
+  // detection into staging the whole worktree — including whatever else the
+  // agent left there — which is strictly worse than the unsafe path itself.
+  test("returns null when a path is unsafe", () => {
     const { safeGitAddCommand, logs } = loadShipSecurityHelpers(ROOT);
     const cmd = safeGitAddCommand(["lib/a.ts; rm -rf /"], ROOT);
-    expect(cmd).toBe("git add .");
-    expect(cmd).not.toContain("rm -rf");
-    expect(logs.join("\n")).toContain("rejected");
+    expect(cmd).toBeNull();
+    expect(logs.join("\n")).toContain("REJECTED");
   });
 
-  test("falls back to a static command when a path escapes the repo", () => {
+  test("returns null when a path escapes the repo", () => {
     const { safeGitAddCommand } = loadShipSecurityHelpers(ROOT);
-    expect(safeGitAddCommand(["../../etc/passwd"], ROOT)).toBe("git add .");
+    expect(safeGitAddCommand(["../../etc/passwd"], ROOT)).toBeNull();
   });
 
+  test("returns null rather than widening scope to git add .", () => {
+    const { safeGitAddCommand } = loadShipSecurityHelpers(ROOT);
+    for (const bad of [["a.ts\u0000b"], ["/etc/passwd"], ["x`whoami`.ts"], ["a$(id).ts"]]) {
+      expect(safeGitAddCommand(bad, ROOT)).toBeNull();
+    }
+  });
+
+  // An empty list is not a rejection — nothing was flagged, the agent simply
+  // did not report paths. That keeps the long-standing behavior.
   test("falls back to a static command when nothing changed", () => {
     const { safeGitAddCommand } = loadShipSecurityHelpers(ROOT);
     expect(safeGitAddCommand([], ROOT)).toBe("git add .");
     expect(safeGitAddCommand(undefined, ROOT)).toBe("git add .");
+  });
+});
+
+describe("ship.js aborts the commit when staging is refused", () => {
+  test("every safeGitAddCommand call site handles null", () => {
+    const lines = shipSource.split("\n");
+    const callSites = lines
+      .map((l, i) => ({ l, i }))
+      .filter(({ l }) => /=\s*safeGitAddCommand\(/.test(l));
+
+    expect(callSites.length).toBeGreaterThanOrEqual(3);
+
+    for (const { l, i } of callSites) {
+      const varName = l.match(/(?:const|let)\s+(\w+)\s*=/)![1];
+      // The guard must appear within a few lines of the assignment.
+      const window = lines.slice(i + 1, i + 6).join("\n");
+      expect(window).toContain(`${varName} === null`);
+      expect(window).toContain("SHIP_FAILED");
+    }
   });
 });
 

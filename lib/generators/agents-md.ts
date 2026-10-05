@@ -7,7 +7,44 @@
  * - Osmani test: delete anything the agent can find by reading code
  * - Three-tier: hot (<100 lines), specialist (scoped rules), cold (on-demand)
  */
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 import type { ProjectScan } from "./types";
+
+/**
+ * Build the AGENTS.md frontmatter block.
+ *
+ * Preserves whatever the existing file declared (owner, status, custom keys)
+ * and only refreshes `updated:`. Regenerating from scratch would silently
+ * drop a hand-set owner, and emitting nothing — the previous behavior —
+ * stripped the block entirely on every re-scaffold.
+ */
+function buildFrontmatter(root: string): string {
+  const today = new Date().toISOString().slice(0, 10);
+  const defaults: Record<string, string> = {
+    "doc-type": "reference",
+    status: "active",
+    updated: today,
+  };
+
+  const path = join(root, "AGENTS.md");
+  const existing: Record<string, string> = {};
+  if (existsSync(path)) {
+    const content = readFileSync(path, "utf-8");
+    const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+    if (match) {
+      for (const line of match[1].split("\n")) {
+        const kv = line.match(/^([\w-]+):\s*(.*)$/);
+        if (kv) existing[kv[1]] = kv[2];
+      }
+    }
+  }
+
+  const merged = { ...defaults, ...existing, updated: today };
+  const order = ["doc-type", "status", "owner", "updated"];
+  const keys = [...order.filter(k => k in merged), ...Object.keys(merged).filter(k => !order.includes(k))];
+  return `---\n${keys.map(k => `${k}: ${merged[k]}`).join("\n")}\n---\n\n`;
+}
 
 export interface GeneratedRule {
   filename: string;
@@ -34,7 +71,19 @@ export function generateAgentsMd(scan: ProjectScan): string {
     ? `\n## Consumers (${consumers.length})\n\n${consumers.map(c => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.`
     : "";
 
-  return `# ${name}
+  // Re-scaffolding used to strip AGENTS.md's frontmatter, because the
+  // generator never emitted any. Carry the existing block forward with a
+  // refreshed `updated:` so doc-hygiene keeps working across re-scaffolds.
+  const frontmatter = buildFrontmatter(scan.root);
+
+  // convert-spec is only advertised where the script actually exists —
+  // rungate has it, a scaffolded consumer may not. It was being dropped on
+  // every re-scaffold because the table did not know about it at all.
+  const convertSpecRow = existsSync(join(scan.root, "scripts", "convert-spec.ts"))
+    ? `\n| Convert spec | \`bun scripts/convert-spec.ts <file> [--dry-run] [--title "..."] [--governs "..."]\` |`
+    : "";
+
+  return `${frontmatter}# ${name}
 
 ## Project Identity
 
@@ -60,7 +109,7 @@ ${repoLine}
 | Conformity | \`bun test test/scaffold-conformity.test.ts\` |
 | Create spec | \`bunx rungate create-spec "title"\` |
 | Create SC | \`bunx rungate create-sc --pattern <name> --params '<json>'\` |
-| Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |
+| Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |${convertSpecRow}
 ${consumerSection}
 
 ## Workflow

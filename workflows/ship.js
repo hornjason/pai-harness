@@ -187,17 +187,27 @@ function relativizePaths(files, baseDir) {
   }).filter(Boolean)
 }
 
-// Returns a `git add ...` command that is safe to paste into a shell.
-// Unsafe or empty input degrades to the static `git add .` the workflow has
-// always used as its fallback — never to an interpolated string.
+// Returns a `git add ...` command that is safe to paste into a shell, or
+// null when the agent's file list was rejected.
+//
+// Rejection must NOT fall back to `git add .`. buildSafeGitAdd only throws
+// when it found shell metacharacters, traversal, a null byte or an absolute
+// path — exactly the case where broadening to "stage the entire worktree"
+// is the worst available response. It would turn a detection into staging
+// whatever else the agent left lying around, which is the opposite of what
+// the check is for. Callers abort the commit instead.
+//
+// An EMPTY list is different and still means `git add .`: the agent reported
+// no filesChanged, nothing was rejected, and that is the long-standing
+// behavior for agents that edit without reporting paths.
 function safeGitAddCommand(files, baseDir) {
   const rel = relativizePaths(files, baseDir)
   if (rel.length === 0) return 'git add .'
   try {
     return buildSafeGitAdd(rel)
   } catch (e) {
-    log(`WARN: unsafe file paths rejected (${e.message}) — falling back to 'git add .'`)
-    return 'git add .'
+    log(`REJECTED unsafe file paths (${e.message}) — refusing to stage`)
+    return null
   }
 }
 
@@ -1305,6 +1315,15 @@ const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
 const gitAddForCommit = safeGitAddCommand(implementResult.buildResult?.filesChanged, commitDir)
+if (gitAddForCommit === null) {
+  return {
+    status: 'SHIP_FAILED',
+    issue: ISSUE,
+    slug: SLUG,
+    phase: 'Commit',
+    message: `Marcus reported file paths that failed shell-safety validation — refusing to commit. See the REJECTED line in the log for the offending paths.`,
+  }
+}
 const commitResult = await agent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
@@ -1365,6 +1384,9 @@ if (verifyResult?.result === 'FAIL') {
     const reimpl = await runImplement()
     if (reimpl.success) {
       const reimplGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
+      if (reimplGitAdd === null) {
+        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, phase: 'Verify', message: 'Verify-gate re-implementation returned unsafe file paths — refusing to commit.' }
+      }
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
 cd ${PROJECT_ROOT} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
@@ -1741,6 +1763,9 @@ if (shipResult?.result !== 'PASS') {
     const reimpl = await runImplement()
     if (reimpl.success) {
       const reimplShipGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
+      if (reimplShipGitAdd === null) {
+        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, phase: 'Ship', message: 'Ship-gate re-implementation returned unsafe file paths — refusing to commit.' }
+      }
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
 cd ${PROJECT_ROOT} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
