@@ -1,0 +1,24 @@
+{
+  "_comment": "Rungate's own conformity exemptions (#80). Each list is a RATCHET, not a mute: adding an entry that is not a real current violation fails, and an entry that stops being a violation must be removed or the build fails. Shrinking both lists to empty is the work. Consumers get their own file or none at all - these never travel.",
+
+  "_untestedSpecs": "DRIFT-2 - testable specs with no test referencing them by name. Over half the testable surface. CONFIG-DIRECTORY-STRUCTURE-SPEC must leave this list before SC-478/479 are rewritten as behavioral assertions, or they would be honest assertions nothing executes.",
+  "untestedSpecs": [
+    "SESSION-LIFECYCLE-SPEC.md",
+    "harness-automation-matrix.md",
+    "CONFIG-DIRECTORY-STRUCTURE-SPEC.md",
+    "DOC-HYGIENE-ARCHITECTURE-SPEC.md",
+    "INSTRUCTION-COMPLIANCE-SPEC.md",
+    "GITHUB-API-MIGRATION-SPEC.md",
+    "HARNESS-STANDARD.md",
+    "HARNESS-SKILL-CONTRACT.md",
+    "AGENT-BRIEF-TEMPLATE-SPEC.md",
+    "SCAFFOLD-DECOMPOSITION-SPEC.md"
+  ],
+
+  "_orphanFiles": "HYGIENE-3 - files with zero references anywhere. The two shell scripts may be dead or may be invoked in a way the reference scanner cannot see; that judgement was deliberately not made under a red gate. Resolve each by deleting, archiving to reference/, or referencing it - then delist.",
+  "orphanFiles": [
+    "specs/harness-automation-matrix.rules.json",
+    "scripts/prove-backfill.sh",
+    "scripts/slug-resolver.sh"
+  ]
+}

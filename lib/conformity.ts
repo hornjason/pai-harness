@@ -337,6 +337,37 @@ type MatcherHandler = (sc: ParsedSC, match: RegExpMatchArray) => AssertionFn | n
 // Config loading with caching
 const _registryCache = new Map<string, Array<{ name: string; regex: string }>>();
 
+/**
+ * Project-owned conformity exemptions, read from
+ * `<root>/.claude/conformity-allowlists.json`.
+ *
+ * A file rather than a constant because the callers that need it differ in
+ * editability: test/scaffold-conformity.test.ts is harness-managed and
+ * regenerated on re-scaffold, so a list written into it would be silently
+ * wiped. Keying on `root` is also what keeps a consumer from inheriting
+ * rungate's exemptions, which is the defect this replaced.
+ *
+ * Absent or unreadable means no exemptions adopted, and the checks report
+ * advisory rather than failing. That is deliberate: before #80 they could not
+ * fail at all, so a missing file must not break an existing consumer.
+ */
+function loadConformityAllowlists(root: string): {
+  untestedSpecs?: string[];
+  orphanFiles?: string[];
+} {
+  try {
+    const p = join(root, ".claude", "conformity-allowlists.json");
+    if (!existsSync(p)) return {};
+    const parsed = JSON.parse(readFileSync(p, "utf-8"));
+    return {
+      untestedSpecs: Array.isArray(parsed.untestedSpecs) ? parsed.untestedSpecs : undefined,
+      orphanFiles: Array.isArray(parsed.orphanFiles) ? parsed.orphanFiles : undefined,
+    };
+  } catch {
+    return {};
+  }
+}
+
 function loadBuiltInRegistry(): Array<{ name: string; regex: string }> {
   const key = "__builtin__";
   if (_registryCache.has(key)) return _registryCache.get(key)!;
@@ -945,7 +976,24 @@ export function runSpecDiscovery(root: string) {
   });
 }
 
-export function runSpecDrift(root: string) {
+/**
+ * @param options.untestedAllowlist Specs permitted to have no referencing test,
+ *   owned by the CALLING project. Omitted means the caller has not adopted the
+ *   ratchet, and DRIFT-2 reports advisory instead of failing — see the comment
+ *   on DRIFT-2 for why a consumer must not inherit rungate's backlog.
+ *
+ * The allowlist is deliberately in `options`, not position 2: the consumer test
+ * that lib/scaffold/steps.ts generates calls `runSpecDrift(ROOT, findings)`, so
+ * a positional second parameter would receive a findings array and exempt
+ * nothing, failing every consumer build.
+ */
+export function runSpecDrift(
+  root: string,
+  _findings?: unknown[],
+  options?: { untestedAllowlist?: string[] },
+) {
+  const untestedAllowlist =
+    options?.untestedAllowlist ?? loadConformityAllowlists(root).untestedSpecs;
   const specsDir = join(root, "specs");
   const testDirs = [join(root, "test"), join(root, "tests")].filter(d => existsSync(d));
 
@@ -995,32 +1043,41 @@ export function runSpecDrift(root: string) {
 
       // Was `expect(true).toBe(true)` after a console.warn, so the mechanical
       // enforcement of CLAUDE.md's "SCs without tests are wishes" could never
-      // fail (#80). Turning it on revealed 10 testable specs with no test
-      // referencing them at all — over half the testable surface unverified.
+      // fail (#80). Turning it on revealed 10 testable specs in rungate with no
+      // test referencing them at all — over half the testable surface.
       //
-      // That backlog cannot be asserted to zero today without writing tests for
-      // ten specs, so this is a RATCHET instead: the ten are listed, and an
-      // eleventh fails the build. The list is the backlog, in source, where it is
-      // visible — shrinking it is the work, and nothing may be added to it.
-      const KNOWN_UNTESTED = [
-        "SESSION-LIFECYCLE-SPEC.md",
-        "harness-automation-matrix.md",
-        "CONFIG-DIRECTORY-STRUCTURE-SPEC.md",
-        "DOC-HYGIENE-ARCHITECTURE-SPEC.md",
-        "INSTRUCTION-COMPLIANCE-SPEC.md",
-        "GITHUB-API-MIGRATION-SPEC.md",
-        "HARNESS-STANDARD.md",
-        "HARNESS-SKILL-CONTRACT.md",
-        "AGENT-BRIEF-TEMPLATE-SPEC.md",
-        "SCAFFOLD-DECOMPOSITION-SPEC.md",
-      ];
+      // That backlog cannot be asserted to zero without writing ten tests, so
+      // adopters pass a RATCHET list: anything on it may stay untested, an
+      // addition fails the build, and a listed spec that GAINS a test must be
+      // delisted or the build fails — otherwise the allowlist rots into another
+      // artifact that certifies nothing.
+      //
+      // The list belongs to the CALLING PROJECT, never to this file. An earlier
+      // version hardcoded rungate's ten spec filenames here, and
+      // lib/scaffold/steps.ts generates a consumer conformity test that calls
+      // this function — so every consumer inherited rungate's backlog. A
+      // consumer with an untested spec of a matching name was silently
+      // exempted, and a consumer that HAD such a spec with a test failed its
+      // own build demanding it delist an entry from a file inside rungate that
+      // it cannot edit.
+      if (!untestedAllowlist) {
+        // No ratchet adopted. Report, but do not fail: before #80 this check
+        // could not fail at all, so failing here would break every existing
+        // consumer on upgrade for a backlog they never opted into.
+        if (orphaned.length > 0) {
+          console.warn(
+            `WARN DRIFT-2: ${orphaned.length} testable spec(s) have no referencing test — ` +
+              `${orphaned.join(", ")}. This check is ADVISORY because no untestedAllowlist ` +
+              `was supplied. Pass one to runSpecDrift to enforce it as a ratchet.`,
+          );
+        }
+        return;
+      }
 
-      const newlyOrphaned = orphaned.filter(s => !KNOWN_UNTESTED.includes(s));
+      const newlyOrphaned = orphaned.filter(s => !untestedAllowlist.includes(s));
       expect(newlyOrphaned).toEqual([]);
 
-      // Equally important: a spec that gains a test must leave the list, or the
-      // allowlist rots into another artifact that certifies nothing.
-      const staleAllowlist = KNOWN_UNTESTED.filter(
+      const staleAllowlist = untestedAllowlist.filter(
         s => testable.includes(s) && !orphaned.includes(s),
       );
       expect(staleAllowlist).toEqual([]);
@@ -1028,7 +1085,19 @@ export function runSpecDrift(root: string) {
   });
 }
 
-export function runDocHygiene(root: string) {
+/**
+ * @param options.orphanAllowlist Files permitted to have zero references, owned
+ *   by the CALLING project. Same contract and same positional constraint as
+ *   runSpecDrift's untestedAllowlist — the generated consumer test calls
+ *   `runDocHygiene(ROOT, findings)`.
+ */
+export function runDocHygiene(
+  root: string,
+  _findings?: unknown[],
+  options?: { orphanAllowlist?: string[] },
+) {
+  const orphanAllowlist =
+    options?.orphanAllowlist ?? loadConformityAllowlists(root).orphanFiles;
   const specsDir = join(root, "specs");
   const refDir = join(root, "reference");
   // .claude/agents/ excluded — Claude Code reads those by name convention, not import
@@ -1059,7 +1128,24 @@ export function runDocHygiene(root: string) {
           ? readdirSync(dir).filter(f => exts.some(e => f.endsWith(e)))
           : readdirSync(dir, { recursive: true }).map(f => String(f)).filter(f => exts.some(e => f.endsWith(e)));
         for (const f of files) {
-          try { chunks.push(readFileSync(join(dir, String(f)), "utf-8")); } catch {}
+          const rel = String(f);
+
+          // skipDirs above only filters TOP-LEVEL entries of root, so the
+          // recursive walk still descended into .claude/worktrees/ — which
+          // holds full copies of the repo, 39 of them on the machine where
+          // this was found. Every file in every worktree counted as a
+          // reference, so nothing was ever an orphan locally while a clean CI
+          // checkout saw three. That divergence is what made HYGIENE-3 look
+          // intermittent and got a real failure dismissed as flake.
+          if (rel.includes("worktrees/") || skipDirs.has(rel.split("/")[0])) continue;
+
+          // The allowlist names the very files it exempts, so counting it as a
+          // reference makes every listed orphan stop being an orphan — the
+          // ratchet then fails demanding they be delisted, and delisting makes
+          // them orphans again. A list that invalidates itself by existing.
+          if (rel.endsWith("conformity-allowlists.json")) continue;
+
+          try { chunks.push(readFileSync(join(dir, rel), "utf-8")); } catch {}
         }
       } catch {}
     }
@@ -1121,12 +1207,37 @@ export function runDocHygiene(root: string) {
           if (!index.includes(f)) orphans.push(`${relPath}/${f}`);
         }
       }
-      // Was unconditionally passing after a console.warn (#80). The two
-      // orphans it had been quietly reporting — specs/bootstrap-data-flow.png
-      // and scripts/self-containment-check.sh, both with zero references
-      // anywhere — were archived to reference/, which is the remedy this check
-      // recommends in its own message.
-      expect(orphans).toEqual([]);
+      // Was unconditionally passing after a console.warn (#80). Two orphans it
+      // had been quietly reporting — specs/bootstrap-data-flow.png and
+      // scripts/self-containment-check.sh — were archived to reference/, the
+      // remedy this check recommends in its own message.
+      //
+      // Converting it to a bare `expect(orphans).toEqual([])` then turned Gates
+      // red on main, because sizing from the warn output was taken as the
+      // post-merge state without re-running the check against a clean tree. The
+      // warn output listed two; a clean checkout has three more that local runs
+      // did not surface. Same instrument as DRIFT-2 applies here and was not
+      // used: list what cannot be fixed now, fail on an addition, fail if a
+      // listed file gains a reference and is not delisted.
+      //
+      // Caller-owned for the same reason as DRIFT-2 — consumers must not
+      // inherit rungate's exemptions.
+      if (!orphanAllowlist) {
+        if (orphans.length > 0) {
+          console.warn(
+            `WARN HYGIENE-3: ${orphans.length} file(s) with zero references — ` +
+              `${orphans.join(", ")}. ADVISORY because no orphanAllowlist was supplied. ` +
+              `Pass one to runDocHygiene to enforce it as a ratchet.`,
+          );
+        }
+        return;
+      }
+
+      const newOrphans = orphans.filter(o => !orphanAllowlist.includes(o));
+      expect(newOrphans).toEqual([]);
+
+      const staleAllowlist = orphanAllowlist.filter(o => !orphans.includes(o));
+      expect(staleAllowlist).toEqual([]);
     });
 
     test("HYGIENE-4: Every spec appears in the specs routing table", () => {
