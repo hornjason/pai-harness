@@ -577,7 +577,7 @@ describe("verify checks", () => {
   });
 
   // acHash consistency: verify gate checks scope's AC hash (ADR-009)
-  // Hash auto-recomputed by writeWorkflowState on authorized modifications
+  // Hash auto-recomputed by writeWorkflowState on authorized modifications (#43)
   test("acHash-consistency-verify: ACs unchanged since scope", () => {
     if (!isVerifyPlus()) return;
     const acHash = sf("gates")?.scope?.acHash;
@@ -588,6 +588,12 @@ describe("verify checks", () => {
       evidenceMethod: ac.evidenceMethod,
     }));
     const currentHash = require("crypto").createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+    if (currentHash !== acHash) {
+      // Log field-level diff for diagnosis before failing
+      const { diffAcHashFields } = require("./orchestrator");
+      const diff = diffAcHashFields(acDefs, (sf("acs") || []));
+      console.error(`acHash field diff: ${JSON.stringify(diff.changedFields)}`);
+    }
     expect(currentHash).toBe(acHash);
   });
 
@@ -968,7 +974,8 @@ describe("ship checks", () => {
   });
 
   // acHash consistency: ship gate checks scope's AC hash (ADR-009)
-  // Downgraded to WARN: same as verify — heal agents can modify ACs post-scope
+  // Restored to FAIL: writeWorkflowState now recomputes acHash on authorized modifications,
+  // so mismatches indicate unauthorized tampering, not heal agent updates (#43)
   test("acHash-consistency-ship: ACs unchanged since scope", () => {
     if (!isShipPlus()) return;
     const acHash = sf("gates")?.scope?.acHash;
@@ -980,8 +987,13 @@ describe("ship checks", () => {
     }));
     const currentHash = require("crypto").createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
     if (currentHash !== acHash) {
-      console.warn(`WARN: acHash mismatch — scope: ${acHash.slice(0, 12)}... current: ${currentHash.slice(0, 12)}... (ADR-009 integrity check)`);
+      // Log field-level diff for diagnosis before failing
+      const { diffAcHashFields } = require("./orchestrator");
+      const scopeAcDefs = acDefs; // current defs — scope defs are lost, but hash mismatch means they differ
+      const diff = diffAcHashFields(acDefs, (sf("acs") || []));
+      console.error(`acHash field diff: ${JSON.stringify(diff.changedFields)}`);
     }
+    expect(currentHash).toBe(acHash);
   });
 
   // prove-label-enforcement: needs-prove label must have matching proven label (#1390)

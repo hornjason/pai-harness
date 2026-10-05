@@ -427,6 +427,64 @@ export function writeGateSummary(
   return "ALL CLEAR";
 }
 
+// ── acHash field-level diff (#43) ────────────────────────────────────────
+
+export interface AcHashDiffResult {
+  changed: boolean;
+  changedFields: Array<{ acId: string; field: string; before: unknown; after: unknown }>;
+}
+
+/**
+ * Compare AC definition fields between the scope-time hash snapshot and the current ACs.
+ * Logs field-level diff showing exactly which AC fields changed, enabling root-cause
+ * diagnosis when acHash mismatches occur.
+ */
+export function diffAcHashFields(
+  scopeAcDefs: Array<Record<string, unknown>>,
+  currentAcs: Array<Record<string, unknown>>,
+): AcHashDiffResult {
+  const HASH_FIELDS = ["id", "type", "statement", "specElement", "threshold", "evidenceMethod"] as const;
+  const changedFields: AcHashDiffResult["changedFields"] = [];
+
+  const currentDefs = currentAcs.map((ac) => {
+    const def: Record<string, unknown> = {};
+    for (const f of HASH_FIELDS) def[f] = ac[f];
+    return def;
+  });
+
+  // Length mismatch
+  if (scopeAcDefs.length !== currentDefs.length) {
+    changedFields.push({
+      acId: "*",
+      field: "count",
+      before: scopeAcDefs.length,
+      after: currentDefs.length,
+    });
+  }
+
+  // Per-AC field comparison
+  const maxLen = Math.max(scopeAcDefs.length, currentDefs.length);
+  for (let i = 0; i < maxLen; i++) {
+    const before = scopeAcDefs[i];
+    const after = currentDefs[i];
+    if (!before || !after) continue;
+    for (const field of HASH_FIELDS) {
+      const bVal = JSON.stringify(before[field]);
+      const aVal = JSON.stringify(after[field]);
+      if (bVal !== aVal) {
+        changedFields.push({
+          acId: String(after.id ?? before.id ?? `index-${i}`),
+          field,
+          before: before[field],
+          after: after[field],
+        });
+      }
+    }
+  }
+
+  return { changed: changedFields.length > 0, changedFields };
+}
+
 // ── Write-time Zod validation (#453) ─────────────────────────────────────
 
 export function writeWorkflowState(sf: string, state: Record<string, unknown>): void {
@@ -445,8 +503,11 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
     throw err;
   }
 
-  // ADR-009: Recompute acHash when ACs are modified through writeWorkflowState
-  // This keeps the hash in sync with authorized modifications (heal agents)
+  // ADR-009: Recompute acHash when ACs are modified through writeWorkflowState.
+  // Root cause: heal agents modify AC definition fields (statement, evidenceMethod, threshold)
+  // between scope and verify/ship gates, causing false hash mismatches. writeWorkflowState is
+  // the authorized modification path — it recomputes acHash from definition fields only,
+  // excluding mutable verdict and evidence fields, keeping the hash stable.
   const gates = state.gates as Record<string, any> | undefined;
   const acs = state.acs as Array<Record<string, unknown>> | undefined;
   if (gates?.scope?.acHash && acs?.length) {
