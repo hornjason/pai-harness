@@ -14,9 +14,7 @@
       "Bash(curl *)"
     ],
     "deny": [
-      "Bash(cat *)",
-      "Bash(head *)",
-      "Bash(tail *)"
+      "Bash(cat *)"
     ]
   },
   "hooks": {

@@ -96,6 +96,45 @@ describe('detectBashFileRead — operator and flag parsing', () => {
     expect(isBashFileRead('git commit -m "msg | head" && cat secrets.txt')).toBe(true);
   });
 
+  it('does not scan heredoc bodies — they are data, not commands', () => {
+    const commitMsg = [
+      "git commit -F - <<'EOF'",
+      'fix: explain the rule',
+      '',
+      'cat package.json and head -5 README.md are still blocked.',
+      'EOF',
+    ].join('\n');
+    expect(isBashFileRead(commitMsg)).toBe(false);
+  });
+
+  it('ignores heredoc bodies with unquoted and indented delimiters', () => {
+    expect(isBashFileRead('gh issue create --body-file - <<EOF\ncat secrets.txt\nEOF')).toBe(false);
+    expect(isBashFileRead('cmd <<-END\n\tcat secrets.txt\n\tEND')).toBe(false);
+  });
+
+  it('still scans commands outside the heredoc', () => {
+    expect(isBashFileRead("cat secrets.txt && git commit -F - <<'EOF'\nmsg\nEOF")).toBe(true);
+  });
+
+  it('still scans a heredoc fed to a shell interpreter', () => {
+    expect(isBashFileRead('bash <<EOF\ncat secrets.txt\nEOF')).toBe(true);
+    expect(isBashFileRead('sh <<EOF\nhead -5 secrets.txt\nEOF')).toBe(true);
+  });
+
+  it('resolves path-qualified commands', () => {
+    expect(isBashFileRead('/bin/cat secrets.txt')).toBe(true);
+    expect(isBashFileRead('/usr/bin/head -5 secrets.txt')).toBe(true);
+    expect(isBashFileRead('ls | /usr/bin/head -5')).toBe(false);
+  });
+
+  it('sees through wrapper prefixes and env assignments', () => {
+    expect(isBashFileRead('command cat secrets.txt')).toBe(true);
+    expect(isBashFileRead('exec cat secrets.txt')).toBe(true);
+    expect(isBashFileRead('env FOO=1 cat secrets.txt')).toBe(true);
+    expect(isBashFileRead('FOO=1 BAR=2 /bin/cat secrets.txt')).toBe(true);
+    expect(isBashFileRead('env FOO=1 ls | head -5')).toBe(false);
+  });
+
   it('handles empty and whitespace commands', () => {
     expect(isBashFileRead('')).toBe(false);
     expect(isBashFileRead('   ')).toBe(false);

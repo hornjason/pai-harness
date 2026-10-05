@@ -25,6 +25,22 @@ const FILE_READERS = new Set(['cat', 'head', 'tail']);
 const VALUE_FLAGS = new Set(['-n', '-c', '--lines', '--bytes']);
 
 /**
+ * Wrappers and prefixes that delegate to the real command, plus `VAR=value`
+ * assignments. `env FOO=1 /bin/cat x` must resolve to `cat`.
+ */
+const PREFIXES = new Set(['command', 'exec', 'builtin', 'env', 'nohup', 'time', 'sudo']);
+
+/**
+ * Drop wrapper prefixes and inline env assignments so the first remaining
+ * token is the actual command.
+ */
+function stripPrefixes(tokens: string[]): string[] {
+  let i = 0;
+  while (i < tokens.length && (PREFIXES.has(tokens[i]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i]))) i++;
+  return tokens.slice(i);
+}
+
+/**
  * True when the token list (argv-style, command first) includes a file operand
  * — i.e. a non-flag argument that is not the value of a preceding flag.
  */
@@ -77,7 +93,9 @@ function splitSegments(command: string): string[] {
       continue;
     }
 
-    if (ch === '|' || ch === '&' || ch === ';') {
+    // Newlines separate commands just like `;` does — multi-line scripts and
+    // interpreter heredocs put each command on its own line.
+    if (ch === '|' || ch === '&' || ch === ';' || ch === '\n') {
       if ((ch === '|' || ch === '&') && command[i + 1] === ch) i++; // consume || and &&
       segments.push(current);
       current = '';
@@ -91,6 +109,47 @@ function splitSegments(command: string): string[] {
   return segments;
 }
 
+/** Shell interpreters that execute a heredoc body as commands. */
+const INTERPRETERS = /(^|[\s;&|])(ba|z|k|da)?sh\s*$/;
+
+/**
+ * Remove heredoc bodies before scanning.
+ *
+ * A heredoc body is DATA, not commands — but the hook sees the whole raw
+ * command string, so `git commit -F - <<EOF ... cat package.json ... EOF`
+ * looked like a file read and blocked the commit. This matches the exemption
+ * lib/transcript-checker.ts already applies via its `<<` check.
+ *
+ * Exception: when the command feeding the heredoc is a shell interpreter
+ * (`bash <<EOF`), the body really does execute, so it is left in place.
+ */
+function stripHeredocBodies(command: string): string {
+  if (!command.includes('<<')) return command;
+
+  const out: string[] = [];
+  let delim: string | null = null;
+  let allowIndent = false;
+
+  for (const line of command.split('\n')) {
+    if (delim !== null) {
+      if ((allowIndent ? line.trimStart() : line) === delim) delim = null;
+      continue; // drop body and terminator
+    }
+
+    const m = line.match(/<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/);
+    if (m && !INTERPRETERS.test(line.slice(0, m.index))) {
+      allowIndent = m[1] === '-';
+      delim = m[3];
+      out.push(line.slice(0, m.index) + line.slice(m.index! + m[0].length));
+      continue;
+    }
+
+    out.push(line);
+  }
+
+  return out.join('\n');
+}
+
 /**
  * Detects cat/head/tail being used to read a file in any segment of a shell
  * command — direct, `;`-chained, `&&`-chained, or piped.
@@ -99,10 +158,12 @@ function splitSegments(command: string): string[] {
  * stdin filters (`cmd | head -80`, `cmd | tail -30`, `cmd | cat`) return null.
  */
 export function detectBashFileRead(command: string): string | null {
-  for (const segment of splitSegments(command)) {
-    const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  for (const segment of splitSegments(stripHeredocBodies(command))) {
+    const tokens = stripPrefixes(segment.trim().split(/\s+/).filter(Boolean));
     if (!tokens.length) continue;
-    if (!FILE_READERS.has(tokens[0])) continue;
+    // Basename so /bin/cat and /usr/bin/head resolve to cat and head.
+    const name = tokens[0].split('/').pop()!;
+    if (!FILE_READERS.has(name)) continue;
     if (hasFileOperand(tokens)) return segment.trim();
   }
   return null;

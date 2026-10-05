@@ -5,17 +5,21 @@ import { join } from "path";
 const settingsPath = join(__dirname, "..", ".claude", "settings.json");
 const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 
-describe("permissions.deny (#45)", () => {
+describe("permissions.deny (#45, narrowed in #62)", () => {
   test("cat is denied", () => {
+    // "Bash(cat *)" only matches cat as the leading command with an argument,
+    // which is always a file read — no false positives.
     expect(settings.permissions.deny).toContain("Bash(cat *)");
   });
 
-  test("head is denied", () => {
-    expect(settings.permissions.deny).toContain("Bash(head *)");
+  test("head is NOT denied by glob — the glob cannot see file operands", () => {
+    // "Bash(head *)" matched stdin filters too (`bun test | head -20`).
+    // BashToolGuard + lib/bash-file-read.ts handle head precisely instead.
+    expect(settings.permissions.deny).not.toContain("Bash(head *)");
   });
 
-  test("tail is denied", () => {
-    expect(settings.permissions.deny).toContain("Bash(tail *)");
+  test("tail is NOT denied by glob — the glob cannot see file operands", () => {
+    expect(settings.permissions.deny).not.toContain("Bash(tail *)");
   });
 
   test("cat is NOT in allow list", () => {
@@ -24,6 +28,6 @@ describe("permissions.deny (#45)", () => {
 
   test("deny array exists and has entries", () => {
     expect(settings.permissions.deny).toBeInstanceOf(Array);
-    expect(settings.permissions.deny.length).toBeGreaterThanOrEqual(3);
+    expect(settings.permissions.deny.length).toBeGreaterThanOrEqual(1);
   });
 });
