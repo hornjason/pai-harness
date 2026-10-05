@@ -434,6 +434,7 @@ For reinforcement: read the YAML frontmatter, find the "tiers.reinforcement" arr
 let discovery = null
 let setupResult = null
 let regressionCount = 0
+let CACHED_CEREMONY = null
 
 async function runDiscovery(context) {
   phase('Discovery')
@@ -848,7 +849,6 @@ phase('Implement')
 
 // ── Ceremony cache: run once, reuse on retries ──
 // These agents produce identical results across Marcus iterations — no need to re-run
-let CACHED_CEREMONY = null
 
 async function runCeremonyOnce() {
   if (CACHED_CEREMONY) {
