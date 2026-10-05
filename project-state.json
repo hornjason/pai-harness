@@ -1,6 +1,7 @@
 {
   "updated": "2026-10-05",
   "priorities": [
+    "P1: #65 Type check has never run — add tsconfig.json, fix the remaining 88 errors, and gate it so it cannot silently revert to a no-op. Scaffold must generate one for consumers too",
     "P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)",
     "P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns",
     "P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures",
@@ -10,7 +11,8 @@
     "P3: #61 Mock agent harness + pass^k determinism metrics",
     "P3: #54 — #53 Phase 2 performance + dead code cleanup",
     "WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it",
-    "WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it"
+    "WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it",
+    "WATCH: consumers re-scaffolded after b8a6aaca will pick up their own rungate.json role config for the first time. Their agent models may change from the rungate defaults they have been silently running on"
   ],
   "notes": "Session 28 (2026-10-05) — Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop.\n\nKey results:\n  - 36 test failures fixed (scaffold --fix flag missing from 6 test files, stale MCP migration tests deleted)\n  - #53 SHIPPED via pipeline (19 agents/16 min, first-pass) — 6/6 SCs\n  - TDZ bug from #53 found and fixed (CACHED_CEREMONY declaration order)\n  - #43 and #45 SHIP_FAILED via pipeline (unwinnable AC pattern) — code correct, merged manually\n  - Council debate (4 agents, 3 rounds): designed pipeline testing inner loop with security-first approach\n  - Phase 1 built directly: lib/workflow-security.ts (7 functions), test/workflow-security.test.ts (43 tests), scripts/validate-workflow.ts\n  - 7 issues created (#55-#61) for phased pipeline testing plan\n  - Security review findings addressed: fail-open git add, SSH option injection, path traversal edge cases\n\nPipeline insight: 'unwinnable AC' pattern caused #42, #43, #45 to SHIP_FAIL — Discovery writes grep evidence that doesn't match implementation. #59 (dry-run smoke test with evidence pre-validation) is the fix.\n\nSuite: 1920+ pass, 0 fail.\n\nNext: #57 ship.js security integration → #59 dry-run smoke tests → #60 trajectory capture.\nSuite: 25/25 SCs done.",
   "antipatterns": [
@@ -444,18 +446,25 @@
         "#63 fixed rather than deferred: scaffold stripped AGENTS.md frontmatter and the convert-spec row on every re-scaffold. Generator now carries frontmatter forward, refreshing only the updated field",
         "Model routing: discovery and marcus moved from sonnet to opus. No model IDs are pinned anywhere in the harness — every role uses an alias, so agents were already on Claude 5",
         "Jason directive: always fix regressions and issues found while working — never defer, never excuse as pre-existing. Saved as a memory",
-        "Jason directive: make routine git/repo-hygiene decisions autonomously — prove safety, act, report. Saved as a memory"
+        "Jason directive: make routine git/repo-hygiene decisions autonomously — prove safety, act, report. Saved as a memory",
+        "instruction-compliance.test.ts timed out: 257s scan against a 240s beforeAll budget. runTemplateCompliance spawned one npx @reporails/cli per file serially over 32 files, each paying an ~8s cold npx resolve. Now 8-way concurrent — 257.1s to 51.5s",
+        "COMP-7 false positive #6, hit while writing a commit message: `cat > file <<EOF` was blocked as a file read. It is a WRITE. hasFileOperand now parses redirections; input redirection (`cat < file`) stays blocked because that really does read a file",
+        "bunx tsc --noEmit is in the AGENTS.md Commands table but there is no tsconfig.json — tsc printed its help text and exited 0. The documented type check has NEVER checked anything. Running it properly reports 98 errors",
+        "gates/run-gate.ts always exited 0: executeGate is async and was not awaited, so process.exit(undefined) exits 0 and the executor was killed mid-flight. ship-orchestrator runs it through execFileSync, which only throws on non-zero — so every gate invoked that way reported success regardless of outcome",
+        "StaleTTLCleanup hook: cleanupStaleBranches unawaited, so br.deleted.length threw into the surrounding catch and the hook reported nothing wrong. Branch cleanup had never run. Also logged r.message, which is not a field on GapResult",
+        "buildAgentMeta was declared TWICE in lib/create-brief.ts with different parameter shapes. The second won, so the scaffold call site passing harness.roles looked up roles.roles and always got an empty map. Every consumer project's role config was silently discarded in favor of DEFAULT_AGENT_META",
+        "Corrected: today's discovery/marcus opus move appeared to work, but the briefs took it from DEFAULT_AGENT_META, not from rungate.json. Right outcome, wrong mechanism — the config path was dead"
       ]
     }
   ],
   "session": {
     "number": 29,
     "date": "2026-10-05",
-    "summary": "Fixed COMP-7 hook firing in every Claude Code session on the machine (5 distinct false positives). Shipped #57 via pipeline — first run with discovery/marcus on opus. Fixed 6 further defects found while working, including a pre-commit hook that blocked every amend and a CI secret scan that had never scanned anything.",
-    "suite": "2121 pass, 0 fail",
+    "summary": "Fixed COMP-7 hook firing in every Claude Code session on the machine (6 distinct false positives). Shipped #57 via pipeline — first run with discovery/marcus on opus. Then ran tsc for the first time ever and found three silent failures behind it, including a gate runner that always exited 0.",
+    "suite": "2468 pass, 0 fail (gates/ + test/)",
     "scs_done": "#62 (5 SCs), #57 (6 SCs), #63 (2 SCs), #64 (closed with #57)",
-    "commits": 7,
-    "issues_created": "#62, #63, #64",
+    "commits": 10,
+    "issues_created": "#62, #63, #64, #65",
     "issues_closed": "#57, #62, #63, #64"
   }
 }

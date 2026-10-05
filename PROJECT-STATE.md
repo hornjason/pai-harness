@@ -22,16 +22,18 @@ Next: #57 ship.js security integration → #59 dry-run smoke tests → #60 traje
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)
-2. P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns
-3. P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures
-4. P1: Re-scaffold consumers (DDB, POV) — they still carry the broken pre-commit hook that rejects every git commit --amend, and the no-op CI secret scan
-5. P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime
-6. P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
-7. P3: #61 Mock agent harness + pass^k determinism metrics
-8. P3: #54 — #53 Phase 2 performance + dead code cleanup
-9. WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it
-10. WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it
+1. P1: #65 Type check has never run — add tsconfig.json, fix the remaining 88 errors, and gate it so it cannot silently revert to a no-op. Scaffold must generate one for consumers too
+2. P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)
+3. P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns
+4. P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures
+5. P1: Re-scaffold consumers (DDB, POV) — they still carry the broken pre-commit hook that rejects every git commit --amend, and the no-op CI secret scan
+6. P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime
+7. P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
+8. P3: #61 Mock agent harness + pass^k determinism metrics
+9. P3: #54 — #53 Phase 2 performance + dead code cleanup
+10. WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it
+11. WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it
+12. WATCH: consumers re-scaffolded after b8a6aaca will pick up their own rungate.json role config for the first time. Their agent models may change from the rungate defaults they have been silently running on
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
