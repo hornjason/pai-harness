@@ -150,6 +150,69 @@ const DRY_RUN = parsedArgs.dryRun || false
 const SKIP_GRADE = parsedArgs.skipGrade || false
 const MAX_REGRESSIONS = 2
 
+// ── Shell-safe command construction (#57) ────────────────────
+// Every shell string built from agent-supplied data goes through
+// lib/workflow-security.ts. Loaded with require() — the workflow sandbox has
+// no dynamic import(), but it does expose require (see the orchestrator and
+// compliance-report loads later in this file).
+let SECURITY
+try {
+  SECURITY = require(`${HARNESS_ROOT}/lib/workflow-security.ts`)
+} catch (e) {
+  return {
+    status: 'ARGS_ERROR',
+    message: `Cannot load ${HARNESS_ROOT}/lib/workflow-security.ts (${e.message}) — refusing to run with unvalidated shell construction`,
+  }
+}
+const { buildSafeGitAdd, buildSafeSSHCommand, resolveEvidencePath, validateEvidenceCommand } = SECURITY
+
+// ──── SECURITY-HELPERS-START ────
+// Single-quote a shell word. Only ever applied to argv produced by the
+// workflow-security builders, never to raw agent output.
+function shellQuote(word) {
+  return `'${String(word).replace(/'/g, "'\\''")}'`
+}
+
+// Agents report file paths relative to their own cwd or as absolutes inside a
+// worktree. buildSafeGitAdd rejects absolutes, so rebase them onto the repo first.
+function relativizePaths(files, baseDir) {
+  const bases = [baseDir, PROJECT_ROOT].filter(Boolean)
+  return (files || []).map(f => {
+    let p = String(f).trim()
+    for (const b of bases) {
+      if (p === b) return ''
+      if (p.startsWith(`${b}/`)) return p.slice(b.length + 1)
+    }
+    return p
+  }).filter(Boolean)
+}
+
+// Returns a `git add ...` command that is safe to paste into a shell.
+// Unsafe or empty input degrades to the static `git add .` the workflow has
+// always used as its fallback — never to an interpolated string.
+function safeGitAddCommand(files, baseDir) {
+  const rel = relativizePaths(files, baseDir)
+  if (rel.length === 0) return 'git add .'
+  try {
+    return buildSafeGitAdd(rel)
+  } catch (e) {
+    log(`WARN: unsafe file paths rejected (${e.message}) — falling back to 'git add .'`)
+    return 'git add .'
+  }
+}
+
+// Returns an `ssh ...` command string, or null when the host is unsafe.
+function safeSSHCommand(host, remoteCmd) {
+  try {
+    const argv = buildSafeSSHCommand(host, remoteCmd)
+    return `${argv[0]} ${argv.slice(1).map(shellQuote).join(' ')} 2>&1`
+  } catch (e) {
+    log(`WARN: skipping SSH pre-flight for "${host}": ${e.message}`)
+    return null
+  }
+}
+// ──── SECURITY-HELPERS-END ────
+
 // ── Agent brief loader (config-driven) ────────────────────
 // Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
 // Roles from args.roles (passed by skill from rungate.json) or convention fallback.
@@ -344,11 +407,10 @@ if (preflightResults) {
   const hostChecks = Object.entries(remoteHosts)
     .filter(([, config]) => config.host)
     .map(([name, config]) => {
-      const cmd = config.preFlightCmd
-        ? `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${config.host} "${config.preFlightCmd}" 2>&1`
-        : `ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no ${config.host} "hostname" 2>&1`
+      const cmd = safeSSHCommand(config.host, config.preFlightCmd || 'hostname')
       return { name, host: config.host, purpose: config.purpose, cmd }
     })
+    .filter(h => h.cmd)
 
   if (hostChecks.length > 0) {
     const batchResult = await agent(`
@@ -497,13 +559,30 @@ Project root: ${PROJECT_ROOT}
       if (cmd !== ac.evidenceMethod.command) {
         log(`Normalized evidence path for ${ac.id}: stripped absolute paths`)
       }
-      ac.evidenceMethod.command = cmd
-    }
-    // Normalize contextFiles paths too
-    for (const cf of ac.contextFiles || []) {
-      if (cf.path?.startsWith(PROJECT_ROOT + '/')) {
-        cf.path = cf.path.slice(PROJECT_ROOT.length + 1)
+      // Evidence commands are executed verbatim by the gates — screen them.
+      const verdict = validateEvidenceCommand(cmd)
+      if (!verdict.safe) {
+        log(`REJECTED evidence command for ${ac.id}: ${verdict.reason} — downgraded to MANUAL`)
+        ac.evidenceMethod.type = 'MANUAL'
+        delete ac.evidenceMethod.command
+      } else {
+        ac.evidenceMethod.command = cmd
       }
+    }
+    // Normalize contextFiles paths too, then drop any that escape the repo
+    if (ac.contextFiles) {
+      ac.contextFiles = ac.contextFiles.filter(cf => {
+        if (cf.path?.startsWith(PROJECT_ROOT + '/')) {
+          cf.path = cf.path.slice(PROJECT_ROOT.length + 1)
+        }
+        try {
+          resolveEvidencePath(PROJECT_ROOT, cf.path || '')
+          return true
+        } catch (e) {
+          log(`Dropped unsafe contextFile for ${ac.id} (${cf.path}): ${e.message}`)
+          return false
+        }
+      })
     }
   }
 
@@ -1225,13 +1304,13 @@ const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
-const filesForCommit = (implementResult.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
+const gitAddForCommit = safeGitAddCommand(implementResult.buildResult?.filesChanged, commitDir)
 const commitResult = await agent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
 1. Commit and push:
    cd ${commitDir}
-   git add ${filesForCommit || '.'}
+   ${gitAddForCommit}
    git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
    git push -u origin ${pushTarget}
 
@@ -1285,10 +1364,10 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify CODE regression #${regressionCount} — re-implementing failed ACs`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplFiles = (reimpl.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
+      const reimplGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${PROJECT_ROOT} && git add ${reimplFiles || '.'} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
+cd ${PROJECT_ROOT} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
 Report commit SHA.
       `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryVerify = await runGateWithHeal('verify', 'Verify',
@@ -1661,10 +1740,10 @@ if (shipResult?.result !== 'PASS') {
     log(`Ship BUILD regression #${regressionCount} — re-implementing`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplShipFiles = (reimpl.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
+      const reimplShipGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${PROJECT_ROOT} && git add ${reimplShipFiles || '.'} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
+cd ${PROJECT_ROOT} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
 Report commit SHA.
       `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.')
