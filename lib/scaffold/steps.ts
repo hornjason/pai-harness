@@ -1318,9 +1318,16 @@ jobs:
           # into the filters would turn an error into empty input, which reads
           # as "clean" — passing exactly when the scan could not run.
           # git grep exits 1 for "no match", which is not an error.
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . || true)
-          if [ $? -gt 1 ]; then
-            echo "::error::git grep failed — refusing to report a clean scan"
+          # NOTE: do NOT append "|| true" to the assignment below. It makes the
+          # assignment itself succeed, so $? is always 0 and the error branch
+          # becomes dead code — the scan would fail open on a git error.
+          set +e
+          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- .)
+          rc=$?
+          set -e
+          # git grep: 0 = match, 1 = no match, >1 = real error.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::git grep failed (exit $rc) — refusing to report a clean scan"
             exit 1
           fi
           # Exclusion applies to the extracted VALUE, not the whole line.
@@ -1548,15 +1555,46 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
 
 export function postScaffoldCommit(root: string, actions: string[]): void {
   try {
-    const result = Bun.spawnSync(["git", "-C", root, "status", "--porcelain"]);
-    const status = result.stdout.toString().trim();
-    if (!status) {
+    // Stage ONLY what this scaffold run generated, never `git add -A`.
+    //
+    // The blanket add swept up whatever else was in the working tree and
+    // committed it under "scaffold: initialize rungate harness". Running
+    // scaffold mid-session therefore hijacked unrelated in-progress work into
+    // a commit with a message describing none of it — and, because the commit
+    // already existed, the real commit then had to be an amend.
+    const generated = [...new Set(
+      actions
+        // Verbs that mean "scaffold wrote this path". Deliberately excludes
+        // SKIP / GAP / WARN / AUDIT (no write happened) — and all of them,
+        // because missing one silently leaves generated files uncommitted.
+        .map(a => a.trim().match(/^(?:CREATED|UPDATED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
+        .filter((p): p is string => Boolean(p))
+        // .git/ contents are not tracked; hooks live there.
+        // .git/ contents are never tracked. Directories are kept — scaffold
+        // reports some output as a created directory (.claude/rules/) rather
+        // than per-file, and git add stages a directory's contents.
+        .map(p => p.replace(/\/+$/, ""))
+        .filter(p => p && !p.startsWith(".git/") && p !== ".git")
+        .filter(p => existsSync(join(root, p)))
+    )];
+
+    if (generated.length === 0) {
+      actions.push("SKIP: post-scaffold commit (nothing generated)");
+      return;
+    }
+
+    Bun.spawnSync(["git", "-C", root, "add", "--", ...generated]);
+
+    // Only commit if staging actually produced a change — re-scaffolding an
+    // up-to-date project regenerates identical files and must stay a no-op.
+    const staged = Bun.spawnSync(["git", "-C", root, "diff", "--cached", "--name-only"])
+      .stdout.toString().trim();
+    if (!staged) {
       actions.push("SKIP: post-scaffold commit (no changes)");
       return;
     }
 
-    Bun.spawnSync(["git", "-C", root, "add", "-A"]);
-    Bun.spawnSync(["git", "-C", root, "commit", "-m", "scaffold: initialize rungate harness"]);
+    Bun.spawnSync(["git", "-C", root, "commit", "-m", "scaffold: regenerate harness files"]);
     actions.push("CREATED: post-scaffold commit");
   } catch {
     actions.push("SKIP: post-scaffold commit (git error)");
