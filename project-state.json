@@ -1,16 +1,20 @@
 {
   "updated": "2026-10-05",
   "priorities": [
-    "P0: #53 Pipeline hardening — fix evidence paths, eliminate dead agents, add safety guards (BLOCKS all shipping)",
+    "P0: #55 Pipeline testing inner loop — Phase 1 DONE (#56/#58 closed), Phase 2 next (#57 partial, #59, #60)",
+    "P1: #57 Ship.js security integration — replace inline git add/SSH with lib/workflow-security.ts functions",
+    "P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns",
     "P1: DDB #1450 — Fix CI checks on Mac Mini runner (5 failures, still OPEN, CI still red)",
-    "P1: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
-    "P2: #45 BashToolGuard in worktrees — permissions.deny reduced cat 80% but not eliminated",
-    "P2: #43 acHash integrity — code written (writeWorkflowState recompute), needs pipeline proof",
-    "DONE: #47 Pipeline optimization — ceremony agents eliminated, ~50% pre-Marcus speedup",
-    "DONE: #41 Scaffold: detect and migrate specs — SHIPPED via pipeline session 27",
-    "DONE: #42 Scaffold auto-fix — code merged but SHIP_FAILED 2x (evidence path mismatch, tracked in #53)"
+    "P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime",
+    "P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
+    "P3: #61 Mock agent harness + pass^k determinism metrics",
+    "DONE: #53 Pipeline hardening — SHIPPED via pipeline, 6/6 SCs",
+    "DONE: #43 acHash integrity — code merged from branch, field-level diff logging added",
+    "DONE: #45 BashToolGuard worktrees — piped pattern blocking + COMP-7 prompt injection removed",
+    "DONE: #56 Workflow validator — syntax + TDZ + shell pattern checking in <200ms",
+    "DONE: #58 Security fuzzing — 43 adversarial tests, 0 injection vectors pass"
   ],
-  "notes": "Session 27 (2026-10-04/05) — Pipeline optimization shipped, then deep audit found 8 systemic issues.\n\nKey results:\n  - #47 pipeline optimization: ceremony agents eliminated, precompute-goal.ts, ceremony caching\n  - #41 SHIPPED via optimized pipeline (17 agents/20 min, first-pass)\n  - #42 SHIP_FAILED 2x: root cause = Discovery invents test filenames Marcus doesn't create (unwinnable ACs)\n  - Pipeline audit found: env-defaults redundant (170s), commit runs tests (431s), ac-completion-check duplicates verify, git add -A unsafe, hill-climb dead code\n  - #53 created: pipeline hardening (fix evidence paths, delete dead agents, safety guards)\n  - permissions.deny reduced COMP-7 cat usage 80% but not eliminated in worktrees\n  - DDB #1450 still OPEN — CI still failing, not yet tested\n\nPipeline trend:\n  #41: 17 agents/20min SHIPPED (optimized, first-pass)\n  #42 attempt 1: 27 agents/57min SHIP_FAILED (evidence corruption)\n  #42 attempt 2: 19 agents/34min SHIP_FAILED (ceremony caching worked, Marcus researched instead of implementing)\n\nSuite: 1880+ pass, 0 fail.\n\nNext: #53 pipeline hardening → DDB #1450 CI fix → #23 Mac Mini isolation.\nSuite: 25/25 SCs done.",
+  "notes": "Session 28 (2026-10-05) — Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop.\n\nKey results:\n  - 36 test failures fixed (scaffold --fix flag missing from 6 test files, stale MCP migration tests deleted)\n  - #53 SHIPPED via pipeline (19 agents/16 min, first-pass) — 6/6 SCs\n  - TDZ bug from #53 found and fixed (CACHED_CEREMONY declaration order)\n  - #43 and #45 SHIP_FAILED via pipeline (unwinnable AC pattern) — code correct, merged manually\n  - Council debate (4 agents, 3 rounds): designed pipeline testing inner loop with security-first approach\n  - Phase 1 built directly: lib/workflow-security.ts (7 functions), test/workflow-security.test.ts (43 tests), scripts/validate-workflow.ts\n  - 7 issues created (#55-#61) for phased pipeline testing plan\n  - Security review findings addressed: fail-open git add, SSH option injection, path traversal edge cases\n\nPipeline insight: 'unwinnable AC' pattern caused #42, #43, #45 to SHIP_FAIL — Discovery writes grep evidence that doesn't match implementation. #59 (dry-run smoke test with evidence pre-validation) is the fix.\n\nSuite: 1920+ pass, 0 fail.\n\nNext: #57 ship.js security integration → #59 dry-run smoke tests → #60 trajectory capture.\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -204,6 +208,22 @@
     }
   ],
   "sessions": [
+    {
+      "date": "2026-10-05 session 28",
+      "items": [
+        "36 test failures fixed: scaffold --fix flag missing from 6 test files after #42, stale MCP migration tests deleted",
+        "#53 SHIPPED via pipeline (19 agents/16 min): env-defaults removed, commit no-test, ac-completion-check removed, safe git add, CACHED_CEREMONY invalidation",
+        "TDZ bug from #53 found and fixed: CACHED_CEREMONY let declaration moved before runDiscovery usage",
+        "#43 SHIP_FAILED (pipeline evidence bug) — code correct on branch 43-achash-heal-fix, merged manually. diffAcHashFields() added to orchestrator.ts",
+        "#45 SHIP_FAILED (pipeline evidence bug) — code correct on branch 45-bash-guard-piped-patterns, merged manually. BashToolGuard now blocks piped patterns",
+        "Council debate (Architect/Engineer/Researcher/Security, 3 rounds): designed pipeline testing inner loop",
+        "Council key finding: security boundary extraction urgent, keep orchestration inline, trajectory capture unifies",
+        "Phase 1 built: lib/workflow-security.ts (7 functions), test/workflow-security.test.ts (43 tests), scripts/validate-workflow.ts",
+        "Issues created: #55 (epic), #56 (validator, DONE), #57 (extraction, partial), #58 (fuzzing, DONE), #59 (dry-run), #60 (trajectory), #61 (harness)",
+        "Security review findings addressed: fail-open git add, SSH option injection, path traversal bare .., denylist documentation",
+        "Suite: 1920+ pass, 0 fail. 8 commits pushed, 5 issues closed"
+      ]
+    },
     {
       "date": "2026-10-04 session 27",
       "items": [
@@ -411,13 +431,13 @@
     }
   ],
   "session": {
-    "number": 27,
-    "date": "2026-10-04",
-    "summary": "#47 pipeline optimization shipped — all 5 phases complete. Ceremony agents replaced with deterministic pre-computation. ~7 agents eliminated per run, ~50% pre-Marcus speedup. DDB #1450 unblocked.",
-    "suite": "1880+ pass, 0 fail",
-    "scs_done": "#47 pipeline optimization (5 phases: goal determinism, context preloading, implement ceremony, scope ceremony, validation)",
-    "commits": 5,
-    "issues_created": "#48, #49, #50, #51, #52",
-    "issues_closed": "#47, #48, #49, #50, #51, #52"
+    "number": 28,
+    "date": "2026-10-05",
+    "summary": "Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop (council-driven). #43/#45 code merged manually after SHIP_FAILED on unwinnable ACs. Security boundary extraction + 43 fuzzing tests + workflow validator.",
+    "suite": "1920+ pass, 0 fail",
+    "scs_done": "#53 (6 SCs), #43 (5 SCs), #45 (4 SCs), #56 (5 SCs), #58 (5 SCs)",
+    "commits": 8,
+    "issues_created": "#55, #56, #57, #58, #59, #60, #61",
+    "issues_closed": "#43, #45, #53, #56, #58"
   }
 }
