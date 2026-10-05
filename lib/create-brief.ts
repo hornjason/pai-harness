@@ -126,8 +126,13 @@ export function addRoleToConfig(configPath: string, roleName: string, descriptio
 }
 
 export const DEFAULT_AGENT_META: Record<string, AgentMeta> = {
-  discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "sonnet", effort: "low", disallowedTools: ["Write", "Edit"], omitClaudeMd: true, tiers: { reinforcement: ["Discovery Rules"] } },
-  marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "sonnet", memory: "project", maxTurns: 30, effort: "high", isolation: "worktree", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
+  // discovery and marcus run opus: discovery authors the ACs and evidence
+  // commands (the "unwinnable AC" pattern that SHIP_FAILED #42/#43/#45
+  // originates there), and marcus does multi-file TDD implementation. Both
+  // clear the "multi-file architectural reasoning" bar in the model routing
+  // guidance; the read-only and checklist roles below stay on sonnet.
+  discovery: { description: "Discovery agent — reads issue, sizes work, writes ACs with evidence methods", tools: "[Bash, Read]", model: "opus", effort: "low", disallowedTools: ["Write", "Edit"], omitClaudeMd: true, tiers: { reinforcement: ["Discovery Rules"] } },
+  marcus: { description: "Principal engineer — implements code changes with TDD, writes tests, commits", tools: "[Bash, Read, Write, Edit]", model: "opus", memory: "project", maxTurns: 30, effort: "high", isolation: "worktree", tiers: { reinforcement: ["Testing Rules"], mechanical: ["Workflow"] } },
   quinn: { description: "QA engineer — tests as a brand-new user using Playwright MCP tools", tools: "[Bash, Read, mcp__playwright__*]", model: "sonnet", effort: "high", disallowedTools: ["Write", "Edit"], omitClaudeMd: true, tiers: { reinforcement: ["Project Type Detection", "CLI Testing Mode"] } },
   rook: { description: "Security engineer — scans changed files for vulnerabilities", tools: "[Bash, Read]", model: "sonnet", effort: "low", disallowedTools: ["Write", "Edit"], omitClaudeMd: true },
   serena: { description: "Software architect — structural decisions, ADRs, module boundary review", tools: "[Read]", model: "sonnet", disallowedTools: ["Write", "Edit"] },

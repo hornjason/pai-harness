@@ -36,11 +36,20 @@ import { dirname, join } from 'path';
 import { parseHookInput } from './lib/utils';
 import { detectBashFileRead } from '../lib/bash-file-read';
 
-/** True when cwd sits at or below a project containing .claude/rungate.json. */
+/**
+ * True when cwd sits at or below a rungate-harnessed project.
+ *
+ * Accepts BOTH config markers. Config is migrating from the monolithic
+ * .claude/rungate.json to the directory form .claude/rungate/ (see
+ * CONFIG-DIRECTORY-STRUCTURE-SPEC.md); lib/config-loader.ts reads the
+ * directory and falls back to the file. Checking only the file would silently
+ * disable COMP-7 for any project that completes the migration.
+ */
 function isHarnessProject(startDir: string): boolean {
   let dir = startDir;
   while (true) {
-    if (existsSync(join(dir, '.claude', 'rungate.json'))) return true;
+    const claude = join(dir, '.claude');
+    if (existsSync(join(claude, 'rungate.json')) || existsSync(join(claude, 'rungate'))) return true;
     const parent = dirname(dir);
     if (parent === dir) return false;
     dir = parent;

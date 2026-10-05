@@ -216,6 +216,18 @@ describe('BashToolGuard — harness project scoping', () => {
     expectBlocked(out);
   });
 
+  it('blocks cat in a project using the directory config form', async () => {
+    // Config is migrating from .claude/rungate.json to .claude/rungate/
+    const dirForm = mkdtempSync(join(tmpdir(), 'btg-dirform-'));
+    mkdirSync(join(dirForm, '.claude', 'rungate'), { recursive: true });
+    try {
+      const out = await runHook('cat file.txt', dirForm);
+      expectBlocked(out);
+    } finally {
+      rmSync(dirForm, { recursive: true, force: true });
+    }
+  });
+
   it('allows cat outside any harnessed project', async () => {
     const out = await runHook('cat file.txt', plainDir);
     expectAllowed(out);

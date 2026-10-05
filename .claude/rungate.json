@@ -12,7 +12,7 @@
       "standardTask": "Scan the codebase and identify all specs, their SCs, and current test coverage",
       "description": "Discovery agent — reads issue, sizes work, writes ACs with evidence methods",
       "tools": "[Bash, Read]",
-      "model": "sonnet",
+      "model": "opus",
       "tiers": {
         "reinforcement": [
           "Discovery Rules"
@@ -25,7 +25,7 @@
       "standardTask": "Add config/test.json with {name: test} and write a unit test for it",
       "description": "Principal engineer — implements code changes with TDD, writes tests, commits",
       "tools": "[Bash, Read, Write, Edit]",
-      "model": "sonnet",
+      "model": "opus",
       "tiers": {
         "reinforcement": [
           "Testing Rules"
@@ -64,7 +64,10 @@
       "description": "Software architect — structural decisions, ADRs, module boundary review",
       "tools": "[Read]",
       "model": "sonnet",
-      "disallowedTools": ["Write", "Edit"]
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ]
     },
     "aditi": {
       "brief": ".claude/agents/aditi.md",
@@ -73,7 +76,10 @@
       "description": "UX/UI designer — component specs, visual review, accessibility",
       "tools": "[Read]",
       "model": "sonnet",
-      "disallowedTools": ["Write", "Edit"],
+      "disallowedTools": [
+        "Write",
+        "Edit"
+      ],
       "tiers": {
         "reinforcement": [
           "Project Type Detection"

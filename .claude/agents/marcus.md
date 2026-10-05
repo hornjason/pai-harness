@@ -2,7 +2,7 @@
 name: marcus
 description: Principal engineer — implements code changes with TDD, writes tests, commits
 tools: [Bash, Read, Write, Edit]
-model: sonnet
+model: opus
 memory: project
 maxTurns: 30
 effort: high

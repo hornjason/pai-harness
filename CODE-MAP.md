@@ -1,14 +1,14 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-10-01
-scanned-at-sha: e526f5dd
+updated: 2026-10-05
+scanned-at-sha: 9ae1ab12
 generator: rungate/scripts/generate-code-map.ts
 ---
 
 # Code Map — rungate
 
-Auto-generated architecture snapshot. Re-run `bun generate-code-map.ts /Users/jhorn/Projects/rungate` to refresh.
+Auto-generated architecture snapshot. Re-run `bun generate-code-map.ts .` to refresh.
 Regenerate when src/ has commits since scanned-at-sha.
 
 ## Summary
@@ -16,11 +16,11 @@ Regenerate when src/ has commits since scanned-at-sha.
 | Metric | Count |
 |--------|-------|
 | Source directories | 13 |
-| Dependencies | 1 |
+| Dependencies | 2 |
 | Dev dependencies | 1 |
 | API routes | 0 |
 | React components | 0 |
-| Entry points (fallow) | 170 |
+| Entry points (fallow) | 193 |
 | Unused files | 6 |
 | Unused exports | 1 |
 | Circular dependencies | N/A |
@@ -31,16 +31,16 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| test/ | 186 | ts, unit, json, fixtures, fixtures/golden-project |
-| evals/ | 142 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| lib/ | 50 | ts, validators, generators, scaffold |
+| .claude/ | 23698 | DS_Store, json, output-styles, agents, rungate |
+| test/ | 201 | ts, unit, json, fixtures, fixtures/golden-project |
+| evals/ | 151 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
+| lib/ | 57 | ts, validators, generators, scaffold |
+| scripts/ | 49 | ts, sh, git-hooks, lib, git-hooks/pre-push |
 | docs/ | 43 | research, adr, DS_Store, council, session-log |
-| scripts/ | 43 | ts, sh, git-hooks, lib, git-hooks/pre-push |
 | gates/ | 33 | ts, gate-salt, toml, md, test-fixtures |
-| specs/ | 30 | md, bootstrap-data-flow, json, png |
-| .claude/ | 26 | DS_Store, json, output-styles, agents, lock |
+| specs/ | 33 | md, bootstrap-data-flow, json, png |
 | prompts/ | 24 | md |
-| hooks/ | 21 | ts, lib |
+| hooks/ | 23 | ts, lib |
 | config/ | 8 | json, yaml |
 | templates/ | 8 | agent-briefs, md |
 | workflows/ | 6 | js |

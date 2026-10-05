@@ -17,10 +17,13 @@ Read the governing spec BEFORE making changes in that area.
 | PROJECT-STATE.md | Project state management — how project-state.json drives PROJECT-STATE.md generation and session handoff | false |
 | HARNESS-GATES.md | Gate definitions — what checks run at each harness gate and their pass/fail criteria | true |
 | AGENTS-MD-TEMPLATE-SPEC.md | AGENTS.md template structure — what's baked in, what's scanned, how to update | true |
+| CONFIG-DIRECTORY-STRUCTURE-SPEC.md | rungate config architecture — directory-based config replacing monolithic rungate.json, self-describing compliance polic | true |
 | INSTRUCTION-COMPLIANCE-SPEC.md | Instruction compliance testing — grading, behavioral verification, and hill climbing template files | true |
 | SESSION-AUDIT-SPEC.md | Session behavioral audit — two feedback loops for instruction quality improvement | false |
+| DOC-HYGIENE-ARCHITECTURE-SPEC.md | Doc-hygiene architecture — spec discovery via governs-field, mechanical drift detection, signal-based enforcement | true |
 | PARALLEL-AGENT-COORDINATION-SPEC.md | Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi | true |
 | CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | true |
+| GITHUB-API-MIGRATION-SPEC.md | GitHub API access — two-layer architecture replacing gh CLI with MCP (agent prompts) and Octokit (TypeScript infrastruct | true |
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | true |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | true |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content as | true |
