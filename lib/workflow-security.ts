@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from "crypto";
 
 const SHELL_METACHARACTERS = /[;&|$`\n\r"'\\(){}[\]<>!~*?#]/;
-const PATH_TRAVERSAL = /\.\.[/\\]/;
+const PATH_TRAVERSAL = /\.\.($|[/\\])/;
 const NULL_BYTE = /\x00/;
 
 export function buildSafeGitAdd(filesChanged: string[]): string {
@@ -11,7 +11,7 @@ export function buildSafeGitAdd(filesChanged: string[]): string {
       `Rejected unsafe file paths: ${validated.rejected.join(", ")}`,
     );
   }
-  if (validated.valid.length === 0) return "git add .";
+  if (validated.valid.length === 0) throw new Error("No valid files to stage");
   return `git add ${validated.valid.map((f) => `'${f.replace(/'/g, "'\\''")}'`).join(" ")}`;
 }
 
@@ -76,6 +76,9 @@ export function validateEvidenceCommand(command: string): {
       return { safe: false, reason: `Dangerous pattern: ${pattern.source}` };
     }
   }
+  // Heuristic denylist — blocks known-dangerous patterns but not a security gate
+  // for arbitrary command execution. Evidence commands are controlled by Discovery,
+  // not external input, so denylist is defense-in-depth, not the primary control.
   return { safe: true };
 }
 
@@ -86,12 +89,16 @@ export function buildSafeSSHCommand(
   if (SHELL_METACHARACTERS.test(host)) {
     throw new Error(`SSH host contains shell metacharacters: ${host}`);
   }
+  if (host.startsWith("-")) {
+    throw new Error(`SSH host starts with dash (option injection): ${host}`);
+  }
   return [
     "ssh",
     "-o",
     "ConnectTimeout=5",
     "-o",
     "StrictHostKeyChecking=no",
+    "--",
     host,
     command,
   ];

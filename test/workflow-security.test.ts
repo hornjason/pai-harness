@@ -52,8 +52,8 @@ describe("buildSafeGitAdd — command injection", () => {
     expect(result).toContain("'src/my file.ts'");
   });
 
-  test("returns git add . for empty array", () => {
-    expect(buildSafeGitAdd([])).toBe("git add .");
+  test("throws on empty array (no fail-open to git add .)", () => {
+    expect(() => buildSafeGitAdd([])).toThrow("No valid files");
   });
 });
 
@@ -98,6 +98,10 @@ describe("resolveEvidencePath — path traversal", () => {
 
   test("rejects absolute evidence paths", () => {
     expect(() => resolveEvidencePath("/base", "/etc/shadow")).toThrow("absolute");
+  });
+
+  test("rejects bare .. at end of path", () => {
+    expect(() => resolveEvidencePath("/base", "valid/..")).toThrow("traversal");
   });
 
   test("accepts clean relative paths", () => {
@@ -150,18 +154,22 @@ describe("buildSafeSSHCommand — SSH injection", () => {
     expect(() => buildSafeSSHCommand("host$(id)", "hostname")).toThrow("metacharacters");
   });
 
-  test("returns arg array for safe host", () => {
+  test("rejects host starting with dash (option injection)", () => {
+    expect(() => buildSafeSSHCommand("-oProxyCommand=evil", "hostname")).toThrow("dash");
+  });
+
+  test("returns arg array with -- separator for safe host", () => {
     const result = buildSafeSSHCommand("mac-mini.local", "hostname");
     expect(result).toEqual([
       "ssh", "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=no",
-      "mac-mini.local", "hostname",
+      "--", "mac-mini.local", "hostname",
     ]);
   });
 
   test("command is passed as single argument (no shell splitting)", () => {
     const result = buildSafeSSHCommand("host.local", "echo hello && rm -rf /");
     expect(result[result.length - 1]).toBe("echo hello && rm -rf /");
-    expect(result).toHaveLength(7);
+    expect(result).toHaveLength(8);
   });
 });
 
