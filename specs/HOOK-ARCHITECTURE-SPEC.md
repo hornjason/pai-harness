@@ -44,7 +44,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | TaskCompleted | TaskCompleted.hook.ts | 51 | SC-370, SC-372 | Good — logic in lib/task-completion-checks.ts |
 | SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
 | WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
-| TestSuiteGuard | TestSuiteGuard.hook.ts | 55 | SC-473, SC-370 | Tier 3 for DIR-L29 |
+| TestSuiteGuard | TestSuiteGuard.hook.ts | 32 | SC-473, SC-370 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
+| TestSuiteRelease | TestSuiteRelease.hook.ts | 32 | SC-370, SC-516 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
 
 ## Success Criteria
 
@@ -58,6 +59,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [x] SC-392: Hook activation controlled by config enabled field (behavioral)
 - [x] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
 - [x] SC-473: TestSuiteGuard blocks full test suite (bun test) after 2 runs per session — Tier 3 enforcement for DIR-L29
+- [x] SC-516: TestSuiteGuard caps concurrent full suites across sessions at 2 — issue #67. The per-session cap in SC-473 does not bound the machine: N sessions obeying the CLAUDE.md pre-implementation gate means N simultaneous 5.4 GB suites, which exhausted the VM compressor and rebooted the machine on 2026-10-05. Slots are files, not a process count — the agentgrit suite leaks ~31 dangling bun processes per run, and BSD `pgrep` has no `-c` flag so the obvious count silently returns nothing. Fails open, never silent.
 
 ## Implementation
 
