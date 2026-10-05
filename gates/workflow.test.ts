@@ -576,8 +576,9 @@ describe("verify checks", () => {
     expect(VALID_UI_EVIDENCE.includes(afterType), `afterEvidence.type must be screenshot or api-response for UI changes, got "${afterType}" (ADR-009 A4)`).toBe(true);
   });
 
-  // acHash consistency: verify gate checks scope's AC hash (ADR-009)
-  // Hash auto-recomputed by writeWorkflowState on authorized modifications
+  // acHash consistency: verify gate checks scope's AC hash (ADR-009, #43)
+  // Hash auto-recomputed by writeWorkflowState on authorized modifications;
+  // mismatches indicate unauthorized direct-write tampering.
   test("acHash-consistency-verify: ACs unchanged since scope", () => {
     if (!isVerifyPlus()) return;
     const acHash = sf("gates")?.scope?.acHash;
@@ -588,6 +589,20 @@ describe("verify checks", () => {
       evidenceMethod: ac.evidenceMethod,
     }));
     const currentHash = require("crypto").createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+    if (currentHash !== acHash) {
+      // Log field-level diff for diagnostics before failing (#43 AC-1)
+      const { diffAcFields } = require("./orchestrator");
+      const scopeState = loadRaw();
+      const scopeAcDefs = (scopeState?.acs || []).map((ac: any) => ({
+        id: ac.id, type: ac.type, statement: ac.statement,
+        specElement: ac.specElement, threshold: ac.threshold,
+        evidenceMethod: ac.evidenceMethod,
+      }));
+      const changedFields = diffAcFields(scopeAcDefs, acDefs);
+      if (changedFields.length > 0) {
+        console.error(`acHash field-level diff: ${JSON.stringify(changedFields, null, 2)}`);
+      }
+    }
     expect(currentHash).toBe(acHash);
   });
 
@@ -967,8 +982,9 @@ describe("ship checks", () => {
     }
   });
 
-  // acHash consistency: ship gate checks scope's AC hash (ADR-009)
-  // Downgraded to WARN: same as verify — heal agents can modify ACs post-scope
+  // acHash consistency: ship gate checks scope's AC hash (ADR-009, #43)
+  // Restored to FAIL: writeWorkflowState now recomputes acHash on authorized modifications,
+  // so mismatches indicate unauthorized direct-write tampering, not heal agent changes.
   test("acHash-consistency-ship: ACs unchanged since scope", () => {
     if (!isShipPlus()) return;
     const acHash = sf("gates")?.scope?.acHash;
@@ -980,8 +996,20 @@ describe("ship checks", () => {
     }));
     const currentHash = require("crypto").createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
     if (currentHash !== acHash) {
-      console.warn(`WARN: acHash mismatch — scope: ${acHash.slice(0, 12)}... current: ${currentHash.slice(0, 12)}... (ADR-009 integrity check)`);
+      // Log field-level diff for diagnostics before failing
+      const { diffAcFields } = require("./orchestrator");
+      const scopeState = loadRaw();
+      const scopeAcDefs = (scopeState?.acs || []).map((ac: any) => ({
+        id: ac.id, type: ac.type, statement: ac.statement,
+        specElement: ac.specElement, threshold: ac.threshold,
+        evidenceMethod: ac.evidenceMethod,
+      }));
+      const changedFields = diffAcFields(scopeAcDefs, acDefs);
+      if (changedFields.length > 0) {
+        console.error(`acHash field-level diff: ${JSON.stringify(changedFields, null, 2)}`);
+      }
     }
+    expect(currentHash).toBe(acHash);
   });
 
   // prove-label-enforcement: needs-prove label must have matching proven label (#1390)

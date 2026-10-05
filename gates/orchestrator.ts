@@ -76,6 +76,62 @@ const PHASE_ADVANCE: Record<string, string> = {
   ship: "DONE",
 };
 
+// ── acHash helpers (ADR-009, #43) ───────────────────────────────────────
+
+/** AC definition fields used for acHash — excludes mutable verdict/evidence */
+const AC_DEF_FIELDS = ["id", "type", "statement", "specElement", "threshold", "evidenceMethod"] as const;
+
+/** Extract definition-only fields from ACs for hashing (excludes mutable verdict/evidence) */
+function extractAcDefs(acs: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return acs.map((ac) => ({
+    id: ac.id, type: ac.type, statement: ac.statement,
+    specElement: ac.specElement, threshold: ac.threshold,
+    evidenceMethod: ac.evidenceMethod,
+  }));
+}
+
+export interface AcFieldDiff {
+  acId: string;
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+
+/** Compare AC definition fields between two snapshots and return field-level diffs */
+export function diffAcFields(
+  before: Array<Record<string, unknown>>,
+  after: Array<Record<string, unknown>>,
+): AcFieldDiff[] {
+  const diffs: AcFieldDiff[] = [];
+  const beforeMap = new Map(before.map(ac => [ac.id as string, ac]));
+  const afterMap = new Map(after.map(ac => [ac.id as string, ac]));
+
+  // Check for removed ACs
+  for (const [id] of beforeMap) {
+    if (!afterMap.has(id)) {
+      diffs.push({ acId: id, field: "(removed)", before: "present", after: "absent" });
+    }
+  }
+
+  // Check for added or modified ACs
+  for (const [id, afterAc] of afterMap) {
+    const beforeAc = beforeMap.get(id);
+    if (!beforeAc) {
+      diffs.push({ acId: id, field: "(added)", before: "absent", after: "present" });
+      continue;
+    }
+    for (const field of AC_DEF_FIELDS) {
+      const bVal = JSON.stringify(beforeAc[field]);
+      const aVal = JSON.stringify(afterAc[field]);
+      if (bVal !== aVal) {
+        diffs.push({ acId: id, field, before: beforeAc[field], after: afterAc[field] });
+      }
+    }
+  }
+
+  return diffs;
+}
+
 export function writeGateResult(
   sf: string,
   gate: string,
@@ -131,13 +187,9 @@ export function writeGateResult(
   });
 
   // ADR-009: Record AC hash at scope PASS for cross-gate consistency
-  // Hash only AC definitions (inputs), not verdicts/evidence (outputs populated by gates)
+  // Hash only AC definition fields (inputs), not mutable verdict/evidence (outputs populated by gates)
   if (gate === "scope" && resultVal === "PASS") {
-    const acDefs = (state.acs || []).map((ac: any) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
+    const acDefs = extractAcDefs(state.acs || []);
     const acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
     state.gates.scope.acHash = acHash;
   }
@@ -445,16 +497,15 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
     throw err;
   }
 
-  // ADR-009: Recompute acHash when ACs are modified through writeWorkflowState
-  // This keeps the hash in sync with authorized modifications (heal agents)
+  // ADR-009 #43: Recompute acHash when ACs are modified through writeWorkflowState.
+  // Root cause of original WARN downgrade: heal agents modify AC definitions (statement,
+  // evidenceMethod, threshold) between scope and verify gates, causing false hash mismatches.
+  // writeWorkflowState is the authorized modification path — recomputing here keeps the hash
+  // consistent with legitimate changes while still catching unauthorized direct-write tampering.
   const gates = state.gates as Record<string, any> | undefined;
   const acs = state.acs as Array<Record<string, unknown>> | undefined;
   if (gates?.scope?.acHash && acs?.length) {
-    const acDefs = acs.map((ac) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
+    const acDefs = extractAcDefs(acs);
     gates.scope.acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
   }
 

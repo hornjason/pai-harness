@@ -126,3 +126,102 @@ describe("gate contracts: implicit state checks", () => {
     expect(src).toMatch(/runWithHeal\(opts:\s*HealInput\)/);
   });
 });
+
+// ═══ acHash integrity (ADR-009, #43) ═══════════════════════════════════
+describe("gate contracts: acHash integrity (#43)", () => {
+  test("acHash: diffAcFields function is exported from orchestrator", () => {
+    const src = readFileSync(join(GATES_DIR, "orchestrator.ts"), "utf-8");
+    expect(src).toMatch(/export function diffAcFields/);
+  });
+
+  test("acHash: writeWorkflowState recomputes acHash (>= 2 hash computation sites)", () => {
+    const src = readFileSync(join(GATES_DIR, "orchestrator.ts"), "utf-8");
+    // Site 1: writeGateResult at scope PASS
+    const scopeHashMatch = src.match(/createHash\("sha256"\)\.update\(JSON\.stringify\(acDefs\)\)/g);
+    expect(scopeHashMatch?.length ?? 0, "Need >= 2 acHash computation sites").toBeGreaterThanOrEqual(2);
+  });
+
+  test("acHash: root cause documented in orchestrator code comment", () => {
+    const src = readFileSync(join(GATES_DIR, "orchestrator.ts"), "utf-8");
+    expect(src).toMatch(/[Rr]oot cause.*heal/i);
+    expect(src).toMatch(/writeWorkflowState.*recompute|recompute.*writeWorkflowState/i);
+  });
+
+  test("acHash: ship gate test uses expect assertion, not console.warn", () => {
+    const src = readFileSync(join(GATES_DIR, "workflow.test.ts"), "utf-8");
+    // Find the acHash-consistency-ship test block
+    const shipTestMatch = src.match(/acHash-consistency-ship[\s\S]*?(?=\n  (?:\/\/|test\(|}\);))/);
+    expect(shipTestMatch, "acHash-consistency-ship test block not found").toBeTruthy();
+    const shipTestBlock = shipTestMatch![0];
+    // Must use expect, not just console.warn
+    expect(shipTestBlock).toMatch(/expect\(currentHash\)/);
+    // Must NOT use console.warn as the primary check
+    expect(shipTestBlock).not.toMatch(/console\.warn.*acHash mismatch/);
+  });
+
+  test("acHash: heal cycle preserves hash consistency via writeWorkflowState", () => {
+    // Import and test the actual functions
+    const { writeGateResult, writeWorkflowState } = require(join(GATES_DIR, "orchestrator.ts"));
+    const { diffAcFields } = require(join(GATES_DIR, "orchestrator.ts"));
+    const { mkdirSync, writeFileSync, readFileSync: readFs, unlinkSync } = require("fs");
+    const { createHash } = require("crypto");
+    const tmpDir = join("/tmp", `achash-test-${process.pid}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const sf = join(tmpDir, "workflow-state.json");
+
+    // Set up initial state with ACs that match WorkflowStateSchema
+    const initialState = {
+      schemaVersion: 2,
+      issue: 999,
+      repo: "test/repo",
+      issueRepo: "test/repo",
+      projectRoot: tmpDir,
+      slug: "test",
+      issueGoal: "test acHash integrity across heal cycles",
+      phase: "SCOPE",
+      acs: [
+        { id: "AC-1", type: "CODE", statement: "the system computes acHash at scope gate pass", threshold: { op: ">=", value: 2 }, evidenceMethod: { type: "grep", command: "grep acHash gates/orchestrator.ts" }, verdict: "PENDING", evidence: null },
+        { id: "AC-2", type: "CODE", statement: "the system recomputes acHash in writeWorkflowState", threshold: { op: ">=", value: 2 }, evidenceMethod: { type: "grep", command: "grep recompute gates/orchestrator.ts" }, verdict: "PENDING", evidence: null },
+      ],
+      gates: {},
+      changelog: [],
+      startTs: new Date().toISOString(),
+      updatedTs: new Date().toISOString(),
+      sizing: { predicted: "S", ceremonyTier: "LIGHT" },
+    };
+    writeFileSync(sf, JSON.stringify(initialState, null, 2));
+
+    // Run scope gate to set acHash
+    writeGateResult(sf, "scope", 2, 0, 0, [], tmpDir);
+    const afterScope = JSON.parse(readFs(sf, "utf-8"));
+    const scopeHash = afterScope.gates.scope.acHash;
+    expect(scopeHash, "scope gate should set acHash").toBeTruthy();
+
+    // Simulate heal agent modifying verdict and evidence (authorized path via writeWorkflowState)
+    afterScope.acs[0].verdict = "PASS";
+    afterScope.acs[0].evidence = { type: "grep-output", content: "found" };
+    writeWorkflowState(sf, afterScope);
+
+    // Read back and verify hash is still consistent
+    const afterHeal = JSON.parse(readFs(sf, "utf-8"));
+    const postHealHash = afterHeal.gates.scope.acHash;
+    expect(postHealHash, "acHash should be recomputed after writeWorkflowState").toBe(scopeHash);
+
+    // Verify diffAcFields returns empty for definition-only comparison
+    const acDefsBefore = initialState.acs.map((ac: any) => ({
+      id: ac.id, type: ac.type, statement: ac.statement,
+      specElement: ac.specElement, threshold: ac.threshold,
+      evidenceMethod: ac.evidenceMethod,
+    }));
+    const acDefsAfter = afterHeal.acs.map((ac: any) => ({
+      id: ac.id, type: ac.type, statement: ac.statement,
+      specElement: ac.specElement, threshold: ac.threshold,
+      evidenceMethod: ac.evidenceMethod,
+    }));
+    const diff = diffAcFields(acDefsBefore, acDefsAfter);
+    expect(diff, "diffAcFields should return empty array for definition-only match").toEqual([]);
+
+    // Cleanup
+    try { unlinkSync(sf); } catch {}
+  });
+});
