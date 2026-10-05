@@ -91,18 +91,57 @@ interface RepoRailsOutput {
   files: Record<string, { findings: RepoRailsFinding[] }>;
 }
 
-function runRepoRailsBatch(paths: string[]): RepoRailsOutput | null {
+/**
+ * RepoRails ships only as an npx package here, so every invocation pays a cold
+ * `npx` resolve (~8s). Running the surface one file at a time serially put the
+ * whole scan at ~257s. These run concurrently instead.
+ */
+async function runRepoRailsOne(path: string): Promise<RepoRailsOutput | null> {
   try {
-    const result = Bun.spawnSync(["npx", "@reporails/cli", "check", ...paths, "--format", "json"], {
-      timeout: 30_000,
+    const proc = Bun.spawn(["npx", "@reporails/cli", "check", path, "--format", "json"], {
+      stdout: "pipe",
+      stderr: "ignore",
       env: { ...process.env, NODE_NO_WARNINGS: "1" },
     });
-    const stdout = result.stdout.toString().trim();
-    if (!stdout) return null;
-    return JSON.parse(stdout) as RepoRailsOutput;
+    const timer = setTimeout(() => proc.kill(), 60_000);
+    try {
+      const stdout = (await new Response(proc.stdout).text()).trim();
+      await proc.exited;
+      if (!stdout) return null;
+      return JSON.parse(stdout) as RepoRailsOutput;
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
     return null;
   }
+}
+
+/** How many RepoRails processes to keep in flight at once. */
+export const REPORAILS_CONCURRENCY = 8;
+
+/** Runs `fn` over `items` with at most `limit` in flight. Results keep input order. */
+export async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(limit, items.length)) },
+    async () => {
+      while (true) {
+        const i = next++;
+        if (i >= items.length) return;
+        results[i] = await fn(items[i]);
+      }
+    },
+  );
+
+  await Promise.all(workers);
+  return results;
 }
 
 // ── Severity Mapping ───────────────────────────────────────
@@ -169,10 +208,10 @@ export interface TemplateComplianceOpts {
   writeReport?: boolean;
 }
 
-export function runTemplateCompliance(
+export async function runTemplateCompliance(
   root: string,
   opts?: TemplateComplianceOpts,
-): ComplianceReport {
+): Promise<ComplianceReport> {
   const files = collectComplianceSurface(root, opts?.surface);
 
   const agnixAvailable = checkToolAvailable("agnix", ["--version"]);
@@ -194,16 +233,16 @@ export function runTemplateCompliance(
     }
   }
 
-  if (reporailsAvailable) {
-    for (const filePath of files) {
-      const result = runRepoRailsBatch([filePath]);
-      if (result) {
-        const relPath = relative(root, filePath);
-        for (const [fp, data] of Object.entries(result.files)) {
-          rrByFile.set(relPath, { quality: result.quality, findings: data.findings });
-        }
-      }
-    }
+  if (reporailsAvailable && files.length > 0) {
+    const results = await mapWithConcurrency(files, REPORAILS_CONCURRENCY, runRepoRailsOne);
+    files.forEach((filePath, i) => {
+      const result = results[i];
+      if (!result) return;
+      rrByFile.set(relative(root, filePath), {
+        quality: result.quality,
+        findings: Object.values(result.files).flatMap(d => d.findings),
+      });
+    });
   }
 
   const fileScores: FileScore[] = [];
@@ -296,11 +335,11 @@ export function runTemplateCompliance(
 
 // ── Layer 2: Generated Compliance ──────────────────────────
 
-export function runGeneratedCompliance(
+export async function runGeneratedCompliance(
   root: string,
   baselineReport?: ComplianceReport,
-): ComplianceReport {
-  const report = runTemplateCompliance(root, { writeReport: false });
+): Promise<ComplianceReport> {
+  const report = await runTemplateCompliance(root, { writeReport: false });
   report.layer = "generated";
 
   if (baselineReport && baselineReport.overallQuality !== null && report.overallQuality !== null) {

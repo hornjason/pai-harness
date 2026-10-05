@@ -11,8 +11,8 @@ const ROOT = join(import.meta.dir, "..");
 describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
   let report: ComplianceReport;
 
-  beforeAll(() => {
-    report = runTemplateCompliance(ROOT, { writeReport: false });
+  beforeAll(async () => {
+    report = await runTemplateCompliance(ROOT, { writeReport: false });
   }, 240_000);
 
   test("compliance surface covers all 4 file types", () => {
