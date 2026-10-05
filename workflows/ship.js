@@ -150,23 +150,99 @@ const DRY_RUN = parsedArgs.dryRun || false
 const SKIP_GRADE = parsedArgs.skipGrade || false
 const MAX_REGRESSIONS = 2
 
-// ── Shell-safe command construction (#57) ────────────────────
-// Every shell string built from agent-supplied data goes through
-// lib/workflow-security.ts. Loaded with require() — the workflow sandbox has
-// no dynamic import(), but it does expose require (see the orchestrator and
-// compliance-report loads later in this file).
-let SECURITY
-try {
-  SECURITY = require(`${HARNESS_ROOT}/lib/workflow-security.ts`)
-} catch (e) {
-  return {
-    status: 'ARGS_ERROR',
-    message: `Cannot load ${HARNESS_ROOT}/lib/workflow-security.ts (${e.message}) — refusing to run with unvalidated shell construction`,
-  }
-}
-const { buildSafeGitAdd, buildSafeSSHCommand, resolveEvidencePath, validateEvidenceCommand } = SECURITY
-
+// ── Shell-safe command construction (#57, #69) ───────────────
 // ──── SECURITY-HELPERS-START ────
+// These primitives are INLINED, not imported. The workflow sandbox provides no
+// require, no dynamic import() and no filesystem access, so a workflow script
+// cannot load a module from disk at all. The previous require() here made every
+// ship run die in ~11ms before spawning a single agent (#69).
+//
+// lib/workflow-security.ts remains the source of truth. The copies below must
+// stay behaviourally identical to it — test/workflow-security-integration.test.ts
+// runs both against the same inputs and fails on any divergence. Change one,
+// change the other.
+const SHELL_METACHARACTERS = /[;&|$`\n\r"'\\(){}[\]<>!~*?#]/
+const PATH_TRAVERSAL = /\.\.($|[/\\])/
+const NULL_BYTE = /\x00/
+
+function validateFilePaths(paths) {
+  const valid = []
+  const rejected = []
+  for (const p of paths) {
+    if (
+      SHELL_METACHARACTERS.test(p) ||
+      PATH_TRAVERSAL.test(p) ||
+      NULL_BYTE.test(p) ||
+      p.startsWith('/') ||
+      p.length > 500
+    ) {
+      rejected.push(p)
+    } else {
+      valid.push(p)
+    }
+  }
+  return { valid, rejected }
+}
+
+function buildSafeGitAdd(filesChanged) {
+  const validated = validateFilePaths(filesChanged)
+  if (validated.rejected.length > 0) {
+    throw new Error(`Rejected unsafe file paths: ${validated.rejected.join(', ')}`)
+  }
+  if (validated.valid.length === 0) throw new Error('No valid files to stage')
+  return `git add ${validated.valid.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`
+}
+
+function resolveEvidencePath(basePath, evidencePath) {
+  if (NULL_BYTE.test(evidencePath)) {
+    throw new Error(`Evidence path contains null byte: ${evidencePath}`)
+  }
+  if (PATH_TRAVERSAL.test(evidencePath)) {
+    throw new Error(`Evidence path contains traversal: ${evidencePath}`)
+  }
+  if (evidencePath.startsWith('/')) {
+    throw new Error(`Evidence path is absolute: ${evidencePath}`)
+  }
+  const resolved = `${basePath}/${evidencePath}`
+  if (!resolved.startsWith(basePath)) {
+    throw new Error(`Evidence path escapes base: ${resolved}`)
+  }
+  return resolved
+}
+
+function validateEvidenceCommand(command) {
+  if (NULL_BYTE.test(command)) {
+    return { safe: false, reason: 'Command contains null byte' }
+  }
+  const dangerous = [
+    /rm\s+-rf/,
+    />\s*\/dev/,
+    /mkfs/,
+    /dd\s+if=/,
+    /chmod\s+777/,
+    /curl.*\|\s*(bash|sh)/,
+  ]
+  for (const pattern of dangerous) {
+    if (pattern.test(command)) {
+      return { safe: false, reason: `Dangerous pattern: ${pattern.source}` }
+    }
+  }
+  // Heuristic denylist — blocks known-dangerous patterns but not a security gate
+  // for arbitrary command execution. Evidence commands are controlled by Discovery,
+  // not external input, so denylist is defense-in-depth, not the primary control.
+  return { safe: true }
+}
+
+function buildSafeSSHCommand(host, command) {
+  if (SHELL_METACHARACTERS.test(host)) {
+    throw new Error(`SSH host contains shell metacharacters: ${host}`)
+  }
+  if (host.startsWith('-')) {
+    throw new Error(`SSH host starts with dash (option injection): ${host}`)
+  }
+  return ['ssh', '-o', 'ConnectTimeout=5', '-o', 'StrictHostKeyChecking=no', '--', host, command]
+}
+
 // Single-quote a shell word. Only ever applied to argv produced by the
 // workflow-security builders, never to raw agent output.
 function shellQuote(word) {
