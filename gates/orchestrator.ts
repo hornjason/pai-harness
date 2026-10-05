@@ -70,6 +70,55 @@ function isoNow(): string {
   return new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+// ── acHash helpers (ADR-009, #43) ────────────────────────────────────────
+
+/** Extract AC definition fields for hashing — excludes mutable verdict/evidence */
+function extractAcDefs(acs: Array<Record<string, any>>): Array<Record<string, any>> {
+  return acs.map((ac) => ({
+    id: ac.id, type: ac.type, statement: ac.statement,
+    specElement: ac.specElement, threshold: ac.threshold,
+    evidenceMethod: ac.evidenceMethod,
+  }));
+}
+
+/** Compute SHA-256 hash of AC definition fields */
+function computeAcHash(acDefs: Array<Record<string, any>>): string {
+  return createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+}
+
+/**
+ * Compare two sets of AC definitions and return field-level diffs.
+ * Used by acHash consistency checks to log exactly which fields changed.
+ */
+export function diffAcFields(
+  original: Array<Record<string, any>>,
+  current: Array<Record<string, any>>,
+): string[] {
+  const diffs: string[] = [];
+  const FIELDS = ["id", "type", "statement", "specElement", "threshold", "evidenceMethod"] as const;
+
+  for (let i = 0; i < Math.max(original.length, current.length); i++) {
+    const orig = original[i];
+    const curr = current[i];
+    if (!orig && curr) {
+      diffs.push(`AC added at index ${i}: ${curr.id}`);
+      continue;
+    }
+    if (orig && !curr) {
+      diffs.push(`AC removed at index ${i}: ${orig.id}`);
+      continue;
+    }
+    for (const field of FIELDS) {
+      const origVal = JSON.stringify(orig[field]);
+      const currVal = JSON.stringify(curr[field]);
+      if (origVal !== currVal) {
+        diffs.push(`${orig.id}.${field}: ${origVal} -> ${currVal}`);
+      }
+    }
+  }
+  return diffs;
+}
+
 const PHASE_ADVANCE: Record<string, string> = {
   scope: "BUILD",
   verify: "SHIP",
@@ -131,14 +180,15 @@ export function writeGateResult(
   });
 
   // ADR-009: Record AC hash at scope PASS for cross-gate consistency
-  // Hash only AC definitions (inputs), not verdicts/evidence (outputs populated by gates)
+  // Hash only AC definition fields (id, type, statement, specElement, threshold, evidenceMethod),
+  // NOT mutable verdict/evidence fields which are populated by gates and heal agents.
+  // Root cause of original WARN downgrade: heal agents modify AC definitions (statement, evidenceMethod)
+  // between scope and verify gates, causing false hash mismatches. The fix is two-part:
+  //   1. writeWorkflowState recomputes acHash when ACs change through the authorized modification path
+  //   2. This scope hash captures the initial AC definitions as the baseline
   if (gate === "scope" && resultVal === "PASS") {
-    const acDefs = (state.acs || []).map((ac: any) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
-    const acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+    const acDefs = extractAcDefs(state.acs || []);
+    const acHash = computeAcHash(acDefs);
     state.gates.scope.acHash = acHash;
   }
 
@@ -446,16 +496,16 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
   }
 
   // ADR-009: Recompute acHash when ACs are modified through writeWorkflowState
-  // This keeps the hash in sync with authorized modifications (heal agents)
+  // Root cause: heal agents modify AC definition fields (statement, evidenceMethod) between scope
+  // and verify/ship gates. This is the AUTHORIZED modification path — writeWorkflowState is the
+  // only function that should recompute acHash, ensuring the hash stays consistent with the
+  // current AC definitions. Direct edits to workflow-state.json bypass this and will cause
+  // acHash mismatches detected at verify/ship gates.
   const gates = state.gates as Record<string, any> | undefined;
   const acs = state.acs as Array<Record<string, unknown>> | undefined;
   if (gates?.scope?.acHash && acs?.length) {
-    const acDefs = acs.map((ac) => ({
-      id: ac.id, type: ac.type, statement: ac.statement,
-      specElement: ac.specElement, threshold: ac.threshold,
-      evidenceMethod: ac.evidenceMethod,
-    }));
-    gates.scope.acHash = createHash("sha256").update(JSON.stringify(acDefs)).digest("hex");
+    const acDefs = extractAcDefs(acs);
+    gates.scope.acHash = computeAcHash(acDefs);
   }
 
   writeState(sf, state as WorkflowState);

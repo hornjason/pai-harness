@@ -105,6 +105,88 @@ describe("gate contracts: no any params in exported functions", () => {
   });
 });
 
+describe("gate contracts: acHash integrity (#43)", () => {
+  test("acHash heal cycle: writeWorkflowState keeps acHash stable through authorized modifications", () => {
+    // Setup: simulate scope PASS setting acHash, then heal agent modifying ACs through writeWorkflowState
+    const { writeWorkflowState, writeGateResult } = require("../gates/orchestrator");
+    const { createHash } = require("crypto");
+    const { writeFileSync, mkdirSync, unlinkSync } = require("fs");
+    const { join } = require("path");
+    const os = require("os");
+
+    const tmpDir = join(os.tmpdir(), `achash-heal-test-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    const sf = join(tmpDir, "workflow-state.json");
+
+    // Create initial state with ACs
+    const initialState = {
+      schemaVersion: 2,
+      issue: 999,
+      repo: "test/repo",
+      issueRepo: "test/repo",
+      projectRoot: tmpDir,
+      slug: "test-slug",
+      issueGoal: "test goal",
+      phase: "SCOPE",
+      acs: [
+        { id: "AC-1", type: "CODE", statement: "first acceptance criterion for the feature implementation", threshold: { op: ">=", value: 2, unit: "functions" }, evidenceMethod: { type: "command", command: "echo ok" }, evidence: null, verdict: "PENDING" },
+        { id: "AC-2", type: "CODE", statement: "second acceptance criterion for the feature implementation", threshold: { op: ">=", value: 2, unit: "functions" }, evidenceMethod: { type: "command", command: "echo ok" }, evidence: null, verdict: "PENDING" },
+      ],
+      gates: {},
+      changelog: [],
+      sizing: { predicted: "S", ceremonyTier: "LIGHT" },
+      startTs: new Date().toISOString(),
+      updatedTs: new Date().toISOString(),
+    };
+    writeFileSync(sf, JSON.stringify(initialState, null, 2));
+
+    // Run scope gate PASS to set acHash
+    writeGateResult(sf, "scope", 5, 0, 0, []);
+
+    const stateAfterScope = JSON.parse(require("fs").readFileSync(sf, "utf-8"));
+    const scopeHash = stateAfterScope.gates.scope.acHash;
+    expect(scopeHash).toBeTruthy();
+
+    // Heal agent modifies ACs through writeWorkflowState (authorized path)
+    // Change verdict and evidence (mutable fields) — should NOT change hash
+    stateAfterScope.acs[0].verdict = "PASS";
+    stateAfterScope.acs[0].evidence = { type: "command-output", content: "test passed" };
+    writeWorkflowState(sf, stateAfterScope);
+
+    const stateAfterHeal = JSON.parse(require("fs").readFileSync(sf, "utf-8"));
+    const hashAfterHeal = stateAfterHeal.gates.scope.acHash;
+
+    // acHash should remain the same — only definition fields are hashed, not verdict/evidence
+    expect(hashAfterHeal).toBe(scopeHash);
+
+    // Cleanup
+    try { unlinkSync(sf); } catch {}
+  });
+
+  test("diffAcFields: returns field-level diff when AC definitions change", () => {
+    const { diffAcFields } = require("../gates/orchestrator");
+    const original = [
+      { id: "AC-1", type: "CODE", statement: "original statement", specElement: null, threshold: null, evidenceMethod: { type: "command", command: "echo ok" } },
+    ];
+    const modified = [
+      { id: "AC-1", type: "CODE", statement: "modified statement", specElement: null, threshold: null, evidenceMethod: { type: "command", command: "echo ok" } },
+    ];
+    const diff = diffAcFields(original, modified);
+    expect(diff.length).toBeGreaterThan(0);
+    expect(diff[0]).toContain("AC-1");
+    expect(diff[0]).toContain("statement");
+  });
+
+  test("diffAcFields: returns empty array when AC definitions are identical", () => {
+    const { diffAcFields } = require("../gates/orchestrator");
+    const defs = [
+      { id: "AC-1", type: "CODE", statement: "test", specElement: null, threshold: null, evidenceMethod: { type: "command", command: "echo ok" } },
+    ];
+    const diff = diffAcFields(defs, defs);
+    expect(diff).toEqual([]);
+  });
+});
+
 describe("gate contracts: implicit state checks", () => {
   test("implicit state: orchestrator writeGateResult uses named interface params", () => {
     const src = readFileSync(join(GATES_DIR, "orchestrator.ts"), "utf-8");
