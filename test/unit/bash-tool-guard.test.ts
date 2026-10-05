@@ -72,34 +72,80 @@ describe('BashToolGuard — &&-chained patterns', () => {
   });
 });
 
-describe('BashToolGuard — piped cat/head/tail patterns', () => {
-  it('blocks grep foo | cat', async () => {
-    const out = await runHook('grep foo bar.txt | cat');
-    expectBlocked(out);
-  });
-
-  it('blocks grep foo | head -20', async () => {
-    const out = await runHook('grep foo bar.txt | head -20');
-    expectBlocked(out);
-  });
-
-  it('blocks grep foo | tail -5', async () => {
-    const out = await runHook('grep foo bar.txt | tail -5');
-    expectBlocked(out);
-  });
-
+describe('BashToolGuard — piped cat/head/tail reading a file', () => {
   it('blocks cmd | cat file.txt', async () => {
     const out = await runHook('ls -la | cat file.txt');
     expectBlocked(out);
   });
 
-  it('blocks multi-pipe: cmd | grep x | head', async () => {
-    const out = await runHook('find . -name "*.ts" | grep test | head');
+  it('blocks cmd | head -20 file.txt', async () => {
+    const out = await runHook('ls -la | head -20 file.txt');
     expectBlocked(out);
   });
 
-  it('blocks multi-pipe: cmd | grep x | tail -20', async () => {
+  it('blocks cat file.txt piped onward', async () => {
+    const out = await runHook('cat file.txt | grep foo');
+    expectBlocked(out);
+  });
+});
+
+// Stdin filters read stdin, not a file. The Read tool cannot replace them,
+// so COMP-7 does not apply — see lib/bash-file-read.ts.
+describe('BashToolGuard — stdin filters are allowed', () => {
+  it('allows grep foo | head -20', async () => {
+    const out = await runHook('grep foo bar.txt | head -20');
+    expectAllowed(out);
+  });
+
+  it('allows grep foo | tail -5', async () => {
+    const out = await runHook('grep foo bar.txt | tail -5');
+    expectAllowed(out);
+  });
+
+  it('allows grep foo | cat', async () => {
+    const out = await runHook('grep foo bar.txt | cat');
+    expectAllowed(out);
+  });
+
+  it('allows bun test | tail -30', async () => {
+    const out = await runHook('bun test | tail -30');
+    expectAllowed(out);
+  });
+
+  it('allows head -n 50 as a stdin filter', async () => {
+    const out = await runHook('git log --oneline | head -n 50');
+    expectAllowed(out);
+  });
+
+  it('allows multi-pipe: cmd | grep x | head', async () => {
+    const out = await runHook('find . -name "*.ts" | grep test | head');
+    expectAllowed(out);
+  });
+
+  it('allows multi-pipe: cmd | grep x | tail -20', async () => {
     const out = await runHook('find . -name "*.ts" | grep test | tail -20');
+    expectAllowed(out);
+  });
+
+  it('allows a commit message body containing the literal pipe-to-head text', async () => {
+    const out = await runHook('git commit -m "docs: explain grep | head -80 blocking"');
+    expectAllowed(out);
+  });
+});
+
+describe('BashToolGuard — file operand detection', () => {
+  it('blocks head -n 20 file.txt (flag value is not an operand)', async () => {
+    const out = await runHook('head -n 20 file.txt');
+    expectBlocked(out);
+  });
+
+  it('allows head -n 20 with no operand', async () => {
+    const out = await runHook('ls | head -n 20');
+    expectAllowed(out);
+  });
+
+  it('blocks tail -f on a file', async () => {
+    const out = await runHook('tail -f /var/log/system.log');
     expectBlocked(out);
   });
 });

@@ -272,7 +272,7 @@ function getReinforcementMap(): Record<string, string> {
   const config = getComplianceConfig();
   if (config) return buildReinforcementMap(config);
   return {
-    "COMP-7": "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
+    "COMP-7": "NEVER read a file with cat, head, or tail via Bash — use Read with offset/limit. Piping output into head/tail as a stdin filter is fine (no file operand).",
     "COMP-12": "Grep BEFORE Read for any file not in Key Files. Find the section, then Read with offset/limit.",
     "COMP-13": "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
     "COMP-6": "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",

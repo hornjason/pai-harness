@@ -11,6 +11,7 @@ import { readFileSync } from "fs";
 import { basename } from "path";
 import type { Directive } from "./directive-extractor.js";
 import { checkCanaries, type CanaryDefinition, type CanaryReport } from "./canary.js";
+import { isBashFileRead } from "./bash-file-read.js";
 
 type ComplianceVerdict = "FOLLOWED" | "IGNORED" | "VIOLATED" | "N/A";
 
@@ -403,8 +404,10 @@ const sharedCriteria: EvalCriterion[] = [
     weight: 5,
     source: "marcus.md § Never Do",
     check(data) {
+      // Shares detectBashFileRead with BashToolGuard so the grader can never
+      // flag something the hook allows (or miss something the hook blocks).
       const catBashes = data.bashes.filter((b) =>
-        /^\s*cat\s|[;&|]\s*cat\s|\bhead\b|\btail\b/.test(b) &&
+        isBashFileRead(b) &&
         !b.includes("<<") &&
         !b.includes("/tmp/claude-") &&
         !b.includes(".output") &&

@@ -34,6 +34,7 @@
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { parseHookInput } from './lib/utils';
+import { detectBashFileRead } from '../lib/bash-file-read';
 
 /** True when cwd sits at or below a project containing .claude/rungate.json. */
 function isHarnessProject(startDir: string): boolean {
@@ -56,20 +57,14 @@ async function main() {
 
   const cmd = (input.tool_input?.command as string) || '';
 
-  // Block cat/head/tail in ALL positions:
-  // 1. Direct: cat file.txt, head -20 file.txt, tail file.txt
-  // 2. Semicolon-chained: cd /tmp; cat file.txt
-  // 3. &&-chained: cd /tmp && cat file.txt
-  // 4. Piped: grep foo | cat, grep foo | head -20, cmd | grep x | tail -5
-  if (
-    /^\s*(cat|head|tail)\s+/.test(cmd) ||
-    /;\s*(cat|head|tail)\s+/.test(cmd) ||
-    /&&\s*(cat|head|tail)\s+/.test(cmd) ||
-    /\|\s*(cat|head|tail)(\s|$)/.test(cmd)
-  ) {
+  // Blocks cat/head/tail reading a FILE in any position — direct,
+  // ;-chained, &&-chained, or piped. Pure stdin filters (cmd | head -80)
+  // are allowed: they read stdin, not a file, and Read cannot replace them.
+  const offending = detectBashFileRead(cmd);
+  if (offending) {
     console.log(JSON.stringify({
       decision: 'block',
-      reason: 'COMP-7: Use the Read tool instead of cat/head/tail via Bash.\nExample: Read({ file_path: "/path/to/file", offset: 0, limit: 50 })',
+      reason: `COMP-7: Use the Read tool instead of cat/head/tail via Bash.\nOffending segment: ${offending}\nExample: Read({ file_path: "/path/to/file", offset: 0, limit: 50 })`,
     }));
     return;
   }
