@@ -1485,16 +1485,33 @@ export function runAgentFileValidation(root: string) {
       expect(missing).toEqual([]);
     });
 
-    test("AGENT-8: All agent briefs use model: sonnet", () => {
+    test("AGENT-8: Agent brief models match rungate.json roles config", () => {
       if (!existsSync(agentsDir)) return;
+      // Was hardcoded to "sonnet". Roles are now routed per-role (discovery
+      // and marcus run opus), so the meaningful check is that each brief
+      // matches its configured model — briefs are generated from that config,
+      // and a mismatch means someone hand-edited generated output.
+      const VALID_MODELS = ["sonnet", "opus", "haiku", "fable"];
+      let roles: Record<string, { model?: string }> = {};
+      const configPath = join(root, ".claude", "rungate.json");
+      if (existsSync(configPath)) {
+        try {
+          roles = JSON.parse(readFileSync(configPath, "utf-8")).roles || {};
+        } catch {}
+      }
+
       const wrong: string[] = [];
       for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
         const content = readFileSync(join(agentsDir, f), "utf-8");
         const fm = parseFrontmatter(content);
+        const role = f.replace(/\.md$/, "");
+        const expected = roles[role]?.model;
         if (!fm?.model) {
           wrong.push(`${f}: missing model field`);
-        } else if (fm.model !== "sonnet") {
-          wrong.push(`${f}: model is "${fm.model}", expected "sonnet"`);
+        } else if (!VALID_MODELS.includes(fm.model)) {
+          wrong.push(`${f}: model is "${fm.model}", expected one of ${VALID_MODELS.join("|")}`);
+        } else if (expected && fm.model !== expected) {
+          wrong.push(`${f}: model is "${fm.model}", but rungate.json roles.${role}.model is "${expected}" — re-scaffold instead of editing the brief`);
         }
       }
       if (wrong.length > 0) {

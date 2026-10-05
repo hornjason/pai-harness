@@ -1302,8 +1302,12 @@ jobs:
         run: bun test test/scaffold-conformity.test.ts
       - name: Secret scan
         run: |
-          if git diff --cached --name-only | xargs grep -l -E '(AKIA|sk-|ghp_|password\\s*=)' 2>/dev/null; then
-            echo "::error::Potential secrets detected in staged files"
+          # CI has nothing staged, so --cached scanned zero files and the bare
+          # xargs/grep read stdin instead. Scan tracked files, and use the same
+          # anchored patterns as the pre-commit hook so CI and local agree.
+          tracked=$(git ls-files)
+          if [ -n "$tracked" ] && printf '%s\\n' "$tracked" | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
+            echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
 `;
@@ -1396,7 +1400,11 @@ export function createGitHooks(root: string, actions: string[]): void {
   if (!existsSync(preCommit)) {
     writeFileSync(preCommit, `#!/bin/sh
 # Managed by rungate — secret scan + PROJECT-STATE update
-if git diff --cached --name-only | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\\s*=\\s*["\\''][^\\"\\'']+["\\''])' 2>/dev/null; then
+# Guard on a non-empty file list: with nothing staged (any --amend), xargs
+# still runs grep with no file operands, grep reads stdin, and exits 0 —
+# reporting a secret that is not there and blocking every amend.
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -n "$staged" ] && printf '%s\\n' "$staged" | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\\s*=\\s*["\\''][^\\"\\'']+["\\''])' 2>/dev/null; then
   echo "ERROR: Potential secrets detected in staged files"
   exit 1
 fi
