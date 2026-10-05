@@ -42,3 +42,22 @@ Post-wave, an integration check verifies no unclaimed file modifications slipped
 - SC-413: Post-wave integration check detects unclaimed file modifications
 - SC-414: Module-boundary decomposition rules documented — issue authors check file overlap at creation time
 - SC-415: Wave planner uses CODE-MAP.md module boundaries for file prediction when no explicit claim exists
+
+## Implementation Status
+
+| SC | State | Where |
+|---|---|---|
+| SC-410 | Not started | — |
+| SC-411 | Partial — holds within a single issue's sub-issue decomposition, not yet across a wave of issues | `workflows/ship.js` `runDecomposedShip()`; `test/decomposed-ship-dispatch.test.ts` |
+| SC-412 | Partial — sub-issue agents receive an explicit "modify ONLY these" file list | `workflows/ship.js` `runDecomposedShip()` |
+| SC-413 | Not started | — |
+| SC-414 | Not started | — |
+| SC-415 | Not started | — |
+
+Issue #66 fixed the disjoint-dispatch path: `runDecomposedShip()` computed the D-2
+overlap check and then serialized both branches anyway, while logging that it had
+dispatched in parallel. Disjoint sub-issues now run concurrently, and a failing
+sub-issue reports its completed siblings rather than discarding them (D-4).
+
+Still open: nothing coordinates *across* issues or across concurrent human-driven
+sessions. That is issue #23.

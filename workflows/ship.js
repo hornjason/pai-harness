@@ -1094,7 +1094,8 @@ Also report worktreePath: your current working directory (run pwd and include th
   return { success: true, buildResult }
 }
 
-// ── M-size sub-issue shipping: dispatch decomposed sub-issues sequentially or via batch-ship ──
+// ──── DECOMPOSED-SHIP-START ────
+// ── M-size sub-issue shipping: disjoint sub-issues run concurrently, overlapping ones serialize ──
 async function runDecomposedShip(subIssues) {
   log(`DECOMPOSED SHIP: ${subIssues.length} sub-issues from to-issues decomposition`)
 
@@ -1109,8 +1110,9 @@ async function runDecomposedShip(subIssues) {
   }
 
   if (!hasOverlap && subIssues.length > 1) {
-    // Independent files — dispatch via batch-ship for parallel execution
-    log(`Sub-issues have independent filesToModify — dispatching via batch-ship for parallel execution`)
+    // Independent files — the overlap check above proved these are disjoint, so
+    // they can run concurrently without colliding (SC-411, D-2).
+    log(`Sub-issues have independent filesToModify — dispatching ${subIssues.length} concurrently`)
     const batchIssues = subIssues.map((sub, i) => ({
       number: ISSUE * 1000 + i + 1,
       title: sub.title,
@@ -1119,8 +1121,7 @@ async function runDecomposedShip(subIssues) {
       size: sub.size,
     }))
 
-    const results = []
-    for (const subIssue of batchIssues) {
+    const settled = await parallel(batchIssues.map(subIssue => async () => {
       log(`Shipping sub-issue: ${subIssue.title} (${subIssue.size})`)
       const buildResult = await briefedAgent(`
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
@@ -1141,20 +1142,41 @@ Also report worktreePath: your current working directory.
 
       if (!buildResult || !buildResult.success) {
         log(`Sub-issue FAILED: ${subIssue.title}`)
-        return { success: false, buildResult }
+        return { subIssue, buildResult, ok: false }
       }
-      results.push(buildResult)
       log(`Sub-issue SUCCESS: ${subIssue.title} — ${(buildResult.filesChanged || []).length} files changed`)
+      return { subIssue, buildResult, ok: true }
+    }))
+
+    // D-4 — no work is lost: report completed siblings even when one fails, so a
+    // late failure does not discard implementations that already succeeded.
+    const completed = settled.filter(r => r.ok)
+    const failed = settled.filter(r => !r.ok)
+    const allFilesChanged = [...new Set(completed.flatMap(r => r.buildResult.filesChanged || []))]
+
+    if (failed.length > 0) {
+      log(`SUB-ISSUES INCOMPLETE — ${completed.length} succeeded, ${failed.length} failed: ${failed.map(r => r.subIssue.title).join(', ')}`)
+      return {
+        success: false,
+        completed: completed.map(r => r.buildResult),
+        failed: failed.map(r => ({ title: r.subIssue.title, buildResult: r.buildResult })),
+        buildResult: {
+          success: false,
+          filesChanged: allFilesChanged,
+          worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
+        }
+      }
     }
 
-    const allFilesChanged = [...new Set(results.flatMap(r => r.filesChanged || []))]
     log(`ALL ${subIssues.length} SUB-ISSUES COMPLETE — ${allFilesChanged.length} unique files changed`)
     return {
       success: true,
+      completed: completed.map(r => r.buildResult),
+      failed: [],
       buildResult: {
         success: true,
         filesChanged: allFilesChanged,
-        worktreePath: results[results.length - 1]?.worktreePath || PROJECT_ROOT,
+        worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
       }
     }
   } else {
@@ -1165,6 +1187,7 @@ Also report worktreePath: your current working directory.
     return await runImplement()
   }
 }
+// ──── DECOMPOSED-SHIP-END ────
 
 let implementResult
 if (priorBranchResult?.testsPass) {
@@ -1402,8 +1425,11 @@ Report commit SHA.
   }
 }
 
+// ──── VERIFY-FANOUT-START ────
 // Container rebuild + Quinn container (STANDARD+ only, requires container config)
 const containerConfig = projectConfig.container || null
+
+async function runContainerVerify() {
 if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
   const rebuildCmd = containerConfig.rebuildCommand
   const containerHosts = containerConfig.hosts || []
@@ -1476,8 +1502,10 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 } else if (discovery.ceremonyTier !== 'LIGHT') {
   log('No container config in rungate.json — skipping container verify')
 }
+}
 
 // Rook security review (THOROUGH only)
+async function runRookReview() {
 if (discovery.ceremonyTier === 'THOROUGH') {
   log('Spawning Rook')
   await briefedAgent(`
@@ -1485,6 +1513,12 @@ Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', 
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
   `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
 }
+}
+
+// Container verification and Rook are independent and read-only, so they run
+// concurrently — verify.js:169 already pairs the same two roles this way.
+await parallel([runContainerVerify, runRookReview])
+// ──── VERIFY-FANOUT-END ────
 
 // ── Merge + push (ONLY after verify passes, batched into 1 agent) ────
 if (verifyResult?.result === 'FAIL') {
