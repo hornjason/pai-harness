@@ -235,11 +235,10 @@ async function briefedAgent(prompt, opts = {}) {
     }
 
     const reinforcement = await loadReinforcementRules(role, briefPath)
-    const complianceRules = role === 'marcus' ? [
-      'NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit instead. This is mechanically checked.',
-      'Read each file exactly ONCE. Use offset/limit to get what you need in one pass. Duplicate reads are tracked and penalized.',
-    ] : []
-    const allRules = [...reinforcement, ...complianceRules]
+    // COMP-7 cat/head/tail rules removed (#45) — now enforced mechanically
+    // via BashToolGuard.hook.ts registered in user-level settings.json.
+    // Prompt-based injection was a workaround; hook enforcement is reliable.
+    const allRules = [...reinforcement]
     if (allRules.length) {
       fullPrompt += `CRITICAL PROCESS RULES (follow in every task):\n${allRules.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\n`
     }
