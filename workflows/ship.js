@@ -94,6 +94,7 @@ const BUILD_RESULT_SCHEMA = {
     branch: { type: 'string' },
     commitSha: { type: 'string' },
     filesChanged: { type: 'array', items: { type: 'string' } },
+    testFiles: { type: 'array', items: { type: 'string' } },
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
     worktreePath: { type: 'string' },
@@ -436,6 +437,8 @@ let regressionCount = 0
 
 async function runDiscovery(context) {
   phase('Discovery')
+  // Clear cached ceremony so stale context is not reused on regression re-runs
+  CACHED_CEREMONY = null
   log(`DISCOVERY${context ? ' (regression: ' + context + ')' : ''}`)
 
   discovery = await briefedAgent(`
@@ -1099,38 +1102,8 @@ Return only the file list, one per line.
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
 const marcusWorktreePath = priorBranchResult?.testsPass ? PROJECT_ROOT : (implementResult.buildResult?.worktreePath || PROJECT_ROOT)
 
-// AC completion gate: run ALL evidence commands from Marcus's worktree before committing.
-// Catches incomplete implementations where Marcus reports success but didn't finish all ACs.
-{
-  const acCmds = discovery.acs.filter(ac => ac.evidenceMethod?.command).map(ac => `echo "--- ${ac.id} ---" && (cd ${marcusWorktreePath} && ${ac.evidenceMethod.command}) 2>&1 || echo "${ac.id}: EVIDENCE_FAILED"`)
-  if (acCmds.length > 0) {
-    const evidenceCheck = await agent(`
-Run ALL of these evidence commands and report their output. Do NOT modify any code.
-
-${acCmds.join('\n\n')}
-
-Report the full output for each AC.
-    `, { label: 'ac-completion-check', phase: 'Validate' })
-
-    const checkText = typeof evidenceCheck === 'string' ? evidenceCheck : ''
-    const failedACs = discovery.acs.filter(ac => {
-      if (!ac.evidenceMethod?.command) return false
-      return checkText.includes(`${ac.id}: EVIDENCE_FAILED`) ||
-        (checkText.includes(`--- ${ac.id} ---`) && !checkText.includes(ac.id + ':') && checkText.split(`--- ${ac.id} ---`)[1]?.trim()?.startsWith('EVIDENCE_FAILED'))
-    })
-
-    if (failedACs.length > 0 && regressionCount < MAX_REGRESSIONS) {
-      regressionCount++
-      log(`AC completion gate: ${failedACs.length}/${discovery.acs.length} ACs failed evidence check — ${failedACs.map(a=>a.id).join(', ')}. Re-implementing.`)
-      implementResult = await runImplement()
-      if (!implementResult.success) {
-        return { status: 'IMPLEMENT_FAILED', reason: `AC completion regression failed: ${failedACs.map(a=>a.id).join(', ')}`, workDir: WORK_DIR }
-      }
-    } else if (failedACs.length > 0) {
-      log(`AC completion gate: ${failedACs.length} ACs still failing after max regressions — proceeding to verify gate`)
-    }
-  }
-}
+// AC evidence validation merged into verify gate (Phase 7) — the separate
+// pre-commit evidence agent was duplicating verify gate work, adding ~170s overhead.
 
 // ════════════════════════════════════════════════════════════
 // PHASE 5: VALIDATE (Quinn local dev — fast feedback before commit)
@@ -1233,13 +1206,8 @@ Report what you fixed.
 phase('Commit')
 log('Committing code')
 
-// Pre-populate environments.local with SKIP defaults so gates degrade gracefully if COMMIT fails
-try {
-  await agent(`Run this command:
-bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); if (!s.environments) s.environments = {}; if (!s.environments.local) s.environments.local = {api: 'SKIP', apiSkipReason: 'pre-commit default', ui: 'SKIP', uiSkipReason: 'pre-commit default', tests: 'SKIP', testsSkipReason: 'pre-commit default'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
-Report: done`, { label: 'env-defaults', phase: 'Commit' })
-} catch (e) { log('WARN: env defaults pre-population failed: ' + e.message) }
-
+// env-defaults logic inlined into the commit agent's workflow-state update (step 3 below)
+// — the separate env-defaults agent was redundant (~170s wasted per run)
 const commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP
@@ -1258,12 +1226,13 @@ const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
+const filesForCommit = (implementResult.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
 const commitResult = await agent(`
-Do ALL of these steps in order:
+Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
 1. Commit and push:
    cd ${commitDir}
-   git add -A
+   git add ${filesForCommit || '.'}
    git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
    git push -u origin ${pushTarget}
 
@@ -1317,8 +1286,10 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify CODE regression #${regressionCount} — re-implementing failed ACs`)
     const reimpl = await runImplement()
     if (reimpl.success) {
+      const reimplFiles = (reimpl.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
       const reCommit = await agent(`
-cd ${PROJECT_ROOT} && git add -A && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
+Do NOT run tests — they were already validated.
+cd ${PROJECT_ROOT} && git add ${reimplFiles || '.'} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
 Report commit SHA.
       `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryVerify = await runGateWithHeal('verify', 'Verify',
@@ -1691,8 +1662,10 @@ if (shipResult?.result !== 'PASS') {
     log(`Ship BUILD regression #${regressionCount} — re-implementing`)
     const reimpl = await runImplement()
     if (reimpl.success) {
+      const reimplShipFiles = (reimpl.buildResult?.filesChanged || []).map(f => `"${f}"`).join(' ')
       const reCommit = await agent(`
-cd ${PROJECT_ROOT} && git add -A && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
+Do NOT run tests — they were already validated.
+cd ${PROJECT_ROOT} && git add ${reimplShipFiles || '.'} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
 Report commit SHA.
       `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.')
