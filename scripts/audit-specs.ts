@@ -225,11 +225,6 @@ function findClosestPattern(
       extractor: () => "all specs have frontmatter",
     },
     {
-      pattern: "test-passes",
-      keywords: ["bun test", "test passes"],
-      extractor: () => "bun test passes",
-    },
-    {
       pattern: "canary",
       keywords: ["canary"],
       extractor: () => "canary test exists",

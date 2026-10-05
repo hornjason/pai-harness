@@ -16,7 +16,7 @@ STOP. Do NOT read source code, edit files, or write code until all 4 steps are d
 1. Run `bun test` — confirm 0 failures. If any fail, fix them first.
    If the guard blocks you because other sessions are running suites, wait or run
    targeted paths — do NOT treat a blocked run as a satisfied gate (#67).
-2. Find the governing spec in the Specs table in AGENTS.md. Read it.
+2. Find the governing spec in the Specs table in `.claude/rules/specs-routing.md`. Read it.
 3. Use `Skill("ship")` with the issue number — it runs the full pipeline via `workflows/ship.js`. **NEVER spawn Marcus, Quinn, or Rook directly with the Agent tool** — direct spawns bypass compliance grading, gates, and transcript capture.
 4. If `Skill("ship")` is unavailable, invoke `Workflow({ scriptPath: "~/Projects/rungate/workflows/ship.js" })` with issue args. See `.claude/rules/ship-workflow.md` for details.
 

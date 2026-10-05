@@ -5,7 +5,7 @@ owner: jason
 updated: 2026-09-30
 testable: false
 created: 2026-09-30
-governs: TODO
+governs: Redirect stub — this spec was split into specs/bootstrap-data-flow/; it governs nothing itself and exists to point readers at the replacements
 ---
 
 This file has been split. See:

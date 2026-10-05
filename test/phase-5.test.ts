@@ -4,7 +4,10 @@ import { join, resolve } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
 
 const ROOT = resolve(import.meta.dir, "..");
-const SPEC_HASH = "369ca9f21bc9a9e6";
+// Re-hashed 2026-10-05 (#80): BOOTSTRAP-DATA-FLOW-SPEC.md is a redirect stub
+// whose `governs` field was literally "TODO" — the only violation blocking
+// HYGIENE-1 from becoming a real assertion. The split specs are unchanged.
+const SPEC_HASH = "05f388d8b3a2e036";
 
 // Auto-generated conformity tests from specs
 runScaffoldConformity(ROOT);

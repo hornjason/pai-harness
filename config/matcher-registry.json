@@ -42,13 +42,6 @@
     "notes": "Checks that a file exists AND contains a reference to the target string."
   },
   {
-    "name": "test-passes",
-    "syntax": "bun test passes",
-    "regex": "bun\\s+test.*passes",
-    "example": "bun test passes",
-    "notes": "Placeholder assertion that always passes. Actual test execution is handled by the CI pipeline."
-  },
-  {
     "name": "canary",
     "syntax": "canary",
     "regex": "canary",

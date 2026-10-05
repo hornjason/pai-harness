@@ -521,9 +521,6 @@ const matcherHandlers: Record<string, MatcherHandler> = {
     };
   },
 
-  "test-passes": () => {
-    return () => { expect(true).toBe(true); };
-  },
 
   "canary": () => {
     return (root) => {
@@ -995,10 +992,38 @@ export function runSpecDrift(root: string) {
       }
 
       const orphaned = testable.filter(s => !allContent.includes(s));
-      if (orphaned.length > 0) {
-        console.warn(`Testable specs with no test references: ${orphaned.join(", ")}`);
-      }
-      expect(true).toBe(true);
+
+      // Was `expect(true).toBe(true)` after a console.warn, so the mechanical
+      // enforcement of CLAUDE.md's "SCs without tests are wishes" could never
+      // fail (#80). Turning it on revealed 10 testable specs with no test
+      // referencing them at all — over half the testable surface unverified.
+      //
+      // That backlog cannot be asserted to zero today without writing tests for
+      // ten specs, so this is a RATCHET instead: the ten are listed, and an
+      // eleventh fails the build. The list is the backlog, in source, where it is
+      // visible — shrinking it is the work, and nothing may be added to it.
+      const KNOWN_UNTESTED = [
+        "SESSION-LIFECYCLE-SPEC.md",
+        "harness-automation-matrix.md",
+        "CONFIG-DIRECTORY-STRUCTURE-SPEC.md",
+        "DOC-HYGIENE-ARCHITECTURE-SPEC.md",
+        "INSTRUCTION-COMPLIANCE-SPEC.md",
+        "GITHUB-API-MIGRATION-SPEC.md",
+        "HARNESS-STANDARD.md",
+        "HARNESS-SKILL-CONTRACT.md",
+        "AGENT-BRIEF-TEMPLATE-SPEC.md",
+        "SCAFFOLD-DECOMPOSITION-SPEC.md",
+      ];
+
+      const newlyOrphaned = orphaned.filter(s => !KNOWN_UNTESTED.includes(s));
+      expect(newlyOrphaned).toEqual([]);
+
+      // Equally important: a spec that gains a test must leave the list, or the
+      // allowlist rots into another artifact that certifies nothing.
+      const staleAllowlist = KNOWN_UNTESTED.filter(
+        s => testable.includes(s) && !orphaned.includes(s),
+      );
+      expect(staleAllowlist).toEqual([]);
     });
   });
 }
@@ -1058,10 +1083,8 @@ export function runDocHygiene(root: string) {
         const governs = fm.governs || "";
         if (!governs || governs.includes("TODO")) missing.push(f);
       }
-      if (missing.length > 0) {
-        console.warn(`Specs with empty/TODO governs field: ${missing.join(", ")}`);
-      }
-      expect(true).toBe(true);
+      // Was unconditionally passing after a console.warn (#80).
+      expect(missing).toEqual([]);
     });
 
     test("HYGIENE-2: All specs have updated field in frontmatter", () => {
@@ -1098,21 +1121,29 @@ export function runDocHygiene(root: string) {
           if (!index.includes(f)) orphans.push(`${relPath}/${f}`);
         }
       }
-      if (orphans.length > 0) {
-        console.warn(`Orphaned files (0 references — consider archiving to reference/):\n  ${orphans.join("\n  ")}`);
-      }
-      expect(true).toBe(true);
+      // Was unconditionally passing after a console.warn (#80). The two
+      // orphans it had been quietly reporting — specs/bootstrap-data-flow.png
+      // and scripts/self-containment-check.sh, both with zero references
+      // anywhere — were archived to reference/, which is the remedy this check
+      // recommends in its own message.
+      expect(orphans).toEqual([]);
     });
 
-    test("HYGIENE-4: All specs listed in AGENTS.md are in AGENTS.md specs table", () => {
-      if (!existsSync(specsDir) || !existsSync(join(root, "AGENTS.md"))) return;
-      const agentsContent = readFileSync(join(root, "AGENTS.md"), "utf-8");
-      const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md"));
-      const unlisted = specFiles.filter(f => !agentsContent.includes(f));
-      if (unlisted.length > 0) {
-        console.warn(`Specs not listed in AGENTS.md: ${unlisted.join(", ")}`);
-      }
-      expect(true).toBe(true);
+    test("HYGIENE-4: Every spec appears in the specs routing table", () => {
+      // The table lives in .claude/rules/specs-routing.md, NOT AGENTS.md. This
+      // check read AGENTS.md, which contains no spec references at all, so it
+      // "found" 22 violations — every spec in the repo — and reported none of
+      // them because it ended in expect(true).toBe(true) (#80). The premise was
+      // stale, which is how a check this wrong stayed invisible.
+      const routingPath = join(root, ".claude", "rules", "specs-routing.md");
+      if (!existsSync(specsDir) || !existsSync(routingPath)) return;
+      const routing = readFileSync(routingPath, "utf-8");
+      const specFiles = readdirSync(specsDir)
+        .filter(f => f.endsWith(".md"))
+        // SPEC-TEMPLATE.md documents how to write a spec; it governs nothing.
+        .filter(f => f !== "SPEC-TEMPLATE.md");
+      const unlisted = specFiles.filter(f => !routing.includes(f));
+      expect(unlisted).toEqual([]);
     });
 
     test("HYGIENE-5: reference/ contents not in active routing", () => {
@@ -1131,10 +1162,8 @@ export function runDocHygiene(root: string) {
           }
         } catch {}
       }
-      if (leaked.length > 0) {
-        console.warn(`Archived files still referenced in AGENTS.md (stale routing): ${leaked.join(", ")}`);
-      }
-      expect(true).toBe(true);
+      // Was unconditionally passing after a console.warn (#80).
+      expect(leaked).toEqual([]);
     });
 
     test("HYGIENE-10: All ADRs have doc-type: adr in frontmatter", () => {
@@ -1243,7 +1272,14 @@ export function runDocHygiene(root: string) {
       expect(misplaced).toEqual([]);
     });
 
-    test("HYGIENE-6: No unreviewed constraint candidates in changed docs", async () => {
+    // WARN, not a gate, and the name now says so. This reports a review
+    // BACKLOG — 119 pending candidates on rungate as of #80 — so asserting it
+    // to zero would block every push until someone triages all of them. It
+    // previously claimed "No unreviewed constraint candidates" while ending in
+    // expect(true).toBe(true), which is the dishonest combination: a gate-
+    // sounding name over an unconditional pass. Advisory is the honest shape
+    // here; the lie was the name, not the leniency.
+    test("WARN HYGIENE-6: Unreviewed constraint candidates in changed docs", async () => {
       const { extractConstraints } = await import("../scripts/extract-constraints");
       const result = await extractConstraints(root, { apply: false });
 

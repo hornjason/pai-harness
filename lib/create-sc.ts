@@ -108,10 +108,6 @@ const patternDefs: Record<string, ParamDef> = {
     required: ["file", "target"],
     generate: (p) => `${p.file} exists with pointer to ${p.target}`,
   },
-  "test-passes": {
-    required: [],
-    generate: () => "bun test passes",
-  },
   "canary": {
     required: [],
     generate: () => "canary test exists",
