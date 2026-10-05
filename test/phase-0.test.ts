@@ -31,7 +31,7 @@ beforeAll(() => {
   execSync("git init", { cwd: OUTPUT, stdio: "pipe" });
   execSync("git add -A && git commit -m 'init fixture'", { cwd: OUTPUT, stdio: "pipe" });
   try {
-    execSync(`bun run ${SCAFFOLD} ${OUTPUT}`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
+    execSync(`bun run ${SCAFFOLD} ${OUTPUT} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
   } catch {
     // Scaffold may not exist yet or may fail — tests should still run and FAIL
   }

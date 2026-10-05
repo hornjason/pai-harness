@@ -69,14 +69,14 @@ governs: Test spec
     execSync("git add -A && git commit -m 'init'", { cwd: fixtureRoot, stdio: "pipe" });
 
     // Run scaffold first time
-    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot}`, { cwd: fixtureRoot, stdio: 'pipe' });
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: 'pipe' });
 
     // Capture first run outputs
     const agentsMd1 = readFileSync(join(fixtureRoot, "AGENTS.md"), "utf-8");
     const codeMap1 = readFileSync(join(fixtureRoot, "CODE-MAP.md"), "utf-8");
 
     // Run scaffold second time
-    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot}`, { cwd: fixtureRoot, stdio: 'pipe' });
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: 'pipe' });
 
     // Capture second run outputs
     const agentsMd2 = readFileSync(join(fixtureRoot, "AGENTS.md"), "utf-8");

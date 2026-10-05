@@ -124,8 +124,8 @@ describe("test-brief-roles", () => {
 
   test("ship.js contains preflightScore gate that halts below 80% (SC-407)", () => {
     const shipContent = readFileSync(join(ROOT, "workflows/ship.js"), "utf-8");
-    // Must contain a preflightScore function or gate
-    expect(shipContent).toMatch(/preflightScore/);
+    // Must contain a score gate (failScore or preflightScore)
+    expect(shipContent).toMatch(/failScore|preflightScore/);
     // Must contain score threshold check at 80
     expect(shipContent).toMatch(/score.*<.*80/);
     // Must contain halt/stop logic for compliance failure

@@ -31,7 +31,7 @@ describe('SC-525: --type workflow flag', () => {
   });
 
   test('--type workflow flag is parsed and creates workflow project', () => {
-    execSync(`bun ${scaffoldScript} ${tempDir} --type workflow`, {
+    execSync(`bun ${scaffoldScript} ${tempDir} --type workflow --fix`, {
       cwd: ROOT,
       encoding: 'utf-8'
     });
@@ -48,7 +48,7 @@ describe('SC-525: --type workflow flag', () => {
   });
 
   test('workflow projects skip harness-specific rungate.json fields', () => {
-    execSync(`bun ${scaffoldScript} ${tempDir} --type workflow`, {
+    execSync(`bun ${scaffoldScript} ${tempDir} --type workflow --fix`, {
       cwd: ROOT,
       encoding: 'utf-8'
     });
@@ -66,7 +66,7 @@ describe('SC-525: --type workflow flag', () => {
   });
 
   test('--type code (default) behavior is unchanged', () => {
-    execSync(`bun ${scaffoldScript} ${tempDir} --type code`, {
+    execSync(`bun ${scaffoldScript} ${tempDir} --type code --fix`, {
       cwd: ROOT,
       encoding: 'utf-8'
     });
@@ -86,7 +86,7 @@ describe('SC-525: --type workflow flag', () => {
   });
 
   test('default (no --type flag) uses code behavior', () => {
-    execSync(`bun ${scaffoldScript} ${tempDir}`, {
+    execSync(`bun ${scaffoldScript} ${tempDir} --fix`, {
       cwd: ROOT,
       encoding: 'utf-8'
     });
@@ -98,7 +98,7 @@ describe('SC-525: --type workflow flag', () => {
 
   test('invalid --type value shows error', () => {
     try {
-      execSync(`bun ${scaffoldScript} ${tempDir} --type invalid`, {
+      execSync(`bun ${scaffoldScript} ${tempDir} --type invalid --fix`, {
         cwd: ROOT,
         encoding: 'utf-8',
         stdio: 'pipe'

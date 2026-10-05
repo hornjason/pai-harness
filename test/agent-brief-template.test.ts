@@ -22,7 +22,7 @@ beforeAll(() => {
 
   // Run scaffold
   try {
-    execSync(`bun run ${SCAFFOLD} ${OUTPUT}`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
+    execSync(`bun run ${SCAFFOLD} ${OUTPUT} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
   } catch (e) {
     // Scaffold may fail — tests should still run and report what's wrong
     console.error("Scaffold failed:", e);
@@ -212,7 +212,7 @@ describe("Agent Brief Template Tests", () => {
       });
 
       // Run scaffold
-      execSync(`bun run ${SCAFFOLD} ${OUTPUT_KW}`, {
+      execSync(`bun run ${SCAFFOLD} ${OUTPUT_KW} --fix`, {
         timeout: 60000,
         encoding: "utf-8",
         stdio: "pipe",
@@ -248,7 +248,7 @@ describe("Agent Brief Template Tests", () => {
 
       try {
         // Re-run scaffold on OUTPUT
-        execSync(`bun run ${SCAFFOLD} ${OUTPUT}`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
+        execSync(`bun run ${SCAFFOLD} ${OUTPUT} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
 
         // Read generated brief
         const briefPath = join(OUTPUT, ".claude/agents/marcus.md");
