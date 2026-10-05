@@ -45,7 +45,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
 | WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
 | TestSuiteGuard | TestSuiteGuard.hook.ts | 32 | SC-473, SC-370 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
-| TestSuiteRelease | TestSuiteRelease.hook.ts | 32 | SC-370, SC-516 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
+| TestSuiteRelease | TestSuiteRelease.hook.ts | 32 | SC-370, SC-516, SC-517, SC-518 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
 
 ## Success Criteria
 
@@ -60,6 +60,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [x] SC-472: Scaffold deploys consumer-facing hooks to .claude/settings.local.json driven by rungate.json hooks[].deployToConsumers (behavioral)
 - [x] SC-473: TestSuiteGuard blocks full test suite (bun test) after 2 runs per session — Tier 3 enforcement for DIR-L29
 - [x] SC-516: TestSuiteGuard caps concurrent full suites across sessions at 2 — issue #67. The per-session cap in SC-473 does not bound the machine: N sessions obeying the CLAUDE.md pre-implementation gate means N simultaneous 5.4 GB suites, which exhausted the VM compressor and rebooted the machine on 2026-10-05. Slots are files, not a process count — the agentgrit suite leaks ~31 dangling bun processes per run, and BSD `pgrep` has no `-c` flag so the obvious count silently returns nothing. Fails open, never silent.
+- [x] SC-517: A slot is one running suite, not one session — issue #67-B. Subagent Bash calls reach PreToolUse with the PARENT session's id (hook `session_id` is the same identifier as the transcript `sessionId`, and all 292 records of a live three-agent run carried the parent's). Keying ownership on the session therefore blocked Quinn's mandatory suite behind Marcus's slot and surfaced it as a test failure. Each live suite takes its own slot and releases exactly one; the cap counts suites, so no distribution across session ids can exceed it.
+- [x] SC-518: Machine-wide hooks are registered in user settings, not project settings — issue #67-A. Project `.claude/settings.json` only loads for sessions started in that directory, so a cross-session cap registered there is inert for every session rooted elsewhere, including sessions working on the repo via an added working directory. Registration must appear in exactly one scope: the two are not de-duplicated, so dual registration fires the hook twice and consumes two slots per suite.
 
 ## Implementation
 

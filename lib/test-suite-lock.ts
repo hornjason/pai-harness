@@ -63,8 +63,17 @@ interface SlotEntry {
   startedAt: number;
 }
 
+/**
+ * Where slot files live. TMPDIR is shared across sessions on this machine,
+ * which is exactly what makes the cap work between them.
+ *
+ * RUNGATE_LOCK_DIR overrides it. Tests that drive the hook as a subprocess
+ * cannot pass `options`, so without an override they compete for the real
+ * slots — including the slot held by the very suite running them — and leak a
+ * live slot per case, wedging the next run for a full TTL.
+ */
 function defaultLockDir(): string {
-  return process.env.TMPDIR || tmpdir() || "/tmp";
+  return process.env.RUNGATE_LOCK_DIR || process.env.TMPDIR || tmpdir() || "/tmp";
 }
 
 function slotPath(lockDir: string, index: number): string {
@@ -263,18 +272,17 @@ export function acquireFullSuiteSlot(
   try {
     mkdirSync(lockDir, { recursive: true });
 
-    // NO RE-ENTRANCY. One slot means one running suite, not one session. The
-    // earlier re-entrant branch returned ok for any session already holding a
-    // slot, so A could start a background suite (which deliberately does not
-    // release) and then a second foreground one — three concurrent suites
-    // alongside B, which is the OOM condition this exists to prevent.
-    const own = heldSlots(lockDir, now, capacity, ttlSeconds).find(
-      (h) => h.sessionId === sessionId,
-    );
-    if (own) {
-      return { ok: false, holders: [own] };
-    }
-
+    // ONE SLOT IS ONE RUNNING SUITE, NOT ONE SESSION. A single session can
+    // legitimately have two suites in flight: a backgrounded run plus a
+    // foreground one, or two pipeline agents, which share their parent's
+    // session id. Each takes its own slot, so the cap keeps counting suites.
+    //
+    // Both earlier attempts had the unit wrong. The original re-entrant branch
+    // returned ok WITHOUT taking a slot, so A's two suites occupied one slot
+    // while B took the other — three suites against a cap of two, the OOM
+    // condition this exists to prevent. Replacing it with a flat refusal then
+    // over-corrected: Marcus holds the slot, Quinn is refused, and the pipeline
+    // reports a test failure that is really a lock collision.
     for (let i = 0; i < capacity; i++) {
       const path = slotPath(lockDir, i);
       const entry = readSlot(path);
@@ -384,7 +392,8 @@ export function evaluateFullSuiteRequest(
       return {
         allow: false,
         reason:
-          `This session already has a full suite running (started ${self.ageSeconds}s ago).\n` +
+          `Every full-suite slot is in use and one of them is yours ` +
+          `(started ${self.ageSeconds}s ago).\n` +
           `A slot is one running suite, not one session — a backgrounded suite keeps its ` +
           `slot until it finishes or the ${DEFAULT_TTL_SECONDS}s TTL expires.\n` +
           `Wait for it, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
@@ -421,7 +430,18 @@ export function evaluateFullSuiteRequest(
   return { allow: true };
 }
 
-/** Give up this session's slot. Releasing one you do not hold is a no-op. */
+/**
+ * Give up ONE slot for a finished suite. Releasing one you do not hold is a no-op.
+ *
+ * Exactly one, not all of them: a session may hold several slots, one per
+ * running suite, and only the suite that just finished is done. Freeing every
+ * slot the session owns would hand back capacity that is still in use — which
+ * is the same over-count that caused the original three-concurrent-suite bug.
+ *
+ * The newest slot is the one released, since the run that just finished is the
+ * most recent acquisition. When that guess is wrong the identity of the freed
+ * slot differs but the count does not, and the count is what the cap enforces.
+ */
 export function releaseFullSuiteSlot(
   sessionId: string,
   options: LockOptions = {},
@@ -429,12 +449,23 @@ export function releaseFullSuiteSlot(
   const lockDir = options.lockDir ?? defaultLockDir();
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
 
+  let newestPath: string | null = null;
+  let newestStartedAt = -Infinity;
+
   for (let i = 0; i < capacity; i++) {
     const path = slotPath(lockDir, i);
-    try {
-      if (readSlot(path)?.sessionId === sessionId) unlinkSync(path);
-    } catch {
-      // Nothing to release here.
+    const entry = readSlot(path);
+    if (!entry || entry.sessionId !== sessionId) continue;
+    if (entry.startedAt > newestStartedAt) {
+      newestStartedAt = entry.startedAt;
+      newestPath = path;
     }
+  }
+
+  if (!newestPath) return;
+  try {
+    unlinkSync(newestPath);
+  } catch {
+    // Already gone, or reclaimed by the TTL — either way nothing is held.
   }
 }

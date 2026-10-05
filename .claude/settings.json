@@ -25,21 +25,6 @@
           {
             "type": "command",
             "command": "bun /Users/jhorn/Projects/rungate/hooks/BashToolGuard.hook.ts"
-          },
-          {
-            "type": "command",
-            "command": "bun /Users/jhorn/Projects/rungate/hooks/TestSuiteGuard.hook.ts"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bun /Users/jhorn/Projects/rungate/hooks/TestSuiteRelease.hook.ts"
           }
         ]
       }

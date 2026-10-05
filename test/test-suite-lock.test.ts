@@ -106,26 +106,57 @@ describe("AC-1: concurrent full suites are capped at the measured safe limit", (
     expect(Math.max(...third.holders!.map((h) => h.ageSeconds))).toBe(45);
   });
 
-  test("a session already holding a slot is refused a second concurrent run", () => {
+  test("a session's second concurrent suite takes its own slot (#67-B)", () => {
     expect(acquireFullSuiteSlot("session-a", opts()).ok).toBe(true);
 
-    // One slot means one RUNNING SUITE, not one session. Re-entrancy let a
-    // session start a background suite (never released) plus a foreground one,
-    // reaching three concurrent alongside another session.
-    const second = acquireFullSuiteSlot("session-a", opts());
-    expect(second.ok).toBe(false);
-    expect(second.holders?.[0].sessionId).toBe("session-a");
+    // One slot is one RUNNING SUITE, not one session. A backgrounded run plus a
+    // foreground one is two live suites, so it must cost two slots — not one
+    // (the original re-entrant bug, three suites on a cap of two) and not a
+    // refusal (the over-correction, which failed legitimate second runs).
+    expect(acquireFullSuiteSlot("session-a", opts()).ok).toBe(true);
+    expect(heldSlots(dir)).toHaveLength(2);
 
-    expect(heldSlots(dir)).toHaveLength(1);
-    // A different session can still take the remaining slot.
-    expect(acquireFullSuiteSlot("session-b", opts()).ok).toBe(true);
+    // Capacity is still 2 suites total, whoever is running them.
+    expect(acquireFullSuiteSlot("session-b", opts()).ok).toBe(false);
   });
 
-  test("three concurrent suites are unreachable via re-entrancy (#67 review, HIGH)", () => {
+  test("two agents sharing a parent session id are not falsely refused (#67-B)", () => {
+    // Subagent Bash calls surface under the PARENT session id — jhorn-8e found
+    // all 292 transcript records in a live run carrying the parent's id, with
+    // agent identity in a separate agentId field. Keying ownership on the
+    // session meant Quinn's mandatory suite was blocked by Marcus's slot and
+    // the pipeline reported it as a test failure rather than a lock collision.
+    expect(evaluateFullSuiteRequest("parent", "bun test", opts()).allow).toBe(
+      true,
+    );
+    expect(evaluateFullSuiteRequest("parent", "bun test", opts()).allow).toBe(
+      true,
+    );
+    expect(heldSlots(dir)).toHaveLength(2);
+  });
+
+  test("three concurrent suites are unreachable, however they are spread (#67 review, HIGH)", () => {
+    // The invariant is about SUITES, not sessions: no distribution of requests
+    // across session ids may put more than `capacity` suites in flight.
     expect(evaluateFullSuiteRequest("A", "bun test", opts()).allow).toBe(true);
     expect(evaluateFullSuiteRequest("B", "bun test", opts()).allow).toBe(true);
-    // A's second run — previously allowed, giving 3 x 5.4 GB.
+    // A third live suite — previously reachable via re-entrancy, 3 x 5.4 GB.
     expect(evaluateFullSuiteRequest("A", "bun test", opts()).allow).toBe(false);
+    expect(evaluateFullSuiteRequest("C", "bun test", opts()).allow).toBe(false);
+    expect(heldSlots(dir)).toHaveLength(2);
+  });
+
+  test("two suites in one session still exclude everyone else (#67-B)", () => {
+    expect(evaluateFullSuiteRequest("solo", "bun test", opts()).allow).toBe(
+      true,
+    );
+    expect(evaluateFullSuiteRequest("solo", "bun test", opts()).allow).toBe(
+      true,
+    );
+    // Allowing a session two slots must not be a route to extra capacity.
+    expect(evaluateFullSuiteRequest("other", "bun test", opts()).allow).toBe(
+      false,
+    );
     expect(heldSlots(dir)).toHaveLength(2);
   });
 
@@ -344,19 +375,37 @@ describe("security: runner aliases and quote-awareness (#67 review round 2)", ()
 });
 
 describe("security: unbounded slot hold (#67 review)", () => {
-  test("repeated requests do not extend the TTL past first acquisition", () => {
+  test("a later request never refreshes a slot already held", () => {
     acquireFullSuiteSlot("hog", opts({ now: 0 }));
-    // Further full-suite commands are now refused outright, and critically they
-    // must not refresh the held slot's timestamp either.
+    // A second request takes a SECOND slot (it is a second suite). What it must
+    // never do is push the first slot's clock forward, which would let a
+    // session hold a slot indefinitely by asking again.
     acquireFullSuiteSlot("hog", opts({ now: 100_000 }));
+    // A third is refused — capacity is full — and must also leave both clocks alone.
     acquireFullSuiteSlot("hog", opts({ now: 300_000 }));
 
-    // TTL is absolute from t=0, so at 500s the slot is reclaimable.
-    acquireFullSuiteSlot("other-a", opts({ now: 500_000 }));
-    acquireFullSuiteSlot("other-b", opts({ now: 500_000 }));
+    const ages = heldSlots(dir, 300_000)
+      .map((h) => h.ageSeconds)
+      .sort((a, b) => a - b);
+    expect(ages).toEqual([200, 300]);
+  });
 
-    const holders = heldSlots(dir, 500_000).map((h) => h.sessionId).sort();
-    expect(holders).toEqual(["other-a", "other-b"]);
+  test("TTL is absolute from acquisition, so a wedged session frees up", () => {
+    acquireFullSuiteSlot("hog", opts({ now: 0 }));
+    acquireFullSuiteSlot("hog", opts({ now: 0 }));
+
+    // 500s later both slots are past the 420s TTL and reclaimable.
+    expect(acquireFullSuiteSlot("other-a", opts({ now: 500_000 })).ok).toBe(
+      true,
+    );
+    expect(acquireFullSuiteSlot("other-b", opts({ now: 500_000 })).ok).toBe(
+      true,
+    );
+    expect(
+      heldSlots(dir, 500_000)
+        .map((h) => h.sessionId)
+        .sort(),
+    ).toEqual(["other-a", "other-b"]);
   });
 });
 
@@ -410,6 +459,21 @@ describe("release", () => {
     releaseFullSuiteSlot("session-a", opts());
 
     expect(acquireFullSuiteSlot("session-c", opts()).ok).toBe(true);
+  });
+
+  test("releasing frees one finished suite, not every slot the session holds", () => {
+    acquireFullSuiteSlot("A", opts({ now: 0 })); // backgrounded, still running
+    acquireFullSuiteSlot("A", opts({ now: 10_000 })); // foreground
+
+    // The foreground suite finishes and its PostToolUse hook releases.
+    releaseFullSuiteSlot("A", opts());
+
+    // The backgrounded suite is still consuming 5.4 GB — its slot must survive,
+    // or the cap hands out capacity that is genuinely in use.
+    const remaining = heldSlots(dir, 10_000);
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].sessionId).toBe("A");
+    expect(remaining[0].ageSeconds).toBe(10);
   });
 
   test("a session cannot release a slot it does not hold", () => {
