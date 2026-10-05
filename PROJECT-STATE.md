@@ -22,18 +22,16 @@ Next: #57 ship.js security integration → #59 dry-run smoke tests → #60 traje
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #55 Pipeline testing inner loop — Phase 1 DONE (#56/#58 closed), Phase 2 next (#57 partial, #59, #60)
-2. P1: #57 Ship.js security integration — replace inline git add/SSH with lib/workflow-security.ts functions
-3. P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns
-4. P1: DDB #1450 — Fix CI checks on Mac Mini runner (5 failures, still OPEN, CI still red)
+1. P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)
+2. P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns
+3. P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures
+4. P1: Re-scaffold consumers (DDB, POV) — they still carry the broken pre-commit hook that rejects every git commit --amend, and the no-op CI secret scan
 5. P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime
 6. P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs
 7. P3: #61 Mock agent harness + pass^k determinism metrics
-8. DONE: #53 Pipeline hardening — SHIPPED via pipeline, 6/6 SCs
-9. DONE: #43 acHash integrity — code merged from branch, field-level diff logging added
-10. DONE: #45 BashToolGuard worktrees — piped pattern blocking + COMP-7 prompt injection removed
-11. DONE: #56 Workflow validator — syntax + TDZ + shell pattern checking in <200ms
-12. DONE: #58 Security fuzzing — 43 adversarial tests, 0 injection vectors pass
+8. P3: #54 — #53 Phase 2 performance + dead code cleanup
+9. WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it
+10. WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 

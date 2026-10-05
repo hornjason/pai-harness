@@ -1,18 +1,16 @@
 {
   "updated": "2026-10-05",
   "priorities": [
-    "P0: #55 Pipeline testing inner loop — Phase 1 DONE (#56/#58 closed), Phase 2 next (#57 partial, #59, #60)",
-    "P1: #57 Ship.js security integration — replace inline git add/SSH with lib/workflow-security.ts functions",
+    "P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)",
     "P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns",
-    "P1: DDB #1450 — Fix CI checks on Mac Mini runner (5 failures, still OPEN, CI still red)",
+    "P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures",
+    "P1: Re-scaffold consumers (DDB, POV) — they still carry the broken pre-commit hook that rejects every git commit --amend, and the no-op CI secret scan",
     "P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime",
     "P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
     "P3: #61 Mock agent harness + pass^k determinism metrics",
-    "DONE: #53 Pipeline hardening — SHIPPED via pipeline, 6/6 SCs",
-    "DONE: #43 acHash integrity — code merged from branch, field-level diff logging added",
-    "DONE: #45 BashToolGuard worktrees — piped pattern blocking + COMP-7 prompt injection removed",
-    "DONE: #56 Workflow validator — syntax + TDZ + shell pattern checking in <200ms",
-    "DONE: #58 Security fuzzing — 43 adversarial tests, 0 injection vectors pass"
+    "P3: #54 — #53 Phase 2 performance + dead code cleanup",
+    "WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it",
+    "WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it"
   ],
   "notes": "Session 28 (2026-10-05) — Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop.\n\nKey results:\n  - 36 test failures fixed (scaffold --fix flag missing from 6 test files, stale MCP migration tests deleted)\n  - #53 SHIPPED via pipeline (19 agents/16 min, first-pass) — 6/6 SCs\n  - TDZ bug from #53 found and fixed (CACHED_CEREMONY declaration order)\n  - #43 and #45 SHIP_FAILED via pipeline (unwinnable AC pattern) — code correct, merged manually\n  - Council debate (4 agents, 3 rounds): designed pipeline testing inner loop with security-first approach\n  - Phase 1 built directly: lib/workflow-security.ts (7 functions), test/workflow-security.test.ts (43 tests), scripts/validate-workflow.ts\n  - 7 issues created (#55-#61) for phased pipeline testing plan\n  - Security review findings addressed: fail-open git add, SSH option injection, path traversal edge cases\n\nPipeline insight: 'unwinnable AC' pattern caused #42, #43, #45 to SHIP_FAIL — Discovery writes grep evidence that doesn't match implementation. #59 (dry-run smoke test with evidence pre-validation) is the fix.\n\nSuite: 1920+ pass, 0 fail.\n\nNext: #57 ship.js security integration → #59 dry-run smoke tests → #60 trajectory capture.\nSuite: 25/25 SCs done.",
   "antipatterns": [
@@ -428,16 +426,36 @@
         "Violation categorization: quality vs process (SC-465-468)",
         "analyze-transcript.ts: file efficiency, deliverable ratio, test runs, context growth"
       ]
+    },
+    {
+      "date": "2026-10-05 session 29",
+      "items": [
+        "COMP-7 BashToolGuard fired in EVERY Claude Code session on the machine — it is registered user-level so it reaches worktree subagents (#45 root cause). Scoped to harnessed projects via a .claude/rungate.json OR .claude/rungate/ marker walk-up. Worktree-only scoping was rejected: ship.js quinn-local and marcus-fix run with isolation undefined, outside any worktree",
+        "Five distinct COMP-7 false positives fixed: non-harness sessions, stdin filters (bun test piped to tail), permissions.deny globs, heredoc bodies scanned as commands, and newlines not treated as segment separators",
+        "Detection extracted to lib/bash-file-read.ts and shared by the hook AND lib/transcript-checker.ts — the grader had used a looser rule than the hook, so it could flag what the hook allowed",
+        "#57 SHIPPED via pipeline (16 agents, 0 regressions). Verified before spawning that SC-1..4 and SC-6 were already done and only SC-5 remained; passed that into goalData so Discovery scoped to the real work",
+        "ship.js staging failed OPEN — safeGitAddCommand fell back to a bare git add on rejection, broadening a detection into staging the whole worktree. Now returns null and all 3 call sites abort with SHIP_FAILED",
+        "acHash was computed inline twice in gates/orchestrator.ts. Both now delegate to computeACHash. The Phase 1 lib helper SORTS and the production code did not, so the extracted function computed a different hash than its source — it had never been wired up, so nothing caught it",
+        "pre-commit secret scan rejected every git commit --amend: empty staged list meant xargs ran grep with no operands, grep read stdin and exited 0. Rewritten to scan the staged diff, which also fixes paths with spaces, error masking, and reading the working tree instead of the staged blob",
+        "Generated CI secret scan had NEVER scanned anything — it used git diff --cached, and CI has no staged index. Possibly one of the 5 DDB #1450 failures",
+        "Allowlist escape closed: the credential exclusion matched anywhere on the line, so a trailing placeholder comment laundered a real secret. grep -o now anchors the exclusion to the value",
+        "postScaffoldCommit did a blanket add and swept unrelated in-progress work into a commit titled 'scaffold: initialize rungate harness' — it hijacked this session's work three times. Now stages only the paths the run reported writing",
+        "A backtick in a comment inside a JS template literal broke scaffold-project.ts and failed 36 tests at once. Added sh -n syntax guards over all generated shell",
+        "#63 fixed rather than deferred: scaffold stripped AGENTS.md frontmatter and the convert-spec row on every re-scaffold. Generator now carries frontmatter forward, refreshing only the updated field",
+        "Model routing: discovery and marcus moved from sonnet to opus. No model IDs are pinned anywhere in the harness — every role uses an alias, so agents were already on Claude 5",
+        "Jason directive: always fix regressions and issues found while working — never defer, never excuse as pre-existing. Saved as a memory",
+        "Jason directive: make routine git/repo-hygiene decisions autonomously — prove safety, act, report. Saved as a memory"
+      ]
     }
   ],
   "session": {
-    "number": 28,
+    "number": 29,
     "date": "2026-10-05",
-    "summary": "Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop (council-driven). #43/#45 code merged manually after SHIP_FAILED on unwinnable ACs. Security boundary extraction + 43 fuzzing tests + workflow validator.",
-    "suite": "1920+ pass, 0 fail",
-    "scs_done": "#53 (6 SCs), #43 (5 SCs), #45 (4 SCs), #56 (5 SCs), #58 (5 SCs)",
-    "commits": 8,
-    "issues_created": "#55, #56, #57, #58, #59, #60, #61",
-    "issues_closed": "#43, #45, #53, #56, #58"
+    "summary": "Fixed COMP-7 hook firing in every Claude Code session on the machine (5 distinct false positives). Shipped #57 via pipeline — first run with discovery/marcus on opus. Fixed 6 further defects found while working, including a pre-commit hook that blocked every amend and a CI secret scan that had never scanned anything.",
+    "suite": "2121 pass, 0 fail",
+    "scs_done": "#62 (5 SCs), #57 (6 SCs), #63 (2 SCs), #64 (closed with #57)",
+    "commits": 7,
+    "issues_created": "#62, #63, #64",
+    "issues_closed": "#57, #62, #63, #64"
   }
 }
