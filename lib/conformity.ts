@@ -368,6 +368,18 @@ function loadConformityAllowlists(root: string): {
   }
 }
 
+/**
+ * Report a check that did not run, rather than returning silently.
+ *
+ * A bare `return` on a missing directory reads as a pass in every report, which
+ * is the same failure as the `expect(true).toBe(true)` bodies removed in #80 —
+ * the check contributes a green tick while verifying nothing. Wording matches
+ * the fallow skips so skipped checks are greppable as one class.
+ */
+function checkSkipped(check: string, reason: string): void {
+  console.warn(`SKIP ${check}: ${reason} — this check did NOT run.`);
+}
+
 function loadBuiltInRegistry(): Array<{ name: string; regex: string }> {
   const key = "__builtin__";
   if (_registryCache.has(key)) return _registryCache.get(key)!;
@@ -1026,7 +1038,7 @@ export function runSpecDrift(
     });
 
     test("DRIFT-2: Every testable spec is referenced by at least one test", () => {
-      if (!existsSync(specsDir)) return;
+      if (!existsSync(specsDir)) return checkSkipped("DRIFT-2", "no specs/ directory");
       const testable = readdirSync(specsDir).filter(f => f.endsWith(".md")).filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return fm?.testable === "true";
@@ -1160,7 +1172,7 @@ export function runDocHygiene(
 
   describe("Doc Hygiene", () => {
     test("HYGIENE-1: All specs have non-empty governs field", () => {
-      if (!existsSync(specsDir)) return;
+      if (!existsSync(specsDir)) return checkSkipped("HYGIENE-1", "no specs/ directory");
       const missing: string[] = [];
       for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
         const content = readFileSync(join(specsDir, f), "utf-8");
@@ -1247,7 +1259,8 @@ export function runDocHygiene(
       // them because it ended in expect(true).toBe(true) (#80). The premise was
       // stale, which is how a check this wrong stayed invisible.
       const routingPath = join(root, ".claude", "rules", "specs-routing.md");
-      if (!existsSync(specsDir) || !existsSync(routingPath)) return;
+      if (!existsSync(specsDir)) return checkSkipped("HYGIENE-4", "no specs/ directory");
+      if (!existsSync(routingPath)) return checkSkipped("HYGIENE-4", "no .claude/rules/specs-routing.md");
       const routing = readFileSync(routingPath, "utf-8");
       const specFiles = readdirSync(specsDir)
         .filter(f => f.endsWith(".md"))
@@ -1258,7 +1271,8 @@ export function runDocHygiene(
     });
 
     test("HYGIENE-5: reference/ contents not in active routing", () => {
-      if (!existsSync(refDir) || !existsSync(join(root, "AGENTS.md"))) return;
+      if (!existsSync(refDir)) return checkSkipped("HYGIENE-5", "no reference/ directory");
+      if (!existsSync(join(root, "AGENTS.md"))) return checkSkipped("HYGIENE-5", "no AGENTS.md");
       const agentsContent = readFileSync(join(root, "AGENTS.md"), "utf-8");
       const leaked: string[] = [];
       for (const sub of readdirSync(refDir)) {
