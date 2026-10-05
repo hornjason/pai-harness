@@ -18,15 +18,41 @@
  * project-level (.claude/settings.json) settings. The regex patterns below block
  * direct, semicolon-chained, &&-chained, AND piped cat/head/tail patterns.
  * permissions.deny entries are retained as defense-in-depth for direct invocations.
+ *
+ * SCOPE: User-level registration means this hook fires for EVERY Claude Code
+ * session on the machine, including non-harness projects and bundled skills that
+ * legitimately pipe through head/tail. COMP-7 is a harness compliance directive
+ * (lib/compliance-report.ts) graded against Marcus/Quinn/Rook transcripts — it is
+ * only meaningful inside a rungate-harnessed project. isHarnessProject() walks up
+ * from cwd looking for .claude/rungate.json (the canonical harness marker used by
+ * lib/config-loader.ts and lib/conformity.ts). This keeps enforcement for rungate,
+ * its worktree subagents, AND consumer projects (DDB, POV) while going silent
+ * everywhere else. Scoping lives here, not in the registration: project-level
+ * hooks do not reach worktree subagents, so user-level registration is required.
  */
 
+import { existsSync } from 'fs';
+import { dirname, join } from 'path';
 import { parseHookInput } from './lib/utils';
+
+/** True when cwd sits at or below a project containing .claude/rungate.json. */
+function isHarnessProject(startDir: string): boolean {
+  let dir = startDir;
+  while (true) {
+    if (existsSync(join(dir, '.claude', 'rungate.json'))) return true;
+    const parent = dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
 
 async function main() {
   const input = await parseHookInput();
   if (!input) process.exit(0);
 
   if (input.tool_name !== 'Bash') process.exit(0);
+
+  if (!isHarnessProject(process.cwd())) process.exit(0);
 
   const cmd = (input.tool_input?.command as string) || '';
 

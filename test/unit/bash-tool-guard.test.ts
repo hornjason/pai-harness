@@ -1,11 +1,14 @@
-import { describe, it, expect } from 'bun:test';
+import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { join } from 'path';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
 
 const HOOK_PATH = join(import.meta.dir, '../../hooks/BashToolGuard.hook.ts');
+const PROJECT_ROOT = join(import.meta.dir, '../..');
 
-async function runHook(command: string): Promise<string> {
+async function runHook(command: string, cwd: string = PROJECT_ROOT): Promise<string> {
   const input = JSON.stringify({ tool_name: 'Bash', tool_input: { command }, session_id: 'test-btg' });
-  const proc = Bun.spawn(['bun', HOOK_PATH], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn(['bun', HOOK_PATH], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe', cwd });
   proc.stdin.write(input);
   proc.stdin.end();
   const out = await new Response(proc.stdout).text();
@@ -123,6 +126,61 @@ describe('BashToolGuard — allowed commands', () => {
   });
 
   it('allows non-Bash tools', async () => {
+    const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/x' }, session_id: 'test-btg' });
+    const proc = Bun.spawn(['bun', HOOK_PATH], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+    proc.stdin.write(input);
+    proc.stdin.end();
+    const out = await new Response(proc.stdout).text();
+    await proc.exited;
+    expect(out.trim()).toBe('');
+  });
+});
+
+describe('BashToolGuard — harness project scoping', () => {
+  let harnessDir: string;
+  let plainDir: string;
+  let nestedDir: string;
+
+  beforeAll(() => {
+    // Harnessed project: has .claude/rungate.json
+    harnessDir = mkdtempSync(join(tmpdir(), 'btg-harness-'));
+    mkdirSync(join(harnessDir, '.claude'), { recursive: true });
+    writeFileSync(join(harnessDir, '.claude', 'rungate.json'), '{"roles":{}}');
+
+    // Nested subdir of a harnessed project — mirrors a worktree subagent cwd
+    nestedDir = join(harnessDir, '.claude', 'worktrees', 'wf_test-1');
+    mkdirSync(nestedDir, { recursive: true });
+
+    // Non-harness project: no rungate.json anywhere up the tree
+    plainDir = mkdtempSync(join(tmpdir(), 'btg-plain-'));
+  });
+
+  afterAll(() => {
+    rmSync(harnessDir, { recursive: true, force: true });
+    rmSync(plainDir, { recursive: true, force: true });
+  });
+
+  it('blocks cat in a harnessed project root', async () => {
+    const out = await runHook('cat file.txt', harnessDir);
+    expectBlocked(out);
+  });
+
+  it('blocks cat from a worktree subdir of a harnessed project', async () => {
+    const out = await runHook('cat file.txt', nestedDir);
+    expectBlocked(out);
+  });
+
+  it('allows cat outside any harnessed project', async () => {
+    const out = await runHook('cat file.txt', plainDir);
+    expectAllowed(out);
+  });
+
+  it('allows piped head outside any harnessed project', async () => {
+    const out = await runHook('grep -n "x" shared/model-migration.md | head -80', plainDir);
+    expectAllowed(out);
+  });
+
+  it('allows non-Bash tools regardless of scope', async () => {
     const input = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: '/tmp/x' }, session_id: 'test-btg' });
     const proc = Bun.spawn(['bun', HOOK_PATH], { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
     proc.stdin.write(input);
