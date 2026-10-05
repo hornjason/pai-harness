@@ -19,12 +19,23 @@ const SPECS_DIR = join(ROOT, "specs");
 interface SC { id: string; what: string; done: boolean }
 interface Phase { name: string; scs: SC[] }
 interface Session { date: string; items: string[] }
+interface CurrentSession {
+  number: number;
+  date: string;
+  summary: string;
+  suite: string;
+  issues_created?: string;
+  issues_closed?: string;
+}
+
 interface ProjectState {
   updated: string;
   priorities: string[];
   notes?: string;
   phases: Phase[];
   sessions: Session[];
+  /** Written every session; was never declared here and never rendered. */
+  session?: CurrentSession;
 }
 
 function scanSpecSCStatus(): Record<string, boolean> {
@@ -69,6 +80,19 @@ function render(state: ProjectState): string {
   lines.push("# Project State");
   lines.push("");
   lines.push(`**Current phase: ${currentLabel}**`);
+
+  // `session` was written into project-state.json every session and rendered
+  // nowhere, so the suite number and session count a reader needs first were
+  // dead data in the file.
+  if (state.session) {
+    lines.push("");
+    lines.push(`**Session ${state.session.number} (${state.session.date})** — ${state.session.summary}`);
+    lines.push("");
+    lines.push(`Suite: ${state.session.suite}`);
+    if (state.session.issues_created) lines.push(`Issues opened: ${state.session.issues_created}`);
+    if (state.session.issues_closed) lines.push(`Issues closed: ${state.session.issues_closed}`);
+  }
+
   if (state.notes) lines.push(`\n${state.notes}`);
   lines.push("");
 
@@ -98,7 +122,13 @@ function render(state: ProjectState): string {
   if (state.sessions.length > 0) {
     lines.push("---");
     lines.push("");
-    for (const session of state.sessions.slice(0, 3)) {
+    // Newest first. This was `slice(0, 3)`, which rendered the three OLDEST
+    // entries — so every session appended to the array was invisible, and
+    // PROJECT-STATE.md showed ancient history to the next session while
+    // AGENTS.md instructs reading it first as the handoff. The generator
+    // printed "✅ Updated" the whole time, because it had in fact rewritten
+    // the file; it just never rendered the new rows.
+    for (const session of [...state.sessions].reverse().slice(0, 3)) {
       lines.push(`**Session ${session.date}:**`);
       session.items.forEach(item => lines.push(`- ${item}`));
       lines.push("");

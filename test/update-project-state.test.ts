@@ -138,7 +138,13 @@ describe("update-project-state", () => {
     expect(first).toBe(second);
   });
 
-  test("sessions capped at 3", () => {
+  // Was "sessions capped at 3" asserting Day 1 and Day 3 present and Day 4
+  // absent — the three OLDEST. That is the behaviour that made PROJECT-STATE.md
+  // show ancient history while every appended session stayed invisible, and the
+  // test locked it in. Inverted rather than deleted: the cap is still 3, but it
+  // must be the three most recent, because this file is the session handoff
+  // AGENTS.md tells the next session to read first.
+  test("sessions capped at 3, newest first", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [],
@@ -151,9 +157,13 @@ describe("update-project-state", () => {
       ]
     });
     const md = run();
-    expect(md).toContain("Day 1");
+    expect(md).toContain("Day 5");
+    expect(md).toContain("Day 4");
     expect(md).toContain("Day 3");
-    expect(md).not.toContain("Day 4");
+    expect(md).not.toContain("Day 2");
+    expect(md).not.toContain("Day 1");
+    // Newest must lead, not merely be present.
+    expect(md.indexOf("Day 5")).toBeLessThan(md.indexOf("Day 3"));
   });
 
   test("updates SC count in notes after sync", () => {

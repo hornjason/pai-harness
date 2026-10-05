@@ -1,20 +1,22 @@
 {
   "updated": "2026-10-05",
   "priorities": [
-    "P1: #65 Type check has never run — add tsconfig.json, fix the remaining 88 errors, and gate it so it cannot silently revert to a no-op. Scaffold must generate one for consumers too",
-    "P0: #55 Pipeline testing inner loop — Phase 1 + 1b DONE (#56/#57/#58/#64 closed), Phase 2 next (#59, #60)",
-    "P1: #59 Dry-run smoke tests — evidence pre-validation to catch unwinnable ACs before Marcus spawns",
-    "P1: DDB #1450 — Fix CI checks on Mac Mini runner. The generated gates.yml secret scan had never scanned anything (git diff --cached in CI = zero files); fixed in 267b72c1, so re-check whether this was one of the 5 failures",
-    "P1: Re-scaffold consumers (DDB, POV) — they still carry the broken pre-commit hook that rejects every git commit --amend, and the no-op CI secret scan",
-    "P2: #60 Trajectory capture — OpenTelemetry-style observability for workflow runtime",
-    "P2: #23 Isolated execution on Mac Mini — research devcontainer vs worktree, enable laptop-off AFK runs",
-    "P3: #61 Mock agent harness + pass^k determinism metrics",
-    "P3: #54 — #53 Phase 2 performance + dead code cleanup",
-    "WATCH: acHash value changed in fada0f8e (lib computeACHash sorts, old inline code did not). Workflows in flight across the upgrade fail loudly on mismatch; re-running resolves it",
-    "WATCH: discovery + marcus now route to opus. #57 shipped first-pass with 0 regressions. Compare grading trend before deciding whether to keep it",
-    "WATCH: consumers re-scaffolded after b8a6aaca will pick up their own rungate.json role config for the first time. Their agent models may change from the rungate defaults they have been silently running on"
+    "P0: #71 CI and local disagree by 29 tests — CI is 2033 pass / 29 fail on ee48cc84 while local is green. Every suite-green claim, including todays two merges, was measured against a suite CI does not agree with. Clusters: SkillSequenceLogger (10), SkillCooccurrence (10), precompute-goal / parallel-ship / contract / context (6 each). All look like machine-local ~/.claude dependencies absent in CI. Until this lands no gate means anything.",
+    "P0: #65 / #76 Type check has never run — no tsconfig.json, 88 errors behind it. AGENTS.md documents bunx tsc --noEmit as THE type check and it cannot succeed. #72 covers generating one for consumers.",
+    "P1: #81 Parallel ship cannot commit — all 11 agents succeeded and the commit phase failed because the file list spans N worktrees but is rebased against only one. This is the autonomy blocker: the work happens and cannot land.",
+    "P1: #77 ship.js assumes agent worktrees live under projectRoot; Claude Code creates them under the workflow script repo.",
+    "P1: #73 DIR-L29 budget is a monotonic per-session counter that never decrements. With subagents sharing the parent id, one pipeline locks itself out after two suites. Needs a decision on what the budget means.",
+    "P1: #74 A full-suite slot leaks for a full TTL when a DIFFERENT PreToolUse hook blocks the command — PostToolUse never fires for a tool that never ran. Observed with COMP-7.",
+    "P2: #70 / #75 Scaffold config divergence — jhorn-5c owns. Phase 1 complete and unpushed, waiting on Jason.",
+    "P2: #68 Worktree cleanup has never removed a worktree — now 39 stale, 314 MB, and they caused the Gates regression this session by poisoning the conformity reference index. Second symptom raises priority.",
+    "P2: #78 docs-routing.md reports 0 ADRs while ADR-001 is on main — generated counts have no drift check.",
+    "P2: #79 Ship workflow Phase 2 deferral writes an issue body that contradicts the ACs it defers.",
+    "P3: #55 / #59 / #60 / #61 pipeline testing inner loop; #54 dead code cleanup; #72 consumer tsconfig.",
+    "CLOSE AS STALE: #66 (parallel dispatch is in main) and #69 (the remaining require( is comment text describing the old bug). Both verified fixed in origin/main.",
+    "WATCH: DRIFT-2 and HYGIENE-3 ratchet lists in .claude/conformity-allowlists.json. Both must shrink to empty. CONFIG-DIRECTORY-STRUCTURE-SPEC must leave the untested list before SC-478/479 are rewritten as behavioral assertions, or they are honest assertions nothing executes.",
+    "WATCH: SC-478 / SC-479 / SC-511 are source-text existence assertions still marked done. They certify that code was authored, never that it was adopted."
   ],
-  "notes": "Session 28 (2026-10-05) — Fixed 36 test failures, shipped #53 pipeline hardening, built Phase 1 of pipeline testing inner loop.\n\nKey results:\n  - 36 test failures fixed (scaffold --fix flag missing from 6 test files, stale MCP migration tests deleted)\n  - #53 SHIPPED via pipeline (19 agents/16 min, first-pass) — 6/6 SCs\n  - TDZ bug from #53 found and fixed (CACHED_CEREMONY declaration order)\n  - #43 and #45 SHIP_FAILED via pipeline (unwinnable AC pattern) — code correct, merged manually\n  - Council debate (4 agents, 3 rounds): designed pipeline testing inner loop with security-first approach\n  - Phase 1 built directly: lib/workflow-security.ts (7 functions), test/workflow-security.test.ts (43 tests), scripts/validate-workflow.ts\n  - 7 issues created (#55-#61) for phased pipeline testing plan\n  - Security review findings addressed: fail-open git add, SSH option injection, path traversal edge cases\n\nPipeline insight: 'unwinnable AC' pattern caused #42, #43, #45 to SHIP_FAIL — Discovery writes grep evidence that doesn't match implementation. #59 (dry-run smoke test with evidence pre-validation) is the fix.\n\nSuite: 1920+ pass, 0 fail.\n\nNext: #57 ship.js security integration → #59 dry-run smoke tests → #60 trajectory capture.\nSuite: 25/25 SCs done.",
+  "notes": "Read this before anything else. Two things on main are green and one is not: Gates passes, the local suite passes, and CI does not — 2033 pass / 29 fail, unchanged all day (#71). Treat any \"suite green\" claim as local-only until that closes.\n\nPattern of the week, found five separate ways: checks that confirm code EXISTS rather than that it WORKS.\n  - test/workflow-security-integration.test.ts asserted ship.js contained the broken require() — the test enforced the defect (#69)\n  - SC-478 / SC-479 / SC-511 are source-text existence assertions, still marked done, satisfied by code with zero production callers\n  - Six conformity checks computed a real result then asserted expect(true).toBe(true) (#80)\n  - A matcher named test-passes generated SCs reading \"bun test passes\" that asserted nothing — removed\n  - docs-routing.md reports 0 ADRs while ADR-001 is on main (#78)\n\nThe sharpest consequence: CLAUDE.md step 2 of the MANDATORY GATE told every agent to find the governing spec in a Specs table in AGENTS.md. That table does not exist — it lives in .claude/rules/specs-routing.md. Every agent in every session either skipped the step or invented a substitute. Fixed this session, and it is a plausible common cause of agents missing governing specs and ADRs.\n\nLocal and CI diverge for a structural reason worth remembering: lib/conformity.ts scanned .claude/worktrees/, which holds full repo copies (39 of them, 314 MB, #68). Every file looked referenced locally and nothing did in CI. When a file-scanning check disagrees with CI, ask what extra files the local tree has before reaching for \"flaky\".\nSuite: 25/25 SCs done.",
   "antipatterns": [
     "Do NOT edit PROJECT-STATE.md directly — edit project-state.json",
     "Do NOT use agentType in workflows — use briefedAgent() with role from config",
@@ -455,16 +457,30 @@
         "buildAgentMeta was declared TWICE in lib/create-brief.ts with different parameter shapes. The second won, so the scaffold call site passing harness.roles looked up roles.roles and always got an empty map. Every consumer project's role config was silently discarded in favor of DEFAULT_AGENT_META",
         "Corrected: today's discovery/marcus opus move appeared to work, but the briefs took it from DEFAULT_AGENT_META, not from rungate.json. Right outcome, wrong mechanism — the config path was dead"
       ]
+    },
+    {
+      "date": "2026-10-05 session 30",
+      "items": [
+        "#67-A the guard was never guarding. TestSuiteGuard/TestSuiteRelease were registered only in rungate .claude/settings.json. Project settings load from the directory a session STARTED in, so the cap was inert for any session rooted elsewhere, including sessions working on rungate via an added working directory. Moved to ~/.claude/settings.json and REMOVED from project scope — the two are not de-duplicated, so dual registration fires the hook twice and takes two slots per suite.",
+        "Subagent Bash calls reach PreToolUse with the PARENT session id. Proven: the budget counter file an allowed run writes is named with the session transcript id. So hook session_id and transcript sessionId are the same identifier, closing the inference gap in jhorn-8e 292/292 measurement.",
+        "#67-B a slot is one RUNNING SUITE, not one session. Keying on session refused Quinn behind Marcus and surfaced as a test failure rather than a lock collision. Each live suite takes its own slot; release frees exactly one.",
+        "#80 six conformity checks could not fail — computed a result, console.warn, then expect(true).toBe(true). DRIFT-2 is the enforcement of SCs-without-tests-are-wishes and found TEN testable specs with no referencing test, over half the testable surface.",
+        "HYGIENE-4 was reading AGENTS.md for a specs table that lives in .claude/rules/specs-routing.md. Same stale pointer was in CLAUDE.md step 2 of the MANDATORY GATE — every agent in every session was told to find the governing spec in a table that does not exist. Fixed.",
+        "REGRESSION AND ROOT CAUSE: converting HYGIENE-3 turned Gates red on main. buildReferenceIndex recursed into .claude/worktrees/ — 39 full repo copies — so every file looked referenced and nothing was ever an orphan locally, while a clean CI checkout saw three. skipDirs only filtered top-level entries, never the recursive walk. A real failure was seen, not reproduced in isolation, and wrongly dismissed as flake.",
+        "Consumer-facing bug caught by security review: the ratchet allowlist was hardcoded in lib/conformity.ts and lib/scaffold/steps.ts generates a consumer test calling the same functions, so every consumer inherited rungate backlog and could fail its own build over entries in a file it cannot edit. Allowlists now live in <root>/.claude/conformity-allowlists.json, advisory when absent.",
+        "A list that invalidates itself: the allowlist named the files it exempted and the reference index read it, so listing made them non-orphans, which fired the delist assertion, and delisting made them orphans again. Allowlist is now excluded from the index.",
+        "Verified consumer-side by jhorn-5c: agentgrit went 37/1/3 to 40 pass / 1 skip / 0 fail."
+      ]
     }
   ],
   "session": {
-    "number": 29,
+    "number": 30,
     "date": "2026-10-05",
-    "summary": "Fixed COMP-7 hook firing in every Claude Code session on the machine (6 distinct false positives). Shipped #57 via pipeline — first run with discovery/marcus on opus. Then ran tsc for the first time ever and found three silent failures behind it, including a gate runner that always exited 0.",
-    "suite": "2468 pass, 0 fail (gates/ + test/)",
-    "scs_done": "#62 (5 SCs), #57 (6 SCs), #63 (2 SCs), #64 (closed with #57)",
-    "commits": 10,
-    "issues_created": "#62, #63, #64, #65",
-    "issues_closed": "#57, #62, #63, #64"
+    "summary": "The #67 full-suite guard merged yesterday was never actually guarding: registered only in rungate project settings, so it was inert for every session not rooted in the repo. Fixed scope and ownership unit, then swept a third defect variant — six conformity checks that computed a real result and asserted expect(true).toBe(true). Converting them turned Gates red; root cause was buildReferenceIndex recursing into 39 worktree copies, which is why the check could never fail locally and always failed in CI.",
+    "suite": "2166 pass, 0 fail locally — but CI is 2033 pass, 29 fail (#71 unresolved; local and CI still disagree)",
+    "scs_done": "SC-516, SC-517, SC-518 (hook architecture)",
+    "commits": 5,
+    "issues_created": "#73, #74, #76, #78, #80",
+    "issues_closed": "#67, #80"
   }
 }
