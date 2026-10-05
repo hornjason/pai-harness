@@ -22,9 +22,11 @@
 
 import {
   closeSync,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -90,13 +92,65 @@ function readSlot(path: string): SlotEntry | null {
 const ENV_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/;
 
 /** Wrappers that delegate to the command word after them. */
-const WRAPPER_PREFIX = /^(?:time|nice|exec|command|env|npx|stdbuf|nohup)\s+/;
+const WRAPPER_PREFIX = /^(?:time|nice|exec|command|env|npx|stdbuf|nohup|sudo|xargs)\s+/;
+
+/** Wrappers that take one argument of their own before the real command. */
+const WRAPPER_WITH_ARG = /^(?:timeout|nice\s+-n)\s+\S+\s+/;
 
 /** `bash -c "<inner>"` and friends — the suite hides inside the quotes. */
 const SHELL_DASH_C = /^(?:ba|z|k|)sh\s+-[a-z]*c\s+(['"])([\s\S]*)\1\s*$/;
 
+/**
+ * Every spelling that runs the whole suite. `package.json` defines
+ * `test` = `bun test`, so `bun run test` and `npm test` are the same 5.4 GB run
+ * under different names — omitting them left the most obvious spelling unguarded.
+ *
+ * The negative lookahead is what keeps `bun test:structure` out: that script is
+ * `bun test test/structure.test.ts`, a targeted run that must not be blocked.
+ */
+const SUITE_INVOCATION =
+  /^(?:bun|npm|pnpm|yarn)\s+(?:run\s+)?test(?![:\w-])/;
+
 /** A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`, `2>/dev/null`. */
 const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
+
+/**
+ * Split on command separators that are NOT inside quotes.
+ *
+ * Quote-blindness cut both ways: `git commit -m "lint && bun test"` was blocked
+ * because the `&&` inside the message split the command, and
+ * `bash -c "bun test; echo done"` went unguarded because the `;` inside the body
+ * split it before the shell-wrapper pattern could match a balanced quoted string.
+ */
+function splitTopLevel(command: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+
+    if (quote) {
+      cur += c;
+      if (c === quote && command[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === "\n" || c === ";" || c === "&" || c === "|") {
+      if ((c === "&" && command[i + 1] === "&") || (c === "|" && command[i + 1] === "|")) i++;
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  out.push(cur);
+  return out;
+}
 
 /**
  * True for a full-suite invocation, false for targeted paths.
@@ -110,12 +164,9 @@ const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
  * guarded, which is the only reason this does argument analysis at all.
  */
 export function isFullSuiteCommand(command: string): boolean {
-  // Split on every construct that can begin a new command word. Newlines matter:
-  // multi-line Bash bodies are routine, and omitting them hid `bun test` on any
-  // line but the first.
-  const segments = command.split(/\n|;|&&|\|\||\||&/);
-
-  for (const segment of segments) {
+  // Newlines matter: multi-line Bash bodies are routine, and omitting them hid
+  // `bun test` on any line but the first.
+  for (const segment of splitTopLevel(command)) {
     if (segmentIsFullSuite(segment)) return true;
   }
   return false;
@@ -128,18 +179,28 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
 
   // Peel env assignments and pass-through wrappers off the front.
   for (let i = 0; i < 8; i++) {
-    const next = s.replace(ENV_PREFIX, "").replace(WRAPPER_PREFIX, "");
+    const next = s
+      .replace(ENV_PREFIX, "")
+      .replace(WRAPPER_WITH_ARG, "")
+      .replace(WRAPPER_PREFIX, "");
     if (next === s) break;
     s = next.trim();
   }
 
-  // `bash -c "bun test"` — recurse into the quoted body.
+  // `bash -c "bun test; echo done"` — recurse into the quoted body.
   const shellC = s.match(SHELL_DASH_C);
-  if (shellC) return segmentIsFullSuite(shellC[2], depth + 1);
+  if (shellC) {
+    return splitTopLevel(shellC[2]).some((inner) =>
+      segmentIsFullSuite(inner, depth + 1),
+    );
+  }
 
-  if (!/^bun\s+test\b/.test(s)) return false;
+  const invocation = s.match(SUITE_INVOCATION);
+  if (!invocation) return false;
 
-  const tokens = s.replace(/^bun\s+test\b/, "").trim().split(/\s+/).filter(Boolean);
+  const rest = s.slice(invocation[0].length).trim();
+  // `npm test -- test/foo.ts` passes args through the runner.
+  const tokens = rest.replace(/^--\s+/, "").split(/\s+/).filter(Boolean);
 
   const args: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -202,17 +263,16 @@ export function acquireFullSuiteSlot(
   try {
     mkdirSync(lockDir, { recursive: true });
 
-    // Already holding a slot — re-entrant, and refresh so a long suite does not
-    // expire out from under itself mid-run.
-    for (let i = 0; i < capacity; i++) {
-      const path = slotPath(lockDir, i);
-      const entry = readSlot(path);
-      if (entry?.sessionId === sessionId) {
-        // Re-entrant, but the TTL stays ABSOLUTE from first acquisition. Refreshing
-        // it here let a session hold a slot indefinitely by issuing further
-        // full-suite commands, which is an unbounded-hold bypass of the cap.
-        return { ok: true };
-      }
+    // NO RE-ENTRANCY. One slot means one running suite, not one session. The
+    // earlier re-entrant branch returned ok for any session already holding a
+    // slot, so A could start a background suite (which deliberately does not
+    // release) and then a second foreground one — three concurrent suites
+    // alongside B, which is the OOM condition this exists to prevent.
+    const own = heldSlots(lockDir, now, capacity, ttlSeconds).find(
+      (h) => h.sessionId === sessionId,
+    );
+    if (own) {
+      return { ok: false, holders: [own] };
     }
 
     for (let i = 0; i < capacity; i++) {
@@ -221,17 +281,34 @@ export function acquireFullSuiteSlot(
       const stale =
         !entry || Math.floor((now - entry.startedAt) / 1000) >= ttlSeconds;
 
-      if (stale) {
+      const claim = JSON.stringify({ sessionId, startedAt: now });
+
+      // A corrupt file reads as `entry === null` but still occupies the name, so
+      // O_EXCL would fail. Decide on the file's existence, not on parseability.
+      if (stale && existsSync(path)) {
+        // Reclaiming a stale slot via unlink-then-create was racy: two sessions
+        // could each unlink the other's fresh claim and both believe they held
+        // slot i. rename(2) is atomic, so exactly one writer survives, and the
+        // read-back below tells the loser to move on.
+        const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}`;
         try {
-          unlinkSync(path);
+          writeFileSync(tmp, claim);
+          renameSync(tmp, path);
+          if (readSlot(path)?.sessionId === sessionId) return { ok: true };
+          continue;
         } catch {
-          // Already gone, or claimed by a racing session — the O_EXCL below decides.
+          try {
+            unlinkSync(tmp);
+          } catch {
+            // Temp file already gone.
+          }
+          continue;
         }
       }
 
       try {
         const fd = openSync(path, "wx");
-        writeSync(fd, JSON.stringify({ sessionId, startedAt: now }));
+        writeSync(fd, claim);
         closeSync(fd);
         return { ok: true };
       } catch {
@@ -301,7 +378,19 @@ export function evaluateFullSuiteRequest(
 
   const slot = acquireFullSuiteSlot(sessionId, options);
   if (!slot.ok) {
-    const who = (slot.holders ?? [])
+    const holders = slot.holders ?? [];
+    const self = holders.find((h) => h.sessionId === sessionId);
+    if (self) {
+      return {
+        allow: false,
+        reason:
+          `This session already has a full suite running (started ${self.ageSeconds}s ago).\n` +
+          `A slot is one running suite, not one session — a backgrounded suite keeps its ` +
+          `slot until it finishes or the ${DEFAULT_TTL_SECONDS}s TTL expires.\n` +
+          `Wait for it, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
+      };
+    }
+    const who = holders
       .map((h) => `${h.sessionId} (${h.ageSeconds}s)`)
       .join(", ");
     return {

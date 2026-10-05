@@ -106,13 +106,33 @@ describe("AC-1: concurrent full suites are capped at the measured safe limit", (
     expect(Math.max(...third.holders!.map((h) => h.ageSeconds))).toBe(45);
   });
 
-  test("a session re-entering does not consume a second slot", () => {
-    acquireFullSuiteSlot("session-a", opts());
+  test("a session already holding a slot is refused a second concurrent run", () => {
     expect(acquireFullSuiteSlot("session-a", opts()).ok).toBe(true);
+
+    // One slot means one RUNNING SUITE, not one session. Re-entrancy let a
+    // session start a background suite (never released) plus a foreground one,
+    // reaching three concurrent alongside another session.
+    const second = acquireFullSuiteSlot("session-a", opts());
+    expect(second.ok).toBe(false);
+    expect(second.holders?.[0].sessionId).toBe("session-a");
 
     expect(heldSlots(dir)).toHaveLength(1);
     // A different session can still take the remaining slot.
     expect(acquireFullSuiteSlot("session-b", opts()).ok).toBe(true);
+  });
+
+  test("three concurrent suites are unreachable via re-entrancy (#67 review, HIGH)", () => {
+    expect(evaluateFullSuiteRequest("A", "bun test", opts()).allow).toBe(true);
+    expect(evaluateFullSuiteRequest("B", "bun test", opts()).allow).toBe(true);
+    // A's second run — previously allowed, giving 3 x 5.4 GB.
+    expect(evaluateFullSuiteRequest("A", "bun test", opts()).allow).toBe(false);
+    expect(heldSlots(dir)).toHaveLength(2);
+  });
+
+  test("a session releases, then may run again", () => {
+    acquireFullSuiteSlot("session-a", opts());
+    releaseFullSuiteSlot("session-a", opts());
+    expect(acquireFullSuiteSlot("session-a", opts()).ok).toBe(true);
   });
 
   test("capacity is configurable for callers that measure differently", () => {
@@ -269,10 +289,65 @@ describe("security: parser-differential guard bypass (#67 review)", () => {
   }
 });
 
+describe("security: runner aliases and quote-awareness (#67 review round 2)", () => {
+  // package.json defines test = "bun test", so these are the same 5.4 GB run.
+  // `bun run test` was the single most obvious spelling and went unguarded.
+  const aliases = [
+    "bun run test",
+    "npm test",
+    "npm run test",
+    "yarn test",
+    "pnpm test",
+  ];
+  for (const cmd of aliases) {
+    test(`guards runner alias: ${cmd}`, () => {
+      expect(isFullSuiteCommand(cmd)).toBe(true);
+    });
+  }
+
+  // These scripts are themselves targeted runs — blocking them also burned a
+  // full-suite credit from the session budget.
+  const scopedScripts = [
+    "bun test:structure",
+    "bun test:external-deps",
+    "bun run test:structure",
+  ];
+  for (const cmd of scopedScripts) {
+    test(`does not guard scoped script: ${cmd}`, () => {
+      expect(isFullSuiteCommand(cmd)).toBe(false);
+    });
+  }
+
+  test("guards a suite hidden behind a separator inside a quoted shell body", () => {
+    expect(isFullSuiteCommand('bash -c "bun test; echo done"')).toBe(true);
+  });
+
+  test("guards a wrapper that takes its own argument", () => {
+    expect(isFullSuiteCommand("timeout 600 bun test")).toBe(true);
+  });
+
+  test("does not guard a separator inside a quoted commit message", () => {
+    expect(isFullSuiteCommand('git commit -m "chore: lint && bun test"')).toBe(
+      false,
+    );
+  });
+
+  test("does not guard a separator inside quoted text written to a file", () => {
+    expect(
+      isFullSuiteCommand('echo "cd /repo && bun test" >> docs/notes.md'),
+    ).toBe(false);
+  });
+
+  test("does not guard args passed through a runner", () => {
+    expect(isFullSuiteCommand("npm test -- test/a.test.ts")).toBe(false);
+  });
+});
+
 describe("security: unbounded slot hold (#67 review)", () => {
-  test("re-entry does not extend the TTL past first acquisition", () => {
+  test("repeated requests do not extend the TTL past first acquisition", () => {
     acquireFullSuiteSlot("hog", opts({ now: 0 }));
-    // Re-enter repeatedly, as a session issuing further full-suite commands would.
+    // Further full-suite commands are now refused outright, and critically they
+    // must not refresh the held slot's timestamp either.
     acquireFullSuiteSlot("hog", opts({ now: 100_000 }));
     acquireFullSuiteSlot("hog", opts({ now: 300_000 }));
 
