@@ -1685,16 +1685,20 @@ interface FallowResult {
 // fail as timeouts instead of skipping, which blocks the pre-push conformity
 // gate on a tool nobody installed.
 //
-// Resolve it locally instead, once per process, with no network path.
-let FALLOW_AVAILABLE: boolean | null = null;
+// Resolve it locally instead, with no network path. Memoised PER ROOT —
+// runFallowCheck is exported and consumer projects call it with their own
+// root, so a single process can ask about several. A root-independent cache
+// would answer for the wrong directory.
+const FALLOW_AVAILABLE = new Map<string, boolean>();
 
 function fallowAvailable(root: string): boolean {
-  if (FALLOW_AVAILABLE === null) {
-    FALLOW_AVAILABLE =
-      existsSync(join(root, "node_modules", ".bin", "fallow")) ||
-      Bun.which("fallow") !== null;
-  }
-  return FALLOW_AVAILABLE;
+  const cached = FALLOW_AVAILABLE.get(root);
+  if (cached !== undefined) return cached;
+  const available =
+    existsSync(join(root, "node_modules", ".bin", "fallow")) ||
+    Bun.which("fallow") !== null;
+  FALLOW_AVAILABLE.set(root, available);
+  return available;
 }
 
 /** Shared skip notice — a skipped check must say so, not read as a pass. */
