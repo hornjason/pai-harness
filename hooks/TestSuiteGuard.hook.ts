@@ -27,6 +27,10 @@ async function main() {
         decision: 'block',
         reason: decision.reason,
       }));
+    } else if (decision.warning) {
+      // Allowed, but the cap is not being enforced. Say so rather than passing
+      // silently — a quiet fail-open is indistinguishable from a working guard.
+      console.error(decision.warning);
     }
   } catch {
     process.exit(0);

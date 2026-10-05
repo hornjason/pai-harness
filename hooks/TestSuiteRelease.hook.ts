@@ -21,6 +21,11 @@ async function main() {
 
   const command = (input.tool_input?.command as string) || '';
 
+  // A backgrounded Bash call returns immediately while the suite keeps running.
+  // Releasing here would hand the slot back mid-run and restore the concurrency
+  // the guard exists to prevent. Let the TTL reclaim it instead.
+  if (input.tool_input?.run_in_background) process.exit(0);
+
   try {
     if (!isFullSuiteCommand(command)) process.exit(0);
     releaseFullSuiteSlot(input.session_id || 'default');

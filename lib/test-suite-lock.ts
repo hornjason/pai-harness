@@ -86,36 +86,83 @@ function readSlot(path: string): SlotEntry | null {
   }
 }
 
+/** Leading `FOO=bar` assignments, which precede the real command word. */
+const ENV_PREFIX = /^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|\S*)\s+/;
+
+/** Wrappers that delegate to the command word after them. */
+const WRAPPER_PREFIX = /^(?:time|nice|exec|command|env|npx|stdbuf|nohup)\s+/;
+
+/** `bash -c "<inner>"` and friends — the suite hides inside the quotes. */
+const SHELL_DASH_C = /^(?:ba|z|k|)sh\s+-[a-z]*c\s+(['"])([\s\S]*)\1\s*$/;
+
+/** A redirection operator, attached target or not: `>`, `2>`, `&>>`, `2>&1`, `2>/dev/null`. */
+const REDIRECT = /^(?:\d*|&)>>?(?:&\d+)?(.*)$/;
+
 /**
- * True for a bare full-suite invocation, false for targeted paths.
+ * True for a full-suite invocation, false for targeted paths.
  *
- * A targeted run is cheap (415 MB / 7 processes for test/unit) and must never
- * be guarded, so anything carrying a file argument passes straight through.
+ * Fails CLOSED. A missed full suite is unlimited concurrency — the condition that
+ * rebooted this machine — whereas a false positive is a loud, recoverable block.
+ * So anything that reaches `bun test` at a command position is guarded unless a
+ * surviving argument is demonstrably a path.
+ *
+ * Targeted runs are cheap (415 MB / 7 processes for test/unit) and must never be
+ * guarded, which is the only reason this does argument analysis at all.
  */
 export function isFullSuiteCommand(command: string): boolean {
-  // Only the first pipeline stage can be the suite; `... | grep 'bun test'` is not.
-  const head = command.split("|")[0];
+  // Split on every construct that can begin a new command word. Newlines matter:
+  // multi-line Bash bodies are routine, and omitting them hid `bun test` on any
+  // line but the first.
+  const segments = command.split(/\n|;|&&|\|\||\||&/);
 
-  // `cd /repo && bun test` is still a full suite run.
-  for (const segment of head.split(/&&|;/)) {
-    const trimmed = segment.trim();
-    if (!/^bun\s+test\b/.test(trimmed)) continue;
+  for (const segment of segments) {
+    if (segmentIsFullSuite(segment)) return true;
+  }
+  return false;
+}
 
-    const args = trimmed
-      .replace(/^bun\s+test\b/, "")
-      .trim()
-      .split(/\s+/)
-      .filter(Boolean)
-      // Flags and redirections do not make a run targeted.
-      .filter((a) => !a.startsWith("-") && !/^\d*>&?\d*$/.test(a));
+function segmentIsFullSuite(segment: string, depth = 0): boolean {
+  if (depth > 3) return false;
 
-    const hasPath = args.some(
-      (a) => a.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(a),
-    );
-    if (!hasPath) return true;
+  let s = segment.trim();
+
+  // Peel env assignments and pass-through wrappers off the front.
+  for (let i = 0; i < 8; i++) {
+    const next = s.replace(ENV_PREFIX, "").replace(WRAPPER_PREFIX, "");
+    if (next === s) break;
+    s = next.trim();
   }
 
-  return false;
+  // `bash -c "bun test"` — recurse into the quoted body.
+  const shellC = s.match(SHELL_DASH_C);
+  if (shellC) return segmentIsFullSuite(shellC[2], depth + 1);
+
+  if (!/^bun\s+test\b/.test(s)) return false;
+
+  const tokens = s.replace(/^bun\s+test\b/, "").trim().split(/\s+/).filter(Boolean);
+
+  const args: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+
+    // Flags never make a run targeted.
+    if (t.startsWith("-")) continue;
+
+    const redirect = t.match(REDIRECT);
+    if (redirect) {
+      // `2>/dev/null` carries its target; a bare `>` consumes the next token.
+      // Either way the target is a sink, not a test path.
+      if (!redirect[1]) i++;
+      continue;
+    }
+
+    args.push(t);
+  }
+
+  const hasPath = args.some(
+    (a) => a.includes("/") || /\.(test\.)?(ts|tsx|js|jsx)$/.test(a),
+  );
+  return !hasPath;
 }
 
 /** Non-stale slot holders, newest timestamp wins. */
@@ -161,7 +208,9 @@ export function acquireFullSuiteSlot(
       const path = slotPath(lockDir, i);
       const entry = readSlot(path);
       if (entry?.sessionId === sessionId) {
-        writeFileSync(path, JSON.stringify({ sessionId, startedAt: now }));
+        // Re-entrant, but the TTL stays ABSOLUTE from first acquisition. Refreshing
+        // it here let a session hold a slot indefinitely by issuing further
+        // full-suite commands, which is an unbounded-hold bypass of the cap.
         return { ok: true };
       }
     }
@@ -201,6 +250,12 @@ export interface GateDecision {
   allow: boolean;
   /** Present when refused — shown verbatim to the caller. Never silent. */
   reason?: string;
+  /**
+   * Present when the run was allowed only because the guard could not function.
+   * Fail-open is deliberate; fail-open-and-quiet is not — an unreadable lock
+   * directory would otherwise restore unlimited concurrency invisibly.
+   */
+  warning?: string;
 }
 
 function counterPath(lockDir: string, sessionId: string): string {
@@ -263,6 +318,16 @@ export function evaluateFullSuiteRequest(
     writeFileSync(path, String(used + 1));
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
+  }
+
+  if (slot.degraded) {
+    return {
+      allow: true,
+      warning:
+        `Concurrency guard DEGRADED — lock directory ${lockDir} is unusable, so this run ` +
+        `was allowed without taking a slot. The cap is not being enforced right now. ` +
+        `Check with other sessions before starting a full suite.`,
+    };
   }
   return { allow: true };
 }

@@ -225,6 +225,107 @@ describe("evaluateFullSuiteRequest — the gate the hook calls", () => {
   });
 });
 
+describe("security: parser-differential guard bypass (#67 review)", () => {
+  // Each of these ran a FULL suite while the original parser reported targeted
+  // or no-match, so the slot was never taken. Fail-closed is the contract: a
+  // missed suite is unlimited concurrency, a false positive is a loud block.
+  const mustGuard: Array<[string, string]> = [
+    ["bun test", "baseline"],
+    ["echo setup\nbun test", "second line of a multi-line body"],
+    ["bun test 2>/dev/null", "attached redirect target read as a path"],
+    ["bun test > /tmp/out.log", "detached redirect target read as a path"],
+    ["bun test 2>&1 | tail -12", "pipeline head"],
+    ["CI=1 bun test", "env assignment prefix"],
+    ["CI=1 FORCE_COLOR=0 bun test", "multiple env assignments"],
+    ["time bun test", "timing wrapper"],
+    ["npx bun test", "npx wrapper"],
+    ['bash -c "bun test"', "shell -c wrapper"],
+    ["cd /repo && bun test", "cd prefix"],
+    ["bun test --coverage", "flag only"],
+  ];
+
+  for (const [cmd, label] of mustGuard) {
+    test(`guards: ${label}`, () => {
+      expect(isFullSuiteCommand(cmd)).toBe(true);
+    });
+  }
+
+  // False positives are cheap but not free — these must still pass through.
+  const mustPass: Array<[string, string]> = [
+    ["bun test test/a.test.ts", "targeted single file"],
+    ["bun test test/unit/b.test.ts test/c.test.ts", "targeted multiple"],
+    ["bun test gates/workflow.test.ts 2>&1 | tail -5", "targeted with redirect"],
+    ["bun run build", "different bun subcommand"],
+    ["bunx tsc --noEmit", "bunx, not bun"],
+    ['git commit -m "bun test"', "suite name inside a commit message"],
+    ["grep -r 'bun test' docs/", "suite name as a search term"],
+    ["echo 'bun test' >> notes.md", "suite name written to a file"],
+  ];
+
+  for (const [cmd, label] of mustPass) {
+    test(`passes through: ${label}`, () => {
+      expect(isFullSuiteCommand(cmd)).toBe(false);
+    });
+  }
+});
+
+describe("security: unbounded slot hold (#67 review)", () => {
+  test("re-entry does not extend the TTL past first acquisition", () => {
+    acquireFullSuiteSlot("hog", opts({ now: 0 }));
+    // Re-enter repeatedly, as a session issuing further full-suite commands would.
+    acquireFullSuiteSlot("hog", opts({ now: 100_000 }));
+    acquireFullSuiteSlot("hog", opts({ now: 300_000 }));
+
+    // TTL is absolute from t=0, so at 500s the slot is reclaimable.
+    acquireFullSuiteSlot("other-a", opts({ now: 500_000 }));
+    acquireFullSuiteSlot("other-b", opts({ now: 500_000 }));
+
+    const holders = heldSlots(dir, 500_000).map((h) => h.sessionId).sort();
+    expect(holders).toEqual(["other-a", "other-b"]);
+  });
+});
+
+describe("security: fail-open must not be silent (#67 review)", () => {
+  test("a degraded guard allows the run but reports that the cap is off", () => {
+    const decision = evaluateFullSuiteRequest("s1", "bun test", {
+      lockDir: "/nonexistent-dir-xyz/nested",
+    });
+
+    expect(decision.allow).toBe(true);
+    expect(decision.warning).toBeDefined();
+    expect(decision.warning).toMatch(/not being enforced/i);
+  });
+
+  test("a healthy guard allows without a warning", () => {
+    const decision = evaluateFullSuiteRequest("s1", "bun test", opts());
+    expect(decision.allow).toBe(true);
+    expect(decision.warning).toBeUndefined();
+  });
+});
+
+describe("security: corrupt slot cannot grant unlimited concurrency", () => {
+  // 8e's pairing: a slot that both fails open and never expires would be
+  // unlimited concurrency — the exact 16:22 condition.
+  test("corrupt slots are reclaimed, and the cap still binds afterwards", () => {
+    writeFileSync(join(dir, "full-suite.slot-0.lock"), "{ not json");
+    writeFileSync(join(dir, "full-suite.slot-1.lock"), "\u0000\u0000corrupt");
+
+    expect(acquireFullSuiteSlot("a", opts()).ok).toBe(true);
+    expect(acquireFullSuiteSlot("b", opts()).ok).toBe(true);
+    // Capacity must still be 2 — reclaiming corruption is not extra capacity.
+    expect(acquireFullSuiteSlot("c", opts()).ok).toBe(false);
+  });
+
+  test("a slot with a non-numeric startedAt is treated as corrupt, not immortal", () => {
+    writeFileSync(
+      join(dir, "full-suite.slot-0.lock"),
+      JSON.stringify({ sessionId: "ghost", startedAt: "never" }),
+    );
+    expect(acquireFullSuiteSlot("a", opts()).ok).toBe(true);
+    expect(heldSlots(dir).map((h) => h.sessionId)).toContain("a");
+  });
+});
+
 describe("release", () => {
   test("releasing frees the slot for another session", () => {
     acquireFullSuiteSlot("session-a", opts());
