@@ -1303,10 +1303,13 @@ jobs:
       - name: Secret scan
         run: |
           # CI has nothing staged, so --cached scanned zero files and the bare
-          # xargs/grep read stdin instead. Scan tracked files, and use the same
-          # anchored patterns as the pre-commit hook so CI and local agree.
-          tracked=$(git ls-files)
-          if [ -n "$tracked" ] && printf '%s\\n' "$tracked" | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
+          # xargs/grep read stdin instead. Scan tracked files, NUL-delimited so
+          # paths with spaces are not split into unscannable fragments.
+          # High-confidence anchored patterns only: the pre-commit hook also
+          # matches password="..." , which is too noisy for a whole-repo scan
+          # (it fires on fixtures and docs). That narrowing is deliberate.
+          tracked_count=$(git ls-files | wc -l)
+          if [ "$tracked_count" -gt 0 ] && git ls-files -z | xargs -0 grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
@@ -1403,8 +1406,16 @@ export function createGitHooks(root: string, actions: string[]): void {
 # Guard on a non-empty file list: with nothing staged (any --amend), xargs
 # still runs grep with no file operands, grep reads stdin, and exits 0 —
 # reporting a secret that is not there and blocking every amend.
-staged=$(git diff --cached --name-only --diff-filter=ACM)
-if [ -n "$staged" ] && printf '%s\\n' "$staged" | xargs grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36}|password\\s*=\\s*["\\''][^\\"\\'']+["\\''])' 2>/dev/null; then
+# NUL-delimited: a path containing a space would otherwise be split into two
+# bogus paths, grep would error, 2>/dev/null would hide it, and the file
+# would never be scanned — a silent miss in exactly the direction that hurts.
+# The former password="..." pattern is gone on purpose. Its quote characters
+# could not survive JS-template -> single-quoted-shell escaping: it rendered as
+# the malformed class ["\] and matched ordinary YAML, so the hook rejected
+# clean commits. The three anchored key formats contain no quotes and are
+# high-confidence on their own.
+staged_count=$(git diff --cached --name-only --diff-filter=ACM | wc -l)
+if [ "$staged_count" -gt 0 ] && git diff --cached --name-only --diff-filter=ACM -z | xargs -0 grep -l -E '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' 2>/dev/null; then
   echo "ERROR: Potential secrets detected in staged files"
   exit 1
 fi

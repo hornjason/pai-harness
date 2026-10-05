@@ -24,13 +24,71 @@ describe('generated pre-commit secret scan', () => {
     // stdin and exits 0, so the hook reports a secret that is not there and
     // blocks every `git commit --amend`.
     const content = readFileSync(preCommit, 'utf-8');
-    expect(content).toContain('staged=$(git diff --cached --name-only');
-    expect(content).toContain('[ -n "$staged" ]');
+    expect(content).toContain('staged_count=$(git diff --cached --name-only');
+    expect(content).toContain('[ "$staged_count" -gt 0 ]');
   });
 
   it('does not pipe a bare diff straight into xargs grep', () => {
     const content = readFileSync(preCommit, 'utf-8');
     expect(content).not.toMatch(/git diff --cached --name-only \| xargs grep/);
+  });
+
+  it('uses NUL-delimited paths so filenames with spaces are scanned', () => {
+    const content = readFileSync(preCommit, 'utf-8');
+    expect(content).toContain('xargs -0');
+  });
+
+  it('does not emit a malformed character class', () => {
+    // The old password="..." pattern rendered as ["\] after JS-template ->
+    // single-quoted-shell escaping and matched ordinary YAML.
+    const grepLine = readFileSync(preCommit, 'utf-8')
+      .split('\n')
+      .find(l => l.includes('xargs -0 grep'))!;
+    expect(grepLine).toBeDefined();
+    expect(grepLine).not.toContain('["\\]');
+    expect(grepLine).not.toContain('password');
+  });
+
+  it('passes a commit of ordinary project files', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'rungate-clean-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      mkdirSync(join(repo, '.github', 'workflows'), { recursive: true });
+      writeFileSync(join(repo, '.github', 'workflows', 'gates.yml'), 'on: push\njobs:\n  a:\n    steps:\n      - run: echo hi\n');
+      writeFileSync(join(repo, 'project-state.json'), '{}\n');
+      writeFileSync(join(repo, 'PROJECT-STATE.md'), '# State\n');
+      execFileSync('git', ['add', '-A'], { cwd: repo });
+      const script = join(repo, 'pre-commit.sh');
+      writeFileSync(script, readFileSync(preCommit, 'utf-8'), { mode: 0o755 });
+      const out = execFileSync('sh', [script], { cwd: repo, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      expect(out).not.toContain('Potential secrets');
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('flags a secret in a staged path containing a space', () => {
+    // Whitespace-split paths become unscannable fragments; grep errors, the
+    // error is swallowed by 2>/dev/null, and the secret ships.
+    const repo = mkdtempSync(join(tmpdir(), 'rungate-spacepath-'));
+    try {
+      execFileSync('git', ['init', '-q'], { cwd: repo });
+      const fakeKey = 'AKIA' + 'IOSFODNN7EXAMPLE';
+      writeFileSync(join(repo, 'my config.txt'), `${fakeKey}\n`);
+      execFileSync('git', ['add', 'my config.txt'], { cwd: repo });
+      const script = join(repo, 'pre-commit.sh');
+      writeFileSync(script, readFileSync(preCommit, 'utf-8'), { mode: 0o755 });
+
+      let failed = false;
+      try {
+        execFileSync('sh', [script], { cwd: repo, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch {
+        failed = true;
+      }
+      expect(failed).toBe(true);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('exits 0 when nothing is staged', () => {
