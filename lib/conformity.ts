@@ -1679,7 +1679,34 @@ interface FallowResult {
   workspace_diagnostics: Array<{ kind: string; message: string }>;
 }
 
+// `fallow` is an optional external tool and is NOT a declared dependency. When
+// it is absent, `npx fallow` does a registry fetch on every invocation — four
+// tests x one fetch each, each outliving bun's per-test timeout. The tests then
+// fail as timeouts instead of skipping, which blocks the pre-push conformity
+// gate on a tool nobody installed.
+//
+// Resolve it locally instead, once per process, with no network path.
+let FALLOW_AVAILABLE: boolean | null = null;
+
+function fallowAvailable(root: string): boolean {
+  if (FALLOW_AVAILABLE === null) {
+    FALLOW_AVAILABLE =
+      existsSync(join(root, "node_modules", ".bin", "fallow")) ||
+      Bun.which("fallow") !== null;
+  }
+  return FALLOW_AVAILABLE;
+}
+
+/** Shared skip notice — a skipped check must say so, not read as a pass. */
+function fallowSkipped(check: string): void {
+  console.warn(
+    `SKIP ${check}: fallow is not installed (not a declared dependency) — ` +
+      `this check did NOT run. Install it to enable static analysis.`,
+  );
+}
+
 function runFallowCommand(root: string, args: string[]): FallowResult | null {
+  if (!fallowAvailable(root)) return null;
   const result = Bun.spawnSync(["npx", "fallow", ...args, "--format", "json", "--quiet"], {
     cwd: root,
     env: { ...process.env, NODE_NO_WARNINGS: "1" },
@@ -1699,10 +1726,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
   describe("Fallow: static analysis", () => {
     test("FALLOW-1: No unused files", () => {
       const result = runFallowCommand(root, ["dead-code", "--unused-files"]);
-      if (!result) {
-        console.warn("Fallow not available or failed to run — skipping");
-        return;
-      }
+      if (!result) { fallowSkipped("FALLOW-1 (unused files)"); return; }
       const unused = result.unused_files.map(f => f.path).filter(p => !p.includes("test/fixtures/") && !p.includes("reference/"));
       if (unused.length > 0) {
         console.warn(`Unused files (${unused.length}):\n  ${unused.slice(0, 10).join("\n  ")}${unused.length > 10 ? `\n  ... and ${unused.length - 10} more` : ""}`);
@@ -1713,7 +1737,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
     if (!opts?.skipUnusedExports) {
       test("FALLOW-2: No unused exports", () => {
         const result = runFallowCommand(root, ["dead-code", "--unused-exports"]);
-        if (!result) return;
+        if (!result) { fallowSkipped("FALLOW-2 (unused exports)"); return; }
         const unused = (result.unused_exports || [])
           .filter(e => !e.path.includes("test/fixtures/") && !e.path.includes("reference/"))
           .map(e => `${e.path}:${e.line ?? "?"} ${e.export_name}`);
@@ -1726,7 +1750,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
 
     test("FALLOW-3: No unused dependencies", () => {
       const result = runFallowCommand(root, ["dead-code", "--unused-deps"]);
-      if (!result) return;
+      if (!result) { fallowSkipped("FALLOW-3 (unused dependencies)"); return; }
       const unused = result.unused_dependencies?.map(d => d.name) || [];
       if (unused.length > 0) {
         console.warn(`Unused dependencies (${unused.length}):\n  ${unused.join("\n  ")}`);
@@ -1736,7 +1760,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
 
     test("FALLOW-4: No circular dependencies", () => {
       const result = runFallowCommand(root, ["dead-code"]);
-      if (!result) return;
+      if (!result) { fallowSkipped("FALLOW-4 (circular dependencies)"); return; }
       const circles = result.circular_dependencies || [];
       if (circles.length > 0) {
         console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.files || c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
