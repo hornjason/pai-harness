@@ -17,6 +17,9 @@
  * Usage:
  *   bun scripts/collect-worktree-files.ts <groups.json> <projectRoot>
  *
+ * One or more <worktreeBase> directories bound which of this repository's
+ * worktrees this run may collect from.
+ *
  * <groups.json> holds [{ worktreePath, filesChanged }] — one entry per agent.
  * Prints the collected project-relative paths, one per line, on stdout.
  * Diagnostics go to stderr so stdout stays a clean file list.
@@ -38,11 +41,21 @@ import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } fro
  * well before it is an attack.
  *
  * So intersect: git decides what is genuinely a worktree of this repository,
- * and `base` decides which of those belong to this run. A path must satisfy
- * both. The base is supplied by the caller because the harness, not this
+ * and the bases decide which of those belong to this run. A path must satisfy
+ * both. The bases are supplied by the caller because the harness, not this
  * script, knows where it puts the worktrees it creates.
+ *
+ * MORE THAN ONE BASE, because one is wrong whenever it matters. Agent
+ * worktrees are created relative to the repo the workflow script lives in
+ * (harnessRoot), not the repo being shipped (projectRoot). Those are normally
+ * the same directory, which is why the assumption survived, but they diverge
+ * exactly when a project is shipped from its own dedicated worktree — the case
+ * parallel collection exists to serve. #77 has the empirical confirmation:
+ * projectRoot was rungate-65, every worktree was created under rungate, and
+ * rungate-65/.claude/worktrees/ did not exist. A single projectRoot-derived
+ * base would authorise nothing there and refuse the whole collection.
  */
-function authorisedWorktrees(projectRoot: string, base: string): string[] {
+function authorisedWorktrees(projectRoot: string, bases: string[]): string[] {
   const out = execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf-8",
   });
@@ -52,13 +65,15 @@ function authorisedWorktrees(projectRoot: string, base: string): string[] {
     .map(l => l.slice("worktree ".length).trim())
     .filter(Boolean);
 
-  let realBase: string;
-  try {
-    realBase = realpathSync(resolve(base));
-  } catch {
-    // A base that does not exist authorises nothing, rather than everything.
-    return [];
+  const realBases: string[] = [];
+  for (const b of bases) {
+    try {
+      realBases.push(realpathSync(resolve(b)));
+    } catch {
+      // A base that does not exist contributes nothing, rather than everything.
+    }
   }
+  if (realBases.length === 0) return [];
 
   return known.filter(w => {
     let real: string;
@@ -67,15 +82,17 @@ function authorisedWorktrees(projectRoot: string, base: string): string[] {
     } catch {
       return false;
     }
-    const rel = relative(realBase, real);
-    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    return realBases.some(rb => {
+      const rel = relative(rb, real);
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    });
   });
 }
 
-const [groupsPath, projectRoot, worktreeBase] = process.argv.slice(2);
+const [groupsPath, projectRoot, ...worktreeBases] = process.argv.slice(2);
 
-if (!groupsPath || !projectRoot || !worktreeBase) {
-  console.error("usage: bun scripts/collect-worktree-files.ts <groups.json> <projectRoot> <worktreeBase>");
+if (!groupsPath || !projectRoot || worktreeBases.length === 0) {
+  console.error("usage: bun scripts/collect-worktree-files.ts <groups.json> <projectRoot> <worktreeBase>...");
   process.exit(2);
 }
 if (!existsSync(groupsPath)) {
@@ -105,7 +122,7 @@ if (groups.length === 0) {
 
 let allowed: string[];
 try {
-  allowed = authorisedWorktrees(projectRoot, worktreeBase);
+  allowed = authorisedWorktrees(projectRoot, worktreeBases);
 } catch (e) {
   console.error(`collect: cannot determine this repository's worktrees: ${(e as Error).message}`);
   process.exit(1);
