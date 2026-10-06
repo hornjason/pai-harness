@@ -84,44 +84,30 @@ describe("AC-5 (#69): ship.js loads no modules at runtime", () => {
   // visible — asserted in test/unit/js-top-level-code.test.ts.
   const topLevelCode = stripStringsAndComments;
 
-  // Nine known top-level require() calls survive at ship.js:1784-1869 (#69).
-  // The first thing the tokenizer did was expose them; the old regex stripper
-  // had discarded that whole region.
+  // BANKED AT ZERO (#69, 2026-10-06). This was a ratchet at 9.
   //
-  // They are ratcheted rather than asserted to zero, for the same reason
-  // scripts/typecheck.ts ratchets its 88: a guard that is red on arrival gets
-  // skipped, and a guard that only fails on NEW violations starts protecting
-  // the file today. Removing them is #69 and is not mechanical — the sandbox
-  // cannot load modules at all, so each site needs the agent-step indirection
-  // that scripts/collect-worktree-files.ts uses.
+  // The nine lived in the Grade phase's tail at ship.js:1784-1869 — compliance
+  // persistence, compliance history, hill-climb brief patching and transcript
+  // re-grading. All nine sat inside try/catch, so `require is not defined` was
+  // swallowed as a WARN and the run reported success while the harness's own
+  // measurement loop had never executed. That whole block now lives in
+  // scripts/persist-compliance.ts, which runs in a real Bun runtime.
   //
-  // Unlike the originals at module scope, all nine sit inside try/catch, so
-  // `require is not defined` is swallowed and logged as a WARN. The run
-  // reports success with compliance persistence, hill-climb and transcript
-  // re-grading silently switched off.
-  const KNOWN_TOP_LEVEL_REQUIRES = 9;
-  // All nine sit in one phase region. Pinning the region as well as the count
-  // closes the obvious hole in a bare count: remove one of the nine, add a new
-  // one somewhere else, and the total is still nine. Counting phase markers
-  // rather than line numbers keeps this stable as the file moves around.
-  const KNOWN_REQUIRE_PHASE_INDEX = 7;
+  // The ratchet existed because a guard that is red on arrival gets skipped,
+  // so it protected against NEW violations while the known nine stood. There
+  // are none left, so it is now a flat assertion: the sandbox provides zero,
+  // the file must contain zero. Do not reintroduce a tolerance. If you need a
+  // module in ship.js, put the code in scripts/ and call it through an agent
+  // step — that is the only shape that works here.
+  const ALLOWED_TOP_LEVEL_REQUIRES = 0;
 
-  test("no NEW top-level require()", () => {
+  test("no top-level require()", () => {
     const stripped = topLevelCode(shipSource);
     const hits = stripped.match(/(?<![.\w$])require\s*\(/g) || [];
     expect(
       hits.length,
-      `top-level require() count changed. The sandbox has none (#69), so a new one fails silently inside try/catch and quietly disables whatever it guards. If you REMOVED one, lower KNOWN_TOP_LEVEL_REQUIRES to bank it.`,
-    ).toBe(KNOWN_TOP_LEVEL_REQUIRES);
-
-    const phaseStarts = [...stripped.matchAll(/(?<![.\w$])phase\s*\(/g)].map(m => m.index!);
-    const regions = [...stripped.matchAll(/(?<![.\w$])require\s*\(/g)].map(
-      m => phaseStarts.filter(p => p < m.index!).length,
-    );
-    expect(
-      [...new Set(regions)],
-      "a top-level require() appeared outside the known region — see #69 before banking it",
-    ).toEqual([KNOWN_REQUIRE_PHASE_INDEX]);
+      `ship.js must load no modules at top level (#69). The sandbox has no require, so each of these throws — and if it sits inside a try/catch it fails SILENTLY and disables whatever it guards while the run still reports success. Move the code to scripts/ and invoke it through an agent step, as scripts/persist-compliance.ts and scripts/collect-worktree-files.ts do.`,
+    ).toBe(ALLOWED_TOP_LEVEL_REQUIRES);
   });
 
   test("the stripper has not silently mangled ship.js", () => {
