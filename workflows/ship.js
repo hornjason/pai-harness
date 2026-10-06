@@ -1682,14 +1682,66 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 }
 }
 
-// Rook security review (THOROUGH only)
+// Rook security review — runs whenever there is something to review (#127).
+//
+// This was `ceremonyTier === 'THOROUGH'`. Line 849 forces LIGHT for any project
+// with an empty `pages` map, so THOROUGH was unreachable for every CLI and
+// library and the security review could not run on them at all. Across 3,555
+// workflow agents ever launched, rook was spawned 0 times (#126).
+//
+// A UI check is the wrong gate for a security review: rook reads changed files
+// for injection, credential leaks, path traversal and XSS, and a CLI that
+// shells out is the higher-risk surface, not the lower one. AGENTS.md:
+// "Security — mandatory every build cycle on changed files."
+//
+// The tier still governs Quinn and the container above. Those genuinely need a
+// UI; this does not.
 async function runRookReview() {
-if (discovery.ceremonyTier === 'THOROUGH') {
-  log('Spawning Rook')
-  await briefedAgent(`
-Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
+// NO SKIP CONDITION, deliberately. Two rounds of security review landed here:
+//
+//   v1  `ceremonyTier === 'THOROUGH'`  — unreachable for any CLI (#127), so
+//                                        rook had never run, ever.
+//   v2  `discovery.filesToModify?.length` — fail-OPEN: a missing or malformed
+//                                        field silently disabled the review.
+//   v3  skip only on a well-formed []   — still lets an LLM-controlled field
+//                                        decide whether security runs at all.
+//
+// v3 is the #115 defect wearing a different hat. The only ground truth for
+// "what changed" is git, and this block has no access to it. So there is no
+// skip: a wasted cheap agent costs far less than a review an upstream agent
+// can switch off, and rook has run 0 times in the harness's entire history.
+// Running it too often is not the risk worth managing here.
+//
+// The file list is a HINT for focus, never the gate.
+const reported = Array.isArray(discovery.filesToModify) ? discovery.filesToModify : []
+// Prompt-injection guard, also from security review. These strings are
+// LLM-produced and were joined straight into rook's prompt: an entry carrying
+// instructions is an injection channel aimed at the one agent whose job is to
+// say no. Entries are filtered by SHAPE rather than escaped — escaping assumes
+// you can enumerate what is dangerous to a language model, while a path
+// allowlist assumes only that you know what a file path looks like.
+const safePaths = reported
+  .filter(p => typeof p === 'string' && /^[A-Za-z0-9._\-/]{1,200}$/.test(p) && !p.includes('..'))
+  .slice(0, 50)
+const scope = safePaths.length
+  ? safePaths.join(', ')
+  : '(no usable file list — review the full diff against origin/main)'
+if (safePaths.length !== reported.length) {
+  log(`Rook: ${reported.length - safePaths.length} file-list entr(ies) rejected as non-path-shaped`)
+}
+log('Spawning Rook')
+const rookResult = await briefedAgent(`
+Security review for issue #${ISSUE}. Changed: ${scope}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
   `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
+// The verdict used to be discarded entirely: rook could return FAIL with a
+// list of vulnerabilities and nothing read it, because the merge decision at
+// the bottom of this file consults only `verifyResult` from the verify gate.
+// A security review whose verdict goes nowhere is worse than no review — it
+// manufactures the appearance of coverage. Making it BLOCK the merge is a
+// consequential change and is filed separately; surfacing it is not.
+if (rookResult?.result === 'FAIL') {
+  log(`SECURITY: Rook FAILED — ${(rookResult.failures || ['no detail returned']).join('; ')}`)
 }
 }
 
