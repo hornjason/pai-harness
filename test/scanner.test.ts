@@ -6,7 +6,7 @@
  * AC-3: Scanner imports no generation logic (only fs, path, types)
  */
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -260,6 +260,74 @@ describe("README identity extraction edge cases", () => {
 
     const scan = scanProject(tmpDir);
     expect(scan.identity).toBe("A substantial description of the image project with enough detail.");
+  });
+});
+
+describe("#91: docs-routing counts include nested documents", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `scanner-nested-${Date.now()}`);
+    mkdirSync(tmpDir, { recursive: true });
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "nested-proj" }));
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function routeFor(dir: string): string | undefined {
+    return scanProject(tmpDir).docRouting.find(d => d.file === `${dir}/`)?.need;
+  }
+
+  test("a category whose documents all live in subdirectories is not reported as empty", () => {
+    // The real case: reference/ held 19 .md files, every one of them nested, and
+    // the routing table told readers it had 0. A row claiming a directory is
+    // empty is worse than no row — it reads as an instruction not to look.
+    mkdirSync(join(tmpDir, "reference", "specs"), { recursive: true });
+    writeFileSync(join(tmpDir, "reference", "specs", "a.md"), "# A");
+    writeFileSync(join(tmpDir, "reference", "specs", "b.md"), "# B");
+
+    expect(routeFor("reference")).toContain("(2 files)");
+  });
+
+  test("counts nested and top-level documents together", () => {
+    mkdirSync(join(tmpDir, "docs", "research", "hill-climb"), { recursive: true });
+    writeFileSync(join(tmpDir, "docs", "research", "top.md"), "# Top");
+    writeFileSync(join(tmpDir, "docs", "research", "hill-climb", "v1.md"), "# V1");
+
+    expect(routeFor("docs/research")).toContain("(2 files)");
+  });
+
+  // The three tests above exercise lib/scanner.ts. The scaffold does not use
+  // it for this: lib/scaffold/steps.ts:334-378 holds a second, complete copy of
+  // scanDocRouting, and steps.ts:422 is what feeds generateScopedRules and
+  // writes the rule file. Fixing scanner.ts alone changed no generated output
+  // at all, and these tests went green anyway — they were covering the copy
+  // nobody calls. This one asserts the artifact a reader actually opens.
+  test("the generated rule file agrees with a recursive count on disk", () => {
+    const rulePath = join(ROOT, ".claude", "rules", "docs-routing.md");
+    if (!existsSync(rulePath)) return;
+    const rule = readFileSync(rulePath, "utf-8");
+
+    for (const dir of ["specs", "docs/research", "docs/council", "docs/guides", "reference"]) {
+      const catPath = join(ROOT, dir);
+      if (!existsSync(catPath)) continue;
+      const actual = readdirSync(catPath, { recursive: true }).map(String).filter(f => f.endsWith(".md")).length;
+      const row = rule.split("\n").find(l => l.includes(`\`${dir}/\``));
+      if (!row) continue;
+      const claimed = row.match(/\((\d+) files\)/)?.[1];
+      expect(claimed, `docs-routing.md row for ${dir}/`).toBe(String(actual));
+    }
+  });
+
+  test("still counts only markdown", () => {
+    mkdirSync(join(tmpDir, "reference", "scripts"), { recursive: true });
+    writeFileSync(join(tmpDir, "reference", "keep.md"), "# Keep");
+    writeFileSync(join(tmpDir, "reference", "scripts", "run.sh"), "echo hi");
+    writeFileSync(join(tmpDir, "reference", "manifest.json"), "{}");
+
+    expect(routeFor("reference")).toContain("(1 files)");
   });
 });
 

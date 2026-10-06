@@ -302,7 +302,10 @@ function scanDocRouting(root: string, categories: Category[]): DocRoute[] {
     const catPath = join(root, cat.dir);
     if (existsSync(catPath)) {
       try {
-        const files = readdirSync(catPath).filter(f => f.endsWith(".md"));
+        // Recursive: reference/ held 19 markdown files, every one of them in a
+        // subdirectory, and a shallow count advertised it as "(0 files)" (#91).
+        // A row saying a directory is empty reads as an instruction not to look.
+        const files = readdirSync(catPath, { recursive: true }).map(String).filter(f => f.endsWith(".md"));
         docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
       } catch {
         docRouting.push({ need: cat.label, file: `${cat.dir}/` });
