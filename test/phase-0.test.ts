@@ -3,6 +3,7 @@ import { existsSync, readFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 // bootstrap re-hashed 2026-10-05 (#80): redirect-stub `governs` was "TODO".
 const SPEC_HASHES: Record<string, string> = { bootstrap: "05f388d8b3a2e036", testPlan: "352ebe436fbd3330" };
@@ -29,14 +30,14 @@ beforeAll(() => {
   try { execSync(`rm -rf ${OUTPUT}`, { stdio: "pipe" }); } catch {}
   mkdirSync(OUTPUT, { recursive: true });
   execSync(`cp -r ${FIXTURE}/. ${OUTPUT}/`);
-  execSync("git init", { cwd: OUTPUT, stdio: "pipe" });
-  execSync("git add -A && git commit -m 'init fixture'", { cwd: OUTPUT, stdio: "pipe" });
+  initFixtureRepo(OUTPUT);
+  commitFixture(OUTPUT, "init fixture");
   try {
     execSync(`bun run ${SCAFFOLD} ${OUTPUT} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
   } catch {
     // Scaffold may not exist yet or may fail — tests should still run and FAIL
   }
-});
+}, 60_000); // 6.2s measured (copy+init+scaffold); 5s default only passed because the commit died first (#71)
 
 describe("Phase 0: Pre-flight + static files", () => {
   test("spec-drift: governing specs haven't changed", () => { checkSpecDrift(); });

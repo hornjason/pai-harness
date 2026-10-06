@@ -149,6 +149,16 @@ function splitTopLevel(command: string): string[] {
       cur += c;
       continue;
     }
+    // Backslash-newline is a line continuation, not a separator (#82). Splitting
+    // on it stranded the paths of `bun test \` on the next segment, leaving a
+    // zero-argument `bun test` that fails closed — so routine multi-line Bash
+    // charged targeted runs to the full-suite budget. Collapse to a space rather
+    // than nothing, or the tokens either side would glue into one.
+    if (c === "\\" && command[i + 1] === "\n") {
+      cur += " ";
+      i++;
+      continue;
+    }
     if (c === "\n" || c === ";" || c === "&" || c === "|") {
       if ((c === "&" && command[i + 1] === "&") || (c === "|" && command[i + 1] === "|")) i++;
       out.push(cur);

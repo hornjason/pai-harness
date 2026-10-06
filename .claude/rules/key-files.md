@@ -11,6 +11,7 @@ description: Key files and documentation routing for this project
 | project-state.json | Source of truth for project status | When editing state |
 | .claude/rungate/ | Harness project config (directory) | Shipping through harness |
 | package.json | Dependencies and scripts | Adding deps or scripts |
+| tsconfig.json | TypeScript configuration | Changing TS settings |
 | lib/ | Lib directory | Working on lib |
 | gates/ | Gates directory | Working on gates |
 | workflows/ | Workflows directory | Working on workflows |

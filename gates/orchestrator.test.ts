@@ -1,6 +1,7 @@
 import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync, statSync } from "fs";
 import { join } from "path";
+import { gateSaltPath } from "../lib/paths";
 import {
   writeGateResult,
   generateHmac,
@@ -281,10 +282,16 @@ describe("generateHmac", () => {
   });
 
   test("salt file has chmod 600", () => {
-    const saltPath = join(process.env.HOME || "", ".claude", "hooks", "lib", ".gate-salt");
+    // Was `join(process.env.HOME, ".claude/hooks/lib/.gate-salt")` — a path from
+    // an earlier layout. generateHmac writes to gateSaltPath(), which is
+    // <harnessRoot>/gates/.gate-salt (lib/paths.ts:21), so this assertion had
+    // not been looking at the file under test for however long ago that move
+    // happened. It passed only because a leftover file from the old layout was
+    // still sitting on the developer's disk; CI, with no such leftover, got
+    // ENOENT. Asking the code where it writes is the whole fix.
     generateHmac(SF, "test-orch", 432);
 
-    const perms = statSync(saltPath).mode & 0o777;
+    const perms = statSync(gateSaltPath()).mode & 0o777;
     expect(perms).toBe(0o600);
   });
 });

@@ -9,7 +9,7 @@ description: Documentation routing and file creation conventions
 | Codebase structure (routes, components, modules, health) | `CODE-MAP.md` |
 | Current project state, priorities, and session history | `PROJECT-STATE.md` |
 | Specs — success criteria, constraints, requirements (23 files) | `specs/` |
-| ADRs — architecture decisions (0 files) | `docs/adr/` |
+| ADRs — architecture decisions (1 files) | `docs/adr/` |
 | Research — findings, evaluations, competitive analysis (23 files) | `docs/research/` |
 | Council — synthesis, design debates (10 files) | `docs/council/` |
 | Guides — setup, onboarding, reference (1 files) | `docs/guides/` |

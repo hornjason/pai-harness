@@ -4,6 +4,7 @@ import { execSync } from "child_process";
 import { join, resolve } from "path";
 import { extractConstraints } from "../scripts/extract-constraints";
 import { runScaffoldConformity } from "../lib/conformity";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 const TEST_PLAN_HASH = "352ebe436fbd3330";
 const OUTPUT = "/tmp/rungate-phase1-test";
@@ -114,12 +115,12 @@ updated: 2026-09-01
 - Never deploy on Fridays (too restrictive)
 `);
 
-  execSync("git init", { cwd: OUTPUT, stdio: "pipe" });
+  initFixtureRepo(OUTPUT);
   execSync("git add docs/old-guide.md && git commit -m 'add old guide'", {
     cwd: OUTPUT, stdio: "pipe",
     env: { ...process.env, GIT_AUTHOR_DATE: "2024-01-15T00:00:00", GIT_COMMITTER_DATE: "2024-01-15T00:00:00" },
   });
-  execSync("git add -A && git commit -m 'init'", { cwd: OUTPUT, stdio: "pipe" });
+  commitFixture(OUTPUT, "init");
 });
 
 // Auto-generated conformity tests from specs

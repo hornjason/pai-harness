@@ -2,41 +2,36 @@
 
 **Current phase: All phases complete**
 
-**Session 30 (2026-10-05)** — The #67 full-suite guard merged yesterday was never actually guarding: registered only in rungate project settings, so it was inert for every session not rooted in the repo. Fixed scope and ownership unit, then swept a third defect variant — six conformity checks that computed a real result and asserted expect(true).toBe(true). Converting them turned Gates red; root cause was buildReferenceIndex recursing into 39 worktree copies, which is why the check could never fail locally and always failed in CI.
+**Session 31 (2026-10-05)** — #71 closed: CI and local disagreed by 28 tests because 24 of them asked the developer's machine a question a fresh runner cannot answer. Built scripts/test-clean-env.ts, which runs the suite with HOME pointed at an empty directory and GitHub credentials stripped — that one lever reproduced CI's verdict locally and produced the fix list instead of my triage guessing it. Suite now 2196 pass / 0 fail under clean environment. #65/#76 closed alongside it, because they had to be: ci.yml runs bunx tsc --noEmit AFTER bun test, so it had never executed once, and making tests pass would have un-hidden a step that prints help and exits 1.
 
-Suite: 2166 pass, 0 fail locally — but CI is 2033 pass, 29 fail (#71 unresolved; local and CI still disagree)
-Issues opened: #73, #74, #76, #78, #80
-Issues closed: #67, #80
+Suite: 2196 pass, 0 fail under clean env (scripts/test-clean-env.ts); typecheck ratchet at 88
+Issues opened: #82, #83, #84, #85
+Issues closed: #71, #65, #76, #78 (pending CI confirmation on merge)
 
-Read this before anything else. Two things on main are green and one is not: Gates passes, the local suite passes, and CI does not — 2033 pass / 29 fail, unchanged all day (#71). Treat any "suite green" claim as local-only until that closes.
+Read this before anything else. The suite is green under a CLEAN ENVIRONMENT, which is a stronger claim than the one this file made yesterday — run `bun scripts/test-clean-env.ts`, not `bun test`, before believing any gate. Plain `bun test` passes on this machine for reasons that have nothing to do with the code.
 
-Pattern of the week, found five separate ways: checks that confirm code EXISTS rather than that it WORKS.
-  - test/workflow-security-integration.test.ts asserted ship.js contained the broken require() — the test enforced the defect (#69)
-  - SC-478 / SC-479 / SC-511 are source-text existence assertions, still marked done, satisfied by code with zero production callers
-  - Six conformity checks computed a real result then asserted expect(true).toBe(true) (#80)
-  - A matcher named test-passes generated SCs reading "bun test passes" that asserted nothing — removed
-  - docs-routing.md reports 0 ADRs while ADR-001 is on main (#78)
+Pattern of the week, now found seven ways: checks that confirm something EXISTS rather than that it WORKS. Yesterday's five, plus two more from #71 — a test that stat'd a .gate-salt path abandoned in an earlier refactor and passed only because a leftover file sat on the developer's disk, and a documented `bunx tsc --noEmit` that had never type-checked a single file because no tsconfig.json existed.
 
-The sharpest consequence: CLAUDE.md step 2 of the MANDATORY GATE told every agent to find the governing spec in a Specs table in AGENTS.md. That table does not exist — it lives in .claude/rules/specs-routing.md. Every agent in every session either skipped the step or invented a substitute. Fixed this session, and it is a plausible common cause of agents missing governing specs and ADRs.
-
-Local and CI diverge for a structural reason worth remembering: lib/conformity.ts scanned .claude/worktrees/, which holds full repo copies (39 of them, 314 MB, #68). Every file looked referenced locally and nothing did in CI. When a file-scanning check disagrees with CI, ask what extra files the local tree has before reaching for "flaky".
+The generalisable lesson from #71: when local and CI disagree, do not triage the failures one by one. Ask what the two environments differ by, remove it locally, and let the suite produce the list. My six-bucket hand triage was right about 28 of 28 failures but would have missed the eight tests that were passing on readdir order and the cluster that reports green while asserting nothing — the lever found those, the triage did not.
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #71 CI and local disagree by 29 tests — CI is 2033 pass / 29 fail on ee48cc84 while local is green. Every suite-green claim, including todays two merges, was measured against a suite CI does not agree with. Clusters: SkillSequenceLogger (10), SkillCooccurrence (10), precompute-goal / parallel-ship / contract / context (6 each). All look like machine-local ~/.claude dependencies absent in CI. Until this lands no gate means anything.
-2. P0: #65 / #76 Type check has never run — no tsconfig.json, 88 errors behind it. AGENTS.md documents bunx tsc --noEmit as THE type check and it cannot succeed. #72 covers generating one for consumers.
-3. P1: #81 Parallel ship cannot commit — all 11 agents succeeded and the commit phase failed because the file list spans N worktrees but is rebased against only one. This is the autonomy blocker: the work happens and cannot land.
+1. P0: #84 git identity — confirm nothing re-adds the local user override. Source is unproven; the regression test (test/unit/git-identity-isolation.test.ts) asserts the state AND bans untargeted `git config user.*`, but neither proves what wrote it originally.
+2. P1: #81 Parallel ship cannot commit — all 11 agents succeeded and the commit phase failed because the file list spans N worktrees but is rebased against only one. Still the autonomy blocker: the work happens and cannot land.
+3. P1: #85 pre-push against a clean checkout. Needs a decision: symlink node_modules (fast, but tests the pushed commit against the working tree's deps) vs bun install in the worktree (correct, slow enough that people bypass the hook).
 4. P1: #77 ship.js assumes agent worktrees live under projectRoot; Claude Code creates them under the workflow script repo.
-5. P1: #73 DIR-L29 budget is a monotonic per-session counter that never decrements. With subagents sharing the parent id, one pipeline locks itself out after two suites. Needs a decision on what the budget means.
+5. P1: #73 DIR-L29 budget is a monotonic per-session counter that never decrements. #82 fixed the DETECTION half; the semantics half is open. With subagents sharing the parent id, one pipeline still locks itself out after two suites.
 6. P1: #74 A full-suite slot leaks for a full TTL when a DIFFERENT PreToolUse hook blocks the command — PostToolUse never fires for a tool that never ran. Observed with COMP-7.
-7. P2: #70 / #75 Scaffold config divergence — jhorn-5c owns. Phase 1 complete and unpushed, waiting on Jason.
-8. P2: #68 Worktree cleanup has never removed a worktree — now 39 stale, 314 MB, and they caused the Gates regression this session by poisoning the conformity reference index. Second symptom raises priority.
-9. P2: #78 docs-routing.md reports 0 ADRs while ADR-001 is on main — generated counts have no drift check.
-10. P2: #79 Ship workflow Phase 2 deferral writes an issue body that contradicts the ACs it defers.
-11. P3: #55 / #59 / #60 / #61 pipeline testing inner loop; #54 dead code cleanup; #72 consumer tsconfig.
-12. CLOSE AS STALE: #66 (parallel dispatch is in main) and #69 (the remaining require( is comment text describing the old bug). Both verified fixed in origin/main.
-13. WATCH: DRIFT-2 and HYGIENE-3 ratchet lists in .claude/conformity-allowlists.json. Both must shrink to empty. CONFIG-DIRECTORY-STRUCTURE-SPEC must leave the untested list before SC-478/479 are rewritten as behavioral assertions, or they are honest assertions nothing executes.
-14. WATCH: SC-478 / SC-479 / SC-511 are source-text existence assertions still marked done. They certify that code was authored, never that it was adopted.
+7. P2: #65 drive the typecheck ratchet down from 88. 54 of those clear on a bun-types upgrade — try that first, it is one line for 61% of the debt. The remaining 34 are real.
+8. P2: #83 port the two removed test files to the PAI repo, where the code they test lives.
+9. P2: the vacuous-pass cluster found while sweeping for #71 — tests that report green in CI while asserting nothing: test/structure.test.ts ST-2/ST-2b/ST-3 (assert files are ABSENT from ~/.claude, trivially true in CI), gates/e2e-smoke.test.ts:208-231 (early-return and a bare catch{}), test/schema-canary.test.ts:14 (early-returns when another repo is missing). Same defect class as #80.
+10. P2: #68 Worktree cleanup has never removed a worktree — 39 stale, 314 MB, and they caused the Gates regression by poisoning the conformity reference index.
+11. P2: #70 / #75 Scaffold config divergence — jhorn-5c owns. Phase 1 complete and unpushed, waiting on Jason.
+12. P2: #79 Ship workflow Phase 2 deferral writes an issue body that contradicts the ACs it defers.
+13. P3: #55 / #59 / #60 / #61 pipeline testing inner loop; #54 dead code cleanup; #72 consumer tsconfig (now partly addressed — the generator no longer emits a typecheck step for consumers without one).
+14. CLOSE AS STALE: #66 (parallel dispatch is in main) and #69 (the remaining require( is comment text describing the old bug). Both verified fixed in origin/main.
+15. WATCH: DRIFT-2 and HYGIENE-3 ratchet lists in .claude/conformity-allowlists.json, plus the new .claude/typecheck-baseline.json. All three must shrink. A baseline that never moves is just a permanent exemption with extra steps.
+16. WATCH: SC-478 / SC-479 / SC-511 are source-text existence assertions still marked done. They certify that code was authored, never that it was adopted.
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
@@ -93,6 +88,19 @@ Suite: 25/25 SCs done.
 
 ---
 
+**Session 2026-10-05 session 31:**
+- #71 root-caused to 6 causes, all 28 failures reconciled: $HOME/.pai hooks (10), live gh API (6), git identity/default branch in fixtures (7), stale $HOME/.claude/.gate-salt path (1), $HOME/Projects/rungate checkout path in contract fixtures (3), 5s timeout on tests doing two scaffolds (1)
+- The lever, not the patches: 24 of 28 were one defect — the test reads developer machine state. scripts/test-clean-env.ts makes that mechanically detectable instead of discovered-in-CI. Proved it before planning against it: 0 fail with real HOME, 11 fail with an empty one
+- #82 found and fixed mid-task: TestSuiteGuard counted line-continued targeted runs as full-suite. splitTopLevel split on every \n without honouring a trailing backslash, so `bun test \` stranded its paths and failed closed. It burned the DIR-L29 budget on cheap runs and then locked this session out of the suite while working on #71
+- #83: test/unit/skill-{sequence-logger,cooccurrence}.test.ts removed. They test SkillSequenceLogger.hook.ts (~/.pai/hooks) and SkillCooccurrence.ts (~/.claude/PAI/Tools) — grep finds zero references to either in rungate. The migration manifest confirmed it: both were migrated INTO rungate from ~/.claude and brought their $HOME dependency with them. Not skipped — a skipIf here is a test that reports green while verifying nothing
+- #84 HIGH: rungate's own .git/config had user.name=Test / user.email=test@test.com. Local beats global, so every commit on main — all of yesterday's and today's merges — is authored as 'Test', not Jason. Override removed; history NOT rewritten (those commits are pushed). Source unproven; all 13 evals/*/scaffold.sh wrote identity with no cwd and no -C, now guarded
+- #85: pre-push tests the working tree, not the pushed commit — the direct cause of the Gates regression on 2026-10-05. Clean-worktree version needs a node_modules decision, so it is filed, not half-built. Meanwhile the hook stopped piping stderr to /dev/null (it discarded the only output explaining the failure) and the generator stopped refusing to update an existing hook, which had frozen it forever
+- #65/#76: tsconfig.json added — the documented type check had never checked anything. 88 errors, of which 54 are ONE upstream defect: bun-types 1.4.2 types test.todo as requiring a function while Bun accepts a bare label. 34 are ours. scripts/typecheck.ts ratchets both directions (fails on increase AND on un-banked progress), verified in all three states
+- Consumer safety: the ci.yml generator emitted `bunx tsc --noEmit` unconditionally, so every scaffolded consumer without a tsconfig got a CI step that could only fail, over a file rungate never created for them. Now conditional on tsconfig.json, and on scripts/typecheck.ts for the ratchet form
+- Order-dependency fixed: gates/.gate-salt is gitignored and was created as a side effect of generateHmac, so 8 adversarial tests passed only when orchestrator.test.ts happened to run first — readdir order, not alphabetical on ext4. Extracted ensureGateSalt() to lib/paths.ts; deliberately NOT used by witness.ts, where a missing salt must fail rather than mint a new one
+- #78 closed as a side effect: re-scaffolding corrected docs-routing.md from '0 ADRs' to 1
+- Caught and unwound: postScaffoldCommit swept my staged `git rm` deletions into a commit titled 'scaffold: regenerate harness files'. Same hijacking as session 29. Soft-reset before push
+
 **Session 2026-10-05 session 30:**
 - #67-A the guard was never guarding. TestSuiteGuard/TestSuiteRelease were registered only in rungate .claude/settings.json. Project settings load from the directory a session STARTED in, so the cap was inert for any session rooted elsewhere, including sessions working on rungate via an added working directory. Moved to ~/.claude/settings.json and REMOVED from project scope — the two are not de-duplicated, so dual registration fires the hook twice and takes two slots per suite.
 - Subagent Bash calls reach PreToolUse with the PARENT session id. Proven: the budget counter file an allowed run writes is named with the session transcript id. So hook session_id and transcript sessionId are the same identifier, closing the inference gap in jhorn-8e 292/292 measurement.
@@ -127,10 +135,4 @@ Suite: 25/25 SCs done.
 - StaleTTLCleanup hook: cleanupStaleBranches unawaited, so br.deleted.length threw into the surrounding catch and the hook reported nothing wrong. Branch cleanup had never run. Also logged r.message, which is not a field on GapResult
 - buildAgentMeta was declared TWICE in lib/create-brief.ts with different parameter shapes. The second won, so the scaffold call site passing harness.roles looked up roles.roles and always got an empty map. Every consumer project's role config was silently discarded in favor of DEFAULT_AGENT_META
 - Corrected: today's discovery/marcus opus move appeared to work, but the briefs took it from DEFAULT_AGENT_META, not from rungate.json. Right outcome, wrong mechanism — the config path was dead
-
-**Session 2026-09-24 session 13:**
-- Ship-and-heal dogfood: #585 shipped (HEALED), #591 shipped (HEALED)
-- Grading pipeline shipped: transcript path fix, role filtering, remediation flow
-- Violation categorization: quality vs process (SC-465-468)
-- analyze-transcript.ts: file efficiency, deliverable ratio, test runs, context growth
 

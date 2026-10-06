@@ -1,27 +1,40 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { stubGh, type StubbedGh } from "./helpers/stub-gh";
 
 const SCRIPT = join(import.meta.dir, "..", "scripts", "precompute-goal.ts");
 const AGENTS_DIR = join(import.meta.dir, "..", ".claude", "agents");
+const ISSUE_FIXTURE = join(import.meta.dir, "fixtures", "github", "issue-48.json");
+
+// See test/helpers/stub-gh.ts — the script under test calls the live GitHub API,
+// which 401s anywhere but Jason's machine (#71). SC-6 below is the clearest
+// case for stubbing rather than authenticating CI: it asserts extraction
+// finishes in under 5s while the call it timed was dominated by network
+// round-trip, so it was grading GitHub's latency, not this repo's code.
+let gh: StubbedGh;
+beforeAll(() => { gh = stubGh(ISSUE_FIXTURE); });
+afterAll(() => gh.cleanup());
+
+function runScript(timeout: number): string {
+  return execFileSync("bun", [SCRIPT, "--issue", "48", "--repo", "hornjason/pai-harness"], {
+    encoding: "utf-8",
+    timeout,
+    env: gh.env,
+  });
+}
 
 describe("context preload parity (#49)", () => {
   test("SC-6: context extraction completes in <5s", () => {
     const start = performance.now();
-    execFileSync("bun", [SCRIPT, "--issue", "48", "--repo", "hornjason/pai-harness"], {
-      encoding: "utf-8",
-      timeout: 5000,
-    });
+    runScript(5000);
     const elapsed = performance.now() - start;
     expect(elapsed).toBeLessThan(5000);
   });
 
   test("SC-7: marcus reinforcement rules match brief content", () => {
-    const output = execFileSync("bun", [SCRIPT, "--issue", "48", "--repo", "hornjason/pai-harness"], {
-      encoding: "utf-8",
-      timeout: 10000,
-    });
+    const output = runScript(10000);
     const result = JSON.parse(output);
     const marcusRules = result.preloadedContexts?.marcus?.rules || [];
 
@@ -40,10 +53,7 @@ describe("context preload parity (#49)", () => {
   });
 
   test("SC-7: discovery reinforcement rules match brief content", () => {
-    const output = execFileSync("bun", [SCRIPT, "--issue", "48", "--repo", "hornjason/pai-harness"], {
-      encoding: "utf-8",
-      timeout: 10000,
-    });
+    const output = runScript(10000);
     const result = JSON.parse(output);
     const discoveryRules = result.preloadedContexts?.discovery?.rules || [];
 

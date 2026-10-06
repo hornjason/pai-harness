@@ -2,7 +2,7 @@ import { test, expect, describe, beforeEach, afterEach } from "bun:test";
 import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { writeWitness, verifyWitness, verifyWitnessChain } from "./witness";
-import { gateSaltPath } from "../lib/paths";
+import { ensureGateSalt, gateSaltPath } from "../lib/paths";
 
 // HOME_DIR is set so workDir resolves correctly via RUNGATE_WORK_DIR
 const HOME_DIR = `/tmp/adversarial-home-${process.pid}`;
@@ -41,9 +41,10 @@ function createSignedWitness(
   commitSha: string,
   overrides: Partial<Record<string, unknown>> = {},
 ): string {
-  // Use the same salt path that verifyWitness uses (gateSaltPath → repo/gates/.gate-salt)
-  const saltPath = gateSaltPath();
-  const salt = readFileSync(saltPath, "utf-8").trim();
+  // ensureGateSalt rather than a bare read of gateSaltPath(): the salt is
+  // gitignored, so on a fresh checkout it exists only if gates/orchestrator.test.ts
+  // already ran generateHmac. These eight tests were passing on file ordering.
+  const salt = readFileSync(ensureGateSalt(), "utf-8").trim();
   const { createHmac } = require("crypto");
 
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -86,6 +87,13 @@ function createForgedWitness(
   result: "PASS" | "FAIL",
   commitSha: string,
 ): string {
+  // The forgery path never reads the salt, but verifyWitness does — and on a
+  // fresh checkout the salt does not exist, so this test failed with ENOENT
+  // instead of the HMAC mismatch it asserts. "Rejected because the salt was
+  // missing" and "rejected because the signature is wrong" are different
+  // outcomes, and only one of them proves the check works.
+  ensureGateSalt();
+
   const ts = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
   const record = {
     gate,

@@ -19,4 +19,4 @@ jobs:
           bun-version: "latest"
       - run: bun install
       - run: bun test
-      - run: bunx tsc --noEmit
+      - run: bun scripts/typecheck.ts

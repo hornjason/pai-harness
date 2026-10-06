@@ -38,9 +38,16 @@ jobs:
           # into the filters would turn an error into empty input, which reads
           # as "clean" — passing exactly when the scan could not run.
           # git grep exits 1 for "no match", which is not an error.
-          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- . || true)
-          if [ $? -gt 1 ]; then
-            echo "::error::git grep failed — refusing to report a clean scan"
+          # NOTE: do NOT append "|| true" to the assignment below. It makes the
+          # assignment itself succeed, so $? is always 0 and the error branch
+          # becomes dead code — the scan would fail open on a git error.
+          set +e
+          tier2=$(git grep -I -hoE '(password|passwd|api[_-]?key|secret)[[:space:]]*[:=][[:space:]]*[A-Za-z0-9/+=_.-]{12,}' -- .)
+          rc=$?
+          set -e
+          # git grep: 0 = match, 1 = no match, >1 = real error.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error::git grep failed (exit $rc) — refusing to report a clean scan"
             exit 1
           fi
           # Exclusion applies to the extracted VALUE, not the whole line.

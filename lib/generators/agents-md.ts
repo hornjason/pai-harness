@@ -91,6 +91,24 @@ export function generateAgentsMd(scan: ProjectScan): string {
     ? `\n| Convert spec | \`bun scripts/convert-spec.ts <file> [--dry-run] [--title "..."] [--governs "..."]\` |`
     : "";
 
+  // Same reasoning as convert-spec, but this row was actively harmful rather
+  // than merely missing: it advertised `bunx tsc --noEmit` unconditionally, and
+  // without a tsconfig.json that command prints help and exits 1. Every project
+  // scaffolded by rungate — including rungate — documented a type check that
+  // had never checked anything (#65/#76).
+  const typecheckRow = !existsSync(join(scan.root, "tsconfig.json"))
+    ? ""
+    : existsSync(join(scan.root, "scripts", "typecheck.ts"))
+      ? `\n| Type check | \`bun scripts/typecheck.ts\` |`
+      : `\n| Type check | \`bunx tsc --noEmit\` |`;
+
+  // The command that reproduces CI locally. Worth a row only where the script
+  // exists: a documented command that is not present is how the type check row
+  // above went wrong.
+  const cleanEnvRow = existsSync(join(scan.root, "scripts", "test-clean-env.ts"))
+    ? `\n| Test as CI sees it | \`bun scripts/test-clean-env.ts\` |`
+    : "";
+
   return `${frontmatter}# ${name}
 
 ## Project Identity
@@ -112,8 +130,7 @@ ${repoLine}
 
 | Action | Command |
 |--------|---------|
-| Test | \`${testCmd}\` |
-| Type check | \`bunx tsc --noEmit\` |
+| Test | \`${testCmd}\` |${typecheckRow}${cleanEnvRow}
 | Conformity | \`bun test test/scaffold-conformity.test.ts\` |
 | Create spec | \`bunx rungate create-spec "title"\` |
 | Create SC | \`bunx rungate create-sc --pattern <name> --params '<json>'\` |
