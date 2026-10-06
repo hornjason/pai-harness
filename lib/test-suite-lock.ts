@@ -445,36 +445,73 @@ function counterPath(lockDir: string, sessionId: string): string {
  * empty one. An unreadable counter that parses as "zero runs spent" is the
  * check-that-reports-success-without-checking shape (#65, #71): a one-character
  * edit would silently disable the cap while every message still looked normal.
+ *
+ * Every bound below exists because the counter lives in a world-writable
+ * TMPDIR and TestSuiteGuard ends in `catch { process.exit(0) }`. That catch is
+ * a deliberate fail-open so a broken guard can never wedge the repo — which
+ * means ANY throw in here silently removes the cap, with nothing printed.
+ * Crashing is therefore the most dangerous thing this function can do, worse
+ * than reading a wrong number, so it allocates nothing it has not bounded.
+ * Found by the security review of b95438cf.
  */
+
+/** Generous for the real format (~20 bytes/run); far below a memory problem. */
+const MAX_COUNTER_BYTES = 64 * 1024;
+
+/** Entries kept per session. Only `maxRuns` can ever be spent; the rest is slack. */
+const MAX_TRACKED_RUNS = 8;
+
 function readRuns(path: string, maxRuns: number): number[] {
+  const budget = Math.max(0, Math.min(maxRuns, MAX_TRACKED_RUNS));
   let raw: string;
   let mtimeMs: number;
   try {
+    const stat = statSync(path);
+    // Checked before the read, not after: the point is to not load it.
+    if (stat.size > MAX_COUNTER_BYTES) {
+      return Array.from({ length: budget }, () => stat.mtimeMs);
+    }
+    mtimeMs = stat.mtimeMs;
     raw = readFileSync(path, "utf-8").trim();
-    mtimeMs = statSync(path).mtimeMs;
   } catch {
     return [];
   }
   if (!raw) return [];
 
   // Legacy: a bare integer, with no record of when those runs happened.
+  // Clamped — `99999999999` is a RangeError at the allocation, not a big array.
   if (/^\d+$/.test(raw)) {
-    return Array.from({ length: parseInt(raw, 10) }, () => mtimeMs);
+    const count = Math.min(parseInt(raw, 10) || 0, budget);
+    return Array.from({ length: count }, () => mtimeMs);
   }
 
   try {
     const parsed = JSON.parse(raw) as { runs?: unknown };
     const runs = parsed?.runs;
-    if (Array.isArray(runs) && runs.every((t) => typeof t === "number" && Number.isFinite(t))) {
-      return runs as number[];
+    if (
+      Array.isArray(runs) &&
+      runs.length <= MAX_COUNTER_BYTES &&
+      runs.every((t) => typeof t === "number" && Number.isFinite(t))
+    ) {
+      // Newest first, then trimmed: the oldest entries are the ones about to
+      // expire anyway, and this keeps every later read cheap.
+      return (runs as number[]).slice().sort((a, b) => a - b).slice(-MAX_TRACKED_RUNS);
     }
   } catch {
     // fall through to the fail-closed path
   }
 
   // Fail closed: spend the whole budget so a corrupt file blocks rather than
-  // waves everything through. Dated now, so it clears after one window.
-  return Array.from({ length: maxRuns }, () => mtimeMs);
+  // waves everything through. Dated from mtime, so it clears after one window
+  // instead of wedging the session permanently.
+  return Array.from({ length: budget }, () => mtimeMs);
+}
+
+/** `Math.min(...xs)` throws on a large array — every element is an argument. */
+function earliest(values: number[]): number | null {
+  let min: number | null = null;
+  for (const v of values) if (min === null || v < min) min = v;
+  return min;
 }
 
 /** Plain-English wait, for a refusal that would otherwise offer no way out. */
@@ -513,13 +550,19 @@ export function evaluateFullSuiteRequest(
   // budget is a rate limit again rather than a lifetime total.
   const recent = readRuns(path, maxRuns).filter((t) => t > now - windowMs);
   if (recent.length >= maxRuns) {
-    const oldest = Math.min(...recent);
-    const freesUpIn = oldest + windowMs - now;
+    const oldest = earliest(recent);
+    // `recent` is empty only when maxRuns is 0 — a configured stop, with no run
+    // to wait for. Saying "frees up in Infinity minutes" taught people to stop
+    // reading the refusal.
+    const when =
+      oldest === null
+        ? "Full suite runs are disabled for this session (budget 0)."
+        : `One run frees up in ${describeWait(oldest + windowMs - now)}.`;
     return {
       allow: false,
       reason:
         `DIR-L29: Full test suite limit reached (${recent.length}/${maxRuns}) in the last ` +
-        `${describeWait(windowMs)}. One run frees up in ${describeWait(freesUpIn)}.\n` +
+        `${describeWait(windowMs)}. ${when}\n` +
         `Use targeted tests until then:\n  bun test test/specific-file.test.ts\n` +
         `Full suite runs cost ~190s and ~5.4 GB each.`,
     };
@@ -554,9 +597,11 @@ export function evaluateFullSuiteRequest(
   }
 
   try {
-    // Only the in-window runs are carried forward, so the file cannot grow
-    // without bound over a long session.
-    writeFileSync(path, JSON.stringify({ runs: [...recent, now] }));
+    // Only the in-window runs are carried forward, and never more than the
+    // tracked maximum, so neither a long session nor a poisoned file can leave
+    // an expensive read behind.
+    const runs = [...recent, now].slice(-MAX_TRACKED_RUNS);
+    writeFileSync(path, JSON.stringify({ runs }));
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }

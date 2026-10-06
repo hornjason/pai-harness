@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, utimesSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -390,6 +390,71 @@ describe("#73: the full-suite budget is a rolling window, not a lifetime total",
 
     const later = evaluateFullSuiteRequest("s1", "bun test", at(31 * MINUTE));
     expect(later.allow).toBe(true);
+  });
+
+  /**
+   * Security review of b95438cf. Every one of these reaches the gate through
+   * the counter file, throws, and is swallowed by TestSuiteGuard's `catch {
+   * process.exit(0) }` — which is a deliberate fail-open for a broken guard.
+   * The result is no full-suite cap at all, with nothing printed. The counter
+   * file is in a world-writable TMPDIR, so "who would write that" is not a
+   * defence.
+   */
+  describe("a malformed counter cannot crash the gate into fail-open", () => {
+    const writeCounter = (body: string) => {
+      const path = join(dir, "rungate-test-suite-count-s1");
+      writeFileSync(path, body);
+      utimesSync(path, new Date(t0), new Date(t0));
+      return path;
+    };
+
+    test("AC-9: an absurd legacy count does not blow up allocation", () => {
+      // `Array.from({length: 99999999999})` throws RangeError before anything
+      // else runs. Thrown out of the gate, caught by the hook, cap gone.
+      writeCounter("99999999999");
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-10: a huge runs array does not blow the argument limit", () => {
+      // Math.min(...runs) spreads every element as an argument. Past roughly
+      // 100k the engine throws RangeError on the call itself.
+      const runs = Array.from({ length: 500_000 }, (_, i) => t0 + i);
+      writeCounter(JSON.stringify({ runs }));
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-11: an oversized counter file is rejected, not read into memory", () => {
+      writeCounter(`{"runs":[${"1,".repeat(2_000_000)}1]}`);
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-12: the budget never persists more entries than it can spend", () => {
+      // Whatever came in, what goes back out has to stay bounded — otherwise a
+      // single poisoned file keeps every later read expensive.
+      const runs = Array.from({ length: 10_000 }, (_, i) => t0 + i);
+      const path = writeCounter(JSON.stringify({ runs }));
+
+      evaluateFullSuiteRequest("s1", "bun test", at(31 * MINUTE));
+      const after = JSON.parse(readFileSync(path, "utf-8")) as { runs: number[] };
+      expect(after.runs.length).toBeLessThanOrEqual(8);
+    });
+
+    test("AC-13: a zero budget refuses with a real wait, not 'Infinity minutes'", () => {
+      // Math.min() of an empty array is Infinity, which reached the user-facing
+      // string. A nonsense number in a refusal is how people learn to ignore it.
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(0, { maxRunsPerSession: 0 }));
+      expect(d.allow).toBe(false);
+      expect(d.reason).not.toContain("Infinity");
+    });
   });
 
   test("AC-8: a corrupt counter file fails closed, not open", () => {
