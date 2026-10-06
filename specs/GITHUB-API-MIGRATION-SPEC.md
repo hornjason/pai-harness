@@ -139,7 +139,7 @@ this directory; that divergence is its own issue.
 ## Constraints
 
 - Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)
-- `GITHUB_API_URL`, when set, MUST point at loopback. It redirects an endpoint that carries a bearer token, and the only reason it is honoured at all is to give the IssueCloseGuard tests a reachable endpoint; a capability that exists for a test must not be able to reach the internet. GitHub Enterprise needs a remote base and is a separate, deliberate decision
+- `GITHUB_API_URL`, when set, MUST resolve to an allowlisted host — GitHub itself or loopback — compared on exact hostname. It redirects an endpoint that carries a bearer token, so an arbitrary host is an exfiltration primitive. GitHub Actions sets this variable to `https://api.github.com` on every run, which is why the rule is an allowlist rather than loopback-only; a loopback-only version broke the whole suite in CI. GitHub Enterprise needs a host outside the list and is a separate, deliberate decision
 - Octokit client MUST be created once per process, not per call
 - Label operations MUST use POST (additive), never PUT (replace)
 - MCP calls in agent prompts MUST NOT have Octokit fallback inline — fallback is at the workflow orchestrator level
