@@ -287,6 +287,60 @@ function safeGitAddCommand(files, baseDir) {
   }
 }
 
+// ──── COMMIT-STAGING-START ────
+// What to stage, decided by git rather than by the agent that did the work (#115).
+//
+// The old path asked Marcus which files it changed and made that answer
+// load-bearing for `git add`. Two behaviours fell out of one LLM-formatted
+// string, and they were the wrong way round:
+//
+//   reported nothing          -> `git add .`, stage the entire worktree
+//   reported annotated paths  -> SHIP_FAILED, throw the finished work away
+//
+// So `/path/file.ts (NEW, 165 lines)` — a genuinely useful annotation that
+// nothing in the schema forbade — ended a run in which every phase had
+// passed, while saying nothing at all was treated as licence to stage
+// everything. Run wf_e750572e-153 died exactly that way with 4 files written
+// and 14 new tests green (#115), and #120 was the same thing one stage later
+// in Verify, where absolute worktree paths could not be relativized.
+//
+// The worktree already knows. `git status --porcelain` cannot be annotated,
+// hallucinated, truncated, or made absolute, so it is the input now and
+// `filesChanged` is reporting metadata only.
+//
+// `git add -A` stages precisely the set `git status --porcelain` reports.
+// Enumerating the paths instead would mean splitting that output in shell,
+// and the portable ways of doing that mangle filenames containing spaces
+// while the NUL-safe way (`cut -z`) is GNU-only — the same BSD/GNU trap that
+// made the prompt-immutability gate pass unconditionally on CI for months.
+//
+// `-A` rather than `.` is for explicitness, not behaviour: with `-C <root>`
+// the two stage the same set on any git this project supports. Written as
+// `-A` so it stays correct if the invocation ever moves to a subdirectory.
+//
+// Empty is a loud, distinct failure: "nothing to commit" is a different
+// outcome from "your paths were rejected", and the old code could not tell
+// them apart.
+function gitDerivedStaging(dir) {
+  const d = shellQuote(dir)
+  return [
+    `if [ -z "$(git -C ${d} status --porcelain)" ]; then`,
+    // The path goes in as the quoted ${d}, never as the raw ${dir}.
+    //
+    // The first version wrote the message as
+    //   echo "...no modifications in ${dir} — nothing to commit"
+    // which looks safe because the git command beside it is quoted, and
+    // is not: inside a double-quoted shell string `$(...)` and backticks
+    // still expand, so a worktreePath of `/tmp/$(touch pwned)` executes.
+    // Security review caught it; the injection test below had only tried
+    // `;`-separated commands, which double quotes do neutralise.
+    `  echo "RUNGATE_NO_CHANGES: git reports no modifications in" ${d} "— nothing to commit"; exit 1;`,
+    `fi`,
+    `git -C ${d} add -A`,
+  ].join('\n')
+}
+// ──── COMMIT-STAGING-END ────
+
 // Returns an `ssh ...` command string, or null when the host is unsafe.
 function safeSSHCommand(host, remoteCmd) {
   try {
@@ -1508,23 +1562,13 @@ const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
 // When the collect step ran, the files are already staged by the script that
-// validated them, and there is nothing left to add. An empty list must not be
-// used to signal that: safeGitAddCommand turns an empty list into `git add .`,
-// which stages the whole tree — the indiscriminate staging AC-3 exists to
-// forbid. Say "nothing to add" explicitly instead.
-const filesForCommit = alreadyStaged ? [] : implementResult.buildResult?.filesChanged
+// validated them, and there is nothing left to add — say so explicitly rather
+// than passing an empty list, which used to mean `git add .`.
+// filesChanged is reporting metadata now, not the input to `git add` (#115).
+log(`Marcus reported ${(implementResult.buildResult?.filesChanged || []).length} changed file(s); staging from git status`)
 const gitAddForCommit = alreadyStaged
   ? 'git diff --cached --quiet && echo "NOTHING_STAGED" || true'
-  : safeGitAddCommand(filesForCommit, commitDir)
-if (gitAddForCommit === null) {
-  return {
-    status: 'SHIP_FAILED',
-    issue: ISSUE,
-    slug: SLUG,
-    phase: 'Commit',
-    message: `Marcus reported file paths that failed shell-safety validation — refusing to commit. See the REJECTED line in the log for the offending paths.`,
-  }
-}
+  : gitDerivedStaging(commitDir)
 const commitResult = await agent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
@@ -1584,10 +1628,12 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify CODE regression #${regressionCount} — re-implementing failed ACs`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
-      if (reimplGitAdd === null) {
-        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, phase: 'Verify', message: 'Verify-gate re-implementation returned unsafe file paths — refusing to commit.' }
-      }
+      // #120 was reported here: the re-implementation's filesChanged were
+      // absolute paths inside its own agent worktree, relativizePaths knew
+      // only baseDir and PROJECT_ROOT, and the commit was refused on a
+      // completed fix. Staging from git status removes the file list from
+      // the path entirely, so there is nothing left to relativize.
+      const reimplGitAdd = gitDerivedStaging(PROJECT_ROOT)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
 cd ${PROJECT_ROOT} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
@@ -1979,10 +2025,7 @@ if (shipResult?.result !== 'PASS') {
     log(`Ship BUILD regression #${regressionCount} — re-implementing`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplShipGitAdd = safeGitAddCommand(reimpl.buildResult?.filesChanged, PROJECT_ROOT)
-      if (reimplShipGitAdd === null) {
-        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, phase: 'Ship', message: 'Ship-gate re-implementation returned unsafe file paths — refusing to commit.' }
-      }
+      const reimplShipGitAdd = gitDerivedStaging(PROJECT_ROOT)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
 cd ${PROJECT_ROOT} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
