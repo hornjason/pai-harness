@@ -47,11 +47,40 @@ export interface RungateConfig {
   compliance?: ComplianceConfig;
 }
 
+const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
+
 export function loadRungateConfig(projectRoot: string): RungateConfig {
   const dirPath = join(projectRoot, ".claude", "rungate");
   const monolithPath = join(projectRoot, ".claude", "rungate.json");
 
-  if (existsSync(dirPath) && existsSync(join(dirPath, "config.json"))) {
+  const config = resolveRungateConfig(projectRoot);
+  if (config) return config;
+
+  throw new Error(`No rungate config found at ${dirPath} or ${monolithPath}`);
+}
+
+/**
+ * Non-throwing variant of loadRungateConfig.
+ *
+ * Returns null ONLY when no config is present. A config that exists but
+ * cannot be parsed still throws — per ADR-001 D2, a malformed config is
+ * never a missing config. Conflating the two is what let #70 stay silent:
+ * the caller could not tell "not configured" from "configured wrong".
+ */
+export function tryLoadRungateConfig(projectRoot: string): RungateConfig | null {
+  return resolveRungateConfig(projectRoot);
+}
+
+/** Directory form wins over the monolith; returns null when neither is present. */
+function resolveRungateConfig(projectRoot: string): RungateConfig | null {
+  const dirPath = join(projectRoot, ".claude", "rungate");
+  const monolithPath = join(projectRoot, ".claude", "rungate.json");
+
+  // config.json is the sole marker for the directory form. Treating any
+  // fragment as the marker let a stray roles.json shadow a complete monolith
+  // and silently drop issueRepo/ci/test — ADR-001 Step E keeps the monolith
+  // in place during migration, so that state is on the normal upgrade path.
+  if (existsSync(join(dirPath, "config.json"))) {
     return loadFromDirectory(dirPath);
   }
 
@@ -59,7 +88,17 @@ export function loadRungateConfig(projectRoot: string): RungateConfig {
     return loadFromMonolith(monolithPath);
   }
 
-  throw new Error(`No rungate config found at ${dirPath} or ${monolithPath}`);
+  // Fragments with no config.json and no monolith is a broken directory
+  // config, not an unconfigured project. Fail loudly rather than returning
+  // null, which the caller would read as "no rungate here".
+  const orphans = DIRECTORY_CONFIG_FILES.filter((file) => existsSync(join(dirPath, file)));
+  if (orphans.length > 0) {
+    throw new Error(
+      `Incomplete rungate config at ${dirPath}: found ${orphans.join(", ")} but no config.json`
+    );
+  }
+
+  return null;
 }
 
 function loadFromDirectory(dirPath: string): RungateConfig {

@@ -43,7 +43,23 @@ export function safeDir(dirPath: string, label: string, actions: string[]): void
 function loadHarnessConfig(root: string): any {
   const dirConfig = join(root, ".claude", "rungate", "config.json");
   if (existsSync(dirConfig)) {
-    try { return JSON.parse(readFileSync(dirConfig, "utf-8")); } catch {}
+    try {
+      const config = JSON.parse(readFileSync(dirConfig, "utf-8"));
+      // The split moved roles out of config.json into roles.json. Callers
+      // (buildAgentMeta) still read `.roles` off one object, so re-attach it
+      // here — otherwise every project on the directory layout silently falls
+      // back to DEFAULT_AGENT_META and its role config is ignored.
+      const rolesPath = join(root, ".claude", "rungate", "roles.json");
+      if (existsSync(rolesPath)) {
+        try {
+          const roles = JSON.parse(readFileSync(rolesPath, "utf-8"));
+          if (roles && typeof roles === "object" && !Array.isArray(roles)) {
+            config.roles = { ...(config.roles || {}), ...roles };
+          }
+        } catch {}
+      }
+      return config;
+    } catch {}
   }
   const p = join(root, ".claude", "rungate.json");
   if (!existsSync(p)) return null;
@@ -1258,7 +1274,12 @@ export function createCiWorkflows(root: string, actions: string[]): void {
   const bunVersion = harness?.ci?.bunVersion || "latest";
   const runner = harness?.ci?.runner || "ubuntu-latest";
   const branches = harness?.ci?.branches || ["main"];
-  const branchList = branches.map((b: string) => `      - ${b}`).join("\n");
+  // Branch patterns are globs: a bare `*` is a YAML alias indicator and `*-dev`
+  // an unresolved alias, so emitting them unquoted produces a workflow file
+  // GitHub Actions refuses to parse. JSON.stringify yields a YAML-compatible
+  // double-quoted scalar with the right escaping.
+  const branchList = branches.map((b: string) => `      - ${JSON.stringify(String(b))}`).join("\n");
+  const runsOn = JSON.stringify(String(runner));
 
   // The typecheck step used to be emitted unconditionally as `bunx tsc --noEmit`.
   // Without a tsconfig.json tsc prints its help text and exits 1, so every
@@ -1278,7 +1299,7 @@ export function createCiWorkflows(root: string, actions: string[]): void {
       ? `\n      - run: bun scripts/typecheck.ts`
       : `\n      - run: bunx tsc --noEmit`;
 
-  const ciYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
+  const ciYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI
 
 on:
@@ -1291,7 +1312,7 @@ ${branchList}
 
 jobs:
   test:
-    runs-on: ${runner}
+    runs-on: ${runsOn}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -1301,7 +1322,7 @@ jobs:
       - run: bun test${typecheckStep}
 `;
 
-  const gatesYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
+  const gatesYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: Gates
 
 on:
@@ -1314,7 +1335,7 @@ ${branchList}
 
 jobs:
   gates:
-    runs-on: ${runner}
+    runs-on: ${runsOn}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

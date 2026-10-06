@@ -331,6 +331,117 @@ describe("#91: docs-routing counts include nested documents", () => {
   });
 });
 
+describe("#70: scanner resolves harnessConfig from the .claude/rungate directory", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `scanner-dirconfig-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** Project whose ONLY harness config is the .claude/rungate/ directory form. */
+  function writeDirectoryConfig(consumers: string[]) {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "dir-config-proj" }));
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    // A file the src/ consumer heuristic WOULD pick up if the config were ignored
+    writeFileSync(join(tmpDir, "src", "api-routes.ts"), "app.get('/x', () => {});\n");
+    const dir = join(tmpDir, ".claude", "rungate");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "config.json"), JSON.stringify({
+      project: "dir-config-proj",
+      repo: "owner/dir-config-proj",
+      consumers,
+    }));
+    writeFileSync(join(dir, "roles.json"), JSON.stringify({
+      marcus: { description: "Engineer", tools: "[Bash, Read]", model: "opus" },
+    }));
+  }
+
+  // --- AC-1 ---
+
+  test("AC-1: scanProject returns non-null harnessConfig for directory-only config", () => {
+    writeDirectoryConfig(["alpha"]);
+    expect(existsSync(join(tmpDir, ".claude", "rungate.json"))).toBe(false);
+
+    const scan = scanProject(tmpDir);
+    expect(scan.harnessConfig).not.toBeNull();
+    expect(scan.harnessConfig!.project).toBe("dir-config-proj");
+    expect(scan.harnessConfig!.repo).toBe("owner/dir-config-proj");
+    // roles.json merges into the same shape as the monolith
+    expect(scan.agentMeta.marcus).toBeDefined();
+    expect(scan.agentMeta.marcus.model).toBe("opus");
+  });
+
+  // --- AC-2 ---
+
+  test("AC-2: detectConsumers reads directory-form consumers, not the src/ heuristic", () => {
+    writeDirectoryConfig(["project-a", "project-b"]);
+
+    const scan = scanProject(tmpDir);
+    expect(scan.consumers).toEqual(["project-a", "project-b"]);
+    expect(scan.consumers).not.toContain("api");
+  });
+
+  // --- AC-3 ---
+
+  test("AC-3: key-files entry names the rungate directory, not .claude/rungate.json", () => {
+    writeDirectoryConfig(["alpha"]);
+
+    const scan = scanProject(tmpDir);
+    const files = scan.keyFiles.map(kf => kf.file);
+    expect(files).toContain(".claude/rungate/");
+    expect(files).not.toContain(".claude/rungate.json");
+
+    const entry = scan.keyFiles.find(kf => kf.file === ".claude/rungate/")!;
+    expect(entry.what).toContain("Harness project config");
+  });
+
+  test("AC-3: key-files entry names the directory for monolith projects too", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "mono-keys-proj" }));
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+    writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({ project: "mono-keys-proj" }));
+
+    const files = scanProject(tmpDir).keyFiles.map(kf => kf.file);
+    expect(files).toContain(".claude/rungate/");
+    expect(files).not.toContain(".claude/rungate.json");
+  });
+
+  // --- AC-4: no regression for monolith-only projects ---
+
+  test("AC-4: scanProject still resolves harnessConfig for a monolith-only project", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "mono-proj" }));
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+    writeFileSync(join(tmpDir, "src", "api-routes.ts"), "app.get('/x', () => {});\n");
+    mkdirSync(join(tmpDir, ".claude"), { recursive: true });
+    writeFileSync(join(tmpDir, ".claude", "rungate.json"), JSON.stringify({
+      project: "mono-proj",
+      repo: "owner/mono-proj",
+      consumers: ["legacy-a"],
+      roles: { quinn: { description: "QA", tools: "[Bash]", model: "sonnet" } },
+    }));
+    expect(existsSync(join(tmpDir, ".claude", "rungate"))).toBe(false);
+
+    const scan = scanProject(tmpDir);
+    expect(scan.harnessConfig).not.toBeNull();
+    expect(scan.harnessConfig!.project).toBe("mono-proj");
+    expect(scan.consumers).toEqual(["legacy-a"]);
+    expect(scan.agentMeta.quinn).toBeDefined();
+  });
+
+  test("AC-4: scanProject returns null harnessConfig when no config exists at all", () => {
+    writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "no-config-proj" }));
+    mkdirSync(join(tmpDir, "src"), { recursive: true });
+
+    const scan = scanProject(tmpDir);
+    expect(scan.harnessConfig).toBeNull();
+  });
+});
+
 describe("AC-3: Scanner import isolation", () => {
   test("scanner.ts imports no generation modules", () => {
     const content = readFileSync(join(ROOT, "lib/scanner.ts"), "utf-8");
