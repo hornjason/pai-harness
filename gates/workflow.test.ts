@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
 import { execSync } from "child_process";
+import { createHash } from "crypto";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
 import { extractTestFailureCount, subtractTestBaseline } from "./gate-executor";
@@ -1026,20 +1027,94 @@ describe("ship checks", () => {
 });
 
 // ═══ PROMPT IMMUTABILITY (#1409, ADR-009) ════════════════════════════
+//
+// This asserted the macOS `uchg` flag via `ls -lO`, and was broken in both
+// directions at once (#92).
+//
+// It failed OPEN on CI, which is the only place it runs. `ls -lO` is BSD; the
+// workflows are ubuntu-latest, where GNU coreutils rejects -O and exits 2. The
+// check read `if (result.ok && !output.includes("uchg"))`, so a non-zero exit
+// skipped the body, the unlocked list stayed empty, and the test passed. Every
+// green CI run in this repo's history passed it without evaluating a file.
+//
+// It failed CLOSED anywhere it would have worked. chflags is filesystem
+// metadata and git does not track it, so a fresh clone or `git worktree add`
+// starts with no flags — confirmed by a second session seeing 0 of 3 flagged
+// in its worktree against 3 of 3 in the primary checkout at the same commit.
+// It failed hardest for a developer doing what the harness tells them to do.
+//
+// And the remedy it printed, `gates/lock-prompts.sh`, does not exist. Nothing
+// in the repo calls chflags at all: the check asserted a property the project
+// had no mechanism to establish.
+//
+// What it actually wants is that the prompts have not been modified. That is
+// content, git already tracks it, and it means the same thing on every
+// platform and in every checkout.
+// A diff against HEAD alone is not enough, and it is worth being explicit
+// about why rather than shipping the obvious fix. In CI the working tree IS
+// HEAD, so `git diff HEAD` is empty by construction and the check could never
+// fail in the one place it runs — the same vacuity, rebuilt. The committed
+// checksum baseline is what makes it meaningful there: editing a prompt
+// without deliberately updating gates/prompts.sha256 fails on CI, and updating
+// the baseline is a reviewable line in the diff. That is also the mechanism
+// the old check never had — a way to establish the property, not just assert
+// it.
+//
+// Both checks are kept. The baseline catches committed drift anywhere; the
+// HEAD diff catches local tampering before it is ever committed.
 describe("prompt immutability", () => {
-  test("prompt-immutability: prompt files have uchg flag set", () => {
-    const promptDir = join(__dirname, "prompts");
+  const promptDir = join(__dirname, "prompts");
+  const baselinePath = join(__dirname, "prompts.sha256");
+
+  test("prompt-immutability: prompt files match the committed checksum baseline", () => {
+    if (!existsSync(promptDir)) return;
+    const prompts = readdirSync(promptDir).filter(f => f.endsWith(".md")).sort();
+    if (prompts.length === 0) return;
+
+    expect(existsSync(baselinePath), `missing ${baselinePath} — the baseline IS the immutability record`).toBe(true);
+
+    const baseline = new Map<string, string>();
+    for (const line of readFileSync(baselinePath, "utf-8").split("\n")) {
+      const m = line.trim().match(/^([0-9a-f]{64})\s+(.+)$/);
+      if (m) baseline.set(m[2], m[1]);
+    }
+    // A baseline that parsed to nothing would make every comparison below
+    // vacuous, so reject it rather than report success.
+    expect(baseline.size, `${baselinePath} contains no usable checksum lines`).toBeGreaterThan(0);
+
+    const drifted: string[] = [];
+    for (const f of prompts) {
+      const want = baseline.get(f);
+      const got = createHash("sha256").update(readFileSync(join(promptDir, f))).digest("hex");
+      if (want !== got) drifted.push(f);
+    }
+    // A prompt added without a baseline entry is drift too — otherwise the
+    // way to evade the check is to add a file rather than edit one.
+    for (const f of baseline.keys()) {
+      if (!prompts.includes(f)) drifted.push(`${f} (in baseline, missing on disk)`);
+    }
+
+    expect(
+      drifted,
+      `Prompt files are immutable (#1409, ADR-009). If a change is intended, update gates/prompts.sha256 in the same commit so it shows up in review.`,
+    ).toEqual([]);
+  });
+
+  test("prompt-immutability: prompt files are unmodified against HEAD", () => {
     if (!existsSync(promptDir)) return;
     const prompts = readdirSync(promptDir).filter(f => f.endsWith(".md"));
     if (prompts.length === 0) return;
-    const unlocked: string[] = [];
-    for (const f of prompts) {
-      const result = exec(`ls -lO "${join(promptDir, f)}"`);
-      if (result.ok && !result.output.includes("uchg")) {
-        unlocked.push(f);
-      }
-    }
-    expect(unlocked, "Prompt files must have uchg flag — run gates/lock-prompts.sh (#1409, ADR-009)").toEqual([]);
+
+    const repoRoot = join(__dirname, "..");
+    const rel = "gates/prompts";
+    const result = exec(`git -C "${repoRoot}" diff --name-only HEAD -- "${rel}"`);
+
+    // Fail closed. The predecessor treated a failed command as "nothing to
+    // report", which is precisely how it passed vacuously for its whole life.
+    expect(result.ok, `could not diff ${rel} against HEAD: ${result.output}`).toBe(true);
+
+    const modified = result.output.split("\n").map(l => l.trim()).filter(Boolean);
+    expect(modified, `Prompt files are immutable (#1409, ADR-009) — revert with: git checkout HEAD -- ${rel}`).toEqual([]);
   });
 });
 
