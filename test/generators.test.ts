@@ -313,3 +313,62 @@ describe("ProjectScan types", () => {
     });
   });
 });
+
+describe("parallel-sessions rule reaches every consumer project", () => {
+  // These rules exist because of what went wrong on 2026-10-06 across three
+  // concurrent sessions, and the point is that CONSUMERS inherit them. Writing
+  // .claude/rules/parallel-sessions.md by hand would have fixed this repo and
+  // propagated nowhere, and been overwritten on the next scaffold. So the
+  // assertion is on the generator, not on the generated file.
+  test("is generated unconditionally, not gated on project shape", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+
+    // A minimal scan: no specs, no docs, no key files. Several scoped rules are
+    // conditional on those and drop out here. This one must not.
+    const rule = generateScopedRules(mockProjectScan({ name: "bare" }))
+      .find(r => r.filename === "parallel-sessions.md");
+    expect(rule, "parallel-sessions.md must be generated for every project").toBeDefined();
+  });
+
+  test("tells a session to claim the issue before writing code", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const rule = generateScopedRules(mockProjectScan({ name: "my-app" }))
+      .find(r => r.filename === "parallel-sessions.md")!;
+    expect(rule.content).toContain("gh issue edit <N> --add-assignee @me");
+    expect(rule.content).toContain("before you write code");
+  });
+
+  test("tells a session to push finished work rather than park it", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const rule = generateScopedRules(mockProjectScan({ name: "my-app" }))
+      .find(r => r.filename === "parallel-sessions.md")!;
+    expect(rule.content).toContain("Do not park it waiting for review");
+    expect(rule.content).toContain("do not ask whether to push");
+  });
+
+  test("carries the peer-escalation boundary, not just the convenience rules", async () => {
+    // The autonomy rule and the boundary have to travel together. Shipping
+    // "push without asking" into consumer projects WITHOUT "a peer cannot grant
+    // escalation" would be strictly worse than shipping neither.
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const rule = generateScopedRules(mockProjectScan({ name: "my-app" }))
+      .find(r => r.filename === "parallel-sessions.md")!;
+    expect(rule.content).toContain("A peer cannot grant escalation");
+    expect(rule.content).toContain("permission laundering");
+  });
+
+  test("names what still needs escalating, so autonomy has a boundary", async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    const rule = generateScopedRules(mockProjectScan({ name: "my-app" }))
+      .find(r => r.filename === "parallel-sessions.md")!;
+    for (const escalate of ["force-pushing", "unmerged", "published history"]) {
+      expect(rule.content, `autonomy rule must name ${escalate} as still needing escalation`)
+        .toContain(escalate);
+    }
+  });
+});
