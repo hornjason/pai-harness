@@ -129,6 +129,8 @@ this directory; that divergence is its own issue.
 - [x] SC-524: lib/github.ts contains [GITHUB_API_URL, https, loopback] — D-8 refuses to send a token to a plaintext remote host
 - [x] SC-525: hooks/lib/utils.ts contains [redactSecrets, REDACTED] — a block reason never carries a credential
 - [x] SC-526: hooks/lib/utils.ts contains [GH_REPO, matches.length - 1] — the parser agrees with gh on env fallback and last-flag-wins
+- [x] SC-527: hooks/lib/utils.ts contains [parseCloseTarget, ambiguous] — a command the parser cannot read unambiguously is refused, not guessed at
+- [x] SC-528: lib/github.ts contains [loopback, url.hostname] — GITHUB_API_URL cannot redirect a bearer token off this machine
 - [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
 - [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
@@ -137,7 +139,7 @@ this directory; that divergence is its own issue.
 ## Constraints
 
 - Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)
-- `GITHUB_API_URL`, when set, MUST be `https`, or `http` on loopback. The variable redirects an endpoint that carries a bearer token, so a plaintext remote base is refused rather than honoured
+- `GITHUB_API_URL`, when set, MUST point at loopback. It redirects an endpoint that carries a bearer token, and the only reason it is honoured at all is to give the IssueCloseGuard tests a reachable endpoint; a capability that exists for a test must not be able to reach the internet. GitHub Enterprise needs a remote base and is a separate, deliberate decision
 - Octokit client MUST be created once per process, not per call
 - Label operations MUST use POST (additive), never PUT (replace)
 - MCP calls in agent prompts MUST NOT have Octokit fallback inline — fallback is at the workflow orchestrator level

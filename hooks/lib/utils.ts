@@ -108,6 +108,69 @@ export function extractIssueNumber(text: string): string | undefined {
  * `--repo unprotected/x --repo protected/y` be vetted against `unprotected/x`
  * and closed in `protected/y`.
  */
+export type CloseTarget =
+  | { kind: "none" }
+  | { kind: "ambiguous"; reason: string }
+  | { kind: "one"; issue: string; repo?: string };
+
+/**
+ * What a command closes, or a refusal to guess.
+ *
+ * Inferring a `gh` invocation by regex over an arbitrary shell string is a
+ * parser differential by construction: wherever this disagrees with the shell
+ * and with `gh`, the guard vets one issue's labels while another issue gets
+ * closed. Three rounds of security review found three such disagreements in
+ * three successive versions of this parser, which is the signal to stop
+ * tightening the pattern and change what the pattern is FOR.
+ *
+ * So the parse no longer decides *what to check*. It decides *whether the
+ * command is simple enough to check at all*. Anything with more than one
+ * close, a command separator, a substitution, or a flag value this cannot
+ * read literally is reported ambiguous, and the caller blocks. Detection
+ * stays deliberately over-broad because its failure mode is now a refusal
+ * rather than a wave-through.
+ *
+ * The bypass that forced this: `closeMatch` took the FIRST issue number while
+ * the repo scan took the LAST slug, so
+ *
+ *     gh issue close 1 --repo unprotected/x; gh issue close 99 --repo protected/y
+ *
+ * vetted issue 1 against protected/y and closed 99 in it. No amount of
+ * regex care fixes that class; refusing to answer does.
+ */
+export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = process.env): CloseTarget {
+  const closes = [...command.matchAll(/\bgh\b[^\n;|&]*?\bissue\b[^\n;|&]*?\bclose\b\s+['"]?(\d+)/g)];
+  if (closes.length === 0) return { kind: "none" };
+  if (closes.length > 1) {
+    return { kind: "ambiguous", reason: `${closes.length} issue closes in one command — run them separately so each can be checked` };
+  }
+
+  // Indirection this cannot resolve statically. `gh` sees the expanded text;
+  // we only ever see the source, so any of these means our view and the
+  // shell's view can differ.
+  for (const [pattern, what] of [
+    [/\$\(|`/, "a command substitution"],
+    [/\beval\b/, "an eval"],
+    [/[;|&]|\n/, "a command separator"],
+  ] as const) {
+    if (pattern.test(command)) {
+      return { kind: "ambiguous", reason: `${what} makes the target unreadable — run the close on its own` };
+    }
+  }
+
+  const issue = closes[0][1];
+
+  // A flag is present but its value is not a literal slug (`--repo "$REPO"`).
+  // Falling back to a default here would vet an entirely different repo.
+  const flagPresent = /(?:--repo|-R)[\s=]/.test(command);
+  const repo = parseRepoSlug(command, env);
+  if (flagPresent && !repo) {
+    return { kind: "ambiguous", reason: "the --repo value is not a literal owner/name — pass it literally so it can be checked" };
+  }
+
+  return { kind: "one", issue, repo };
+}
+
 export function parseRepoSlug(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   // Global, and keep the last — `gh` lets a later flag override an earlier one.
   const matches = [...command.matchAll(/(?:--repo|-R)[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/g)];

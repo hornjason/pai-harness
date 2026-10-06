@@ -32,7 +32,7 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parseRepoSlug, redactSecrets } from "../hooks/lib/utils";
+import { parseRepoSlug, parseCloseTarget, redactSecrets } from "../hooks/lib/utils";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const HOOK = join(REPO_ROOT, "hooks", "IssueCloseGuard.hook.ts");
@@ -219,6 +219,73 @@ describe("#140: the repo slug is parsed precisely enough to act on", () => {
   test("a legitimate name that merely contains dots still parses", () => {
     // The guard must reject `..` as a whole segment, not punish dots.
     expect(parseRepoSlug(`gh issue close 23 --repo my.org/v1.2.3-repo`, {})).toBe("my.org/v1.2.3-repo");
+  });
+});
+
+describe("#140: a command the parser cannot read unambiguously is refused", () => {
+  // Third round of security review found a third parser differential, which
+  // is the signal to stop tightening the regex. The parse now reports whether
+  // the command is simple enough to vet; anything else is a refusal. These
+  // are the shapes where our view and the shell's can diverge.
+  test("two closes in one command — the bypass that forced this", () => {
+    // `closeMatch` took the FIRST issue, the repo scan took the LAST slug, so
+    // this vetted issue 1's labels against protected/y and then closed 99.
+    const t = parseCloseTarget(
+      `gh issue close 1 --repo unprotected/x; gh issue close 99 --repo protected/y`,
+      {},
+    );
+    expect(t.kind, "the guard paired one issue with another's repo").toBe("ambiguous");
+  });
+
+  test.each([
+    ["a command substitution", `gh issue close 23 --repo $(cat repo.txt)`],
+    ["backticks", "gh issue close 23 --repo `cat repo.txt`"],
+    ["an eval", `eval "gh issue close 23 --repo a/b"`],
+    ["a chained command", `gh issue close 23 --repo a/b && rm -rf x`],
+    ["a pipe", `gh issue close 23 --repo a/b | tee log`],
+    ["a newline-separated second command", `gh issue close 23 --repo a/b\necho done`],
+  ])("%s is refused rather than guessed at", (_label, command) => {
+    expect(parseCloseTarget(command, {}).kind).toBe("ambiguous");
+  });
+
+  test("two closes with no separator between them", () => {
+    // The `;` example above does not actually exercise the count — the
+    // separator check catches it first, and a mutation disabling the count
+    // survived. This has no separator at all: the second close lives inside
+    // the comment text, which is a perfectly ordinary thing to write and
+    // which the close-matching regex sees as a second invocation.
+    const t = parseCloseTarget(
+      `gh issue close 1 --repo a/b --comment "supersedes gh issue close 99"`,
+      {},
+    );
+    expect(t.kind, "two closes were collapsed into one target").toBe("ambiguous");
+  });
+
+  test("a --repo that is a variable is refused, not silently defaulted", () => {
+    // Falling back to the caller's default here would vet a completely
+    // different repository than the one gh resolves at runtime.
+    const t = parseCloseTarget(`gh issue close 23 --repo "$REPO"`, {});
+    expect(t.kind).toBe("ambiguous");
+  });
+
+  test("a plain, readable close is still handled, not refused", () => {
+    // The refusals must not swallow the ordinary case — a guard that blocks
+    // everything gets switched off.
+    expect(parseCloseTarget(`gh issue close 23 --repo owner/name`, {})).toEqual({
+      kind: "one",
+      issue: "23",
+      repo: "owner/name",
+    });
+  });
+
+  test("a command with no close at all is left alone", () => {
+    expect(parseCloseTarget(`git status --porcelain`, {}).kind).toBe("none");
+  });
+
+  test("the reason names what to do about it", () => {
+    const t = parseCloseTarget(`gh issue close 1 --repo a/b; gh issue close 2 --repo c/d`, {});
+    expect(t.kind).toBe("ambiguous");
+    if (t.kind === "ambiguous") expect(t.reason).toMatch(/separately|on its own|literally/);
   });
 });
 

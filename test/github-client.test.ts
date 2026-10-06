@@ -192,21 +192,29 @@ describe("lib/github.ts", () => {
 
         afterEach(() => setEnv({ ...saved, GITHUB_API_URL: undefined }));
 
-        test("https to any host is accepted", () => {
-          expect(withBase("https://ghe.example.com/api/v3")).not.toThrow();
-          expect(lastOctokitOptions?.baseUrl).toBe("https://ghe.example.com/api/v3");
-        });
-
-        test("http on loopback is accepted — it cannot leave the machine", () => {
-          expect(withBase("http://127.0.0.1:1")).not.toThrow();
-          expect(lastOctokitOptions?.baseUrl).toBe("http://127.0.0.1:1");
+        test.each([
+          ["http://127.0.0.1:1"],
+          ["http://localhost:8080"],
+          ["https://127.0.0.1:9"],
+        ])("loopback %s is accepted — it cannot leave the machine", base => {
+          expect(withBase(base)).not.toThrow();
+          expect(lastOctokitOptions?.baseUrl).toBe(base);
         });
 
         test.each([
-          ["a remote host over plaintext", "http://evil.example.com"],
-          ["a bare IP over plaintext", "http://203.0.113.9:8080"],
+          ["plaintext to a remote host", "http://evil.example.com"],
+          ["a bare remote IP", "http://203.0.113.9:8080"],
+          // The one that matters most, and the one an earlier version of this
+          // allowed: https does not make exfiltration safe, it makes it tidy.
+          ["https to a remote host", "https://evil.example.com/api/v3"],
+          ["a GHES-shaped host, which is a separate decision", "https://ghe.example.com/api/v3"],
+          // `127.0.0.1.evil.com` and `localhost.evil.com` resolve remotely.
+          ["a hostname that merely starts with a loopback name", "http://127.0.0.1.evil.com"],
+          ["a hostname that merely contains localhost", "https://localhost.evil.com"],
+          // Userinfo trick: the real host is after the @.
+          ["a loopback name in the userinfo", "https://127.0.0.1@evil.com"],
         ])("%s is refused", (_label, base) => {
-          expect(withBase(base)).toThrow(/https/);
+          expect(withBase(base)).toThrow(/loopback/);
         });
 
         test("a malformed value is refused rather than silently ignored", () => {
