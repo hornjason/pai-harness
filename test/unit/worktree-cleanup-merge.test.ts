@@ -38,7 +38,9 @@ import { repoRootFrom } from "../../lib/paths";
 let root: string;
 
 function git(cwd: string, ...args: string[]) {
-  const r = spawnSync("git", args, { cwd, encoding: "utf-8" });
+  // -C explicitly, not just cwd: #84 requires every git-identity write to name
+  // its target directory, so a stray run can never touch the real repo.
+  const r = spawnSync("git", ["-C", cwd, ...args], { cwd, encoding: "utf-8" });
   if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
   return r.stdout;
 }
@@ -49,7 +51,7 @@ function git(cwd: string, ...args: string[]) {
  */
 function initRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "wt-cleanup-"));
-  git(dir, "init", "-q", "-b", "main");
+  spawnSync("git", ["init", "-q", "-b", "main", dir], { encoding: "utf-8" });
   git(dir, "config", "user.email", "test@example.invalid");
   git(dir, "config", "user.name", "Test");
   writeFileSync(join(dir, "README.md"), "base\n");

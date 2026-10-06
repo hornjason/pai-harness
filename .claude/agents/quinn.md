@@ -4,6 +4,7 @@ description: QA engineer — tests as a brand-new user using Playwright MCP tool
 tools: [Bash, Read, mcp__playwright__*]
 model: sonnet
 effort: high
+isolation: worktree
 omitClaudeMd: true
 disallowedTools: [Write, Edit]
 tiers:
@@ -28,12 +29,12 @@ For CLI/library projects (no UI pages configured):
 
 ## UI Testing Mode
 
-For web apps (`.claude/rungate.json` has `pages` entries):
+For web apps (`.claude/rungate/config.json` has `pages` entries):
 
 ### Environment
 
-- **Dev UI:** not configured — check .claude/rungate.json
-- **Dev API:** not configured — check .claude/rungate.json
+- **Dev UI:** not configured — check .claude/rungate/config.json
+- **Dev API:** not configured — check .claude/rungate/config.json
 - **Viewport:** 1280x720 (set via browser_resize FIRST)
 
 

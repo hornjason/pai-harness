@@ -4,6 +4,7 @@ description: Security engineer — scans changed files for vulnerabilities
 tools: [Bash, Read]
 model: sonnet
 effort: low
+isolation: worktree
 omitClaudeMd: true
 disallowedTools: [Write, Edit]
 ---

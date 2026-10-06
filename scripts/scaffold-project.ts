@@ -14,6 +14,7 @@ import {
   safeDir,
   safeWrite,
   generateAgentsMdContent,
+  refreshScopedRulesStep,
   refreshAgentsMd,
   updateSpecsTable,
   injectEnvironmentSection,
@@ -152,11 +153,6 @@ What does this workflow produce?
     safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
   }
 
-  // Phase 1: Code-specific generation
-  if (projectType === "code") {
-    generateCodeMapStep(projectPath, actions);
-  }
-
   // Phase 1.5: Harness config + briefs for ALL project types
   generateOrAuditProjectHarness(projectPath, actions);
   injectEnvironmentSection(projectPath, actions);
@@ -171,6 +167,13 @@ What does this workflow produce?
   createCiWorkflows(projectPath, actions);
   createGitHooks(projectPath, actions);
   deployHooksToConsumers(projectPath, actions);
+
+  // Phase 3.5: steps that DESCRIBE the project run last, so they describe the tree this run left (#123).
+  refreshScopedRulesStep(projectPath, projectType, actions);
+  if (projectType === "code") {
+    generateCodeMapStep(projectPath, actions);
+  }
+
   postScaffoldCommit(projectPath, actions);
 } else {
   // Dry-run: report gaps for items that --fix would generate
