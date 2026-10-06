@@ -14,22 +14,18 @@ The generalisable lesson from #71: when local and CI disagree, do not triage the
 Suite: 25/25 SCs done.
 
 **Next priorities:**
-1. P0: #84 git identity — confirm nothing re-adds the local user override. Source is unproven; the regression test (test/unit/git-identity-isolation.test.ts) asserts the state AND bans untargeted `git config user.*`, but neither proves what wrote it originally.
-2. P1: #81 Parallel ship cannot commit — all 11 agents succeeded and the commit phase failed because the file list spans N worktrees but is rebased against only one. Still the autonomy blocker: the work happens and cannot land.
-3. P1: #85 pre-push against a clean checkout. Needs a decision: symlink node_modules (fast, but tests the pushed commit against the working tree's deps) vs bun install in the worktree (correct, slow enough that people bypass the hook).
-4. P1: #77 ship.js assumes agent worktrees live under projectRoot; Claude Code creates them under the workflow script repo.
-5. P1: #73 DIR-L29 budget is a monotonic per-session counter that never decrements. #82 fixed the DETECTION half; the semantics half is open. With subagents sharing the parent id, one pipeline still locks itself out after two suites.
-6. P1: #74 A full-suite slot leaks for a full TTL when a DIFFERENT PreToolUse hook blocks the command — PostToolUse never fires for a tool that never ran. Observed with COMP-7.
-7. P2: #65 typecheck ratchet is at 76, down from 88. lib/, scripts/ and hooks/ are now at ZERO diagnostics and must stay there — any new error in those three trees is a regression, not debt. All 76 remaining live in test/ (74) and gates/ (2), and 53 of them are the single bun-types test.todo defect that clears on a types upgrade. Only ~23 are real work.
-8. P2: #83 port the two removed test files to the PAI repo, where the code they test lives.
-9. P2: the vacuous-pass cluster found while sweeping for #71 — tests that report green in CI while asserting nothing: test/structure.test.ts ST-2/ST-2b/ST-3 (assert files are ABSENT from ~/.claude, trivially true in CI), gates/e2e-smoke.test.ts:208-231 (early-return and a bare catch{}), test/schema-canary.test.ts:14 (early-returns when another repo is missing). Same defect class as #80.
-10. P2: #68 Worktree cleanup has never removed a worktree — 39 stale, 314 MB, and they caused the Gates regression by poisoning the conformity reference index.
-11. P2: #70 / #75 Scaffold config divergence — jhorn-5c owns. Phase 1 complete and unpushed, waiting on Jason.
-12. P2: #79 Ship workflow Phase 2 deferral writes an issue body that contradicts the ACs it defers.
-13. P3: #55 / #59 / #60 / #61 pipeline testing inner loop; #54 dead code cleanup; #72 consumer tsconfig (now partly addressed — the generator no longer emits a typecheck step for consumers without one).
-14. CLOSE AS STALE: #66 (parallel dispatch is in main) and #69 (the remaining require( is comment text describing the old bug). Both verified fixed in origin/main.
-15. WATCH: DRIFT-2 and HYGIENE-3 ratchet lists in .claude/conformity-allowlists.json, plus .claude/typecheck-baseline.json (now 76, was 88). All three must shrink. A baseline that never moves is just a permanent exemption with extra steps.
-16. WATCH: SC-478 / SC-479 / SC-511 are source-text existence assertions still marked done. They certify that code was authored, never that it was adopted.
+1. P0: #136 ship workflow pushes merged work directly to main with no PR and no pre-merge CI (ship.js:1842). Blocks consumer-readiness — everything else costs a run, this one writes to the default branch unreviewed.
+2. P0: #137 finalize/record-env-and-pr cannot reach mcp__github__* in workflow subagents, so runs leave no trace on the tracker and never open a PR. Half of why #136 goes unnoticed.
+3. P0: #105 harnessRoot() resolves to whichever checkout loaded the code, so gates can execute against another session's dirty tree. Mitigation (HARNESS_ROOT) exists but requires knowing to opt in. NOT attempted this session — making it strict could wedge an unattended run (premortem 5).
+4. P1: security review of ce842a73 — gate-coverage-gap and validator-consumer-differential (lib/scaffold/steps.ts), supply-chain (scripts/scaffold-project.ts). The validator one decides whether consumer tsconfig enforcement lives in #72 or #65 SC-4.
+5. P1: #126 Quinn half still unproven — Quinn only runs at STANDARD+, and a CLI project with empty pages is always LIGHT, so it cannot be proved on this repo.
+6. P1: #116 compliance-history records verdicts without rule text, evidence or category.
+7. P2: safeGitAddCommand/relativizePaths/buildSafeGitAdd in ship.js now have no callers; removal cascades into 4 test files.
+8. P2: scripts/scaffold-project.ts 200-line cap is being satisfied by collapsing imports — the cap is now shaping formatting.
+9. P3: #55 / #59 / #60 / #61 pipeline testing inner loop; #54 dead code cleanup; #72 consumer tsconfig (now partly addressed — the generator no longer emits a typecheck step for consumers without one).
+10. CLOSE AS STALE: #66 (parallel dispatch is in main) and #69 (the remaining require( is comment text describing the old bug). Both verified fixed in origin/main.
+11. WATCH: DRIFT-2 and HYGIENE-3 ratchet lists in .claude/conformity-allowlists.json, plus .claude/typecheck-baseline.json (now 76, was 88). All three must shrink. A baseline that never moves is just a permanent exemption with extra steps.
+12. WATCH: SC-478 / SC-479 / SC-511 are source-text existence assertions still marked done. They certify that code was authored, never that it was adopted.
 
 ## ✅ Phase 0+1 — Scaffold + Knowledge Extraction (COMPLETE)
 
