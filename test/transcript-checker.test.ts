@@ -27,6 +27,7 @@ function makeDirective(overrides: Partial<Directive> & { type: Directive["type"]
   return {
     text: overrides.text || "test directive",
     type: overrides.type,
+    category: overrides.category || "quality",
     line: overrides.line || 1,
     section: overrides.section || "Test",
     target: overrides.target,

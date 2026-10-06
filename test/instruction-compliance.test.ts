@@ -97,4 +97,10 @@ describe("Instruction Compliance — Layer 1 (Template Quality)", () => {
       console.log(`   ${q.padStart(6)} ${f.file} (agnix:${f.agnixFindings} rr:${f.reporailsFindings} high:${high})`);
     }
   });
-}, { timeout: 300_000 });
+});
+// The third argument here used to be `{ timeout: 300_000 }`. `describe` takes
+// no options in bun:test — it was silently discarded, so the suite never had
+// the 300s it looked like it had. The slow work is the agnix/reporails run in
+// `beforeAll`, which carries its own 240s timeout (above) and is the only
+// place a timeout applies. Removed rather than "fixed" because there is
+// nothing left for it to cover. (TS2554, surfaced by #65.)

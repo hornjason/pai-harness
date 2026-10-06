@@ -114,26 +114,24 @@ governs: Test spec
   });
 
   test("SC-364: generator determinism — generateAgentBriefs produces identical output", () => {
-    // Setup: create tmp directory for agent briefs output
-    const briefsDir1 = join(tmpRoot, "briefs1");
-    const briefsDir2 = join(tmpRoot, "briefs2");
-    mkdirSync(briefsDir1, { recursive: true });
-    mkdirSync(briefsDir2, { recursive: true });
-
-    // Call generator twice with same input
+    // This asserted nothing until #65. It called
+    // `generateAgentBriefs(scan, briefsDir, actions)` and compared the two
+    // `actions` arrays — but the generator takes ONE argument, writes no files
+    // and returns the briefs. The extra arguments were discarded, both arrays
+    // stayed empty, and `expect([]).toEqual([])` passed however
+    // non-deterministic the generator was. The type error (TS2554, "Expected 1
+    // arguments, but got 3") was the only thing pointing at it, and the type
+    // check had never run.
+    //
+    // Now compares the real return value, and fails if there is nothing in it
+    // to compare — an empty result must not read as determinism either.
     const scan = mockProjectScan();
-    const actions1: string[] = [];
-    const actions2: string[] = [];
 
-    generateAgentBriefs(scan, briefsDir1, actions1);
-    generateAgentBriefs(scan, briefsDir2, actions2);
+    const briefs1 = generateAgentBriefs(scan);
+    const briefs2 = generateAgentBriefs(scan);
 
-    // Verify action logs are identical
-    expect(actions1).toEqual(actions2);
-
-    // Verify generated files are identical (if any were created)
-    // Note: generateAgentBriefs may not create files with mockProjectScan,
-    // but actions should still be deterministic
+    expect(Object.keys(briefs1).length).toBeGreaterThan(0);
+    expect(briefs1).toEqual(briefs2);
   });
 
   test("SC-364: scanner stability — scanProject produces identical output", () => {

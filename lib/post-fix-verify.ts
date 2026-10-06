@@ -7,6 +7,8 @@
  * Ref: Ship-and-heal post-fix verification (PROJECT-STATE P1)
  */
 
+import { spawnSync } from 'child_process';
+
 export interface PostFixResult {
   /** Overall assessment */
   status: 'DURABLE' | 'WARN_NON_DURABLE' | 'UNKNOWN';
@@ -138,8 +140,6 @@ export function verifyPostFix(changedFiles: string[]): PostFixResult {
  * @returns Array of file paths changed
  */
 export function getChangedFiles(cwd: string, baseRef: string = 'HEAD'): string[] {
-  const { spawnSync } = require('child_process');
-
   // Get changed files since baseRef (unstaged + staged)
   const result = spawnSync('git', ['diff', '--name-only', baseRef], {
     cwd,

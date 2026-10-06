@@ -15,7 +15,7 @@ import type { Directive } from "../lib/directive-extractor.js";
 
 function makeResult(status: ComplianceResult["status"], line = 1, section = "Test"): ComplianceResult {
   return {
-    directive: { text: "test", type: "read", line, section, target: "file.md" },
+    directive: { text: "test", type: "read", category: "quality", line, section, target: "file.md" },
     status,
     evidence: "test evidence",
   };
@@ -83,7 +83,7 @@ describe("hill-climb", () => {
   test("generateRecommendations identifies position issues for deep directives", () => {
     const results: ComplianceResult[] = [
       {
-        directive: { text: "Read file.md", type: "read", line: 50, section: "Reference", target: "file.md" },
+        directive: { text: "Read file.md", type: "read", category: "quality", line: 50, section: "Reference", target: "file.md" },
         status: "IGNORED",
         evidence: "Not read",
       },
@@ -96,7 +96,7 @@ describe("hill-climb", () => {
   test("generateRecommendations identifies weak language", () => {
     const results: ComplianceResult[] = [
       {
-        directive: { text: "Read file.md", type: "read", line: 5, section: "Reference", target: "file.md" },
+        directive: { text: "Read file.md", type: "read", category: "quality", line: 5, section: "Reference", target: "file.md" },
         status: "IGNORED",
         evidence: "Not read",
       },

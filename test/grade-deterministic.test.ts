@@ -165,7 +165,7 @@ describe("grade-deterministic", () => {
       // Every directive-derived rule should have a category
       for (const rule of directiveRules) {
         expect(rule.category).toBeDefined();
-        expect(["quality", "process"]).toContain(rule.category);
+        expect(rule.category).toBeOneOf(["quality", "process"]);
       }
     });
 
@@ -190,7 +190,7 @@ describe("grade-deterministic", () => {
       expect(rulesWithCategory.length).toBeGreaterThan(0);
 
       for (const rule of rulesWithCategory) {
-        expect(["quality", "process"]).toContain(rule.category);
+        expect(rule.category).toBeOneOf(["quality", "process"]);
       }
     });
   });
