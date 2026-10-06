@@ -125,7 +125,10 @@ mutation that turns it red — see the PR for #139/#140. `scripts/sync-spec-test
 `$HARNESS_ROOT/PAI/Specs` and defaults `HARNESS_ROOT` to `~/.claude`, so it has never read
 this directory; that divergence is its own issue.
 
-- [x] SC-519: lib/github.ts contains [resolveGitHubToken, GH_TOKEN, GITHUB_API_URL]
+- [x] SC-519: lib/github.ts contains [resolveGitHubToken, GH_TOKEN, resolveApiBaseUrl]
+- [x] SC-524: lib/github.ts contains [GITHUB_API_URL, https, loopback] — D-8 refuses to send a token to a plaintext remote host
+- [x] SC-525: hooks/lib/utils.ts contains [redactSecrets, REDACTED] — a block reason never carries a credential
+- [x] SC-526: hooks/lib/utils.ts contains [GH_REPO, matches.length - 1] — the parser agrees with gh on env fallback and last-flag-wins
 - [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
 - [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]

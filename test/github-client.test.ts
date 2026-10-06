@@ -174,6 +174,53 @@ describe("lib/github.ts", () => {
         expect(() => createGitHubClient()).toThrow("GITHUB_TOKEN");
       });
 
+      /**
+       * D-8 is an endpoint redirect that carries a bearer token, so it is
+       * constrained rather than taken at face value. Raised by security
+       * review of this change: plaintext to a remote host puts the
+       * credential on the wire in the clear.
+       *
+       * Not a full allowlist, and not pretending to be one — anyone who can
+       * set this variable can usually read the token out of the same
+       * environment. The aim is to stop accidental and passive exposure.
+       */
+      describe("D-8: GITHUB_API_URL cannot redirect the token into plaintext", () => {
+        const withBase = (base: string | undefined) => {
+          setEnv({ GITHUB_TOKEN: "t", GH_TOKEN: undefined, GITHUB_API_URL: base });
+          return () => createGitHubClient();
+        };
+
+        afterEach(() => setEnv({ ...saved, GITHUB_API_URL: undefined }));
+
+        test("https to any host is accepted", () => {
+          expect(withBase("https://ghe.example.com/api/v3")).not.toThrow();
+          expect(lastOctokitOptions?.baseUrl).toBe("https://ghe.example.com/api/v3");
+        });
+
+        test("http on loopback is accepted — it cannot leave the machine", () => {
+          expect(withBase("http://127.0.0.1:1")).not.toThrow();
+          expect(lastOctokitOptions?.baseUrl).toBe("http://127.0.0.1:1");
+        });
+
+        test.each([
+          ["a remote host over plaintext", "http://evil.example.com"],
+          ["a bare IP over plaintext", "http://203.0.113.9:8080"],
+        ])("%s is refused", (_label, base) => {
+          expect(withBase(base)).toThrow(/https/);
+        });
+
+        test("a malformed value is refused rather than silently ignored", () => {
+          // Ignoring it would quietly fall back to the real API, which is the
+          // opposite of what someone setting this variable intended.
+          expect(withBase("not a url")).toThrow(/not a valid URL/);
+        });
+
+        test("unset means Octokit's own default, with no baseUrl forced", () => {
+          expect(withBase(undefined)).not.toThrow();
+          expect(lastOctokitOptions?.baseUrl).toBeUndefined();
+        });
+      });
+
       test("surrounding whitespace is stripped from the credential", () => {
         // `GH_TOKEN=$(cat token)` keeps the file's trailing newline, which
         // Octokit puts straight into the Authorization header. The result is

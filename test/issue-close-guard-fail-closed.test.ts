@@ -29,10 +29,10 @@
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parseRepoSlug } from "../hooks/lib/utils";
+import { parseRepoSlug, redactSecrets } from "../hooks/lib/utils";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const HOOK = join(REPO_ROOT, "hooks", "IssueCloseGuard.hook.ts");
@@ -146,7 +146,51 @@ describe("#140: the repo slug is parsed precisely enough to act on", () => {
     [`gh issue close 23 --repo owner/name && echo done`, "owner/name"],
     [`gh issue close 23 --repo my.org/some_repo-2`, "my.org/some_repo-2"],
   ])("%s -> %s", (command, expected) => {
-    expect(parseRepoSlug(command)).toBe(expected);
+    // Explicit empty env everywhere: `parseRepoSlug` now consults GH_REPO, so
+    // defaulting to process.env would make these pass or fail on whether the
+    // developer's shell exports it.
+    expect(parseRepoSlug(command, {})).toBe(expected);
+  });
+
+  /**
+   * Checked against the real binary rather than assumed. Each row is a way
+   * `gh` resolves the target that the first version of this parser got wrong,
+   * and every disagreement means the guard vets one repository's labels while
+   * `gh` closes an issue in another.
+   */
+  describe("agreement with what gh actually does", () => {
+    test("the LAST --repo wins, as gh does — this one was a bypass", () => {
+      // Verified: `gh issue view 23 --repo hornjason/pai-config --repo
+      // hornjason/pai-harness` returns the pai-harness issue. Taking the
+      // first let `--repo unprotected/x --repo protected/y` be vetted
+      // against unprotected/x and closed in protected/y.
+      expect(
+        parseRepoSlug(`gh issue close 23 --repo unprotected/x --repo protected/y`, {}),
+        "the guard would check a different repo than gh closes",
+      ).toBe("protected/y");
+    });
+
+    test("-R is recognised, as gh does", () => {
+      // Verified: `gh issue view 23 -R hornjason/pai-harness` works. Missing
+      // it sent the guard to the caller's default instead.
+      expect(parseRepoSlug(`gh issue close 23 -R owner/name`, {})).toBe("owner/name");
+    });
+
+    test("GH_REPO is used when no flag is given, as gh does", () => {
+      // Verified: `GH_REPO=hornjason/pai-harness gh issue view 23` works.
+      expect(parseRepoSlug(`gh issue close 23`, { GH_REPO: "owner/name" })).toBe("owner/name");
+    });
+
+    test("an explicit flag beats GH_REPO, as gh does", () => {
+      expect(
+        parseRepoSlug(`gh issue close 23 --repo flag/wins`, { GH_REPO: "env/loses" }),
+      ).toBe("flag/wins");
+    });
+
+    test("a malformed GH_REPO is refused rather than passed through", () => {
+      expect(parseRepoSlug(`gh issue close 23`, { GH_REPO: "../.." })).toBeUndefined();
+      expect(parseRepoSlug(`gh issue close 23`, { GH_REPO: "notaslug" })).toBeUndefined();
+    });
   });
 
   test.each([
@@ -154,7 +198,63 @@ describe("#140: the repo slug is parsed precisely enough to act on", () => {
     ["a bare word that is not a slug", `gh issue close 23 --repo garbage`],
     ["a flag value that is another flag", `gh issue close 23 --repo --json`],
   ])("returns undefined for %s, so the caller's default applies", (_label, command) => {
-    expect(parseRepoSlug(command)).toBeUndefined();
+    expect(parseRepoSlug(command, {})).toBeUndefined();
+  });
+
+  test.each([
+    ["../.."],
+    ["../etc"],
+    ["owner/.."],
+    ["./x"],
+    ["owner/."],
+  ])("refuses the relative segment in --repo %s", slug => {
+    // `[A-Za-z0-9._-]+` admits `.` and `..`, so these parsed as slugs and
+    // reached Octokit, which built `/repos/../../issues/N` and sent it. Seen
+    // for real: the guard reported "Not Found - https://docs.github.com/rest"
+    // for a crafted `--repo`, which is a different endpoint than the one it
+    // meant to ask about.
+    expect(parseRepoSlug(`gh issue close 23 --repo ${slug}`, {})).toBeUndefined();
+  });
+
+  test("a legitimate name that merely contains dots still parses", () => {
+    // The guard must reject `..` as a whole segment, not punish dots.
+    expect(parseRepoSlug(`gh issue close 23 --repo my.org/v1.2.3-repo`, {})).toBe("my.org/v1.2.3-repo");
+  });
+});
+
+describe("#140: a block reason never carries a credential", () => {
+  // Tested as a function, not through the hook: `runGuard` uses spawnSync,
+  // which blocks the event loop, so a Bun.serve in this process can never
+  // answer the subprocess's request. The first attempt at a live-server
+  // version deadlocked for 30s and timed out.
+  test.each([
+    ["classic PAT", "Bad credentials ghp_AAAAAAAAAAAAAAAAAAAA", "ghp_AAAAAAAAAAAAAAAAAAAA"],
+    ["OAuth token", "401 for gho_BBBBBBBBBBBBBBBBBBBB", "gho_BBBBBBBBBBBBBBBBBBBB"],
+    ["fine-grained PAT", "github_pat_11ABCDE_xyz rejected", "github_pat_11ABCDE_xyz"],
+    ["basic auth in a URL", "GET http://someuser:s3cr3t@host/repos/a/b", "s3cr3t"],
+  ])("%s is removed", (_label, message, secret) => {
+    const out = redactSecrets(message);
+    expect(out, "a credential survived redaction").not.toContain(secret);
+    expect(out).toContain("[REDACTED]");
+  });
+
+  test("ordinary error text is left intact", () => {
+    // Over-redaction would make block reasons useless to act on.
+    const msg = "Not Found - https://docs.github.com/rest/issues/issues#get-an-issue";
+    expect(redactSecrets(msg)).toBe(msg);
+  });
+
+  test("the guard routes its error text through the redactor", () => {
+    // The functions above prove the redactor works; this proves it is wired
+    // in. Without it a future edit could print `e.message` directly and every
+    // test above would still pass.
+    const hook = readFileSync(join(REPO_ROOT, "hooks", "IssueCloseGuard.hook.ts"), "utf-8");
+    const codeLines = hook
+      .split("\n")
+      .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l));
+    const detail = codeLines.find(l => /const detail\s*=/.test(l));
+    expect(detail, "the catch no longer builds a detail string").toBeDefined();
+    expect(detail!, "the error text is printed without redaction").toContain("redactSecrets(");
   });
 });
 

@@ -13,7 +13,7 @@
 import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { parseHookInput, findWorkflowState, parseRepoSlug, HARNESS_ROOT } from './lib/utils';
+import { parseHookInput, findWorkflowState, parseRepoSlug, redactSecrets, HARNESS_ROOT } from './lib/utils';
 import { createGitHubClient, getIssue } from '../lib/github';
 
 const TEMPLATE_RULES = [
@@ -107,9 +107,12 @@ async function main() {
       const issueData = await getIssue(github, repo, parseInt(issueNum, 10));
       labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
     } catch (e: any) {
+      // Scrub before printing — the message can carry the request URL, and a
+      // block reason is echoed into transcripts and issue comments.
+      const detail = redactSecrets(String(e?.message || e)).slice(0, 200);
       block(
         `Cannot close #${issueNum} — no workflow-state.json, and its labels could not be ` +
-        `read to check whether it is protected: ${e?.message?.slice(0, 200) || e}\n` +
+        `read to check whether it is protected: ${detail}\n` +
         `Fix the GitHub access (GITHUB_TOKEN or GH_TOKEN) and retry, or close it on GitHub ` +
         `directly if you have already confirmed it does not need to ship.`,
       );

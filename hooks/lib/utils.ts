@@ -93,8 +93,53 @@ export function extractIssueNumber(text: string): string | undefined {
  * slug. That was harmless while the guard swallowed errors; now that an
  * unreadable label set blocks the close, a sloppy parse refuses legitimate
  * work. Match the slug's shape and stop.
+ *
+ * This parses a command string to infer what `gh` will do, which is a
+ * differential by construction: anywhere the two disagree, the guard checks
+ * one repository's labels and `gh` closes an issue in another. Three
+ * disagreements were found by checking against the real binary rather than
+ * assuming, and all three are closed here:
+ *
+ *   gh issue view 23 --repo a/pai-config --repo b/pai-harness  -> LAST wins
+ *   gh issue view 23 -R b/pai-harness                          -> `-R` is a real alias
+ *   GH_REPO=b/pai-harness gh issue view 23                     -> env is honoured
+ *
+ * The first was a guard bypass: taking the first occurrence let
+ * `--repo unprotected/x --repo protected/y` be vetted against `unprotected/x`
+ * and closed in `protected/y`.
  */
-export function parseRepoSlug(command: string): string | undefined {
-  const m = command.match(/--repo[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/);
-  return m?.[1];
+export function parseRepoSlug(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  // Global, and keep the last — `gh` lets a later flag override an earlier one.
+  const matches = [...command.matchAll(/(?:--repo|-R)[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/g)];
+  const explicit = matches.length ? matches[matches.length - 1][1] : undefined;
+  // `gh` falls back to GH_REPO when no flag is given.
+  const slug = explicit ?? env.GH_REPO?.trim();
+  if (!slug) return undefined;
+
+  // `[A-Za-z0-9._-]+` admits `.` and `..`, so `--repo ../..` parsed as a slug
+  // and reached Octokit, which built `/repos/../../issues/N` and issued it —
+  // the request normalises to a different endpoint entirely. Observed: the
+  // guard answering "Not Found - https://docs.github.com/rest" for a crafted
+  // `--repo`. A GET with the operator's own token is a small prize, but a
+  // relative segment is never part of a real `owner/name`, so refuse it.
+  const parts = slug.split("/");
+  if (parts.length !== 2) return undefined;
+  if (parts.some(seg => !seg || seg === "." || seg === ".." || !/^[A-Za-z0-9._-]+$/.test(seg))) {
+    return undefined;
+  }
+  return slug;
+}
+
+/**
+ * Strip credential-shaped substrings from text that is about to be printed.
+ *
+ * Hook output lands in transcripts and, downstream, in issue comments. An API
+ * error can carry the request URL, and a base URL given as
+ * `https://user:token@host` would put a secret somewhere durable. Cheap
+ * insurance at the one place that prints an upstream error verbatim (#140).
+ */
+export function redactSecrets(text: string): string {
+  return String(text)
+    .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "$1[REDACTED]")
+    .replace(/\/\/[^/@\s]+:[^/@\s]+@/g, "//[REDACTED]@");
 }

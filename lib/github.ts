@@ -75,13 +75,45 @@ export function createGitHubClient(): GitHubClient {
         "(GH_TOKEN is also accepted)",
     );
   }
-  // `GITHUB_API_URL` is the conventional companion to the token variables —
-  // gh CLI and GitHub Actions both set it — and honouring it is what lets a
-  // test point the client at a dead port to exercise the non-token failure
-  // path in `hooks/IssueCloseGuard.hook.ts` (#140) without reaching the real
-  // API. Absent, Octokit's own default applies.
-  const baseUrl = process.env.GITHUB_API_URL?.trim();
+  const baseUrl = resolveApiBaseUrl();
   return new Octokit(baseUrl ? { auth: token, baseUrl } : { auth: token }) as unknown as GitHubClient;
+}
+
+/**
+ * The API base from `GITHUB_API_URL` (D-8), or undefined for Octokit's default.
+ *
+ * `GITHUB_API_URL` is the conventional companion to the token variables — gh
+ * CLI and GitHub Actions both set it — and honouring it makes GitHub
+ * Enterprise usable and lets tests point the client somewhere harmless
+ * instead of at the real API.
+ *
+ * It is also an endpoint redirect that carries a bearer credential, so it is
+ * constrained rather than taken at face value: plaintext `http` is accepted
+ * only for loopback, where it cannot leave the machine, and every other
+ * scheme must be `https`. That blocks the realistic bad case — a plaintext
+ * base URL pointed at a remote host, which puts the token on the wire in the
+ * clear — while leaving the test seam and GHES working.
+ *
+ * This is deliberately not a full allowlist. Anyone who can set this variable
+ * can generally also read the token out of the same environment, so the aim
+ * is to stop accidental and passive exposure, not to defend against an
+ * attacker who already holds the credential.
+ */
+export function resolveApiBaseUrl(): string | undefined {
+  const raw = process.env.GITHUB_API_URL?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`GITHUB_API_URL is not a valid URL: ${raw}`);
+  }
+  const isLoopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname);
+  if (url.protocol === "https:") return raw;
+  if (url.protocol === "http:" && isLoopback) return raw;
+  throw new Error(
+    `GITHUB_API_URL must use https (or http on loopback) — refusing to send a token to ${url.protocol}//${url.hostname}`,
+  );
 }
 
 /**
