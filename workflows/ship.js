@@ -815,8 +815,13 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
 3. For each group AFTER the first, write its body to a file and create a sub-issue.
    Write the body with a heredoc so newlines and backticks survive, then run:
 
+   Write the title to its own file too — it comes from a spec heading, and a
+   quote or a backtick in that heading would otherwise be read by the shell:
+
    cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
-     --title "#${ISSUE} Phase N: [phase description]" --body-file ${WORK_DIR}/subissue-N.md
+     --title-file ${WORK_DIR}/subissue-N-title.txt --body-file ${WORK_DIR}/subissue-N.md
+
+   The title file holds one line: "#${ISSUE} Phase N: [phase description]".
 
    The body file should contain: "Parent: #${ISSUE}", "Spec: ${specPath} — Phase N",
    a "## Success Criteria" section listing that phase's SCs, and a "## Dependencies"
@@ -2044,8 +2049,12 @@ BRANCH=$(cd ${PROJECT_ROOT} && git branch --show-current)
 
 cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-upsert --repo ${REPO} \\
   --head "$BRANCH" --base main \\
-  --title "fix(#${ISSUE}): ${goalData.issueTitle}" \\
+  --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
   --body-file ${WORK_DIR}/pr-body.md
+
+The title is composed by the script from the issue itself. Do NOT pass --title,
+and do NOT paste the issue title into the command — it is text someone else
+wrote, and a shell would read the quotes in it.
 
 The last command prints one JSON object: {"number":N,"html_url":"...","action":"created|updated"}.
 Set prNumber and prUrl from it and ok to true ONLY if it exited zero. On any

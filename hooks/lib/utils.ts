@@ -139,7 +139,21 @@ export type CloseTarget =
  * regex care fixes that class; refusing to answer does.
  */
 /** A `gh issue close` anywhere in a segment, with nothing required after it. */
-const CLOSE_INVOCATION = /\bgh\b.*?\bissue\b.*?\bclose\b/;
+const GH_CLOSE = /\bgh\b.*?\bissue\b.*?\bclose\b/;
+
+/**
+ * The harness's own close path, added by #137.
+ *
+ * Moving workflow steps onto `scripts/github-op.ts` would otherwise have
+ * walked every automated close straight around this guard — the detector
+ * above looks for `gh`, and the new path is `bun scripts/github-op.ts
+ * issue-update --issue N --state closed`. A control that stops applying to
+ * the caller it was written for is worse than no control, because the report
+ * still says it ran.
+ */
+const OP_CLOSE = /github-op\.ts\s+issue-update\b[^\n]*--state[\s=]+['"]?closed\b/;
+
+const CLOSE_INVOCATION = new RegExp(`${GH_CLOSE.source}|${OP_CLOSE.source}`);
 
 /** `https://github.com/owner/name/issues/123`, which `gh` accepts in place of a number. */
 const ISSUE_URL = /https?:\/\/[^\s"'`]*?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)/;
@@ -170,6 +184,29 @@ export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = proce
     return ambiguous(`${closing.length} issue closes in one command — run them separately so each can be checked`);
   }
   const segment = closing[0];
+
+  // The github-op form is parsed on its own terms rather than squeezed
+  // through the gh rules below. Its grammar is strictly `--flag value`, with
+  // no positional issue number and no URL form, so none of the ambiguity the
+  // gh path has to reason about exists here — and reusing those rules would
+  // have been a fourth parser differential waiting to happen.
+  if (OP_CLOSE.test(segment)) {
+    // No GH_REPO fallback: scripts/github-op.ts requires --repo and does not
+    // read the environment, so inheriting one here would vet a repository the
+    // command is not going to touch.
+    const repo = parseRepoSlug(segment, {} as NodeJS.ProcessEnv);
+    if (!repo) {
+      return ambiguous("github-op needs a literal --repo owner/name so the close can be checked");
+    }
+    // Last wins, matching the script's own flag parsing, where a repeated
+    // flag overwrites the earlier value.
+    const issues = [...segment.matchAll(/--issue[\s=]+['"]?([^\s'"]+)/g)];
+    const last = issues.length ? issues[issues.length - 1][1] : undefined;
+    if (!last || !/^\d+$/.test(last)) {
+      return ambiguous("the --issue value is not a literal number — pass it literally so it can be checked");
+    }
+    return { kind: "one", issue: last, repo };
+  }
 
   // A URL carries its own owner/name, which overrides --repo. If both are
   // present and disagree, we cannot tell which gh will use.

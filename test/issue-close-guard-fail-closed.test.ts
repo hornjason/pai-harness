@@ -443,3 +443,75 @@ describe("#140: the guard still gets out of the way when it can decide", () => {
     expect(decision).toBeNull();
   });
 });
+
+/**
+ * #137 moved every automated close onto `scripts/github-op.ts`, which the
+ * detector — built entirely around the word `gh` — would not have recognised.
+ * The harness would have gone on closing issues while this guard reported
+ * that it was guarding them. Raised by security review of that commit, and
+ * it was right: a control that stops applying to the caller it was written
+ * for is worse than no control, because the report still says it ran.
+ */
+describe("#137: the guard follows the harness onto its new close path", () => {
+  const OP = (extra = "") =>
+    `cd /x && bun scripts/github-op.ts issue-update --repo hornjason/pai-harness --issue 23 --state closed${extra}`;
+
+  test("it is recognised as a close at all", () => {
+    const target = parseCloseTarget(OP());
+    expect(target.kind).toBe("one");
+    expect(target).toMatchObject({ issue: "23", repo: "hornjason/pai-harness" });
+  });
+
+  test("--state open is not a close", () => {
+    expect(parseCloseTarget(
+      `bun scripts/github-op.ts issue-update --repo o/n --issue 23 --state open`,
+    ).kind).toBe("none");
+  });
+
+  test("another subcommand is not a close", () => {
+    expect(parseCloseTarget(
+      `bun scripts/github-op.ts issue-label --repo o/n --issue 23 --labels closed`,
+    ).kind).toBe("none");
+  });
+
+  test("the last --issue wins, matching the script's own flag parsing", () => {
+    // github-op.ts builds a flags object, so a repeated flag overwrites. A
+    // guard that took the first would vet 1 and close 99.
+    expect(parseCloseTarget(
+      `bun scripts/github-op.ts issue-update --repo o/n --issue 1 --issue 99 --state closed`,
+    )).toMatchObject({ kind: "one", issue: "99" });
+  });
+
+  test("a non-literal --issue is refused rather than guessed at", () => {
+    const target = parseCloseTarget(
+      `bun scripts/github-op.ts issue-update --repo o/n --issue "$N" --state closed`,
+    );
+    expect(target.kind).toBe("ambiguous");
+  });
+
+  test("a missing --repo is refused, and GH_REPO does not fill it in", () => {
+    // The script requires --repo and never reads the environment. Inheriting
+    // GH_REPO here would vet a repository the command is not going to touch.
+    const target = parseCloseTarget(
+      `bun scripts/github-op.ts issue-update --issue 23 --state closed`,
+      { GH_REPO: "someone/else" } as NodeJS.ProcessEnv,
+    );
+    expect(target.kind).toBe("ambiguous");
+    expect((target as any).reason).toContain("--repo");
+  });
+
+  test("the guard actually blocks it end to end, not just in the parser", () => {
+    // The parse is only half the control. This drives the hook itself with no
+    // workflow-state.json and no credential, which is the state every earlier
+    // bypass was measured in.
+    const { decision, stdout } = runGuard(OP(" --repo hornjason/pai-harness"));
+    expect(decision, stdout).toBe("block");
+  });
+
+  test("mixing a gh close and a github-op close in one command is refused", () => {
+    const target = parseCloseTarget(
+      `gh issue close 1 --repo a/b && bun scripts/github-op.ts issue-update --repo c/d --issue 99 --state closed`,
+    );
+    expect(target.kind).toBe("ambiguous");
+  });
+});

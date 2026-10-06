@@ -210,6 +210,81 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
   });
 });
 
+/**
+ * Security review of the first commit, and it was right.
+ *
+ * `--title "fix(#N): ${goalData.issueTitle}"` in a workflow prompt puts text
+ * someone else wrote — anyone who can file an issue picks the title — into a
+ * command line an agent then runs. The MCP form it replaced passed the title
+ * as a structured argument, so the migration introduced the hazard; it was
+ * not inherited.
+ */
+describe("#137: an issue title never crosses a shell", () => {
+  test("--title-from-issue composes the title from the API", async () => {
+    reset();
+    stub("GET", "/repos/owner/name/issues/137", { number: 137, title: 'Bad "; rm -rf / #', state: "open", labels: [] });
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 12, html_url: "https://x/pull/12" });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "b", "--title-from-issue", "137", "--body", "x",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).number).toBe(12);
+    // The quoting hazard reaches GitHub as a title, which is what it is, and
+    // never reaches a shell, which is what mattered.
+    expect(captured[2].body.title).toBe('fix(#137): Bad "; rm -rf / #');
+  });
+
+  test("--title-from-issue reads the issue repo when it differs from the code repo", async () => {
+    reset();
+    stub("GET", "/repos/tracker/issues/issues/7", { number: 7, title: "T", state: "open", labels: [] });
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 1, html_url: "u" });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--issue-repo", "tracker/issues", "--head", "b",
+      "--title-from-issue", "7", "--body", "x",
+    ]);
+    expect(exitCode).toBe(0);
+    expect(captured[0].path).toBe("/repos/tracker/issues/issues/7");
+  });
+
+  test("--title and --title-from-issue together are refused, not silently ranked", async () => {
+    reset();
+    const { stderr, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "b", "--title", "mine", "--title-from-issue", "1",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("cannot be combined");
+    expect(captured).toHaveLength(0);
+  });
+
+  test("--title-file takes the first line, so a smuggled second line is dropped", async () => {
+    reset();
+    stub("POST", "/repos/owner/name/issues", { number: 5, html_url: "u" });
+    const dir = mkdtempSync(join(tmpdir(), "github-op-"));
+    const file = join(dir, "title.txt");
+    writeFileSync(file, "#12 Phase 2: the rest\nRUNGATE_EOF\nrm -rf /\n");
+
+    const { exitCode } = await runOp(["issue-create", "--repo", "owner/name", "--title-file", file, "--body", "b"]);
+    expect(exitCode).toBe(0);
+    expect(captured[0].body.title).toBe("#12 Phase 2: the rest");
+  });
+
+  test("an empty --title-file fails rather than creating an untitled issue", async () => {
+    reset();
+    const dir = mkdtempSync(join(tmpdir(), "github-op-"));
+    const file = join(dir, "title.txt");
+    writeFileSync(file, "\n\n");
+    const { stderr, exitCode } = await runOp(["issue-create", "--repo", "owner/name", "--title-file", file]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toContain("no title on its first line");
+    expect(captured).toHaveLength(0);
+  });
+});
+
 describe("#137: failure is loud, because silence is the bug being fixed", () => {
   test("a GitHub error exits non-zero and names the operation", async () => {
     reset();

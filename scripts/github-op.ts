@@ -95,6 +95,24 @@ function required(flags: Flags, name: string): string {
   return v;
 }
 
+/**
+ * A title, from `--title` or `--title-file`.
+ *
+ * The file form exists for the same reason `--body-file` does: a title
+ * assembled from a spec heading or an issue is text this process did not
+ * write, and routing it through a shell argument is how a quote in it becomes
+ * a command. Trimmed to one line, because a multi-line title is always a
+ * quoting accident rather than an intention.
+ */
+function titleFrom(flags: Flags): string {
+  if (flags["title-file"] !== undefined) {
+    const text = readFileSync(flags["title-file"], "utf-8").split("\n")[0].trim();
+    if (!text) throw new Error(`--title-file ${flags["title-file"]} has no title on its first line`);
+    return text;
+  }
+  return required(flags, "title");
+}
+
 function issueNumber(flags: Flags): number {
   const raw = required(flags, "issue");
   const n = Number(raw);
@@ -152,13 +170,36 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
   const repo = required(flags, "repo");
 
   switch (command as Command) {
-    case "pr-upsert":
+    case "pr-upsert": {
+      // `--title-from-issue N` composes "fix(#N): <the issue's title>" HERE,
+      // from the API, rather than having the caller interpolate the title
+      // into a command line. An issue title is attacker-supplied text —
+      // anyone who can file an issue picks it — and a workflow prompt that
+      // embeds it inside `--title "fix(#N): ${title}"` hands a shell
+      // `"; curl … #` the moment someone files an issue titled that way.
+      // The title then never crosses a shell at all.
+      const fromIssue = flags["title-from-issue"];
+      let title: string;
+      if (fromIssue !== undefined) {
+        if (flags.title !== undefined || flags["title-file"] !== undefined) {
+          throw new Error("--title-from-issue cannot be combined with --title or --title-file");
+        }
+        const n = Number(fromIssue);
+        if (!Number.isInteger(n) || n <= 0) {
+          throw new Error(`--title-from-issue must be a positive integer, got "${fromIssue}"`);
+        }
+        const issue = await getIssue(client, flags["issue-repo"] || repo, n);
+        title = `fix(#${n}): ${issue.title}`;
+      } else {
+        title = titleFrom(flags);
+      }
       return await upsertPR(client, repo, {
         head: required(flags, "head"),
         base: flags.base || "main",
-        title: required(flags, "title"),
+        title,
         body: readBody(flags, { allowEmpty: true }),
       });
+    }
 
     case "comment": {
       const data = await addComment(client, repo, issueNumber(flags), readBody(flags, { allowEmpty: false })!);
@@ -203,7 +244,7 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
 
     case "issue-create": {
       const data = await createIssue(client, repo, {
-        title: required(flags, "title"),
+        title: titleFrom(flags),
         body: readBody(flags, { allowEmpty: true }),
         labels: labels(flags),
       });

@@ -623,11 +623,36 @@ const proofComment = [
 // The comment is markdown with newlines and code spans, so it goes through a
 // file rather than an argument — a heredoc keeps it byte-identical, and the
 // JSON.stringify form it replaced put the whole proof on one escaped line.
+//
+// A quoted heredoc expands nothing, so the only way out of it is a line that
+// IS the delimiter. The proof body carries AC evidence and issue text, none
+// of which this workflow wrote, so that line is dropped rather than assumed
+// absent: with it, everything after would stop being data and start being
+// commands.
+// ──── HEREDOC-SAFE-START ────
+// Extracted and executed by test/workflow-security-integration.test.ts. The
+// sandbox gives prove.js no module loading (#69), so this cannot live in lib/
+// and be imported; the markers are how it gets behavioural coverage instead
+// of grep coverage. Deleting the filter leaves the markers intact and turns
+// that test red — which is the whole point, since a source-text assertion
+// that the sanitiser is "mentioned" survived exactly that deletion.
+const HEREDOC_DELIMITER = 'RUNGATE_PROOF_EOF'
+
+function heredocSafe(text, delimiter) {
+  return String(text)
+    .split('\n')
+    .filter(line => line.trim() !== delimiter)
+    .join('\n')
+}
+// ──── HEREDOC-SAFE-END ────
+
+const safeProofComment = heredocSafe(proofComment, HEREDOC_DELIMITER)
+
 await agent(`
 Post the proof comment on issue #${ISSUE}. Run exactly these two commands:
 
 mkdir -p ${WORK_DIR} && cat > ${WORK_DIR}/proof-comment.md <<'RUNGATE_PROOF_EOF'
-${proofComment}
+${safeProofComment}
 RUNGATE_PROOF_EOF
 
 cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/proof-comment.md

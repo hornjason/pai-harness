@@ -164,6 +164,16 @@ D-8 allowlists it; the test seam and the exfiltration guard are the same rule.
 - [x] SC-533: test/github-op.test.ts contains [action: "updated", positive integer, no stub matched] — upsert does not re-create, a malformed issue number is refused rather than coerced, and every request is asserted against a real server
 - [x] SC-534: test/workflow-mcp-tools.test.ts contains [grantedServers, mcpServersReferenced] — a workflow prompt may not name an MCP server no role grants
 
+### Phase 7 — The migration does not create what it replaces (#137, security review)
+
+Moving from structured tool arguments to a command line introduced three hazards
+that the MCP form did not have. All three were raised by security review of the
+first commit and all three were real.
+
+- [x] SC-535: scripts/github-op.ts contains [title-from-issue, title-file] and workflows/ship.js not contains [--title "fix(#] — an issue title is written by whoever files the issue, and it never crosses a shell
+- [x] SC-536: hooks/lib/utils.ts contains [OP_CLOSE, github-op] — the close guard follows the harness onto `github-op.ts issue-update --state closed`, instead of being walked around by it
+- [x] SC-537: workflows/prove.js contains [HEREDOC-SAFE-START, heredocSafe] and test/workflow-security-integration.test.ts contains [loadHeredocSafe] — the proof body cannot break out of its quoted heredoc, proven by executing the extracted helper rather than grepping for it
+
 ## Constraints
 
 - Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)
@@ -173,6 +183,8 @@ D-8 allowlists it; the test seam and the exfiltration guard are the same rule.
 - Workflow agent prompts MUST NOT name an MCP tool whose server no role in `.claude/rungate/roles.json` grants. An instruction to call a tool the agent does not have is not a degraded path, it is a step that silently does nothing (#137)
 - Workflow agent prompts MUST reach GitHub through `scripts/github-op.ts` — not `mcp__github__*`, not `gh` (D-9). A step that cannot complete the write MUST exit non-zero; reporting success without the write is the defect this replaced
 - Bodies (PR descriptions, issue comments) MUST be passed as `--body-file`, not assembled into a shell argument. They contain newlines, quotes and backticks, and the caller building the command line is a language model
+- Text the harness did not author — issue titles and bodies, spec headings, AC evidence — MUST NOT be interpolated into a command line in a workflow prompt. Use `--title-from-issue`, `--title-file` or `--body-file` so the value is read by the process that uses it. An issue title is chosen by whoever files the issue
+- Any new way to close an issue MUST be recognised by `parseCloseTarget`. The guard was written against `gh issue close`; a second path that it does not match is not a gap, it is a bypass that still reports as guarded
 - Tests MUST NOT reach the real GitHub API. Mocking the client or pointing `GITHUB_API_URL` at loopback both satisfy this; the loopback form is preferred for anything that claims an end-to-end result, because a mocked client cannot catch a wrong path or a wrong verb
 
 ## Anti-Criteria
