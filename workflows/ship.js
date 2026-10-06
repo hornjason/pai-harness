@@ -1717,8 +1717,9 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
 2. Run grading:
    bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${PROJECT_ROOT} ${WORK_DIR}
 
-3. Run efficiency analysis:
-   bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json
+3. Run efficiency analysis. Use tee, not a plain redirect — the file is read by
+   the persist step and you still need to see the output to report it below:
+   bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json | tee ${WORK_DIR}/efficiency.json
 
 4. Wall-clock timing per agent — for each agent-*.jsonl file, get file timestamps:
    for f in "$TDIR"/agent-*.jsonl; do
@@ -1778,113 +1779,58 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
     }
   }
 
-  // Persist grade data into workflow-state.json for cross-run tracking
-  try {
-    const wsPath = `${WORK_DIR}/workflow-state.json`
-    const ws = JSON.parse(require('fs').readFileSync(wsPath, 'utf-8'))
-    ws.compliance = {
-      grades: gradeResult?.grades?.map(g => ({
-        role: g.role, followed: g.followed, total: g.total,
-        pct: g.total > 0 ? Math.round(100 * g.followed / g.total) : 0,
-        flagged: g.flagged || []
-      })) || [],
-      efficiency: gradeResult?.efficiency || null,
-      timing: gradeResult?.timing || []
+  // ── Persist grades, report trends, hill-climb briefs (#69) ──
+  //
+  // This was ~110 lines of inline code containing NINE top-level require()
+  // calls. The workflow sandbox has no module loading, so every one of them
+  // threw — and all nine sat inside try/catch, so `require is not defined` was
+  // swallowed and logged as a WARN. Compliance persistence, compliance
+  // history, hill-climb brief patching and transcript re-grading had therefore
+  // never once executed, while the run reported success.
+  //
+  // That is strictly worse than the original #69 offender at module scope,
+  // which killed the run outright and so could not be missed. A silent
+  // measurement failure leaves the harness reporting health it never measured.
+  //
+  // It lives in a script now, which runs in a real Bun runtime and can import
+  // the libraries directly. The script also reads compliance-grade.json off
+  // disk rather than taking `gradeResult` as input: grade-deterministic.ts
+  // already wrote that file and the agent's return value is a restatement of
+  // it, so reading the file keeps a language model out of the data path (#81).
+  // Nothing agent-derived is interpolated into the command below.
+  const persistResult = await agent(`
+Run exactly this command and report its result:
+
+  cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
+
+It prints human-readable progress on stderr and a single JSON receipt on stdout.
+
+Return that receipt. If the command exits non-zero, return ok:false with the
+error text from stderr — do NOT retry it and do NOT edit any file to make it
+pass. Change nothing else.
+  `, { label: 'persist-compliance', phase: 'Grade', model: 'sonnet', schema: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      persisted: { type: 'boolean' },
+      graded: { type: 'number' },
+      hillClimbApplied: { type: 'number' },
+      verified: { type: 'array', items: { type: 'string' } },
+      error: { type: 'string' }
+    },
+    required: ['ok']
+  }})
+
+  // Reported, not swallowed. The whole #69 defect was a failure that only ever
+  // existed as a WARN nobody read, so a persist failure says so plainly and
+  // names the measurement that is missing as a result.
+  if (persistResult?.ok) {
+    log(`COMPLIANCE: ${persistResult.graded ?? 0} role(s) graded, persisted=${persistResult.persisted}, hill-climb reinforcements=${persistResult.hillClimbApplied ?? 0}`)
+    if (persistResult.verified?.length) {
+      log(`HILL-CLIMB VERIFIED: ${persistResult.verified.join(', ')}`)
     }
-    const { writeWorkflowState } = require(`${HARNESS_ROOT}/gates/orchestrator.ts`)
-    writeWorkflowState(wsPath, ws)
-    log('Compliance data persisted to workflow-state.json')
-  } catch (e) {
-    log(`WARN: Could not persist compliance data: ${e.message}`)
-  }
-
-  // Generate and display compliance report with trend tracking
-  try {
-    const { appendComplianceHistory, loadComplianceHistory, generateComplianceReport, formatComplianceReport, detectHillClimbNeeds, applyHillClimb } = require(`${HARNESS_ROOT}/lib/compliance-report.ts`)
-    const historyPath = require('path').join(WORK_DIR, '..', 'compliance-history.jsonl')
-    const COMPLIANCE_THRESHOLD = 70
-
-    for (const g of (gradeResult?.grades || [])) {
-      const entry = {
-        timestamp: new Date().toISOString(),
-        issue: `#${ISSUE}`,
-        role: g.role,
-        scores: {},
-        total: g.total,
-        followed: g.followed,
-        pct: g.total > 0 ? Math.round(100 * g.followed / g.total) : 0,
-        flagged: g.flagged || []
-      }
-      // Build scores map from flagged (IGNORED) vs total rules
-      if (g.rules) {
-        for (const r of g.rules) {
-          if (r.id) entry.scores[r.id] = r.verdict || 'N/A'
-        }
-      }
-
-      appendComplianceHistory(historyPath, entry)
-      const history = loadComplianceHistory(historyPath).slice(0, -1)
-      const report = generateComplianceReport(entry, history, COMPLIANCE_THRESHOLD)
-      const formatted = formatComplianceReport(report)
-      log('\n' + formatted)
-
-      if (report.belowThreshold) {
-        log(`⚠️  ${g.role} compliance ${entry.pct}% is below ${COMPLIANCE_THRESHOLD}% threshold — brief improvement needed`)
-      }
-      if (report.alerts.length > 0) {
-        log(`📋 ${report.alerts.length} compliance alert(s) for ${g.role} — check report above`)
-      }
-
-      // Grader accuracy gate: skip hill-climb for COMPs where >50% of failures are N/A-eligible
-      // Prevents patching briefs to fix grader false positives
-      const graderAccuracySkips = new Set()
-      for (const ct of report.compTrends) {
-        const naCount = ct.lastN.filter(v => v === 'N/A').length
-        const ignoredCount = ct.lastN.filter(v => v === 'IGNORED').length
-        if (naCount > 0 && ignoredCount > 0 && naCount / (naCount + ignoredCount) > 0.5) {
-          graderAccuracySkips.add(ct.compId)
-          log(`⚠️  GRADER-GATE: Skipping hill-climb for ${ct.compId} — ${naCount}/${naCount + ignoredCount} recent verdicts are N/A (possible grader false positive)`)
-        }
-      }
-
-      // Auto hill-climb: if a COMP has failed 3+ consecutive runs, reinforce the brief
-      const hillClimbActions = detectHillClimbNeeds(report).filter(a => !graderAccuracySkips.has(a.compId))
-      if (hillClimbActions.length > 0) {
-        const briefPaths = require(`${HARNESS_ROOT}/scripts/grade-deterministic.ts`).loadRoleBriefPaths(HARNESS_ROOT)
-        const briefPath = briefPaths[g.role]
-        if (briefPath) {
-          const { applied, skipped } = applyHillClimb(briefPath, hillClimbActions)
-          for (const a of applied) log(`🔧 HILL-CLIMB: ${a}`)
-          for (const s of skipped) log(`⏭️  HILL-CLIMB: ${s}`)
-          if (applied.length > 0) {
-            log(`📝 Brief updated for ${g.role} — ${applied.length} reinforcement(s) applied automatically`)
-
-            // Auto-rerun: verify hill-climb improved scores
-            try {
-              const transcriptDir = require('path').join(WORK_DIR, 'transcripts')
-              const transcriptFiles = require('fs').existsSync(transcriptDir)
-                ? require('fs').readdirSync(transcriptDir).filter(f => f.includes(g.role) && f.endsWith('.jsonl'))
-                : []
-              if (transcriptFiles.length > 0) {
-                const latestTranscript = require('path').join(transcriptDir, transcriptFiles[transcriptFiles.length - 1])
-                log(`🔄 HILL-CLIMB VERIFY: re-grading ${g.role} with patched brief...`)
-                const reGradeResult = await agent(
-                  `Run: bun ${HARNESS_ROOT}/scripts/test-brief.ts ${g.role} --prompt=${latestTranscript}\n\nReport the compliance score as JSON: {"role": "${g.role}", "total": N, "followed": N, "pct": N}`,
-                  { label: `hill-climb-verify-${g.role}`, phase: 'Grade', model: 'sonnet' }
-                )
-                if (reGradeResult) {
-                  log(`📊 HILL-CLIMB RESULT: ${reGradeResult}`)
-                }
-              }
-            } catch (hcErr) {
-              log(`WARN: Hill-climb verify failed: ${hcErr.message}`)
-            }
-          }
-        }
-      }
-    }
-  } catch (e) {
-    log(`WARN: Compliance report failed: ${e.message}`)
+  } else {
+    log(`WARN: compliance persistence FAILED — trends, hill-climb and re-grading did not run for this issue: ${persistResult?.error || 'no receipt returned'}`)
   }
 } else {
   log('GRADE: skipped (skipGrade=true)')
