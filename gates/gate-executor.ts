@@ -11,6 +11,7 @@ import {
   type GateResult,
 } from "./orchestrator";
 import { writeWitness } from "./witness";
+import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { harnessRoot } from "../lib/paths";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import {
@@ -145,13 +146,30 @@ function loadAndValidateHarness(projectRoot: string): ProjectHarness | null {
   return null;
 }
 
-function autoPopulateACs(state: Record<string, any>, sf: string): void {
+/**
+ * Exported for test. This is where evidence commands actually execute, and it
+ * is the last place a stale git ref can be caught (#118).
+ */
+export function autoPopulateACs(state: Record<string, any>, sf: string): void {
   let acUpdated = false;
   for (let i = 0; i < (state.acs || []).length; i++) {
     const ac = state.acs[i];
     if (ac.verdict && ac.verdict !== "PENDING" && ac.verdict !== "FAIL") continue;
-    const cmd = ac.evidenceMethod?.command;
-    if (!cmd) continue;
+    const rawCmd = ac.evidenceMethod?.command;
+    if (!rawCmd) continue;
+    // Qualify bare `main`/`master` to `origin/...` at the point of execution,
+    // not only at prevalidation (#118).
+    //
+    // Prevalidation is not a chokepoint: the verify-gate re-implementation path
+    // authors NEW ACs after Scope has already run, so a command can reach here
+    // having never been prevalidated. Normalizing only there would fix the
+    // commands that were already least likely to be wrong.
+    //
+    // Writing it back onto the AC means the repaired form is what gets
+    // persisted and reported, so a human reading the failure sees the command
+    // that actually ran.
+    const cmd = normalizeGitRefs(rawCmd).command;
+    if (cmd !== rawCmd) ac.evidenceMethod.command = cmd;
     try {
       const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
       const isTestRunner = /bun test\b/.test(cmd);

@@ -8,6 +8,8 @@
 
 import { execSync } from "child_process";
 
+import { normalizeGitRefs } from "./git-ref-normalizer";
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 export interface ACInput {
@@ -100,16 +102,44 @@ export async function prevalidateEvidence(
   const results: PrevalidationResult[] = [];
 
   for (const ac of acs) {
-    const command = ac.evidenceMethod?.command;
+    const rawCommand = ac.evidenceMethod?.command;
 
     // Skip ACs without a command
-    if (!command) {
+    if (!rawCommand) {
       results.push({
         id: ac.id,
         status: "skipped",
       });
       continue;
     }
+
+    // Qualify bare `main`/`master` refs to `origin/...` BEFORE anything else,
+    // including before the dry-run (#118).
+    //
+    // This is deliberately NOT an entry in attemptAutoFix, which only fires on
+    // a FAILING dry-run. A stale-`main` command often succeeds here — the local
+    // ref is only sometimes behind — and then fails at Verify, which is exactly
+    // what happened on #103: a false FAIL on an untouched file spawned a second
+    // Marcus to "fix" it and cost roughly 300k tokens. The defect is in the
+    // text of the command, not in its exit code, so the repair has to be too,
+    // and it has to happen before the command is dry-run or persisted.
+    const refFix = normalizeGitRefs(rawCommand);
+    const command = refFix.command;
+    const refRewritten = refFix.changed;
+
+    /**
+     * Carry the ref rewrite onto whatever verdict this AC ends up with.
+     *
+     * Every exit path has to go through here. If the rewrite were only
+     * reported on the paths that already set `fixedCommand`, a command that
+     * dry-runs clean would be reported "ok" with no fixed form, the caller
+     * would persist the original, and the stale ref would reach Verify intact
+     * — the bug surviving its own fix.
+     */
+    const withRefFix = (r: PrevalidationResult): PrevalidationResult =>
+      refRewritten && !r.fixedCommand
+        ? { ...r, autoFixed: true, fixedCommand: command }
+        : r;
 
     // Check for bun test pipe pattern BEFORE running — always auto-fix
     const pipeFix = tryFixBunTestPipe(command);
@@ -132,16 +162,21 @@ export async function prevalidateEvidence(
       }).trim();
 
       if (output.length === 0) {
-        results.push({
+        results.push(withRefFix({
           id: ac.id,
           status: "empty",
           diagnostic: `Command succeeded but produced no output: ${command}`,
-        });
+        }));
       } else {
-        results.push({
+        // The ok path is the one that MATTERS for #118: a stale-`main` command
+        // usually dry-runs clean here and only diverges later, in a worktree
+        // whose local ref has drifted. Without withRefFix the caller would
+        // persist the original and the rewrite would be a no-op in exactly the
+        // case it exists for.
+        results.push(withRefFix({
           id: ac.id,
           status: "ok",
-        });
+        }));
       }
     } catch (e: any) {
       const exitCode: number = e.status ?? 1;
@@ -152,6 +187,8 @@ export async function prevalidateEvidence(
       const fix = attemptAutoFix(command, ac.evidenceMethod?.type, exitCode, stdout);
 
       if (fix) {
+        // fix.fixedCommand is derived from `command`, which is already
+        // ref-normalized, so the rewrite is carried without needing withRefFix.
         results.push({
           id: ac.id,
           status: "ok",
@@ -165,12 +202,12 @@ export async function prevalidateEvidence(
         if (stderr) diagParts.push(stderr.slice(0, 200));
         if (!stdout && !stderr) diagParts.push(`No output from: ${command}`);
 
-        results.push({
+        results.push(withRefFix({
           id: ac.id,
           status: "broken",
           needsRewrite: true,
           diagnostic: diagParts.join(". "),
-        });
+        }));
       }
     }
   }
