@@ -68,11 +68,99 @@ export interface ListPRsOptions {
  * (D-4: single auth point, created once per process).
  */
 export function createGitHubClient(): GitHubClient {
-  const token = process.env.GITHUB_TOKEN;
+  const token = resolveGitHubToken();
   if (!token) {
-    throw new Error("GITHUB_TOKEN environment variable is not set — required for GitHub API access");
+    throw new Error(
+      "GITHUB_TOKEN environment variable is not set — required for GitHub API access " +
+        "(GH_TOKEN is also accepted)",
+    );
   }
-  return new Octokit({ auth: token }) as unknown as GitHubClient;
+  const baseUrl = resolveApiBaseUrl();
+  return new Octokit(baseUrl ? { auth: token, baseUrl } : { auth: token }) as unknown as GitHubClient;
+}
+
+/**
+ * The API base from `GITHUB_API_URL` (D-8), or undefined for Octokit's default.
+ *
+ * `GITHUB_API_URL` is the conventional companion to the token variables — gh
+ * CLI and GitHub Actions both set it — and honouring it makes GitHub
+ * Enterprise usable and lets tests point the client somewhere harmless
+ * instead of at the real API.
+ *
+ * **Allowlisted hosts only: GitHub itself, or loopback.** This variable
+ * redirects an endpoint that carries a bearer token, so it is an
+ * exfiltration primitive for anyone who can set it. An earlier version
+ * allowed any `https` host, reasoning that whoever controls the environment
+ * can usually read the token anyway. Security review flagged it twice and
+ * was right the second time: "usually" is not "always".
+ *
+ * The allowlist is not loopback-only, though, and CI is what taught me that:
+ * **GitHub Actions sets `GITHUB_API_URL=https://api.github.com` on every
+ * run.** A loopback-only rule therefore refused the genuine GitHub API and
+ * broke the whole suite in CI while passing locally, where the variable is
+ * unset. The differential was the fix's bug, not the test's.
+ *
+ * So the token can reach GitHub, or a port on this machine, and nowhere else.
+ * Hostname is compared exactly, so `api.github.com.evil.com` and a loopback
+ * name hidden in the userinfo (`https://127.0.0.1@evil.com`) are both
+ * refused. GitHub Enterprise needs a host outside this list and stays a
+ * separate, deliberate decision rather than a side effect of a test seam.
+ */
+const ALLOWED_API_HOSTS = new Set([
+  "api.github.com",
+  "github.com",
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+  "::1",
+]);
+
+export function resolveApiBaseUrl(): string | undefined {
+  const raw = process.env.GITHUB_API_URL?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`GITHUB_API_URL is not a valid URL: ${raw}`);
+  }
+  if (!ALLOWED_API_HOSTS.has(url.hostname)) {
+    throw new Error(
+      `GITHUB_API_URL may only point at GitHub or loopback — refusing to send a token to ${url.hostname}`,
+    );
+  }
+  return raw;
+}
+
+/**
+ * The GitHub credential, under either of the two conventional names.
+ *
+ * #139: this read `GITHUB_TOKEN` alone, and nothing sets it. `gh auth status`
+ * on Jason's machine reports the account is authenticated via `GH_TOKEN`, so
+ * every Octokit call in the repo threw at construction — the prove gate said
+ * so loudly, `gates/orchestrator.ts` dropped the `shipped` label into a
+ * `.catch(() => {})`, and `hooks/IssueCloseGuard.hook.ts` stopped guarding
+ * (#140).
+ *
+ * D-3 of GITHUB-API-MIGRATION-SPEC chose the single name on the grounds that
+ * it was "already set by `gh` CLI auth". It is not: `gh` reads `GH_TOKEN` and
+ * exports nothing. Accepting both is what makes D-7's "Octokit always works"
+ * true in an environment authenticated the ordinary way.
+ *
+ * `GITHUB_TOKEN` wins when both are present, so a deliberately scoped token
+ * can override a broader ambient one. Empty strings count as absent — an
+ * exported-but-unset variable must produce the clear error here rather than
+ * an unauthenticated client that 401s somewhere less obvious.
+ */
+export function resolveGitHubToken(): string | undefined {
+  for (const name of ["GITHUB_TOKEN", "GH_TOKEN"]) {
+    const v = process.env[name];
+    // Trimmed, not just tested: `GH_TOKEN=$(cat token)` carries a trailing
+    // newline, and Octokit sends it in the Authorization header, where it
+    // 401s with nothing pointing at the whitespace as the cause.
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

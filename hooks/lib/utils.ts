@@ -79,3 +79,166 @@ export function findWorkflowState(issueNum?: string, phases?: string[]): Workflo
 export function extractIssueNumber(text: string): string | undefined {
   return text.match(/#(\d+)/)?.[1];
 }
+
+/**
+ * The `owner/name` a `gh` command targets, or undefined if it names none.
+ *
+ * Split out of IssueCloseGuard (#140) so it can be tested without driving the
+ * hook, and because HOOK-ARCHITECTURE-SPEC wants the logic in lib rather than
+ * in the trigger.
+ *
+ * The previous pattern was `--repo\s+(\S+)`, which ran to the next space and
+ * so captured whatever punctuation followed — `owner/name"}}'` when the close
+ * appeared inside a nested shell string. The lookup then 404'd on the mangled
+ * slug. That was harmless while the guard swallowed errors; now that an
+ * unreadable label set blocks the close, a sloppy parse refuses legitimate
+ * work. Match the slug's shape and stop.
+ *
+ * This parses a command string to infer what `gh` will do, which is a
+ * differential by construction: anywhere the two disagree, the guard checks
+ * one repository's labels and `gh` closes an issue in another. Three
+ * disagreements were found by checking against the real binary rather than
+ * assuming, and all three are closed here:
+ *
+ *   gh issue view 23 --repo a/pai-config --repo b/pai-harness  -> LAST wins
+ *   gh issue view 23 -R b/pai-harness                          -> `-R` is a real alias
+ *   GH_REPO=b/pai-harness gh issue view 23                     -> env is honoured
+ *
+ * The first was a guard bypass: taking the first occurrence let
+ * `--repo unprotected/x --repo protected/y` be vetted against `unprotected/x`
+ * and closed in `protected/y`.
+ */
+export type CloseTarget =
+  | { kind: "none" }
+  | { kind: "ambiguous"; reason: string }
+  | { kind: "one"; issue: string; repo?: string };
+
+/**
+ * What a command closes, or a refusal to guess.
+ *
+ * Inferring a `gh` invocation by regex over an arbitrary shell string is a
+ * parser differential by construction: wherever this disagrees with the shell
+ * and with `gh`, the guard vets one issue's labels while another issue gets
+ * closed. Three rounds of security review found three such disagreements in
+ * three successive versions of this parser, which is the signal to stop
+ * tightening the pattern and change what the pattern is FOR.
+ *
+ * So the parse no longer decides *what to check*. It decides *whether the
+ * command is simple enough to check at all*. Anything with more than one
+ * close, a command separator, a substitution, or a flag value this cannot
+ * read literally is reported ambiguous, and the caller blocks. Detection
+ * stays deliberately over-broad because its failure mode is now a refusal
+ * rather than a wave-through.
+ *
+ * The bypass that forced this: `closeMatch` took the FIRST issue number while
+ * the repo scan took the LAST slug, so
+ *
+ *     gh issue close 1 --repo unprotected/x; gh issue close 99 --repo protected/y
+ *
+ * vetted issue 1 against protected/y and closed 99 in it. No amount of
+ * regex care fixes that class; refusing to answer does.
+ */
+/** A `gh issue close` anywhere in a segment, with nothing required after it. */
+const CLOSE_INVOCATION = /\bgh\b.*?\bissue\b.*?\bclose\b/;
+
+/** `https://github.com/owner/name/issues/123`, which `gh` accepts in place of a number. */
+const ISSUE_URL = /https?:\/\/[^\s"'`]*?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)/;
+
+export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = process.env): CloseTarget {
+  // Detection is deliberately loose and requires NOTHING after `close`. The
+  // previous version demanded `close\s+(\d+)`, so `gh issue close --repo a/b 23`
+  // — flag first, number last, which gh accepts — matched nothing, returned
+  // "no close here", and the guard stepped aside entirely. A detector that
+  // can under-match is a bypass; a detector that over-matches is at worst an
+  // inconvenient refusal.
+  if (!CLOSE_INVOCATION.test(command)) return { kind: "none" };
+
+  const ambiguous = (reason: string): CloseTarget => ({ kind: "ambiguous", reason });
+
+  // Indirection that cannot be resolved from the source text. `gh` acts on
+  // the expanded command; we only ever see what was typed.
+  if (/\$\(|`|\$\{/.test(command)) return ambiguous("a command substitution makes the target unreadable — run the close on its own");
+  if (/\beval\b/.test(command)) return ambiguous("an eval makes the target unreadable — run the close on its own");
+
+  // Split on separators rather than rejecting them outright, so an ordinary
+  // `cd somewhere && gh issue close 23 --repo a/b` still gets vetted. Exactly
+  // one segment may be closing an issue: two let the issue number from one be
+  // paired with the repository from the other, which is the bypass that
+  // prompted all of this.
+  const closing = command.split(/[;|&\n]+/).filter(s => CLOSE_INVOCATION.test(s));
+  if (closing.length !== 1) {
+    return ambiguous(`${closing.length} issue closes in one command — run them separately so each can be checked`);
+  }
+  const segment = closing[0];
+
+  // A URL carries its own owner/name, which overrides --repo. If both are
+  // present and disagree, we cannot tell which gh will use.
+  const url = segment.match(ISSUE_URL);
+  const flagRepo = parseRepoSlug(segment, env);
+  if (url) {
+    const urlRepo = `${url[1]}/${url[2]}`;
+    if (flagRepo && flagRepo !== urlRepo) {
+      return ambiguous("the issue URL and --repo name different repositories — pass one of them");
+    }
+    return { kind: "one", issue: url[3], repo: urlRepo };
+  }
+
+  // A flag is present but its value is not a literal slug (`--repo "$REPO"`).
+  // Defaulting here would vet an entirely different repository.
+  if (/(?:--repo|-R)[\s=]/.test(segment) && !flagRepo) {
+    return ambiguous("the --repo value is not a literal owner/name — pass it literally so it can be checked");
+  }
+
+  // Prefer the number immediately after `close`, which is the ordinary form
+  // and is unambiguous even when other digits appear in a comment body.
+  const direct = segment.match(/\bclose\b\s+['"]?#?(\d+)\b/);
+  if (direct) return { kind: "one", issue: direct[1], repo: flagRepo };
+
+  // Otherwise gh is taking the number from somewhere later in the line. Only
+  // act when exactly one candidate exists; guessing between several is how
+  // the wrong issue gets vetted.
+  const after = segment.slice(segment.search(/\bclose\b/));
+  const numbers = [...new Set((after.match(/(?<![\w/.-])#?(\d+)\b/g) || []).map(n => n.replace("#", "")))];
+  if (numbers.length === 1) return { kind: "one", issue: numbers[0], repo: flagRepo };
+  return ambiguous(
+    numbers.length === 0
+      ? "no issue number could be read from the command — pass it directly after `close`"
+      : `several numbers could be the issue (${numbers.join(", ")}) — put the issue number directly after \`close\``,
+  );
+}
+
+export function parseRepoSlug(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  // Global, and keep the last — `gh` lets a later flag override an earlier one.
+  const matches = [...command.matchAll(/(?:--repo|-R)[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/g)];
+  const explicit = matches.length ? matches[matches.length - 1][1] : undefined;
+  // `gh` falls back to GH_REPO when no flag is given.
+  const slug = explicit ?? env.GH_REPO?.trim();
+  if (!slug) return undefined;
+
+  // `[A-Za-z0-9._-]+` admits `.` and `..`, so `--repo ../..` parsed as a slug
+  // and reached Octokit, which built `/repos/../../issues/N` and issued it —
+  // the request normalises to a different endpoint entirely. Observed: the
+  // guard answering "Not Found - https://docs.github.com/rest" for a crafted
+  // `--repo`. A GET with the operator's own token is a small prize, but a
+  // relative segment is never part of a real `owner/name`, so refuse it.
+  const parts = slug.split("/");
+  if (parts.length !== 2) return undefined;
+  if (parts.some(seg => !seg || seg === "." || seg === ".." || !/^[A-Za-z0-9._-]+$/.test(seg))) {
+    return undefined;
+  }
+  return slug;
+}
+
+/**
+ * Strip credential-shaped substrings from text that is about to be printed.
+ *
+ * Hook output lands in transcripts and, downstream, in issue comments. An API
+ * error can carry the request URL, and a base URL given as
+ * `https://user:token@host` would put a secret somewhere durable. Cheap
+ * insurance at the one place that prints an upstream error verbatim (#140).
+ */
+export function redactSecrets(text: string): string {
+  return String(text)
+    .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "$1[REDACTED]")
+    .replace(/\/\/[^/@\s]+:[^/@\s]+@/g, "//[REDACTED]@");
+}

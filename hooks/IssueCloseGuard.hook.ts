@@ -13,17 +13,9 @@
 import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { parseHookInput, findWorkflowState, HARNESS_ROOT } from './lib/utils';
+import { parseHookInput, findWorkflowState, parseCloseTarget, redactSecrets, HARNESS_ROOT } from './lib/utils';
+import { commentTemplateViolation } from './lib/comment-template';
 import { createGitHubClient, getIssue } from '../lib/github';
-
-const TEMPLATE_RULES = [
-  { marker: '## AC-', required: ['Type:', 'Metric:', 'Threshold:', 'Baseline:', 'Evidence Method:', 'Pass Criteria:'] },
-  { marker: '## ATTEMPT', required: ['Approach:', 'Files Changed:', 'Result:', 'Evidence:', 'Why It Failed:'] },
-  { marker: '## DISCOVERY', required: ['### Docs read', '### Issue context'] },
-  { marker: '## Completion Report', required: ['### Evidence per AC', '### Ship Scorecard'] },
-  { marker: '## Sizing Declaration', required: ['Predicted:', 'Files:'] },
-  { marker: '## Sizing Outcome', required: ['Declared:', 'Actual:'] },
-];
 
 function block(reason: string): never {
   console.log(JSON.stringify({ decision: 'block', reason }));
@@ -31,30 +23,11 @@ function block(reason: string): never {
   throw new Error('unreachable');
 }
 
+// Rules live in hooks/lib/comment-template.ts — HOOK-ARCHITECTURE-SPEC wants
+// the trigger thin, and SC-371 caps this file at 150 lines.
 function validateCommentTemplate(command: string) {
-  let body = '';
-  const heredocMatch = command.match(/--body\s+"?\$\(cat\s+<<'?EOF'?\s*\n?([\s\S]*?)\nEOF/);
-  if (heredocMatch) body = heredocMatch[1];
-  else {
-    const bodyMatch = command.match(/(?:--body|-b)\s+["']([^"']*(?:(?:\\.)[^"']*)*)['"]/);
-    if (bodyMatch) body = bodyMatch[1];
-  }
-  if (!body) return;
-
-  if (/^## AC-\d+/m.test(body))
-    block('ACs (## AC-N) must be posted to the issue body via "gh issue edit --body", not as comments.');
-  if (body.includes('### Docs read') && !body.includes('## DISCOVERY'))
-    block('Comment contains "### Docs read" but no "## DISCOVERY" heading. Use the DISCOVERY template.');
-  if (body.includes('### Evidence per AC') && !body.includes('## Completion Report'))
-    block('Comment contains "### Evidence per AC" but no "## Completion Report" heading.');
-  if (body.includes('REPLACE:'))
-    block('Comment body contains unfilled REPLACE: placeholder(s).');
-
-  for (const rule of TEMPLATE_RULES) {
-    if (!body.includes(rule.marker)) continue;
-    const missing = rule.required.filter(f => !body.includes(f));
-    if (missing.length) block(`Template "${rule.marker}" missing fields: ${missing.join(', ')}. See TEMPLATES.md.`);
-  }
+  const violation = commentTemplateViolation(command);
+  if (violation) block(violation);
 }
 
 function validateHmac(wf: any, slug: string, issueNum: string) {
@@ -82,23 +55,52 @@ async function main() {
     process.exit(0);
   }
 
-  const closeMatch = command.match(/gh\s+issue\s+close\s+(\d+)/);
-  if (!closeMatch) process.exit(0);
-  const issueNum = closeMatch[1];
+  // The parse reports whether the command is simple enough to vet, not what
+  // to vet — see parseCloseTarget. Anything it cannot read unambiguously is
+  // refused rather than guessed at, because a guess here checks one issue's
+  // labels and closes another's.
+  const target = parseCloseTarget(command);
+  if (target.kind === 'none') process.exit(0);
+  if (target.kind === 'ambiguous') {
+    block(`Cannot vet this close — ${target.reason}.`);
+  }
 
-  const repoMatch = command.match(/--repo\s+(\S+)/);
-  const repo = repoMatch?.[1] || 'hornjason/pai-config';
+  const issueNum = target.issue;
+  const repo = target.repo || 'hornjason/pai-config';
 
   const wf = findWorkflowState(issueNum);
   if (!wf) {
+    // #140: `block()` used to sit inside a `try` whose `catch {}` was empty,
+    // so every way of failing to READ the labels — no credential (#139), a
+    // rate limit, a malformed repo, a network blip — fell through to the
+    // warning below and exited 0. The close went ahead. Measured: the same
+    // close of the same p1-labelled issue blocked with a token present and
+    // was waved through without one.
+    //
+    // There is no workflow-state.json here, so the labels are the only
+    // evidence available. Not being able to read them is not the same as
+    // reading them and finding nothing, and only one of those is safe to
+    // treat as permission.
+    let labelNames: string;
     try {
       const github = createGitHubClient();
       const issueData = await getIssue(github, repo, parseInt(issueNum, 10));
-      const labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
-      if (labelNames.includes('p1-ship-next') || labelNames.includes('p2-this-week')) {
-        block(`Cannot close #${issueNum} — has ${labelNames.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
-      }
-    } catch {}
+      labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
+    } catch (e: any) {
+      // Scrub before printing — the message can carry the request URL, and a
+      // block reason is echoed into transcripts and issue comments.
+      const detail = redactSecrets(String(e?.message || e)).slice(0, 200);
+      block(
+        `Cannot close #${issueNum} — no workflow-state.json, and its labels could not be ` +
+        `read to check whether it is protected: ${detail}\n` +
+        `Fix the GitHub access (GITHUB_TOKEN or GH_TOKEN) and retry, or close it on GitHub ` +
+        `directly if you have already confirmed it does not need to ship.`,
+      );
+    }
+
+    if (labelNames.includes('p1-ship-next') || labelNames.includes('p2-this-week')) {
+      block(`Cannot close #${issueNum} — has ${labelNames.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
+    }
     console.log(`<system-reminder>\nWARNING: Closing #${issueNum} but no workflow-state.json found.\nIf this issue went through ship, gates may not have been run.\n</system-reminder>`);
     process.exit(0);
   }
