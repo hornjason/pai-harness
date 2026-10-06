@@ -159,7 +159,26 @@ function loadAndValidateHarness(projectRoot: string): ProjectHarness | null {
  * Returns false when the ref still cannot be resolved, so the caller can say
  * "could not measure" instead of "failed".
  */
+/** Exported for test: one entry per (cwd, ref) actually resolved. */
+export const __refResolutionCache = new Map<string, boolean>();
+const REF_RESOLUTION_CACHE = __refResolutionCache;
+
 function ensureRemoteRef(ref: string, cwd: string): boolean {
+  // Memoized per (cwd, ref) for the life of the process. A gate run commonly
+  // has a dozen ACs all diffing against origin/main; without this each one
+  // pays its own fetch, and the 60s timeout below turns an offline remote into
+  // minutes of dead gate time before any verdict exists. Negative results are
+  // cached too — that is the expensive case, and re-attempting a fetch that
+  // just failed within the same run has nothing new to learn.
+  const key = `${cwd}\u0000${ref}`;
+  const cached = REF_RESOLUTION_CACHE.get(key);
+  if (cached !== undefined) return cached;
+  const ok = resolveRemoteRef(ref, cwd);
+  REF_RESOLUTION_CACHE.set(key, ok);
+  return ok;
+}
+
+function resolveRemoteRef(ref: string, cwd: string): boolean {
   // execFileSync with an argv array throughout: no shell, so a ref name can
   // never be interpreted as a command. The shape checks below stay as a
   // second line, but they are no longer what makes this safe.
@@ -194,9 +213,29 @@ function ensureRemoteRef(ref: string, cwd: string): boolean {
   return resolves();
 }
 
-/** Remote refs an evidence command depends on, e.g. `origin/main`. */
-function remoteRefsIn(command: string): string[] {
-  return [...command.matchAll(/\b(origin|upstream)\/([A-Za-z0-9._/-]+)/g)].map(m => `${m[1]}/${m[2]}`);
+/**
+ * Remote refs an evidence command depends on, e.g. `origin/main`.
+ *
+ * Scanned narrowly, because this function's mistakes go both ways. Reading a
+ * ref that is not there makes a measurable AC unmeasurable and blocks it;
+ * missing one that is there lets the stale-ref FAIL through. A bare scan for
+ * `origin/...` anywhere in the string does both: `grep -r origin/main docs/`
+ * names no ref at all, and `git log -- docs/origin/main.md` names a path.
+ *
+ * So: only inside a `git` invocation, and only before the `--` pathspec
+ * separator, and not when preceded by a path character.
+ */
+export function remoteRefsIn(command: string): string[] {
+  const refs = new Set<string>();
+  for (const invocation of command.matchAll(/\bgit\s+(?:-C\s+\S+\s+)?([^|&;]*)/g)) {
+    const beforePathspec = invocation[1].split(" -- ")[0];
+    // Segment-wise, so a `.` can appear inside a ref name (`release-2.1`) but
+    // `..` terminates it — `origin/main..HEAD` depends on `origin/main`, and
+    // asking git to fetch `main..HEAD` fetches nothing.
+    const inRefPosition = /(?<![\w/.-])(origin|upstream)\/([A-Za-z0-9_-]+(?:[./][A-Za-z0-9_-]+)*)/g;
+    for (const m of beforePathspec.matchAll(inRefPosition)) refs.add(`${m[1]}/${m[2]}`);
+  }
+  return [...refs];
 }
 
 /**
@@ -234,11 +273,27 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
     const evidenceCwdForRefs = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
     const missingRefs = remoteRefsIn(cmd).filter(r => !ensureRemoteRef(r, evidenceCwdForRefs));
     if (missingRefs.length > 0) {
-      console.warn(`WARN: AC ${ac.id} needs ${missingRefs.join(", ")} which could not be resolved or fetched — reporting UNMEASURED rather than FAIL`);
-      state.acs[i].verdict = "SKIP";
+      // Blocking, not SKIP.
+      //
+      // The first version of this marked the AC SKIP, reasoning that an
+      // unmeasured AC should not be scored as a code failure. Security review
+      // caught what that actually bought: gates/orchestrator.ts advances when
+      // every AC is PASS or SKIP, so an unresolvable ref would have turned a
+      // blocking gate into a passing one. Anything able to make a ref
+      // unresolvable — a typo, a network blip, a ref name chosen for the
+      // purpose — would have been a gate bypass.
+      //
+      // What #118 is actually about is narrower than "never FAIL here". The
+      // #103 damage was a confident, specific, fabricated finding — named
+      // files, named line numbers — that a second agent then acted on. Saying
+      // "origin/main is unreachable, I measured nothing" is the opposite of
+      // that. It blocks, and it is honest about why, which is what lets a
+      // human or a heal step fix the environment instead of the code.
+      console.warn(`WARN: AC ${ac.id} needs ${missingRefs.join(", ")} which could not be resolved or fetched — blocking as UNMEASURED (environment fault, not a code defect)`);
+      state.acs[i].verdict = "FAIL";
       state.acs[i].evidence = {
         type: "unmeasured",
-        content: `Evidence requires ${missingRefs.join(", ")}; the ref is absent and could not be fetched. This is an environment fault — the AC was not evaluated, and is NOT a failure.`,
+        content: `Evidence requires ${missingRefs.join(", ")}; the ref is absent and could not be fetched. This is an environment fault — the AC was NOT evaluated, so no claim is made about the code. Fix the checkout (fetch the ref), then re-run; do not change code in response to this.`,
       };
       acUpdated = true;
       continue;
