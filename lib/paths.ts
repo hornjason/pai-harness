@@ -1,5 +1,6 @@
 import { dirname, join, resolve } from "path";
-import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { chmodSync, existsSync, mkdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import { randomBytes } from "crypto";
 
 export function harnessRoot(): string {
@@ -7,6 +8,46 @@ export function harnessRoot(): string {
   const repoRoot = resolve(import.meta.dir, "..");
   if (existsSync(join(repoRoot, "HARNESS.md"))) return repoRoot;
   return join(process.env.HOME || "", ".claude");
+}
+
+/**
+ * The MAIN repository root containing `dir`, or null if `dir` is not in a repo
+ * (#68).
+ *
+ * SessionStart hooks were calling `process.cwd()` and treating it as the
+ * project root. A session opened in `~` therefore skipped worktree cleanup
+ * entirely while still reporting "no stale files found", and sessions started
+ * in `~/.claude` created a stray worktree tree at `~/.claude/.claude/worktrees`
+ * with 16 entries in it. Cleanup ran or didn't based on where a terminal
+ * happened to be.
+ *
+ * `--git-common-dir`, not `--show-toplevel`: from inside a LINKED WORKTREE,
+ * `--show-toplevel` returns that worktree. `.claude/worktrees/` lives in the
+ * main checkout, so resolving to the worktree would make cleanup look at a
+ * directory that is never there — failing silently in the exact situation the
+ * cleanup exists to handle. `--git-common-dir` always points at the main
+ * repo's `.git`, from a worktree or not.
+ */
+export function repoRootFrom(dir: string): string | null {
+  const r = spawnSync("git", ["-C", dir, "rev-parse", "--git-common-dir"], {
+    encoding: "utf-8",
+    timeout: 5000,
+  });
+  if (r.status !== 0) return null;
+  const gitDir = r.stdout.trim();
+  if (!gitDir) return null;
+  // Relative when `dir` is already the repo root (".git"); absolute otherwise.
+  const repo = dirname(resolve(dir, gitDir));
+  // Always hand back a real path. Git returns an absolute, symlink-resolved
+  // path from inside a worktree but a bare relative ".git" from the root, so
+  // without this the same repo resolves to "/var/..." or "/private/var/..."
+  // depending on which directory you asked from. Callers compare these to
+  // decide whether to DELETE a worktree, so a string mismatch is not cosmetic.
+  try {
+    return realpathSync(repo);
+  } catch {
+    return repo;
+  }
 }
 
 export function paiRoot(): string {

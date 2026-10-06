@@ -113,22 +113,43 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
       continue;
     }
 
-    // Check if branch is merged to main
-    const mergeCheck = spawnSync("git", ["branch", "--merged", "main"], {
+    // Is the branch merged into main? (#68)
+    //
+    // This used to parse `git branch --merged main` display output, stripping
+    // a leading `*`. Git also prefixes `+ ` on any branch checked out in a
+    // LINKED WORKTREE — which is, by definition, every branch this function
+    // evaluates. So entries came out as "+ 24-doc-hygiene-infra", never
+    // matched the bare name, every candidate was classified unmerged, and the
+    // function removed nothing for its entire existence. 36 worktrees and
+    // 243 MB accumulated behind it.
+    //
+    // Ask git the question directly instead. `--is-ancestor` is a predicate
+    // with an exit status, so there is no display output to parse and no
+    // decoration to strip — the whole class of prefix bug goes away rather
+    // than this one instance of it.
+    //
+    // Argument order is load-bearing and inverting it is catastrophic: this
+    // asks whether BRANCH is an ancestor of main. Reversed, every branch cut
+    // from main would look merged and cleanup would delete unmerged work.
+    // test/unit/worktree-cleanup-merge.test.ts pins both directions.
+    const mergeCheck = spawnSync("git", ["merge-base", "--is-ancestor", branchName, "main"], {
       cwd: projectRoot,
       encoding: "utf-8",
       timeout: 5000,
     });
 
-    if (mergeCheck.status !== 0) {
-      result.errors.push(`Failed to check merge status for ${entry}: ${mergeCheck.stderr}`);
+    // Exit 0 = merged, 1 = not merged. Anything else (128: bad revision, no
+    // `main`, not a repo) is an error, NOT a verdict — treating it as "not
+    // merged" would be safe here, but treating it as merged would delete work,
+    // and silently swallowing it is how the original bug stayed invisible.
+    if (mergeCheck.status !== 0 && mergeCheck.status !== 1) {
+      result.errors.push(
+        `Failed to check merge status for ${entry}: git exited ${mergeCheck.status}: ${mergeCheck.stderr.trim()}`,
+      );
       continue;
     }
 
-    const mergedBranches = mergeCheck.stdout.split("\n").map(b => b.trim().replace(/^\*\s*/, ""));
-    const isMerged = mergedBranches.includes(branchName);
-
-    if (!isMerged) {
+    if (mergeCheck.status !== 0) {
       // Branch not merged — keep it
       result.kept.push(`${entry} (unmerged branch: ${branchName})`);
       continue;

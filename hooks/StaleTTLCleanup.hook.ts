@@ -14,6 +14,7 @@
 import { existsSync, appendFileSync } from 'fs';
 import { join } from 'path';
 import { cleanStaleFiles } from '../lib/stale-cleanup';
+import { repoRootFrom } from '../lib/paths';
 
 const PAI_WORK = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 const STALE_LOG = join(process.env.HOME!, '.claude', 'state', 'stale-cleanup.log');
@@ -32,10 +33,16 @@ const result = cleanStaleFiles(PAI_WORK, FOUR_HOURS_MS, SEVEN_DAYS_MS);
 let deletedCount = result.deleted;
 for (const msg of result.logs) log(msg);
 
+// Resolve the project root ONCE from the repo, not from wherever the terminal
+// happened to be (#68). A session opened in ~ used to skip worktree cleanup
+// entirely while still reporting success.
+const PROJECT_ROOT = repoRootFrom(process.cwd());
+if (!PROJECT_ROOT) log('cleanup skipped: cwd is not inside a git repository');
+
 // Worktree cleanup
-try {
+if (PROJECT_ROOT) try {
   const { cleanupWorktrees } = await import('../lib/worktree-cleanup.ts');
-  const projectRoot = process.cwd();
+  const projectRoot = PROJECT_ROOT;
   if (existsSync(join(projectRoot, '.claude', 'worktrees'))) {
     const wr = await cleanupWorktrees({ projectRoot, maxAgeMs: 24 * 60 * 60 * 1000 });
     if (wr.removed.length) {
@@ -46,9 +53,9 @@ try {
 } catch (e) { log(`WORKTREE cleanup error: ${e}`); }
 
 // Branch cleanup
-try {
+if (PROJECT_ROOT) try {
   const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts');
-  const projectRoot = process.cwd();
+  const projectRoot = PROJECT_ROOT;
   const br = await cleanupStaleBranches({ projectRoot, maxAgeDays: 7 });
   if (br.deleted.length) {
     deletedCount += br.deleted.length;
@@ -58,9 +65,9 @@ try {
 
 // Gap scan — drift detection
 let gapWarns = 0;
-try {
+if (PROJECT_ROOT) try {
   const { scanGaps } = await import('../lib/gap-scanner.ts');
-  const projectRoot = process.cwd();
+  const projectRoot = PROJECT_ROOT;
   const gapResult = scanGaps(projectRoot, PAI_WORK);
   for (const r of gapResult.results) {
     if (r.status === 'WARN') {
