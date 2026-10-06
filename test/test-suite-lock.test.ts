@@ -517,3 +517,103 @@ describe("release", () => {
     expect(() => releaseFullSuiteSlot("nobody", opts())).not.toThrow();
   });
 });
+
+/**
+ * #74 — a slot leaks for a full TTL when a LATER PreToolUse hook blocks the
+ * command.
+ *
+ * TestSuiteGuard acquires at PreToolUse. If another hook then refuses the same
+ * command, the tool never runs, so TestSuiteRelease (PostToolUse) never fires.
+ * Observed during #67: COMP-7 blocked `bun test ... ; cat /tmp/out` for the
+ * `cat`, leaving slot-0 held with no suite running and a budget unit spent.
+ * With capacity 2, two such blocks wedge every session on the machine for
+ * ~7 minutes.
+ *
+ * PreToolUse cannot know whether a later hook will block, and no "tool was
+ * denied" signal reaches the hook that acquired. So reconcile on the next
+ * acquire instead.
+ *
+ * The reconciliation deliberately does NOT try to attribute processes to
+ * sessions — that is the part #67 established is unreliable, because the
+ * agentgrit suite leaks ~31 dangling bun processes. It only uses the zero
+ * case: a slot means a running suite, so if NO suite is running anywhere on
+ * the machine, every slot is provably false regardless of its age.
+ */
+describe("#74: a slot held with no suite running is reclaimed early", () => {
+  const GRACE = 25; // seconds — covers acquire-then-spawn
+
+  test("reclaims a leaked slot once no suite is running and the grace period has passed", () => {
+    const t0 = 1_000_000;
+    // capacity 1, or the second session simply takes the OTHER slot and the
+    // test passes without reclaiming anything. The first draft of this test
+    // omitted it and went green against unchanged code.
+    const first = acquireFullSuiteSlot("blocked-session", opts({ now: t0, capacity: 1, suitesRunning: () => true }));
+    expect(first.ok).toBe(true);
+
+    // The command was blocked by another hook: no suite ever started, and no
+    // release will come. 30s later, with nothing running anywhere.
+    const at = t0 + (GRACE + 5) * 1000;
+    const after = acquireFullSuiteSlot("next-session", opts({
+      now: at,
+      capacity: 1,
+      suitesRunning: () => false,
+    }));
+    expect(after.ok).toBe(true);
+    expect(heldSlots(dir, at, 1).map(h => h.sessionId)).toEqual(["next-session"]);
+  });
+
+  test("does NOT reclaim within the grace period — acquire happens before the suite spawns", () => {
+    const t0 = 2_000_000;
+    expect(acquireFullSuiteSlot("starting", opts({ now: t0, suitesRunning: () => false })).ok).toBe(true);
+
+    // 5s later bun has not appeared in the process table yet. Stealing the slot
+    // here would break the very case the lock exists for.
+    const racer = acquireFullSuiteSlot("racer", opts({
+      now: t0 + 5000,
+      capacity: 1,
+      suitesRunning: () => false,
+    }));
+    expect(racer.ok).toBe(false);
+  });
+
+  test("never reclaims while a suite IS running, however old the slot", () => {
+    const t0 = 3_000_000;
+    expect(acquireFullSuiteSlot("long-runner", opts({ now: t0, suitesRunning: () => true })).ok).toBe(true);
+
+    // Well past the grace period but still under the TTL, with a suite alive.
+    const other = acquireFullSuiteSlot("other", opts({
+      now: t0 + 200_000,
+      capacity: 1,
+      suitesRunning: () => true,
+    }));
+    expect(other.ok).toBe(false);
+  });
+
+  test("the TTL still reclaims even when liveness cannot be determined", () => {
+    const t0 = 4_000_000;
+    expect(acquireFullSuiteSlot("ghost", opts({ now: t0, suitesRunning: () => true })).ok).toBe(true);
+
+    // A detector that always claims something is running must not be able to
+    // pin a slot forever — the TTL remains the backstop it was designed to be.
+    const later = acquireFullSuiteSlot("after-ttl", opts({
+      now: t0 + 421_000,
+      capacity: 1,
+      suitesRunning: () => true,
+    }));
+    expect(later.ok).toBe(true);
+  });
+
+  test("a detector that throws fails safe: the slot is kept, not reclaimed", () => {
+    const t0 = 5_000_000;
+    expect(acquireFullSuiteSlot("holder", opts({ now: t0, suitesRunning: () => true })).ok).toBe(true);
+
+    const unknown = acquireFullSuiteSlot("next", opts({
+      now: t0 + 100_000,
+      capacity: 1,
+      suitesRunning: () => { throw new Error("ps unavailable"); },
+    }));
+    // Reclaiming on an unreadable process table would let two real suites run
+    // against a cap of one, which is the OOM condition the cap prevents.
+    expect(unknown.ok).toBe(false);
+  });
+});

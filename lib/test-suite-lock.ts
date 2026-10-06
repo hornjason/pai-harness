@@ -31,6 +31,7 @@ import {
   writeFileSync,
   writeSync,
 } from "fs";
+import { execFileSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -56,6 +57,11 @@ export interface LockOptions {
   capacity?: number;
   ttlSeconds?: number;
   now?: number;
+  /**
+   * Whether any full suite is running on this machine. Injected so tests do
+   * not depend on the real process table. Defaults to `anySuiteRunning`.
+   */
+  suitesRunning?: () => boolean;
 }
 
 interface SlotEntry {
@@ -245,6 +251,39 @@ function segmentIsFullSuite(segment: string, depth = 0): boolean {
   return !hasPath;
 }
 
+/**
+ * Seconds a slot is protected from liveness-based reclamation.
+ *
+ * The slot is taken at PreToolUse, before the suite is spawned, so there is a
+ * window where the slot is legitimately held and no `bun test` is in the
+ * process table yet. Reclaiming inside that window would break the exact case
+ * the lock exists for.
+ */
+const LIVENESS_GRACE_SECONDS = 25;
+
+/**
+ * True when at least one full suite is running anywhere on this machine.
+ *
+ * ONLY THE ZERO CASE IS USED, deliberately. #67 established that attributing
+ * bun processes to sessions is unreliable — the agentgrit suite leaks ~31
+ * dangling bun processes per run, which is why slots are files rather than a
+ * process count. This does not attribute anything: a slot means a running
+ * suite, so if NO suite is running at all, every slot is provably false.
+ *
+ * Matches on the command line rather than the executable name. `pgrep -f bun`
+ * is useless here — it matches powerd's bundle paths, mdbulkimport and any
+ * other command containing "bun" as a substring.
+ *
+ * Throws rather than guessing when the process table cannot be read; the
+ * caller treats that as "cannot determine" and keeps the slot.
+ */
+export function anySuiteRunning(): boolean {
+  const out = execFileSync("ps", ["-axo", "command"], { encoding: "utf-8" });
+  return out
+    .split("\n")
+    .some(line => /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/.test(line));
+}
+
 /** Non-stale slot holders, newest timestamp wins. */
 export function heldSlots(
   lockDir: string,
@@ -293,11 +332,31 @@ export function acquireFullSuiteSlot(
     // condition this exists to prevent. Replacing it with a flat refusal then
     // over-corrected: Marcus holds the slot, Quinn is refused, and the pipeline
     // reports a test failure that is really a lock collision.
+    // #74: a slot leaks for a full TTL when a LATER PreToolUse hook blocks the
+    // command — the tool never runs, so PostToolUse never releases. Nothing
+    // tells the acquiring hook it was denied, so reconcile here instead.
+    //
+    // Only the zero case is used, and only after a grace period. If no suite
+    // is running anywhere, every slot is provably false; within the grace
+    // period the slot may simply be waiting for its own `bun` to appear. If
+    // liveness cannot be determined the slots are KEPT: reclaiming on an
+    // unreadable process table would let two real suites run against a cap of
+    // one, which is the OOM condition this whole mechanism prevents.
+    let noSuiteRunning = false;
+    try {
+      noSuiteRunning = (options.suitesRunning ?? anySuiteRunning)() === false;
+    } catch {
+      noSuiteRunning = false;
+    }
+
     for (let i = 0; i < capacity; i++) {
       const path = slotPath(lockDir, i);
       const entry = readSlot(path);
+      const ageSeconds = entry ? Math.floor((now - entry.startedAt) / 1000) : Infinity;
       const stale =
-        !entry || Math.floor((now - entry.startedAt) / 1000) >= ttlSeconds;
+        !entry ||
+        ageSeconds >= ttlSeconds ||
+        (noSuiteRunning && ageSeconds >= LIVENESS_GRACE_SECONDS);
 
       const claim = JSON.stringify({ sessionId, startedAt: now });
 
