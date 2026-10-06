@@ -46,13 +46,48 @@ function createWorkDir(slug: string, phase?: string, ageMs?: number): void {
 }
 
 describe('archiveAndPurge', () => {
-  test('archives orphaned directory (no workflow-state.json)', () => {
-    const slug = 'orphaned-dir';
+  // #132. The orphan branch had no age check at all, where every other branch
+  // in archiveAndPurge compares against a TTL. A run directory was therefore
+  // archived on sight for as long as it had not yet written
+  // workflow-state.json — which, for a run that writes other artifacts first,
+  // means while it is live.
+  //
+  // This is not a hypothetical. It happened to this session's own run
+  // directory mid-session: created 17:22, holding the run's PRD, moved into
+  // .archive by a SessionStart cleanup, and the next write to the PRD failed
+  // with "file does not exist". It also explains why
+  // lib/compliance-backfill.ts has to sweep .archive to find its full corpus
+  // of grade records — a moved directory splits a run's artifacts across two
+  // paths with nothing recording that they belong together.
+  //
+  // The test below used to assert the bug: it created a brand-new directory
+  // and expected `archived` to be 1.
+  test('does NOT archive an orphaned directory that was just created', () => {
+    const slug = 'orphaned-but-live';
     const dir = join(testDir, slug);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'goal-record.json'), JSON.stringify({ goal: 'test' }));
+    writeFileSync(join(dir, 'PRD.md'), '# a run in progress');
 
     const result = archiveAndPurge(testDir, 4 * 60 * 60 * 1000, 30 * 24 * 60 * 60 * 1000);
+
+    expect(result.archived, 'a live run directory was archived underneath it').toBe(0);
+    expect(existsSync(join(dir, 'PRD.md'))).toBe(true);
+    expect(existsSync(join(testDir, '.archive', slug))).toBe(false);
+  });
+
+  test('archives an orphaned directory once it is past the archive TTL', () => {
+    // The other half: the branch still has a job. Only "on sight" goes away.
+    const slug = 'orphaned-dir';
+    const fourHoursMs = 4 * 60 * 60 * 1000;
+    const dir = join(testDir, slug);
+    mkdirSync(dir, { recursive: true });
+    const stale = join(dir, 'goal-record.json');
+    writeFileSync(stale, JSON.stringify({ goal: 'test' }));
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000);
+    utimesSync(stale, fiveHoursAgo, fiveHoursAgo);
+    utimesSync(dir, fiveHoursAgo, fiveHoursAgo);
+
+    const result = archiveAndPurge(testDir, fourHoursMs, 30 * 24 * 60 * 60 * 1000);
 
     expect(result.archived).toBe(1);
     expect(existsSync(dir)).toBe(false);
