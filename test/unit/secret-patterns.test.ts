@@ -122,3 +122,25 @@ describe("generated scanners use the registry, not their own copy", () => {
     }
   });
 });
+
+describe("deduplication must not narrow coverage", () => {
+  test("sk- keys shorter than 48 chars are still caught", () => {
+    // The regression the security review caught. pre-commit used {48}, CI used
+    // {20,}; merging to a single registry by taking the hook's value would
+    // have silently narrowed CI. When registries disagree, the union is the
+    // safe merge — a dedup must never remove coverage that existed.
+    const re = new RegExp(tier1Ere());
+    expect(re.test("sk-" + "a".repeat(24)), "a 24-char sk- key slipped through").toBe(true);
+    expect(re.test("sk-" + "a".repeat(48))).toBe(true);
+  });
+
+  test("every string embedded in generated shell is validated, not just tier 1", () => {
+    // The validator used to inspect only TIER1, while tier-2 expressions are
+    // interpolated into the same shell — a validator with a narrower view
+    // than the thing it validates.
+    const src = readFileSync(join(REPO_ROOT, "lib", "secret-patterns.ts"), "utf-8");
+    expect(src).toContain("tier2-assignment");
+    expect(src).toContain("tier2-allowlist");
+    expect(unshellSafePatterns()).toEqual([]);
+  });
+});

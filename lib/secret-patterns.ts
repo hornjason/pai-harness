@@ -49,7 +49,12 @@ export const TIER1_SECRET_PATTERNS: SecretPattern[] = [
   { id: "github-server", ere: "ghs_[A-Za-z0-9]{36}", description: "GitHub server-to-server token" },
   { id: "github-pat-fine", ere: "github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}", description: "GitHub fine-grained PAT" },
   { id: "aws-access-key", ere: "AKIA[A-Z0-9]{16}", description: "AWS access key ID" },
-  { id: "openai", ere: "sk-[A-Za-z0-9]{48}", description: "OpenAI API key" },
+  // {20,} not {48}. The pre-commit hook used {48} and the CI scan used {20,};
+  // taking the hook's value would have NARROWED CI, missing any sk- key
+  // shorter than 48 chars — a coverage regression smuggled in by a
+  // deduplication. When registries disagree, the union is the safe merge, not
+  // whichever copy you happened to start from.
+  { id: "openai", ere: "sk-[A-Za-z0-9]{20,}", description: "OpenAI-style API key" },
   { id: "anthropic", ere: "sk-ant-[A-Za-z0-9-]{90,}", description: "Anthropic API key" },
   {
     id: "private-key",
@@ -91,5 +96,17 @@ export function tier1Ere(): string {
  * rather than trusted, because the failure is invisible in review.
  */
 export function unshellSafePatterns(): string[] {
-  return TIER1_SECRET_PATTERNS.filter(p => /['`$\\]/.test(p.ere.replace(/\\\\/g, ""))).map(p => p.id);
+  // Covers EVERY string that reaches generated shell, not just tier 1. The
+  // tier-2 assignment and allowlist expressions are embedded the same way, so
+  // checking only tier 1 would have been a validator with a narrower view
+  // than the thing it validates.
+  const embedded: Array<{ id: string; ere: string }> = [
+    ...TIER1_SECRET_PATTERNS.map(p => ({ id: p.id, ere: p.ere })),
+    { id: "tier2-assignment", ere: TIER2_ASSIGNMENT_ERE },
+    { id: "tier2-allowlist", ere: TIER2_ALLOWED_VALUE_ERE },
+  ];
+  // A single quote ends the shell quoting; a backtick or ${ ends the JS
+  // template the shell is built in. Backslashes are legitimate regex escapes,
+  // so they are not disqualifying on their own.
+  return embedded.filter(p => /['`]|\$\{/.test(p.ere)).map(p => p.id);
 }

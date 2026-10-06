@@ -12,6 +12,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
 import { readFreshCache } from "./behavioral-cache";
+import { tryLoadRungateConfig } from "./config-loader";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -1665,20 +1666,34 @@ export function runAgentFileValidation(root: string) {
       expect(missing).toEqual([]);
     });
 
-    test("AGENT-8: Agent brief models match rungate.json roles config", () => {
+    test("AGENT-8: Agent brief models match the roles config", () => {
       if (!existsSync(agentsDir)) return;
-      // Was hardcoded to "sonnet". Roles are now routed per-role (discovery
-      // and marcus run opus), so the meaningful check is that each brief
-      // matches its configured model — briefs are generated from that config,
-      // and a mismatch means someone hand-edited generated output.
+      // Was hardcoded to "sonnet". Roles are now routed per-role, so the
+      // meaningful check is that each brief matches its configured model —
+      // briefs are generated from that config, and a mismatch means someone
+      // hand-edited generated output.
+      //
+      // #90: this read `.claude/rungate.json` directly, which is the LEGACY
+      // monolith. Scaffold migrated projects to `.claude/rungate/` and
+      // generates briefs from `roles.json` there, so on any migrated project
+      // the generator and this validator read different files. They disagreed
+      // in this very repo — roles.json said sonnet, the stale monolith said
+      // opus — and AGENT-8 reported a violation against output that exactly
+      // matched its real source.
+      //
+      // The failure mode was worse than a false alarm: the message told the
+      // reader to "re-scaffold instead of editing the brief", and
+      // re-scaffolding reproduced the same briefs, so following the advice
+      // could not clear it.
+      //
+      // Go through the canonical loader, which understands both layouts and
+      // prefers the directory. tryLoadRungateConfig is the non-throwing
+      // variant: absent config is "nothing to check", while a MALFORMED
+      // config still throws, per ADR-001 D2 — a broken config must not read
+      // as an unconfigured one.
       const VALID_MODELS = ["sonnet", "opus", "haiku", "fable"];
-      let roles: Record<string, { model?: string }> = {};
-      const configPath = join(root, ".claude", "rungate.json");
-      if (existsSync(configPath)) {
-        try {
-          roles = JSON.parse(readFileSync(configPath, "utf-8")).roles || {};
-        } catch {}
-      }
+      const roles: Record<string, { model?: string }> =
+        (tryLoadRungateConfig(root)?.roles as Record<string, { model?: string }>) ?? {};
 
       const wrong: string[] = [];
       for (const f of readdirSync(agentsDir).filter(f => f.endsWith(".md"))) {
@@ -1691,7 +1706,7 @@ export function runAgentFileValidation(root: string) {
         } else if (!VALID_MODELS.includes(fm.model)) {
           wrong.push(`${f}: model is "${fm.model}", expected one of ${VALID_MODELS.join("|")}`);
         } else if (expected && fm.model !== expected) {
-          wrong.push(`${f}: model is "${fm.model}", but rungate.json roles.${role}.model is "${expected}" — re-scaffold instead of editing the brief`);
+          wrong.push(`${f}: model is "${fm.model}", but the roles config says "${expected}" — re-scaffold instead of editing the brief`);
         }
       }
       if (wrong.length > 0) {

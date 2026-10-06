@@ -35,6 +35,31 @@ const HELPER_FORM = /\bgit\(\s*["'`]config["'`]\s*,\s*["'`]user\.(?:name|email)[
 
 interface Offender { where: string; why: string }
 
+/**
+ * Single-line verdict, shared by scan() and its own tests.
+ *
+ * This used to be a SECOND copy of the classification logic living inside one
+ * test, so "the checker detects every form it claims to" validated the copy
+ * rather than the checker. The two could drift and the tests would still pass
+ * — a checker that tests a different implementation than the one that runs.
+ * The agreement test below pins them together.
+ */
+export function detect(line: string, wrapperBindsDir = false): boolean {
+  if (/^\s*(\/\/|\*|#)/.test(line)) return false;
+  const shell = line.match(SHELL_FORM);
+  if (shell) {
+    const [, dir, flags = ""] = shell;
+    return /--global|--system/.test(flags) || !dir || dir === "." || dir === "$PWD" || dir === '"$PWD"';
+  }
+  if (HELPER_FORM.test(line) || ARGV_FORM.test(line)) {
+    if (/--global|--system/.test(line)) return true;
+    // `"-C", <dir>` in the argv names the target more explicitly than cwd.
+    const namesDirInArgv = /["']-C["']\s*,\s*[^.\s"']/.test(line);
+    return !/\bcwd\s*:/.test(line) && !namesDirInArgv && !wrapperBindsDir;
+  }
+  return false;
+}
+
 function scan(): Offender[] {
   const offenders: Offender[] = [];
 
@@ -79,8 +104,19 @@ function scan(): Offender[] {
         }
         // argv/helper forms pass the directory out-of-band: accept a `cwd:` on
         // the call, or a wrapper in this file that already binds one.
-        if (!/\bcwd\s*:/.test(line) && !wrapperBindsDir) {
-          offenders.push({ where: at, why: "argv-form `git config user.*` with no `cwd:` on the call" });
+        //
+        // Also accept an explicit `"-C", <dir>` in the argv itself. That is
+        // STRONGER than cwd, not weaker: cwd can be inherited or changed by a
+        // parent, while -C names the repo on the command git actually runs.
+        // Rejecting it pushed callers toward the weaker form to satisfy the
+        // checker, which is the wrong direction for a safety rule.
+        // Delegate the verdict to detect() so there is exactly ONE rule.
+        // scan() keeps the reporting; detect() owns the decision.
+        if (detect(line, wrapperBindsDir)) {
+          offenders.push({
+            where: at,
+            why: "argv-form `git config user.*` with no `cwd:` and no explicit `\"-C\", <dir>`",
+          });
         }
         return;
       }
@@ -115,19 +151,6 @@ describe("#84: git identity isolation", () => {
   test("the checker detects every form it claims to", () => {
     // A checker nobody has tried to evade is a checker nobody has tested. These
     // are the exact forms the first version of this file was blind to.
-    const detect = (line: string): boolean => {
-      if (/^\s*(\/\/|\*|#)/.test(line)) return false;
-      const shell = line.match(SHELL_FORM);
-      if (shell) {
-        const [, dir, flags = ""] = shell;
-        return /--global|--system/.test(flags) || !dir || dir === "." || dir === "$PWD" || dir === '"$PWD"';
-      }
-      if (HELPER_FORM.test(line) || ARGV_FORM.test(line)) {
-        return /--global|--system/.test(line) || !/\bcwd\s*:/.test(line);
-      }
-      return false;
-    };
-
     // Must be caught.
     expect(detect(`git config user.email x`)).toBe(true);
     expect(detect(`git config --global user.email x`)).toBe(true);
@@ -141,5 +164,55 @@ describe("#84: git identity isolation", () => {
     expect(detect(`git -C "$WORKSPACE" config user.email x`)).toBe(false);
     expect(detect(`execFileSync("git", ["config", "user.email", v], { cwd: tempDir });`)).toBe(false);
     expect(detect(`// git config user.email x`)).toBe(false);
+  });
+});
+
+describe("the -C allowance does not open a hole", () => {
+  test('explicit "-C", dir in argv is accepted', () => {
+    expect(detect(`sh("git", ["-C", project, "config", "user.email", v], project);`)).toBe(false);
+  });
+
+  test("a bare argv call with neither cwd nor -C is still rejected", () => {
+    expect(detect(`sh("git", ["config", "user.email", v]);`)).toBe(true);
+  });
+
+  test('-C pointing at the current directory is still rejected', () => {
+    expect(detect(`spawnSync("git", ["-C", ".", "config", "user.email", v]);`)).toBe(true);
+  });
+
+  test("--global is still rejected even with -C", () => {
+    expect(detect(`sh("git", ["-C", dir, "config", "--global", "user.email", v]);`)).toBe(true);
+  });
+});
+
+describe("scan() and detect() cannot drift apart", () => {
+  test("they agree on every line in the real corpus", () => {
+    // The pin. scan() keeps its own classification so it can report WHY, and
+    // detect() exists so the evasion tests have something to call. Two
+    // implementations of one rule is how a checker ends up testing a copy of
+    // itself — so compare them over the actual repo, not over fixtures.
+    const flaggedByScan = new Set(scan().map(o => o.where));
+    const flaggedByDetect: string[] = [];
+
+    for (const rel of new Glob("{test,scripts,evals,lib,gates,hooks,workflows}/**/*.{ts,js,sh}").scanSync({ cwd: ROOT })) {
+      if (rel.includes("worktrees/") || rel.includes("node_modules/")) continue;
+      if (rel === SELF) continue;
+      const src = readFileSync(join(ROOT, rel), "utf-8");
+      // Same file-level wrapper flag scan() derives, so the comparison is
+      // like-for-like. Without it the two disagree on wrapper-bound helpers
+      // for a reason that is about missing context, not a differing rule.
+      const wrapperBindsDir = /execFileSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src)
+        || /spawnSync\(\s*["'`]git["'`][\s\S]{0,200}?\bcwd\b/.test(src);
+      src.split("\n").forEach((line, i) => {
+        if (detect(line, wrapperBindsDir)) flaggedByDetect.push(`${rel}:${i + 1}`);
+      });
+    }
+
+    const onlyDetect = flaggedByDetect.filter(w => !flaggedByScan.has(w));
+    const onlyScan = [...flaggedByScan].filter(w => !flaggedByDetect.includes(w));
+    expect(
+      { onlyDetect, onlyScan },
+      "scan() and detect() disagree — one of them is now the wrong rule",
+    ).toEqual({ onlyDetect: [], onlyScan: [] });
   });
 });
