@@ -1432,13 +1432,22 @@ if (distinctWorktrees.length > 1) {
   // path security boundary — invented or summarised paths would have reached
   // `git add`, and an agent that neglected to echo the agreed failure token
   // would have read as success.
+  //
+  // RESIDUAL, AND NOT CLOSED: this reply is still LLM-produced, so an agent
+  // that falsely reports ok:true makes ship.js proceed. That is no longer a
+  // path-security decision — the script chose and staged the files, or it did
+  // not run at all — so the worst case is committing an index the script never
+  // populated, which the commit then fails on. It cannot be closed here:
+  // ship.js has no I/O in the sandbox (#69), so everything crossing back from
+  // a script must pass through an agent. Removing the agent entirely needs the
+  // sandbox to offer a direct exec primitive; tracked separately.
   const collectOut = await agent(`
 Run exactly this and report the result:
 
 cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
-cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT}
+cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT} ${PROJECT_ROOT}/.claude/worktrees
 
 Set ok to true ONLY if the command exited zero. Set collected to the number in
 its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.

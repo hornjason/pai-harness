@@ -23,33 +23,59 @@
  */
 
 import { execFileSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
+import { isAbsolute, relative, resolve } from "path";
 import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } from "../lib/worktree-collect";
 
 /**
- * The worktrees git actually knows about.
+ * The worktrees git knows about AND that live under this run's worktree base.
  *
- * The groups file is agent-reported, so the worktree paths in it cannot
- * authorise themselves. Git is the authority on what is a worktree of this
- * repository, and it is not guessable by whatever produced the groups file.
- * Deriving the list here rather than accepting it as an argument keeps the
- * authorisation out of reach of the caller as well.
+ * Git alone is too generous. `git worktree list` returns every worktree of the
+ * repository — on this machine, 45 of them, including other developers' and
+ * other concurrent sessions' live, unpushed checkouts. Authorising all of them
+ * would let one ship run collect another session's uncommitted work into its
+ * own commit. With several sessions running at once that is a likely accident
+ * well before it is an attack.
+ *
+ * So intersect: git decides what is genuinely a worktree of this repository,
+ * and `base` decides which of those belong to this run. A path must satisfy
+ * both. The base is supplied by the caller because the harness, not this
+ * script, knows where it puts the worktrees it creates.
  */
-function authorisedWorktrees(projectRoot: string): string[] {
+function authorisedWorktrees(projectRoot: string, base: string): string[] {
   const out = execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf-8",
   });
-  return out
+  const known = out
     .split("\n")
     .filter(l => l.startsWith("worktree "))
     .map(l => l.slice("worktree ".length).trim())
     .filter(Boolean);
+
+  let realBase: string;
+  try {
+    realBase = realpathSync(resolve(base));
+  } catch {
+    // A base that does not exist authorises nothing, rather than everything.
+    return [];
+  }
+
+  return known.filter(w => {
+    let real: string;
+    try {
+      real = realpathSync(resolve(w));
+    } catch {
+      return false;
+    }
+    const rel = relative(realBase, real);
+    return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+  });
 }
 
-const [groupsPath, projectRoot] = process.argv.slice(2);
+const [groupsPath, projectRoot, worktreeBase] = process.argv.slice(2);
 
-if (!groupsPath || !projectRoot) {
-  console.error("usage: bun scripts/collect-worktree-files.ts <groups.json> <projectRoot>");
+if (!groupsPath || !projectRoot || !worktreeBase) {
+  console.error("usage: bun scripts/collect-worktree-files.ts <groups.json> <projectRoot> <worktreeBase>");
   process.exit(2);
 }
 if (!existsSync(groupsPath)) {
@@ -79,7 +105,7 @@ if (groups.length === 0) {
 
 let allowed: string[];
 try {
-  allowed = authorisedWorktrees(projectRoot);
+  allowed = authorisedWorktrees(projectRoot, worktreeBase);
 } catch (e) {
   console.error(`collect: cannot determine this repository's worktrees: ${(e as Error).message}`);
   process.exit(1);
