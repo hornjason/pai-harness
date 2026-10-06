@@ -5,7 +5,7 @@
  *   import { runScaffoldConformity, runSpecDiscovery, runSpecDrift } from "rungate/lib/conformity";
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
 import { spawnSync } from "child_process";
 import { join, dirname } from "path";
@@ -173,6 +173,19 @@ export function getPassingSCs(): readonly PassingSC[] {
   return _passingSCs;
 }
 
+/**
+ * Flip `- [ ] SC-N` to `- [x] SC-N` for every SC recorded as passing in this
+ * process.
+ *
+ * DELIBERATELY HAS NO AUTOMATIC CALLER (#86). It used to run from an afterAll
+ * inside runScaffoldConformity, which made a test run mutate the spec files
+ * that the next run's test collection reads from — the suite alternated
+ * between 57 and 99 tests and reported 0 fail either way.
+ *
+ * Routine syncing is handled by scripts/sync-sc-status.ts via the `posttest`
+ * hook, which re-derives pass state independently. Call this only from an
+ * explicitly-invoked command, never from a test lifecycle hook.
+ */
 export function flipPassingCheckboxes(): number {
   const byFile = new Map<string, Set<string>>();
   for (const { id, specPath } of _passingSCs) {
@@ -846,17 +859,20 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       return;
     }
 
-    afterAll(() => {
-      const flipped = flipPassingCheckboxes();
-      if (flipped > 0) {
-        console.log(`\n✅ Auto-flipped ${flipped} SC checkbox${flipped > 1 ? "es" : ""}`);
-        try {
-          spawnSync("bun", ["scripts/update-project-state.ts", "--skip-tests"], {
-            cwd: root, encoding: "utf-8", timeout: 10_000,
-          });
-        } catch {}
-      }
-    });
+    // No afterAll checkbox flip here, deliberately (#86).
+    //
+    // This describe builds its test list at collection time by reading SC
+    // checkboxes off disk. Writing those same files back at the end of the run
+    // meant run N mutated the input run N+1 collected from, so the generated
+    // test list alternated between two shapes — 57 tests, then 99, then 57.
+    // Both parities reported 0 fail, so nothing ever surfaced it: the suite was
+    // not hiding a failure, it was hiding whether 42 checks ran at all.
+    //
+    // Checkbox syncing still happens, deliberately and separately, via the
+    // `posttest` hook in package.json -> scripts/sync-sc-status.ts. That script
+    // re-derives pass state from the specs itself rather than riding on a test
+    // run's in-memory bookkeeping, so it is not load-bearing for this suite and
+    // nothing is lost by removing the hook.
 
     for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
