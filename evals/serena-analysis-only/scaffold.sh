@@ -4,9 +4,17 @@
 set -euo pipefail
 
 # Initialize git repo (required for Claude Code)
+# Refuse to scaffold into an existing checkout. The identity writes below are
+# repo-scoped, so running this from a real repo rewrites that repo's author
+# (#84 — rungate's own commits were attributed to a test identity for months).
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  echo "scaffold.sh: refusing to run inside an existing git repo: $PWD" >&2
+  exit 1
+fi
 git init
-git config user.email "eval@test.com"
-git config user.name "Eval"
+WORKSPACE="$PWD"
+git -C "$WORKSPACE" config user.email "eval@test.com"
+git -C "$WORKSPACE" config user.name "Eval"
 
 # Create minimal project structure with real code to work with
 mkdir -p lib test specs .claude/agents .claude/rules

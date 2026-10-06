@@ -14,6 +14,7 @@ import { generateAgentsMd } from "../lib/generators/agents-md";
 import { generateCodeMap } from "../lib/generators/code-map";
 import { generateAgentBriefs } from "../lib/generators/agent-briefs";
 import { scanProject } from "../lib/scanner";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -65,8 +66,8 @@ governs: Test spec
 
     // Create .claude directory and init git repo (scaffold needs git for postScaffoldCommit)
     mkdirSync(join(fixtureRoot, ".claude"), { recursive: true });
-    execSync("git init", { cwd: fixtureRoot, stdio: "pipe" });
-    execSync("git add -A && git commit -m 'init'", { cwd: fixtureRoot, stdio: "pipe" });
+    initFixtureRepo(fixtureRoot);
+    commitFixture(fixtureRoot, "init");
 
     // Run scaffold first time
     execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: 'pipe' });
@@ -85,7 +86,12 @@ governs: Test spec
     // Verify outputs are byte-identical
     expect(agentsMd1).toBe(agentsMd2);
     expect(codeMap1).toBe(codeMap2);
-  });
+    // Two full scaffold runs, measured at 6.9s locally. It inherited bun's 5s
+    // default and so could only ever pass by being faster than its own work —
+    // on CI it timed out at exactly 5000ms. 30s is ~4x the measured time, which
+    // covers a cold GitHub runner without being so loose that a genuine hang
+    // reads as a slow pass. Raise it off a new measurement, never off a guess.
+  }, 30_000);
 
   test("SC-364: generator determinism — generateAgentsMd produces identical output", () => {
     // Call generator twice with same input

@@ -8,6 +8,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 // Use /tmp/ fixtures to avoid auto-commit pollution
 const FIXTURE_ROOT = join("/tmp", "spec-migration-test-" + process.pid);
@@ -19,9 +20,10 @@ function createFixture() {
   mkdirSync(join(FIXTURE_ROOT, "specs"), { recursive: true });
   mkdirSync(join(FIXTURE_ROOT, "docs", "specs"), { recursive: true });
   // Initialize a git repo so git mv works
-  execSync("git init", { cwd: FIXTURE_ROOT, stdio: "pipe" });
-  execSync("git config user.email 'test@test.com'", { cwd: FIXTURE_ROOT, stdio: "pipe" });
-  execSync("git config user.name 'Test'", { cwd: FIXTURE_ROOT, stdio: "pipe" });
+  // initFixtureRepo sets the identity. The two `git config` lines that used to
+  // sit here wrote `Test <test@test.com>` — the exact pair found in rungate's
+  // own .git/config in #84 — and overrode the helper on the line after it set it.
+  initFixtureRepo(FIXTURE_ROOT);
 }
 
 function cleanupFixture() {

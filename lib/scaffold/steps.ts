@@ -1257,6 +1257,24 @@ export function createCiWorkflows(root: string, actions: string[]): void {
   const branches = harness?.ci?.branches || ["main"];
   const branchList = branches.map((b: string) => `      - ${b}`).join("\n");
 
+  // The typecheck step used to be emitted unconditionally as `bunx tsc --noEmit`.
+  // Without a tsconfig.json tsc prints its help text and exits 1, so every
+  // scaffolded consumer that is not already a TypeScript project got a CI step
+  // that could only fail, over a file rungate never created for them (#65/#76).
+  // Rungate itself was shielded from noticing because `bun test` failed first
+  // and the step never ran.
+  //
+  // Emit it only when the project actually has a tsconfig, and prefer the
+  // project's own ratchet script when it has one — consumers do not get
+  // rungate's scripts/, so they must fall back to plain tsc.
+  const hasTsconfig = existsSync(join(root, "tsconfig.json"));
+  const hasRatchet = existsSync(join(root, "scripts", "typecheck.ts"));
+  const typecheckStep = !hasTsconfig
+    ? ""
+    : hasRatchet
+      ? `\n      - run: bun scripts/typecheck.ts`
+      : `\n      - run: bunx tsc --noEmit`;
+
   const ciYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
 name: CI
 
@@ -1277,8 +1295,7 @@ jobs:
         with:
           bun-version: "${bunVersion}"
       - run: bun install
-      - run: bun test
-      - run: bunx tsc --noEmit
+      - run: bun test${typecheckStep}
 `;
 
   const gatesYml = `# Managed by rungate — do not edit. Customize via .claude/rungate.json ci section.
@@ -1494,18 +1511,36 @@ exit 0
   }
 
   const prePush = join(hooksDir, "pre-push");
-  if (!existsSync(prePush)) {
-    writeFileSync(prePush, `#!/bin/sh
-# Managed by rungate — conformity check before push
-bun test test/scaffold-conformity.test.ts 2>/dev/null
-if [ $? -ne 0 ]; then
-  echo "ERROR: Conformity tests failed — fix before pushing"
+  const MANAGED_MARKER = "# Managed by rungate — conformity check before push";
+
+  // `2>/dev/null` threw away the only output that said WHY conformity failed,
+  // leaving the developer a bare "fix before pushing" and no diagnosis. And the
+  // old guard was `if (!existsSync(prePush))`, so once a hook existed it was
+  // never updated again — every fix to this hook, including this one, would
+  // have reached nobody. Overwrite only our own managed hook; a hook a human
+  // wrote is left alone.
+  const existing = existsSync(prePush) ? readFileSync(prePush, "utf-8") : null;
+  if (existing !== null && !existing.includes(MANAGED_MARKER)) {
+    actions.push("SKIP: .git/hooks/pre-push (hand-written, not overwriting)");
+    return;
+  }
+
+  writeFileSync(prePush, `#!/bin/sh
+${MANAGED_MARKER}
+# NOTE: this runs against the WORKING TREE, not the commits being pushed. On
+# 2026-10-05 that let a conformity regression reach main: the check passed
+# locally because the working tree held files a clean checkout does not.
+# Running it against the pushed SHA in a detached worktree is tracked
+# separately — until then, \`bun scripts/test-clean-env.ts\` is the honest check.
+if ! bun test test/scaffold-conformity.test.ts; then
+  echo "ERROR: Conformity tests failed — fix before pushing" >&2
   exit 1
 fi
 `);
-    chmodSync(prePush, 0o755);
-    actions.push("CREATED: .git/hooks/pre-push (conformity check)");
-  }
+  chmodSync(prePush, 0o755);
+  actions.push(existing === null
+    ? "CREATED: .git/hooks/pre-push (conformity check)"
+    : "UPDATED: .git/hooks/pre-push (conformity check)");
 }
 
 export function addPaiHarnessDevDep(root: string, actions: string[]): void {

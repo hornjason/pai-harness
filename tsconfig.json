@@ -1,0 +1,23 @@
+{
+  "//": "Added for #65/#76. AGENTS.md documented `bunx tsc --noEmit` as THE type check, but with no tsconfig.json tsc printed its help text and exited 1 — the documented check had never checked anything. CI only hid this because `bun test` failed first and the step never ran.",
+  "compilerOptions": {
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "moduleDetection": "force",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "allowJs": true,
+    "resolveJsonModule": true,
+
+    "types": ["bun"]
+  },
+  "include": ["lib/**/*.ts", "gates/**/*.ts", "hooks/**/*.ts", "scripts/**/*.ts", "test/**/*.ts"],
+  "exclude": ["node_modules", ".claude/worktrees", "test/fixtures"]
+}

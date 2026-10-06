@@ -32,6 +32,6 @@ Read the governing spec BEFORE making changes in that area.
 | AGENT-BRIEF-TEMPLATE-SPEC.md | Agent brief templates — externalized markdown templates with variable substitution, not hardcoded TypeScript strings | true |
 | HARNESS-SKILL-CHAIN.md | Skill chaining — how goal → ship → prove → close sequences connect and pass state | true |
 | SCAFFOLD-DECOMPOSITION-SPEC.md | Scaffold decomposition — extracting scan, generation, and validation from the 1,844-line scaffold-project.ts into focuse | true |
-| BOOTSTRAP-DATA-FLOW-SPEC.md |  | false |
+| BOOTSTRAP-DATA-FLOW-SPEC.md | Redirect stub — this spec was split into specs/bootstrap-data-flow/; it governs nothing itself and exists to point reade | false |
 | DA-COMPLIANCE-SPEC.md | DA compliance evaluation — role-specific grading criteria for DA, Marcus, and Quinn agents with scoring dashboard | no |
 | bootstrap-data-flow/ (6 specs) | Bootstrap data flow — scan order, data sources, consumer requirements, re-run behavior | yes |

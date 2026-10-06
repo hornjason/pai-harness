@@ -3,6 +3,17 @@ import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
+// The governing spec these fixtures cite, resolved from this file rather than
+// from the developer's home directory (#71). It used to read
+// `join(process.env.HOME, "Projects/rungate/specs/...")` — the path where Jason
+// happens to keep his checkout. The gate resolves absolute paths as-is, so
+// projectRoot never rescued it: on CI, HOME is /home/runner while the checkout
+// is /home/runner/work/pai-harness/pai-harness, the file is not there, and
+// `governing-spec-exists` fails. That single missing file produced three of the
+// 28 CI failures, because gate-executor runs the scope checks inside verify and
+// ship too, and ship then cascaded on verify's recorded FAIL.
+const GOVERNING_SPEC = join(import.meta.dir, "..", "specs", "BOOTSTRAP-DATA-FLOW-SPEC.md");
+
 const TEST_BASE = "/tmp/harness-contract-tests";
 const GATES_DIR = join(import.meta.dir, "..", "gates");
 
@@ -65,7 +76,7 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
         { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "COMMAND", command: "grep fix src/test.ts" }, specElement: "target module fix", evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
         { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, specElement: "test regression", evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
       ],
-      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
       environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" }, prod: { rebuild: "SKIP", smoke: "SKIP", quinn: "SKIP" } },
       agents: { marcus: { spawned: true, verdict: "PASS" }, quinn: { spawned: true, verdict: "PASS" } },
@@ -99,7 +110,7 @@ describe("contract: negative cases", () => {
       projectRoot: "/tmp/test", slug: "broken-env", phase: "DONE",
       issueGoal: "Broken env test", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
       acs: [{ id: "AC-1", type: "CODE", statement: "Fix applied correctly to module", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" }],
-      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
       environments: {},
       agents: { marcus: { spawned: true, verdict: "PASS" } },
@@ -123,7 +134,7 @@ describe("contract: negative cases", () => {
         { id: "AC-3", type: "CODE", statement: "Third check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
         { id: "AC-4", type: "CODE", statement: "Fourth check passes via grep only", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, evidence: { type: "command-output", content: "10" }, verdict: "PASS" },
       ],
-      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
       environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
       agents: { marcus: { spawned: true, verdict: "PASS" } },
@@ -145,7 +156,7 @@ describe("contract: negative cases", () => {
         { id: "AC-1", type: "CODE", statement: "Has evidence from test run output", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
         { id: "AC-2", type: "CODE", statement: "Missing evidence for grep verification", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "grep", command: "grep x y" }, verdict: "PENDING" },
       ],
-      sourceSpecs: [{ path: join(process.env.HOME || "", "Projects/rungate/specs/BOOTSTRAP-DATA-FLOW-SPEC.md"), citedInDiscovery: true }],
+      sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
       environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
       agents: { marcus: { spawned: true, verdict: "PASS" } },

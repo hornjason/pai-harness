@@ -2,6 +2,7 @@ import { test, expect, describe, beforeAll } from "bun:test";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 const FIXTURE = join(import.meta.dir, "fixtures/golden-project");
 const OUTPUT = "/tmp/rungate-agent-brief-template-test";
@@ -17,8 +18,8 @@ beforeAll(() => {
   execSync(`cp -r ${FIXTURE}/. ${OUTPUT}/`);
 
   // Init git (required for scaffold)
-  execSync("git init", { cwd: OUTPUT, stdio: "pipe" });
-  execSync("git add -A && git commit -m 'init fixture'", { cwd: OUTPUT, stdio: "pipe" });
+  initFixtureRepo(OUTPUT);
+  commitFixture(OUTPUT, "init fixture");
 
   // Run scaffold
   try {
@@ -27,7 +28,9 @@ beforeAll(() => {
     // Scaffold may fail — tests should still run and report what's wrong
     console.error("Scaffold failed:", e);
   }
-});
+  // Fixture copy + git init + full scaffold: measured 9.1s. See phase-0 for why
+  // the 5s default went unnoticed — the hook used to die before it got here.
+}, 60_000);
 
 describe("Agent Brief Template Tests", () => {
 
@@ -185,7 +188,7 @@ describe("Agent Brief Template Tests", () => {
       try { execSync(`rm -rf ${OUTPUT_KW}`, { stdio: "pipe" }); } catch {}
       mkdirSync(OUTPUT_KW, { recursive: true });
       execSync(`cp -r ${FIXTURE}/. ${OUTPUT_KW}/`);
-      execSync("git init", { cwd: OUTPUT_KW, stdio: "pipe" });
+      initFixtureRepo(OUTPUT_KW);
 
       // Create .claude/rungate.json with promptKeywords override
       mkdirSync(join(OUTPUT_KW, ".claude"), { recursive: true });

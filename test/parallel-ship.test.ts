@@ -9,6 +9,7 @@ import {
   generateContainerName,
   cleanupShipWorktree,
 } from "../scripts/parallel-ship";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 describe("parallel-ship", () => {
   let testRepo: string;
@@ -16,9 +17,9 @@ describe("parallel-ship", () => {
   beforeEach(() => {
     // Create a temporary git repository for testing
     testRepo = mkdtempSync(join(tmpdir(), "parallel-ship-test-"));
-    execSync("git init", { cwd: testRepo });
-    execSync('git config user.email "test@example.com"', { cwd: testRepo });
-    execSync('git config user.name "Test User"', { cwd: testRepo });
+    // Identity comes from initFixtureRepo; the explicit config lines that were
+    // here overrode it immediately (#84).
+    initFixtureRepo(testRepo);
     execSync("git commit --allow-empty -m 'Initial commit'", { cwd: testRepo });
   });
 

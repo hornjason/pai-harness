@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-05
+updated: 2026-10-06
 ---
 
 # rungate
@@ -10,7 +10,7 @@ updated: 2026-10-05
 ## Project Identity
 
 Ship harness — conformity tests, scaffold, and agent briefs for AI-first development
-**Tech:** Bun, ESM
+**Tech:** Bun, TypeScript, ESM
 - **Repo:** https://github.com/hornjason/pai-harness
 
 ## Rules
@@ -28,7 +28,8 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Action | Command |
 |--------|---------|
 | Test | `bun test` |
-| Type check | `bunx tsc --noEmit` |
+| Type check | `bun scripts/typecheck.ts` |
+| Test as CI sees it | `bun scripts/test-clean-env.ts` |
 | Conformity | `bun test test/scaffold-conformity.test.ts` |
 | Create spec | `bunx rungate create-spec "title"` |
 | Create SC | `bunx rungate create-sc --pattern <name> --params '<json>'` |

@@ -357,6 +357,36 @@ describe("security: runner aliases and quote-awareness (#67 review round 2)", ()
     expect(isFullSuiteCommand("timeout 600 bun test")).toBe(true);
   });
 
+  // #82. splitTopLevel treats every \n as a separator, so a trailing backslash
+  // left `bun test \` alone in its segment with its paths stranded on the next
+  // one — zero arguments survive, the fail-closed branch fires, and a targeted
+  // run is charged to the DIR-L29 budget. Multi-line Bash is routine for agents,
+  // so this emptied the 2-run budget on cheap runs and then locked the session
+  // out of the suite entirely. Found while the budget blocked #71 itself.
+  const continued: Array<[string, string]> = [
+    ["bun test \\\n  test/a.test.ts test/b.test.ts", "paths on a continuation line"],
+    ["bun test test/a.test.ts \\\n  test/b.test.ts", "paths split across the continuation"],
+    ["HOME=/tmp bun test \\\n  test/a.test.ts", "env prefix plus continuation"],
+    ["bun test \\\n  test/a.test.ts 2>&1 | tail -5", "continuation then a pipe"],
+  ];
+  for (const [cmd, label] of continued) {
+    test(`does not guard a line-continued targeted run: ${label}`, () => {
+      expect(isFullSuiteCommand(cmd)).toBe(false);
+    });
+  }
+
+  // The continuation must not become an escape hatch: a real full suite spread
+  // over two lines is still a real full suite.
+  test("still guards a line-continued full suite", () => {
+    expect(isFullSuiteCommand("bun test \\\n  --coverage")).toBe(true);
+  });
+
+  // A backslash that is NOT a line continuation (anything before the newline)
+  // must keep splitting, or `echo 'a\' ; bun test` style commands slip through.
+  test("still guards a suite on a later line when the newline is a real separator", () => {
+    expect(isFullSuiteCommand("echo hello\nbun test")).toBe(true);
+  });
+
   test("does not guard a separator inside a quoted commit message", () => {
     expect(isFullSuiteCommand('git commit -m "chore: lint && bun test"')).toBe(
       false,

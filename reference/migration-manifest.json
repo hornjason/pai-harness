@@ -177,19 +177,19 @@
       "source": "~/.claude/gates/ceremony-profiles.json",
       "dest": "config/ceremony-profiles.json",
       "migrated": true,
-      "note": "canonical copy — delete skills/ship/ duplicate"
+      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/gates/workflow-schema.json",
       "dest": "config/workflow-schema.json",
       "migrated": true,
-      "note": "canonical copy — delete skills/ship/ duplicate"
+      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/gates/spec-policies.json",
       "dest": "config/spec-policies.json",
       "migrated": true,
-      "note": "canonical copy — delete skills/ship/ duplicate"
+      "note": "canonical copy \u2014 delete skills/ship/ duplicate"
     },
     {
       "source": "~/.claude/scripts/sync-spec-tests.ts",
@@ -225,7 +225,7 @@
       "source": "~/.claude/scripts/gate-smoke-test-e2e.sh",
       "dest": "scripts/gate-smoke-test-e2e.sh",
       "migrated": false,
-      "note": "deleted — dead script referenced nonexistent gate-runner.sh"
+      "note": "deleted \u2014 dead script referenced nonexistent gate-runner.sh"
     },
     {
       "source": "~/.claude/scripts/generate-qc-tables.sh",
@@ -355,12 +355,14 @@
     {
       "source": "~/.claude/test/unit/skill-cooccurrence.test.ts",
       "dest": "test/unit/skill-cooccurrence.test.ts",
-      "migrated": true
+      "migrated": false,
+      "note": "Reverted #83: the artifact under test stayed in PAI (~/.pai/hooks, ~/.claude/PAI/Tools), so the test resolved its subject through $HOME and could never pass in CI or in any scaffolded consumer. Removed from rungate 2026-10-05; recover with git checkout 48c6fefb -- <dest>."
     },
     {
       "source": "~/.claude/test/unit/skill-sequence-logger.test.ts",
       "dest": "test/unit/skill-sequence-logger.test.ts",
-      "migrated": true
+      "migrated": false,
+      "note": "Reverted #83: the artifact under test stayed in PAI (~/.pai/hooks, ~/.claude/PAI/Tools), so the test resolved its subject through $HOME and could never pass in CI or in any scaffolded consumer. Removed from rungate 2026-10-05; recover with git checkout 48c6fefb -- <dest>."
     },
     {
       "source": "~/.claude/lib/paths.ts",
@@ -411,49 +413,49 @@
       "source": "~/.claude/skills/ship/consumer-cascade-map.json",
       "dest": "config/consumer-cascade-map.json",
       "migrated": false,
-      "note": "Removed — dashboard project file, not RunGate"
+      "note": "Removed \u2014 dashboard project file, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/doc-cascade-map.json",
       "dest": "config/doc-cascade-map.json",
       "migrated": false,
-      "note": "Removed — dashboard project file, not RunGate"
+      "note": "Removed \u2014 dashboard project file, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/eval.json",
       "dest": "config/eval.json",
       "migrated": false,
-      "note": "Removed — dashboard eval scenarios, not RunGate"
+      "note": "Removed \u2014 dashboard eval scenarios, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/profiles/account-plan.yaml",
       "dest": "config/profiles/account-plan.yaml",
       "migrated": false,
-      "note": "Removed — dashboard profile, not RunGate"
+      "note": "Removed \u2014 dashboard profile, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/profiles/campaign.yaml",
       "dest": "config/profiles/campaign.yaml",
       "migrated": false,
-      "note": "Removed — dashboard profile, not RunGate"
+      "note": "Removed \u2014 dashboard profile, not RunGate"
     },
     {
       "source": "~/.claude/skills/ship/ceremony-profiles.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy — delete, do not migrate"
+      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/ship/workflow-schema.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy — delete, do not migrate"
+      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/ship/spec-policies.json",
       "dest": "DUPLICATE-DELETE",
       "migrated": true,
-      "note": "duplicate of gates/ copy — delete, do not migrate"
+      "note": "duplicate of gates/ copy \u2014 delete, do not migrate"
     },
     {
       "source": "~/.claude/skills/prove/SKILL.md",

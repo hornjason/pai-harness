@@ -196,23 +196,15 @@ export function writeGateResult(
   return { resultVal, attempt };
 }
 
-import { gateSaltPath } from "../lib/paths";
+import { ensureGateSalt, gateSaltPath } from "../lib/paths";
 
 const GATE_SALT_PATH = gateSaltPath();
 
 export function generateHmac(sf: string, slug: string, issue: number, projectRoot?: string): string {
-  if (!existsSync(GATE_SALT_PATH)) {
-    mkdirSync(dirname(GATE_SALT_PATH), { recursive: true });
-    writeFileSync(GATE_SALT_PATH, randomBytes(32).toString("hex") + "\n");
-    chmodSync(GATE_SALT_PATH, 0o600);
-  }
-
-  const perms = statSync(GATE_SALT_PATH).mode & 0o777;
-  if (perms !== 0o600) {
-    chmodSync(GATE_SALT_PATH, 0o600);
-  }
-
-  const salt = readFileSync(GATE_SALT_PATH, "utf-8").trim();
+  // Creation + chmod moved to ensureGateSalt() so every reader shares one
+  // definition. Inlined here, it made the salt's existence a side effect of
+  // this function having run, which other tests were silently relying on.
+  const salt = readFileSync(ensureGateSalt(), "utf-8").trim();
   const sha = gitSha(projectRoot);
   const input = `${slug}:${issue}:PASS:${sha}`;
   const hash = createHmac("sha256", salt).update(input).digest("hex").slice(0, 16);
