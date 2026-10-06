@@ -171,3 +171,71 @@ describe("evidence-prevalidator: prevalidateEvidence", () => {
     expect(results[0].diagnostic).toContain("nonexistent");
   });
 });
+
+describe("#118: bare main refs are qualified before the command is persisted", () => {
+  /**
+   * The repair has to reach the CALLER, not just the dry-run. The prevalidator
+   * communicates fixes through `fixedCommand`; a result that says `ok` with no
+   * `fixedCommand` tells the caller to keep the original. A stale-`main`
+   * command usually dry-runs clean here — local `main` is only sometimes
+   * behind — so without carrying the rewrite onto the ok path, the normalizer
+   * would be a no-op in exactly the case it exists for.
+   */
+
+  test("an ok command still reports the rewritten form", async () => {
+    const acs: ACInput[] = [
+      {
+        id: "AC-1",
+        // Succeeds regardless of ref drift, so it lands on the `ok` path.
+        evidenceMethod: { type: "command", command: "git log main..HEAD --oneline | head -1 || echo none" },
+        threshold: { op: "exists", value: "true" },
+      },
+    ];
+    const [r] = await prevalidateEvidence(acs, PROJECT_ROOT);
+    expect(r.fixedCommand, "the rewrite never reached the caller").toContain("origin/main..HEAD");
+    expect(r.autoFixed).toBe(true);
+  });
+
+  test("the exact #103 command is repaired", async () => {
+    const acs: ACInput[] = [
+      {
+        id: "AC-4",
+        evidenceMethod: {
+          type: "command",
+          command: "git diff --exit-code main -- hooks/TestSuiteGuard.hook.ts >/dev/null 2>&1; echo $?",
+        },
+        threshold: { op: "==", value: "0" },
+      },
+    ];
+    const [r] = await prevalidateEvidence(acs, PROJECT_ROOT);
+    expect(r.fixedCommand).toContain("origin/main");
+    expect(r.fixedCommand).not.toMatch(/--exit-code main\b/);
+  });
+
+  test("a command with no bare ref is left exactly as written", async () => {
+    // No spurious fixedCommand: the caller must be able to tell "nothing to do"
+    // from "here is a replacement", or every AC looks rewritten.
+    const acs: ACInput[] = [
+      { id: "AC-2", evidenceMethod: { type: "command", command: "echo hello" }, threshold: { op: "contains", value: "hello" } },
+    ];
+    const [r] = await prevalidateEvidence(acs, PROJECT_ROOT);
+    expect(r.status).toBe("ok");
+    expect(r.fixedCommand).toBeUndefined();
+    expect(r.autoFixed).toBeFalsy();
+  });
+
+  test("a broken command is reported broken AND ref-corrected", async () => {
+    // Both facts matter: the caller needs to rewrite it, and the rewrite it
+    // starts from should not reintroduce the stale ref.
+    const acs: ACInput[] = [
+      {
+        id: "AC-3",
+        evidenceMethod: { type: "command", command: "git rev-parse main && false" },
+        threshold: { op: "exists", value: "true" },
+      },
+    ];
+    const [r] = await prevalidateEvidence(acs, PROJECT_ROOT);
+    expect(r.status).toBe("broken");
+    expect(r.fixedCommand).toContain("origin/main");
+  });
+});
