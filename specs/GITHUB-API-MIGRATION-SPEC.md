@@ -172,6 +172,7 @@ first commit and all three were real.
 
 - [x] SC-535: scripts/github-op.ts contains [title-from-issue, title-file] and workflows/ship.js not contains [--title "fix(#] — an issue title is written by whoever files the issue, and it never crosses a shell
 - [x] SC-536: hooks/lib/utils.ts contains [OP_CLOSE, github-op] — the close guard follows the harness onto `github-op.ts issue-update --state closed`, instead of being walked around by it
+- [x] SC-538: lib/github.ts contains [REPO_SEGMENT, is not a GitHub owner or repository name] — a repo slug cannot steer the request path. Measured, not assumed: `--repo "../x"` reached `GET /x/issues/7`, outside `/repos/` entirely
 - [x] SC-537: workflows/prove.js contains [HEREDOC-SAFE-START, heredocSafe] and test/workflow-security-integration.test.ts contains [loadHeredocSafe] — the proof body cannot break out of its quoted heredoc, proven by executing the extracted helper rather than grepping for it
 
 ## Constraints

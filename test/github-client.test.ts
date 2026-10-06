@@ -250,6 +250,43 @@ describe("lib/github.ts", () => {
     test("throws on invalid format", () => {
       expect(() => parseOwnerRepo("invalid")).toThrow();
     });
+
+    /**
+     * Raised by security review of #137 and confirmed by measurement against
+     * a loopback server, not by reading the Octokit source:
+     *
+     *     --repo "owner/.."  ->  GET /repos/issues/7
+     *     --repo "../x"      ->  GET /x/issues/7
+     *
+     * The second escapes `/repos/` entirely, which is arbitrary API-path
+     * construction with whatever verb the operation uses. Query strings and
+     * fragments were already percent-encoded on the way out, so traversal is
+     * the whole of the hole.
+     */
+    describe("a slug cannot steer the request path (#137)", () => {
+      test.each([
+        ["a parent segment as the repo", "owner/.."],
+        ["a parent segment as the owner", "../x"],
+        ["a current-directory segment", "owner/."],
+        ["an encoded traversal", "owner/name%2f..%2f.."],
+        ["a slash inside, making three parts", "owner/name/extra"],
+        ["a space", "owner/na me"],
+        ["a query string", "owner/na?x=1"],
+        ["an empty owner", "/name"],
+        ["an empty repo", "owner/"],
+      ])("%s is refused", (_label, slug) => {
+        expect(() => parseOwnerRepo(slug)).toThrow(/Invalid repo format/);
+      });
+
+      test.each([
+        ["hornjason/pai-harness"],
+        ["owner/repo.js"],
+        ["Owner-1/repo_name"],
+        ["a/b"],
+      ])("%s is still accepted — real names must keep working", slug => {
+        expect(() => parseOwnerRepo(slug)).not.toThrow();
+      });
+    });
   });
 
   describe("getIssue", () => {

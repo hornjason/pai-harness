@@ -167,12 +167,37 @@ export function resolveGitHubToken(): string | undefined {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Parse "owner/repo" string into { owner, repo } components.
+ * Parse "owner/repo" into { owner, repo }, rejecting anything that is not one.
+ *
+ * The shape check alone was not enough, and the measurement is unambiguous.
+ * Octokit interpolates these into the request path, and the URL layer
+ * resolves `..` segments before the request goes out:
+ *
+ *     --repo "owner/.."   ->  GET /repos/issues/7
+ *     --repo "../x"       ->  GET /x/issues/7       <- out of /repos entirely
+ *
+ * The second one is arbitrary API-path construction with whatever verb the
+ * caller's operation uses. Query strings and fragments were already safe —
+ * `owner/na?x=1` arrives percent-encoded — so traversal is the whole of it.
+ *
+ * It mattered more once #137 made a repo slug a command-line argument, but it
+ * was always reachable: `gates/orchestrator.ts` and `lib/branch-cleanup.ts`
+ * pass slugs through here too. GitHub owner and repository names are
+ * `[A-Za-z0-9._-]` only, so requiring exactly that rejects nothing real.
  */
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
 export function parseOwnerRepo(repoSlug: string): { owner: string; repo: string } {
   const parts = repoSlug.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+  if (parts.length !== 2) {
     throw new Error(`Invalid repo format: "${repoSlug}" — expected "owner/repo"`);
+  }
+  for (const part of parts) {
+    if (!REPO_SEGMENT.test(part) || part === "." || part === "..") {
+      throw new Error(
+        `Invalid repo format: "${repoSlug}" — "${part}" is not a GitHub owner or repository name`,
+      );
+    }
   }
   return { owner: parts[0], repo: parts[1] };
 }
