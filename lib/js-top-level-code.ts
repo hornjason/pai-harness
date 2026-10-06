@@ -198,6 +198,13 @@ export function stripStringsAndComments(src: string): string {
   return out;
 }
 
+export interface SyntaxWitness {
+  /** True only for `clean`. Both failure modes are failures. */
+  ok: boolean;
+  verdict: "clean" | "input-unparseable" | "stripping-broke-syntax";
+  detail?: string;
+}
+
 /**
  * Check the stripper against a real parser.
  *
@@ -215,7 +222,7 @@ export function stripStringsAndComments(src: string): string {
  * The wrapping neutralises `export` and makes ship.js's top-level `return`
  * legal; both sides get identical treatment, so only a DIFFERENCE is reported.
  */
-export function strippingPreservesSyntax(src: string): { ok: boolean; detail?: string } {
+export function strippingPreservesSyntax(src: string): SyntaxWitness {
   const prep = (c: string) => "(async function(){" + c.replace(/^export\s+/gm, "") + "\n})";
   const parses = (c: string): string | null => {
     try {
@@ -226,10 +233,18 @@ export function strippingPreservesSyntax(src: string): { ok: boolean; detail?: s
     }
   };
 
-  // If the input does not parse to begin with, there is no differential to
-  // draw and this check has nothing to say.
-  if (parses(src) !== null) return { ok: true };
+  // If the input does not parse, there is no differential to draw — but that
+  // is NOT a pass. Returning ok here would mean an unparseable ship.js
+  // silently turns the witness into a no-op, which is the exact failure this
+  // module was written to end: a check reporting green because of what it
+  // could not look at. The caller has to decide, so say which case it is.
+  const before = parses(src);
+  if (before !== null) {
+    return { ok: false, verdict: "input-unparseable", detail: before };
+  }
 
   const after = parses(stripStringsAndComments(src));
-  return after === null ? { ok: true } : { ok: false, detail: after };
+  return after === null
+    ? { ok: true, verdict: "clean" }
+    : { ok: false, verdict: "stripping-broke-syntax", detail: after };
 }

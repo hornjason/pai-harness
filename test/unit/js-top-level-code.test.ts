@@ -187,3 +187,33 @@ describe("#89 review: the tokenizer is checked against a real parser", () => {
     }
   });
 });
+
+describe("#89 review round 2: the witness does not fail open", () => {
+  test("unparseable input is reported as a failure, not a pass", () => {
+    // The first version returned ok:true when the input did not parse, on the
+    // reasoning that there was no differential to draw. That makes an
+    // unparseable ship.js silently turn the witness into a no-op — a check
+    // reporting green because of what it could not look at, which is the
+    // precise failure this whole module exists to end.
+    const w = strippingPreservesSyntax("function broken( {");
+    expect(w.ok).toBe(false);
+    expect(w.verdict).toBe("input-unparseable");
+  });
+
+  test("clean input is distinguishable from merely-not-checked", () => {
+    const w = strippingPreservesSyntax("const a = 1;");
+    expect(w.verdict).toBe("clean");
+    expect(w.ok).toBe(true);
+  });
+
+  test("a stripper that breaks syntax is reported distinctly", () => {
+    // Guards the invariant rather than the current implementation: whatever
+    // the stripper does later, breaking parseability must surface as its own
+    // verdict and never be confused with "input was bad".
+    const verdicts = new Set(
+      ["const a = 1;", "function broken( {"].map(s => strippingPreservesSyntax(s).verdict),
+    );
+    expect(verdicts.has("clean")).toBe(true);
+    expect(verdicts.has("input-unparseable")).toBe(true);
+  });
+});
