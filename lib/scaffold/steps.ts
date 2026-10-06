@@ -344,7 +344,10 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
   for (const cat of categories) {
     const catPath = join(projectPath, cat.dir);
     if (existsSync(catPath)) {
-      const files = readdirSync(catPath).filter(f => f.endsWith(".md"));
+      // Recursive — see the same fix in scanner.ts. This is a second copy of
+      // scanDocRouting and it is the one the scaffold actually calls, so the
+      // scanner fix alone changed no generated output at all (#91).
+      const files = readdirSync(catPath, { recursive: true }).map(String).filter(f => f.endsWith(".md"));
       docRouting.push({ need: `${cat.label} (${files.length} files)`, file: `${cat.dir}/` });
     } else {
       docRouting.push({ need: cat.label, file: `${cat.dir}/` });
