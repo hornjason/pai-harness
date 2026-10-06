@@ -79,3 +79,22 @@ export function findWorkflowState(issueNum?: string, phases?: string[]): Workflo
 export function extractIssueNumber(text: string): string | undefined {
   return text.match(/#(\d+)/)?.[1];
 }
+
+/**
+ * The `owner/name` a `gh` command targets, or undefined if it names none.
+ *
+ * Split out of IssueCloseGuard (#140) so it can be tested without driving the
+ * hook, and because HOOK-ARCHITECTURE-SPEC wants the logic in lib rather than
+ * in the trigger.
+ *
+ * The previous pattern was `--repo\s+(\S+)`, which ran to the next space and
+ * so captured whatever punctuation followed — `owner/name"}}'` when the close
+ * appeared inside a nested shell string. The lookup then 404'd on the mangled
+ * slug. That was harmless while the guard swallowed errors; now that an
+ * unreadable label set blocks the close, a sloppy parse refuses legitimate
+ * work. Match the slug's shape and stop.
+ */
+export function parseRepoSlug(command: string): string | undefined {
+  const m = command.match(/--repo[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/);
+  return m?.[1];
+}

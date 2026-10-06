@@ -27,7 +27,8 @@ Research (session 25) identified 16 `gh` CLI calls across 7 files, with 3 gaps t
 |---|----------|-----------|
 | D-1 | Two-layer architecture: MCP in agent prompts, Octokit in TypeScript | Agents can use MCP tools natively; TypeScript code needs a library. Clean separation |
 | D-2 | `@octokit/rest` as the TypeScript SDK | GitHub's official SDK, 100% REST API coverage, full TypeScript types |
-| D-3 | Auth via `GITHUB_TOKEN` environment variable | Already set by `gh` CLI auth, works in CI, worktrees, and headless |
+| D-3 | Auth via `GITHUB_TOKEN`, falling back to `GH_TOKEN` | Works in CI, worktrees, and headless. **Corrected 2026-10-06 (#139):** this originally read "Already set by `gh` CLI auth" and accepted `GITHUB_TOKEN` alone. That premise was false — `gh` reads `GH_TOKEN` and exports nothing, so on a machine authenticated the ordinary way `GITHUB_TOKEN` is unset and every Octokit call threw at construction. Accept both names, `GITHUB_TOKEN` first |
+| D-8 | `GITHUB_API_URL` selects the API base when set | The conventional companion to the token variables (gh CLI and Actions both set it). Makes GitHub Enterprise usable, and lets tests point the client somewhere harmless instead of reaching the real API |
 | D-4 | Shared Octokit helper in `lib/github.ts` | Single auth point, reusable across hooks/gates/lib, mockable for tests |
 | D-5 | `POST /issues/{n}/labels` for label append (not PUT) | POST is additive by design, eliminates read-merge-write race condition |
 | D-6 | Remove `gh` CLI from automation code entirely | Keep only for developer interactive use; not in programmatic paths |
@@ -109,6 +110,26 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 
 - [x] SC-501: workflows/ship.js contains [mcp__github__create_pull_request, mcp__github__update_pull_request] and not contains [gh pr edit, gh pr create, gh pr list]
 - [x] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
+
+### Phase 5 — Auth actually resolves (#139, #140)
+
+Phases 1–4 all reported green while the client could not authenticate at all. Every SC
+above asserts that a *name* appears in a file; none asserted that a call could succeed.
+That is why a false premise in D-3 survived four phases of "done" — the criteria could
+not see it. These are the criteria that can.
+
+Covered by hand-written tests, named here because the generator cannot currently reach
+them: `test/github-client.test.ts` (SC-519, SC-520) and
+`test/issue-close-guard-fail-closed.test.ts` (SC-521, SC-522, SC-523). Each has a recorded
+mutation that turns it red — see the PR for #139/#140. `scripts/sync-spec-tests.ts` reads
+`$HARNESS_ROOT/PAI/Specs` and defaults `HARNESS_ROOT` to `~/.claude`, so it has never read
+this directory; that divergence is its own issue.
+
+- [x] SC-519: lib/github.ts contains [resolveGitHubToken, GH_TOKEN, GITHUB_API_URL]
+- [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
+- [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
+- [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
+- [x] SC-523: hooks/IssueCloseGuard.hook.ts not contains [} catch {}]
 
 ## Constraints
 

@@ -68,11 +68,51 @@ export interface ListPRsOptions {
  * (D-4: single auth point, created once per process).
  */
 export function createGitHubClient(): GitHubClient {
-  const token = process.env.GITHUB_TOKEN;
+  const token = resolveGitHubToken();
   if (!token) {
-    throw new Error("GITHUB_TOKEN environment variable is not set — required for GitHub API access");
+    throw new Error(
+      "GITHUB_TOKEN environment variable is not set — required for GitHub API access " +
+        "(GH_TOKEN is also accepted)",
+    );
   }
-  return new Octokit({ auth: token }) as unknown as GitHubClient;
+  // `GITHUB_API_URL` is the conventional companion to the token variables —
+  // gh CLI and GitHub Actions both set it — and honouring it is what lets a
+  // test point the client at a dead port to exercise the non-token failure
+  // path in `hooks/IssueCloseGuard.hook.ts` (#140) without reaching the real
+  // API. Absent, Octokit's own default applies.
+  const baseUrl = process.env.GITHUB_API_URL?.trim();
+  return new Octokit(baseUrl ? { auth: token, baseUrl } : { auth: token }) as unknown as GitHubClient;
+}
+
+/**
+ * The GitHub credential, under either of the two conventional names.
+ *
+ * #139: this read `GITHUB_TOKEN` alone, and nothing sets it. `gh auth status`
+ * on Jason's machine reports the account is authenticated via `GH_TOKEN`, so
+ * every Octokit call in the repo threw at construction — the prove gate said
+ * so loudly, `gates/orchestrator.ts` dropped the `shipped` label into a
+ * `.catch(() => {})`, and `hooks/IssueCloseGuard.hook.ts` stopped guarding
+ * (#140).
+ *
+ * D-3 of GITHUB-API-MIGRATION-SPEC chose the single name on the grounds that
+ * it was "already set by `gh` CLI auth". It is not: `gh` reads `GH_TOKEN` and
+ * exports nothing. Accepting both is what makes D-7's "Octokit always works"
+ * true in an environment authenticated the ordinary way.
+ *
+ * `GITHUB_TOKEN` wins when both are present, so a deliberately scoped token
+ * can override a broader ambient one. Empty strings count as absent — an
+ * exported-but-unset variable must produce the clear error here rather than
+ * an unauthenticated client that 401s somewhere less obvious.
+ */
+export function resolveGitHubToken(): string | undefined {
+  for (const name of ["GITHUB_TOKEN", "GH_TOKEN"]) {
+    const v = process.env[name];
+    // Trimmed, not just tested: `GH_TOKEN=$(cat token)` carries a trailing
+    // newline, and Octokit sends it in the Authorization header, where it
+    // 401s with nothing pointing at the whitespace as the cause.
+    if (v && v.trim()) return v.trim();
+  }
+  return undefined;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────

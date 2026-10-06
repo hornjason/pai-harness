@@ -5,7 +5,14 @@
  *
  * All tests mock HTTP calls — never hit real GitHub API (spec constraint).
  */
-import { describe, test, expect, mock, beforeEach } from "bun:test";
+import { describe, test, expect, mock, beforeEach, afterEach } from "bun:test";
+
+/**
+ * The options the most recent Octokit construction received. #139 is about
+ * which token reaches the client, so the tests need to see the value, not
+ * just whether the constructor was reached.
+ */
+let lastOctokitOptions: any = null;
 
 // Mock Octokit before importing the module
 const mockIssuesGet = mock(() => Promise.resolve({
@@ -44,7 +51,9 @@ class MockOctokit {
       list: mockPullsList,
     },
   };
-  constructor(_opts?: any) {}
+  constructor(opts?: any) {
+    lastOctokitOptions = opts ?? null;
+  }
 }
 
 // We need to mock the module
@@ -88,14 +97,92 @@ describe("lib/github.ts", () => {
       expect(client.rest).toBeDefined();
     });
 
-    test("throws if GITHUB_TOKEN is not set", () => {
-      const saved = process.env.GITHUB_TOKEN;
+    test("throws if no token is set under any name", () => {
+      // Both names, deliberately. This used to clear GITHUB_TOKEN only, which
+      // made the test's meaning depend on whether the developer's shell
+      // happened to export GH_TOKEN — green here, red on Jason's machine,
+      // for a reason the diff would not explain.
+      const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
       delete process.env.GITHUB_TOKEN;
+      delete process.env.GH_TOKEN;
       try {
         expect(() => createGitHubClient()).toThrow("GITHUB_TOKEN");
       } finally {
-        process.env.GITHUB_TOKEN = saved || "test-token-for-mocked-octokit";
+        process.env.GITHUB_TOKEN = saved.GITHUB_TOKEN || "test-token-for-mocked-octokit";
+        if (saved.GH_TOKEN === undefined) delete process.env.GH_TOKEN;
+        else process.env.GH_TOKEN = saved.GH_TOKEN;
       }
+    });
+
+    /**
+     * #139: the client authenticated from GITHUB_TOKEN alone, and nothing sets
+     * it. `gh auth status` on this machine reports the account is authenticated
+     * via GH_TOKEN, so every Octokit call in the repo threw at construction —
+     * silently in `gates/orchestrator.ts` and `hooks/IssueCloseGuard.hook.ts`,
+     * loudly in the prove gate.
+     *
+     * D-3 of GITHUB-API-MIGRATION-SPEC justified the single name with "Already
+     * set by `gh` CLI auth". It is not. The design decision rested on an
+     * unchecked premise, which is why no test caught it.
+     */
+    describe("#139: token resolution across both conventional names", () => {
+      const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+
+      const setEnv = (vars: Record<string, string | undefined>) => {
+        for (const [k, v] of Object.entries(vars)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      };
+
+      afterEach(() => setEnv(saved));
+
+      test("GH_TOKEN alone is sufficient — the real environment today", () => {
+        setEnv({ GITHUB_TOKEN: undefined, GH_TOKEN: "gh-token-value" });
+        expect(() => createGitHubClient()).not.toThrow();
+      });
+
+      test("GITHUB_TOKEN alone is still sufficient", () => {
+        setEnv({ GITHUB_TOKEN: "github-token-value", GH_TOKEN: undefined });
+        expect(() => createGitHubClient()).not.toThrow();
+      });
+
+      test("GITHUB_TOKEN wins when both are set", () => {
+        // Order matters for anyone who exports a scoped GITHUB_TOKEN to
+        // override a broader ambient GH_TOKEN. Assert the auth value itself,
+        // not merely that construction succeeded — "it did not throw" is true
+        // for either precedence and would pass whichever one we picked.
+        setEnv({ GITHUB_TOKEN: "specific", GH_TOKEN: "ambient" });
+        createGitHubClient();
+        expect(lastOctokitOptions?.auth).toBe("specific");
+      });
+
+      test("an empty token is treated as absent, not as a credential", () => {
+        // `GH_TOKEN=""` is what an unset-but-exported variable looks like.
+        setEnv({ GITHUB_TOKEN: "", GH_TOKEN: "" });
+        expect(() => createGitHubClient()).toThrow("GITHUB_TOKEN");
+      });
+
+      test("a whitespace-only token is treated as absent too", () => {
+        // This is the case that actually exercises the trim. The empty-string
+        // test above does not: `""` is falsy, so it throws on the plain
+        // truthiness check whether or not the value is trimmed, and a
+        // mutation removing the trim survived it. `"  "` is truthy, so
+        // without the trim it reaches Octokit as a credential and the
+        // request 401s somewhere far from the cause.
+        setEnv({ GITHUB_TOKEN: "   ", GH_TOKEN: "\t\n" });
+        expect(() => createGitHubClient()).toThrow("GITHUB_TOKEN");
+      });
+
+      test("surrounding whitespace is stripped from the credential", () => {
+        // `GH_TOKEN=$(cat token)` keeps the file's trailing newline, which
+        // Octokit puts straight into the Authorization header. The result is
+        // a 401 with nothing in it pointing at whitespace, so strip it here
+        // where the cause is still visible.
+        setEnv({ GITHUB_TOKEN: undefined, GH_TOKEN: "  gho_realtoken\n" });
+        createGitHubClient();
+        expect(lastOctokitOptions?.auth).toBe("gho_realtoken");
+      });
     });
   });
 

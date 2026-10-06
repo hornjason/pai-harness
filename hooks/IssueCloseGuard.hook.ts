@@ -13,7 +13,7 @@
 import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { parseHookInput, findWorkflowState, HARNESS_ROOT } from './lib/utils';
+import { parseHookInput, findWorkflowState, parseRepoSlug, HARNESS_ROOT } from './lib/utils';
 import { createGitHubClient, getIssue } from '../lib/github';
 
 const TEMPLATE_RULES = [
@@ -86,19 +86,38 @@ async function main() {
   if (!closeMatch) process.exit(0);
   const issueNum = closeMatch[1];
 
-  const repoMatch = command.match(/--repo\s+(\S+)/);
-  const repo = repoMatch?.[1] || 'hornjason/pai-config';
+  const repo = parseRepoSlug(command) || 'hornjason/pai-config';
 
   const wf = findWorkflowState(issueNum);
   if (!wf) {
+    // #140: `block()` used to sit inside a `try` whose `catch {}` was empty,
+    // so every way of failing to READ the labels — no credential (#139), a
+    // rate limit, a malformed repo, a network blip — fell through to the
+    // warning below and exited 0. The close went ahead. Measured: the same
+    // close of the same p1-labelled issue blocked with a token present and
+    // was waved through without one.
+    //
+    // There is no workflow-state.json here, so the labels are the only
+    // evidence available. Not being able to read them is not the same as
+    // reading them and finding nothing, and only one of those is safe to
+    // treat as permission.
+    let labelNames: string;
     try {
       const github = createGitHubClient();
       const issueData = await getIssue(github, repo, parseInt(issueNum, 10));
-      const labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
-      if (labelNames.includes('p1-ship-next') || labelNames.includes('p2-this-week')) {
-        block(`Cannot close #${issueNum} — has ${labelNames.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
-      }
-    } catch {}
+      labelNames = (issueData.labels || []).map((l: any) => typeof l === 'string' ? l : l.name).join('\n');
+    } catch (e: any) {
+      block(
+        `Cannot close #${issueNum} — no workflow-state.json, and its labels could not be ` +
+        `read to check whether it is protected: ${e?.message?.slice(0, 200) || e}\n` +
+        `Fix the GitHub access (GITHUB_TOKEN or GH_TOKEN) and retry, or close it on GitHub ` +
+        `directly if you have already confirmed it does not need to ship.`,
+      );
+    }
+
+    if (labelNames.includes('p1-ship-next') || labelNames.includes('p2-this-week')) {
+      block(`Cannot close #${issueNum} — has ${labelNames.includes('p1') ? 'p1-ship-next' : 'p2-this-week'} label but no workflow-state.json. Run /ship first.`);
+    }
     console.log(`<system-reminder>\nWARNING: Closing #${issueNum} but no workflow-state.json found.\nIf this issue went through ship, gates may not have been run.\n</system-reminder>`);
     process.exit(0);
   }
