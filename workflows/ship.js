@@ -137,11 +137,42 @@ if (!parsedArgs.issue || !parsedArgs.projectRoot) {
 }
 
 const ISSUE = parsedArgs.issue
-const REPO = parsedArgs.repo || 'hornjason/asaCommandCenter'
+// ──── SLUG-DERIVATION-START ────
+// No project-specific literal as a fallback (#114).
+//
+// This read `parsedArgs.repo || 'hornjason/asaCommandCenter'` and
+// `parsedArgs.slug || \`ddb-${ISSUE}\``. The ship skill documents "detect slug
+// from repo name + issue number" but never passes slug, so EVERY run in EVERY
+// repo took the hardcoded branch: 26 rungate runs and 3 asaCommandCenter runs
+// were filed under `ddb-*`, and not one resolvable directory was actually
+// DailyBriefDashboard. Any analysis grouping compliance data by slug prefix
+// was reading another project's namespace.
+//
+// Deriving from `repo` is the fix, and refusing is the other half of it. A
+// default repo is the same bug one level up — it would keep runs flowing into
+// a namespace nobody chose, just a different one. Naming no project at all is
+// what makes the failure impossible to mistake for success.
+function deriveSlug(repo, issue) {
+  const name = String(repo || '').split('/').filter(Boolean).pop() || ''
+  if (!name) return null
+  // Keep it filesystem-safe: this becomes a directory under ~/.rungate/.
+  const safe = name.replace(/[^A-Za-z0-9._-]/g, '-')
+  return `${safe}-${issue}`
+}
+// ──── SLUG-DERIVATION-END ────
+const REPO = parsedArgs.repo
+if (!REPO && !parsedArgs.slug) {
+  return {
+    status: 'ARGS_ERROR',
+    message: 'repo is required (e.g. "owner/name") so the run slug can be derived — ' +
+      'pass repo, or pass slug explicitly. Refusing to guess: the previous default ' +
+      'filed every run under another project\'s namespace (#114).',
+  }
+}
 const ISSUE_REPO = parsedArgs.issueRepo || REPO
 const PROJECT_ROOT = parsedArgs.projectRoot
 const PHASE_TARGET = parsedArgs.phase || 'all'
-const SLUG = parsedArgs.slug || `ddb-${ISSUE}`
+const SLUG = parsedArgs.slug || deriveSlug(REPO, ISSUE)
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
 const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
