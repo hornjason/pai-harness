@@ -335,6 +335,7 @@ Only return the rule TEXT — strip leading dashes, numbers, and whitespace.
   return REINFORCEMENT_CACHE[role]
 }
 
+// ──── BRIEFED-AGENT-START ────
 async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
   const taskContextFiles = opts.contextFiles || null
@@ -352,6 +353,13 @@ async function briefedAgent(prompt, opts = {}) {
       if (roleConfig?.isolation) opts.isolation = roleConfig.isolation
       else opts.isolation = 'worktree'
     }
+    // The role's model. This was missing, so every role agent ran on the
+    // workflow default while two config files, a conformity rule and six brief
+    // frontmatters all described a choice that was never in effect. An explicit
+    // model from the caller wins, matching how isolation behaves above; a role
+    // that configures none is left alone rather than defaulted, so an
+    // incomplete config stays visible instead of being quietly filled in.
+    if (!('model' in opts) && roleConfig?.model) opts.model = roleConfig.model
     if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT
 
     let fullPrompt = ''
@@ -406,6 +414,7 @@ async function briefedAgent(prompt, opts = {}) {
   }
   return agent(prompt, opts)
 }
+// ──── BRIEFED-AGENT-END ────
 
 // ── Helper: run gate with self-heal + error classification ──
 
