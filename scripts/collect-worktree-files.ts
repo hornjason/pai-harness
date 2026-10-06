@@ -22,8 +22,29 @@
  * Diagnostics go to stderr so stdout stays a clean file list.
  */
 
+import { execFileSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
 import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } from "../lib/worktree-collect";
+
+/**
+ * The worktrees git actually knows about.
+ *
+ * The groups file is agent-reported, so the worktree paths in it cannot
+ * authorise themselves. Git is the authority on what is a worktree of this
+ * repository, and it is not guessable by whatever produced the groups file.
+ * Deriving the list here rather than accepting it as an argument keeps the
+ * authorisation out of reach of the caller as well.
+ */
+function authorisedWorktrees(projectRoot: string): string[] {
+  const out = execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
+    encoding: "utf-8",
+  });
+  return out
+    .split("\n")
+    .filter(l => l.startsWith("worktree "))
+    .map(l => l.slice("worktree ".length).trim())
+    .filter(Boolean);
+}
 
 const [groupsPath, projectRoot] = process.argv.slice(2);
 
@@ -56,9 +77,17 @@ if (groups.length === 0) {
   process.exit(1);
 }
 
+let allowed: string[];
+try {
+  allowed = authorisedWorktrees(projectRoot);
+} catch (e) {
+  console.error(`collect: cannot determine this repository's worktrees: ${(e as Error).message}`);
+  process.exit(1);
+}
+
 let collected;
 try {
-  collected = collectWorktreeFiles(groups, projectRoot);
+  collected = collectWorktreeFiles(groups, projectRoot, allowed);
 } catch (e) {
   // A traversal or symlink rejection means the inputs cannot be trusted. Abort
   // rather than hand the caller a partially-collected tree to commit.
@@ -70,9 +99,31 @@ for (const m of collected.missing) {
   console.error(`collect: WARNING agent reported a file that does not exist: ${m}`);
 }
 
+// Stage here rather than printing a list for the caller to stage.
+//
+// The caller is workflows/ship.js, which can only reach this script through an
+// agent step, so anything printed on stdout comes back as free-form LLM text.
+// Parsing a file list out of that text put a language model inside a path
+// security boundary: prose, a summary, or an invented path would have flowed
+// straight into `git add`, and an agent that simply failed to echo the agreed
+// failure token would have been read as success. The set of files to stage is
+// decided and acted on in the same process that validated them, so no path
+// survives a round trip through generated text.
+try {
+  if (collected.copied.length > 0) {
+    execFileSync("git", ["-C", projectRoot, "add", "--", ...collected.copied], { stdio: "pipe" });
+  }
+} catch (e) {
+  console.error(`collect: staging failed: ${(e as Error).message}`);
+  process.exit(1);
+}
+
 console.error(
   `collect: ${collected.copied.length} file(s) from ${groups.length} worktree(s)` +
     (collected.missing.length ? `, ${collected.missing.length} missing` : ""),
 );
 
-for (const p of collected.copied) console.log(p);
+// stdout is a receipt, not an instruction: the count is reportable, and the
+// paths are listed only for the run log.
+console.log(`COLLECTED ${collected.copied.length}`);
+for (const p of collected.copied) console.error(`collect:   staged ${p}`);

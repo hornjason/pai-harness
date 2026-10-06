@@ -19,8 +19,8 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync } from "fs";
-import { join, dirname } from "path";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, symlinkSync, linkSync } from "fs";
+import { join, dirname, relative } from "path";
 import { tmpdir } from "os";
 import { groupFilesByWorktree, collectWorktreeFiles } from "../../lib/worktree-collect";
 
@@ -99,6 +99,7 @@ describe("#81: collectWorktreeFiles", () => {
         { worktreePath: b, files: ["lib/scanner.ts"] },
       ],
       projectRoot,
+      [a, b],
     );
 
     expect(result.copied.sort()).toEqual(["lib/config-loader.ts", "lib/scanner.ts", "test/config-loader.test.ts"]);
@@ -110,7 +111,7 @@ describe("#81: collectWorktreeFiles", () => {
 
   test("returns paths relative to the project root, so buildSafeGitAdd accepts them", () => {
     const a = makeWorktree("wt-a", { "lib/a.ts": "A" });
-    const { copied } = collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot);
+    const { copied } = collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot, [a]);
     for (const p of copied) expect(p.startsWith("/")).toBe(false);
   });
 
@@ -119,6 +120,7 @@ describe("#81: collectWorktreeFiles", () => {
     const { copied, missing } = collectWorktreeFiles(
       [{ worktreePath: a, files: ["lib/a.ts", "lib/never-written.ts"] }],
       projectRoot,
+      [a],
     );
     expect(copied).toEqual(["lib/a.ts"]);
     expect(missing).toEqual([join(a, "lib/never-written.ts")]);
@@ -126,7 +128,7 @@ describe("#81: collectWorktreeFiles", () => {
 
   test("refuses to write outside the project root", () => {
     const a = makeWorktree("wt-a", { "lib/a.ts": "A" });
-    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["../../escape.ts"] }], projectRoot)).toThrow();
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["../../escape.ts"] }], projectRoot, [a])).toThrow();
     expect(existsSync(join(root, "escape.ts"))).toBe(false);
   });
 
@@ -140,7 +142,7 @@ describe("#81: collectWorktreeFiles", () => {
     writeFileSync(secret, "SECRET");
     symlinkSync(secret, join(a, "lib-a.ts"));
 
-    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib-a.ts"] }], projectRoot)).toThrow(/symlink/i);
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib-a.ts"] }], projectRoot, [a])).toThrow(/symlink/i);
     expect(existsSync(join(projectRoot, "lib-a.ts"))).toBe(false);
   });
 
@@ -150,7 +152,7 @@ describe("#81: collectWorktreeFiles", () => {
     mkdirSync(escape, { recursive: true });
     symlinkSync(escape, join(projectRoot, "lib"));
 
-    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot)).toThrow();
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot, [a])).toThrow();
     expect(existsSync(join(escape, "a.ts"))).toBe(false);
   });
 
@@ -161,7 +163,7 @@ describe("#81: collectWorktreeFiles", () => {
     writeFileSync(join(outside, "a.ts"), "SECRET");
     symlinkSync(outside, join(a, "lib"));
 
-    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot)).toThrow();
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib/a.ts"] }], projectRoot, [a])).toThrow();
   });
 
   test("refuses when the destination FILE is a symlink out of the project", () => {
@@ -172,13 +174,84 @@ describe("#81: collectWorktreeFiles", () => {
     writeFileSync(secret, "SECRET");
     symlinkSync(secret, join(projectRoot, "a.ts"));
 
-    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["a.ts"] }], projectRoot)).toThrow(/symlink/i);
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["a.ts"] }], projectRoot, [a])).toThrow(/symlink/i);
     expect(readFileSync(secret, "utf-8")).toBe("SECRET");
+  });
+
+  // Every check above validates `src` against `group.worktreePath`. None of
+  // them validated `group.worktreePath` itself — and it arrives from
+  // `agentResults`, which is agent-reported. An agent that names "/" as its
+  // worktree makes every file on the machine "inside" it. `dest` stays in the
+  // project root, so the payload is not a write outside; it is a read of
+  // anything on disk INTO the repo, which ship.js then stages, commits and
+  // pushes. Four rounds of symlink hardening all assumed the root was trusted.
+  describe("the containment root is itself untrusted", () => {
+    test("refuses a worktree the caller did not authorise", () => {
+      const a = makeWorktree("wt-a", { "a.ts": "A" });
+      const rogue = makeWorktree("wt-rogue", { "a.ts": "ROGUE" });
+      expect(() =>
+        collectWorktreeFiles([{ worktreePath: rogue, files: ["a.ts"] }], projectRoot, [a]),
+      ).toThrow(/worktree/i);
+    });
+
+    test("the exfiltration shape: worktreePath '/' cannot pull a system file into the repo", () => {
+      const a = makeWorktree("wt-a", { "a.ts": "A" });
+      const secret = join(root, "outside-secret.txt");
+      writeFileSync(secret, "SECRET");
+
+      expect(() =>
+        collectWorktreeFiles(
+          [{ worktreePath: "/", files: [relative("/", secret)] }],
+          projectRoot,
+          [a],
+        ),
+      ).toThrow(/worktree/i);
+      expect(existsSync(join(projectRoot, "outside-secret.txt"))).toBe(false);
+    });
+
+    test("an empty allow-list authorises nothing", () => {
+      const a = makeWorktree("wt-a", { "a.ts": "A" });
+      expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["a.ts"] }], projectRoot, [])).toThrow(/worktree/i);
+    });
+
+    test("accepts an authorised worktree named by a different but equivalent path", () => {
+      // Comparison is by realpath, so /tmp vs /private/tmp on macOS must not
+      // reject a worktree that genuinely is the authorised one.
+      const a = makeWorktree("wt-a", { "a.ts": "A" });
+      const viaDot = join(a, ".");
+      const { copied } = collectWorktreeFiles([{ worktreePath: viaDot, files: ["a.ts"] }], projectRoot, [a]);
+      expect(copied).toEqual(["a.ts"]);
+    });
+  });
+
+  test("creates no directory outside the project root before refusing", () => {
+    // mkdirSync(dirname(dest), {recursive:true}) ran BEFORE the containment
+    // check on that directory, so a pre-existing symlink in the project root
+    // meant the directory was already created outside before the throw.
+    const a = makeWorktree("wt-a", { "lib/sub/a.ts": "A" });
+    const escape = join(root, "escape-dir");
+    mkdirSync(escape, { recursive: true });
+    symlinkSync(escape, join(projectRoot, "lib"));
+
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["lib/sub/a.ts"] }], projectRoot, [a])).toThrow();
+    expect(existsSync(join(escape, "sub"))).toBe(false);
+  });
+
+  test("refuses a source that is a hard link to a file outside the worktree", () => {
+    // lstat reports a regular file and the path really is inside the worktree,
+    // so every symlink check passes. The inode is shared with a file outside.
+    const a = makeWorktree("wt-a", { "placeholder": "x" });
+    const secret = join(root, "outside-secret.txt");
+    writeFileSync(secret, "SECRET");
+    linkSync(secret, join(a, "a.ts"));
+
+    expect(() => collectWorktreeFiles([{ worktreePath: a, files: ["a.ts"] }], projectRoot, [a])).toThrow(/hard link/i);
+    expect(existsSync(join(projectRoot, "a.ts"))).toBe(false);
   });
 
   test("a single-worktree run is unchanged — same worktree as the project root is a no-op copy", () => {
     writeFileSync(join(projectRoot, "a.ts"), "A");
-    const { copied, missing } = collectWorktreeFiles([{ worktreePath: projectRoot, files: ["a.ts"] }], projectRoot);
+    const { copied, missing } = collectWorktreeFiles([{ worktreePath: projectRoot, files: ["a.ts"] }], projectRoot, [projectRoot]);
     expect(copied).toEqual(["a.ts"]);
     expect(missing).toEqual([]);
     expect(readFileSync(join(projectRoot, "a.ts"), "utf-8")).toBe("A");

@@ -130,11 +130,45 @@ export function groupFilesByWorktree(results: AgentBuildResult[]): WorktreeGroup
  * means the inputs cannot be trusted, and the caller must abort the commit
  * rather than proceed with a partially-collected tree.
  */
-export function collectWorktreeFiles(groups: WorktreeGroup[], projectRoot: string): CollectResult {
+export function collectWorktreeFiles(
+  groups: WorktreeGroup[],
+  projectRoot: string,
+  allowedWorktrees: string[],
+): CollectResult {
   const copied: string[] = [];
   const missing: string[] = [];
 
+  // `allowedWorktrees` is required, and an empty list authorises nothing.
+  // Making it optional with an "allow anything" default would restore exactly
+  // the hole it exists to close, in the quietest possible way.
+  const allowed = new Set<string>();
+  for (const w of allowedWorktrees || []) {
+    try {
+      allowed.add(realpathSync(resolve(w)));
+    } catch {
+      // A worktree the caller named but that does not exist authorises nothing.
+    }
+  }
+
   for (const group of groups) {
+    // Every other check in this function validates a path against
+    // `group.worktreePath`. That value arrives from `agentResults` and is
+    // agent-reported, so until it is checked the containment root is chosen by
+    // the same party the checks defend against: `worktreePath: "/"` makes every
+    // file on the machine "inside the worktree". The destination stays within
+    // the project root, so the payload is not a write outside — it is a read of
+    // anything on disk INTO the repo, which the caller then stages, commits and
+    // pushes. Authorise the root against the caller's list before trusting it.
+    let realWorktree: string;
+    try {
+      realWorktree = realpathSync(resolve(group.worktreePath));
+    } catch {
+      throw new Error(`refusing an unresolvable worktree path: ${group.worktreePath}`);
+    }
+    if (!allowed.has(realWorktree)) {
+      throw new Error(`refusing a worktree the caller did not authorise: ${group.worktreePath}`);
+    }
+
     for (const rel of group.files) {
       const dest = resolve(projectRoot, rel);
       if (!isInside(projectRoot, dest)) {
@@ -159,6 +193,14 @@ export function collectWorktreeFiles(groups: WorktreeGroup[], projectRoot: strin
         missing.push(src);
         continue;
       }
+      // A hard link defeats every check above: lstat reports a regular file and
+      // the path genuinely is inside the worktree, because a hard link has no
+      // target path to resolve — it is a second name for the same inode. Only
+      // the link count gives it away. Source files written by an agent have
+      // one name; anything else is reaching for a file it was not given.
+      if (st.nlink > 1) {
+        throw new Error(`refusing to collect a hard link: ${rel}`);
+      }
       // Catches a symlinked intermediate directory (`wt/lib` -> elsewhere),
       // which the lstat above cannot see because the leaf is a real file.
       if (!realIsInside(group.worktreePath, src)) {
@@ -168,10 +210,19 @@ export function collectWorktreeFiles(groups: WorktreeGroup[], projectRoot: strin
       // Same path on both sides: the agent worked directly in the project root
       // (the single-agent path). copyFileSync onto itself would truncate.
       if (src !== dest) {
+        // Check BEFORE creating anything. `mkdirSync(recursive)` used to run
+        // first, so a pre-existing symlink in the project root meant the
+        // directories had already been created outside it by the time the
+        // check threw — the refusal was correct and still left a side effect
+        // where it had no business writing. realIsInside walks up to the
+        // deepest existing ancestor, so it answers correctly for a path that
+        // does not exist yet.
+        if (!realIsInside(projectRoot, dirname(dest))) {
+          throw new Error(`destination directory escapes the project root: ${rel}`);
+        }
         mkdirSync(dirname(dest), { recursive: true });
-        // Re-check after mkdir: the destination directory may itself be a
-        // symlink out of the project, in which case the lexical check above
-        // passed and the write would still land outside.
+        // And again after: mkdir resolved and created real directories, but a
+        // symlinked component could have been introduced between the two.
         if (!realIsInside(projectRoot, dirname(dest))) {
           throw new Error(`destination directory escapes the project root: ${rel}`);
         }
@@ -185,6 +236,11 @@ export function collectWorktreeFiles(groups: WorktreeGroup[], projectRoot: strin
         }
         if (dst && !dst.isFile()) {
           throw new Error(`refusing to overwrite a non-regular file: ${rel}`);
+        }
+        // Same inode trick on the destination side: copyFileSync writes
+        // through a hard link into whatever else shares the inode.
+        if (dst && dst.nlink > 1) {
+          throw new Error(`refusing to overwrite a hard link: ${rel}`);
         }
         copyFileSync(src, dest);
       }

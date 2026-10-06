@@ -271,14 +271,32 @@ describe("ship.js safeGitAddCommand behaviour", () => {
 describe("ship.js aborts the commit when staging is refused", () => {
   test("every safeGitAddCommand call site handles null", () => {
     const lines = shipSource.split("\n");
+
+    // Match the CALL, then look back for the assignment it belongs to.
+    //
+    // This used to require `= safeGitAddCommand(` on one line. Wrapping a call
+    // site across lines — a ternary, a long argument list — made it invisible
+    // to the check while the null guard it asserts was still right there. The
+    // test went from 3 call sites to 2 and failed on the count, reporting a
+    // missing guard that had not gone anywhere. Same shape as #82 and the AC-5
+    // byte window: a guard whose detection is narrower than the thing it
+    // guards, so valid code reads as a violation and, worse, a genuinely
+    // unguarded call in that form would read as no call at all.
     const callSites = lines
       .map((l, i) => ({ l, i }))
-      .filter(({ l }) => /=\s*safeGitAddCommand\(/.test(l));
+      .filter(({ l }) => /safeGitAddCommand\(/.test(l) && !/^\s*function\s+safeGitAddCommand/.test(l));
 
     expect(callSites.length).toBeGreaterThanOrEqual(3);
 
-    for (const { l, i } of callSites) {
-      const varName = l.match(/(?:const|let)\s+(\w+)\s*=/)![1];
+    for (const { i } of callSites) {
+      // Walk back to the nearest const/let assignment — the call may sit on a
+      // continuation line.
+      let varName: string | undefined;
+      for (let j = i; j >= 0 && j > i - 5; j--) {
+        const m = lines[j].match(/(?:const|let)\s+(\w+)\s*=/);
+        if (m) { varName = m[1]; break; }
+      }
+      expect(varName, `no assignment found for the safeGitAddCommand call on line ${i + 1}`).toBeDefined();
       // The guard must appear within a few lines of the assignment.
       const window = lines.slice(i + 1, i + 6).join("\n");
       expect(window).toContain(`${varName} === null`);

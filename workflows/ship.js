@@ -1421,35 +1421,56 @@ log('Committing code')
 const agentResults = implementResult.buildResult?.agentResults || []
 const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filter(Boolean))]
 let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
-let collectedFiles = null
+let alreadyStaged = false
 
 if (distinctWorktrees.length > 1) {
   log(`Collecting work from ${distinctWorktrees.length} worktrees into ${PROJECT_ROOT} (#81)`)
   const groupsJson = JSON.stringify(agentResults)
+  // The script stages what it collects, in the process that validated it.
+  // This step therefore reports an outcome; it does not hand back a file list.
+  // Parsing paths out of an agent's reply would put a language model inside a
+  // path security boundary — invented or summarised paths would have reached
+  // `git add`, and an agent that neglected to echo the agreed failure token
+  // would have read as success.
   const collectOut = await agent(`
-Run exactly this, then return ONLY the script's stdout (the file list), nothing else:
+Run exactly this and report the result:
 
 cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
 cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT}
 
-If the command exits non-zero, return the literal text COLLECT_FAILED followed by stderr.
-  `, { label: 'collect-worktrees', phase: 'Commit' })
+Set ok to true ONLY if the command exited zero. Set collected to the number in
+its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
+  `, {
+    label: 'collect-worktrees',
+    phase: 'Commit',
+    schema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        collected: { type: 'number' },
+        detail: { type: 'string' },
+      },
+      required: ['ok', 'collected'],
+    },
+  })
 
-  const out = typeof collectOut === 'string' ? collectOut.trim() : ''
-  if (!out || out.includes('COLLECT_FAILED')) {
+  // Fail closed: anything other than an explicit success with a positive count
+  // aborts. A malformed reply, a missing field, or a claim of success with
+  // nothing collected all land here rather than proceeding to commit.
+  if (!collectOut || collectOut.ok !== true || !(collectOut.collected > 0)) {
     return {
       status: 'SHIP_FAILED',
       issue: ISSUE,
-      reason: `Could not collect parallel worktree output (#81): ${out || 'no output'}`,
+      reason: `Could not collect parallel worktree output (#81): ${collectOut?.detail || 'no usable result from the collect step'}`,
       workDir: WORK_DIR,
     }
   }
-  collectedFiles = out.split('\n').map(l => l.trim()).filter(Boolean)
-  // Everything now lives in the project root, so that is where we stage.
+  // Everything now lives in the project root and is already staged there.
   commitDir = PROJECT_ROOT
-  log(`Collected ${collectedFiles.length} files into the project root`)
+  alreadyStaged = true
+  log(`Collected and staged ${collectOut.collected} files into the project root`)
 }
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP
@@ -1468,8 +1489,15 @@ const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
-const filesForCommit = collectedFiles || implementResult.buildResult?.filesChanged
-const gitAddForCommit = safeGitAddCommand(filesForCommit, commitDir)
+// When the collect step ran, the files are already staged by the script that
+// validated them, and there is nothing left to add. An empty list must not be
+// used to signal that: safeGitAddCommand turns an empty list into `git add .`,
+// which stages the whole tree — the indiscriminate staging AC-3 exists to
+// forbid. Say "nothing to add" explicitly instead.
+const filesForCommit = alreadyStaged ? [] : implementResult.buildResult?.filesChanged
+const gitAddForCommit = alreadyStaged
+  ? 'git diff --cached --quiet && echo "NOTHING_STAGED" || true'
+  : safeGitAddCommand(filesForCommit, commitDir)
 if (gitAddForCommit === null) {
   return {
     status: 'SHIP_FAILED',
