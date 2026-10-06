@@ -8,7 +8,7 @@
  * documented check had never checked a single file, and CI never noticed because
  * `bun test` failed first and the step never ran.
  *
- * Adding tsconfig.json surfaces 88 errors. Fixing all of them is #65 and is a
+ * Adding tsconfig.json surfaced 88 errors. Fixing all of them is #65 and is a
  * separate body of work, so the choice here is between a step that blocks every
  * merge and a step that cannot fail. Both are bad; a ratchet is neither.
  *
@@ -17,11 +17,12 @@
  *   - FEWER errors than the baseline -> progress that nobody banked; lower the
  *     baseline in the same commit, or the number quietly drifts back up
  *
- * Current baseline is 88, of which 54 are a single upstream defect rather than
- * our code: bun-types 1.4.2 types `test.todo` as `Test<T>`, which makes the test
- * function mandatory, while Bun's runtime accepts `test.todo("label")` with no
- * body. Those resolve on a types upgrade and should not be mistaken for debt.
- * The other 34 are ours.
+ * The baseline is whatever `.claude/typecheck-baseline.json` says; it only ever
+ * goes down. 49 of the original 88 were one upstream defect rather than our
+ * code — bun-types 1.4.2 makes the test function mandatory on `test.todo`,
+ * while Bun's runtime accepts a bodyless `test.todo("label")`. Those are now
+ * absorbed by the ambient overload in `test/types/bun-test-todo.d.ts`, so they
+ * no longer inflate the count. What remains is ours.
  */
 
 import { spawnSync } from "child_process";
@@ -73,8 +74,8 @@ if (/tsc: The TypeScript Compiler/.test(output)) {
 
 // tsc reports config-level problems (TS18003 "no inputs were found",
 // TS5083 "cannot read file") with no file(line,col) prefix, so ERROR_LINE
-// counts zero and the run looks clean. Today baseline 88 masks it; the day #65
-// drives the baseline to 0 it becomes a silent pass for a check that never
+// counts zero and the run looks clean. A non-zero baseline masks it; the day
+// #65 drives the baseline to 0 it becomes a silent pass for a check that never
 // compiled anything. Trust the exit status over the parse.
 const actual = countErrors(output);
 if (result.status !== 0 && actual === 0) {

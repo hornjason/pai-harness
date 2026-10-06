@@ -17,7 +17,8 @@ const STATE_MD = join(ROOT, "PROJECT-STATE.md");
 const SPECS_DIR = join(ROOT, "specs");
 
 interface SC { id: string; what: string; done: boolean }
-interface Phase { name: string; scs: SC[] }
+/** `note` is written for every phase in project-state.json and read by phaseEmoji. */
+interface Phase { name: string; scs: SC[]; note?: string }
 interface Session { date: string; items: string[] }
 interface CurrentSession {
   number: number;

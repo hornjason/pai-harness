@@ -13,6 +13,8 @@ import {
   getPromotionCandidates,
   type ComplianceEntry,
   type ComplianceReport,
+  type HillClimbAction,
+  type PromotionFinding,
 } from "../lib/compliance-report.js";
 import { loadRungateConfig } from "../lib/config-loader.js";
 
@@ -236,11 +238,12 @@ name: marcus
 ## Workflow
 1. Write test first
 `);
-      const actions = [{
+      const actions: HillClimbAction[] = [{
         compId: "COMP-7",
         rule: "No cat/head via Bash",
         reinforcement: "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
         consecutiveFails: 3,
+        tier: 1,
       }];
       const result = applyHillClimb(briefPath, actions);
       expect(result.applied.length).toBe(1);
@@ -263,11 +266,12 @@ name: marcus
 ## Workflow
 1. Write test first
 `);
-      const actions = [{
+      const actions: HillClimbAction[] = [{
         compId: "COMP-7",
         rule: "No cat/head via Bash",
         reinforcement: "NEVER use cat, head, or tail via Bash — including piped (grep | head). Use Read with offset/limit.",
         consecutiveFails: 4,
+        tier: 1,
       }];
       const result = applyHillClimb(briefPath, actions);
       expect(result.applied.length).toBe(0);
@@ -360,7 +364,7 @@ name: marcus
   describe("WARN-to-FAIL promotion tracking", () => {
     test("calculatePromotionPrecision returns precision above 80 percent threshold for promotion", () => {
       // 9 out of 10 WARN findings were true positives = 90% precision
-      const findings = [
+      const findings: PromotionFinding[] = [
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
@@ -382,7 +386,7 @@ name: marcus
 
     test("calculatePromotionPrecision blocks promotion below 80 percent threshold", () => {
       // 6 out of 10 = 60% precision — below 80% threshold
-      const findings = [
+      const findings: PromotionFinding[] = [
         { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-2', verdict: 'TRUE_POSITIVE' },
@@ -402,7 +406,7 @@ name: marcus
 
     test("calculatePromotionPrecision requires minimum 10 cycles for promotion eligibility", () => {
       // 5 out of 5 = 100% precision but only 5 samples
-      const findings = [
+      const findings: PromotionFinding[] = [
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },
         { checkId: 'CONTENT-1', verdict: 'TRUE_POSITIVE' },

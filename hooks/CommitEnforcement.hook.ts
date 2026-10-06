@@ -44,7 +44,10 @@ async function main() {
 
   // Extract worktree path from response
   const resp = payload.tool_response
-  const respText = typeof resp === 'string' ? resp : (resp?.content || '')
+  // `tool_response.content` is declared `unknown` — the payload is whatever the
+  // tool emitted. Only a string is regex-able; anything else means no path here.
+  const respContent = typeof resp === 'string' ? resp : resp?.content
+  const respText = typeof respContent === 'string' ? respContent : ''
   let worktreePath: string | null = null
 
   // Try regex on response text

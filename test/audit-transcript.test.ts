@@ -130,6 +130,7 @@ describe("eval-criteria module", () => {
       writes: [],
       duplicateReads: {},
       firstThreeReads: ["AGENTS.md"],
+      promptContent: "",
     };
     const results = evaluateCriteria("da", data);
     expect(results.length).toBeGreaterThan(0);

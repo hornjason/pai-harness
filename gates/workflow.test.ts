@@ -59,7 +59,9 @@ describe("schema validation", () => {
     const result = WorkflowStateSchema.passthrough().safeParse(raw);
     if (!result.success) {
       const issues = result.error.issues.map(i => `${i.path.join(".")}: ${i.message}`);
-      expect(result.success, issues.join("\n")).toBe(true);
+      // Narrowed to `false` inside this branch — widen so the always-fail
+      // assertion still reports the collected issues as its message.
+      expect<boolean>(result.success, issues.join("\n")).toBe(true);
     }
   });
 });
@@ -759,7 +761,7 @@ describe("spec traceability", () => {
       .map((ac: any) => ac.evidenceMethod?.command || "")
       .filter(Boolean);
     if (commands.length === 0) return;
-    const fileRefs = commands.join("\n").match(/[^\s]+(\/[^\s]+|\.[a-z]+)/g) || [];
+    const fileRefs: string[] = commands.join("\n").match(/[^\s]+(\/[^\s]+|\.[a-z]+)/g) || [];
     const outside = fileRefs.filter(ref => {
       if (/^-/.test(ref) || /^\|/.test(ref)) return false;
       return !paths.some((p: string) => ref.includes(p));

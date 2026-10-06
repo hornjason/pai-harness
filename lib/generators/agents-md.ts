@@ -48,7 +48,7 @@ function buildFrontmatter(root: string): string {
     }
   }
 
-  const merged = { ...defaults, ...existing, updated: today };
+  const merged: Record<string, string> = { ...defaults, ...existing, updated: today };
   const order = ["doc-type", "status", "owner", "updated"];
   const keys = [...order.filter(k => k in merged), ...Object.keys(merged).filter(k => !order.includes(k))];
   return `---\n${keys.map(k => `${k}: ${merged[k]}`).join("\n")}\n---\n\n`;

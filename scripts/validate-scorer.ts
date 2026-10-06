@@ -49,7 +49,38 @@ function detectRole(calls: ToolCall[], filename: string): Role {
   return "da";
 }
 
-function buildTranscriptData(calls: ToolCall[]): TranscriptData {
+/**
+ * Concatenate the user-authored turns of a transcript.
+ *
+ * Several criteria in evaluateCriteria() ask whether a file was *injected* into
+ * the prompt rather than read by the agent, which they answer off
+ * `TranscriptData.promptContent`. Passing it empty (or passing the raw JSONL,
+ * which also carries the agent's own output) would have scored those criteria
+ * against text the agent never received.
+ */
+function extractPromptContent(transcriptContent: string): string {
+  const parts: string[] = [];
+  for (const line of transcriptContent.split("\n").filter(Boolean)) {
+    try {
+      const entry = JSON.parse(line);
+      if (entry.type !== "human" && entry.type !== "user" && entry.role !== "user") continue;
+      const content = entry.message?.content ?? entry.content ?? "";
+      if (typeof content === "string") {
+        parts.push(content);
+      } else if (Array.isArray(content)) {
+        parts.push(
+          content
+            .filter((b: { type?: string }) => b.type === "text")
+            .map((b: { text?: string }) => b.text ?? "")
+            .join("\n"),
+        );
+      }
+    } catch { /* skip */ }
+  }
+  return parts.join("\n");
+}
+
+function buildTranscriptData(calls: ToolCall[], promptContent: string): TranscriptData {
   const reads = calls.filter(c => c.name === "Read").map(c => c.input.file_path || "");
   const bashes = calls.filter(c => c.name === "Bash").map(c => c.input.command || "");
   const edits = calls.filter(c => c.name === "Edit").map(c => c.input.file_path || "");
@@ -72,6 +103,7 @@ function buildTranscriptData(calls: ToolCall[]): TranscriptData {
     writes,
     duplicateReads,
     firstThreeReads: reads.slice(0, 3),
+    promptContent,
   };
 }
 
@@ -99,7 +131,7 @@ const results: Array<{
 for (const file of selected) {
   const calls = parseTranscript(file);
   const role = detectRole(calls, basename(file));
-  const data = buildTranscriptData(calls);
+  const data = buildTranscriptData(calls, extractPromptContent(readFileSync(file, "utf-8")));
   const criteria = evaluateCriteria(role, data);
 
   const totalWeight = criteria.reduce((s, c) => s + c.weight, 0);

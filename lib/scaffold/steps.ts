@@ -969,7 +969,7 @@ function generateCodeMapInline(root: string, outPath: string, actions: string[])
     try {
       if (!statSync(full).isDirectory()) continue;
       const files = readdirSync(full, { recursive: true }).map(String);
-      const exts = new Set(files.map(f => f.split(".").pop()).filter(Boolean));
+      const exts = new Set(files.map(f => f.split(".").pop()).filter((e): e is string => Boolean(e)));
       dirs.push({ name: entry, fileCount: files.length, types: [...exts].slice(0, 5) });
     } catch {}
   }

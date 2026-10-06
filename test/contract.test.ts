@@ -33,7 +33,9 @@ function runGate(gate: string, slug: string): { pass: number; fail: number; outp
   }
 }
 
-describe("contract: LIGHT tier", { timeout: 30_000 }, () => {
+// Bun ignores a describe-level `timeout` option, so the 30s budget lives on each
+// test inside the block (the third argument, which is the position bun-types models).
+describe("contract: LIGHT tier", () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "light");
     mkdirSync(dir, { recursive: true });
@@ -56,15 +58,15 @@ describe("contract: LIGHT tier", { timeout: 30_000 }, () => {
     const r = runGate("scope", "light");
     expect(r.fail).toBe(0);
     expect(r.pass).toBeGreaterThan(0);
-  });
+  }, { timeout: 30_000 });
 
-  test("ship passes", { timeout: 30_000 }, () => {
+  test("ship passes", () => {
     const r = runGate("ship", "light");
     expect(r.pass).toBeGreaterThan(0);
-  });
+  }, { timeout: 30_000 });
 });
 
-describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
+describe("contract: STANDARD tier", () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "standard");
     mkdirSync(dir, { recursive: true });
@@ -88,17 +90,17 @@ describe("contract: STANDARD tier", { timeout: 30_000 }, () => {
   test("scope passes", () => {
     const r = runGate("scope", "standard");
     expect(r.fail).toBe(0);
-  });
+  }, { timeout: 30_000 });
 
   test("verify passes", () => {
     const r = runGate("verify", "standard");
     expect(r.fail).toBe(0);
-  });
+  }, { timeout: 30_000 });
 
-  test("ship passes", { timeout: 30_000 }, () => {
+  test("ship passes", () => {
     const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
-  });
+  }, { timeout: 30_000 });
 });
 
 describe("contract: negative cases", () => {

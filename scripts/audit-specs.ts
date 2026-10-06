@@ -327,9 +327,9 @@ export function auditSpecs(
           );
           const scMatch = modified.match(scLinePattern);
           if (scMatch) {
-            const replacement = closest
-              ? `${scMatch[1]}${closest.rewrite}`
-              : `${scMatch[0]}\n<!-- REVIEW: original — ${usc.statement} -->`;
+            // `closest` is null inside this branch, so the rewrite arm of the
+            // old ternary was unreachable. Only the REVIEW marker can apply.
+            const replacement = `${scMatch[0]}\n<!-- REVIEW: original — ${usc.statement} -->`;
             modified = modified.replace(scLinePattern, replacement);
             hasChanges = true;
             rewrites.push({

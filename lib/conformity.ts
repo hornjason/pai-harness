@@ -871,7 +871,10 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           const assertion = matchPattern(sc);
           if (!assertion) {
             if (metadata.status === "draft") {
-              test.todo(`${sc.id}: ${sc.statement}`);
+              // bun-types declares test.todo as requiring a body even though the
+              // runtime accepts a bare label. A no-op body satisfies both: todo
+              // tests are not executed unless `bun test --todo` is passed.
+              test.todo(`${sc.id}: ${sc.statement}`, () => {});
             } else {
               unmatched.push(`${sc.id}: ${sc.statement}`);
             }
@@ -1928,7 +1931,7 @@ export function runFallowCheck(root: string, opts?: { skipUnusedExports?: boolea
       if (!result) { fallowSkipped("FALLOW-4 (circular dependencies)"); return; }
       const circles = result.circular_dependencies || [];
       if (circles.length > 0) {
-        console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.files || c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
+        console.warn(`Circular dependencies (${circles.length}):\n  ${circles.slice(0, 5).map(c => c.path || JSON.stringify(c.chain ?? c)).join("\n  ")}${circles.length > 5 ? `\n  ... and ${circles.length - 5} more` : ""}`);
       }
       if (fail) expect(circles).toEqual([]);
     });
