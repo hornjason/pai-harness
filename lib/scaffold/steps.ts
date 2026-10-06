@@ -445,6 +445,41 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
   return buildAgentsMdContent(scan);
 }
 
+/**
+ * Rewrite `.claude/rules/` from a scan of the tree the run actually left (#123).
+ *
+ * The first pass happens in Phase 0.5, before `generateOrAuditProjectHarness`
+ * creates `.claude/rungate/` and before `copySpecTemplateIfEmpty` creates
+ * `specs/`. So a freshly scaffolded project shipped rules describing a tree that
+ * no longer existed:
+ *
+ *   docs-routing.md  "Specs — ... (0 files)"   in a project with a spec
+ *   key-files.md     `.claude/rungate.json`    the LEGACY monolith path, in a
+ *                                              project using the directory layout
+ *
+ * The second one is the damaging one: it sends every agent in a new project to a
+ * config file that is not there, and key-files.md is the table agents are told
+ * to read first.
+ *
+ * Re-running the generator is safe and cheap: `generateAgentsMdContent` writes
+ * only the rules, and returns AGENTS.md content for its caller to write. The
+ * return value is discarded here on purpose — AGENTS.md has already been
+ * through `updateSpecsTable` and `injectEnvironmentSection` by this point, and
+ * rewriting it would undo both.
+ */
+export function refreshScopedRulesStep(root: string, type: ProjectType, actions: string[]): void {
+  const sink: string[] = [];
+  generateAgentsMdContent(root, type, sink);
+  // Forward everything except the per-rule GENERATED lines already reported by
+  // the Phase 0.5 pass. Swallowing the rest would hide a warning raised only on
+  // the second scan — the fail-open shape .claude/rules/checks-must-be-able-to-fail.md
+  // exists to prevent.
+  for (const a of sink) {
+    if (!a.startsWith("GENERATED: .claude/rules/")) actions.push(a);
+  }
+  actions.push(`REFRESHED: .claude/rules/ (rescanned after harness config and specs/ existed)`);
+}
+
 export function refreshAgentsMd(root: string, type: ProjectType, actions: string[]): void {
   const agentsPath = join(root, "AGENTS.md");
   const content = readFileSync(agentsPath, "utf-8");
@@ -927,6 +962,21 @@ function writeDirectoryStructure(
 
 // ── Code map generation ────────────────────────────────────────
 
+/**
+ * Generate CODE-MAP.md. Must run LAST in the scaffold (#123).
+ *
+ * This used to be invoked in Phase 1, before `generateAgentBriefsStep` wrote
+ * `.claude/agents/`, before `copySpecTemplateIfEmpty` wrote `specs/`, and
+ * before `addPaiHarnessDevDep` added a devDependency — so a fresh project's
+ * CODE-MAP.md described a tree that stopped existing moments later in the same
+ * run, reporting `specs/ 0 files` and no agents directory in a project with
+ * both.
+ *
+ * The lag was permanent rather than one-run-behind, because of the staleness
+ * skip below: while the file is under 14 days old it is not regenerated at all,
+ * so no later scaffold ever corrected it. Running this step last is what makes
+ * that skip safe — the content it preserves is now right from run 1.
+ */
 export function generateCodeMapStep(root: string, actions: string[], opts?: { fix?: boolean; dryRun?: boolean }): void {
   const fixMode = opts?.fix ?? !opts?.dryRun;
   const codeMapPath = join(root, "CODE-MAP.md");

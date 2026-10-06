@@ -118,17 +118,9 @@ beforeAll(() => {
   sh("git", ["add", "-A"], project);
   sh("git", ["commit", "-q", "-m", "init"], project);
 
-  // Scaffold TWICE to reach the fixed point. Run 1 generates CODE-MAP.md from
-  // a scan taken BEFORE it writes .claude/agents/, specs/ and a devDependency,
-  // so the map it ships describes a project that stops existing the moment the
-  // run finishes. Run 2 regenerates it against the real tree.
-  //
-  // Converging first is what makes SC-364 a meaningful property rather than a
-  // trick question: "identical output" is about the scaffold being a fixed
-  // point, not about a first run predicting its own side effects. The
-  // one-run-behind CODE-MAP is asserted explicitly below so it stays a known
-  // property and cannot silently become something worse.
-  scaffold(project);
+  // ONE run. The scaffold is a fixed point from the first invocation (#123) —
+  // scaffolding twice here would hide a regression that reintroduces the
+  // one-run-behind CODE-MAP, because run 2 would quietly repair it.
   scaffold(project);
 }, 420_000);
 
@@ -171,11 +163,18 @@ describe("SC-364: re-scaffold produces identical output", () => {
     expect(diffKeys(before, restored), "re-scaffold did not reproduce the original bytes").toEqual([]);
   }, 300_000);
 
-  test("CODE-MAP.md needs one extra run to describe the project scaffold just made", () => {
-    // Documents the known limitation found while writing this gate, so it is a
-    // recorded property rather than a surprise. A FRESH project's first
-    // CODE-MAP.md undercounts: it is generated from a pre-scaffold scan, so it
-    // misses .claude/agents/, specs/ and the devDependency the same run adds.
+  test("a FRESH project's first CODE-MAP.md already describes what scaffold created", () => {
+    // #123. generateCodeMapStep used to run in Phase 1, before the same run
+    // wrote .claude/agents/, specs/ and a devDependency — so run 1 shipped a map
+    // of a tree that stopped existing moments later (`specs/ 0 files`, no agents
+    // directory). And because regeneration is skipped while the file is under 14
+    // days old, no later run ever corrected it. The lag was permanent.
+    //
+    // WHY THIS IS NOT JUST `first === second`: that comparison is FREE under the
+    // staleness skip — a scaffold that never regenerates CODE-MAP.md passes it
+    // while shipping a wrong map forever. So the load-bearing assertions are the
+    // CONTENT ones: the first map must name the directories and the dependency
+    // that this very run created. Equality is then the fixed-point half.
     const fresh = mkdtempSync(join(tmpdir(), "sc364-fresh-"));
     try {
       mkdirSync(join(fresh, "src"), { recursive: true });
@@ -189,12 +188,22 @@ describe("SC-364: re-scaffold produces identical output", () => {
 
       scaffold(fresh);
       const first = readFileSync(join(fresh, "CODE-MAP.md"), "utf-8");
+
+      // Each of these is a thing the SAME run created after the code map used
+      // to be generated. Before #123 every one of them was absent or zero.
+      expect(first, "first-run CODE-MAP.md does not list specs/ — scaffold created it this run")
+        .toMatch(/\|\s*specs\/\s*\|\s*[1-9]/);
+      expect(first, "first-run CODE-MAP.md reports no devDependency — addPaiHarnessDevDep added one this run")
+        .toMatch(/\|\s*Dev dependencies\s*\|\s*[1-9]/);
+      expect(first, "first-run CODE-MAP.md does not see .claude/agents/ — generateAgentBriefsStep wrote it this run")
+        .toMatch(/\|\s*\.claude\/\s*\|[^|]*\|[^|]*agents/);
+
+      // ...and it is already the fixed point: a second run changes nothing.
       scaffold(fresh);
       const second = readFileSync(join(fresh, "CODE-MAP.md"), "utf-8");
-
-      expect(first, "first-run CODE-MAP.md already matches — the convergence gap closed, simplify this test")
-        .not.toBe(second);
-      expect(second, "second run should see the specs/ directory scaffold created").toContain("specs/");
+      const norm = (s: string) => s.replace(/scanned-at-sha:\s*[0-9a-f]+/g, "<SHA>");
+      expect(norm(second), "a second scaffold changed CODE-MAP.md — run 1 is not the fixed point")
+        .toBe(norm(first));
     } finally {
       rmSync(fresh, { recursive: true, force: true });
     }

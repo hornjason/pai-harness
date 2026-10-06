@@ -1,5 +1,5 @@
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/AGENTS.md"}}]}}
-{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/.claude/rungate.json"}}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/.claude/rungate/config.json"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/PROJECT-STATE.md"}}]}}
 {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/project/specs/AGENT-BRIEF-TEMPLATE-SPEC.md"}}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"The pages field in rungate.json is not set. The brief template layout follows the spec correctly. Recommend adding aria-label attributes to the navigation components for accessibility."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"The pages field in .claude/rungate/config.json is not set. The brief template layout follows the spec correctly. Recommend adding aria-label attributes to the navigation components for accessibility."}]}}

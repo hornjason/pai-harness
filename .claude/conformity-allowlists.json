@@ -11,8 +11,7 @@
     "GITHUB-API-MIGRATION-SPEC.md",
     "HARNESS-STANDARD.md",
     "HARNESS-SKILL-CONTRACT.md",
-    "AGENT-BRIEF-TEMPLATE-SPEC.md",
-    "SCAFFOLD-DECOMPOSITION-SPEC.md"
+    "AGENT-BRIEF-TEMPLATE-SPEC.md"
   ],
 
   "_orphanFiles": "HYGIENE-3 - files with zero references anywhere. The two shell scripts may be dead or may be invoked in a way the reference scanner cannot see; that judgement was deliberately not made under a red gate. Resolve each by deleting, archiving to reference/, or referencing it - then delist.",
