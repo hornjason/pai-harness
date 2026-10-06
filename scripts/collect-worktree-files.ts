@@ -27,7 +27,7 @@
 
 import { execFileSync } from "child_process";
 import { existsSync, readFileSync, realpathSync } from "fs";
-import { isAbsolute, relative, resolve } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
 import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } from "../lib/worktree-collect";
 
 /**
@@ -55,7 +55,45 @@ import { collectWorktreeFiles, groupFilesByWorktree, type AgentBuildResult } fro
  * rungate-65/.claude/worktrees/ did not exist. A single projectRoot-derived
  * base would authorise nothing there and refuse the whole collection.
  */
-function authorisedWorktrees(projectRoot: string, bases: string[]): string[] {
+/**
+ * Where git itself puts this repo's agent worktrees (#120).
+ *
+ * `git worktree add` run from inside a linked worktree resolves against the
+ * COMMON dir, so agent worktrees land under the main checkout regardless of
+ * which worktree the caller is in. Neither `projectRoot` nor `harnessRoot`
+ * controls that, which is why passing both only *happens* to work: it covers
+ * the usual case where one of the two is the main checkout, and fails
+ * silently whenever neither is — including when a caller deliberately points
+ * harnessRoot at their own worktree to avoid executing another session's
+ * uncommitted code (#77).
+ *
+ * Asking git removes the guess. Returns null rather than throwing: this is an
+ * additional base, and losing it should degrade to the caller-supplied
+ * behaviour, not fail the collection.
+ */
+export function gitWorktreeBase(projectRoot: string): string | null {
+  try {
+    const commonDir = execFileSync(
+      "git",
+      ["-C", projectRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+      { encoding: "utf-8" },
+    ).trim();
+    if (!commonDir) return null;
+    // <main>/.git -> <main>. A bare repo has no worktrees dir to speak of.
+    const mainRepo = commonDir.replace(/\/\.git\/?$/, "");
+    if (mainRepo === commonDir) return null;
+    return join(mainRepo, ".claude", "worktrees");
+  } catch {
+    return null;
+  }
+}
+
+export function authorisedWorktrees(projectRoot: string, bases: string[]): string[] {
+  // git's answer first, then whatever the caller believed. The caller's bases
+  // are kept: they are not wrong, merely incomplete, and dropping them would
+  // break any layout where worktrees legitimately live elsewhere.
+  const derived = gitWorktreeBase(projectRoot);
+  if (derived) bases = [derived, ...bases];
   const out = execFileSync("git", ["-C", projectRoot, "worktree", "list", "--porcelain"], {
     encoding: "utf-8",
   });
@@ -89,6 +127,14 @@ function authorisedWorktrees(projectRoot: string, bases: string[]): string[] {
   });
 }
 
+// CLI entry point. Guarded so the module can be imported by tests without
+// running the collection and calling process.exit — importing it used to
+// print the usage line and abort the test run.
+if (import.meta.main) {
+  main();
+}
+
+function main(): void {
 const [groupsPath, projectRoot, ...worktreeBases] = process.argv.slice(2);
 
 if (!groupsPath || !projectRoot || worktreeBases.length === 0) {
@@ -170,3 +216,4 @@ console.error(
 // paths are listed only for the run log.
 console.log(`COLLECTED ${collected.copied.length}`);
 for (const p of collected.copied) console.error(`collect:   staged ${p}`);
+}
