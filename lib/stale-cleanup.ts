@@ -119,9 +119,26 @@ export function archiveAndPurge(
             reason = `phase=${phase} age=${Math.floor(ageMs / 60000)}m`;
           }
         } else {
-          // Orphaned directory (no workflow-state.json)
-          shouldArchive = true;
-          reason = 'orphaned (no workflow-state.json)';
+          // Orphaned directory (no workflow-state.json).
+          //
+          // Age-checked like every other branch here (#132). This used to
+          // archive on sight, which made "has not written workflow-state.json
+          // YET" indistinguishable from "never will" — so a run that writes
+          // any other artifact first could have its directory renamed out
+          // from under it while still live. That happened to a real run
+          // holding its own PRD, and it is why compliance grades turn up in
+          // .archive: a mid-run move splits one run's artifacts across two
+          // paths with nothing recording that they belong together.
+          //
+          // mtime of the directory, since there is no state file to read.
+          const ageMs = now - statSync(dirPath).mtimeMs;
+          if (ageMs > archiveTtlMs) {
+            shouldArchive = true;
+            reason = `orphaned (no workflow-state.json) age=${Math.floor(ageMs / 60000)}m`;
+          } else {
+            skipped++;
+            continue;
+          }
         }
 
         if (shouldArchive) {
