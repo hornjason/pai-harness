@@ -26,6 +26,7 @@ export interface GitHubClient {
   rest: {
     issues: {
       get: (params: { owner: string; repo: string; issue_number: number }) => Promise<{ data: any }>;
+      create: (params: { owner: string; repo: string; title: string; body?: string; labels?: string[] }) => Promise<{ data: any }>;
       createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<{ data: any }>;
       addLabels: (params: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; issue_number: number; state?: string; [key: string]: any }) => Promise<{ data: any }>;
@@ -226,6 +227,51 @@ export async function addLabels(client: GitHubClient, repoSlug: string, issueNum
 }
 
 /**
+ * Create a new issue.
+ *
+ * Used by ship.js when Discovery rescopes a large issue into phases: phase 1
+ * stays on the parent, the rest become sub-issues.
+ */
+export async function createIssue(
+  client: GitHubClient,
+  repoSlug: string,
+  opts: { title: string; body?: string; labels?: string[] },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.create({
+    owner,
+    repo,
+    title: opts.title,
+    ...(opts.body !== undefined ? { body: opts.body } : {}),
+    ...(opts.labels?.length ? { labels: opts.labels } : {}),
+  });
+  return response.data;
+}
+
+/**
+ * Update an issue's body and/or state.
+ *
+ * Labels are deliberately NOT part of this call. `PATCH /issues/{n}` with a
+ * `labels` array REPLACES the whole set, which is the read-merge-write race
+ * D-5 exists to avoid. Callers that want to add a label use `addLabels`.
+ */
+export async function updateIssue(
+  client: GitHubClient,
+  repoSlug: string,
+  issueNumber: number,
+  opts: { body?: string; title?: string; state?: "open" | "closed" },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.update({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    ...opts,
+  });
+  return response.data;
+}
+
+/**
  * Close an issue by setting state to "closed".
  */
 export async function closeIssue(client: GitHubClient, repoSlug: string, issueNumber: number): Promise<any> {
@@ -269,6 +315,40 @@ export async function updatePR(client: GitHubClient, repoSlug: string, prNumber:
     ...opts,
   });
   return response.data;
+}
+
+/**
+ * Create the PR for `head`, or update the one that already exists.
+ *
+ * A ship run can reach this step more than once — a gate heals and re-runs,
+ * or a regression sends it back through implement — so "create" alone fails
+ * the second time with a 422 the caller has no way to distinguish from a real
+ * error. Upsert is the operation the workflow actually wants.
+ *
+ * The lookup filters server-side on `owner:branch`, the form the REST API
+ * documents for the `head` parameter. Listing every open PR and filtering here
+ * would silently miss a match once the repo has more than one page of them.
+ */
+export async function upsertPR(
+  client: GitHubClient,
+  repoSlug: string,
+  opts: CreatePROptions,
+): Promise<{ number: number; html_url: string; action: "created" | "updated" }> {
+  const { owner } = parseOwnerRepo(repoSlug);
+  const existing = await listPRs(client, repoSlug, {
+    state: "open",
+    head: `${owner}:${opts.head}`,
+  });
+  if (existing.length > 0) {
+    const pr = existing[0];
+    const updated = await updatePR(client, repoSlug, pr.number, {
+      title: opts.title,
+      ...(opts.body !== undefined ? { body: opts.body } : {}),
+    });
+    return { number: pr.number, html_url: updated.html_url ?? pr.html_url, action: "updated" };
+  }
+  const created = await createPR(client, repoSlug, opts);
+  return { number: created.number, html_url: created.html_url, action: "created" };
 }
 
 /**

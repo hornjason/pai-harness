@@ -3,7 +3,7 @@ doc-type: spec
 status: draft
 owner: jason
 created: 2026-10-02
-updated: 2026-10-02
+updated: 2026-10-06
 governs: GitHub API access — two-layer architecture replacing gh CLI with MCP (agent prompts) and Octokit (TypeScript infrastructure)
 testable: true
 compliance: strict
@@ -25,14 +25,15 @@ Research (session 25) identified 16 `gh` CLI calls across 7 files, with 3 gaps t
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D-1 | Two-layer architecture: MCP in agent prompts, Octokit in TypeScript | Agents can use MCP tools natively; TypeScript code needs a library. Clean separation |
+| D-1 | ~~Two-layer architecture: MCP in agent prompts, Octokit in TypeScript~~ **SUPERSEDED by D-9 for workflow prompts (#137)** | The rationale was "Agents can use MCP tools natively". Workflow subagents do not: they get the tools their role names, and no role grants `mcp__github__*`. Still correct for an interactive session with the server connected |
 | D-2 | `@octokit/rest` as the TypeScript SDK | GitHub's official SDK, 100% REST API coverage, full TypeScript types |
 | D-3 | Auth via `GITHUB_TOKEN`, falling back to `GH_TOKEN` | Works in CI, worktrees, and headless. **Corrected 2026-10-06 (#139):** this originally read "Already set by `gh` CLI auth" and accepted `GITHUB_TOKEN` alone. That premise was false — `gh` reads `GH_TOKEN` and exports nothing, so on a machine authenticated the ordinary way `GITHUB_TOKEN` is unset and every Octokit call threw at construction. Accept both names, `GITHUB_TOKEN` first |
 | D-8 | `GITHUB_API_URL` selects the API base when set | The conventional companion to the token variables (gh CLI and Actions both set it). Makes GitHub Enterprise usable, and lets tests point the client somewhere harmless instead of reaching the real API |
 | D-4 | Shared Octokit helper in `lib/github.ts` | Single auth point, reusable across hooks/gates/lib, mockable for tests |
 | D-5 | `POST /issues/{n}/labels` for label append (not PUT) | POST is additive by design, eliminates read-merge-write race condition |
 | D-6 | Remove `gh` CLI from automation code entirely | Keep only for developer interactive use; not in programmatic paths |
-| D-7 | MCP fallback to Octokit when MCP server not connected | Headless/CI environments may lack MCP; Octokit always works |
+| D-7 | ~~MCP fallback to Octokit when MCP server not connected~~ **NEVER IMPLEMENTED; replaced by D-9 (#137)** | Right instinct, no code, and no SC that could notice. "Fallback at the orchestrator level" is also not buildable as written: `workflows/ship.js` runs in a sandbox with no module loading and no filesystem (#69), so the orchestrator cannot call Octokit at all |
+| D-9 | Workflow agent prompts invoke `scripts/github-op.ts`; no `mcp__github__*` and no `gh` in a workflow prompt | A workflow step can only run Bash, so the Octokit layer is reached through a script — the same shape as `scripts/collect-worktree-files.ts`, which exists for the same sandbox reason. The agent runs one command and reports the outcome; the script decides what to send, in a process that imports `lib/github.ts`, so there is no second copy of the API logic to drift |
 
 ## Architecture
 
@@ -103,12 +104,16 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 
 ### Phase 3 — Migrate workflow agent prompts (prove.js)
 
-- [x] SC-499: workflows/prove.js contains [mcp__github__get_issue, mcp__github__add_issue_comment] and not contains [gh issue view, gh issue comment]
-- [x] SC-500: workflows/prove.js contains [mcp__github__update_issue] for issue close, not contains [gh issue close]
+**Both criteria below were satisfied by prompts that could never run** — see Phase 6.
+They are kept, struck through, because the failure is the point: each one certifies
+that a tool NAME is present in a prompt, which is true whether or not the tool exists.
+
+- [x] SC-499: SUPERSEDED by SC-532/SC-534 (#137) — was "workflows/prove.js names the MCP get-issue and add-comment tools". It did, and neither tool existed
+- [x] SC-500: SUPERSEDED by SC-532/SC-534 (#137) — was "workflows/prove.js names the MCP update-issue tool". Same defect: a name in a prompt, not a call that lands
 
 ### Phase 4 — Handle remaining ship.js gaps
 
-- [x] SC-501: workflows/ship.js contains [mcp__github__create_pull_request, mcp__github__update_pull_request] and not contains [gh pr edit, gh pr create, gh pr list]
+- [x] SC-501: SUPERSEDED by SC-531/SC-534 (#137) — was "workflows/ship.js names the MCP create- and update-pull-request tools". It named both, and opened no PR on any run
 - [x] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
 
 ### Phase 5 — Auth actually resolves (#139, #140)
@@ -136,14 +141,39 @@ this directory; that divergence is its own issue.
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
 - [x] SC-523: hooks/IssueCloseGuard.hook.ts not contains [} catch {}]
 
+### Phase 6 — The agent layer reaches GitHub at all (#137)
+
+Phase 3 and Phase 4 were marked done by prompts naming `mcp__github__*` tools that
+no agent in this harness has ever had. Two independent reasons, either sufficient:
+no role in `.claude/rungate/roles.json` grants `mcp__github__*`, and the server
+`.mcp.json` points at — `@modelcontextprotocol/server-github` — is deprecated on npm
+("Package no longer supported") and does not connect. The run that found this
+(`wf_43a48428-ab0`) searched for the tool, found nothing, reported the failure
+honestly, and the workflow still returned SHIPPED.
+
+Covered by `test/github-op.test.ts` (SC-529..533) and `test/workflow-mcp-tools.test.ts`
+(SC-534). The first runs the script as a subprocess against a loopback HTTP server
+and asserts the request GitHub would have received — method, path, query and body —
+rather than that the source mentions a function name. Loopback is reachable because
+D-8 allowlists it; the test seam and the exfiltration guard are the same rule.
+
+- [x] SC-529: scripts/github-op.ts contains [upsertPR, addComment, addLabels, createIssue] — one script, every operation a workflow step needs
+- [x] SC-530: lib/github.ts contains [upsertPR, createIssue, updateIssue] — the upsert lives in the library, not in the script, so it is testable without a subprocess
+- [x] SC-531: workflows/ship.js contains [scripts/github-op.ts pr-upsert, scripts/github-op.ts comment] and not contains [mcp__github__]
+- [x] SC-532: workflows/prove.js contains [scripts/github-op.ts issue-get, scripts/github-op.ts issue-label] and not contains [mcp__github__]
+- [x] SC-533: test/github-op.test.ts contains [action: "updated", positive integer, no stub matched] — upsert does not re-create, a malformed issue number is refused rather than coerced, and every request is asserted against a real server
+- [x] SC-534: test/workflow-mcp-tools.test.ts contains [grantedServers, mcpServersReferenced] — a workflow prompt may not name an MCP server no role grants
+
 ## Constraints
 
 - Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)
 - `GITHUB_API_URL`, when set, MUST resolve to an allowlisted host — GitHub itself or loopback — compared on exact hostname. It redirects an endpoint that carries a bearer token, so an arbitrary host is an exfiltration primitive. GitHub Actions sets this variable to `https://api.github.com` on every run, which is why the rule is an allowlist rather than loopback-only; a loopback-only version broke the whole suite in CI. GitHub Enterprise needs a host outside the list and is a separate, deliberate decision
 - Octokit client MUST be created once per process, not per call
 - Label operations MUST use POST (additive), never PUT (replace)
-- MCP calls in agent prompts MUST NOT have Octokit fallback inline — fallback is at the workflow orchestrator level
-- Tests MUST mock HTTP calls, never hit real GitHub API
+- Workflow agent prompts MUST NOT name an MCP tool whose server no role in `.claude/rungate/roles.json` grants. An instruction to call a tool the agent does not have is not a degraded path, it is a step that silently does nothing (#137)
+- Workflow agent prompts MUST reach GitHub through `scripts/github-op.ts` — not `mcp__github__*`, not `gh` (D-9). A step that cannot complete the write MUST exit non-zero; reporting success without the write is the defect this replaced
+- Bodies (PR descriptions, issue comments) MUST be passed as `--body-file`, not assembled into a shell argument. They contain newlines, quotes and backticks, and the caller building the command line is a language model
+- Tests MUST NOT reach the real GitHub API. Mocking the client or pointing `GITHUB_API_URL` at loopback both satisfy this; the loopback form is preferred for anything that claims an end-to-end result, because a mocked client cannot catch a wrong path or a wrong verb
 
 ## Anti-Criteria
 

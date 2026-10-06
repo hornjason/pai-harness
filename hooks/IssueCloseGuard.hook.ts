@@ -14,7 +14,7 @@ import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput, findWorkflowState, parseCloseTarget, redactSecrets, HARNESS_ROOT } from './lib/utils';
-import { commentTemplateViolation } from './lib/comment-template';
+import { commentTemplateViolation, COMMENT_INVOCATION } from './lib/comment-template';
 import { createGitHubClient, getIssue } from '../lib/github';
 
 function block(reason: string): never {
@@ -50,7 +50,7 @@ async function main() {
 
   const command = input.tool_input?.command || '';
 
-  if (/gh\s+issue\s+comment\s+\d+/.test(command)) {
+  if (COMMENT_INVOCATION.test(command)) {
     validateCommentTemplate(command);
     process.exit(0);
   }
