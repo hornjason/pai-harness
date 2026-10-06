@@ -187,10 +187,10 @@ log(`Prove #${ISSUE}: reading issue and chain context`)
 const issueData = await agent(`
 Read this GitHub issue and extract the goal.
 
-Use the mcp__github__get_issue tool to retrieve the issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
+Retrieve the issue:
+  cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE}
+
+It prints one JSON object with number, title, body, state and labels.
 
 Also check for chain artifacts:
 1. test -f ${GOAL_RECORD_PATH} && echo "GOAL_RECORD: exists" || echo "GOAL_RECORD: none"
@@ -199,7 +199,7 @@ Also check for chain artifacts:
 If goal-record.json exists, read it and extract the structured SCs.
 If ship-evidence.json exists, read it and extract mergeCommitSha.
 
-Extract from the mcp__github__get_issue result:
+Extract from the issue-get result:
 1. issueGoal — main goal statement
 2. issueTitle — the title
 3. issueBody — full body text
@@ -620,12 +620,44 @@ const proofComment = [
   screenshotMarkdown,
 ].filter(Boolean).join('\n')
 
+// The comment is markdown with newlines and code spans, so it goes through a
+// file rather than an argument — a heredoc keeps it byte-identical, and the
+// JSON.stringify form it replaced put the whole proof on one escaped line.
+//
+// A quoted heredoc expands nothing, so the only way out of it is a line that
+// IS the delimiter. The proof body carries AC evidence and issue text, none
+// of which this workflow wrote, so that line is dropped rather than assumed
+// absent: with it, everything after would stop being data and start being
+// commands.
+// ──── HEREDOC-SAFE-START ────
+// Extracted and executed by test/workflow-security-integration.test.ts. The
+// sandbox gives prove.js no module loading (#69), so this cannot live in lib/
+// and be imported; the markers are how it gets behavioural coverage instead
+// of grep coverage. Deleting the filter leaves the markers intact and turns
+// that test red — which is the whole point, since a source-text assertion
+// that the sanitiser is "mentioned" survived exactly that deletion.
+const HEREDOC_DELIMITER = 'RUNGATE_PROOF_EOF'
+
+function heredocSafe(text, delimiter) {
+  return String(text)
+    .split('\n')
+    .filter(line => line.trim() !== delimiter)
+    .join('\n')
+}
+// ──── HEREDOC-SAFE-END ────
+
+const safeProofComment = heredocSafe(proofComment, HEREDOC_DELIMITER)
+
 await agent(`
-Post this comment to issue #${ISSUE} using mcp__github__add_issue_comment:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  body: ${JSON.stringify(proofComment)}
+Post the proof comment on issue #${ISSUE}. Run exactly these two commands:
+
+mkdir -p ${WORK_DIR} && cat > ${WORK_DIR}/proof-comment.md <<'RUNGATE_PROOF_EOF'
+${safeProofComment}
+RUNGATE_PROOF_EOF
+
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/proof-comment.md
+
+Report the JSON it prints. If it exits non-zero, report the failure — do NOT fall back to gh.
 `, { label: 'post-comment', phase: 'Output' })
 
 log('Proof comment posted')
@@ -637,28 +669,18 @@ test -f ${GOAL_RECORD_PATH} && echo "CHAIN" || echo "STANDALONE"
   `, { label: 'chain-check', phase: 'Output' })
 
   await agent(`
-Add the "proven" label to issue #${ISSUE} using MCP tools (do NOT use gh CLI):
+Add the "proven" label to issue #${ISSUE}:
 
-Use mcp__github__update_issue to add the label:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  labels: ["proven"]
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
 
+That appends. It does not replace whatever labels triage already put on the issue.
 ${String(chainMode).includes('CHAIN') ? `
-Also close the issue (chain mode — goal-record.json exists):
-Use mcp__github__update_issue to close:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  state: "closed"
+Then close it (chain mode — goal-record.json exists) and say why:
 
-Then use mcp__github__add_issue_comment:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  body: "Issue closed by /prove — verdict: PROVEN"
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} --body "Issue closed by /prove — verdict: PROVEN"
 ` : '# Standalone mode — do NOT close the issue'}
+Report each command's exit status. If any exits non-zero, report the failure — do NOT fall back to gh.
   `, { label: 'label-close', phase: 'Output' })
 
   log(String(chainMode).includes('CHAIN') ? 'Issue labeled + closed (chain mode)' : 'Issue labeled proven (standalone)')
@@ -667,12 +689,12 @@ Then use mcp__github__add_issue_comment:
   const specUpdateResult = await agent(`
 Read ${GOAL_RECORD_PATH} (if it exists) and the issue body to extract D-NNN decision IDs and governingSpec.path.
 
-First, get the issue body using mcp__github__get_issue:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
+First, save the issue to a file:
 
-Then run this command to update the spec (pass the issue body text you retrieved):
+mkdir -p ${WORK_DIR} && cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-get --repo ${ISSUE_REPO} --issue ${ISSUE} > ${WORK_DIR}/issue.json
+
+Then run this command. It reads the body out of that file itself — do not paste
+the body into the command, and do not edit the command:
 
 bun -e "
 import { updateSpecStatus, extractDecisionIds } from '${HARNESS_ROOT}/lib/spec-updater.ts';
@@ -684,7 +706,7 @@ if (existsSync(goalPath)) {
   try { goalRecord = JSON.parse(readFileSync(goalPath, 'utf-8')); } catch {}
 }
 
-const issueBody = process.argv[1] || '';
+const issueBody = JSON.parse(readFileSync('${WORK_DIR}/issue.json', 'utf-8')).body || '';
 const decisionIds = extractDecisionIds(issueBody + ' ' + JSON.stringify(goalRecord));
 
 const result = await updateSpecStatus({
@@ -693,29 +715,30 @@ const result = await updateSpecStatus({
   decisionIds,
 });
 console.log(JSON.stringify(result));
-" "ISSUE_BODY_FROM_MCP"
+"
 
-Replace ISSUE_BODY_FROM_MCP with the actual issue body you retrieved from mcp__github__get_issue.
 Report the JSON result. If spec was updated, commit the changed spec file.
   `, { label: 'spec-update', phase: 'Output' })
 
   log(`Spec update: ${JSON.stringify(specUpdateResult)}`)
 } else if (verdict === 'UNPROVEN') {
   await agent(`
-Post a re-investigation comment using mcp__github__add_issue_comment:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  body: "Prove verdict: UNPROVEN — issue remains open for re-investigation"
+Post a re-investigation comment:
+
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+  --body "Prove verdict: UNPROVEN — issue remains open for re-investigation"
+
+If it exits non-zero, report the failure — do NOT fall back to gh.
   `, { label: 'unproven-comment', phase: 'Output' })
   log('UNPROVEN — issue remains open')
 } else {
   await agent(`
-Post an inconclusive comment using mcp__github__add_issue_comment:
-  owner: "${ISSUE_REPO.split('/')[0]}"
-  repo: "${ISSUE_REPO.split('/')[1]}"
-  issue_number: ${ISSUE}
-  body: "Prove verdict: INCONCLUSIVE — could not reproduce. Manual investigation needed."
+Post an inconclusive comment:
+
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+  --body "Prove verdict: INCONCLUSIVE — could not reproduce. Manual investigation needed."
+
+If it exits non-zero, report the failure — do NOT fall back to gh.
   `, { label: 'inconclusive-comment', phase: 'Output' })
   log('INCONCLUSIVE — manual investigation needed')
 }

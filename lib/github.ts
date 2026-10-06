@@ -26,6 +26,7 @@ export interface GitHubClient {
   rest: {
     issues: {
       get: (params: { owner: string; repo: string; issue_number: number }) => Promise<{ data: any }>;
+      create: (params: { owner: string; repo: string; title: string; body?: string; labels?: string[] }) => Promise<{ data: any }>;
       createComment: (params: { owner: string; repo: string; issue_number: number; body: string }) => Promise<{ data: any }>;
       addLabels: (params: { owner: string; repo: string; issue_number: number; labels: string[] }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; issue_number: number; state?: string; [key: string]: any }) => Promise<{ data: any }>;
@@ -166,12 +167,37 @@ export function resolveGitHubToken(): string | undefined {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Parse "owner/repo" string into { owner, repo } components.
+ * Parse "owner/repo" into { owner, repo }, rejecting anything that is not one.
+ *
+ * The shape check alone was not enough, and the measurement is unambiguous.
+ * Octokit interpolates these into the request path, and the URL layer
+ * resolves `..` segments before the request goes out:
+ *
+ *     --repo "owner/.."   ->  GET /repos/issues/7
+ *     --repo "../x"       ->  GET /x/issues/7       <- out of /repos entirely
+ *
+ * The second one is arbitrary API-path construction with whatever verb the
+ * caller's operation uses. Query strings and fragments were already safe —
+ * `owner/na?x=1` arrives percent-encoded — so traversal is the whole of it.
+ *
+ * It mattered more once #137 made a repo slug a command-line argument, but it
+ * was always reachable: `gates/orchestrator.ts` and `lib/branch-cleanup.ts`
+ * pass slugs through here too. GitHub owner and repository names are
+ * `[A-Za-z0-9._-]` only, so requiring exactly that rejects nothing real.
  */
+const REPO_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
 export function parseOwnerRepo(repoSlug: string): { owner: string; repo: string } {
   const parts = repoSlug.split("/");
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+  if (parts.length !== 2) {
     throw new Error(`Invalid repo format: "${repoSlug}" — expected "owner/repo"`);
+  }
+  for (const part of parts) {
+    if (!REPO_SEGMENT.test(part) || part === "." || part === "..") {
+      throw new Error(
+        `Invalid repo format: "${repoSlug}" — "${part}" is not a GitHub owner or repository name`,
+      );
+    }
   }
   return { owner: parts[0], repo: parts[1] };
 }
@@ -226,6 +252,51 @@ export async function addLabels(client: GitHubClient, repoSlug: string, issueNum
 }
 
 /**
+ * Create a new issue.
+ *
+ * Used by ship.js when Discovery rescopes a large issue into phases: phase 1
+ * stays on the parent, the rest become sub-issues.
+ */
+export async function createIssue(
+  client: GitHubClient,
+  repoSlug: string,
+  opts: { title: string; body?: string; labels?: string[] },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.create({
+    owner,
+    repo,
+    title: opts.title,
+    ...(opts.body !== undefined ? { body: opts.body } : {}),
+    ...(opts.labels?.length ? { labels: opts.labels } : {}),
+  });
+  return response.data;
+}
+
+/**
+ * Update an issue's body and/or state.
+ *
+ * Labels are deliberately NOT part of this call. `PATCH /issues/{n}` with a
+ * `labels` array REPLACES the whole set, which is the read-merge-write race
+ * D-5 exists to avoid. Callers that want to add a label use `addLabels`.
+ */
+export async function updateIssue(
+  client: GitHubClient,
+  repoSlug: string,
+  issueNumber: number,
+  opts: { body?: string; title?: string; state?: "open" | "closed" },
+): Promise<any> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.issues.update({
+    owner,
+    repo,
+    issue_number: issueNumber,
+    ...opts,
+  });
+  return response.data;
+}
+
+/**
  * Close an issue by setting state to "closed".
  */
 export async function closeIssue(client: GitHubClient, repoSlug: string, issueNumber: number): Promise<any> {
@@ -269,6 +340,40 @@ export async function updatePR(client: GitHubClient, repoSlug: string, prNumber:
     ...opts,
   });
   return response.data;
+}
+
+/**
+ * Create the PR for `head`, or update the one that already exists.
+ *
+ * A ship run can reach this step more than once — a gate heals and re-runs,
+ * or a regression sends it back through implement — so "create" alone fails
+ * the second time with a 422 the caller has no way to distinguish from a real
+ * error. Upsert is the operation the workflow actually wants.
+ *
+ * The lookup filters server-side on `owner:branch`, the form the REST API
+ * documents for the `head` parameter. Listing every open PR and filtering here
+ * would silently miss a match once the repo has more than one page of them.
+ */
+export async function upsertPR(
+  client: GitHubClient,
+  repoSlug: string,
+  opts: CreatePROptions,
+): Promise<{ number: number; html_url: string; action: "created" | "updated" }> {
+  const { owner } = parseOwnerRepo(repoSlug);
+  const existing = await listPRs(client, repoSlug, {
+    state: "open",
+    head: `${owner}:${opts.head}`,
+  });
+  if (existing.length > 0) {
+    const pr = existing[0];
+    const updated = await updatePR(client, repoSlug, pr.number, {
+      title: opts.title,
+      ...(opts.body !== undefined ? { body: opts.body } : {}),
+    });
+    return { number: pr.number, html_url: updated.html_url ?? pr.html_url, action: "updated" };
+  }
+  const created = await createPR(client, repoSlug, opts);
+  return { number: created.number, html_url: created.html_url, action: "created" };
 }
 
 /**

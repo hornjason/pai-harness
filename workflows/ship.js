@@ -812,12 +812,25 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
 
 1. Read the governing spec at ${PROJECT_ROOT}/${specPath} — find phase headers (### Phase N or similar groupings)
 2. Group the ACs by phase (max ${MAX_ACS_PER_ISSUE} per group). If no phases exist, split sequentially.
-3. For each group AFTER the first, create a sub-issue using mcp__github__create_issue:
-   owner: "${ISSUE_REPO.split('/')[0]}"
-   repo: "${ISSUE_REPO.split('/')[1]}"
-   title: "#${ISSUE} Phase N: [phase description]"
-   body: "Parent: #${ISSUE}\\nSpec: ${specPath} — Phase N\\n\\n## Success Criteria\\n[list the SCs for this phase]\\n\\n## Dependencies\\n- Requires previous phase"
-4. Update the parent issue (#${ISSUE}) body to say "Rescoped to Phase 1 only" and list sub-issue numbers using mcp__github__update_issue
+3. For each group AFTER the first, write its body to a file and create a sub-issue.
+   Write the body with a heredoc so newlines and backticks survive, then run:
+
+   Write the title to its own file too — it comes from a spec heading, and a
+   quote or a backtick in that heading would otherwise be read by the shell:
+
+   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-create --repo ${ISSUE_REPO} \\
+     --title-file ${WORK_DIR}/subissue-N-title.txt --body-file ${WORK_DIR}/subissue-N.md
+
+   The title file holds one line: "#${ISSUE} Phase N: [phase description]".
+
+   The body file should contain: "Parent: #${ISSUE}", "Spec: ${specPath} — Phase N",
+   a "## Success Criteria" section listing that phase's SCs, and a "## Dependencies"
+   line saying it requires the previous phase.
+   The command prints {"number":N,...} — take the number from there.
+4. Rescope the parent. Write the new body for #${ISSUE} to ${WORK_DIR}/parent-body.md —
+   it must say "Rescoped to Phase 1 only" and list the sub-issue numbers — then run:
+
+   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
 5. Return the Phase 1 AC IDs (the first ${MAX_ACS_PER_ISSUE} or fewer)
 
 Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}] }
@@ -1987,7 +2000,14 @@ pass. Change nothing else.
 
 phase('Ship')
 
-// Record container/environment test evidence
+// Record container/environment test evidence.
+//
+// #137: the PR step used to report nothing back, so a run in which no PR was
+// created looked exactly like one in which a PR was created. It is captured
+// now, and the ship gate's heal text below says what is actually true rather
+// than asserting a PR exists.
+let prStep = null
+
 if (containerConfig) {
   const containerPort = containerConfig.port || 3000
   const containerHealthPath = containerConfig.healthPath || '/'
@@ -2007,44 +2027,62 @@ Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 } else {
   // No container — batch record-env + create-pr into one agent
-  await agent(`
+  prStep = await agent(`
 Do BOTH tasks:
 
 1. Record env as SKIP:
    bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-2. Create or update PR using MCP tools (do NOT use gh CLI):
-   First, check for existing PRs using mcp__github__list_pull_requests:
-     owner: "${REPO.split('/')[0]}"
-     repo: "${REPO.split('/')[1]}"
-     state: "open"
+2. Open or update the PR. Run exactly these three commands:
 
-   Look through the results for a PR with head branch matching the current branch or title containing #${ISSUE}.
+cat > ${WORK_DIR}/pr-body.md <<'RUNGATE_PR_BODY_EOF'
+Fixes #${ISSUE}
 
-   If an existing PR is found, update it using mcp__github__update_pull_request:
-     owner: "${REPO.split('/')[0]}"
-     repo: "${REPO.split('/')[1]}"
-     pull_number: <the PR number found>
-     title: "fix(#${ISSUE}): ${goalData.issueTitle}"
-     body: "Fixes #${ISSUE}\\n\\n## Test plan\\n- Unit tests: PASS\\n- Container: deferred to CI\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+## Test plan
+- Unit tests: PASS
+- Container: deferred to CI
 
-   If no existing PR is found, create one using mcp__github__create_pull_request:
-     owner: "${REPO.split('/')[0]}"
-     repo: "${REPO.split('/')[1]}"
-     title: "fix(#${ISSUE}): ${goalData.issueTitle}"
-     head: <current branch name from: cd ${PROJECT_ROOT} && git branch --show-current>
-     base: "main"
-     body: "Fixes #${ISSUE}\\n\\n## Test plan\\n- Unit tests: PASS\\n- Container: deferred to CI\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+RUNGATE_PR_BODY_EOF
 
-Report both results.
-  `, { label: 'record-env-and-pr', phase: 'Ship' })
+BRANCH=$(cd ${PROJECT_ROOT} && git branch --show-current)
+
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-upsert --repo ${REPO} \\
+  --head "$BRANCH" --base main \\
+  --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
+  --body-file ${WORK_DIR}/pr-body.md
+
+The title is composed by the script from the issue itself. Do NOT pass --title,
+and do NOT paste the issue title into the command — it is text someone else
+wrote, and a shell would read the quotes in it.
+
+The last command prints one JSON object: {"number":N,"html_url":"...","action":"created|updated"}.
+Set prNumber and prUrl from it and ok to true ONLY if it exited zero. On any
+non-zero exit, set ok to false and put the command's stderr in detail — do NOT
+retry with gh, and do NOT report success.
+  `, { label: 'record-env-and-pr', phase: 'Ship', schema: {
+    type: 'object',
+    properties: {
+      ok: { type: 'boolean' },
+      prNumber: { type: 'number' },
+      prUrl: { type: 'string' },
+      detail: { type: 'string' },
+    },
+    required: ['ok'],
+  } })
+}
+
+if (prStep) {
+  log(prStep.ok
+    ? `PR ${prStep.prNumber ? `#${prStep.prNumber}` : ''} ${prStep.prUrl || ''}`.trim()
+    : `WARN: no PR was opened or updated — ${prStep.detail || 'the step reported failure with no detail'}`)
 }
 
 log('Running ship gate')
 const shipResult = await runGateWithHeal('ship', 'Ship',
   `Fix ceremony gaps in workflow-state.json via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
-- branch-merged: set code-pushed="PASS" if branch is pushed. The PR is open for Jason to review — branch-merged may WARN, that's OK.
+- branch-merged: set code-pushed="PASS" if branch is pushed. ${prStep?.ok ? `PR #${prStep.prNumber} is open for Jason to review` : 'NO PR was opened for this run'} — branch-merged may WARN, that's OK.
 - Any missing environments fields: add with SKIP + skipReason.
 - code-committed: should already be PASS from commit phase.`)
 
@@ -2106,18 +2144,14 @@ log(`Prove: ${proveVerdict}`)
 await agent(`
 Do ALL of these tasks in order:
 
-1. Post prove result using MCP tools (do NOT use gh CLI):
-   Use mcp__github__add_issue_comment to post a comment:
-     owner: "${ISSUE_REPO.split('/')[0]}"
-     repo: "${ISSUE_REPO.split('/')[1]}"
-     issue_number: ${ISSUE}
-     body: "Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
-   ${proveVerdict === 'PROVEN' ? `Then use mcp__github__update_issue to add the label and close:
-     owner: "${ISSUE_REPO.split('/')[0]}"
-     repo: "${ISSUE_REPO.split('/')[1]}"
-     issue_number: ${ISSUE}
-     labels: ["proven"]
-     state: "closed"` : ''}
+1. Post the prove result on the issue:
+   cd ${HARNESS_ROOT} && bun scripts/github-op.ts comment --repo ${ISSUE_REPO} --issue ${ISSUE} \\
+     --body "Ship verdict: ${proveVerdict} (${discovery.ceremonyTier} ceremony — via ship.js)"
+${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in this order:
+   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-label --repo ${ISSUE_REPO} --issue ${ISSUE} --labels proven
+   cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --state closed
+   issue-label appends; it does not replace the labels triage already set.
+` : ''}   If any of these exits non-zero, report the failure — do NOT fall back to gh.
 
 2. Log telemetry:
    mkdir -p ${HOME}/.claude/MEMORY/LEARNING/SIGNALS
