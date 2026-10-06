@@ -136,7 +136,8 @@ this directory; that divergence is its own issue.
 
 ## Constraints
 
-- Auth MUST use `GITHUB_TOKEN` env var — no hardcoded tokens, no interactive auth
+- Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)
+- `GITHUB_API_URL`, when set, MUST be `https`, or `http` on loopback. The variable redirects an endpoint that carries a bearer token, so a plaintext remote base is refused rather than honoured
 - Octokit client MUST be created once per process, not per call
 - Label operations MUST use POST (additive), never PUT (replace)
 - MCP calls in agent prompts MUST NOT have Octokit fallback inline — fallback is at the workflow orchestrator level
