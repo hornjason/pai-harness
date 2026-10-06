@@ -33,7 +33,7 @@ jobs:
           # CLAIM parity while CI carried 3 patterns and the hook carried 8 —
           # CI missed gho_, ghs_, github_pat_, sk-ant- and PEM private keys
           # entirely. Asserted now in test/unit/secret-patterns.test.ts.
-          if git grep -I -lE '(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}|AKIA[A-Z0-9]{16}|sk-[A-Za-z0-9]{48}|sk-ant-[A-Za-z0-9-]{90,}|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----)' -- .; then
+          if git grep -I -lE '(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}|AKIA[A-Z0-9]{16}|sk-[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9-]{90,}|-----BEGIN (RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----)' -- .; then
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
