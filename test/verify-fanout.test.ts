@@ -379,6 +379,33 @@ describe("#127: the security review is not a function of having a UI", () => {
     expect(rookPrompt, "the legitimate path was dropped along with the bad one").toContain("lib/real.ts");
   });
 
+  for (const [label, entry] of [
+    ["absolute path", "/etc/passwd"],
+    ["absolute path to a key", "/Users/jhorn/.ssh/id_rsa"],
+    ["home-relative path", "~/.aws/credentials"],
+    ["parent traversal", "../../../etc/shadow"],
+    ["traversal mid-path", "lib/../../../etc/hosts"],
+  ] as Array<[string, string]>) {
+    test(`rejects ${label} from the review scope`, async () => {
+      // Third security-review finding: path-traversal. The shape filter allowed
+      // a leading `/`, so an LLM-supplied absolute path would be handed to rook
+      // as something to go and read — and rook quotes what it reads into a
+      // transcript that is persisted and graded. That turns the security review
+      // into a file-exfiltration primitive, which is a notably bad thing for the
+      // security review to be.
+      //
+      // Scope is always INSIDE the project. Anything else is not a file this
+      // run changed.
+      const { done, prompts } = runWithDiscovery({
+        ceremonyTier: "LIGHT", acs: [], filesToModify: [entry, "lib/real.ts"],
+      });
+      await done;
+      const rookPrompt = prompts.find(p => /Security review/.test(p)) || "";
+      expect(rookPrompt, `${entry} reached the security agent`).not.toContain(entry);
+      expect(rookPrompt).toContain("lib/real.ts");
+    });
+  }
+
   test("when every entry is rejected, Rook still runs against the diff", async () => {
     // Fail closed. Dropping all the entries must not become a new way to skip
     // the review — that would hand the attacker the outcome they wanted.

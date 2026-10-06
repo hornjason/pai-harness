@@ -1720,8 +1720,20 @@ const reported = Array.isArray(discovery.filesToModify) ? discovery.filesToModif
 // say no. Entries are filtered by SHAPE rather than escaped — escaping assumes
 // you can enumerate what is dangerous to a language model, while a path
 // allowlist assumes only that you know what a file path looks like.
+// The leading-slash rejection is the path-traversal fix (third security
+// review on this function). The first shape filter allowed `/etc/passwd` and
+// `/Users/you/.ssh/id_rsa`, so an LLM-supplied absolute path would be handed
+// to rook as something to go and read — and rook quotes what it reads into a
+// transcript that is persisted and graded. That makes the security review a
+// file-exfiltration primitive, which is a notably bad thing for the security
+// review to be. Scope is always INSIDE the project; anything else is not a
+// file this run changed.
 const safePaths = reported
-  .filter(p => typeof p === 'string' && /^[A-Za-z0-9._\-/]{1,200}$/.test(p) && !p.includes('..'))
+  .filter(p =>
+    typeof p === 'string'
+    && /^[A-Za-z0-9._\-/]{1,200}$/.test(p)
+    && !p.startsWith('/')
+    && !p.split('/').includes('..'))
   .slice(0, 50)
 const scope = safePaths.length
   ? safePaths.join(', ')
