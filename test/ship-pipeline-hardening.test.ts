@@ -29,10 +29,69 @@ describe('ship.js pipeline hardening (#53)', () => {
     expect(nullifyCount).toBeGreaterThanOrEqual(2)
   })
 
-  test('AC-3: commit agent uses filesChanged instead of git add -A', () => {
-    // There should be zero occurrences of 'git add -A' in the file
-    const gitAddAllCount = (shipContent.match(/git add -A/g) || []).length
-    expect(gitAddAllCount).toBe(0)
+  test('AC-3 (superseded by #115): staging derives from git status, never from filesChanged', () => {
+    // RULE REVERSAL, recorded deliberately.
+    //
+    // AC-3 of #53 read "commit agent uses filesChanged instead of git add -A"
+    // and this test asserted zero occurrences of `git add -A`. The intent was
+    // to stop indiscriminate staging, and that intent was right.
+    //
+    // The implementation was not. Making an LLM's file list load-bearing for
+    // `git add` produced two behaviours from one formatted string, the wrong
+    // way round: reporting nothing meant `git add .` (stage everything), and
+    // reporting annotated paths meant SHIP_FAILED (discard the work). Run
+    // wf_e750572e-153 died the second way with four files written and
+    // fourteen tests green; #120 was the same defect one stage later.
+    //
+    // #115 supersedes AC-3 on the basis of that evidence: the worktree is
+    // ground truth, so `git status --porcelain` decides and filesChanged is
+    // reporting metadata. The anti-indiscriminate intent survives as the
+    // assertions below — exactly one staging command, inside the one helper,
+    // behind an explicit empty-worktree guard.
+    // Asserted on CALL SITES, not on occurrences of `git add` in the file.
+    //
+    // Two earlier versions of this counted text. Both were wrong in the same
+    // direction: the raw-file scan matched the helper's own explanatory
+    // comments, and the comment-stripped scan still matched the body of
+    // safeGitAddCommand — which #115 left with no callers but did not
+    // delete. A dead function was making a live assertion fail. Counting
+    // what is CALLED says what the test means and is indifferent to text
+    // that nothing executes. (The dead helpers are tracked separately for
+    // removal; leaving them is not the same as using them.)
+    const codeLines = shipContent
+      .split('\n')
+      .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+
+    const llmPathStaging = codeLines.filter(
+      l => /safeGitAddCommand\(/.test(l) && !/^\s*function\s/.test(l),
+    )
+    expect(llmPathStaging, "an agent's file list still reaches git add").toEqual([])
+
+    const gitDerived = codeLines.filter(
+      l => /gitDerivedStaging\(/.test(l) && !/^\s*function\s/.test(l),
+    )
+    expect(gitDerived.length, 'a commit path lost its staging').toBe(3)
+
+    const start = shipContent.indexOf('// ──── COMMIT-STAGING-START ────')
+    const end = shipContent.indexOf('// ──── COMMIT-STAGING-END ────')
+    expect(start, 'the staging helper lost its markers').toBeGreaterThan(-1)
+    // Comment-stripped. The helper's own prose explains what it replaced and
+    // therefore contains both "filesChanged" and "git add ." — asserting
+    // against the raw block failed on the documentation, which is the third
+    // time in this change that a detector matched a comment instead of code.
+    const body = shipContent
+      .slice(start, end)
+      .split('\n')
+      .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n')
+
+    expect(body, 'staging moved outside the audited helper').toMatch(/add\s+-A/)
+    expect(body, 'staging is no longer guarded by an empty-worktree check')
+      .toContain('RUNGATE_NO_CHANGES')
+
+    // filesChanged may still be reported; it must not reach a git command.
+    expect(body, "the agent's file list is back inside the staging helper")
+      .not.toContain('filesChanged')
   })
 
   test('AC-4: env-defaults agent label is removed', () => {

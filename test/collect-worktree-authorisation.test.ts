@@ -138,3 +138,64 @@ describe("#120: worktree authorisation is derived from git", () => {
     expect(gitWorktreeBase(notARepo)).toBeNull();
   });
 });
+
+/**
+ * Security review on the commit above raised authorization-scope-expansion:
+ * the derived base widens what the caller asked for, silently. These pin the
+ * bounds that make the widening acceptable, so a later change cannot quietly
+ * remove them.
+ */
+describe("#120: the scope expansion stays bounded", () => {
+  test("another repository's worktrees are never authorised", () => {
+    // The hard bound. Candidates come from `git worktree list` for THIS repo,
+    // so no base — derived or supplied — can reach into a different project.
+    const other = join(root, "other-project");
+    mkdirSync(other, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", other], { stdio: "pipe" });
+    execFileSync("git", ["-C", other, "config", "user.email", "t@example.com"], { stdio: "pipe" });
+    execFileSync("git", ["-C", other, "config", "user.name", "t"], { stdio: "pipe" });
+    writeFileSync(join(other, "f.txt"), "x\n");
+    execFileSync("git", ["-C", other, "add", "f.txt"], { stdio: "pipe" });
+    execFileSync("git", ["-C", other, "commit", "-q", "-m", "init"], { stdio: "pipe" });
+    const otherAgent = join(other, ".claude", "worktrees", "wf_other-1");
+    execFileSync("git", ["-C", other, "worktree", "add", "-q", "-b", "a", otherAgent], { stdio: "pipe" });
+
+    // Hand our repo's authorisation the OTHER project's worktrees dir as a base.
+    const allowed = authorisedWorktrees(sideWorktree, [join(other, ".claude", "worktrees")]);
+    expect(allowed, "a foreign repository's worktree was authorised").not.toContain(
+      realpathSync(otherAgent),
+    );
+  });
+
+  test("a repo path that itself contains '.git' is not truncated", () => {
+    // The strip is anchored to a trailing /.git segment. Unanchored, a repo
+    // living under a directory with ".git" in its name gets cut at the first
+    // occurrence and the derived base points somewhere else entirely —
+    // silently authorising nothing, which is #120 all over again. No fixture
+    // here had such a path, so the unanchored version survived mutation.
+    const awkward = join(root, "my.github-mirror", "project");
+    mkdirSync(awkward, { recursive: true });
+    execFileSync("git", ["init", "-q", "-b", "main", awkward], { stdio: "pipe" });
+    execFileSync("git", ["-C", awkward, "config", "user.email", "t@example.com"], { stdio: "pipe" });
+    execFileSync("git", ["-C", awkward, "config", "user.name", "t"], { stdio: "pipe" });
+    writeFileSync(join(awkward, "f.txt"), "x\n");
+    execFileSync("git", ["-C", awkward, "add", "f.txt"], { stdio: "pipe" });
+    execFileSync("git", ["-C", awkward, "commit", "-q", "-m", "init"], { stdio: "pipe" });
+
+    const base = gitWorktreeBase(awkward);
+    expect(base, "the repo path was truncated at an embedded '.git'").toBe(
+      join(realpathSync(awkward), ".claude", "worktrees"),
+    );
+  });
+
+  test("the derived base is the agent-worktree dir, not the whole main checkout", () => {
+    // If it resolved to <main> rather than <main>/.claude/worktrees, every
+    // worktree anywhere under the main repo would be authorised, including
+    // the main checkout itself.
+    const base = gitWorktreeBase(sideWorktree)!;
+    expect(base.endsWith(join(".claude", "worktrees"))).toBe(true);
+    const allowed = authorisedWorktrees(sideWorktree, []);
+    expect(allowed, "the main checkout authorised itself").not.toContain(realpathSync(mainRepo));
+    expect(allowed, "a sibling checkout was authorised").not.toContain(realpathSync(sideWorktree));
+  });
+});

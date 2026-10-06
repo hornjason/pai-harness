@@ -309,40 +309,76 @@ describe("ship.js safeGitAddCommand behaviour", () => {
   });
 });
 
-describe("ship.js aborts the commit when staging is refused", () => {
-  test("every safeGitAddCommand call site handles null", () => {
-    const lines = shipSource.split("\n");
-
-    // Match the CALL, then look back for the assignment it belongs to.
+describe("ship.js stages from git, not from an agent's file list", () => {
+  test("no git command in ship.js is built from filesChanged", () => {
+    // Replaces "every safeGitAddCommand call site handles null".
     //
-    // This used to require `= safeGitAddCommand(` on one line. Wrapping a call
-    // site across lines — a ternary, a long argument list — made it invisible
-    // to the check while the null guard it asserts was still right there. The
-    // test went from 3 call sites to 2 and failed on the count, reporting a
-    // missing guard that had not gone anywhere. Same shape as #82 and the AC-5
-    // byte window: a guard whose detection is narrower than the thing it
-    // guards, so valid code reads as a violation and, worse, a genuinely
-    // unguarded call in that form would read as no call at all.
-    const callSites = lines
+    // That test required at least three call sites, each followed by a null
+    // guard that returned SHIP_FAILED. It was correct for the design it
+    // guarded, and #115 removed that design: there are now zero call sites,
+    // because the agent's file list no longer reaches `git add` at all. A
+    // test demanding three of them would have blocked the fix for the bug it
+    // was written alongside.
+    //
+    // The property worth keeping is the one underneath: no path chosen by a
+    // language model may be interpolated into a git command.
+    // Asserted as "the path-from-LLM helper has no callers", which is precise
+    // and survives reformatting. Scanning for `git add` near `filesChanged`
+    // was tried first and matched comments and the helper's own dead body.
+    const codeLines = shipSource
+      .split("\n")
       .map((l, i) => ({ l, i }))
-      .filter(({ l }) => /safeGitAddCommand\(/.test(l) && !/^\s*function\s+safeGitAddCommand/.test(l));
+      .filter(({ l }) => !/^\s*(\/\/|\*|\/\*)/.test(l));
 
-    expect(callSites.length).toBeGreaterThanOrEqual(3);
+    const callSites = codeLines.filter(
+      ({ l }) => /safeGitAddCommand\(/.test(l) && !/^\s*function\s+safeGitAddCommand/.test(l),
+    );
+    expect(
+      callSites.map(c => `line ${c.i + 1}: ${c.l.trim()}`),
+      "an agent's file list is still being turned into a git add",
+    ).toEqual([]);
 
-    for (const { i } of callSites) {
-      // Walk back to the nearest const/let assignment — the call may sit on a
-      // continuation line.
-      let varName: string | undefined;
-      for (let j = i; j >= 0 && j > i - 5; j--) {
-        const m = lines[j].match(/(?:const|let)\s+(\w+)\s*=/);
-        if (m) { varName = m[1]; break; }
-      }
-      expect(varName, `no assignment found for the safeGitAddCommand call on line ${i + 1}`).toBeDefined();
-      // The guard must appear within a few lines of the assignment.
-      const window = lines.slice(i + 1, i + 6).join("\n");
-      expect(window).toContain(`${varName} === null`);
-      expect(window).toContain("SHIP_FAILED");
-    }
+    // And the replacement is actually wired in at every commit point:
+    // Commit, the Verify-gate regression recommit, and the Ship-gate one.
+    const derived = codeLines.filter(
+      ({ l }) => /gitDerivedStaging\(/.test(l) && !/^\s*function\s+gitDerivedStaging/.test(l),
+    );
+    expect(derived.length, "a commit path lost its staging").toBe(3);
+
+    // And each stages the directory the work is actually in. Swapping the
+    // Commit call to PROJECT_ROOT survived every other assertion here while
+    // staging the wrong tree whenever Marcus worked in a worktree — which is
+    // #81, the bug the collect step exists to handle.
+    const args = derived.map(({ l }) => l.match(/gitDerivedStaging\(([^)]*)\)/)?.[1]);
+    expect(args.filter(a => a === "commitDir"), "the Commit path no longer stages commitDir")
+      .toHaveLength(1);
+    expect(args.filter(a => a === "PROJECT_ROOT"), "a regression recommit changed target")
+      .toHaveLength(2);
+  });
+
+  test("staging happens in exactly one place, behind an empty-worktree guard", () => {
+    const start = shipSource.indexOf("// ──── COMMIT-STAGING-START ────");
+    const end = shipSource.indexOf("// ──── COMMIT-STAGING-END ────");
+    expect(start, "the staging helper lost its markers").toBeGreaterThan(-1);
+
+    // Comment-stripped: the helper documents the commands it replaced, so
+    // the prose matches patterns the code must not.
+    const block = shipSource
+      .slice(start, end)
+      .split("\n")
+      .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join("\n");
+    expect(block).toContain("RUNGATE_NO_CHANGES");
+    expect(block).toContain("shellQuote(dir)");
+
+    // A second staging path would have to be CALLED from a commit point.
+    // Scanning for stray `git add` text outside the helper matched the dead
+    // body of safeGitAddCommand, which #115 orphaned but did not delete —
+    // so the assertion failed on code that never runs. The three
+    // gitDerivedStaging call sites asserted above are the live staging
+    // paths; this pins that the helper they call still has its guard.
+    expect(block.match(/add\s+-A/g) || [], "the helper stages more than once")
+      .toHaveLength(1);
   });
 });
 
