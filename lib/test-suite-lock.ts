@@ -297,6 +297,37 @@ export function anySuiteRunning(): boolean {
     .some(line => /(^|\/|\s)bun\s+(run\s+)?test(\s|$)/.test(line));
 }
 
+/**
+ * True when no full suite is running anywhere, so every slot is provably false.
+ *
+ * A detector that throws means "cannot determine", which must read as "keep the
+ * slots": reclaiming on an unreadable process table would let two real suites
+ * run against a cap of one.
+ */
+function noSuiteRunningNow(options: LockOptions): boolean {
+  try {
+    return (options.suitesRunning ?? anySuiteRunning)() === false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The one staleness rule, so the acquirer and the read-only predicate cannot
+ * drift apart. A prediction that disagrees with the gate is worse than no
+ * prediction — it reports a deadlock the gate does not actually have.
+ */
+function slotIsStale(
+  ageSeconds: number,
+  ttlSeconds: number,
+  noSuiteRunning: boolean,
+): boolean {
+  return (
+    ageSeconds >= ttlSeconds ||
+    (noSuiteRunning && ageSeconds >= LIVENESS_GRACE_SECONDS)
+  );
+}
+
 /** Non-stale slot holders, newest timestamp wins. */
 export function heldSlots(
   lockDir: string,
@@ -355,21 +386,13 @@ export function acquireFullSuiteSlot(
     // liveness cannot be determined the slots are KEPT: reclaiming on an
     // unreadable process table would let two real suites run against a cap of
     // one, which is the OOM condition this whole mechanism prevents.
-    let noSuiteRunning = false;
-    try {
-      noSuiteRunning = (options.suitesRunning ?? anySuiteRunning)() === false;
-    } catch {
-      noSuiteRunning = false;
-    }
+    const noSuiteRunning = noSuiteRunningNow(options);
 
     for (let i = 0; i < capacity; i++) {
       const path = slotPath(lockDir, i);
       const entry = readSlot(path);
       const ageSeconds = entry ? Math.floor((now - entry.startedAt) / 1000) : Infinity;
-      const stale =
-        !entry ||
-        ageSeconds >= ttlSeconds ||
-        (noSuiteRunning && ageSeconds >= LIVENESS_GRACE_SECONDS);
+      const stale = !entry || slotIsStale(ageSeconds, ttlSeconds, noSuiteRunning);
 
       const claim = JSON.stringify({ sessionId, startedAt: now });
 
@@ -520,88 +543,169 @@ function describeWait(ms: number): string {
   return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
-/**
- * The whole gate: per-session budget (DIR-L29) then cross-session concurrency.
- *
- * Order is deliberate. The per-session cap is checked first so its behaviour is
- * unchanged, and a run refused by either check does not consume the other's
- * budget.
- */
-export function evaluateFullSuiteRequest(
-  sessionId: string,
-  command: string,
-  options: LockOptions & {
-    maxRunsPerSession?: number;
-    /** Rolling window the budget is measured over (#73). */
-    budgetWindowMs?: number;
-    /** Injected clock, so the window is testable without sleeping. */
-    now?: number;
-  } = {},
-): GateDecision {
-  if (!isFullSuiteCommand(command)) return { allow: true };
+export interface GateOptions extends LockOptions {
+  maxRunsPerSession?: number;
+  /** Rolling window the budget is measured over (#73). */
+  budgetWindowMs?: number;
+  /** Injected clock, so the window is testable without sleeping. */
+  now?: number;
+}
 
+interface BudgetView {
+  /** In-window runs, oldest first — what a new run is appended to. */
+  recent: number[];
+  /** The DIR-L29 refusal, present only when the budget is spent. */
+  refusal?: GateDecision;
+}
+
+/**
+ * What this session has spent inside the rolling window, and whether that is
+ * already too much.
+ *
+ * The window arithmetic lives here and nowhere else. Two copies of it — one
+ * that decides and one that reports — is how a predicate starts telling people
+ * something the gate does not do.
+ */
+function budgetView(sessionId: string, options: GateOptions): BudgetView {
   const lockDir = options.lockDir ?? defaultLockDir();
   const maxRuns = options.maxRunsPerSession ?? 2;
   const windowMs = options.budgetWindowMs ?? DEFAULT_BUDGET_WINDOW_MS;
   const now = options.now ?? Date.now();
 
-  const path = counterPath(lockDir, sessionId);
   // Runs older than the window are forgotten, which is the whole of #73: the
   // budget is a rate limit again rather than a lifetime total.
-  const recent = readRuns(path, maxRuns).filter((t) => t > now - windowMs);
-  if (recent.length >= maxRuns) {
-    const oldest = earliest(recent);
-    // `recent` is empty only when maxRuns is 0 — a configured stop, with no run
-    // to wait for. Saying "frees up in Infinity minutes" taught people to stop
-    // reading the refusal.
-    const when =
-      oldest === null
-        ? "Full suite runs are disabled for this session (budget 0)."
-        : `One run frees up in ${describeWait(oldest + windowMs - now)}.`;
-    return {
+  const recent = readRuns(counterPath(lockDir, sessionId), maxRuns).filter(
+    (t) => t > now - windowMs,
+  );
+  if (recent.length < maxRuns) return { recent };
+
+  const oldest = earliest(recent);
+  // `recent` is empty only when maxRuns is 0 — a configured stop, with no run
+  // to wait for. Saying "frees up in Infinity minutes" taught people to stop
+  // reading the refusal.
+  const when =
+    oldest === null
+      ? "Full suite runs are disabled for this session (budget 0)."
+      : `One run frees up in ${describeWait(oldest + windowMs - now)}.`;
+  return {
+    recent,
+    refusal: {
       allow: false,
       reason:
         `DIR-L29: Full test suite limit reached (${recent.length}/${maxRuns}) in the last ` +
         `${describeWait(windowMs)}. ${when}\n` +
         `Use targeted tests until then:\n  bun test test/specific-file.test.ts\n` +
         `Full suite runs cost ~190s and ~5.4 GB each.`,
-    };
-  }
+    },
+  };
+}
 
-  const slot = acquireFullSuiteSlot(sessionId, options);
-  if (!slot.ok) {
-    const holders = slot.holders ?? [];
-    const self = holders.find((h) => h.sessionId === sessionId);
-    if (self) {
-      return {
-        allow: false,
-        reason:
-          `Every full-suite slot is in use and one of them is yours ` +
-          `(started ${self.ageSeconds}s ago).\n` +
-          `A slot is one running suite, not one session — a backgrounded suite keeps its ` +
-          `slot until it finishes or the ${DEFAULT_TTL_SECONDS}s TTL expires.\n` +
-          `Wait for it, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
-      };
-    }
-    const who = holders
-      .map((h) => `${h.sessionId} (${h.ageSeconds}s)`)
-      .join(", ");
+/** The "no slot for you" refusal, worded for whoever is holding them. */
+function concurrencyRefusal(
+  sessionId: string,
+  holders: SlotHolder[],
+): GateDecision {
+  const self = holders.find((h) => h.sessionId === sessionId);
+  if (self) {
     return {
       allow: false,
       reason:
-        `Another full test suite is already running: ${who}.\n` +
-        `Concurrent full suites exhausted the VM compressor and rebooted this machine on 2026-10-05 ` +
-        `(one suite peaks at ~5.4 GB across 33 processes).\n` +
-        `Wait for it to finish, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
+        `Every full-suite slot is in use and one of them is yours ` +
+        `(started ${self.ageSeconds}s ago).\n` +
+        `A slot is one running suite, not one session — a backgrounded suite keeps its ` +
+        `slot until it finishes or the ${DEFAULT_TTL_SECONDS}s TTL expires.\n` +
+        `Wait for it, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
     };
   }
+  const who = holders.map((h) => `${h.sessionId} (${h.ageSeconds}s)`).join(", ");
+  return {
+    allow: false,
+    reason:
+      `Another full test suite is already running: ${who}.\n` +
+      `Concurrent full suites exhausted the VM compressor and rebooted this machine on 2026-10-05 ` +
+      `(one suite peaks at ~5.4 GB across 33 processes).\n` +
+      `Wait for it to finish, or run targeted tests now:\n  bun test test/specific-file.test.ts`,
+  };
+}
+
+/**
+ * Would this command be allowed right now? Answers without changing the answer.
+ *
+ * `evaluateFullSuiteRequest` reads as a predicate and behaves as a transaction:
+ * it takes one of two machine-wide slots and spends a unit of the DIR-L29
+ * budget. On 2026-10-05 a three-call diagnostic that only wanted the verdict
+ * took both slots, and every other session was refused by a message naming two
+ * holders that were running nothing (#103).
+ *
+ * This reads the same slot files and the same counter — it must, or it would be
+ * answering about a different world — but it writes nothing and creates
+ * nothing. Both verdicts come from the same `budgetView`, `slotIsStale` and
+ * refusal builders the gate uses, so the prediction cannot drift from the act.
+ *
+ * It is a prediction, not a reservation: between asking and running, another
+ * session may take the last slot. Callers that intend to RUN must still call
+ * `evaluateFullSuiteRequest`, which re-checks atomically.
+ */
+export function wouldAllowFullSuite(
+  sessionId: string,
+  command: string,
+  options: GateOptions = {},
+): GateDecision {
+  if (!isFullSuiteCommand(command)) return { allow: true };
+
+  const budget = budgetView(sessionId, options);
+  if (budget.refusal) return budget.refusal;
+
+  const lockDir = options.lockDir ?? defaultLockDir();
+  const capacity = options.capacity ?? DEFAULT_CAPACITY;
+  const ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS;
+  const now = options.now ?? Date.now();
+
+  // The slots the acquirer would refuse to overwrite: present, parseable, and
+  // neither past the TTL nor provably dead.
+  const noSuiteRunning = noSuiteRunningNow(options);
+  const holders = heldSlots(lockDir, now, capacity, ttlSeconds).filter(
+    (h) => !slotIsStale(h.ageSeconds, ttlSeconds, noSuiteRunning),
+  );
+  if (holders.length >= capacity) return concurrencyRefusal(sessionId, holders);
+
+  return { allow: true };
+}
+
+/**
+ * The whole gate: per-session budget (DIR-L29) then cross-session concurrency.
+ *
+ * Order is deliberate. The per-session cap is checked first so its behaviour is
+ * unchanged, and a run refused by either check does not consume the other's
+ * budget. Both checks are `wouldAllowFullSuite`; what this adds is the
+ * side effects — claiming a slot and spending a unit of budget.
+ */
+export function evaluateFullSuiteRequest(
+  sessionId: string,
+  command: string,
+  options: GateOptions = {},
+): GateDecision {
+  const predicted = wouldAllowFullSuite(sessionId, command, options);
+  if (!predicted.allow) return predicted;
+  // Targeted runs are neither capped nor counted, so there is nothing to spend.
+  if (!isFullSuiteCommand(command)) return { allow: true };
+
+  const lockDir = options.lockDir ?? defaultLockDir();
+  const now = options.now ?? Date.now();
+
+  // The prediction above is advisory; this is the atomic claim. Another session
+  // can take the last slot in between, and then the acquirer's answer wins.
+  const slot = acquireFullSuiteSlot(sessionId, options);
+  if (!slot.ok) return concurrencyRefusal(sessionId, slot.holders ?? []);
 
   try {
     // Only the in-window runs are carried forward, and never more than the
     // tracked maximum, so neither a long session nor a poisoned file can leave
     // an expensive read behind.
-    const runs = [...recent, now].slice(-MAX_TRACKED_RUNS);
-    writeFileSync(path, JSON.stringify({ runs }));
+    const runs = [...budgetView(sessionId, options).recent, now].slice(
+      -MAX_TRACKED_RUNS,
+    );
+    writeFileSync(counterPath(lockDir, sessionId), JSON.stringify({ runs }));
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }
