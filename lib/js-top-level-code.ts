@@ -1,0 +1,180 @@
+/**
+ * Remove string, template, comment and regex-literal CONTENT from JavaScript
+ * source, leaving the code that actually executes (#89).
+ *
+ * This exists because the #69 guard — "ship.js must not call require() at top
+ * level, the sandbox has no module loading" — was stripping template literals
+ * with a regex:
+ *
+ *     src.replace(/`(?:\\[\s\S]|[^\\`])*`/g, " `` ")
+ *
+ * ship.js contains backticks that are not template delimiters: inside
+ * single-quoted strings, inside comments, inside other templates. A regex has
+ * no way to tell which is which, so one stray backtick paired with a later
+ * unrelated one and everything between them was deleted — real code included.
+ * 61% of the file vanished, and `buildSafeGitAdd` and `validateFilePaths`,
+ * the two helpers #69 is actually about, were invisible to the check that
+ * protects them. Two functions calling require('path') and require('fs') were
+ * added and the suite reported 48 pass, 0 fail.
+ *
+ * A single-pass tokenizer is not clever, but it is correct for the thing a
+ * regex cannot do: it knows what context it is in, so a backtick inside a
+ * comment is just a character.
+ *
+ * TEMPLATE INTERPOLATIONS ARE KEPT. `${...}` evaluates in the enclosing scope,
+ * so a require() there is top-level code and must stay visible. That requires
+ * tracking brace depth per template, which is the other thing the regex could
+ * not express.
+ */
+
+/** Characters after which a `/` begins a regex literal rather than division. */
+function regexCanFollow(prev: string): boolean {
+  // Scanning back over the last significant character is enough in practice:
+  // after a value (identifier, number, closing bracket) a slash is division;
+  // after an operator, keyword or opening bracket it starts a regex.
+  return !/[A-Za-z0-9_$)\]]/.test(prev);
+}
+
+export function stripStringsAndComments(src: string): string {
+  let out = "";
+  let i = 0;
+  // Stack of brace depths, one entry per template literal currently open. An
+  // entry is pushed on ` and popped on the matching `; while inside an
+  // interpolation the depth counts { } so the template's closing backtick is
+  // not confused with a backtick in nested code.
+  const templates: number[] = [];
+  let lastSignificant = "\n";
+
+  while (i < src.length) {
+    const c = src[i];
+    const next = src[i + 1];
+
+    // Inside a template, but NOT inside one of its interpolations.
+    if (templates.length > 0 && templates[templates.length - 1] === 0) {
+      if (c === "\\") {
+        i += 2;
+        continue;
+      }
+      if (c === "`") {
+        templates.pop();
+        out += "`";
+        lastSignificant = "`";
+        i++;
+        continue;
+      }
+      if (c === "$" && next === "{") {
+        templates[templates.length - 1] = 1;
+        out += "${";
+        lastSignificant = "{";
+        i += 2;
+        continue;
+      }
+      // Template text: drop it, but keep newlines so line numbers survive.
+      out += c === "\n" ? "\n" : "";
+      i++;
+      continue;
+    }
+
+    // Block comment.
+    if (c === "/" && next === "*") {
+      const end = src.indexOf("*/", i + 2);
+      const body = src.slice(i, end === -1 ? src.length : end + 2);
+      out += body.replace(/[^\n]/g, " ");
+      i = end === -1 ? src.length : end + 2;
+      continue;
+    }
+
+    // Line comment.
+    if (c === "/" && next === "/") {
+      let end = src.indexOf("\n", i);
+      if (end === -1) end = src.length;
+      out += " ".repeat(end - i);
+      i = end;
+      continue;
+    }
+
+    // Quoted string.
+    if (c === '"' || c === "'") {
+      const quote = c;
+      out += quote;
+      i++;
+      while (i < src.length) {
+        if (src[i] === "\\") {
+          i += 2;
+          continue;
+        }
+        if (src[i] === quote) break;
+        // Unterminated strings must not swallow the rest of the file.
+        if (src[i] === "\n") break;
+        out += src[i] === "\n" ? "\n" : "";
+        i++;
+      }
+      if (src[i] === quote) {
+        out += quote;
+        i++;
+      }
+      lastSignificant = quote;
+      continue;
+    }
+
+    // Regex literal. Only when a `/` cannot be division here.
+    if (c === "/" && regexCanFollow(lastSignificant)) {
+      let j = i + 1;
+      let inClass = false;
+      let closed = false;
+      while (j < src.length) {
+        const d = src[j];
+        if (d === "\\") {
+          j += 2;
+          continue;
+        }
+        if (d === "\n") break; // not a regex after all
+        if (d === "[") inClass = true;
+        else if (d === "]") inClass = false;
+        else if (d === "/" && !inClass) {
+          closed = true;
+          break;
+        }
+        j++;
+      }
+      if (closed) {
+        while (j + 1 < src.length && /[a-z]/.test(src[j + 1])) j++; // flags
+        out += " ".repeat(j - i + 1);
+        i = j + 1;
+        lastSignificant = ")"; // a regex is a value
+        continue;
+      }
+      // Fall through: it was division.
+    }
+
+    // Template start.
+    if (c === "`") {
+      templates.push(0);
+      out += "`";
+      lastSignificant = "`";
+      i++;
+      continue;
+    }
+
+    // Brace tracking so an interpolation knows where it ends.
+    if (templates.length > 0) {
+      if (c === "{") templates[templates.length - 1]++;
+      else if (c === "}") {
+        templates[templates.length - 1]--;
+        if (templates[templates.length - 1] === 0) {
+          // Closing `}` of the interpolation: back to template text.
+          out += "}";
+          lastSignificant = "}";
+          i++;
+          continue;
+        }
+      }
+    }
+
+    out += c;
+    if (!/\s/.test(c)) lastSignificant = c;
+    i++;
+  }
+
+  return out;
+}
