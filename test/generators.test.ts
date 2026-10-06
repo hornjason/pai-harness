@@ -372,3 +372,43 @@ describe("parallel-sessions rule reaches every consumer project", () => {
     }
   });
 });
+
+describe("checks-must-be-able-to-fail rule reaches every consumer project", () => {
+  // Five of eight issues shipped on 2026-10-06 were one defect: a check green
+  // because of what it never looked at. Nothing in the generated rules named
+  // that class, so consumers inherited the tooling without the warning.
+  const load = async () => {
+    const { generateScopedRules } = await import("../lib/generators/agents-md");
+    const { mockProjectScan } = await import("../lib/generators/types");
+    return generateScopedRules(mockProjectScan({ name: "bare" }))
+      .find(r => r.filename === "checks-must-be-able-to-fail.md");
+  };
+
+  test("is generated unconditionally, not gated on project shape", async () => {
+    expect(await load(), "must be generated for every project").toBeDefined();
+  });
+
+  test("states the actionable instruction, not just the warning", async () => {
+    // A rule that only describes the failure mode is a story. The rule has to
+    // say what to DO, or it cannot be followed or graded.
+    const rule = (await load())!;
+    expect(rule.content).toContain("prove it fails");
+    expect(rule.content).toContain("watch it go red");
+  });
+
+  test("names the three shapes so the rule is recognisable in the wild", async () => {
+    const rule = (await load())!;
+    for (const shape of ["Fail-open", "narrower than what it detects", "vacuously"]) {
+      expect(rule.content, `rule must name the '${shape}' shape`).toContain(shape);
+    }
+  });
+
+  test("carries concrete evidence, not an abstract principle", async () => {
+    // The rule cites real incidents with real numbers. An abstract "write good
+    // tests" rule is ignorable; "this passed 48 tests while blind to 61% of
+    // the file" is not.
+    const rule = (await load())!;
+    expect(rule.content).toContain("61%");
+    expect(rule.content).toContain("parseInt");
+  });
+});
