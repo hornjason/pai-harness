@@ -1158,6 +1158,102 @@ export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): vo
   actions.push("CREATED: specs/SPEC-TEMPLATE.md (starter template)");
 }
 
+// ── tsconfig.json ──────────────────────────────────────────────
+
+/**
+ * Trees a generated tsconfig type-checks. Same list as the scanner's source
+ * directories, plus `scripts/` — a consumer keeps real TypeScript there and
+ * nothing else would check it.
+ *
+ * `test/` is deliberately absent. The conformity test rungate generates into
+ * every consumer imports `bun:test` and `rungate/lib/conformity`, and neither
+ * resolves for tsc without `@types/bun` and an installed `rungate` — so
+ * including the test tree would hand a freshly scaffolded project a type check
+ * that reports 4 errors it did not cause and cannot fix. That is the #65/#76
+ * defect again in the other direction: a documented command whose result says
+ * nothing about the project's code.
+ */
+const TS_SOURCE_DIRS = ["src", "lib", "scripts", "gates", "hooks", "workflows"] as const;
+
+/** True when `dir` holds at least one hand-written .ts/.tsx file. */
+function containsTypeScript(dir: string): boolean {
+  let stack = [dir];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
+      if (entry.isDirectory()) {
+        stack.push(join(current, entry.name));
+      } else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Write a tsconfig.json for a TypeScript consumer that has none (#72, #65/#76).
+ *
+ * AGENTS.md has documented `bunx tsc --noEmit` as THE type check for every
+ * scaffolded project since the scaffold existed, and `.github/workflows/ci.yml`
+ * ran it — over a file rungate never created. With no tsconfig.json tsc prints
+ * 147 lines of help text and exits 1, so the documented check had never checked
+ * anything anywhere. `lib/generators/agents-md.ts` and `createCiWorkflows` were
+ * taught to stop ADVERTISING the command without a tsconfig; this creates the
+ * file so the command can be advertised again and mean something.
+ *
+ * Must run before AGENTS.md is generated and before createCiWorkflows: both
+ * decide whether to emit the type check by looking for this file on disk.
+ *
+ * Never overwrites. A consumer's compiler settings are the consumer's, and
+ * re-scaffold is routine.
+ */
+export function createTsconfig(root: string, actions: string[]): void {
+  const tsconfigPath = join(root, "tsconfig.json");
+  if (existsSync(tsconfigPath)) {
+    actions.push("SKIP: tsconfig.json (already exists)");
+    return;
+  }
+
+  // The include list and the "is this a TypeScript project" test are the same
+  // question, answered once. Deriving them separately is how you get a
+  // tsconfig whose include matches no files — tsc error TS18003, which reads
+  // as a broken type check rather than as "nothing to check".
+  const include = TS_SOURCE_DIRS
+    .filter(dir => containsTypeScript(join(root, dir)))
+    .map(dir => `${dir}/**/*.ts`);
+
+  if (include.length === 0) {
+    actions.push(`SKIP: tsconfig.json (no TypeScript source in ${TS_SOURCE_DIRS.join("/, ")}/)`);
+    return;
+  }
+
+  const tsconfig = {
+    "//": "Created by rungate. Edit freely — re-scaffold never overwrites an existing tsconfig.json.",
+    compilerOptions: {
+      strict: true,
+      target: "ESNext",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      noEmit: true,
+      skipLibCheck: true,
+      resolveJsonModule: true,
+    },
+    include,
+    exclude: ["node_modules"],
+  };
+
+  writeFileSync(tsconfigPath, JSON.stringify(tsconfig, null, 2) + "\n");
+  actions.push("CREATED: tsconfig.json");
+}
+
 export function createGitignore(root: string, actions: string[]): void {
   const gitignorePath = join(root, ".gitignore");
   const securityTemplate = `# Dependencies

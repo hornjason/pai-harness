@@ -176,6 +176,16 @@ describe("Phase 0: Pre-flight + static files", () => {
       expect(brief).toContain(`model: ${ROLES_CANARY_MODEL}`);
     });
 
+    // #72 AC-4. SC-74 below used to be unfalsifiable: the golden fixture
+    // shipped its own tsconfig.json, scaffoldFixture copies the fixture
+    // wholesale, and the scaffold never wrote that file — so SC-74 asserted
+    // strict mode on a file checked into this repo, not on scaffold output.
+    // The fixture no longer carries one; this test fails the moment anyone
+    // adds it back, which would silently restore the vacuous pass.
+    test("#72 AC-4: the golden fixture ships no tsconfig.json", () => {
+      expect(existsSync(join(import.meta.dir, "fixtures/golden-project/tsconfig.json"))).toBe(false);
+    });
+
     test("SC-74: tsconfig.json strict mode", () => {
       const tsconfig = JSON.parse(readFileSync(join(OUTPUT, "tsconfig.json"), "utf-8"));
       expect(tsconfig.compilerOptions?.strict).toBe(true);

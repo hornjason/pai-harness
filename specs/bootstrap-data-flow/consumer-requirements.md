@@ -351,7 +351,7 @@ Every project integrated with the harness has these files. On new projects, scaf
 | `.claude/agents/serena.md` | Phase 2.2 | Always regenerated | Architect brief — ADR location, module boundaries |
 | `.claude/agents/aditi.md` | Phase 2.2 | Always regenerated | Designer brief — component paths, design system |
 | `package.json` | Phase 0.18 | Required fields added if missing | name, type:module, scripts.test, devDep |
-| `tsconfig.json` | Phase 0.19 | WARN on missing recommended fields | strict:true, module:ESNext |
+| `tsconfig.json` | Phase 0.19 | Created if missing when the project has TypeScript source; NEVER overwritten (#72) | strict:true, target/module:ESNext, moduleResolution:bundler, include = source dirs holding .ts |
 | `.gitignore` | Phase 0.11 | Verified, missing entries appended | node_modules, dist, .env*, .rungate, secrets |
 | `.github/copilot-instructions.md` | Phase 0.14 | Skip if exists | Tool-bridge: points Copilot to AGENTS.md |
 | `.github/workflows/ci.yml` | Phase 0.15 | Always regenerated (harness-owned) | CI pipeline: bun test + typecheck on PR/push |

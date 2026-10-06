@@ -93,6 +93,39 @@ governs: Test spec
     // reads as a slow pass. Raise it off a new measurement, never off a guess.
   }, 30_000);
 
+  test("#72 AC-2: re-scaffolding leaves an existing tsconfig.json byte-for-byte unchanged", () => {
+    const fixtureRoot = join(tmpRoot, "tsconfig-fixture");
+    mkdirSync(join(fixtureRoot, "src"), { recursive: true });
+
+    writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({
+      name: "tsconfig-fixture",
+      version: "1.0.0",
+      type: "module",
+      scripts: { test: "bun test" },
+    }, null, 2) + "\n");
+    writeFileSync(join(fixtureRoot, "src", "index.ts"), "export const hello = 'world';\n");
+
+    // Hand-written and deliberately unlike anything the scaffold would emit:
+    // non-strict, a different target, odd whitespace, no trailing newline. A
+    // generator that "helpfully" normalises or merges would change the bytes,
+    // and that is what this is guarding — the consumer's own TS settings are
+    // theirs, and re-scaffold is run routinely.
+    const handWritten = '{"compilerOptions":{"strict":false,    "target":"ES2020"}}';
+    writeFileSync(join(fixtureRoot, "tsconfig.json"), handWritten);
+
+    initFixtureRepo(fixtureRoot);
+    commitFixture(fixtureRoot, "init");
+
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+    const afterFirst = readFileSync(join(fixtureRoot, "tsconfig.json"), "utf-8");
+
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+    const afterSecond = readFileSync(join(fixtureRoot, "tsconfig.json"), "utf-8");
+
+    expect(afterFirst).toBe(handWritten);
+    expect(afterSecond).toBe(handWritten);
+  }, 60_000);
+
   test("SC-364: generator determinism — generateAgentsMd produces identical output", () => {
     // Call generator twice with same input
     const scan = mockProjectScan();

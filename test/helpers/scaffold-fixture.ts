@@ -6,8 +6,8 @@
  * The fixture mechanics live here; the test file asserts.
  */
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { dirname, join } from "path";
 import { initFixtureRepo, commitFixture } from "./git-fixture";
 
 // bootstrap re-hashed 2026-10-05 (#80): redirect-stub `governs` was "TODO".
@@ -54,6 +54,45 @@ export function scaffoldFixture(dest: string, seed?: () => void): void {
   } catch {
     // Scaffold may not exist yet or may fail — tests should still run and FAIL
   }
+}
+
+/**
+ * A TypeScript consumer with NO tsconfig.json — the shape #65/#76 broke on.
+ *
+ * Deliberately minimal and deliberately missing the tsconfig: callers assert
+ * that the scaffold creates one. Adding a tsconfig here would make every one
+ * of those assertions pass for the wrong reason.
+ */
+export const MINIMAL_TS_PROJECT: Record<string, string> = {
+  "package.json": JSON.stringify(
+    { name: "minimal-ts-consumer", version: "1.0.0", type: "module", scripts: { test: "bun test" } },
+    null,
+    2,
+  ) + "\n",
+  "src/index.ts": 'export const greeting: string = "hello";\n',
+};
+
+/**
+ * Write `files` into a fresh `dest`, commit them, then scaffold with --fix.
+ *
+ * Unlike `scaffoldFixture`, a scaffold failure is NOT swallowed here. These
+ * callers assert on what the scaffold produced, so a silent scaffold crash
+ * would turn into a confusing "file missing" rather than the real error.
+ */
+export function scaffoldMinimalProject(
+  dest: string,
+  files: Record<string, string> = MINIMAL_TS_PROJECT,
+): void {
+  rmSync(dest, { recursive: true, force: true });
+  mkdirSync(dest, { recursive: true });
+  for (const [rel, content] of Object.entries(files)) {
+    const target = join(dest, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  }
+  initFixtureRepo(dest);
+  commitFixture(dest, "init minimal project");
+  execSync(`bun run ${SCAFFOLD} ${dest} --fix`, { timeout: 120000, encoding: "utf-8", stdio: "pipe" });
 }
 
 /** Seeder that writes a directory-layout config whose roles.json holds the canary. */

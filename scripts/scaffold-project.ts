@@ -24,6 +24,7 @@ import {
   generateCodeMapStep,
   copySpecTemplateIfEmpty,
   createGitignore,
+  createTsconfig,
   generateProjectState,
   createClaudeMdBridge,
   createCiWorkflows,
@@ -34,12 +35,8 @@ import {
   postScaffoldCommit,
 } from "../lib/scaffold/steps";
 import {
-  addFrontmatterToSpecs,
-  addFrontmatterToAdrs,
-  detectOversizedSpecs,
-  checkGovernsAlignment,
-  detectMisplacedSpecs,
-  detectUnconvertedSpecs,
+  addFrontmatterToSpecs, addFrontmatterToAdrs, detectOversizedSpecs,
+  checkGovernsAlignment, detectMisplacedSpecs, detectUnconvertedSpecs,
 } from "../lib/validators/spec-validators";
 import type { ProjectType } from "../lib/generators/types";
 
@@ -95,9 +92,12 @@ if (fix) {
   safeDir(join(projectPath, "docs"), "docs", actions);
   safeDir(join(projectPath, "docs", "adr"), "docs/adr", actions);
 
-  const existingTestDir = existsSync(join(projectPath, "test")) ? "test" : null;
-  const testDirName = existingTestDir || "tests";
+  const testDirName = existsSync(join(projectPath, "test")) ? "test" : "tests";
   safeDir(join(projectPath, testDirName), testDirName, actions);
+
+  // Before Phase 0.5 and before createCiWorkflows on purpose (#72): both decide
+  // whether to emit a type check by looking for tsconfig.json on disk.
+  createTsconfig(projectPath, actions);
 
   // Phase 0.5: Generate AGENTS.md
   const agentsMd = generateAgentsMdContent(projectPath, projectType, actions);

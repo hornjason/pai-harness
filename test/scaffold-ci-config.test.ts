@@ -8,9 +8,10 @@
  *       customization path (the config lives in .claude/rungate/config.json)
  */
 import { test, expect, describe, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, rmSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { createCiWorkflows } from "../lib/scaffold/steps";
+import { MINIMAL_TS_PROJECT, scaffoldMinimalProject } from "./helpers/scaffold-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 const TMP = "/tmp/rungate-ci-config-test";
@@ -94,5 +95,34 @@ describe("AC-5: customization path points at the config directory", () => {
       .split("\n")
       .filter((l) => /[Cc]ustomize[^\n]*rungate\.json/.test(l));
     expect(offenders).toEqual([]);
+  });
+});
+
+/**
+ * #72 AC-5 — a consumer scaffolded WITHOUT a tsconfig gets a CI type check step.
+ *
+ * `createCiWorkflows` emits the step only when tsconfig.json already exists on
+ * disk (#65/#76: emitting it unconditionally gave every non-TypeScript consumer
+ * a step that could only fail). That makes the step's presence a statement
+ * about scaffold step ORDER, which the unit-level cases above cannot see
+ * because they call createCiWorkflows directly. So this one runs the real
+ * pipeline on a project that starts with no tsconfig at all.
+ */
+describe("AC-5: full scaffold of a project with no tsconfig emits the CI type check", () => {
+  const dest = "/tmp/rungate-ci-no-tsconfig-test";
+
+  beforeAll(() => scaffoldMinimalProject(dest), 180_000);
+  afterAll(() => rmSync(dest, { recursive: true, force: true }));
+
+  test("the project really had no tsconfig going in, and has one coming out", () => {
+    expect(MINIMAL_TS_PROJECT["tsconfig.json"]).toBeUndefined();
+    expect(existsSync(join(dest, "tsconfig.json"))).toBe(true);
+  });
+
+  test("ci.yml runs the type check", () => {
+    const ci = readFileSync(join(dest, ".github", "workflows", "ci.yml"), "utf-8");
+    // A consumer gets rungate's lib/, not its scripts/, so it falls back to
+    // plain tsc rather than the ratchet script.
+    expect(ci).toContain("- run: bunx tsc --noEmit");
   });
 });
