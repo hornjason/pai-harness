@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -11,6 +19,7 @@ import {
   heldSlots,
   isFullSuiteCommand,
   releaseFullSuiteSlot,
+  wouldAllowFullSuite,
 } from "../lib/test-suite-lock";
 
 /**
@@ -809,5 +818,138 @@ describe("#74: a slot held with no suite running is reclaimed early", () => {
     // Reclaiming on an unreadable process table would let two real suites run
     // against a cap of one, which is the OOM condition the cap prevents.
     expect(unknown.ok).toBe(false);
+  });
+});
+
+/**
+ * #103 — `evaluateFullSuiteRequest` reads as a predicate and behaves as a
+ * transaction: it takes one of only two machine-wide slots and spends a unit of
+ * the DIR-L29 budget on the way through.
+ *
+ * Proven on 2026-10-05: a three-call diagnostic that only wanted to know
+ * whether a suite WOULD be allowed took both slots, and every other session was
+ * refused with a message naming two holders that were running nothing.
+ *
+ * `wouldAllowFullSuite` is the read-only half. It reads the same lock directory
+ * and the same counter file — it has to, or it would be answering about a
+ * different world — but it writes nothing, so asking the question can never
+ * change the answer.
+ */
+describe("wouldAllowFullSuite — asking is not running (#103)", () => {
+  /** Name, mtime and bytes of every file in the lock dir. Any write moves one. */
+  const snapshot = () =>
+    readdirSync(dir)
+      .sort()
+      .map((name) => {
+        const p = join(dir, name);
+        return `${name}\u0000${statSync(p).mtimeMs}\u0000${readFileSync(p, "utf-8")}`;
+      });
+
+  // Pinned rather than probed: the default detector shells out to `ps`, so an
+  // unrelated suite elsewhere on the machine would otherwise decide whether the
+  // held slots in these fixtures look live.
+  const live = (extra: Record<string, unknown> = {}) =>
+    opts({ suitesRunning: () => true, ...extra });
+
+  test("wouldAllowFullSuite is pure: asking never takes a slot", () => {
+    for (let i = 0; i < 3; i++) {
+      expect(wouldAllowFullSuite("diagnostic", "bun test", live()).allow).toBe(true);
+    }
+
+    // The 2026-10-05 symptom: three asks, both slots gone, holders running
+    // nothing. Capacity must be entirely untouched.
+    expect(heldSlots(dir)).toHaveLength(0);
+    expect(evaluateFullSuiteRequest("other-a", "bun test", live()).allow).toBe(true);
+    expect(evaluateFullSuiteRequest("other-b", "bun test", live()).allow).toBe(true);
+  });
+
+  test("wouldAllowFullSuite is pure: asking never spends the session budget", () => {
+    for (let i = 0; i < 5; i++) {
+      expect(wouldAllowFullSuite("s1", "bun test", live()).allow).toBe(true);
+    }
+
+    // The full budget of 2 is still there to be spent by actual runs.
+    expect(evaluateFullSuiteRequest("s1", "bun test", live()).allow).toBe(true);
+    releaseFullSuiteSlot("s1", opts());
+    expect(evaluateFullSuiteRequest("s1", "bun test", live()).allow).toBe(true);
+  });
+
+  test("wouldAllowFullSuite is pure: the lock directory is byte-identical afterwards", () => {
+    // Ask against a populated directory — a held slot and a spent budget — so
+    // the assertion is about not writing, not about there being nothing to write.
+    evaluateFullSuiteRequest("holder", "bun test", live());
+    const before = snapshot();
+    expect(before.length).toBeGreaterThan(0);
+
+    wouldAllowFullSuite("asker", "bun test", live());
+    wouldAllowFullSuite("holder", "bun test", live());
+    wouldAllowFullSuite("asker", "bun test test/foo.test.ts", live());
+
+    expect(snapshot()).toEqual(before);
+  });
+
+  test("wouldAllowFullSuite is pure: repeated asks cannot change their own answer", () => {
+    acquireFullSuiteSlot("a", live());
+
+    const answers = Array.from({ length: 6 }, () =>
+      wouldAllowFullSuite("asker", "bun test", live()).allow,
+    );
+    // One slot of two is taken, so every ask must say yes. A self-poisoning
+    // predicate flips to false partway through this list.
+    expect(answers).toEqual([true, true, true, true, true, true]);
+  });
+
+  test("the two entry points agree on the budget verdict when it is exhausted", () => {
+    evaluateFullSuiteRequest("s1", "bun test", live());
+    releaseFullSuiteSlot("s1", opts());
+    evaluateFullSuiteRequest("s1", "bun test", live());
+    releaseFullSuiteSlot("s1", opts());
+
+    const predicted = wouldAllowFullSuite("s1", "bun test", live());
+    const actual = evaluateFullSuiteRequest("s1", "bun test", live());
+
+    expect(predicted.allow).toBe(false);
+    expect(predicted.allow).toBe(actual.allow);
+    // The same refusal text, not merely the same boolean — the reason is what
+    // the caller acts on, and two gates that disagree about WHY are two gates.
+    expect(predicted.reason).toContain("DIR-L29");
+    expect(predicted.reason).toBe(actual.reason);
+  });
+
+  test("the two entry points agree on the concurrency verdict", () => {
+    evaluateFullSuiteRequest("alpha", "bun test", live());
+    evaluateFullSuiteRequest("beta", "bun test", live());
+
+    const predicted = wouldAllowFullSuite("gamma", "bun test", live());
+    const actual = evaluateFullSuiteRequest("gamma", "bun test", live());
+
+    expect(predicted.allow).toBe(false);
+    expect(predicted.allow).toBe(actual.allow);
+    expect(predicted.reason).toBe(actual.reason);
+    expect(predicted.reason).toContain("alpha");
+    expect(predicted.reason).toContain("beta");
+  });
+
+  test("a targeted run is predicted allowed, like the gate itself", () => {
+    const cmd = "bun test test/foo.test.ts";
+    expect(wouldAllowFullSuite("s1", cmd, live()).allow).toBe(true);
+    expect(wouldAllowFullSuite("s1", cmd, live()).allow).toBe(
+      evaluateFullSuiteRequest("s1", cmd, live()).allow,
+    );
+  });
+
+  test("a stale slot is predicted free, exactly as the acquirer would reclaim it", () => {
+    acquireFullSuiteSlot("dead-a", opts({ now: 0, suitesRunning: () => true }));
+    acquireFullSuiteSlot("dead-b", opts({ now: 0, suitesRunning: () => true }));
+
+    // Inside the 420s TTL both holders are real.
+    expect(
+      wouldAllowFullSuite("next", "bun test", live({ now: 400_000 })).allow,
+    ).toBe(false);
+    // Past it, the acquirer reclaims — so the prediction must say so too, or it
+    // reports a deadlock the gate does not actually have.
+    expect(
+      wouldAllowFullSuite("next", "bun test", live({ now: 500_000 })).allow,
+    ).toBe(true);
   });
 });
