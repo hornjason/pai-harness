@@ -36,6 +36,34 @@ export function validateFilePaths(
   return { valid, rejected };
 }
 
+/**
+ * Whether a string is safe to interpolate into a git or `gh` command as a
+ * branch name.
+ *
+ * #136 made branch names flow from the run into commands: the PR head is now
+ * `${shipBranch}` rather than something a checkout is asked for at the time.
+ * That is the right direction — an agent recovering from a failed push chose
+ * `HEAD:main` once — but the value still reaches a shell, and it originates
+ * from an agent's reply or from a PR listing, neither of which this process
+ * wrote.
+ *
+ * Git's own rules are looser than this (`git check-ref-format`). The extra
+ * strictness is deliberate: every character git allows but this rejects is
+ * one that means something to a shell, and no branch this harness creates
+ * needs any of them.
+ */
+const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/;
+
+export function isSafeBranchName(name: unknown): name is string {
+  if (typeof name !== "string" || name.length === 0 || name.length > 255) return false;
+  if (!SAFE_BRANCH.test(name)) return false;
+  // Git's own refusals, and the ones that matter here: `..` would let a
+  // branch argument climb out of a refspec, and a leading `-` would be read
+  // as a flag by git and by gh alike.
+  if (name.includes("..") || name.includes("//") || name.endsWith("/") || name.endsWith(".lock")) return false;
+  return true;
+}
+
 export function resolveEvidencePath(
   basePath: string,
   evidencePath: string,

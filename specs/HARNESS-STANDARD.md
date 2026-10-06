@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-08-06
+updated: 2026-10-06
 testable: true
 compliance: strict
 created: 2026-09-20
@@ -282,6 +282,26 @@ Check DISCOVERY's answer to "Where does this run?":
 5. For M/L iterative work: Marcus works on a feature branch per ADR-039 ("main branch untouched until full convergence"). XS/S may commit to main directly.
 6. DA merges to main + deploy — read project CLAUDE.md for deploy command. Do not assume any specific deploy command.
 7. Rollback protocol: every iteration produces one squashed commit on feature branch. Rollback = `git revert`, not `git reset`. Main branch untouched until full convergence (ADR-039 gate 5).
+
+**The workflow never writes to the default branch (#136).** Step 6 above says the
+DA merges, and ADR-039 says main is untouched until convergence. `workflows/ship.js`
+was doing neither: a `merge-and-push` step in the VERIFY phase merged the work
+branch into whatever branch `PROJECT_ROOT` happened to be on and ran a bare
+`git push`. One run finished `SHIPPED` with its code on `main` as a direct,
+non-merge commit — no pull request, no pre-merge CI. The push failed first, so the
+ref actually written (`HEAD:main`) was chosen by an agent recovering from an error.
+
+Ship pushes the work to its own branch and opens a PR. CI gates the merge there,
+which is what the ship gate already assumed — `branch-merged` reads "at ship gate:
+check code is pushed, not merged", with the merge verified at prove. A project that
+wants direct-to-main needs an explicit, off-by-default setting; it must not be the
+only path.
+
+- [x] SC-539: workflows/ship.js not contains [git merge ${worktreeBranch}, label: 'merge-and-push'] — the auto-merge is removed, not relocated
+- [x] SC-540: every `git push` in workflows/ship.js names an explicit ref, and none names main or master (behavioral — test/ship-never-writes-main.test.ts)
+- [x] SC-541: workflows/ship.js contains [REFUSING: on $branch, SKIPPED MERGE: checkout is on $branch] — the commit step and the prior-branch merge both refuse the default branch
+- [x] SC-542: workflows/ship.js contains [const shipBranch = branchToReuse, --head ${shipBranch}] — the PR head is derived from the run, not read back out of a checkout
+- [x] SC-543: lib/workflow-security.ts contains [isSafeBranchName, SAFE_BRANCH] and workflows/ship.js contains [isSafeBranchName(shipBranch)] — a branch name reaching a shell is validated, and both copies are executed against the same inputs
 
 **Output:** Code committed, tests passing, deployed to test environment.
 

@@ -224,6 +224,18 @@ function buildSafeGitAdd(filesChanged) {
   return `git add ${validated.valid.map(f => `'${f.replace(/'/g, "'\\''")}'`).join(' ')}`
 }
 
+// Mirror of isSafeBranchName in lib/workflow-security.ts — see the note at
+// the top of this block. Change one, change the other; the integration test
+// runs both against the same inputs.
+const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
+
+function isSafeBranchName(name) {
+  if (typeof name !== 'string' || name.length === 0 || name.length > 255) return false
+  if (!SAFE_BRANCH.test(name)) return false
+  if (name.includes('..') || name.includes('//') || name.endsWith('/') || name.endsWith('.lock')) return false
+  return true
+}
+
 function resolveEvidencePath(basePath, evidencePath) {
   if (NULL_BYTE.test(evidencePath)) {
     throw new Error(`Evidence path contains null byte: ${evidencePath}`)
@@ -1072,8 +1084,19 @@ if (!priorBranchResult) {
 Run this command and report the result:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
 
-If a prior branch exists (non-empty branch field), merge it:
-  cd ${PROJECT_ROOT} && git merge <branch> --no-edit
+If a prior branch exists (non-empty branch field), bring it into the working
+tree — but NOT onto the default branch (#136):
+
+  cd ${PROJECT_ROOT}
+  branch=$(git branch --show-current)
+  case "$branch" in
+    main|master) echo "SKIPPED MERGE: checkout is on $branch" ;;
+    *) git merge <branch> --no-edit ;;
+  esac
+
+If it skips, that is a correct outcome, not an error: this workflow does not
+write to the default branch, not even locally. Report priorBranch anyway — it
+is still the branch this run pushes to.
 
 Return: priorBranch (string, empty if none), priorCommitCount (number).
 `, { label: 'prior-branch', phase: 'Scope', schema: {
@@ -1616,11 +1639,18 @@ const gitAddForCommit = alreadyStaged
 const commitResult = await agent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
-1. Commit and push:
+1. Commit and push. Run these in order, exactly as written:
    cd ${commitDir}
+   branch=$(git branch --show-current)
+   case "$branch" in main|master) echo "REFUSING: on $branch — ship never commits to the default branch"; exit 1;; esac
    ${gitAddForCommit}
    git commit -m "fix(#${ISSUE}): ${goalData.issueTitle}"
    git push -u origin ${pushTarget}
+
+   The branch check is not optional and is not a formality. #136: a run pushed
+   straight to main, and the ref it wrote was chosen by an agent recovering
+   from a failed push, not by this workflow. If the check refuses, stop and
+   report it — do not switch branches, and do not push anywhere else.
 
 2. Get branch info:
    branch=$(git branch --show-current)
@@ -1646,6 +1676,34 @@ if (!commitResult?.commitSha) {
 log(`Committed: ${commitResult.commitSha} on ${commitResult.branch}`)
 
 const worktreeBranch = commitResult.branch
+
+/**
+ * The remote branch this run's work lives on — the PR head, and the only ref
+ * this workflow ever pushes to.
+ *
+ * `pushTarget` is `HEAD:<prior branch>` when one is being reused, so the
+ * remote name and the local worktree branch name are not always the same
+ * thing. Taking `commitResult.branch` alone would name the local one and open
+ * a PR for a branch that does not exist on the remote.
+ *
+ * Derived here, from the run, rather than read back out of a checkout later.
+ * #136's second half was a step that said bare `git push`, failed, and let an
+ * agent choose `HEAD:main` as the recovery.
+ */
+const shipBranch = branchToReuse || commitResult.branch
+
+// It reaches a shell, and it came from an agent's reply or a PR listing —
+// neither of which this process wrote. Refuse rather than quote: a branch
+// name needing quoting is not a branch name this harness created.
+if (!isSafeBranchName(shipBranch)) {
+  log(`SHIP ABORTED: "${String(shipBranch).slice(0, 80)}" is not a usable branch name`)
+  return { status: 'COMMIT_FAILED', reason: 'unsafe branch name', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+}
+if (shipBranch === 'main' || shipBranch === 'master') {
+  log(`SHIP ABORTED: the work is reported to be on ${shipBranch} — ship does not open a PR from the default branch (#136)`)
+  return { status: 'COMMIT_FAILED', reason: 'work is on the default branch', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+}
+log(`Work branch: ${shipBranch}`)
 
 // ════════════════════════════════════════════════════════════
 // PHASE 7: VERIFY (gate + container rebuild + Quinn container)
@@ -1677,11 +1735,14 @@ if (verifyResult?.result === 'FAIL') {
       // only baseDir and PROJECT_ROOT, and the commit was refused on a
       // completed fix. Staging from git status removes the file list from
       // the path entirely, so there is nothing left to relativize.
-      const reimplGitAdd = gitDerivedStaging(PROJECT_ROOT)
+      const reimplGitAdd = gitDerivedStaging(commitDir)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${PROJECT_ROOT} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push
+cd ${commitDir} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
 Report commit SHA.
+
+The push target is explicit and is the branch this run is already on. Do not
+substitute another ref if it fails — report the failure instead (#136).
       `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryVerify = await runGateWithHeal('verify', 'Verify',
         'Fix remaining verify gate failures.',
@@ -1847,17 +1908,28 @@ if (rookResult?.result === 'FAIL') {
 await parallel([runContainerVerify, runRookReview])
 // ──── VERIFY-FANOUT-END ────
 
-// ── Merge + push (ONLY after verify passes, batched into 1 agent) ────
+// ── #136: this workflow does not write to the default branch ──────────
+//
+// What used to be here merged the worktree branch into whatever branch
+// PROJECT_ROOT happened to be on and then ran a bare `git push`. In the run
+// that found it, that put a commit on main with no pull request and no
+// pre-merge CI — and the push failed first, so the ref that actually got
+// written (`HEAD:main`) was chosen by an agent recovering from an error.
+//
+// Nothing replaces it, because nothing needs to. The commit step already
+// pushed the work to `origin/${shipBranch}`; the Ship phase opens a PR for
+// that branch, and CI gates the merge there. That is also what the ship gate
+// has always expected — gates/workflow.test.ts's branch-merged check reads
+// "at ship gate: check code is pushed, not merged", with merging verified at
+// prove. The auto-merge was contradicting the gate it was supposed to satisfy.
+//
+// A project that genuinely wants direct-to-main needs it to be an explicit,
+// off-by-default choice rather than the only path, and that is a config
+// decision for Jason rather than something to infer here.
 if (verifyResult?.result === 'FAIL') {
-  log('Verify FAILED — skipping merge to main')
-} else if (marcusWorktreePath !== PROJECT_ROOT && worktreeBranch) {
-  await agent(`
-Do both:
-1. Merge: cd ${PROJECT_ROOT} && git merge ${worktreeBranch} --no-edit
-2. Push: cd ${PROJECT_ROOT} && git push
-Report: merge result, current HEAD SHA
-  `, { label: 'merge-and-push', phase: 'Verify' })
-  log('Worktree merged and pushed to main')
+  log('Verify FAILED — the branch stays unmerged and no PR is opened')
+} else {
+  log(`Verify passed — work is on origin/${shipBranch}; the PR, not this workflow, merges it`)
 }
 
 // ── GRADE: Post-run compliance grading (#574 — runs before ship gate) ──
@@ -2045,10 +2117,8 @@ Fixes #${ISSUE}
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 RUNGATE_PR_BODY_EOF
 
-BRANCH=$(cd ${PROJECT_ROOT} && git branch --show-current)
-
 cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-upsert --repo ${REPO} \\
-  --head "$BRANCH" --base main \\
+  --head ${shipBranch} --base main \\
   --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
   --body-file ${WORK_DIR}/pr-body.md
 
@@ -2094,11 +2164,14 @@ if (shipResult?.result !== 'PASS') {
     log(`Ship BUILD regression #${regressionCount} — re-implementing`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplShipGitAdd = gitDerivedStaging(PROJECT_ROOT)
+      const reimplShipGitAdd = gitDerivedStaging(commitDir)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${PROJECT_ROOT} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push
+cd ${commitDir} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push origin HEAD:${shipBranch}
 Report commit SHA.
+
+The push target is explicit and is the branch this run is already on. Do not
+substitute another ref if it fails — report the failure instead (#136).
       `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.')
       if (retryShip?.result === 'PASS') {
