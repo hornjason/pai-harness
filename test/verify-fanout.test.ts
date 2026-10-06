@@ -152,24 +152,30 @@ describe("Verify fan-out: container chain and Rook run concurrently", () => {
   });
 });
 
-describe("Verify fan-out: tier and config gating is unchanged", () => {
-  test("LIGHT tier runs neither container verify nor Rook", async () => {
+describe("Verify fan-out: tier gating of the UI-dependent steps", () => {
+  // These two were "LIGHT tier runs neither container verify nor Rook" and
+  // "STANDARD tier runs container verify but not Rook". Both were accurate
+  // descriptions of the code and wrong descriptions of the intent — see the
+  // #127 block below. Rook's expectation moved there; what remains here is the
+  // tier gating of the browser-driven steps, which is correct and unchanged.
+
+  test("LIGHT tier runs no container verify", async () => {
     const { done, calls } = runFanout({
       ceremonyTier: "LIGHT",
       container: CONTAINER,
     });
     await done;
-    expect(calls).toHaveLength(0);
+    expect(byLabel(calls, "container-rebuild")).toBeUndefined();
+    expect(byLabel(calls, "quinn-container")).toBeUndefined();
   });
 
-  test("STANDARD tier runs container verify but not Rook", async () => {
+  test("STANDARD tier runs container verify", async () => {
     const { done, calls } = runFanout({
       ceremonyTier: "STANDARD",
       container: CONTAINER,
     });
     await done;
     expect(byLabel(calls, "quinn-container")).toBeDefined();
-    expect(byLabel(calls, "rook")).toBeUndefined();
   });
 
   test("THOROUGH with no container config still runs Rook", async () => {
@@ -234,5 +240,76 @@ describe("Verify fan-out: tier and config gating is unchanged", () => {
     expect(labels).not.toContain("quinn-container");
     expect(labels).toContain("rook");
     expect(logs.some((l) => /No test container available/i.test(l))).toBe(true);
+  });
+});
+
+describe("#127: the security review is not a function of having a UI", () => {
+  /**
+   * Rook used to be gated on `ceremonyTier === 'THOROUGH'`, and ship.js:849
+   * forces LIGHT for any project with an empty `pages` map. THOROUGH was
+   * therefore unreachable for every CLI and library, and the security review
+   * could not run on them at all — confirmed by the agent census in #126: rook
+   * launched 0 times across 3,555 workflow agents.
+   *
+   * Two tests above previously asserted the old behaviour ("LIGHT tier runs
+   * neither container verify nor Rook", "STANDARD tier runs container verify
+   * but not Rook"). They were correct descriptions of the code and wrong
+   * descriptions of the intent: AGENTS.md says "Security — mandatory every
+   * build cycle on changed files", and "Spawn Security after every build
+   * cycle. Do not wait to be asked." They are updated, not deleted.
+   *
+   * The tier still governs Quinn and the container, which genuinely need a UI.
+   */
+
+  test("Rook runs on a LIGHT tier — the case that never happened", async () => {
+    const { done, calls } = runFanout({ ceremonyTier: "LIGHT", container: CONTAINER });
+    await done;
+    expect(
+      byLabel(calls, "rook"),
+      "a CLI project still cannot get a security review",
+    ).toBeDefined();
+  });
+
+  test("Rook runs on STANDARD too", async () => {
+    const { done, calls } = runFanout({ ceremonyTier: "STANDARD", container: CONTAINER });
+    await done;
+    expect(byLabel(calls, "rook")).toBeDefined();
+  });
+
+  test("LIGHT still skips the container chain and container Quinn", async () => {
+    // The over-fix guard. Decoupling Rook from the tier must not drag the
+    // browser-driven steps along with it — running Quinn against a project
+    // with no pages is what the override was right about.
+    const { done, calls } = runFanout({ ceremonyTier: "LIGHT", container: CONTAINER });
+    await done;
+    expect(byLabel(calls, "quinn-container")).toBeUndefined();
+    expect(byLabel(calls, "container-rebuild")).toBeUndefined();
+  });
+
+  test("Rook is skipped when the change touched no files", async () => {
+    // The new trigger is "there is something to review", so the empty case has
+    // to be the one that skips — otherwise the gate can never fail closed and
+    // we have swapped one unconditional for another.
+    const start = shipSource.indexOf(BLOCK_START);
+    const end = shipSource.indexOf(BLOCK_END);
+    const block = shipSource.slice(start + BLOCK_START.length, end);
+    const labels: string[] = [];
+
+    const factory = new Function(
+      "log", "agent", "briefedAgent", "parallel", "discovery",
+      "projectConfig", "PROJECT_ROOT", "WORK_DIR", "ISSUE", "GATE_RESULT_SCHEMA",
+      `return (async () => {${block}})()`,
+    );
+    await factory(
+      () => {},
+      async (_p: string, o: { label: string }) => { labels.push(o.label); return {}; },
+      async (_p: string, o: { label: string }) => { labels.push(o.label); return { result: "PASS" }; },
+      (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
+      { ceremonyTier: "LIGHT", acs: [], filesToModify: [] },
+      { container: null },
+      REPO_ROOT, "/tmp/work", 66, {},
+    );
+
+    expect(labels).not.toContain("rook");
   });
 });

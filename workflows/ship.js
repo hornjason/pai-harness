@@ -1682,9 +1682,22 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 }
 }
 
-// Rook security review (THOROUGH only)
+// Rook security review — runs whenever there is something to review (#127).
+//
+// This was `ceremonyTier === 'THOROUGH'`. Line 849 forces LIGHT for any project
+// with an empty `pages` map, so THOROUGH was unreachable for every CLI and
+// library and the security review could not run on them at all. Across 3,555
+// workflow agents ever launched, rook was spawned 0 times (#126).
+//
+// A UI check is the wrong gate for a security review: rook reads changed files
+// for injection, credential leaks, path traversal and XSS, and a CLI that
+// shells out is the higher-risk surface, not the lower one. AGENTS.md:
+// "Security — mandatory every build cycle on changed files."
+//
+// The tier still governs Quinn and the container above. Those genuinely need a
+// UI; this does not.
 async function runRookReview() {
-if (discovery.ceremonyTier === 'THOROUGH') {
+if (discovery.filesToModify?.length) {
   log('Spawning Rook')
   await briefedAgent(`
 Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
