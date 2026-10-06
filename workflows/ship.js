@@ -297,6 +297,7 @@ function safeSSHCommand(host, remoteCmd) {
     return null
   }
 }
+
 // ──── SECURITY-HELPERS-END ────
 
 // ── Agent brief loader (config-driven) ────────────────────
@@ -1240,6 +1241,14 @@ Also report worktreePath: your current working directory.
           success: false,
           filesChanged: allFilesChanged,
           worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
+          // Each agent's files paired with ITS OWN worktree. filesChanged above
+          // is flattened across all of them and worktreePath is only the last
+          // one, so the commit phase could never relativize the other N-1
+          // agents' paths — 37 minutes of valid work that would not commit (#81).
+          agentResults: completed.map(r => ({
+            worktreePath: r.buildResult?.worktreePath || '',
+            filesChanged: r.buildResult?.filesChanged || [],
+          })),
         }
       }
     }
@@ -1253,6 +1262,11 @@ Also report worktreePath: your current working directory.
         success: true,
         filesChanged: allFilesChanged,
         worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
+        // See the failure branch above — the pairing is what #81 lost.
+        agentResults: completed.map(r => ({
+          worktreePath: r.buildResult?.worktreePath || '',
+          filesChanged: r.buildResult?.filesChanged || [],
+        })),
       }
     }
   } else {
@@ -1395,7 +1409,78 @@ log('Committing code')
 
 // env-defaults logic inlined into the commit agent's workflow-state update (step 3 below)
 // — the separate env-defaults agent was redundant (~170s wasted per run)
-const commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
+// #81: when sub-issues ran in parallel, the work is spread across N worktrees.
+// Committing from any single one of them leaves the other N-1 agents' paths
+// absolute, buildSafeGitAdd rejects them (correctly — it refuses absolutes),
+// and the commit aborts with every agent having succeeded. Collect the files
+// into the project root first, then commit there.
+//
+// This runs through an agent because the workflow sandbox provides no module
+// loading (#69); scripts/collect-worktree-files.ts imports the real library so
+// there is no second copy of the logic to drift.
+const agentResults = implementResult.buildResult?.agentResults || []
+const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filter(Boolean))]
+let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
+let alreadyStaged = false
+
+if (distinctWorktrees.length > 1) {
+  log(`Collecting work from ${distinctWorktrees.length} worktrees into ${PROJECT_ROOT} (#81)`)
+  const groupsJson = JSON.stringify(agentResults)
+  // The script stages what it collects, in the process that validated it.
+  // This step therefore reports an outcome; it does not hand back a file list.
+  // Parsing paths out of an agent's reply would put a language model inside a
+  // path security boundary — invented or summarised paths would have reached
+  // `git add`, and an agent that neglected to echo the agreed failure token
+  // would have read as success.
+  //
+  // RESIDUAL, AND NOT CLOSED: this reply is still LLM-produced, so an agent
+  // that falsely reports ok:true makes ship.js proceed. That is no longer a
+  // path-security decision — the script chose and staged the files, or it did
+  // not run at all — so the worst case is committing an index the script never
+  // populated, which the commit then fails on. It cannot be closed here:
+  // ship.js has no I/O in the sandbox (#69), so everything crossing back from
+  // a script must pass through an agent. Removing the agent entirely needs the
+  // sandbox to offer a direct exec primitive; tracked separately.
+  const collectOut = await agent(`
+Run exactly this and report the result:
+
+cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
+${groupsJson}
+RUNGATE_GROUPS_EOF
+cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT} ${PROJECT_ROOT}/.claude/worktrees
+
+Set ok to true ONLY if the command exited zero. Set collected to the number in
+its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
+  `, {
+    label: 'collect-worktrees',
+    phase: 'Commit',
+    schema: {
+      type: 'object',
+      properties: {
+        ok: { type: 'boolean' },
+        collected: { type: 'number' },
+        detail: { type: 'string' },
+      },
+      required: ['ok', 'collected'],
+    },
+  })
+
+  // Fail closed: anything other than an explicit success with a positive count
+  // aborts. A malformed reply, a missing field, or a claim of success with
+  // nothing collected all land here rather than proceeding to commit.
+  if (!collectOut || collectOut.ok !== true || !(collectOut.collected > 0)) {
+    return {
+      status: 'SHIP_FAILED',
+      issue: ISSUE,
+      reason: `Could not collect parallel worktree output (#81): ${collectOut?.detail || 'no usable result from the collect step'}`,
+      workDir: WORK_DIR,
+    }
+  }
+  // Everything now lives in the project root and is already staged there.
+  commitDir = PROJECT_ROOT
+  alreadyStaged = true
+  log(`Collected and staged ${collectOut.collected} files into the project root`)
+}
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP
 const ENV_CHECK_SCHEMA = {
@@ -1413,7 +1498,15 @@ const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
-const gitAddForCommit = safeGitAddCommand(implementResult.buildResult?.filesChanged, commitDir)
+// When the collect step ran, the files are already staged by the script that
+// validated them, and there is nothing left to add. An empty list must not be
+// used to signal that: safeGitAddCommand turns an empty list into `git add .`,
+// which stages the whole tree — the indiscriminate staging AC-3 exists to
+// forbid. Say "nothing to add" explicitly instead.
+const filesForCommit = alreadyStaged ? [] : implementResult.buildResult?.filesChanged
+const gitAddForCommit = alreadyStaged
+  ? 'git diff --cached --quiet && echo "NOTHING_STAGED" || true'
+  : safeGitAddCommand(filesForCommit, commitDir)
 if (gitAddForCommit === null) {
   return {
     status: 'SHIP_FAILED',

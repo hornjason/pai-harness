@@ -42,12 +42,26 @@ describe('ship.js pipeline hardening (#53)', () => {
   })
 
   test('AC-5: commit agent prompt contains "Do NOT run tests"', () => {
-    // The commit phase prompt should explicitly tell the agent not to run tests
-    // Find the commit phase section and check for the instruction
+    // Was `slice(commitPhaseStart, +3000)` — a byte distance standing in for
+    // "the commit agent's prompt". Inserting anything into the commit phase
+    // pushed the instruction past the window and failed the test while the
+    // property it checks was still true (#81 did exactly that). Anchor on the
+    // agent instead: the claim is about the commit agent's prompt, so find the
+    // commit agent and read its prompt.
     const commitPhaseStart = shipContent.indexOf("phase('Commit')")
     expect(commitPhaseStart).toBeGreaterThan(-1)
-    const commitPhaseSection = shipContent.slice(commitPhaseStart, commitPhaseStart + 3000)
-    expect(commitPhaseSection).toContain('Do NOT run tests')
+
+    const labelIdx = shipContent.indexOf("label: 'commit'", commitPhaseStart)
+    expect(labelIdx, "no agent labelled 'commit' after phase('Commit')").toBeGreaterThan(-1)
+
+    // The prompt is the template literal immediately preceding the options
+    // object that carries the label.
+    const promptEnd = shipContent.lastIndexOf('`', labelIdx)
+    const promptStart = shipContent.lastIndexOf('await agent(`', Math.max(0, promptEnd - 1))
+    expect(promptStart).toBeGreaterThan(-1)
+
+    const commitPrompt = shipContent.slice(promptStart, promptEnd)
+    expect(commitPrompt).toContain('Do NOT run tests')
   })
 
   test('AC-6: ac-completion-check agent label is removed', () => {
