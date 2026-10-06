@@ -1,8 +1,8 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-10-05
-scanned-at-sha: 9ae1ab12
+updated: 2026-10-06
+scanned-at-sha: f74832fe
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -20,9 +20,9 @@ Regenerate when src/ has commits since scanned-at-sha.
 | Dev dependencies | 1 |
 | API routes | 0 |
 | React components | 0 |
-| Entry points (fallow) | 193 |
+| Entry points (fallow) | 213 |
 | Unused files | 6 |
-| Unused exports | 1 |
+| Unused exports | 2 |
 | Circular dependencies | N/A |
 | Module import mappings | 0 |
 | Page-component mappings | 0 |
@@ -31,16 +31,16 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| .claude/ | 23698 | DS_Store, json, output-styles, agents, rungate |
-| test/ | 201 | ts, unit, json, fixtures, fixtures/golden-project |
+| .claude/ | 30894 | DS_Store, json, output-styles, agents, rungate |
+| test/ | 223 | ts, unit, types, json, fixtures |
 | evals/ | 151 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| lib/ | 57 | ts, validators, generators, scaffold |
-| scripts/ | 49 | ts, sh, git-hooks, lib, git-hooks/pre-push |
-| docs/ | 43 | research, adr, DS_Store, council, session-log |
-| gates/ | 33 | ts, gate-salt, toml, md, test-fixtures |
-| specs/ | 33 | md, bootstrap-data-flow, json, png |
+| lib/ | 60 | ts, validators, generators, scaffold |
+| scripts/ | 52 | ts, sh, git-hooks, lib, git-hooks/pre-push |
+| docs/ | 44 | research, adr, DS_Store, council, session-log |
+| gates/ | 34 | ts, gate-salt, toml, md, sha256 |
+| specs/ | 32 | md, bootstrap-data-flow, json |
+| hooks/ | 24 | ts, lib |
 | prompts/ | 24 | md |
-| hooks/ | 23 | ts, lib |
 | config/ | 8 | json, yaml |
 | templates/ | 8 | agent-briefs, md |
 | workflows/ | 6 | js |
