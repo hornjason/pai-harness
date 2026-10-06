@@ -130,7 +130,10 @@ describe("AC-5 (#69): ship.js loads no modules at runtime", () => {
     // content cannot change whether the source parses, so a real parser is an
     // independent witness that nothing was eaten (#89 review).
     const result = strippingPreservesSyntax(shipSource);
-    expect(result.ok, `stripped ship.js no longer parses: ${result.detail}`).toBe(true);
+    // "clean", not merely ok. An unparseable ship.js is its own failure and
+    // must not read as a pass — that would make this witness a no-op exactly
+    // when something is wrong with the file.
+    expect(result.verdict, `witness on ship.js: ${result.verdict} ${result.detail ?? ""}`).toBe("clean");
   });
 
   test("no dynamic import()", () => {
