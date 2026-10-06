@@ -5,6 +5,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
+import { buildDefaultRoles, buildDefaultHooks } from "../lib/scaffold/defaults";
 
 const projectRoot = process.argv[2];
 if (!projectRoot) {
@@ -92,10 +93,15 @@ const config = {
   prod: { rebuild: rebuildCmd },
 };
 
-// Write split directory structure instead of monolith
+// Write split directory structure instead of monolith.
+// roles/hooks come from the SAME source the main scaffold uses — two entry
+// points writing different role sets means whichever ran last decides what the
+// project is, which is the bug in #70 one layer up.
+const roles = buildDefaultRoles();
+const hooks = buildDefaultHooks();
 writeFileSync(join(dirTarget, "config.json"), JSON.stringify(config, null, 2) + "\n");
-writeFileSync(join(dirTarget, "roles.json"), JSON.stringify({}, null, 2) + "\n");
-writeFileSync(join(dirTarget, "hooks.json"), JSON.stringify([], null, 2) + "\n");
+writeFileSync(join(dirTarget, "roles.json"), JSON.stringify(roles, null, 2) + "\n");
+writeFileSync(join(dirTarget, "hooks.json"), JSON.stringify(hooks, null, 2) + "\n");
 writeFileSync(join(dirTarget, "compliance.json"), JSON.stringify({
   rules: {},
   defaults: { consecutiveFailThreshold: 3, tierPromotionThreshold: 5 },
