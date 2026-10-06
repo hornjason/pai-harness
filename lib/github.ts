@@ -87,20 +87,34 @@ export function createGitHubClient(): GitHubClient {
  * Enterprise usable and lets tests point the client somewhere harmless
  * instead of at the real API.
  *
- * **Loopback only.** This variable redirects an endpoint that carries a
- * bearer token, so it is an exfiltration primitive for anyone who can set it.
- * An earlier version here allowed any `https` host, reasoning that whoever
- * controls the environment can usually read the token anyway. Security review
- * flagged it twice, and the second time was right: "usually" is not "always",
- * and the honest accounting is that the only reason this variable exists is
- * to give the IssueCloseGuard tests a reachable endpoint. A capability that
- * exists for a test should not be able to reach the internet.
+ * **Allowlisted hosts only: GitHub itself, or loopback.** This variable
+ * redirects an endpoint that carries a bearer token, so it is an
+ * exfiltration primitive for anyone who can set it. An earlier version
+ * allowed any `https` host, reasoning that whoever controls the environment
+ * can usually read the token anyway. Security review flagged it twice and
+ * was right the second time: "usually" is not "always".
  *
- * So the token can go to exactly two places: GitHub, or a port on this
- * machine. GitHub Enterprise support would need a remote base URL and is
- * therefore a separate, deliberate decision rather than a side effect of a
- * test seam.
+ * The allowlist is not loopback-only, though, and CI is what taught me that:
+ * **GitHub Actions sets `GITHUB_API_URL=https://api.github.com` on every
+ * run.** A loopback-only rule therefore refused the genuine GitHub API and
+ * broke the whole suite in CI while passing locally, where the variable is
+ * unset. The differential was the fix's bug, not the test's.
+ *
+ * So the token can reach GitHub, or a port on this machine, and nowhere else.
+ * Hostname is compared exactly, so `api.github.com.evil.com` and a loopback
+ * name hidden in the userinfo (`https://127.0.0.1@evil.com`) are both
+ * refused. GitHub Enterprise needs a host outside this list and stays a
+ * separate, deliberate decision rather than a side effect of a test seam.
  */
+const ALLOWED_API_HOSTS = new Set([
+  "api.github.com",
+  "github.com",
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+  "::1",
+]);
+
 export function resolveApiBaseUrl(): string | undefined {
   const raw = process.env.GITHUB_API_URL?.trim();
   if (!raw) return undefined;
@@ -110,9 +124,9 @@ export function resolveApiBaseUrl(): string | undefined {
   } catch {
     throw new Error(`GITHUB_API_URL is not a valid URL: ${raw}`);
   }
-  if (!["localhost", "127.0.0.1", "[::1]", "::1"].includes(url.hostname)) {
+  if (!ALLOWED_API_HOSTS.has(url.hostname)) {
     throw new Error(
-      `GITHUB_API_URL may only point at loopback — refusing to send a token to ${url.hostname}`,
+      `GITHUB_API_URL may only point at GitHub or loopback — refusing to send a token to ${url.hostname}`,
     );
   }
   return raw;

@@ -138,37 +138,73 @@ export type CloseTarget =
  * vetted issue 1 against protected/y and closed 99 in it. No amount of
  * regex care fixes that class; refusing to answer does.
  */
+/** A `gh issue close` anywhere in a segment, with nothing required after it. */
+const CLOSE_INVOCATION = /\bgh\b.*?\bissue\b.*?\bclose\b/;
+
+/** `https://github.com/owner/name/issues/123`, which `gh` accepts in place of a number. */
+const ISSUE_URL = /https?:\/\/[^\s"'`]*?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)/;
+
 export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = process.env): CloseTarget {
-  const closes = [...command.matchAll(/\bgh\b[^\n;|&]*?\bissue\b[^\n;|&]*?\bclose\b\s+['"]?(\d+)/g)];
-  if (closes.length === 0) return { kind: "none" };
-  if (closes.length > 1) {
-    return { kind: "ambiguous", reason: `${closes.length} issue closes in one command — run them separately so each can be checked` };
-  }
+  // Detection is deliberately loose and requires NOTHING after `close`. The
+  // previous version demanded `close\s+(\d+)`, so `gh issue close --repo a/b 23`
+  // — flag first, number last, which gh accepts — matched nothing, returned
+  // "no close here", and the guard stepped aside entirely. A detector that
+  // can under-match is a bypass; a detector that over-matches is at worst an
+  // inconvenient refusal.
+  if (!CLOSE_INVOCATION.test(command)) return { kind: "none" };
 
-  // Indirection this cannot resolve statically. `gh` sees the expanded text;
-  // we only ever see the source, so any of these means our view and the
-  // shell's view can differ.
-  for (const [pattern, what] of [
-    [/\$\(|`/, "a command substitution"],
-    [/\beval\b/, "an eval"],
-    [/[;|&]|\n/, "a command separator"],
-  ] as const) {
-    if (pattern.test(command)) {
-      return { kind: "ambiguous", reason: `${what} makes the target unreadable — run the close on its own` };
+  const ambiguous = (reason: string): CloseTarget => ({ kind: "ambiguous", reason });
+
+  // Indirection that cannot be resolved from the source text. `gh` acts on
+  // the expanded command; we only ever see what was typed.
+  if (/\$\(|`|\$\{/.test(command)) return ambiguous("a command substitution makes the target unreadable — run the close on its own");
+  if (/\beval\b/.test(command)) return ambiguous("an eval makes the target unreadable — run the close on its own");
+
+  // Split on separators rather than rejecting them outright, so an ordinary
+  // `cd somewhere && gh issue close 23 --repo a/b` still gets vetted. Exactly
+  // one segment may be closing an issue: two let the issue number from one be
+  // paired with the repository from the other, which is the bypass that
+  // prompted all of this.
+  const closing = command.split(/[;|&\n]+/).filter(s => CLOSE_INVOCATION.test(s));
+  if (closing.length !== 1) {
+    return ambiguous(`${closing.length} issue closes in one command — run them separately so each can be checked`);
+  }
+  const segment = closing[0];
+
+  // A URL carries its own owner/name, which overrides --repo. If both are
+  // present and disagree, we cannot tell which gh will use.
+  const url = segment.match(ISSUE_URL);
+  const flagRepo = parseRepoSlug(segment, env);
+  if (url) {
+    const urlRepo = `${url[1]}/${url[2]}`;
+    if (flagRepo && flagRepo !== urlRepo) {
+      return ambiguous("the issue URL and --repo name different repositories — pass one of them");
     }
+    return { kind: "one", issue: url[3], repo: urlRepo };
   }
-
-  const issue = closes[0][1];
 
   // A flag is present but its value is not a literal slug (`--repo "$REPO"`).
-  // Falling back to a default here would vet an entirely different repo.
-  const flagPresent = /(?:--repo|-R)[\s=]/.test(command);
-  const repo = parseRepoSlug(command, env);
-  if (flagPresent && !repo) {
-    return { kind: "ambiguous", reason: "the --repo value is not a literal owner/name — pass it literally so it can be checked" };
+  // Defaulting here would vet an entirely different repository.
+  if (/(?:--repo|-R)[\s=]/.test(segment) && !flagRepo) {
+    return ambiguous("the --repo value is not a literal owner/name — pass it literally so it can be checked");
   }
 
-  return { kind: "one", issue, repo };
+  // Prefer the number immediately after `close`, which is the ordinary form
+  // and is unambiguous even when other digits appear in a comment body.
+  const direct = segment.match(/\bclose\b\s+['"]?#?(\d+)\b/);
+  if (direct) return { kind: "one", issue: direct[1], repo: flagRepo };
+
+  // Otherwise gh is taking the number from somewhere later in the line. Only
+  // act when exactly one candidate exists; guessing between several is how
+  // the wrong issue gets vetted.
+  const after = segment.slice(segment.search(/\bclose\b/));
+  const numbers = [...new Set((after.match(/(?<![\w/.-])#?(\d+)\b/g) || []).map(n => n.replace("#", "")))];
+  if (numbers.length === 1) return { kind: "one", issue: numbers[0], repo: flagRepo };
+  return ambiguous(
+    numbers.length === 0
+      ? "no issue number could be read from the command — pass it directly after `close`"
+      : `several numbers could be the issue (${numbers.join(", ")}) — put the issue number directly after \`close\``,
+  );
 }
 
 export function parseRepoSlug(command: string, env: NodeJS.ProcessEnv = process.env): string | undefined {

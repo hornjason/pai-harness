@@ -240,31 +240,124 @@ describe("#140: a command the parser cannot read unambiguously is refused", () =
   test.each([
     ["a command substitution", `gh issue close 23 --repo $(cat repo.txt)`],
     ["backticks", "gh issue close 23 --repo `cat repo.txt`"],
+    ["parameter expansion", `gh issue close 23 --repo \${REPO}`],
     ["an eval", `eval "gh issue close 23 --repo a/b"`],
-    ["a chained command", `gh issue close 23 --repo a/b && rm -rf x`],
-    ["a pipe", `gh issue close 23 --repo a/b | tee log`],
-    ["a newline-separated second command", `gh issue close 23 --repo a/b\necho done`],
   ])("%s is refused rather than guessed at", (_label, command) => {
     expect(parseCloseTarget(command, {}).kind).toBe("ambiguous");
   });
 
-  test("two closes with no separator between them", () => {
-    // The `;` example above does not actually exercise the count — the
-    // separator check catches it first, and a mutation disabling the count
-    // survived. This has no separator at all: the second close lives inside
-    // the comment text, which is a perfectly ordinary thing to write and
-    // which the close-matching regex sees as a second invocation.
+  test("a substitution that adds a second --repo we cannot see", () => {
+    // The cases above are all shielded by the "--repo value is not a literal
+    // slug" rule, so a mutation deleting the substitution check survived
+    // them — they prove the wrong thing. This one has a perfectly literal
+    // `--repo owner/name` AND a readable issue number, so every other rule
+    // is satisfied; only the substitution check stands between the guard and
+    // a confident wrong answer.
+    //
+    // At runtime the expansion appends a second `--repo other/repo`, and gh
+    // takes the last one. Vetting owner/name would approve a close that
+    // lands in other/repo.
     const t = parseCloseTarget(
-      `gh issue close 1 --repo a/b --comment "supersedes gh issue close 99"`,
+      `gh issue close 23 --repo owner/name $(echo --repo other/repo)`,
       {},
     );
-    expect(t.kind, "two closes were collapsed into one target").toBe("ambiguous");
+    expect(t.kind, "an unexpanded substitution was treated as readable").toBe("ambiguous");
+  });
+
+  test.each([
+    ["a trailing chained command", `gh issue close 23 --repo a/b && echo done`],
+    ["a pipe", `gh issue close 23 --repo a/b | tee log`],
+    ["a following line", `gh issue close 23 --repo a/b\necho done`],
+  ])("%s is vetted, because only one segment closes anything", (_label, command) => {
+    // Earlier these were refused outright, on the theory that any separator
+    // made the command unreadable. That was too blunt: it refuses the most
+    // ordinary shapes people actually type, and a guard that blocks routine
+    // work is a guard that gets turned off. Splitting on separators and
+    // requiring exactly one closing segment keeps the protection — two real
+    // gh invocations cannot share a line without a separator — while letting
+    // these through.
+    expect(parseCloseTarget(command, {})).toEqual({ kind: "one", issue: "23", repo: "a/b" });
+  });
+
+  test("a close mentioned inside a comment body is not a second close", () => {
+    // I previously asserted the opposite, and it was wrong. The shell runs
+    // exactly one gh here; the second "close" is quoted prose in the comment
+    // text. Vetting issue 1 is the correct answer, and refusing it was a
+    // false positive that would have blocked a reasonable command.
+    //
+    // Two REAL invocations cannot share a line without a separator, which is
+    // what the segment split counts — so nothing is lost by allowing this.
+    expect(
+      parseCloseTarget(`gh issue close 1 --repo a/b --comment "supersedes gh issue close 99"`, {}),
+    ).toEqual({ kind: "one", issue: "1", repo: "a/b" });
+  });
+
+  test("a quoted separator before a second close still refuses", () => {
+    // The split is textual, so a `;` inside quotes splits too. That makes
+    // this look like two closing segments and it is refused. A false
+    // positive, and the safe direction: the alternative is parsing shell
+    // quoting correctly, which is the differential this design exists to
+    // stop relying on.
+    const t = parseCloseTarget(
+      `gh issue close 1 --repo a/b --comment "done; gh issue close 99"`,
+      {},
+    );
+    expect(t.kind).toBe("ambiguous");
   });
 
   test("a --repo that is a variable is refused, not silently defaulted", () => {
     // Falling back to the caller's default here would vet a completely
     // different repository than the one gh resolves at runtime.
     const t = parseCloseTarget(`gh issue close 23 --repo "$REPO"`, {});
+    expect(t.kind).toBe("ambiguous");
+  });
+
+  test.each([
+    // THE bypass class: the detector missing a close entirely means the guard
+    // steps aside and the close is never vetted at all. The old pattern
+    // demanded `close\s+(\d+)`, so every one of these returned "none".
+    ["flag before the number", `gh issue close --repo owner/name 23`, "23", "owner/name"],
+    ["a quoted number", `gh issue close "23" --repo owner/name`, "23", "owner/name"],
+    ["a hash-prefixed number", `gh issue close #23 --repo owner/name`, "23", "owner/name"],
+    ["an absolute path to gh", `/opt/homebrew/bin/gh issue close 23 --repo owner/name`, "23", "owner/name"],
+    ["an issue URL instead of a number", `gh issue close https://github.com/owner/name/issues/23`, "23", "owner/name"],
+  ])("%s is still detected and vetted", (_label, command, issue, repo) => {
+    expect(parseCloseTarget(command, {})).toEqual({ kind: "one", issue, repo });
+  });
+
+  test("a benign chained command is vetted, not refused", () => {
+    // Rejecting every separator outright would have made the guard
+    // intolerable for ordinary use, and an intolerable guard gets disabled.
+    expect(parseCloseTarget(`cd /tmp/x && gh issue close 23 --repo owner/name`, {})).toEqual({
+      kind: "one",
+      issue: "23",
+      repo: "owner/name",
+    });
+  });
+
+  test("digits elsewhere do not displace the number after close", () => {
+    expect(
+      parseCloseTarget(`gh issue close 23 --repo owner/name --comment "fixed in 5 minutes"`, {}),
+    ).toEqual({ kind: "one", issue: "23", repo: "owner/name" });
+  });
+
+  test("a URL that disagrees with --repo is refused", () => {
+    // gh takes the repo from the URL; a guard reading --repo would vet the
+    // wrong one.
+    const t = parseCloseTarget(
+      `gh issue close https://github.com/owner/name/issues/23 --repo other/repo`,
+      {},
+    );
+    expect(t.kind).toBe("ambiguous");
+  });
+
+  test("no readable issue number is refused, not skipped", () => {
+    const t = parseCloseTarget(`gh issue close --repo owner/name`, {});
+    expect(t.kind).toBe("ambiguous");
+  });
+
+  test("several candidate numbers after close are refused", () => {
+    const t = parseCloseTarget(`gh issue close --repo owner/name 23 99`, {});
     expect(t.kind).toBe("ambiguous");
   });
 
