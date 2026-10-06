@@ -32,7 +32,10 @@
     "Check the thing the checks are measured against, not just the thing being measured. #81 had four rounds of hardening on src and zero on the root src was compared to.",
     "A check that cannot fail where it runs is worse than no check: it occupies a slot, and it teaches readers that red means environment. Before shipping a fix, ask where it will run and whether it can fail there.",
     "Fixing one copy of duplicated logic and watching tests pass proves nothing. #91 fixed scanner.ts, output did not change, and three new tests went green against the copy nobody calls.",
-    "Read the open issues for the assumption you are about to encode. #77 documented the projectRoot/harnessRoot divergence before I shipped code depending on projectRoot."
+    "Read the open issues for the assumption you are about to encode. #77 documented the projectRoot/harnessRoot divergence before I shipped code depending on projectRoot.",
+    "A guard is only as good as its view of the input. Before trusting one, measure how much of the file it can actually see.",
+    "Do not close an issue from a list. Re-verify against the code — a stale-list entry closed #69 would have buried nine live defects.",
+    "When a fix needs an independent witness, pick one the implementation cannot influence: a real parser, a second tool, the artifact a reader opens."
   ],
   "phases": [
     {
@@ -505,6 +508,17 @@
         "Self-inflicted and caught: the worktree allow-list I merged in #93 derived from PROJECT_ROOT, which is the assumption #77 documents as wrong. Agent worktrees live under harnessRoot; they diverge exactly when shipping from a dedicated worktree, the case parallel collection exists for. Would have turned #81 from cannot-commit into refuses-to-commit. Reproduced and fixed with variadic bases.",
         "FILED: #90 (scaffold migrates projects onto .claude/rungate/ but 4 of 6 readers only understand the monolith — gate-executor, brief-assembler, ship-orchestrator, scanner; this repo has BOTH layouts so the stale monolith masks it), #91, #92.",
         "Durable: .claude/agents/auditor.md — post-completion reviewer that grades the repo guidance rather than the agent, via a mechanical sweep of all rules. First run on 4ec1196e produced #90, #91, #92. Two of its three diagnoses were wrong on cause while right on symptom; verify before acting on them."
+      ]
+    },
+    {
+      "date": "2026-10-05 session 32b",
+      "items": [
+        "#85 CLOSED (PR #97) — pre-push ran conformity in the WORKING TREE, not the commits being pushed. That is how the HYGIENE-3 regression reached main. Now checks out each pushed sha into a detached worktree. The node_modules question #85 left open is answered by comparing lockfiles: symlink when they match (4.9s fast path), bun install --frozen-lockfile when they do not. Cleanup is unconditional so a failed push cannot leak a worktree.",
+        "#74 CLOSED (PR #98) — a slot leaked for the full 420s TTL when a LATER PreToolUse hook blocked the command. Reconcile on acquire using ONLY the zero case: if no bun test is running anywhere, every slot is provably false. Deliberately does not attribute processes to sessions, which #67 established is unreliable. Keeps slots when ps is unreadable; 25s grace covers acquire-before-spawn; TTL remains the backstop.",
+        "#89 CLOSED (PR #99, #100) — the #69 guard stripped template literals with a regex and discarded 60% of ship.js, including buildSafeGitAdd and validateFilePaths, the two helpers #69 is about. Replaced with a tokenizer (37% discarded, all visible). Hardened twice under review: regex literals now collapse to a valid placeholder so the output stays parseable, and the parse check is the independent witness that nothing was eaten.",
+        "#66 CLOSED — already implemented and tested (test/decomposed-ship-dispatch.test.ts, 7 pass). Closes as DONE, not stale.",
+        "#69 IS NOT STALE — the tokenizer immediately exposed nine live top-level require() calls at ship.js:1784-1869. Unlike the original at module scope which killed the run, all nine sit inside try/catch, so require-is-not-defined is swallowed as a WARN and the run reports success. Compliance persistence, compliance history, hill-climb brief patching and transcript re-grading have therefore never run.",
+        "Had #66 and #69 on one list to close as stale. #66 was closeable (done, not stale); #69 is a live defect. Checking before closing was the difference."
       ]
     }
   ],
