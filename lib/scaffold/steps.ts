@@ -14,6 +14,8 @@ import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from ".
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
+import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
+import { tryLoadRungateConfig } from "../config-loader";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -843,8 +845,16 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
       },
     };
 
-    writeDirectoryStructure(root, config, {}, [], undefined, actions);
-    actions.push(`CREATED: .claude/rungate/ (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers)`);
+    // Greenfield gets the DEFAULT roles and hooks, not `{}` and `[]`. An empty
+    // roles.json reads as a configured project with nothing to dispatch (#70).
+    // The split path below is deliberately NOT routed through these defaults.
+    const roles = buildDefaultRoles();
+    const hooks = buildDefaultHooks();
+    writeDirectoryStructure(root, config, roles, hooks, undefined, actions);
+    actions.push(
+      `CREATED: .claude/rungate/ (${Object.keys(scannedPages).length} pages, ${scannedConsumers.length} consumers, ` +
+      `${Object.keys(roles).length} roles, ${hooks.length} hooks)`
+    );
   }
 }
 
@@ -1394,16 +1404,28 @@ jobs:
 // ── Consumer hook deployment ─────────────────────────────────
 
 /**
- * Deploy hooks marked deployToConsumers:true from rungate.json to consumer
- * projects' .claude/settings.local.json with correct hookFor and command paths.
+ * Deploy hooks marked deployToConsumers:true to consumer projects'
+ * .claude/settings.local.json with correct hookFor and command paths.
  * SC-472: scaffold deploys consumer-facing hooks
+ *
+ * Reads through the config loader, so the hooks come from
+ * `.claude/rungate/hooks.json` under the directory layout and from
+ * `.claude/rungate.json` under the monolith. Reading the monolith path
+ * directly — as this did — meant a project on the directory layout deployed
+ * nothing and said nothing, because the early return is indistinguishable
+ * from "this project has no hooks" (#70).
  */
 export function deployHooksToConsumers(root: string, actions: string[]): void {
-  const harnessPath = join(root, ".claude", "rungate.json");
-  if (!existsSync(harnessPath)) return;
-
   let harness: any;
-  try { harness = JSON.parse(readFileSync(harnessPath, "utf-8")); } catch { return; }
+  try {
+    harness = tryLoadRungateConfig(root);
+  } catch (err) {
+    // A config that exists but cannot be read is not a config that is absent
+    // (ADR-001 D2). Say so rather than returning as if there were no hooks.
+    actions.push(`SKIP: hook deployment — unreadable rungate config: ${(err as Error).message}`);
+    return;
+  }
+  if (!harness) return;
 
   if (!harness?.hooks || !Array.isArray(harness.hooks)) return;
   if (!harness?.consumers || !Array.isArray(harness.consumers) || harness.consumers.length === 0) return;
