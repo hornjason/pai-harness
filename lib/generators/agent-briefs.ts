@@ -95,8 +95,8 @@ export function generateAgentBriefs(scan: ProjectScan): Record<string, string> {
     content = content.replace(/\$\{SOURCE_DIRS\}/g, dirList);
     content = content.replace(/\$\{CONSUMERS\}/g, consumerNote);
     content = content.replace(/\$\{PROMPT_PREFIX\}/g, scan.promptPrefix);
-    content = content.replace(/\$\{DEV_UI_LINE\}/g, devUi ? `- **Dev UI:** ${devUi}` : "- **Dev UI:** not configured — check .claude/rungate.json");
-    content = content.replace(/\$\{DEV_API_LINE\}/g, devApi ? `- **Dev API:** ${devApi}` : "- **Dev API:** not configured — check .claude/rungate.json");
+    content = content.replace(/\$\{DEV_UI_LINE\}/g, devUi ? `- **Dev UI:** ${devUi}` : "- **Dev UI:** not configured — check .claude/rungate/config.json");
+    content = content.replace(/\$\{DEV_API_LINE\}/g, devApi ? `- **Dev API:** ${devApi}` : "- **Dev API:** not configured — check .claude/rungate/config.json");
     content = content.replace(/\$\{PAGES_TABLE\}/g, pagesTable);
     content = content.replace(/\$\{TEST_CMD\}/g, testCmd);
     content = content.replace(/\$\{TYPE_CHECK\}/g, typeCheck);

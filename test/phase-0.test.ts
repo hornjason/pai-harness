@@ -1,43 +1,19 @@
 import { test, expect, describe, beforeAll } from "bun:test";
-import { existsSync, readFileSync, mkdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
-import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
+import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift } from "./helpers/scaffold-fixture";
 
-// bootstrap re-hashed 2026-10-05 (#80): redirect-stub `governs` was "TODO".
-const SPEC_HASHES: Record<string, string> = { bootstrap: "05f388d8b3a2e036", testPlan: "352ebe436fbd3330" };
-
-function checkSpecDrift() {
-  const specs = [
-    { name: "bootstrap", path: join(import.meta.dir, "..", "specs", "BOOTSTRAP-DATA-FLOW-SPEC.md") },
-    { name: "testPlan", path: join(import.meta.dir, "..", "specs", "BOOTSTRAP-TEST-PLAN.md") },
-  ];
-  for (const { name, path } of specs) {
-    if (!existsSync(path)) continue;
-    const hash = execSync(`shasum -a 256 "${path}" | cut -c1-16`, { encoding: "utf-8" }).trim();
-    const expected = SPEC_HASHES[name];
-    if (expected !== "UPDATE_AFTER_SPEC_CHANGE" && hash !== expected)
-      throw new Error(`SPEC DRIFT: ${name} changed (${hash} != ${expected}). Update SPEC_HASHES.${name} to "${hash}".`);
-  }
-}
-
-const FIXTURE = join(import.meta.dir, "fixtures/golden-project");
 const OUTPUT = "/tmp/rungate-phase0-test";
-const SCAFFOLD = join(import.meta.dir, "..", "scripts", "scaffold-project.ts");
+const ROLES_OUTPUT = "/tmp/rungate-phase0-roles-test";
 
 beforeAll(() => {
-  try { execSync(`rm -rf ${OUTPUT}`, { stdio: "pipe" }); } catch {}
-  mkdirSync(OUTPUT, { recursive: true });
-  execSync(`cp -r ${FIXTURE}/. ${OUTPUT}/`);
-  initFixtureRepo(OUTPUT);
-  commitFixture(OUTPUT, "init fixture");
-  try {
-    execSync(`bun run ${SCAFFOLD} ${OUTPUT} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
-  } catch {
-    // Scaffold may not exist yet or may fail — tests should still run and FAIL
-  }
-}, 60_000); // 6.2s measured (copy+init+scaffold); 5s default only passed because the commit died first (#71)
+  scaffoldFixture(OUTPUT);
+  scaffoldFixture(ROLES_OUTPUT, seedRolesConfig(ROLES_OUTPUT));
+  // 60s: two scaffolds, ~6.2s each. The 5s default only passed before because
+  // the fixture commit died first (#71).
+}, 60_000);
 
 describe("Phase 0: Pre-flight + static files", () => {
   test("spec-drift: governing specs haven't changed", () => { checkSpecDrift(); });
@@ -189,6 +165,15 @@ describe("Phase 0: Pre-flight + static files", () => {
       const nameIdx = content.indexOf("name: marcus");
       const workflowIdx = content.indexOf("## Workflow");
       expect(nameIdx).toBeLessThan(workflowIdx);
+    });
+
+    test("AC-4: roles.json model reaches the generated marcus brief", () => {
+      const rolesPath = join(ROLES_OUTPUT, ".claude/rungate/roles.json");
+      expect(existsSync(rolesPath)).toBe(true);
+      expect(readFileSync(rolesPath, "utf-8")).toContain(ROLES_CANARY_MODEL);
+
+      const brief = readFileSync(join(ROLES_OUTPUT, ".claude/agents/marcus.md"), "utf-8");
+      expect(brief).toContain(`model: ${ROLES_CANARY_MODEL}`);
     });
 
     test("SC-74: tsconfig.json strict mode", () => {

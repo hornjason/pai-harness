@@ -4,11 +4,13 @@
  * Scans a project root and returns a typed ProjectScan object containing
  * tech stack, specs, consumers, source directories, and other project metadata.
  *
- * This module imports ONLY from fs, path, and generators/types — no generation
- * logic (agents-md, agent-briefs, code-map) is imported here (SC-365, AC-3).
+ * This module imports ONLY from fs, path, generators/types, and config-loader —
+ * no generation logic (agents-md, agent-briefs, code-map) is imported here
+ * (SC-365, AC-3).
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
+import { loadRungateConfig } from "./config-loader";
 import type {
   ProjectScan,
   ProjectType,
@@ -155,15 +157,11 @@ function scanSpecs(root: string): SpecEntry[] {
 // ── Consumer detection ─────────────────────────────────────────
 
 function detectConsumers(root: string): string[] {
-  // First check rungate.json
-  const harnessPath = join(root, ".claude", "rungate.json");
-  if (existsSync(harnessPath)) {
-    try {
-      const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-      if (harness.consumers && Array.isArray(harness.consumers) && harness.consumers.length > 0) {
-        return harness.consumers;
-      }
-    } catch {}
+  // First check the harness config (.claude/rungate/ directory, or the
+  // .claude/rungate.json monolith as fallback) — #70
+  const harness = loadHarnessConfig(root);
+  if (harness?.consumers && Array.isArray(harness.consumers) && harness.consumers.length > 0) {
+    return harness.consumers;
   }
 
   // Scan src/ for consumer modules
@@ -214,8 +212,9 @@ function scanKeyFiles(root: string): KeyFile[] {
     { pattern: "Dockerfile", what: "Container build definition", when: "Modifying container" },
   ];
 
-  // Always include .claude/rungate.json for idempotency (scaffold generates it)
-  keyFiles.push({ file: ".claude/rungate.json", what: "Harness project config", when: "Shipping through harness" });
+  // Always include the .claude/rungate/ directory for idempotency — scaffold
+  // generates the directory form, not the legacy monolith (#70)
+  keyFiles.push({ file: ".claude/rungate/", what: "Harness project config (directory)", when: "Shipping through harness" });
 
   for (const kf of conditionalPatterns) {
     if (existsSync(join(root, kf.pattern))) {
@@ -419,10 +418,17 @@ function scanMakeTargets(root: string): string {
 
 // ── Harness config loading ─────────────────────────────────────
 
+/**
+ * Resolves the harness config via lib/config-loader — `.claude/rungate/`
+ * directory form first, `.claude/rungate.json` monolith as fallback (#70).
+ * Returns null when neither exists or the config is unreadable.
+ */
 function loadHarnessConfig(root: string): Record<string, any> | null {
-  const p = join(root, ".claude", "rungate.json");
-  if (!existsSync(p)) return null;
-  try { return JSON.parse(readFileSync(p, "utf-8")); } catch { return null; }
+  try {
+    return loadRungateConfig(root) as unknown as Record<string, any>;
+  } catch {
+    return null;
+  }
 }
 
 // ── Code structure scanning (dirs, modules, routes) ────────────
