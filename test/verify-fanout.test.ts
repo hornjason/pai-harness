@@ -286,30 +286,86 @@ describe("#127: the security review is not a function of having a UI", () => {
     expect(byLabel(calls, "container-rebuild")).toBeUndefined();
   });
 
-  test("Rook is skipped when the change touched no files", async () => {
-    // The new trigger is "there is something to review", so the empty case has
-    // to be the one that skips — otherwise the gate can never fail closed and
-    // we have swapped one unconditional for another.
+  /** Run the fan-out block with an arbitrary discovery object. */
+  function runWithDiscovery(discovery: Record<string, unknown>, rookResult: unknown = { result: "PASS" }) {
     const start = shipSource.indexOf(BLOCK_START);
     const end = shipSource.indexOf(BLOCK_END);
     const block = shipSource.slice(start + BLOCK_START.length, end);
     const labels: string[] = [];
+    const logs: string[] = [];
 
     const factory = new Function(
       "log", "agent", "briefedAgent", "parallel", "discovery",
       "projectConfig", "PROJECT_ROOT", "WORK_DIR", "ISSUE", "GATE_RESULT_SCHEMA",
       `return (async () => {${block}})()`,
     );
-    await factory(
-      () => {},
+    const done = factory(
+      (m: string) => logs.push(String(m)),
       async (_p: string, o: { label: string }) => { labels.push(o.label); return {}; },
-      async (_p: string, o: { label: string }) => { labels.push(o.label); return { result: "PASS" }; },
+      async (_p: string, o: { label: string }) => {
+        labels.push(o.label);
+        return o.label === "rook" ? rookResult : { result: "PASS" };
+      },
       (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
-      { ceremonyTier: "LIGHT", acs: [], filesToModify: [] },
+      discovery,
       { container: null },
       REPO_ROOT, "/tmp/work", 66, {},
-    );
+    ) as Promise<void>;
 
+    return { done, labels, logs };
+  }
+
+  test("Rook is skipped only when discovery POSITIVELY reports no files", async () => {
+    const { done, labels } = runWithDiscovery({ ceremonyTier: "LIGHT", acs: [], filesToModify: [] });
+    await done;
     expect(labels).not.toContain("rook");
+  });
+
+  test("skipping Rook is logged, never silent", async () => {
+    // The old gate was at least readable in the state: you could see THOROUGH
+    // was absent. A condition that drops the security review with no log line
+    // is strictly harder to notice than the bug being fixed.
+    const { done, logs } = runWithDiscovery({ ceremonyTier: "LIGHT", acs: [], filesToModify: [] });
+    await done;
+    expect(logs.some(l => /rook/i.test(l) && /skip/i.test(l)), "rook vanished without a log line").toBe(true);
+  });
+
+  for (const [label, discovery] of [
+    ["filesToModify missing entirely", { ceremonyTier: "LIGHT", acs: [] }],
+    ["filesToModify undefined", { ceremonyTier: "LIGHT", acs: [], filesToModify: undefined }],
+    ["filesToModify null", { ceremonyTier: "LIGHT", acs: [], filesToModify: null }],
+    ["filesToModify not an array", { ceremonyTier: "LIGHT", acs: [], filesToModify: "lib/a.ts" }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    test(`fails CLOSED: runs Rook when ${label}`, async () => {
+      // Flagged by security review on the first version of this fix.
+      // `if (discovery.filesToModify?.length)` skips silently on a missing or
+      // malformed field — importing the #115 defect (trusting an LLM's file
+      // list) straight into the security gate. Absence of evidence that there
+      // is nothing to review is not evidence that there is nothing to review.
+      const { done, labels } = runWithDiscovery(discovery);
+      await done;
+      expect(labels, "a malformed discovery output disabled the security review").toContain("rook");
+    });
+  }
+
+  test("a Rook FAIL is surfaced, not swallowed", async () => {
+    // Second security-review finding. `await briefedAgent(...)` discarded the
+    // result: rook could return FAIL with a list of vulnerabilities and nothing
+    // read it, because the merge decision at ship.js:1715 consults only
+    // `verifyResult` from the verify gate. A security review whose verdict goes
+    // nowhere is worse than none — it manufactures the appearance of coverage.
+    //
+    // Making it BLOCK the merge is a consequential behaviour change and is
+    // filed separately rather than made unilaterally; this asserts the verdict
+    // at least reaches the log and the transcript.
+    const { done, logs } = runWithDiscovery(
+      { ceremonyTier: "LIGHT", acs: [], filesToModify: ["lib/a.ts"] },
+      { result: "FAIL", failures: ["command injection in lib/a.ts"] },
+    );
+    await done;
+    expect(
+      logs.some(l => /command injection in lib\/a\.ts/.test(l)),
+      "rook reported FAIL and the finding never appeared anywhere",
+    ).toBe(true);
   });
 });

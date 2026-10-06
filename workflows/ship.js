@@ -1697,12 +1697,35 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 // The tier still governs Quinn and the container above. Those genuinely need a
 // UI; this does not.
 async function runRookReview() {
-if (discovery.filesToModify?.length) {
-  log('Spawning Rook')
-  await briefedAgent(`
-Security review for issue #${ISSUE}. Changed: ${discovery.filesToModify.join(', ')}
+// Fail CLOSED. The first version of this fix read
+// `if (discovery.filesToModify?.length)`, which silently skips when the field
+// is missing, null, or not an array — importing the #115 defect (treating an
+// LLM's file list as authoritative) directly into the security gate, and doing
+// it without a log line. Absence of evidence that there is nothing to review
+// is not evidence that there is nothing to review. Caught by security review.
+//
+// Only an explicit, well-formed empty array skips, and the skip is logged.
+const reported = discovery.filesToModify
+if (Array.isArray(reported) && reported.length === 0) {
+  log('Rook: SKIPPED — discovery positively reported zero changed files')
+  return
+}
+const scope = Array.isArray(reported) && reported.length
+  ? reported.join(', ')
+  : '(file list unavailable — review the full diff against origin/main)'
+log('Spawning Rook')
+const rookResult = await briefedAgent(`
+Security review for issue #${ISSUE}. Changed: ${scope}
 Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
   `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
+// The verdict used to be discarded entirely: rook could return FAIL with a
+// list of vulnerabilities and nothing read it, because the merge decision at
+// the bottom of this file consults only `verifyResult` from the verify gate.
+// A security review whose verdict goes nowhere is worse than no review — it
+// manufactures the appearance of coverage. Making it BLOCK the merge is a
+// consequential change and is filed separately; surfacing it is not.
+if (rookResult?.result === 'FAIL') {
+  log(`SECURITY: Rook FAILED — ${(rookResult.failures || ['no detail returned']).join('; ')}`)
 }
 }
 
