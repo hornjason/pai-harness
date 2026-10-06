@@ -64,15 +64,34 @@ describe("#118: the executing command is the corrected one", () => {
     expect(ac.evidenceMethod.command).not.toMatch(/--exit-code main\b/);
   });
 
-  test("and that command now reports the file as unchanged", () => {
+  test("and that command no longer produces a false FAIL", () => {
     // The payoff, asserted against the real repository rather than a fixture.
     // `hooks/TestSuiteGuard.hook.ts` is identical to origin/main; against the
     // local `main` ref it may not be. This is the AC that produced a confident,
     // detailed, wrong FAIL and spawned a second Marcus to "fix" a correct file.
+    //
+    // PASS where origin/main is present. SKIP where it is not — CI checks out
+    // the PR merge ref and has no refs/remotes/origin/main, and the first
+    // version of this test asserted a bare PASS and went red there. The point
+    // of #118 is that the gate must not FAIL on something it did not measure;
+    // asserting "PASS or SKIP, never FAIL" states that directly, where
+    // asserting PASS stated an accident of the local clone.
     const ac = run(stateWith(
       "git diff --exit-code main -- hooks/TestSuiteGuard.hook.ts >/dev/null 2>&1; echo $?",
     ));
-    expect(ac.verdict, `evidence ran: ${ac.evidenceMethod.command}`).toBe("PASS");
+    expect(["PASS", "SKIP"], `evidence ran: ${ac.evidenceMethod.command}`).toContain(ac.verdict);
+  });
+
+  test("an unresolvable ref is UNMEASURED, never FAIL", () => {
+    // The environment-fault path, forced deterministically. A ref that cannot
+    // be fetched must not be scored as a code failure — that is the same false
+    // FAIL as #103, one layer down, and it is what CI hit.
+    const ac = run(stateWith(
+      "git diff --exit-code origin/branch-that-does-not-exist-9f3a -- README.md; echo $?",
+    ));
+    expect(ac.verdict, "a missing remote ref was scored as a code failure").toBe("SKIP");
+    expect(ac.evidence.type).toBe("unmeasured");
+    expect(ac.evidence.content).toContain("environment fault");
   });
 
   test("a command with no bare ref is left byte-identical", () => {

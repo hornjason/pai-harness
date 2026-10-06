@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execSync, execFileSync } from "child_process";
 import { readFileSync, writeFileSync, existsSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
 import {
@@ -147,6 +147,59 @@ function loadAndValidateHarness(projectRoot: string): ProjectHarness | null {
 }
 
 /**
+ * Make a `<remote>/<branch>` ref resolvable, fetching it if it is not (#118).
+ *
+ * Qualifying evidence commands to `origin/main` only helps if that ref exists.
+ * It frequently does not: a CI checkout fetches the PR merge ref and nothing
+ * else, and a fresh agent worktree inherits whatever the shared clone last
+ * fetched. `git diff origin/main` against a missing ref exits non-zero with a
+ * message on stderr, which the verdict logic below reads as a code failure —
+ * reproducing the exact false FAIL this issue is about, one layer down.
+ *
+ * Returns false when the ref still cannot be resolved, so the caller can say
+ * "could not measure" instead of "failed".
+ */
+function ensureRemoteRef(ref: string, cwd: string): boolean {
+  // execFileSync with an argv array throughout: no shell, so a ref name can
+  // never be interpreted as a command. The shape checks below stay as a
+  // second line, but they are no longer what makes this safe.
+  const resolves = () => {
+    try {
+      execFileSync("git", ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+        cwd, stdio: "pipe", timeout: 10000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (resolves()) return true;
+  const slash = ref.indexOf("/");
+  if (slash <= 0) return false;
+  const remote = ref.slice(0, slash);
+  const branch = ref.slice(slash + 1);
+  if (!/^[A-Za-z0-9._-]+$/.test(remote) || !/^[A-Za-z0-9._/-]+$/.test(branch)) return false;
+  try {
+    // Explicit refspec: `git fetch origin main` alone writes FETCH_HEAD and
+    // does not necessarily create refs/remotes/origin/main, which is the name
+    // the evidence command uses.
+    execFileSync("git", ["fetch", "--quiet", remote, `${branch}:refs/remotes/${remote}/${branch}`], {
+      cwd, stdio: "pipe", timeout: 60000,
+    });
+  } catch {
+    // Offline, no remote, or no permission. Not fatal here — the caller
+    // reports it as unmeasurable rather than guessing a verdict.
+    return false;
+  }
+  return resolves();
+}
+
+/** Remote refs an evidence command depends on, e.g. `origin/main`. */
+function remoteRefsIn(command: string): string[] {
+  return [...command.matchAll(/\b(origin|upstream)\/([A-Za-z0-9._/-]+)/g)].map(m => `${m[1]}/${m[2]}`);
+}
+
+/**
  * Exported for test. This is where evidence commands actually execute, and it
  * is the last place a stale git ref can be caught (#118).
  */
@@ -170,6 +223,26 @@ export function autoPopulateACs(state: Record<string, any>, sf: string): void {
     // that actually ran.
     const cmd = normalizeGitRefs(rawCmd).command;
     if (cmd !== rawCmd) ac.evidenceMethod.command = cmd;
+
+    // A ref the command needs but the clone does not have is an ENVIRONMENT
+    // fault, not a code failure. Letting it fall through produces a non-zero
+    // exit with a message on stderr, which the verdict logic below scores as
+    // FAIL — recreating the false FAIL this whole issue is about, one layer
+    // down. Found by CI: the runner checks out the PR merge ref and has no
+    // refs/remotes/origin/main at all, so the corrected command failed there
+    // while passing on every developer machine.
+    const evidenceCwdForRefs = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
+    const missingRefs = remoteRefsIn(cmd).filter(r => !ensureRemoteRef(r, evidenceCwdForRefs));
+    if (missingRefs.length > 0) {
+      console.warn(`WARN: AC ${ac.id} needs ${missingRefs.join(", ")} which could not be resolved or fetched — reporting UNMEASURED rather than FAIL`);
+      state.acs[i].verdict = "SKIP";
+      state.acs[i].evidence = {
+        type: "unmeasured",
+        content: `Evidence requires ${missingRefs.join(", ")}; the ref is absent and could not be fetched. This is an environment fault — the AC was not evaluated, and is NOT a failure.`,
+      };
+      acUpdated = true;
+      continue;
+    }
     try {
       const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
       const isTestRunner = /bun test\b/.test(cmd);
