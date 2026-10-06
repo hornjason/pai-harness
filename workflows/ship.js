@@ -1697,22 +1697,38 @@ ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
 // The tier still governs Quinn and the container above. Those genuinely need a
 // UI; this does not.
 async function runRookReview() {
-// Fail CLOSED. The first version of this fix read
-// `if (discovery.filesToModify?.length)`, which silently skips when the field
-// is missing, null, or not an array — importing the #115 defect (treating an
-// LLM's file list as authoritative) directly into the security gate, and doing
-// it without a log line. Absence of evidence that there is nothing to review
-// is not evidence that there is nothing to review. Caught by security review.
+// NO SKIP CONDITION, deliberately. Two rounds of security review landed here:
 //
-// Only an explicit, well-formed empty array skips, and the skip is logged.
-const reported = discovery.filesToModify
-if (Array.isArray(reported) && reported.length === 0) {
-  log('Rook: SKIPPED — discovery positively reported zero changed files')
-  return
+//   v1  `ceremonyTier === 'THOROUGH'`  — unreachable for any CLI (#127), so
+//                                        rook had never run, ever.
+//   v2  `discovery.filesToModify?.length` — fail-OPEN: a missing or malformed
+//                                        field silently disabled the review.
+//   v3  skip only on a well-formed []   — still lets an LLM-controlled field
+//                                        decide whether security runs at all.
+//
+// v3 is the #115 defect wearing a different hat. The only ground truth for
+// "what changed" is git, and this block has no access to it. So there is no
+// skip: a wasted cheap agent costs far less than a review an upstream agent
+// can switch off, and rook has run 0 times in the harness's entire history.
+// Running it too often is not the risk worth managing here.
+//
+// The file list is a HINT for focus, never the gate.
+const reported = Array.isArray(discovery.filesToModify) ? discovery.filesToModify : []
+// Prompt-injection guard, also from security review. These strings are
+// LLM-produced and were joined straight into rook's prompt: an entry carrying
+// instructions is an injection channel aimed at the one agent whose job is to
+// say no. Entries are filtered by SHAPE rather than escaped — escaping assumes
+// you can enumerate what is dangerous to a language model, while a path
+// allowlist assumes only that you know what a file path looks like.
+const safePaths = reported
+  .filter(p => typeof p === 'string' && /^[A-Za-z0-9._\-/]{1,200}$/.test(p) && !p.includes('..'))
+  .slice(0, 50)
+const scope = safePaths.length
+  ? safePaths.join(', ')
+  : '(no usable file list — review the full diff against origin/main)'
+if (safePaths.length !== reported.length) {
+  log(`Rook: ${reported.length - safePaths.length} file-list entr(ies) rejected as non-path-shaped`)
 }
-const scope = Array.isArray(reported) && reported.length
-  ? reported.join(', ')
-  : '(file list unavailable — review the full diff against origin/main)'
 log('Spawning Rook')
 const rookResult = await briefedAgent(`
 Security review for issue #${ISSUE}. Changed: ${scope}
