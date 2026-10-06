@@ -1447,7 +1447,7 @@ Run exactly this and report the result:
 cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
-cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT} ${PROJECT_ROOT}/.claude/worktrees
+cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT} ${PROJECT_ROOT}/.claude/worktrees ${HARNESS_ROOT}/.claude/worktrees
 
 Set ok to true ONLY if the command exited zero. Set collected to the number in
 its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
