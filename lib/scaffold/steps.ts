@@ -1528,17 +1528,67 @@ exit 0
     return;
   }
 
+  // Checks the COMMITS BEING PUSHED, not the working tree (#85).
+  //
+  // The old hook ran the conformity suite in the working tree, which is not
+  // what is being pushed. On 2026-10-05 that let a regression reach main:
+  // HYGIENE-3's reference index recursed into .claude/worktrees/, 39 full repo
+  // copies that exist locally and not in a clean checkout, so every file
+  // looked referenced. It passed before push and Gates went red on main. A
+  // gate that inspects something other than what it is gating is not a weaker
+  // gate; it is a different gate wearing the name of the one you wanted.
+  //
+  // On node_modules, which #85 left open: symlinking the working tree's is
+  // fast, and it is honest exactly while the pushed commit's lockfile matches
+  // the one those modules were installed from. Installing unconditionally is
+  // correct and slow enough that people disable the hook, which is worse than
+  // either. So compare the lockfiles and only pay for an install when they
+  // actually differ — the common push changes no dependencies and keeps the
+  // fast path, and the push that does change them cannot quietly test against
+  // the wrong ones.
   writeFileSync(prePush, `#!/bin/sh
 ${MANAGED_MARKER}
-# NOTE: this runs against the WORKING TREE, not the commits being pushed. On
-# 2026-10-05 that let a conformity regression reach main: the check passed
-# locally because the working tree held files a clean checkout does not.
-# Running it against the pushed SHA in a detached worktree is tracked
-# separately — until then, \`bun scripts/test-clean-env.ts\` is the honest check.
-if ! bun test test/scaffold-conformity.test.ts; then
-  echo "ERROR: Conformity tests failed — fix before pushing" >&2
+ZERO=0000000000000000000000000000000000000000
+TOPLEVEL=$(git rev-parse --show-toplevel) || exit 1
+status=0
+
+while read -r _lref lsha _rref _rsha; do
+  # Branch deletion: there is no commit to check out.
+  [ "$lsha" = "$ZERO" ] && continue
+
+  tmp=$(mktemp -d) || exit 1
+  if ! git worktree add --detach --quiet "$tmp" "$lsha"; then
+    echo "ERROR: could not check out $lsha to verify the push" >&2
+    rm -rf "$tmp"
+    exit 1
+  fi
+
+  # Reuse the installed modules only when the pushed commit expects the same
+  # ones; otherwise install from the pushed lockfile.
+  if [ -f "$TOPLEVEL/bun.lock" ] && [ -f "$tmp/bun.lock" ] && cmp -s "$TOPLEVEL/bun.lock" "$tmp/bun.lock"; then
+    ln -s "$TOPLEVEL/node_modules" "$tmp/node_modules" 2>/dev/null
+  else
+    echo "pre-push: dependencies differ from the working tree — installing from the pushed lockfile" >&2
+    ( cd "$tmp" && bun install --frozen-lockfile ) >&2 || status=1
+  fi
+
+  if [ "$status" -eq 0 ]; then
+    ( cd "$tmp" && bun test test/scaffold-conformity.test.ts ) || status=1
+  fi
+
+  # Always clean up. An early exit here would leak a worktree on every failed
+  # push, which is how #68 reached 39 stale worktrees and 243 MB.
+  git worktree remove --force "$tmp" 2>/dev/null
+  rm -rf "$tmp"
+
+  [ "$status" -ne 0 ] && break
+done
+
+if [ "$status" -ne 0 ]; then
+  echo "ERROR: Conformity tests failed against the commits being pushed — fix before pushing" >&2
   exit 1
 fi
+exit 0
 `);
   chmodSync(prePush, 0o755);
   actions.push(existing === null
