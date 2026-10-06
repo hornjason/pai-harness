@@ -27,6 +27,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -37,6 +38,18 @@ import { join } from "path";
 
 const DEFAULT_CAPACITY = 2;
 const DEFAULT_TTL_SECONDS = 420;
+
+/**
+ * How far back the DIR-L29 budget looks. Issue #73: this used to be "forever",
+ * which turned a rate limit into a one-way lockout — and because subagents
+ * carry the parent session's id, the whole pipeline shared one lifetime budget
+ * and ran out partway through.
+ *
+ * 30 minutes is a little longer than two full suites back to back (~190s each
+ * plus the agent work between them), so it still stops thrashing while letting
+ * a long session come back for a legitimate later run.
+ */
+const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 
 export interface SlotHolder {
   sessionId: string;
@@ -416,12 +429,58 @@ function counterPath(lockDir: string, sessionId: string): string {
   return join(lockDir, `rungate-test-suite-count-${sessionId}`);
 }
 
-function readCount(path: string): number {
+/**
+ * Timestamps of the runs this session has spent, newest last.
+ *
+ * Three file shapes have to be read, and the difference between them matters:
+ *
+ *   missing          -> no runs. Genuinely nothing spent.
+ *   `{"runs":[...]}` -> the current format.
+ *   `2`              -> written before #73. Dated from the file's mtime, which
+ *                       is when that run actually happened, so an existing
+ *                       lockout ages out instead of being reset to a free
+ *                       budget the moment this ships.
+ *
+ * Anything else is corrupt, and corrupt returns a FULL budget rather than an
+ * empty one. An unreadable counter that parses as "zero runs spent" is the
+ * check-that-reports-success-without-checking shape (#65, #71): a one-character
+ * edit would silently disable the cap while every message still looked normal.
+ */
+function readRuns(path: string, maxRuns: number): number[] {
+  let raw: string;
+  let mtimeMs: number;
   try {
-    return parseInt(readFileSync(path, "utf-8").trim()) || 0;
+    raw = readFileSync(path, "utf-8").trim();
+    mtimeMs = statSync(path).mtimeMs;
   } catch {
-    return 0;
+    return [];
   }
+  if (!raw) return [];
+
+  // Legacy: a bare integer, with no record of when those runs happened.
+  if (/^\d+$/.test(raw)) {
+    return Array.from({ length: parseInt(raw, 10) }, () => mtimeMs);
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { runs?: unknown };
+    const runs = parsed?.runs;
+    if (Array.isArray(runs) && runs.every((t) => typeof t === "number" && Number.isFinite(t))) {
+      return runs as number[];
+    }
+  } catch {
+    // fall through to the fail-closed path
+  }
+
+  // Fail closed: spend the whole budget so a corrupt file blocks rather than
+  // waves everything through. Dated now, so it clears after one window.
+  return Array.from({ length: maxRuns }, () => mtimeMs);
+}
+
+/** Plain-English wait, for a refusal that would otherwise offer no way out. */
+function describeWait(ms: number): string {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
 /**
@@ -434,21 +493,34 @@ function readCount(path: string): number {
 export function evaluateFullSuiteRequest(
   sessionId: string,
   command: string,
-  options: LockOptions & { maxRunsPerSession?: number } = {},
+  options: LockOptions & {
+    maxRunsPerSession?: number;
+    /** Rolling window the budget is measured over (#73). */
+    budgetWindowMs?: number;
+    /** Injected clock, so the window is testable without sleeping. */
+    now?: number;
+  } = {},
 ): GateDecision {
   if (!isFullSuiteCommand(command)) return { allow: true };
 
   const lockDir = options.lockDir ?? defaultLockDir();
   const maxRuns = options.maxRunsPerSession ?? 2;
+  const windowMs = options.budgetWindowMs ?? DEFAULT_BUDGET_WINDOW_MS;
+  const now = options.now ?? Date.now();
 
   const path = counterPath(lockDir, sessionId);
-  const used = readCount(path);
-  if (used >= maxRuns) {
+  // Runs older than the window are forgotten, which is the whole of #73: the
+  // budget is a rate limit again rather than a lifetime total.
+  const recent = readRuns(path, maxRuns).filter((t) => t > now - windowMs);
+  if (recent.length >= maxRuns) {
+    const oldest = Math.min(...recent);
+    const freesUpIn = oldest + windowMs - now;
     return {
       allow: false,
       reason:
-        `DIR-L29: Full test suite limit reached (${used}/${maxRuns}) for this session. ` +
-        `Use targeted tests instead:\n  bun test test/specific-file.test.ts\n` +
+        `DIR-L29: Full test suite limit reached (${recent.length}/${maxRuns}) in the last ` +
+        `${describeWait(windowMs)}. One run frees up in ${describeWait(freesUpIn)}.\n` +
+        `Use targeted tests until then:\n  bun test test/specific-file.test.ts\n` +
         `Full suite runs cost ~190s and ~5.4 GB each.`,
     };
   }
@@ -482,7 +554,9 @@ export function evaluateFullSuiteRequest(
   }
 
   try {
-    writeFileSync(path, String(used + 1));
+    // Only the in-window runs are carried forward, so the file cannot grow
+    // without bound over a long session.
+    writeFileSync(path, JSON.stringify({ runs: [...recent, now] }));
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }
