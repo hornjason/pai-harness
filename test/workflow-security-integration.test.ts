@@ -3,7 +3,7 @@ import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { stripStringsAndComments } from "../lib/js-top-level-code";
+import { stripStringsAndComments, strippingPreservesSyntax } from "../lib/js-top-level-code";
 import {
   buildSafeGitAdd,
   buildSafeSSHCommand,
@@ -100,13 +100,37 @@ describe("AC-5 (#69): ship.js loads no modules at runtime", () => {
   // reports success with compliance persistence, hill-climb and transcript
   // re-grading silently switched off.
   const KNOWN_TOP_LEVEL_REQUIRES = 9;
+  // All nine sit in one phase region. Pinning the region as well as the count
+  // closes the obvious hole in a bare count: remove one of the nine, add a new
+  // one somewhere else, and the total is still nine. Counting phase markers
+  // rather than line numbers keeps this stable as the file moves around.
+  const KNOWN_REQUIRE_PHASE_INDEX = 7;
 
   test("no NEW top-level require()", () => {
-    const hits = topLevelCode(shipSource).match(/(?<![.\w$])require\s*\(/g) || [];
+    const stripped = topLevelCode(shipSource);
+    const hits = stripped.match(/(?<![.\w$])require\s*\(/g) || [];
     expect(
       hits.length,
       `top-level require() count changed. The sandbox has none (#69), so a new one fails silently inside try/catch and quietly disables whatever it guards. If you REMOVED one, lower KNOWN_TOP_LEVEL_REQUIRES to bank it.`,
     ).toBe(KNOWN_TOP_LEVEL_REQUIRES);
+
+    const phaseStarts = [...stripped.matchAll(/(?<![.\w$])phase\s*\(/g)].map(m => m.index!);
+    const regions = [...stripped.matchAll(/(?<![.\w$])require\s*\(/g)].map(
+      m => phaseStarts.filter(p => p < m.index!).length,
+    );
+    expect(
+      [...new Set(regions)],
+      "a top-level require() appeared outside the known region — see #69 before banking it",
+    ).toEqual([KNOWN_REQUIRE_PHASE_INDEX]);
+  });
+
+  test("the stripper has not silently mangled ship.js", () => {
+    // The guard is only as good as its view of the file, and the previous
+    // version of that view discarded 60% of it. Removing string and comment
+    // content cannot change whether the source parses, so a real parser is an
+    // independent witness that nothing was eaten (#89 review).
+    const result = strippingPreservesSyntax(shipSource);
+    expect(result.ok, `stripped ship.js no longer parses: ${result.detail}`).toBe(true);
   });
 
   test("no dynamic import()", () => {

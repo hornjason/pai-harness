@@ -139,7 +139,14 @@ export function stripStringsAndComments(src: string): string {
       }
       if (closed) {
         while (j + 1 < src.length && /[a-z]/.test(src[j + 1])) j++; // flags
-        out += " ".repeat(j - i + 1);
+        // Emit a valid placeholder, not spaces. Blanking the literal leaves
+        // `const SHELL_METACHARACTERS = ` with no right-hand side, which makes
+        // the output unparseable — and the output has to stay parseable,
+        // because "does a real parser still accept this?" is the only
+        // independent check that the tokenizer did not mangle the file.
+        // The shortest possible regex literal is 3 characters, so this always
+        // fits.
+        out += "/x/" + " ".repeat(Math.max(0, j - i + 1 - 3));
         i = j + 1;
         lastSignificant = ")"; // a regex is a value
         continue;
@@ -176,5 +183,53 @@ export function stripStringsAndComments(src: string): string {
     i++;
   }
 
+  // Unbalanced state at EOF is the signature of a mis-parse: a template that
+  // was opened by something that was not a template delimiter, and therefore a
+  // run of real code consumed as template text. That is precisely the failure
+  // this module exists to end, so refuse rather than hand back a plausible
+  // looking fragment.
+  if (templates.length > 0) {
+    throw new Error(
+      `stripStringsAndComments: ${templates.length} template literal(s) still open at end of input — ` +
+        `the tokenizer mis-parsed and the result cannot be trusted`,
+    );
+  }
+
   return out;
+}
+
+/**
+ * Check the stripper against a real parser.
+ *
+ * Removing string and comment CONTENT must not change whether the source is
+ * syntactically valid. If the stripped output stops parsing, the tokenizer ate
+ * something it should not have — which is the whole defect being fixed here,
+ * and exactly the parser-differential risk of hand-rolling a lexer.
+ *
+ * `new Function` here is a PARSER, not an evaluator. Construction compiles the
+ * body and stops; the resulting function is discarded without ever being
+ * called, so nothing in the input runs. That distinction is the only reason
+ * this is acceptable at all — if the result were invoked, feeding it a repo
+ * file would be arbitrary code execution. It must stay uninvoked.
+ *
+ * The wrapping neutralises `export` and makes ship.js's top-level `return`
+ * legal; both sides get identical treatment, so only a DIFFERENCE is reported.
+ */
+export function strippingPreservesSyntax(src: string): { ok: boolean; detail?: string } {
+  const prep = (c: string) => "(async function(){" + c.replace(/^export\s+/gm, "") + "\n})";
+  const parses = (c: string): string | null => {
+    try {
+      new Function(prep(c));
+      return null;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+
+  // If the input does not parse to begin with, there is no differential to
+  // draw and this check has nothing to say.
+  if (parses(src) !== null) return { ok: true };
+
+  const after = parses(stripStringsAndComments(src));
+  return after === null ? { ok: true } : { ok: false, detail: after };
 }

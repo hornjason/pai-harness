@@ -24,7 +24,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { stripStringsAndComments } from "../../lib/js-top-level-code";
+import { stripStringsAndComments, strippingPreservesSyntax } from "../../lib/js-top-level-code";
 
 describe("#89: stripStringsAndComments keeps code a regex would eat", () => {
   test("a backtick inside a single-quoted string does not open a template", () => {
@@ -136,5 +136,54 @@ describe("#89: the guard can see all of ship.js", () => {
     // few percent of drift.
     const kept = stripStringsAndComments(shipSource).length / shipSource.length;
     expect(kept).toBeGreaterThan(0.2);
+  });
+});
+
+describe("#89 review: the tokenizer is checked against a real parser", () => {
+  // Hand-rolling a lexer invites parser differentials — a construct the real
+  // engine reads one way and this reads another, letting a require() hide from
+  // the guard. Removing string and comment CONTENT cannot change whether the
+  // source is syntactically valid, so a real parser is an independent witness
+  // that nothing was eaten.
+  test("stripping ship.js preserves its syntactic validity", () => {
+    const { readFileSync } = require("fs") as typeof import("fs");
+    const { join } = require("path") as typeof import("path");
+    const src = readFileSync(join(import.meta.dir, "..", "..", "workflows", "ship.js"), "utf-8");
+    const result = strippingPreservesSyntax(src);
+    expect(result.ok, `stripped ship.js no longer parses — the tokenizer ate something: ${result.detail}`).toBe(true);
+  });
+
+  test("a regex literal is replaced by a valid placeholder, not blanked", () => {
+    // Blanking left `const X = ` with no right-hand side, which is how the
+    // parser check caught the first version of this module.
+    const src = "const X = /[;&|]/g;\nconst Y = 1;";
+    expect(strippingPreservesSyntax(src).ok).toBe(true);
+  });
+
+  test("an unbalanced template is refused rather than returned", () => {
+    // If a backtick that was not a delimiter opened a template, a run of real
+    // code was consumed as template text. Returning a plausible fragment is
+    // the exact failure this module exists to end.
+    expect(() => stripStringsAndComments("const a = `never closed;\n")).toThrow(/mis-parsed|still open/i);
+  });
+
+  test("every construct the unit tests cover also survives the parser check", () => {
+    const cases = [
+      "const tick = '`'; function keepMe() {}",
+      "// a stray ` in prose\nfunction keepMe() {}",
+      "/* ` */ function keepMe() {}",
+      "const a = `one`; function keepMe() {} const b = `two`;",
+      "const a = `x ${ 1 + 2 } y`;",
+      "const a = `outer ${ `inner ${ 1 }` } tail`;",
+      "const a = `before \\` still inside`;",
+      "const r = total / count;",
+      "const re = /['\"`]/g;",
+      "// don't do this\nfunction keepMe() {}",
+      "const u = 'https://example.com/x';",
+    ];
+    for (const c of cases) {
+      const r = strippingPreservesSyntax(c);
+      expect(r.ok, `${JSON.stringify(c)} -> ${r.detail}`).toBe(true);
+    }
   });
 });
