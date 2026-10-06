@@ -15,6 +15,7 @@ import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/ag
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
+import { tier1Ere } from "../secret-patterns";
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -1352,9 +1353,12 @@ jobs:
           # and surfaces real errors instead of hiding them behind 2>/dev/null,
           # so this cannot fail open the way the xargs pipeline could.
           # git grep exits 1 when nothing matches, which is the pass case.
-          # Two tiers matching the pre-commit hook, so local and CI cannot
-          # disagree about what counts as a secret.
-          if git grep -I -lE '(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})' -- .; then
+          # Tier 1 patterns come from lib/secret-patterns.ts, the single registry
+          # shared with the generated pre-commit hook. This comment used to
+          # CLAIM parity while CI carried 3 patterns and the hook carried 8 —
+          # CI missed gho_, ghs_, github_pat_, sk-ant- and PEM private keys
+          # entirely. Asserted now in test/unit/secret-patterns.test.ts.
+          if git grep -I -lE '${tier1Ere()}' -- .; then
             echo "::error::Potential secrets detected in tracked files"
             exit 1
           fi
@@ -1493,7 +1497,7 @@ staged_diff=$(git diff --cached --diff-filter=ACM -U0) || {
   exit 1
 }
 # Tier 1 — anchored key formats. Unambiguous, so no exceptions.
-if printf '%s\\n' "$staged_diff" | grep -qE '^\\+.*(AKIA[A-Z0-9]{16}|sk-[a-zA-Z0-9]{20,}|ghp_[a-zA-Z0-9]{36})'; then
+if printf '%s\\n' "$staged_diff" | grep -qE '^\\+.*${tier1Ere()}'; then
   echo "ERROR: Potential secrets detected in staged changes"
   exit 1
 fi
