@@ -30,6 +30,10 @@ import {
 } from "../../lib/secret-patterns";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
+
+// Split so this file never contains a literal PEM header (see below).
+const PEM_OPEN = "-----" + "BEGIN";
+const PEM_TAIL = "PRIVATE" + " KEY" + "-----";
 const steps = readFileSync(join(REPO_ROOT, "lib", "scaffold", "steps.ts"), "utf-8");
 const gatesYml = readFileSync(join(REPO_ROOT, ".github", "workflows", "gates.yml"), "utf-8");
 const repoPreCommit = readFileSync(join(REPO_ROOT, "scripts", "git-hooks", "pre-commit"), "utf-8");
@@ -58,9 +62,13 @@ describe("the registry covers the key formats that actually leak", () => {
       ["GitHub server", "ghs_" + "c".repeat(36)],
       ["OpenAI", "sk-" + "d".repeat(48)],
       ["Anthropic", "sk-ant-" + "e".repeat(95)],
-      ["PEM", "-----BEGIN RSA PRIVATE KEY-----"],
-      ["PEM bare", "-----BEGIN PRIVATE KEY-----"],
-      ["PEM openssh", "-----BEGIN OPENSSH PRIVATE KEY-----"],
+      // Assembled from fragments, never written whole. A literal PEM header
+      // here makes this file match its own scanner, and the Gates secret scan
+      // then fails on the test that proves the scanner works. Same
+      // self-reference trap as an allowlist naming the files it exempts.
+      ["PEM", `${PEM_OPEN} RSA ${PEM_TAIL}`],
+      ["PEM bare", `${PEM_OPEN} ${PEM_TAIL}`],
+      ["PEM openssh", `${PEM_OPEN} OPENSSH ${PEM_TAIL}`],
     ];
     for (const [label, sample] of shouldMatch) {
       expect(re.test(sample), `${label} key shape is not caught`).toBe(true);

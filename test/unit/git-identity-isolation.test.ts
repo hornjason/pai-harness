@@ -54,7 +54,16 @@ export function detect(line: string, wrapperBindsDir = false): boolean {
   if (HELPER_FORM.test(line) || ARGV_FORM.test(line)) {
     if (/--global|--system/.test(line)) return true;
     // `"-C", <dir>` in the argv names the target more explicitly than cwd.
-    const namesDirInArgv = /["']-C["']\s*,\s*[^.\s"']/.test(line);
+    // ...but only if <dir> is a REAL target. `-C "."`, `-C process.cwd()` and
+    // `-C $PWD` all resolve to wherever the process is standing, which is the
+    // exact hazard #84 exists for. The shell form already rejects `git -C .`;
+    // accepting its argv twin would be the same directory, opposite verdict.
+    // Found by security review on the first version of this allowance.
+    const argvDir = line.match(/["']-C["']\s*,\s*([^,\]]+)/)?.[1]?.trim();
+    const dirIsCurrent = !argvDir
+      || /^["'`]?\.["'`]?$/.test(argvDir)
+      || /process\.cwd|\$PWD|__dirname/.test(argvDir);
+    const namesDirInArgv = !!argvDir && !dirIsCurrent;
     return !/\bcwd\s*:/.test(line) && !namesDirInArgv && !wrapperBindsDir;
   }
   return false;
@@ -214,5 +223,25 @@ describe("scan() and detect() cannot drift apart", () => {
       { onlyDetect, onlyScan },
       "scan() and detect() disagree — one of them is now the wrong rule",
     ).toEqual({ onlyDetect: [], onlyScan: [] });
+  });
+});
+
+describe("the -C allowance rejects directories that are just cwd", () => {
+  // The first version of this allowance accepted any token after -C, so
+  // `-C process.cwd()` bought an exemption while the shell form `git -C .`
+  // was correctly rejected: same directory, opposite verdict.
+  for (const [line, label] of [
+    ['spawnSync("git", ["-C", process.cwd(), "config", "user.email", v]);', "process.cwd()"],
+    ['spawnSync("git", ["-C", ".", "config", "user.email", v]);', "literal dot"],
+    ['spawnSync("git", ["-C", __dirname, "config", "user.email", v]);', "__dirname"],
+  ] as Array<[string, string]>) {
+    test(`rejects -C ${label}`, () => {
+      expect(detect(line)).toBe(true);
+    });
+  }
+
+  test("still accepts a real target directory", () => {
+    expect(detect('sh("git", ["-C", project, "config", "user.email", v], project);')).toBe(false);
+    expect(detect('spawnSync("git", ["-C", tempDir, "config", "user.name", n]);')).toBe(false);
   });
 });
