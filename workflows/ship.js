@@ -297,6 +297,7 @@ function safeSSHCommand(host, remoteCmd) {
     return null
   }
 }
+
 // ──── SECURITY-HELPERS-END ────
 
 // ── Agent brief loader (config-driven) ────────────────────
@@ -1240,6 +1241,14 @@ Also report worktreePath: your current working directory.
           success: false,
           filesChanged: allFilesChanged,
           worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
+          // Each agent's files paired with ITS OWN worktree. filesChanged above
+          // is flattened across all of them and worktreePath is only the last
+          // one, so the commit phase could never relativize the other N-1
+          // agents' paths — 37 minutes of valid work that would not commit (#81).
+          agentResults: completed.map(r => ({
+            worktreePath: r.buildResult?.worktreePath || '',
+            filesChanged: r.buildResult?.filesChanged || [],
+          })),
         }
       }
     }
@@ -1253,6 +1262,11 @@ Also report worktreePath: your current working directory.
         success: true,
         filesChanged: allFilesChanged,
         worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
+        // See the failure branch above — the pairing is what #81 lost.
+        agentResults: completed.map(r => ({
+          worktreePath: r.buildResult?.worktreePath || '',
+          filesChanged: r.buildResult?.filesChanged || [],
+        })),
       }
     }
   } else {
@@ -1395,7 +1409,48 @@ log('Committing code')
 
 // env-defaults logic inlined into the commit agent's workflow-state update (step 3 below)
 // — the separate env-defaults agent was redundant (~170s wasted per run)
-const commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
+// #81: when sub-issues ran in parallel, the work is spread across N worktrees.
+// Committing from any single one of them leaves the other N-1 agents' paths
+// absolute, buildSafeGitAdd rejects them (correctly — it refuses absolutes),
+// and the commit aborts with every agent having succeeded. Collect the files
+// into the project root first, then commit there.
+//
+// This runs through an agent because the workflow sandbox provides no module
+// loading (#69); scripts/collect-worktree-files.ts imports the real library so
+// there is no second copy of the logic to drift.
+const agentResults = implementResult.buildResult?.agentResults || []
+const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filter(Boolean))]
+let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
+let collectedFiles = null
+
+if (distinctWorktrees.length > 1) {
+  log(`Collecting work from ${distinctWorktrees.length} worktrees into ${PROJECT_ROOT} (#81)`)
+  const groupsJson = JSON.stringify(agentResults)
+  const collectOut = await agent(`
+Run exactly this, then return ONLY the script's stdout (the file list), nothing else:
+
+cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
+${groupsJson}
+RUNGATE_GROUPS_EOF
+cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT}
+
+If the command exits non-zero, return the literal text COLLECT_FAILED followed by stderr.
+  `, { label: 'collect-worktrees', phase: 'Commit' })
+
+  const out = typeof collectOut === 'string' ? collectOut.trim() : ''
+  if (!out || out.includes('COLLECT_FAILED')) {
+    return {
+      status: 'SHIP_FAILED',
+      issue: ISSUE,
+      reason: `Could not collect parallel worktree output (#81): ${out || 'no output'}`,
+      workDir: WORK_DIR,
+    }
+  }
+  collectedFiles = out.split('\n').map(l => l.trim()).filter(Boolean)
+  // Everything now lives in the project root, so that is where we stage.
+  commitDir = PROJECT_ROOT
+  log(`Collected ${collectedFiles.length} files into the project root`)
+}
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP
 const ENV_CHECK_SCHEMA = {
@@ -1413,7 +1468,8 @@ const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
 
 // Batched: commit + push + record state (was 3 agents, now 1)
-const gitAddForCommit = safeGitAddCommand(implementResult.buildResult?.filesChanged, commitDir)
+const filesForCommit = collectedFiles || implementResult.buildResult?.filesChanged
+const gitAddForCommit = safeGitAddCommand(filesForCommit, commitDir)
 if (gitAddForCommit === null) {
   return {
     status: 'SHIP_FAILED',
