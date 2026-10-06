@@ -325,7 +325,16 @@ function gitDerivedStaging(dir) {
   const d = shellQuote(dir)
   return [
     `if [ -z "$(git -C ${d} status --porcelain)" ]; then`,
-    `  echo "RUNGATE_NO_CHANGES: git reports no modifications in ${dir} — nothing to commit"; exit 1;`,
+    // The path goes in as the quoted ${d}, never as the raw ${dir}.
+    //
+    // The first version wrote the message as
+    //   echo "...no modifications in ${dir} — nothing to commit"
+    // which looks safe because the git command beside it is quoted, and
+    // is not: inside a double-quoted shell string `$(...)` and backticks
+    // still expand, so a worktreePath of `/tmp/$(touch pwned)` executes.
+    // Security review caught it; the injection test below had only tried
+    // `;`-separated commands, which double quotes do neutralise.
+    `  echo "RUNGATE_NO_CHANGES: git reports no modifications in" ${d} "— nothing to commit"; exit 1;`,
     `fi`,
     `git -C ${d} add -A`,
   ].join('\n')

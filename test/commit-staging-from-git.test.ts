@@ -168,6 +168,38 @@ describe("#115: annotated filesChanged no longer discards the work", () => {
     expect(staged()).toEqual([]);
   });
 
+  // Every one of these is a worktreePath an agent could report. The `;` case
+  // passed from the start; the command-substitution cases did not, and
+  // security review found them — the empty-worktree message interpolated the
+  // raw path inside a double-quoted echo, where `$(...)` and backticks still
+  // expand even though the git command beside it was quoted.
+  test.each([
+    ["semicolon", "d; touch pwned"],
+    ["command substitution", "d$(touch pwned)"],
+    ["backticks", "d`touch pwned`"],
+    ["substitution in a clean repo path", "$(touch pwned)"],
+  ])("a worktree path using %s is quoted, not executed", (_name, nasty) => {
+    const dir = join(sandbox, nasty);
+    mkdirSync(dir, { recursive: true });
+    runStaging(dir);
+    for (const where of [sandbox, repo, dir, process.cwd()]) {
+      let pwned = false;
+      try {
+        readFileSync(join(where, "pwned"));
+        pwned = true;
+      } catch {}
+      expect(pwned, `the path executed as a command, writing into ${where}`).toBe(false);
+    }
+  });
+
+  test("the empty-worktree message still names the directory", () => {
+    // The fix must not become "stop reporting the path" — the message is how
+    // an operator tells an environment fault from a code one.
+    const { out } = runStaging(repo);
+    expect(out).toContain("RUNGATE_NO_CHANGES");
+    expect(out, "the message no longer says which directory was empty").toContain(repo);
+  });
+
   test("a directory name containing shell metacharacters is quoted, not executed", () => {
     // commitDir traces back to an agent-reported worktreePath, and ship.js
     // interpolates it into a shell string. Unquoted, `d; touch pwned` runs
