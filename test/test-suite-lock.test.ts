@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -273,6 +273,200 @@ describe("evaluateFullSuiteRequest — the gate the hook calls", () => {
     const blocked = evaluateFullSuiteRequest("s3", "bun test", opts());
     expect(blocked.allow).toBe(false);
     expect(blocked.reason && blocked.reason.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Issue #73 — the DIR-L29 budget was a monotonic per-session counter. Nothing
+ * decremented it and nothing expired it, so a session that had run two suites
+ * was locked out of the suite for the rest of its life.
+ *
+ * That is worse than it sounds, because subagent Bash calls reach PreToolUse
+ * carrying the PARENT session's id. One budget covers the DA and every agent it
+ * spawns, so a ship pipeline exhausted all 2 runs partway through and every
+ * later agent was refused with a message that read like a policy violation
+ * rather than an exhausted shared counter. Measured 2026-10-05: three sessions
+ * pinned at 2/2, two of them for hours, with the #65 pipeline failing behind it.
+ *
+ * The fix keeps the rule's intent — do not thrash a 190s / 5.4 GB suite — by
+ * making the budget a rolling window instead of a session-lifetime total. You
+ * still cannot run it three times back to back; you are no longer locked out
+ * permanently for having done so once.
+ */
+describe("#73: the full-suite budget is a rolling window, not a lifetime total", () => {
+  const MINUTE = 60_000;
+  const t0 = 1_700_000_000_000;
+
+  // `now` is injected rather than read from the clock so the window is tested
+  // in milliseconds instead of by sleeping for half an hour.
+  const at = (ms: number, extra: Record<string, unknown> = {}) =>
+    opts({ now: t0 + ms, ...extra });
+
+  test("AC-1: a third run inside the window is still refused (DIR-L29 intact)", () => {
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(0)).allow).toBe(true);
+    releaseFullSuiteSlot("s1", opts());
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(MINUTE)).allow).toBe(true);
+    releaseFullSuiteSlot("s1", opts());
+
+    const third = evaluateFullSuiteRequest("s1", "bun test", at(2 * MINUTE));
+    expect(third.allow).toBe(false);
+    expect(third.reason).toContain("DIR-L29");
+  });
+
+  test("AC-2: the budget frees up once the window passes — no permanent lockout", () => {
+    evaluateFullSuiteRequest("s1", "bun test", at(0));
+    releaseFullSuiteSlot("s1", opts());
+    evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+    releaseFullSuiteSlot("s1", opts());
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(2 * MINUTE)).allow).toBe(false);
+
+    // Both runs are now outside the 30-minute window.
+    const later = evaluateFullSuiteRequest("s1", "bun test", at(31 * MINUTE));
+    expect(later.allow).toBe(true);
+  });
+
+  test("AC-3: runs expire individually, not as a batch", () => {
+    evaluateFullSuiteRequest("s1", "bun test", at(0));
+    releaseFullSuiteSlot("s1", opts());
+    evaluateFullSuiteRequest("s1", "bun test", at(20 * MINUTE));
+    releaseFullSuiteSlot("s1", opts());
+
+    // At t=35m the first run has aged out and the second has not, so exactly
+    // one slot of budget is back — not zero, and not the full two.
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(35 * MINUTE)).allow).toBe(true);
+    releaseFullSuiteSlot("s1", opts());
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(36 * MINUTE)).allow).toBe(false);
+  });
+
+  test("AC-4: the window is per session, not shared between them", () => {
+    evaluateFullSuiteRequest("s1", "bun test", at(0));
+    releaseFullSuiteSlot("s1", opts());
+    evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+    releaseFullSuiteSlot("s1", opts());
+    expect(evaluateFullSuiteRequest("s1", "bun test", at(2 * MINUTE)).allow).toBe(false);
+
+    // s2 has spent nothing and must be unaffected by s1 exhausting its budget.
+    expect(evaluateFullSuiteRequest("s2", "bun test", at(2 * MINUTE)).allow).toBe(true);
+  });
+
+  test("AC-5: the refusal says when the budget comes back", () => {
+    evaluateFullSuiteRequest("s1", "bun test", at(0));
+    releaseFullSuiteSlot("s1", opts());
+    evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+    releaseFullSuiteSlot("s1", opts());
+
+    const blocked = evaluateFullSuiteRequest("s1", "bun test", at(2 * MINUTE));
+    expect(blocked.allow).toBe(false);
+    // The old message offered no way out, which is why it read as a policy
+    // violation. It must name the wait.
+    expect(blocked.reason).toMatch(/\b2[89] minutes?\b/);
+  });
+
+  /** A pre-#73 counter file, stamped as having been written at `writtenAt`. */
+  const writeLegacyCounter = (runs: number, writtenAt: number) => {
+    const path = join(dir, "rungate-test-suite-count-s1");
+    writeFileSync(path, String(runs));
+    // Legacy files record no timestamp, so mtime is the only evidence of when
+    // those runs happened. Set it rather than inheriting the real clock.
+    utimesSync(path, new Date(writtenAt), new Date(writtenAt));
+    return path;
+  };
+
+  test("AC-6: a legacy bare-integer counter is honoured, not silently discarded", () => {
+    // Counter files written before this change hold `"2"` and nothing else.
+    // Reading one as zero would hand every currently-capped session a fresh
+    // budget the moment this ships — a silent reset of the live cap.
+    writeLegacyCounter(2, t0);
+
+    const blocked = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+    expect(blocked.allow).toBe(false);
+    expect(blocked.reason).toContain("DIR-L29");
+  });
+
+  test("AC-7: a legacy counter ages out of the window like any other run", () => {
+    // Dated from mtime, so an old lockout clears instead of persisting for the
+    // life of the session as it does today.
+    writeLegacyCounter(2, t0);
+
+    const later = evaluateFullSuiteRequest("s1", "bun test", at(31 * MINUTE));
+    expect(later.allow).toBe(true);
+  });
+
+  /**
+   * Security review of b95438cf. Every one of these reaches the gate through
+   * the counter file, throws, and is swallowed by TestSuiteGuard's `catch {
+   * process.exit(0) }` — which is a deliberate fail-open for a broken guard.
+   * The result is no full-suite cap at all, with nothing printed. The counter
+   * file is in a world-writable TMPDIR, so "who would write that" is not a
+   * defence.
+   */
+  describe("a malformed counter cannot crash the gate into fail-open", () => {
+    const writeCounter = (body: string) => {
+      const path = join(dir, "rungate-test-suite-count-s1");
+      writeFileSync(path, body);
+      utimesSync(path, new Date(t0), new Date(t0));
+      return path;
+    };
+
+    test("AC-9: an absurd legacy count does not blow up allocation", () => {
+      // `Array.from({length: 99999999999})` throws RangeError before anything
+      // else runs. Thrown out of the gate, caught by the hook, cap gone.
+      writeCounter("99999999999");
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-10: a huge runs array does not blow the argument limit", () => {
+      // Math.min(...runs) spreads every element as an argument. Past roughly
+      // 100k the engine throws RangeError on the call itself.
+      const runs = Array.from({ length: 500_000 }, (_, i) => t0 + i);
+      writeCounter(JSON.stringify({ runs }));
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-11: an oversized counter file is rejected, not read into memory", () => {
+      writeCounter(`{"runs":[${"1,".repeat(2_000_000)}1]}`);
+
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+      expect(d.allow).toBe(false);
+      expect(d.reason).toContain("DIR-L29");
+    });
+
+    test("AC-12: the budget never persists more entries than it can spend", () => {
+      // Whatever came in, what goes back out has to stay bounded — otherwise a
+      // single poisoned file keeps every later read expensive.
+      const runs = Array.from({ length: 10_000 }, (_, i) => t0 + i);
+      const path = writeCounter(JSON.stringify({ runs }));
+
+      evaluateFullSuiteRequest("s1", "bun test", at(31 * MINUTE));
+      const after = JSON.parse(readFileSync(path, "utf-8")) as { runs: number[] };
+      expect(after.runs.length).toBeLessThanOrEqual(8);
+    });
+
+    test("AC-13: a zero budget refuses with a real wait, not 'Infinity minutes'", () => {
+      // Math.min() of an empty array is Infinity, which reached the user-facing
+      // string. A nonsense number in a refusal is how people learn to ignore it.
+      const d = evaluateFullSuiteRequest("s1", "bun test", at(0, { maxRunsPerSession: 0 }));
+      expect(d.allow).toBe(false);
+      expect(d.reason).not.toContain("Infinity");
+    });
+  });
+
+  test("AC-8: a corrupt counter file fails closed, not open", () => {
+    // `{"runs": "two"}` must never read as an empty budget — that is the
+    // report-success-without-checking shape this repo keeps finding.
+    const path = join(dir, "rungate-test-suite-count-s1");
+    writeFileSync(path, '{"runs": "two"}');
+    utimesSync(path, new Date(t0), new Date(t0));
+
+    const d = evaluateFullSuiteRequest("s1", "bun test", at(MINUTE));
+    expect(d.allow).toBe(false);
+    expect(d.reason).toContain("DIR-L29");
   });
 });
 

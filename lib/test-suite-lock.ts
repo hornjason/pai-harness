@@ -27,6 +27,7 @@ import {
   openSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
   writeSync,
@@ -37,6 +38,18 @@ import { join } from "path";
 
 const DEFAULT_CAPACITY = 2;
 const DEFAULT_TTL_SECONDS = 420;
+
+/**
+ * How far back the DIR-L29 budget looks. Issue #73: this used to be "forever",
+ * which turned a rate limit into a one-way lockout — and because subagents
+ * carry the parent session's id, the whole pipeline shared one lifetime budget
+ * and ran out partway through.
+ *
+ * 30 minutes is a little longer than two full suites back to back (~190s each
+ * plus the agent work between them), so it still stops thrashing while letting
+ * a long session come back for a legitimate later run.
+ */
+const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 
 export interface SlotHolder {
   sessionId: string;
@@ -416,12 +429,95 @@ function counterPath(lockDir: string, sessionId: string): string {
   return join(lockDir, `rungate-test-suite-count-${sessionId}`);
 }
 
-function readCount(path: string): number {
+/**
+ * Timestamps of the runs this session has spent, newest last.
+ *
+ * Three file shapes have to be read, and the difference between them matters:
+ *
+ *   missing          -> no runs. Genuinely nothing spent.
+ *   `{"runs":[...]}` -> the current format.
+ *   `2`              -> written before #73. Dated from the file's mtime, which
+ *                       is when that run actually happened, so an existing
+ *                       lockout ages out instead of being reset to a free
+ *                       budget the moment this ships.
+ *
+ * Anything else is corrupt, and corrupt returns a FULL budget rather than an
+ * empty one. An unreadable counter that parses as "zero runs spent" is the
+ * check-that-reports-success-without-checking shape (#65, #71): a one-character
+ * edit would silently disable the cap while every message still looked normal.
+ *
+ * Every bound below exists because the counter lives in a world-writable
+ * TMPDIR and TestSuiteGuard ends in `catch { process.exit(0) }`. That catch is
+ * a deliberate fail-open so a broken guard can never wedge the repo — which
+ * means ANY throw in here silently removes the cap, with nothing printed.
+ * Crashing is therefore the most dangerous thing this function can do, worse
+ * than reading a wrong number, so it allocates nothing it has not bounded.
+ * Found by the security review of b95438cf.
+ */
+
+/** Generous for the real format (~20 bytes/run); far below a memory problem. */
+const MAX_COUNTER_BYTES = 64 * 1024;
+
+/** Entries kept per session. Only `maxRuns` can ever be spent; the rest is slack. */
+const MAX_TRACKED_RUNS = 8;
+
+function readRuns(path: string, maxRuns: number): number[] {
+  const budget = Math.max(0, Math.min(maxRuns, MAX_TRACKED_RUNS));
+  let raw: string;
+  let mtimeMs: number;
   try {
-    return parseInt(readFileSync(path, "utf-8").trim()) || 0;
+    const stat = statSync(path);
+    // Checked before the read, not after: the point is to not load it.
+    if (stat.size > MAX_COUNTER_BYTES) {
+      return Array.from({ length: budget }, () => stat.mtimeMs);
+    }
+    mtimeMs = stat.mtimeMs;
+    raw = readFileSync(path, "utf-8").trim();
   } catch {
-    return 0;
+    return [];
   }
+  if (!raw) return [];
+
+  // Legacy: a bare integer, with no record of when those runs happened.
+  // Clamped — `99999999999` is a RangeError at the allocation, not a big array.
+  if (/^\d+$/.test(raw)) {
+    const count = Math.min(parseInt(raw, 10) || 0, budget);
+    return Array.from({ length: count }, () => mtimeMs);
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as { runs?: unknown };
+    const runs = parsed?.runs;
+    if (
+      Array.isArray(runs) &&
+      runs.length <= MAX_COUNTER_BYTES &&
+      runs.every((t) => typeof t === "number" && Number.isFinite(t))
+    ) {
+      // Newest first, then trimmed: the oldest entries are the ones about to
+      // expire anyway, and this keeps every later read cheap.
+      return (runs as number[]).slice().sort((a, b) => a - b).slice(-MAX_TRACKED_RUNS);
+    }
+  } catch {
+    // fall through to the fail-closed path
+  }
+
+  // Fail closed: spend the whole budget so a corrupt file blocks rather than
+  // waves everything through. Dated from mtime, so it clears after one window
+  // instead of wedging the session permanently.
+  return Array.from({ length: budget }, () => mtimeMs);
+}
+
+/** `Math.min(...xs)` throws on a large array — every element is an argument. */
+function earliest(values: number[]): number | null {
+  let min: number | null = null;
+  for (const v of values) if (min === null || v < min) min = v;
+  return min;
+}
+
+/** Plain-English wait, for a refusal that would otherwise offer no way out. */
+function describeWait(ms: number): string {
+  const minutes = Math.max(1, Math.ceil(ms / 60_000));
+  return minutes === 1 ? "1 minute" : `${minutes} minutes`;
 }
 
 /**
@@ -434,21 +530,40 @@ function readCount(path: string): number {
 export function evaluateFullSuiteRequest(
   sessionId: string,
   command: string,
-  options: LockOptions & { maxRunsPerSession?: number } = {},
+  options: LockOptions & {
+    maxRunsPerSession?: number;
+    /** Rolling window the budget is measured over (#73). */
+    budgetWindowMs?: number;
+    /** Injected clock, so the window is testable without sleeping. */
+    now?: number;
+  } = {},
 ): GateDecision {
   if (!isFullSuiteCommand(command)) return { allow: true };
 
   const lockDir = options.lockDir ?? defaultLockDir();
   const maxRuns = options.maxRunsPerSession ?? 2;
+  const windowMs = options.budgetWindowMs ?? DEFAULT_BUDGET_WINDOW_MS;
+  const now = options.now ?? Date.now();
 
   const path = counterPath(lockDir, sessionId);
-  const used = readCount(path);
-  if (used >= maxRuns) {
+  // Runs older than the window are forgotten, which is the whole of #73: the
+  // budget is a rate limit again rather than a lifetime total.
+  const recent = readRuns(path, maxRuns).filter((t) => t > now - windowMs);
+  if (recent.length >= maxRuns) {
+    const oldest = earliest(recent);
+    // `recent` is empty only when maxRuns is 0 — a configured stop, with no run
+    // to wait for. Saying "frees up in Infinity minutes" taught people to stop
+    // reading the refusal.
+    const when =
+      oldest === null
+        ? "Full suite runs are disabled for this session (budget 0)."
+        : `One run frees up in ${describeWait(oldest + windowMs - now)}.`;
     return {
       allow: false,
       reason:
-        `DIR-L29: Full test suite limit reached (${used}/${maxRuns}) for this session. ` +
-        `Use targeted tests instead:\n  bun test test/specific-file.test.ts\n` +
+        `DIR-L29: Full test suite limit reached (${recent.length}/${maxRuns}) in the last ` +
+        `${describeWait(windowMs)}. ${when}\n` +
+        `Use targeted tests until then:\n  bun test test/specific-file.test.ts\n` +
         `Full suite runs cost ~190s and ~5.4 GB each.`,
     };
   }
@@ -482,7 +597,11 @@ export function evaluateFullSuiteRequest(
   }
 
   try {
-    writeFileSync(path, String(used + 1));
+    // Only the in-window runs are carried forward, and never more than the
+    // tracked maximum, so neither a long session nor a poisoned file can leave
+    // an expensive read behind.
+    const runs = [...recent, now].slice(-MAX_TRACKED_RUNS);
+    writeFileSync(path, JSON.stringify({ runs }));
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }
