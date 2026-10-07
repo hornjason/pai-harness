@@ -66,3 +66,36 @@ and it is the only evidence that separates a real check from a decorative one.
 When a guard has to ship red — a known-violations ratchet — bank progress in
 the same commit that earns it, and write down what the number means. A ratchet
 nobody can interpret becomes a number nobody lowers.
+
+## For a script whose job is to exit non-zero
+
+A sentence in the PR is evidence a reader has to trust. When the guard is a
+script, the break can live in the test instead, and then it is re-checked on
+every run.
+
+Route every refusal through **one exported exit-code constant**, declared on a
+single line, and have the test build a mutant copy of the source with that
+constant set to `0`. Each negative case then runs twice — the real script, and
+the mutant — and asserts the real one refuses while the mutant does not. The
+second assertion is the whole point: it is the removal of the non-zero exit,
+performed and observed, so a case that later starts passing for an unrelated
+reason stops being indistinguishable from a case that is genuinely caught.
+
+`scripts/rook-review-scope.ts` and `test/rook-review-scope.test.ts` are the
+worked example (#129). Two properties make it work, and both are asserted by
+the test rather than left as conventions:
+
+- The constant appears exactly once in the source, so no refusal can quietly
+  bypass the mutation by inlining `process.exit(1)`.
+- The script has no relative imports, so the mutant runs from a temp
+  directory. Without that check a later `from "../lib/..."` would make every
+  mutant die on module resolution — exiting non-zero, which reads as the
+  mutation having been rejected on the merits.
+
+What was broken to prove it, run and counted rather than asserted: making the
+empty-scope branch stop throwing turns 3 tests red, and zeroing `REFUSE_EXIT`
+in the real source leaves the harness nothing to mutate, so it throws
+"could not build the mutant" and the whole file aborts instead of passing
+quietly. That second outcome is the point — a mutation harness that silently
+no-ops when its target moves is the decorative check this rule is about.
+Neither mutation is left in the tree; both were run and reverted.

@@ -114,6 +114,11 @@ export const AgentSchema = z.object({
   comparedToSpec: z.boolean().optional(),
   screenshots: z.array(z.string()).optional(),
   findings: z.string().nullable().optional(),
+  // One entry per blocking problem the agent found. Declared explicitly because
+  // Zod strips undeclared keys: without this line a rook FAIL round-trips through
+  // the schema as a verdict with no reasons attached. A FAIL verdict must carry a
+  // non-empty list (see gates/SCHEMA-GUIDE.md).
+  failures: z.array(z.string()).optional(),
   testedSha: z.string().optional(),
   testedPaths: z.array(z.string()).optional(),
   port: z.number().optional(),
