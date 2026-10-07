@@ -7,9 +7,10 @@
  * it. A review whose verdict goes nowhere is worse than no review, because it
  * manufactures the appearance of coverage.
  *
- * SOURCE OF TRUTH. `workflows/ship.js` carries inlined copies of all three
- * functions below, because the Workflow sandbox provides no module loading —
- * a top-level `require()` there killed every ship run before it spawned a
+ * SOURCE OF TRUTH. `workflows/ship.js` carries inlined copies of every
+ * function below — `rookReviewSha`, `rookScopeCommand`, `rookGateVerdict` and
+ * `reviewIsCurrent` — because the Workflow sandbox provides no module loading
+ * — a top-level `require()` there killed every ship run before it spawned a
  * single agent (#69). The copies must stay behaviourally identical to these:
  * test/security-verdict-blocks.test.ts runs both over the same input matrix
  * and fails on any divergence. Change one, change the other.
@@ -45,6 +46,81 @@ export function rookReviewSha(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return SHA.test(trimmed) ? trimmed.toLowerCase() : null;
+}
+
+export interface ReviewCurrency {
+  /** True only when both SHAs are real and name the same commit. */
+  current: boolean;
+  /** Why the review is not current. Null — and only null — when it is. */
+  reason: string | null;
+}
+
+/**
+ * Does the recorded security review still describe the commit the run ends at?
+ *
+ * #129 gave the review a real scope and made its verdict block the run. It did
+ * not make the verdict follow the branch. On the #164 run `agents.rook.testedSha`
+ * was 3fe336f1 while the branch tip was ef998b73, and the diff between them
+ * rewrote all four files rook had reviewed — 236 insertions, 254 deletions. The
+ * review was real, it read the right files, and then those files were replaced
+ * by the regression remediation loop. Nothing compared the two SHAs, so the run
+ * reported SHIPPED carrying a PASS for code that no longer existed.
+ *
+ * FAILS CLOSED. Missing, non-string, malformed and mismatched all return
+ * `current: false`. There is no default-to-current branch and nothing here
+ * throws: this is called on the path that decides whether a run may ship, so a
+ * throw would be a refusal the caller's error handling could turn back into a
+ * ship. The reason always names both operands so the refusal says which commit
+ * was reviewed and which one the branch ended at.
+ *
+ * An abbreviation counts as a match in either direction, because the two values
+ * reach this function from different places — `testedSha` comes back through an
+ * agent via the scope report, `headSha` from `git rev-parse` — and either may be
+ * shortened. Prefix matching is deliberately not symmetric-length: `3fe336f1`
+ * against `3192a75c...` shares no prefix and is stale, which is exactly the #164
+ * case. Two full SHAs are a prefix of each other only when equal.
+ */
+export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCurrency {
+  const tested = rookReviewSha(testedSha);
+  const head = rookReviewSha(headSha);
+
+  if (!tested && !head) {
+    return {
+      current: false,
+      reason:
+        `no security review is current: the tested commit is ${describe(testedSha)} and ` +
+        `the head commit is ${describe(headSha)} — neither is a commit SHA, so there is ` +
+        `nothing to compare`,
+    };
+  }
+  if (!tested) {
+    return {
+      current: false,
+      reason:
+        `no security review is current: the tested commit is ${describe(testedSha)}, not a ` +
+        `commit SHA, so it cannot be compared against head ${head}`,
+    };
+  }
+  if (!head) {
+    return {
+      current: false,
+      reason:
+        `no security review is current: the head commit is ${describe(headSha)}, not a ` +
+        `commit SHA, so the review pinned to ${tested} cannot be confirmed against it`,
+    };
+  }
+
+  const abbreviates = tested.startsWith(head) || head.startsWith(tested);
+  if (!abbreviates) {
+    return {
+      current: false,
+      reason:
+        `the security review is stale: it was pinned to ${tested} but the branch now ends ` +
+        `at ${head} — the reviewed code is not the code this run would ship`,
+    };
+  }
+
+  return { current: true, reason: null };
 }
 
 /**

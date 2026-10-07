@@ -358,6 +358,154 @@ describe("#173: ship.js reports the verdict Quinn returned, not the one its tier
   });
 });
 
+/**
+ * #169 — AC-5 and AC-6.
+ *
+ * The commit step records `buildCommit`. The two remediation rounds that run
+ * after it — recommit-verify and recommit-ship — move the branch and recorded
+ * nothing, so on the #164 run `buildCommit` named a commit three rounds behind
+ * the tip the PR was opened from. Both now re-record through the same script,
+ * and both must say so in a REQUIRED reply field, because an instruction an
+ * agent can skip without the reply changing is not a step (#166).
+ *
+ * AC-6 is the half #173 is about: every one of those call sites hands the
+ * recorder a Quinn verdict, and a verdict chosen by the ceremony tier is the
+ * tier talking. PR #172 was closed unmerged for exactly this — its two new
+ * call sites passed a hardcoded PASS over a measured verdict.
+ */
+describe("#169 recommit: both remediation rounds re-record the commit", () => {
+  const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+
+  /** One agent step, sliced from its prompt open to the close of its options. */
+  function step(label: string): string {
+    const at = shipSource.indexOf(`label: '${label}'`);
+    expect(at, `ship.js has no ${label} step`).toBeGreaterThan(-1);
+    const start = shipSource.lastIndexOf("await agent(`", at);
+    expect(start, `${label} is not an agent() call — this slicer is stale`).toBeGreaterThan(-1);
+    const end = shipSource.indexOf("\n", at);
+    return shipSource.slice(start, end === -1 ? shipSource.length : end);
+  }
+
+  for (const label of ["recommit-verify", "recommit-ship"]) {
+    test(`${label} runs the recorder`, () => {
+      expect(step(label), `${label} moves the branch and records nothing`).toContain(
+        "record-build-commit.ts",
+      );
+    });
+
+    test(`${label} requires stateRecorded in its reply`, () => {
+      // Not merely present: REQUIRED. An optional field is one the agent can
+      // omit, and then the workflow cannot tell a skipped step from a done one.
+      const s = step(label);
+      expect(s).toContain("stateRecorded");
+      const required = s.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";
+      expect(required, `${label} required fields were: ${required}`).toContain("stateRecorded");
+    });
+
+    test(`${label} records the commit it just made, not the one before it`, () => {
+      // The whole point: `--sha` must be the post-commit HEAD. Recording
+      // parentSha would leave buildCommit exactly as stale as it was.
+      const s = step(label);
+      expect(s).toMatch(/--sha "\$(commitSha|sha)"/);
+      expect(s, `${label} records its parent commit`).not.toMatch(/--sha "\$parentSha"/);
+    });
+  }
+
+  test("every recorder call site reports its receipt", () => {
+    // The commit step plus the two remediation rounds. A fourth call site that
+    // skipped the receipt would be the #166 defect returning, so the count is
+    // asserted rather than the three names.
+    // Matched on the invocation, not the name: the name also appears in three
+    // comments and in the COMMIT_STATE_NOT_RECORDED message, and counting
+    // those would make this number move whenever someone edits prose.
+    const callSites = shipSource.split("scripts/record-build-commit.ts`)}").length - 1;
+    expect(callSites, "a record-build-commit call site was added or removed").toBe(3);
+  });
+});
+
+describe("#169 measured verdict: no call site reports a verdict the tier implied", () => {
+  const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+
+  /** Both verdict choosers, extracted from the QUINN-VERDICT markers. */
+  function loadChoosers(): {
+    quinnVerdictFor: (ran: boolean, result: unknown) => string;
+    quinnShipVerdict: (ran: boolean, result: unknown, local: string) => string;
+  } {
+    const start = shipSource.indexOf("// ──── QUINN-VERDICT-START ────");
+    const end = shipSource.indexOf("// ──── QUINN-VERDICT-END ────");
+    expect(start, "ship.js is missing the QUINN-VERDICT markers").toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return new Function(
+      `${shipSource.slice(start, end)}\nreturn { quinnVerdictFor, quinnShipVerdict }`,
+    )();
+  }
+
+  test("the ship-phase chooser reports what container Quinn said", () => {
+    const { quinnShipVerdict } = loadChoosers();
+    expect(quinnShipVerdict(true, { result: "FAIL" }, "PASS")).toBe("FAIL");
+    expect(quinnShipVerdict(true, { result: "PASS" }, "SKIP")).toBe("PASS");
+    expect(quinnShipVerdict(true, { result: "SKIP" }, "PASS")).toBe("SKIP");
+  });
+
+  test("a container Quinn that said nothing usable is not a pass", () => {
+    // The positive control for the case above: returning the local verdict for
+    // everything satisfies two of its three assertions.
+    const { quinnShipVerdict } = loadChoosers();
+    for (const reply of [undefined, null, {}, { result: "MAYBE" }, "PASS"]) {
+      expect(quinnShipVerdict(true, reply, "PASS"), `${JSON.stringify(reply)} read as a verdict`).toBe(
+        "FAIL",
+      );
+    }
+  });
+
+  test("a container Quinn that never ran falls back to the local measurement", () => {
+    // Not SKIP. The local verdict is still a measurement taken at or before
+    // this point, and reporting SKIP over it would downgrade a real Quinn PASS
+    // in the artefact — which is #173 one project over.
+    const { quinnShipVerdict } = loadChoosers();
+    expect(quinnShipVerdict(false, null, "PASS")).toBe("PASS");
+    expect(quinnShipVerdict(false, { result: "PASS" }, "FAIL")).toBe("FAIL");
+    expect(quinnShipVerdict(false, null, "SKIP")).toBe("SKIP");
+  });
+
+  test("no --quinn argument anywhere in ship.js is derived from the ceremony tier", () => {
+    // AC-6, over every call site rather than the ones this change added. The
+    // literal PR #172 shipped was `--quinn ${shellQuote('PASS')}`; the one #173
+    // removed was `ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'`.
+    const args = shipSource.match(/--quinn \$\{([^}]*)\}/g) || [];
+    expect(args.length, "ship.js passes no --quinn at all").toBe(3);
+    for (const a of args) {
+      expect(a, `${a} chooses a verdict from the tier`).not.toContain("ceremonyTier");
+      expect(a, `${a} hardcodes a verdict`).not.toMatch(/'(PASS|FAIL)'/);
+      expect(a, `${a} does not name a measured verdict variable`).toMatch(/quinn\w*Verdict/i);
+    }
+  });
+
+  test("container Quinn's reply is captured rather than discarded", () => {
+    // It cannot be reported if nothing holds it. Before #169 the
+    // `quinn-container` briefedAgent call was awaited and its result dropped
+    // on the floor.
+    const at = shipSource.indexOf("label: 'quinn-container'");
+    expect(at, "ship.js no longer spawns quinn-container").toBeGreaterThan(-1);
+    const spawn = shipSource.lastIndexOf("briefedAgent(`", at);
+    expect(spawn).toBeGreaterThan(-1);
+    // The line the call is on, not the prompt body: the assignment sits to the
+    // LEFT of `briefedAgent(`, so slicing forward from it would always miss.
+    const callLine = shipSource.slice(shipSource.lastIndexOf("\n", spawn) + 1, spawn);
+    expect(callLine, "quinn-container's verdict is still discarded").toContain("quinnContainerResult =");
+    expect(shipSource).toContain("quinnContainerRan = true");
+  });
+
+  test("the ship-phase chooser is called, not merely defined", () => {
+    // A function nothing calls is the shape #162's round one shipped.
+    expect(shipSource).toMatch(
+      /const quinnShipVerdictValue = quinnShipVerdict\(quinnContainerRan, quinnContainerResult, quinnLocalVerdict\)/,
+    );
+    expect(shipSource).toContain("--quinn ${shellQuote(quinnShipVerdictValue)}");
+    expect(shipSource).toContain("--quinn ${shellQuote(quinnLocalVerdict)}");
+  });
+});
+
 describe("#166: refusals, each shown against a mutant that does not refuse", () => {
   const CASES: Array<[string, string[]]> = [
     ["no --state", ["--sha", SHA, "--branch", "b", "--quinn", "SKIP"]],

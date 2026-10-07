@@ -565,6 +565,72 @@ properties make that work and both are asserted rather than assumed:
 so the mutant can run from a temp directory instead of dying on module
 resolution and reading as a refusal on the merits.
 
+### A verdict names a commit, and the commit moves (#169)
+
+#129 gave the review a real scope and made its verdict block the run. It left
+the verdict pinned to a commit the branch no longer ends at, and nothing
+compared the two.
+
+Field evidence from the #164 run: `agents.rook.testedSha` was `3fe336f1` while
+the branch tip was `ef998b73`, and all four reviewed files had been rewritten
+between them — 236 insertions, 254 deletions. The review ran, the verdict was
+read, the verdict was PASS, and it was a PASS about code the pull request did
+not contain. The #129 defect one commit out.
+
+**A verdict is usable only while the branch tip still matches `testedSha`.**
+`reviewSha` is captured once, from the commit step, before any remediation
+round can move the branch, so no variable in this file notices the move.
+Beside the decision that reads the verdict, `ship.js` now re-reads the commit
+the branch ends at and compares it with `agents.rook.testedSha` from
+`workflow-state.json`, through an inlined copy of `reviewIsCurrent`. Both
+values are read at the point of comparison rather than carried: #169, #155 and
+#166 are all one shape, a value captured early and consumed later as though it
+still described the run.
+
+A review that is not current returns `SHIP_FAILED` with a reason prefixed
+`SECURITY_REVIEW_STALE`, on the return path the FAIL verdict already uses and
+ahead of the PR step. The comparison fails closed — a missing SHA, a malformed
+SHA and two different SHAs are one answer, because none of them is evidence
+that what was read is what will ship. It tolerates abbreviation, because the
+commit step reports `rev-parse --short` while the scope script resolves a full
+SHA, and a check that refuses every run is switched off rather than obeyed.
+
+**The check runs once, and the Ship round is still uncovered.** The comparison
+sits inside `SECURITY-DECISION-START/END`, which is reached after the review
+and before the PR step. The Verify regression loop commits before that point,
+so its rounds are covered: the head is re-read from git afterwards. The Ship
+regression loop commits at `recommit-ship`, which is *after* the decision
+block, and nothing compares again — so a Ship-round remediation still moves the
+branch past the reviewed commit exactly as #164 did.
+
+That is the half of #169 this section does not close, and it is written here
+rather than left for someone to find. It is the half that matters most: a
+remediation round exists because something failed, which makes it where the
+risky code goes.
+
+- [x] SC-583: workflows/ship.js contains [testedSha, HEAD, stale] — the security record is compared against the commit the run is about to open a PR for, rather than trusted because it exists
+- [x] SC-584: workflows/ship.js contains [SECURITY_REVIEW_STALE] and not contains [securityVerdict.verdict === 'PASS' ? ] — a mismatch is a named refusal on the same path as every other security failure, not a warning in the log
+- [x] SC-585: lib/security-verdict.ts contains [reviewIsCurrent] — the comparison lives beside `rookGateVerdict`, so the inlined copy in ship.js and the library are driven over one input matrix by `test/security-verdict-blocks.test.ts`, as #129 established
+- [x] SC-586: workflows/ship.js contains [recommit, buildCommit] — `buildCommit` names the commit the PR is opened from, because a stale `buildCommit` is the same defect in the field the ship gate already reads
+
+**Two gaps are deliberately left open and tracked on #169, not claimed here.**
+
+1. **No currency check after `recommit-ship`.** Described above. The Ship
+   regression round still ships a commit the review never read.
+2. **SC-598.** Both remediation recommits hand the recorder
+   `quinnLocalVerdict`, computed in the Validate phase, while the Ship round
+   runs after `quinn-container` — #173's overwrite one call site along.
+
+Also stated rather than implied: the two SHAs reach this file through an agent,
+because the sandbox cannot exec or read files (#69). What that buys is a fixed
+pair of commands run by a step with no stake in the verdict, not a
+cryptographic boundary. The defect being fixed is systematic, not adversarial.
+
+A spec that ticks a criterion the source does not meet is worse than one that
+admits the gap. The run that produced this change did exactly that — `35f12943`
+marked three SCs `[x]` whose literals were absent — and the security gate
+refused it. See `.claude/rules/checks-must-be-able-to-fail.md` and #178.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection
