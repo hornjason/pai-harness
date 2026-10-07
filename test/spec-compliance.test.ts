@@ -1,5 +1,7 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { spawnSync } from "child_process";
 import { join } from "path";
 import { harnessRoot } from "../lib/paths";
 
@@ -139,10 +141,62 @@ describe("prove-integration: prove.js workflow, not gate test", () => {
 describe("evidence-requirements: mechanical evidence checks", () => {
 
   test("ER-1: Environment evidence recorded after commit", () => {
+    // The commit step used to inline a `bun -e` one-liner that named
+    // `environments.local.api` and friends literally. #166 moved the write
+    // into scripts/record-build-commit.ts, because an instruction an agent
+    // can skip without the reply changing is not a step — so the evidence is
+    // now in two places and BOTH are asserted. Checking only the call site
+    // would pass while the script recorded nothing; checking only the script
+    // would pass while the workflow stopped calling it.
     const commitSection = sliceBetween(SHIP_JS, "PHASE 6: COMMIT", "PHASE 7: VERIFY");
-    expect(commitSection).toContain("environments.local.api");
-    expect(commitSection).toContain("environments.local.ui");
-    expect(commitSection).toContain("environments.local.tests");
+    expect(commitSection).toContain("record-build-commit.ts");
+    expect(commitSection).toContain("--api");
+    expect(commitSection).toContain("--ui");
+
+    const recorder = readFileSync(
+      join(import.meta.dir, "..", "scripts", "record-build-commit.ts"),
+      "utf-8",
+    );
+    expect(recorder).toContain("local: {");
+    for (const field of ["api", "ui", "tests"]) {
+      expect(recorder, `the recorder no longer writes environments.local.${field}`).toMatch(
+        new RegExp(`\\b${field}[,:]`),
+      );
+    }
+  });
+
+  test("ER-1a: the recorder actually writes environments.local", () => {
+    // The executing half of ER-1 — a grep over the recorder stays true after
+    // its body is emptied. test/record-build-commit.test.ts owns the full
+    // matrix; this is the one assertion that keeps ER-1 from being three
+    // string searches.
+    const dir = mkdtempSync(join(tmpdir(), "er1-"));
+    try {
+      const state = join(dir, "workflow-state.json");
+      writeFileSync(state, JSON.stringify({
+        schemaVersion: 2, issue: 166, slug: "er-1", phase: "BUILD",
+        issueGoal: "environment evidence is recorded after the commit",
+        acs: [{
+          id: "AC-1", type: "CODE",
+          statement: "environments.local is present after the commit step runs",
+          threshold: { op: "==", value: 0, unit: "exit code" },
+          evidenceMethod: { type: "BUN_TEST" },
+        }],
+      }));
+      const r = spawnSync("bun", [
+        join(import.meta.dir, "..", "scripts", "record-build-commit.ts"),
+        "--state", state,
+        "--sha", "dd242a62aea9371d788abb58f3d26922d5dd6cbc",
+        "--branch", "ship-166", "--quinn", "SKIP", "--api", "PASS", "--ui", "SKIP",
+      ], { encoding: "utf-8" });
+      expect(r.status, r.stderr ?? "").toBe(0);
+      const written = JSON.parse(readFileSync(state, "utf-8"));
+      expect(written.environments.local).toEqual({
+        api: "PASS", ui: "SKIP", uiSkipReason: "No UI configured", tests: "PASS",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("ER-1b: Environment values enforced via schema enum (not agent prose)", () => {
