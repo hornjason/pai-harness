@@ -114,6 +114,29 @@ describe("#143: GH_REPO set inside the command is refused", () => {
       .toBe("ambiguous");
   });
 
+  test("an assignment in a SEPARATE segment is refused — the natural spelling", () => {
+    // The first version of this control tested the closing segment, so it
+    // caught the inline prefix and missed `export ... && close`, which is how
+    // anyone would actually write it: the segment contains no assignment at
+    // all. A control that only covers the awkward spelling is not a control.
+    for (const cmd of [
+      `export GH_REPO=unprotected/x && ${CLOSE} 23`,
+      `GH_REPO=unprotected/x ; ${CLOSE} 23`,
+      `GH_REPO=unprotected/x\n${CLOSE} 23`,
+    ]) {
+      expect(parseCloseTarget(cmd, env({ GH_REPO: "a/b" })).kind).toBe("ambiguous");
+    }
+  });
+
+  test("an explicit --repo makes the assignment irrelevant, and is allowed", () => {
+    // gh prefers the flag over GH_REPO, so there is no differential left to
+    // refuse. Without this, a command that sets the variable for an earlier
+    // step would be blocked for no reason — and a fix that refuses every
+    // GH_REPO= would pass every assertion above.
+    expect(parseCloseTarget(`export GH_REPO=unprotected/x && ${CLOSE} 23 --repo a/b`, env()))
+      .toEqual({ kind: "one", issue: "23", repo: "a/b" });
+  });
+
   test("GH_REPO from the real environment is still honoured", () => {
     // Positive control: gh reads it, so the guard must too. Only an
     // assignment inside the command is the problem.

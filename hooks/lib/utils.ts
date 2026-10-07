@@ -218,7 +218,19 @@ export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = proce
   // resolved to this repo while gh would have closed it in unprotected/x.
   // Reading the assignment properly means tracking shell variable scope, so
   // refuse instead — the operator can pass --repo.
-  if (/\bGH_REPO=/.test(segment)) {
+  //
+  // Tested against the WHOLE command, not the closing segment. The first
+  // version checked the segment and so caught the inline-prefix form while
+  // missing the natural one: `export GH_REPO=unprotected/x && gh issue close
+  // 23` splits on `&&`, and the closing segment contains no assignment at
+  // all. A control that only covers the awkward spelling is not a control.
+  //
+  // Only when the close names no repository of its own. An explicit
+  // --repo/-R beats GH_REPO in gh too, so there is no differential left to
+  // refuse, and refusing anyway would block an ordinary command that happens
+  // to set the variable for an earlier step. Deliberately NOT parseRepoSlug's
+  // env-aware form — the environment is exactly what is in question here.
+  if (/\bGH_REPO=/.test(command) && !parseRepoSlug(segment, {} as NodeJS.ProcessEnv)) {
     return ambiguous("GH_REPO is being set inside the command, which the guard cannot follow — pass --repo owner/name instead");
   }
 
