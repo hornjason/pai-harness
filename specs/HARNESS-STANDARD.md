@@ -595,25 +595,41 @@ that what was read is what will ship. It tolerates abbreviation, because the
 commit step reports `rev-parse --short` while the scope script resolves a full
 SHA, and a check that refuses every run is switched off rather than obeyed.
 
-**The Verify round re-pins; the Ship round refuses.** They are not the same
-situation. The security review has not run when the Verify round recommits, so
-moving the pin there means the review reads the remediated code. It has run by
-the time the Ship round recommits, so a mismatch there is a refusal — that
-round is where the risky code goes, and a second review bolted on after the
-gate would be the "verdict computed late" shape #129 was about.
+**The check runs once, and the Ship round is still uncovered.** The comparison
+sits inside `SECURITY-DECISION-START/END`, which is reached after the review
+and before the PR step. The Verify regression loop commits before that point,
+so its rounds are covered: the head is re-read from git afterwards. The Ship
+regression loop commits at `recommit-ship`, which is *after* the decision
+block, and nothing compares again — so a Ship-round remediation still moves the
+branch past the reviewed commit exactly as #164 did.
+
+That is the half of #169 this section does not close, and it is written here
+rather than left for someone to find. It is the half that matters most: a
+remediation round exists because something failed, which makes it where the
+risky code goes.
 
 - [x] SC-583: workflows/ship.js contains [testedSha, HEAD, stale] — the security record is compared against the commit the run is about to open a PR for, rather than trusted because it exists
 - [x] SC-584: workflows/ship.js contains [SECURITY_REVIEW_STALE] and not contains [securityVerdict.verdict === 'PASS' ? ] — a mismatch is a named refusal on the same path as every other security failure, not a warning in the log
 - [x] SC-585: lib/security-verdict.ts contains [reviewIsCurrent] — the comparison lives beside `rookGateVerdict`, so the inlined copy in ship.js and the library are driven over one input matrix by `test/security-verdict-blocks.test.ts`, as #129 established
 - [x] SC-586: workflows/ship.js contains [recommit, buildCommit] — `buildCommit` names the commit the PR is opened from, because a stale `buildCommit` is the same defect in the field the ship gate already reads
 
-**SC-598 is NOT satisfied by this section and is deliberately left open.** Both
-remediation recommits still hand the recorder `quinnLocalVerdict`, computed in
-the Validate phase, while the Ship round runs after `quinn-container`. That is
-#173's overwrite one call site along, and it is tracked on #169 rather than
-claimed here. A spec that ticks a criterion the source does not meet is worse
-than one that admits the gap — see the note in
-`.claude/rules/checks-must-be-able-to-fail.md`.
+**Two gaps are deliberately left open and tracked on #169, not claimed here.**
+
+1. **No currency check after `recommit-ship`.** Described above. The Ship
+   regression round still ships a commit the review never read.
+2. **SC-598.** Both remediation recommits hand the recorder
+   `quinnLocalVerdict`, computed in the Validate phase, while the Ship round
+   runs after `quinn-container` — #173's overwrite one call site along.
+
+Also stated rather than implied: the two SHAs reach this file through an agent,
+because the sandbox cannot exec or read files (#69). What that buys is a fixed
+pair of commands run by a step with no stake in the verdict, not a
+cryptographic boundary. The defect being fixed is systematic, not adversarial.
+
+A spec that ticks a criterion the source does not meet is worse than one that
+admits the gap. The run that produced this change did exactly that — `35f12943`
+marked three SCs `[x]` whose literals were absent — and the security gate
+refused it. See `.claude/rules/checks-must-be-able-to-fail.md` and #178.
 
 ---
 
