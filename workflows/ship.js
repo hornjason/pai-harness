@@ -1479,6 +1479,33 @@ const marcusWorktreePath = priorBranchResult?.testsPass ? PROJECT_ROOT : (implem
 
 phase('Validate')
 let quinnLocalResult = { result: 'PASS' }
+// Whether Quinn actually produced a reply this run. Observed, not inferred
+// from the tier — see quinnVerdictFor below (#173).
+let quinnLocalRan = false
+
+// ──── QUINN-VERDICT-START ────
+/**
+ * What this run can honestly say Quinn's verdict was.
+ *
+ * #173: the commit step used to tell scripts/record-build-commit.ts that the
+ * verdict was PASS whenever the ceremony tier was anything but LIGHT, and SKIP
+ * otherwise. That is the tier talking, not Quinn — it reads PASS whenever
+ * Quinn was *supposed* to run, including the paths where the agent came back
+ * with something unusable. #169 adds call sites after the Verify phase, where
+ * a real FAIL is already in the file.
+ *
+ * A reply that is not one of the three verdicts is FAIL, not PASS: "Quinn did
+ * not tell us it passed" and "Quinn told us it passed" are different facts,
+ * and only one of them is a pass. A function with markers rather than an
+ * inline ternary so test/record-build-commit.test.ts can EXECUTE it — every
+ * source-text assertion in this repo has survived its first mutation.
+ */
+function quinnVerdictFor(ran, result) {
+  if (!ran) return 'SKIP'
+  const v = result && typeof result === 'object' ? result.result : undefined
+  return v === 'PASS' || v === 'FAIL' || v === 'SKIP' ? v : 'FAIL'
+}
+// ──── QUINN-VERDICT-END ────
 
 // Quinn local runs for ALL STANDARD+ tiers (spec: Layer 1, ceremony table: STANDARD = Quinn)
 if (discovery.ceremonyTier !== 'LIGHT') {
@@ -1540,6 +1567,7 @@ Do NOT screenshot after every browser_snapshot().
       if (validateAttempt >= 3) return { status: 'VALIDATE_FAILED', reason: 'Quinn agent unavailable', workDir: WORK_DIR }
       continue
     }
+    quinnLocalRan = true
 
     if (quinnLocalResult.result === 'PASS') {
       log('Quinn local: PASS')
@@ -1776,6 +1804,9 @@ log(`Marcus reported ${(implementResult.buildResult?.filesChanged || []).length}
 const gitAddForCommit = alreadyStaged
   ? 'git diff --cached --quiet && echo "NOTHING_STAGED" || true'
   : gitDerivedStaging(commitDir)
+// What Quinn said, as opposed to what the ceremony tier implies she would have
+// said if she had run (#173).
+const quinnLocalVerdict = quinnVerdictFor(quinnLocalRan, quinnLocalResult)
 const commitResult = await agent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
@@ -1800,7 +1831,7 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
      --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
      --sha "$sha" --branch "$branch" \\
-     --quinn ${shellQuote(discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP')} \\
+     --quinn ${shellQuote(quinnLocalVerdict)} \\
      --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
      --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
 

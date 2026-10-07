@@ -158,11 +158,20 @@ describe("evidence-requirements: mechanical evidence checks", () => {
       "utf-8",
     );
     expect(recorder).toContain("local: {");
-    for (const field of ["api", "ui", "tests"]) {
+    for (const field of ["api", "ui"]) {
       expect(recorder, `the recorder no longer writes environments.local.${field}`).toMatch(
         new RegExp(`\\b${field}[,:]`),
       );
     }
+    // `tests` is NOT in that list any more (#173). It was the literal string
+    // "PASS" written by a script that runs no tests, over the top of whatever
+    // the Verify phase measured — so this asserts its absence, not its
+    // presence. The `tests-pass` check in gates/workflow.test.ts reads this
+    // field, which is what made the constant load-bearing.
+    expect(
+      recorder.match(/tests:\s*['"]PASS['"]/g) || [],
+      "the recorder is inventing a test verdict again",
+    ).toEqual([]);
   });
 
   test("ER-1a: the recorder actually writes environments.local", () => {
@@ -173,6 +182,10 @@ describe("evidence-requirements: mechanical evidence checks", () => {
     const dir = mkdtempSync(join(tmpdir(), "er1-"));
     try {
       const state = join(dir, "workflow-state.json");
+      // The suite result is already in the file, measured by the Verify phase.
+      // #173: the recorder used to replace `environments.local` wholesale and
+      // set tests to a constant PASS, so this fixture carries a FAIL — the
+      // value the old code destroyed.
       writeFileSync(state, JSON.stringify({
         schemaVersion: 2, issue: 166, slug: "er-1", phase: "BUILD",
         issueGoal: "environment evidence is recorded after the commit",
@@ -182,6 +195,7 @@ describe("evidence-requirements: mechanical evidence checks", () => {
           threshold: { op: "==", value: 0, unit: "exit code" },
           evidenceMethod: { type: "BUN_TEST" },
         }],
+        environments: { local: { tests: "FAIL" } },
       }));
       const r = spawnSync("bun", [
         join(import.meta.dir, "..", "scripts", "record-build-commit.ts"),
@@ -192,7 +206,7 @@ describe("evidence-requirements: mechanical evidence checks", () => {
       expect(r.status, r.stderr ?? "").toBe(0);
       const written = JSON.parse(readFileSync(state, "utf-8"));
       expect(written.environments.local).toEqual({
-        api: "PASS", ui: "SKIP", uiSkipReason: "No UI configured", tests: "PASS",
+        api: "PASS", ui: "SKIP", uiSkipReason: "No UI configured", tests: "FAIL",
       });
     } finally {
       rmSync(dir, { recursive: true, force: true });
