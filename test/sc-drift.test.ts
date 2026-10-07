@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
 import { join } from "path";
-import { detectDrift } from "../scripts/detect-sc-drift";
+import { detectDrift, extractKeywords } from "../scripts/detect-sc-drift";
 
 const ROOT = join(import.meta.dir, "..");
 const TEMP_DIR = join(ROOT, ".tmp-sc-drift-test");
@@ -152,5 +152,79 @@ doc-type: spec
     const stale = result.stale.get("test-no-refs.md");
     expect(drift).toBeUndefined();
     expect(stale).toBeUndefined();
+  });
+});
+
+/**
+ * `contains [a, b]` is two requirements (#141)
+ *
+ * `extractKeywords` returned the bracket contents as one string, so a
+ * multi-keyword SC was searched for the literal text `"resolveSyncPaths,
+ * harnessRoot"` — comma and space included — which no source file contains.
+ * Every multi-keyword SC was therefore reported stale regardless of the file,
+ * and `sync-sc-status.ts` refuses to flip a stale SC. A criterion the
+ * conformity engine had just PASSED could not be marked done, and the printed
+ * reason was "keyword missing from file", which is not what was wrong.
+ */
+describe("#141: keyword extraction", () => {
+  test("a comma-separated list is separate keywords, not one literal", () => {
+    expect(extractKeywords("x.ts contains [resolveSyncPaths, harnessRoot]")).toEqual([
+      "resolveSyncPaths",
+      "harnessRoot",
+    ]);
+  });
+
+  test("a single keyword is unchanged", () => {
+    expect(extractKeywords("x.ts contains [onlyOne]")).toEqual(["onlyOne"]);
+  });
+
+  test("`not contains` is an absence clause and yields nothing", () => {
+    // This detector only answers "a file exists but lacks a term it should
+    // have". Read as a positive requirement it inverts the SC: SC-539 says
+    // ship.js must NOT contain `git merge ${worktreeBranch}`, and the
+    // detector reported it stale for being correct.
+    expect(extractKeywords("workflows/ship.js not contains [git merge]")).toEqual([]);
+  });
+
+  test("a positive clause alongside a negative one still extracts", () => {
+    expect(
+      extractKeywords("hooks/x.ts contains [redactSecrets] and not contains [} catch {}]"),
+    ).toEqual(["redactSecrets"]);
+  });
+
+  test("a statement with no contains clause yields nothing", () => {
+    expect(extractKeywords("lib/real-file.ts exists")).toEqual([]);
+  });
+});
+
+describe("#141: a multi-keyword SC is only stale for the terms it is missing", () => {
+  test("every missing term is named, and a present one is not", () => {
+    mkdirSync(join(TEMP_DIR, "workflows"), { recursive: true });
+    writeFileSync(join(TEMP_DIR, "workflows", "multi.ts"), "export const present = 1;\n");
+    writeFileSync(
+      join(TEMP_SPECS, "test-multi.md"),
+      `# Multi\n\n- [ ] SC-500: workflows/multi.ts contains [present, absentOne, absentTwo]\n`,
+    );
+
+    const result = detectDrift(TEMP_SPECS, TEMP_DIR);
+    const stale = result.stale.get("test-multi.md")!;
+
+    expect(stale).toBeDefined();
+    // Before the fix this read the whole bracket string back; a reader who
+    // fixed one term and re-ran would discover the next one by iteration.
+    expect(stale[0].keyword).toBe("absentOne, absentTwo");
+  });
+
+  test("an SC whose terms are all present is not stale at all", () => {
+    writeFileSync(join(TEMP_DIR, "workflows", "allthere.ts"), "alpha beta gamma\n");
+    writeFileSync(
+      join(TEMP_SPECS, "test-allthere.md"),
+      `# All\n\n- [ ] SC-501: workflows/allthere.ts contains [alpha, beta, gamma]\n`,
+    );
+
+    const result = detectDrift(TEMP_SPECS, TEMP_DIR);
+    // The failure that blocked #141: this was stale because it searched for
+    // "alpha, beta, gamma" as one string.
+    expect(result.stale.get("test-allthere.md")).toBeUndefined();
   });
 });

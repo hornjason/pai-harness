@@ -33,12 +33,25 @@ export interface UncheckedSC {
   specFile: string;
 }
 
+/**
+ * The template's SCs are placeholders, not criteria (#148).
+ *
+ * `findDuplicateSCIds` already skipped it; the scan the flipper reads from did
+ * not, so `- [ ] SC-1: [first criterion]` was eligible to be ticked — and was.
+ * Every spec created from a ticked template inherits a criterion that is done
+ * before anyone writes it.
+ */
+export function isTemplateSpec(specFile: string): boolean {
+  return specFile.includes("SPEC-TEMPLATE");
+}
+
 export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
   const dir = specsDir || SPECS_DIR;
   const unchecked: UncheckedSC[] = [];
   if (!existsSync(dir)) return unchecked;
 
   for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
+    if (isTemplateSpec(file)) continue;
     const content = readFileSync(join(dir, file), "utf-8");
     for (const match of content.matchAll(/^- \[ \] (SC-\d+):\s*(.+)$/gm)) {
       unchecked.push({ id: match[1], statement: match[2].trim(), specFile: file });
@@ -47,16 +60,50 @@ export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
   return unchecked;
 }
 
+/**
+ * Does this text name this SC, as opposed to a longer one starting with it?
+ *
+ * `content.includes("SC-1")` is true of any file mentioning `SC-144`, so
+ * eighteen test files were credited as covering `SC-1` and none of them
+ * mentioned it (#148). The trailing boundary is "not another digit" rather
+ * than `\b`, because `SC-1` is followed by `:`, `,`, `)` or end-of-line in
+ * every real reference and `\b` would accept `SC-1` inside `SC-1A` — but a
+ * digit is the only character that makes it a different ID.
+ */
+export function scMentionPattern(id: string): RegExp {
+  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
+}
+
+/**
+ * Remove the mentions that are fixture data rather than coverage claims (#149).
+ *
+ * Tests of the spec tooling embed spec lines and SC records as input. They
+ * assert how an SC is parsed, flipped or scanned — nothing about the criterion
+ * the ID names. Seven files carried `- [ ] SC-1: …` or `id: "SC-1"` as fixture
+ * text, and between them they certified a real unimplemented bootstrap
+ * criterion as done.
+ *
+ * Only these two shapes are stripped. Anything else — a mention in a test
+ * title, a header comment — still counts, because that is this project's
+ * existing convention for declaring which criteria a file covers. Replacing
+ * the convention itself is #149.
+ */
+export function stripFixtureMentions(content: string): string {
+  return content
+    .replace(/- \[[ x]\] SC-\d+/g, "")
+    .replace(/\bid:\s*["']SC-\d+["']/g, "");
+}
+
 export function findTestFilesForSCs(scIds: Set<string>, testDir?: string): Map<string, string[]> {
   const dir = testDir || TEST_DIR;
   const testFileToSCs = new Map<string, string[]>();
   if (!existsSync(dir)) return testFileToSCs;
 
   for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
-    const content = readFileSync(join(dir, file), "utf-8");
+    const content = stripFixtureMentions(readFileSync(join(dir, file), "utf-8"));
     const foundSCs: string[] = [];
     for (const id of scIds) {
-      if (content.includes(id)) foundSCs.push(id);
+      if (scMentionPattern(id).test(content)) foundSCs.push(id);
     }
     if (foundSCs.length > 0) {
       testFileToSCs.set(file, foundSCs);
@@ -97,7 +144,7 @@ export function scopedKey(specFile: string, id: string): string {
 export function findDuplicateSCIds(scs: UncheckedSC[]): Map<string, string[]> {
   const idToSpecs = new Map<string, string[]>();
   for (const sc of scs) {
-    if (sc.specFile.includes("SPEC-TEMPLATE")) continue;
+    if (isTemplateSpec(sc.specFile)) continue;
     const specs = idToSpecs.get(sc.id) || [];
     if (!specs.includes(sc.specFile)) specs.push(sc.specFile);
     idToSpecs.set(sc.id, specs);

@@ -22,7 +22,7 @@ function sliceBetween(src: string, start: string, end: string): string {
 
 describe("ceremony-tier: Quinn gating matches spec", () => {
 
-  test("SC-1: Quinn local gates on ceremonyTier, not hasUIChanges", () => {
+  test("CHAIN-1: Quinn local gates on ceremonyTier, not hasUIChanges", () => {
     // Spec Layer 1: "Quinn validates on local dev"
     // Ceremony table: STANDARD = Quinn, THOROUGH = Quinn + Rook
     // Quinn local MUST NOT gate on file extensions — backend fixes with UI impact need Quinn too
@@ -31,7 +31,7 @@ describe("ceremony-tier: Quinn gating matches spec", () => {
     expect(validateSection).toContain("ceremonyTier !== 'LIGHT'");
   });
 
-  test("SC-2: Container Quinn gates on ceremonyTier, not hasUIChanges", () => {
+  test("CHAIN-2: Container Quinn gates on ceremonyTier, not hasUIChanges", () => {
     // Spec Layer 2: "make test-up → Quinn validates on container"
     // Must gate on ceremonyTier !== 'LIGHT', not file type checks
     const verifySection = sliceBetween(SHIP_JS, "PHASE 7: VERIFY", "PHASE 8: SHIP");
@@ -39,7 +39,7 @@ describe("ceremony-tier: Quinn gating matches spec", () => {
     expect(verifySection).not.toContain("hasUIChanges");
   });
 
-  test("SC-3: Rook gates on ceremonyTier", () => {
+  test("CHAIN-3: Rook gates on ceremonyTier", () => {
     // Ceremony table: THOROUGH = Quinn + Rook parallel
     // Spec line 94 says "STANDARD+ tiers" — conflict with ceremony table
     // Code follows ceremony table (THOROUGH only) — this test documents current behavior
@@ -47,12 +47,12 @@ describe("ceremony-tier: Quinn gating matches spec", () => {
     expect(verifySection).toMatch(/ceremonyTier.*===.*'THOROUGH'/);
   });
 
-  test("SC-4: LIGHT tier skips scope gate", () => {
+  test("CHAIN-4: LIGHT tier skips scope gate", () => {
     // SKILL.md: "LIGHT tier: scope gate is skipped"
     expect(SHIP_JS).toMatch(/skipScope\s*=\s*discovery\.ceremonyTier\s*===\s*'LIGHT'/);
   });
 
-  test("SC-5: LIGHT tier gets simplified log when Quinn skipped", () => {
+  test("CHAIN-5: LIGHT tier gets simplified log when Quinn skipped", () => {
     expect(SHIP_JS).toContain("Quinn local: SKIPPED (LIGHT tier)");
   });
 });

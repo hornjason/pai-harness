@@ -41,7 +41,9 @@ function makeProject(): string {
   const root = mkdtempSync(join(tmpdir(), "conformity-readonly-"));
   mkdirSync(join(root, "specs"), { recursive: true });
   writeFileSync(join(root, "specs", "FIXTURE-SPEC.md"), SPEC);
-  // Makes SC-1 pass, so the old afterAll would have had something to flip.
+  // Makes the fixture's criterion pass, so the old afterAll would have had
+  // something to flip. Named obliquely on purpose: a bare SC ID in a comment
+  // is read as a coverage claim by scripts/sync-sc-status.ts (#149).
   writeFileSync(join(root, "AGENTS.md"), "# fixture\n");
   return root;
 }

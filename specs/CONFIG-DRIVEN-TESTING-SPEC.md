@@ -88,6 +88,73 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [x] SC-398: All RunGate specs at compliance: strict — zero unmatched SCs (behavioral)
 - [x] SC-399: AGENTS.md Commands table includes `rungate create-sc` — one-line instruction, no pattern docs needed in agent context
 
+### The generator read a different repository (#141)
+
+`scripts/sync-spec-tests.ts` computed its own harness root —
+`process.env.HARNESS_ROOT || ~/.claude` — and looked for specs in `PAI/Specs`.
+Nothing exports `HARNESS_ROOT`, so the default applied and it read
+`~/.claude/PAI/Specs` and wrote `~/.claude/test/`, while `lib/paths.ts`
+`harnessRoot()` resolved to this checkout. Both directories exist, so it read a
+real spec tree and wrote a real test file on every gate, and reported success.
+
+One correction to how this was first described: fixing the path does NOT make
+success criteria generate tests, because this generator never did that. It
+extracts four hardcoded claim shapes — `` `make x` ``, `**GATE:**`, ports, and
+Quinn plus a verb. SC-to-test is `scripts/sync-sc-status.ts`, which reads
+`specs/` correctly and always has. What was lost was the claim extraction, on
+18 testable specs.
+
+- [x] SC-544: scripts/sync-spec-tests.ts contains [resolveSyncPaths, harnessRoot, "specs"]
+- [x] SC-545: scripts/sync-spec-tests.ts contains [import.meta.main] — importing it for its path helpers must not rewrite a test file
+- [x] SC-546: test/spec-compliance-auto.test.ts contains [harnessRoot, Source: specs/] — the generated file resolves paths at run time instead of baking in whoever last ran it
+- [x] SC-547: test/sync-spec-tests-paths.test.ts contains [resolveSyncPaths, HARNESS_ROOT]
+- [x] SC-551: test/sync-spec-tests-paths.test.ts contains [running it as a script, sentinel, spawnSync] — the root the script picks for ITSELF is proven by running it, because every assertion that passes a root in cannot see the default that caused #141
+
+### An SC ID was matched as a substring (#148)
+
+`findTestFilesForSCs` asked `content.includes(id)`. `"SC-1"` is a substring of
+`SC-144`, so eighteen test files were credited as covering `SC-1` and not one
+of them mentioned it. One passing run of any of the eighteen ticked `SC-1`
+wherever it was unchecked: `specs/SPEC-TEMPLATE.md:190`, the literal
+placeholder `- [ ] SC-1: [first criterion]`, and a real unimplemented
+bootstrap criterion. A ticked template means every spec generated from it
+inherits a criterion that is done before anyone writes it.
+
+The mistake conceals itself. Once an SC reads `[x]` it leaves
+`findUncheckedSCs` and is never evaluated again, so nothing re-examines it.
+
+`findDuplicateSCIds` already skipped the template; the scan the flipper reads
+from did not. The intent existed and was applied in one place out of two.
+
+- [x] SC-548: scripts/sync-sc-status.ts contains [scMentionPattern] and not contains [content.includes(id)] — an SC ID matches as a whole token, so a longer ID's test cannot certify a shorter one
+- [x] SC-549: scripts/sync-sc-status.ts contains [isTemplateSpec, SPEC-TEMPLATE] — the template placeholder is never a candidate for flipping
+- [x] SC-550: test/sync-sc-status-matching.test.ts contains [SHORTEST_ID, SPEC-TEMPLATE, first criterion] — the substring collision and the template exclusion are each pinned by a case that fails without the fix
+
+### Fixture data was read as a coverage claim (#149, partial)
+
+Fixing the substring match was not enough to stop the harm, which is why this
+landed with #148 rather than after it. Seven test files of the *spec tooling*
+carried `- [ ] SC-1: …` or `id: "SC-1"` as input data, and `test/spec-compliance.test.ts`
+used `SC-1`..`SC-5` as local sequence numbers for a spec
+(`HARNESS-SKILL-CHAIN.md`) that has no success criteria at all. Between them
+they certified a real unimplemented bootstrap criterion — and four others —
+as done.
+
+Two shapes are now stripped before the lookup: a spec checkbox line, and an
+`id: "SC-N"` record. Nothing else. A mention in a test title or a header
+comment is still a claim, because that is this project's existing convention
+for declaring coverage.
+
+What did NOT land, and is still #149: the convention itself. "A test file
+mentions the ID" is not a sound coverage signal, and `findTestFilesForSCs`
+receives IDs without spec files, so it cannot apply the `scopedKey` discipline
+every other part of this tool uses. Making a test declare which spec it covers
+is a contract change and needs review, not an unattended patch.
+
+- [x] SC-552: scripts/sync-sc-status.ts contains [stripFixtureMentions] — a spec line embedded as test input is not a claim about the criterion it names
+- [x] SC-553: test/spec-compliance.test.ts contains [CHAIN-1] and not contains [test("SC-] — a test file may not use SC numbering that belongs to no spec, because the flipper cannot tell a local label from a reference
+- [x] SC-554: test/sync-sc-status-matching.test.ts contains [claimed by nothing] — the outcome is asserted, not just the mechanism: the real bootstrap criterion is credited to no test file
+
 ## Implementation
 
 ### Phase A: SC Classification
