@@ -1938,7 +1938,9 @@ function rookGateVerdict(scope, rook) {
     failures.push(`the review scope could not be established: scripts/rook-review-scope.ts reported exit ${describe(scope.exitCode)}`)
   } else if (!Array.isArray(scope.files)) {
     failures.push(`the review scope is not a list of files (got ${describe(scope.files)}) — refusing to treat an unreadable scope as a reviewed one`)
-  } else if (scope.files.length === 0) {
+  } else if (scope.files.filter(f => typeof f === 'string' && f.trim() !== '').length === 0) {
+    // Counted, not `.length` — `[""]` and `[null]` are the same absence of a
+    // reviewed scope as `[]`, and length cannot tell them apart.
     failures.push('the review scope is empty — the security review read zero files, so its verdict says nothing about this change (#129)')
   }
 
@@ -2126,6 +2128,16 @@ async function runRookReview() {
 // SHA, and it exits non-zero on an empty or unresolvable scope. Its exit code
 // is half of the gate verdict below, so "the scope could not be established"
 // cannot be mistaken for "the scope was clean".
+//
+// WHERE THIS STOPS, stated rather than implied. The sandbox cannot exec or
+// read files (#69), so the script's exit code reaches this file by way of an
+// agent reporting it. What that buys is a different agent from the reviewer,
+// running a fixed command, with no stake in the verdict — not a cryptographic
+// boundary. An agent that misreports exit 0 and invents a file list defeats
+// it. The defect being fixed is systematic (every run reviewed an empty diff),
+// not adversarial, and this is the strongest form available inside #69; a
+// stronger one needs the scope written where the workflow can read it without
+// an agent in between.
 if (!reviewSha) {
   log('SECURITY: no commit SHA to pin the review to — the review cannot be scoped, and the run is blocked (#129)')
   securityVerdict = rookGateVerdict(null, null)

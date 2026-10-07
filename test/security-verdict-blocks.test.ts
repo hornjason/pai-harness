@@ -247,6 +247,17 @@ describe("AC-6: the scope determination fails closed", () => {
     ["files as a string", { exitCode: 0, files: "a.ts" }],
     ["files as an object", { exitCode: 0, files: { 0: "a.ts" } }],
     ["files empty", { exitCode: 0, files: [] }],
+    // A list whose entries are not usable paths is the same absence of a
+    // reviewed scope as an empty list, and `files.length` cannot tell them
+    // apart. Found by security review of this change: the earlier draft
+    // filtered to non-blank strings before counting and this one dropped it,
+    // which is a fail-open inside a function whose contract is to fail closed
+    // everywhere.
+    ["files containing only an empty string", { exitCode: 0, files: [""] }],
+    ["files containing only whitespace", { exitCode: 0, files: ["   ", "\t"] }],
+    ["files containing nulls", { exitCode: 0, files: [null, null] }],
+    ["files containing numbers", { exitCode: 0, files: [1, 2] }],
+    ["files containing nested arrays", { exitCode: 0, files: [["a.ts"]] }],
   ];
 
   for (const [label, scope] of MALFORMED) {
@@ -259,6 +270,16 @@ describe("AC-6: the scope determination fails closed", () => {
       expect(v.failures.length).toBeGreaterThan(0);
     });
   }
+
+  test("a usable path beside an unusable one is still a scope", () => {
+    // The positive control for the filter above. A stricter rule — "every
+    // entry must be a non-blank string" — would reject this, and then the
+    // whole matrix would pass for a reason that has nothing to do with
+    // emptiness. git produces clean paths; the filter exists to stop a
+    // report of nothing from counting as a report of something.
+    const v = rookGateVerdict({ exitCode: 0, files: ["", "lib/a.ts"] }, { result: "PASS" });
+    expect(v.verdict).toBe("PASS");
+  });
 
   test("a missing rook result is a FAIL, not a skip", () => {
     for (const rook of [undefined, null, {}, { result: "MAYBE" }, { result: "SKIP" }]) {

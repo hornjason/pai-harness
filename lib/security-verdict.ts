@@ -120,7 +120,13 @@ export function rookGateVerdict(scope: unknown, rook: unknown): SecurityVerdict 
       `the review scope is not a list of files (got ${describe(scope.files)}) — ` +
         `refusing to treat an unreadable scope as a reviewed one`,
     );
-  } else if (scope.files.length === 0) {
+  } else if (scope.files.filter(f => typeof f === "string" && f.trim() !== "").length === 0) {
+    // Counted, not `.length`. A report of `[""]` or `[null]` is the same
+    // absence of a reviewed scope as `[]`, and length cannot tell them apart —
+    // a fail-open inside the one function whose contract is to fail closed
+    // everywhere. Entries are filtered rather than the whole report rejected:
+    // git produces clean paths, so a stray blank beside a real path is noise,
+    // not evidence that nothing was reviewed.
     failures.push(
       "the review scope is empty — the security review read zero files, so its verdict " +
         "says nothing about this change (#129)",
