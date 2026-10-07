@@ -346,6 +346,35 @@ an allowlist that forgets to quote still executes a substitution.
 - [x] SC-559: workflows/ship.js contains [collectDestination, COLLECT-DESTINATION-START] and not contains [cd ${dest}] — a destination is allowlisted and quoted, never sanitised into something that looks acceptable
 - [x] SC-560: test/ship-collect-destination.test.ts contains [loadCollectDestination, new Function, shellQuote(dest)] — the validator is executed rather than grepped, because "ship.js contains collectDestination" stays true after the body is reduced to `return dir`
 
+The collection above was wired into both loops and still discarded the work,
+because what it was handed was `undefined`. `runImplement()` built
+`agentResults` only on its decomposed sub-issue path; the single-Marcus path —
+which is the one EVERY remediation round runs — returned a `buildResult`
+without it. `results || []` then defaulted to an empty list, found no worktree
+to move from, and returned `{ok: true, collected: 0}` without spawning
+anything. `staged` was false, so the caller fell back to staging `commitDir`,
+and `commitDir` is the first pass's worktree, where the new work is not.
+
+Measured twice on `wf_14bb327b-5d2`: both recommit steps reported
+`RUNGATE_NO_CHANGES` against an unmoved HEAD, and the best of that run's three
+implementations was thrown away — recovered by hand from its worktree.
+
+`{ok: true, collected: 0}` was serving two different situations: "there was
+nothing to collect" and "I was never told what to collect". Only the first is
+a success, and the second was the one actually happening. The fix is at the
+source — one return shape from both of `runImplement`'s paths — and the
+refusal is the other half of it, because a shape fix alone leaves the next
+caller free to make the same omission silently.
+
+"ship.js contains collectAgentWork" stayed true for the whole time the
+collector was being handed `undefined`, so the criteria below are carried by a
+suite that EXECUTES the collector and `runImplement` with injected
+dependencies, in the manner of SC-560.
+
+- [x] SC-571: workflows/ship.js contains [agentResults: [{, One shape for both of runImplement's paths] — runImplement's single-agent success pairs its own worktree with its own filesChanged, so a remediation round hands the collector the same shape the decomposed path does
+- [x] SC-572: workflows/ship.js contains [!Array.isArray(results), a caller that cannot say what to collect is a failure] — the collector refuses a caller that did not say what to collect, while an empty list stays an ordinary success, so the two situations stop sharing one answer
+- [x] SC-573: test/ship-remediation-commits.test.ts contains [loadCollectAgentWork, loadRunImplement, new Function] — the collector and runImplement are extracted and run, because a source-text assertion is exactly what failed to notice this for the length of #155
+
 **Output:** Code committed, tests passing, deployed to test environment.
 
 **Quality bar:** Read project CLAUDE.md for test commands. Tests pass with 0 failures. Code deployed and reachable.

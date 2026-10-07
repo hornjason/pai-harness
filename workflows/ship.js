@@ -1298,7 +1298,27 @@ Also report worktreePath: your current working directory (run pwd and include th
     return { success: false, buildResult }
   }
   log(`IMPLEMENT SUCCESS — ${(buildResult.filesChanged || []).length} files changed`)
-  return { success: true, buildResult }
+  // One shape for both of runImplement's paths (#162). runDecomposedShip
+  // builds `agentResults` — this path did not, and this path is the one EVERY
+  // remediation round runs. `collectAgentWork(undefined, …)` then defaulted to
+  // [], found nothing to move, and returned {ok:true, collected:0} without
+  // spawning anything; the caller staged `commitDir`, which is the FIRST
+  // pass's worktree, and the round's work was never committed. Measured twice
+  // on wf_14bb327b-5d2 — both recommits reported RUNGATE_NO_CHANGES against an
+  // unmoved HEAD, and the best of three implementations was thrown away.
+  //
+  // The pairing, not just the presence, is what matters: filesChanged has to
+  // travel with the worktree it is relative to, which is what #81 established.
+  return {
+    success: true,
+    buildResult: {
+      ...buildResult,
+      agentResults: [{
+        worktreePath: buildResult.worktreePath || '',
+        filesChanged: buildResult.filesChanged || [],
+      }],
+    },
+  }
 }
 
 // ──── DECOMPOSED-SHIP-START ────
@@ -1610,7 +1630,21 @@ function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNE
  * not assume a clean skip left anything behind either.
  */
 async function collectAgentWork(results, intoDir, phaseName, label) {
-  const list = results || []
+  // `results || []` used to serve two different situations under one answer
+  // (#162): "there is nothing to collect" and "I was never told what to
+  // collect". Only the first is a success, and the second was the one
+  // actually happening — every remediation round passed `undefined`, and the
+  // empty success it got back sent the caller on to stage a directory the
+  // work was not in. A caller that cannot say what to collect is a failure.
+  if (!Array.isArray(results)) {
+    return {
+      ok: false,
+      collected: 0,
+      staged: false,
+      detail: `refusing to collect: the caller passed no list of agent results (got ${results === null ? 'null' : typeof results}) — a caller that cannot say what to collect is a failure, not an empty success (#162)`,
+    }
+  }
+  const list = results
   const worktrees = [...new Set(list.map(r => r.worktreePath).filter(Boolean))]
   const elsewhere = worktrees.filter(w => w !== intoDir)
   if (elsewhere.length === 0) return { ok: true, collected: 0, staged: false }
