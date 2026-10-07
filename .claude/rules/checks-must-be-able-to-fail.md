@@ -92,7 +92,10 @@ the test rather than left as conventions:
   mutant die on module resolution — exiting non-zero, which reads as the
   mutation having been rejected on the merits.
 
-What was broken to prove it: setting the constant to `0` turns all eleven
-negative tests red, and separately, making the empty-scope branch return `[]`
-instead of throwing turns the four SC-568 tests red. Neither mutation is left
-in the tree; both were run and reverted.
+What was broken to prove it, run and counted rather than asserted: making the
+empty-scope branch stop throwing turns 3 tests red, and zeroing `REFUSE_EXIT`
+in the real source leaves the harness nothing to mutate, so it throws
+"could not build the mutant" and the whole file aborts instead of passing
+quietly. That second outcome is the point — a mutation harness that silently
+no-ops when its target moves is the decorative check this rule is about.
+Neither mutation is left in the tree; both were run and reverted.

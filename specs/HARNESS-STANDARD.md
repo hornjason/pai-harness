@@ -54,7 +54,7 @@ flowchart TD
     BASELINE_CHECK -->|"YES — drift detected"| GOAL_AUDIT
     BASELINE_CHECK -->|"NO — baselines valid"| VERIFICATION
 
-    VERIFICATION["5. VERIFICATION<br/>Default-FAIL — evidence required<br/>├ Every AC checked with evidence<br/>├ Full test suite (unit + integration)<br/>├ Quinn UI (if .tsx changed)<br/>├ Rook security (every ship run)<br/>├ Consumer contract (if consumer changed)<br/>├ Goal statement check<br/>└ Docs cascade check"]
+    VERIFICATION["5. VERIFICATION<br/>Default-FAIL — evidence required<br/>├ Every AC checked with evidence<br/>├ Full test suite (unit + integration)<br/>├ Quinn UI (if .tsx changed)<br/>├ Rook security (always — blocks on FAIL)<br/>├ Consumer contract (if consumer changed)<br/>├ Goal statement check<br/>└ Docs cascade check"]
     VERIFICATION --> RESULT
 
     RESULT{"All gates<br/>pass?"}
@@ -367,18 +367,73 @@ an allowlist that forgets to quote still executes a substitution.
 2. Full test suite: `bun test` (all tests in test/ directory)
 3. Tests pass on test env — read project CLAUDE.md for test port (e.g., 7776 for DailyBriefDashboard). Do not assume port.
 4. If UI change (any `.tsx` file modified) → spawn Quinn with Playwright MCP tools (browser_navigate, browser_snapshot, browser_take_screenshot)
-5. Spawn Rook (security scan on changed files) — every ship run, unconditionally. Rook derives its own scope from `git diff --name-only origin/main...HEAD`, so the step needs no inputs and no qualifier. Any qualifier on this step — ceremony tier, issue estimate, whether a `.tsx` changed — is how the review came to run 0 times across 3,555 workflow agents (#126, #127).
+5. Always → spawn Rook (security scan on the files git says changed). Not conditional on size and not conditional on having a UI: a CLI that shells out is the higher-risk surface, not the lower one. Gating this on ceremony tier meant rook was spawned 0 times across 3,555 workflow agents (#126, #127). Rook's scope is established from git before it is spawned, and an empty scope blocks the run — a PASS over zero files is an absent review, not a clean one (#129).
 6. If consumer change (read project PRINCIPLES.md consumer list; if any changed file is in consumer list → mandatory) → Consumer 4-layer verification (→ ~/.claude/skills/ship/SKILL.md)
 7. Goal statement check (→ `project_application_mission.md`)
 8. Docs cascade check (→ Ship SKILL.md DURABILITY matrix)
 
 **Output:** PASS/FAIL per AC with evidence. Completion report (→ ~/.claude/skills/ship/SKILL.md template).
 
-**Quality bar:** ALL ACs have evidence. ALL tests pass (zero tolerance). Quinn PASS if UI. Rook must PASS.
+**Quality bar:** ALL ACs have evidence. ALL tests pass (zero tolerance). Quinn PASS if UI. Rook PASS, always — a FAIL, an absent review, or a review whose scope could not be established all block the run and no PR is opened.
 
 **Handoff to ITERATION:** PASS → close issue, go to FEEDBACK. FAIL → enter ITERATION.
 
 **Reference:** → Ship SKILL.md VERIFY step. → ~/.claude/skills/ship/SKILL.md completion report template. → ~/.claude/PAI/Testing/QUINN-STANDARD.md for Quinn protocol.
+
+### The security review can fail the run (#129)
+
+Rook's verdict was computed, logged and graded, and read by nothing that could
+stop anything. The merge decision consulted only `verifyResult`.
+
+Measured twice on live runs before this was written. On `wf_7c91ba3a-a22` rook
+returned `{"result":"FAIL"}` carrying a reproduced HIGH guard bypass; the
+workflow returned `SHIPPED` and opened a PR. The verdict reached the run
+summary only as a compliance grade — which measures whether rook followed its
+brief, not what it found. On `wf_67f052e6-1a5` rook returned FAIL with two
+HIGHs and the run stopped on an unrelated ship-gate failure; remove that and it
+ships them. A third run, the one that produced this change, did it again.
+
+A second and independent cause sat underneath. `roles.json` gives rook
+`"isolation": "worktree"`, and that worktree is cut from `origin/main`, so
+`git diff --name-only origin/main...HEAD` inside it is **empty**. Both runs
+said so in rook's own words, and both found anything at all only because rook
+reconstructed a scope on its own initiative. "Found no problems in nothing" and
+"found no problems" serialise identically, so an empty scope was a PASS.
+
+So the scope is established from git by a separate step before the reviewer is
+spawned, pinned to a validated commit SHA, and an empty or unresolvable scope
+exits non-zero. The verdict combines that exit code with rook's answer and
+fails closed on both — a scope that could not be established cannot be mistaken
+for a scope that was clean.
+
+There is no warn-only mode and no config switch to disable the block. A gate
+with an off switch is this defect one indirection out. Blocking is cheap to
+reverse in practice: the work stays on `origin/<shipBranch>`, nothing is
+discarded, and the run can be re-driven once the finding is addressed.
+
+- [x] SC-566: workflows/ship.js contains [SECURITY-DECISION-START, securityVerdict.verdict !== 'PASS'] — the verdict is read at the point that decides whether the run proceeds, and anything that is not a positive PASS stops it before the PR step
+- [x] SC-567: workflows/ship.js contains [rookReviewSha(commitResult.commitSha), The review scope has already been established from git] — the reviewer is pinned to a commit the workflow validated, instead of diffing the HEAD of whatever worktree it was handed
+- [x] SC-568: scripts/rook-review-scope.ts contains [REFUSE_EXIT, an empty diff] — the scope comes from git in a step that exits non-zero on an empty or unresolvable scope, so emptiness is not something the agent being reviewed gets to report
+- [x] SC-569: scripts/record-security-verdict.ts contains [buildRookRecord, failureList] — the run artefact records whether security ran and what it said, built from a findings file rather than from text interpolated into a command
+- [x] SC-570: test/harness-standard-security.test.ts contains [carriesSizeCondition, dropNegatedConditions, the matcher still catches a real size condition] — this section's security step is asserted to carry no size qualifier, by a matcher with a positive control, so widening the negation stripper cannot make it pass vacuously
+
+What was broken to prove these fail — run, counted, reverted:
+
+| mutation | result |
+|---|---|
+| the empty-scope branch stops throwing (`if (false)`) | 3 fail |
+| the fail-closed initialiser flipped to `verdict: 'PASS'` | 1 fail |
+| the decision branch neutralised (`if (false)`) | 3 fail |
+| `REFUSE_EXIT = 0` in the real source | the suite refuses to build its mutant and the file aborts |
+
+The last row is the guard on the guard. Every negative scope case runs twice —
+the real script and a copy with `REFUSE_EXIT` set to `0` — and asserts the real
+one refuses while the copy does not. Zeroing the real constant leaves nothing
+to mutate, so rather than passing quietly the harness fails loudly. Two
+properties make that work and both are asserted rather than assumed:
+`REFUSE_EXIT` is assigned exactly once, and the script has no relative imports,
+so the mutant can run from a temp directory instead of dying on module
+resolution and reading as a refusal on the merits.
 
 ---
 
@@ -561,7 +616,7 @@ FEEDBACK    → ratings.jsonl + memories + docs + closed issue
 | PLANNING | `Skill("grill-with-docs")` | M+ size |
 | PLANNING | `Skill("to-prd")` → `Skill("to-issues")` | L size |
 | EXECUTION | `Skill("ship")` → `Skill("tdd")` → `Skill("simplify")` → `npx fallow` | Always |
-| VERIFICATION | verify workflow + Quinn + Rook | Always — Rook every run; Quinn when UI changed |
+| VERIFICATION | verify workflow + Quinn + Rook | Always — Rook every cycle, Quinn when there is a UI |
 | ITERATION | (built into this standard) | When verification fails |
 | FEEDBACK | `Skill("doc-hygiene")` | Always — docs must match what shipped |
 | FEEDBACK | (automatic — hooks) | Always |

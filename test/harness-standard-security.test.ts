@@ -40,6 +40,27 @@ const MENTIONS_SECURITY_REVIEW = /\brook\b|security\s+(review|scan)/i;
 const SIZE_CONDITION =
   /\b(?:X?[SML])\s*\+|\bif\s+(?:X?[SML])\b|\b(?:X?[SML])\s+size\b|\bsize\b|\bconditional\b|\bor\s+larger\b/i;
 
+/**
+ * Drop clauses that DENY a condition before looking for one.
+ *
+ * "Not conditional on size and not conditional on having a UI" is the spec
+ * saying exactly what SC-570 asks for, and a bag-of-tokens matcher reads it as
+ * the violation because the words `conditional` and `size` are in it. Same
+ * root shape as #141 and #158 in `detect-sc-drift`: a statement parsed as
+ * tokens rather than as a sequence of clauses. Each negation runs to the next
+ * sentence boundary, so only the denial is removed.
+ */
+function dropNegatedConditions(text: string): string {
+  return text
+    .replace(/\bnot\s+(?:conditional|gated|dependent)\s+on\s+[^.,;]*/gi, "")
+    .replace(/\bno\s+(?:size|tier)\s+(?:condition|gate|qualifier)[^.,;]*/gi, "");
+}
+
+/** The check SIZE_CONDITION is actually meant to apply. */
+function carriesSizeCondition(text: string): boolean {
+  return SIZE_CONDITION.test(dropNegatedConditions(text));
+}
+
 function securityLines(): { n: number; text: string }[] {
   return specLines
     .map((text, i) => ({ n: i + 1, text }))
@@ -66,7 +87,7 @@ describe("HARNESS-STANDARD.md security review is unconditional", () => {
 
   test("no line mentioning rook or the security review carries a size condition", () => {
     const offenders = securityLines()
-      .filter((l) => SIZE_CONDITION.test(l.text))
+      .filter((l) => carriesSizeCondition(l.text))
       .map((l) => `${SPEC_PATH}:${l.n}: ${l.text.trim()}`);
     expect(offenders).toEqual([]);
   });
@@ -80,13 +101,13 @@ describe("HARNESS-STANDARD.md security review is unconditional", () => {
   test("§5 process list spawns Rook unconditionally", () => {
     const step = lineContaining(/spawn Rook/i);
     expect(step.text).toMatch(/every ship run|always|unconditional/i);
-    expect(SIZE_CONDITION.test(step.text)).toBe(false);
+    expect(carriesSizeCondition(step.text)).toBe(false);
   });
 
   test("the Quality bar requires Rook PASS with no qualifier", () => {
     const bar = lineContaining("**Quality bar:** ALL ACs have evidence");
     expect(bar.text).toMatch(/Rook (must )?PASS/i);
-    expect(SIZE_CONDITION.test(bar.text)).toBe(false);
+    expect(carriesSizeCondition(bar.text)).toBe(false);
   });
 
   test("the VERIFICATION mermaid node shows the security review with no size condition", () => {
@@ -98,6 +119,31 @@ describe("HARNESS-STANDARD.md security review is unconditional", () => {
       .split("<br/>")
       .filter((seg) => MENTIONS_SECURITY_REVIEW.test(seg));
     expect(rookBranch.length).toBeGreaterThan(0);
-    expect(rookBranch.filter((seg) => SIZE_CONDITION.test(seg))).toEqual([]);
+    expect(rookBranch.filter((seg) => carriesSizeCondition(seg))).toEqual([]);
+  });
+
+  // Positive control for the negation stripper. Without these, widening
+  // `dropNegatedConditions` until nothing matches would turn every assertion
+  // above green while the spec still gated the review on size — the exact
+  // shape .claude/rules/checks-must-be-able-to-fail.md is about. These are
+  // fixtures, not spec text, so they assert the matcher rather than the file.
+  test("the matcher still catches a real size condition", () => {
+    for (const offender of [
+      "5. If M+ size → spawn Rook (security scan on changed files)",
+      "**Quality bar:** Rook PASS if M+",
+      "Rook security scan (M or larger)",
+      "spawn Rook, conditional on the ceremony tier",
+      "if L, run the security review",
+    ]) {
+      expect(carriesSizeCondition(offender)).toBe(true);
+    }
+  });
+
+  test("the negation stripper removes only the denial", () => {
+    expect(dropNegatedConditions("Always spawn Rook. Not conditional on size.")).not.toMatch(
+      /conditional|size/i,
+    );
+    // A denial in one clause must not launder a real condition in the next.
+    expect(carriesSizeCondition("Not conditional on having a UI; spawn Rook if M+")).toBe(true);
   });
 });

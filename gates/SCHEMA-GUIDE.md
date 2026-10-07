@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-07
+updated: 2026-09-14
 ---
 
 # workflow-state.json Schema Guide
@@ -74,13 +74,14 @@ Path must be absolute (starts with `/`) or relative to projectRoot. `~` is NOT e
 
 ## agents.rook
 
-The security reviewer's result lives at `agents.rook`. Three fields carry it:
+The security reviewer's result lives at `agents.rook`. Four fields carry it:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `spawned` | boolean | Whether rook actually ran on this ship run |
 | `verdict` | `PASS` \| `FAIL` \| `SKIP` \| `null` | The review outcome |
 | `failures` | string[] | One entry per blocking problem found |
+| `testedPaths` | string[] | The files git said changed — what was actually reviewed |
 
 **A `FAIL` verdict must carry a non-empty `failures` list.** A FAIL with an empty
 or absent list is a verdict nobody can act on — it blocks the run without naming
@@ -91,11 +92,15 @@ write time, so put one finding per entry rather than joining them into prose.
 { "agents": { "rook": {
   "spawned": true,
   "verdict": "FAIL",
-  "failures": ["secret logged at gates/run-gate.ts:120", "unvalidated path join in lib/github.ts"]
+  "failures": ["secret logged at gates/run-gate.ts:120", "unvalidated path join in lib/github.ts"],
+  "testedSha": "3192a75...", "testedPaths": ["gates/run-gate.ts", "lib/github.ts"]
 } } }
 ```
 
 A `PASS` or `SKIP` verdict may omit `failures` entirely.
+
+Write it with `scripts/record-security-verdict.ts`, not by hand — `workflows/ship.js`
+calls it in the Verify fan-out (#129).
 
 ## Changelog Actor Values
 
