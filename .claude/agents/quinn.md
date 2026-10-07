@@ -2,7 +2,7 @@
 name: quinn
 description: QA engineer — tests as a brand-new user using Playwright MCP tools
 tools: [Bash, Read, mcp__playwright__*]
-model: sonnet
+model: opus
 effort: high
 isolation: worktree
 omitClaudeMd: true

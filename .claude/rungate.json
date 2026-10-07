@@ -41,7 +41,7 @@
       "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence",
       "description": "QA engineer — tests as a brand-new user using Playwright MCP tools",
       "tools": "[Bash, Read, mcp__playwright__*]",
-      "model": "sonnet",
+      "model": "opus",
       "tiers": {
         "reinforcement": [
           "Project Type Detection",
@@ -55,7 +55,7 @@
       "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection",
       "description": "Security engineer — scans changed files for vulnerabilities",
       "tools": "[Bash, Read]",
-      "model": "sonnet"
+      "model": "opus"
     },
     "serena": {
       "brief": ".claude/agents/serena.md",
