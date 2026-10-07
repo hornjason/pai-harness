@@ -1553,9 +1553,41 @@ const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filt
 let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
 let alreadyStaged = false
 
-if (distinctWorktrees.length > 1) {
-  log(`Collecting work from ${distinctWorktrees.length} worktrees into ${PROJECT_ROOT} (#81)`)
-  const groupsJson = JSON.stringify(agentResults)
+// ──── COLLECT-AGENT-WORK-START ────
+/**
+ * Bring agents' work into the directory that is going to commit it.
+ *
+ * Two callers, one implementation, because the second one was missing and
+ * that cost two whole remediation rounds (#155). `commitDir` is fixed by the
+ * FIRST implement pass; a remediation round runs a new agent in a new
+ * worktree and the commit still ran `cd ${commitDir}`, so nothing was staged,
+ * `git commit` had nothing to commit, and the step reported the HEAD that was
+ * already there. Measured on wf_67f052e6-1a5: three Marcus passes, SHA never
+ * moved.
+ *
+ * Collecting into `intoDir` rather than rebasing the new worktree is
+ * deliberate. The remediation worktree is cut from origin/main, not from the
+ * ship branch, so it does not contain the round before it; replaying it onto
+ * the branch would conflict with the work it re-derived. Copying the changed
+ * files into the directory that owns the branch keeps history linear and has
+ * no merge to get wrong.
+ *
+ * Runs through an agent because the workflow sandbox provides no module
+ * loading (#69); scripts/collect-worktree-files.ts imports the real library
+ * so there is no second copy of the logic to drift.
+ *
+ * Returns { ok, collected, staged, detail }. `staged` is true only when the
+ * script ran and populated the index — the caller must not re-stage, and must
+ * not assume a clean skip left anything behind either.
+ */
+async function collectAgentWork(results, intoDir, phaseName, label) {
+  const list = results || []
+  const worktrees = [...new Set(list.map(r => r.worktreePath).filter(Boolean))]
+  const elsewhere = worktrees.filter(w => w !== intoDir)
+  if (elsewhere.length === 0) return { ok: true, collected: 0, staged: false }
+
+  log(`Collecting work from ${elsewhere.length} worktree(s) into ${intoDir} (#81, #155)`)
+  const groupsJson = JSON.stringify(list)
   // The script stages what it collects, in the process that validated it.
   // This step therefore reports an outcome; it does not hand back a file list.
   // Parsing paths out of an agent's reply would put a language model inside a
@@ -1571,19 +1603,19 @@ if (distinctWorktrees.length > 1) {
   // ship.js has no I/O in the sandbox (#69), so everything crossing back from
   // a script must pass through an agent. Removing the agent entirely needs the
   // sandbox to offer a direct exec primitive; tracked separately.
-  const collectOut = await agent(`
+  const out = await agent(`
 Run exactly this and report the result:
 
 cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
-cd ${PROJECT_ROOT} && bun scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${PROJECT_ROOT} ${PROJECT_ROOT}/.claude/worktrees ${HARNESS_ROOT}/.claude/worktrees
+cd ${intoDir} && bun ${HARNESS_ROOT}/scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${intoDir} ${PROJECT_ROOT}/.claude/worktrees ${HARNESS_ROOT}/.claude/worktrees
 
 Set ok to true ONLY if the command exited zero. Set collected to the number in
 its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
   `, {
-    label: 'collect-worktrees',
-    phase: 'Commit',
+    label,
+    phase: phaseName,
     schema: {
       type: 'object',
       properties: {
@@ -1596,20 +1628,32 @@ its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
   })
 
   // Fail closed: anything other than an explicit success with a positive count
-  // aborts. A malformed reply, a missing field, or a claim of success with
-  // nothing collected all land here rather than proceeding to commit.
-  if (!collectOut || collectOut.ok !== true || !(collectOut.collected > 0)) {
+  // is a failure. A malformed reply, a missing field, or a claim of success
+  // with nothing collected all land here rather than proceeding to commit.
+  if (!out || out.ok !== true || !(out.collected > 0)) {
+    return { ok: false, collected: 0, staged: false, detail: out?.detail || 'no usable result from the collect step' }
+  }
+  return { ok: true, collected: out.collected, staged: true }
+}
+// ──── COLLECT-AGENT-WORK-END ────
+
+if (distinctWorktrees.length > 1) {
+  // One implementation — see collectAgentWork above. The inline copy that
+  // used to live here is what let the remediation loops be written without
+  // one at all (#155).
+  const collected = await collectAgentWork(agentResults, PROJECT_ROOT, 'Commit', 'collect-worktrees')
+  if (!collected.ok) {
     return {
       status: 'SHIP_FAILED',
       issue: ISSUE,
-      reason: `Could not collect parallel worktree output (#81): ${collectOut?.detail || 'no usable result from the collect step'}`,
+      reason: `Could not collect parallel worktree output (#81): ${collected.detail}`,
       workDir: WORK_DIR,
     }
   }
   // Everything now lives in the project root and is already staged there.
   commitDir = PROJECT_ROOT
   alreadyStaged = true
-  log(`Collected and staged ${collectOut.collected} files into the project root`)
+  log(`Collected and staged ${collected.collected} files into the project root`)
 }
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP
@@ -1730,25 +1774,46 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify CODE regression #${regressionCount} — re-implementing failed ACs`)
     const reimpl = await runImplement()
     if (reimpl.success) {
+      // #155: this round ran in its OWN worktree. Collect it into the
+      // directory that owns the branch before committing, or the commit
+      // stages nothing and the round is silently discarded.
+      const gathered = await collectAgentWork(
+        reimpl.buildResult?.agentResults, commitDir, 'Verify', 'collect-verify-regression')
+      if (!gathered.ok) {
+        log(`Verify regression work could not be collected (#155): ${gathered.detail}`)
+      } else {
       // #120 was reported here: the re-implementation's filesChanged were
       // absolute paths inside its own agent worktree, relativizePaths knew
       // only baseDir and PROJECT_ROOT, and the commit was refused on a
       // completed fix. Staging from git status removes the file list from
       // the path entirely, so there is nothing left to relativize.
-      const reimplGitAdd = gitDerivedStaging(commitDir)
+      const reimplGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${commitDir} && ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
-Report commit SHA.
+cd ${commitDir}
+git rev-parse HEAD   # this is parentSha
+${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
+git rev-parse HEAD   # this is commitSha
+
+Report both SHAs exactly as git printed them. Do NOT invent a value for either
+one, and do NOT report the same SHA twice to make the step look successful —
+a round that committed nothing is a result this workflow needs to see (#155).
 
 The push target is explicit and is the branch this run is already on. Do not
 substitute another ref if it fails — report the failure instead (#136).
-      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
+      `, { label: 'recommit-verify', phase: 'Verify', schema: { type: 'object', properties: { commitSha: { type: 'string' }, parentSha: { type: 'string' } }, required: ['commitSha', 'parentSha'] } })
+      if (!reCommit || !reCommit.commitSha || reCommit.commitSha === reCommit.parentSha) {
+        // A SHA equal to the parent means nothing was committed. The old
+        // schema asked only for `commitSha`, so echoing the HEAD that was
+        // already there satisfied it — three times, on wf_67f052e6-1a5.
+        log(`Verify regression produced no commit (#155) — HEAD is still ${reCommit?.parentSha || 'unknown'}`)
+      }
       const retryVerify = await runGateWithHeal('verify', 'Verify',
         'Fix remaining verify gate failures.',
-        { cwd: reimpl.buildResult?.worktreePath || marcusWorktreePath })
+        { cwd: commitDir })
       if (retryVerify?.result === 'PASS') {
         log('Verify passed after BUILD regression fix')
+      }
       }
     }
   }
@@ -2164,16 +2229,32 @@ if (shipResult?.result !== 'PASS') {
     log(`Ship BUILD regression #${regressionCount} — re-implementing`)
     const reimpl = await runImplement()
     if (reimpl.success) {
-      const reimplShipGitAdd = gitDerivedStaging(commitDir)
+      // #155, same shape as the Verify remediation above.
+      const gathered = await collectAgentWork(
+        reimpl.buildResult?.agentResults, commitDir, 'Ship', 'collect-ship-regression')
+      if (!gathered.ok) {
+        log(`Ship regression work could not be collected (#155): ${gathered.detail}`)
+        return { status: 'SHIP_FAILED', reason: `BUILD regression work could not be collected: ${gathered.detail}`, issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+      }
+      const reimplShipGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
       const reCommit = await agent(`
 Do NOT run tests — they were already validated.
-cd ${commitDir} && ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push origin HEAD:${shipBranch}
-Report commit SHA.
+cd ${commitDir}
+git rev-parse HEAD   # this is parentSha
+${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push origin HEAD:${shipBranch}
+git rev-parse HEAD   # this is commitSha
+
+Report both SHAs exactly as git printed them. Do NOT invent a value for either
+one, and do NOT report the same SHA twice to make the step look successful —
+a round that committed nothing is a result this workflow needs to see (#155).
 
 The push target is explicit and is the branch this run is already on. Do not
 substitute another ref if it fails — report the failure instead (#136).
-      `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' } }, required: ['commitSha'] } })
-      const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.')
+      `, { label: 'recommit-ship', phase: 'Ship', schema: { type: 'object', properties: { commitSha: { type: 'string' }, parentSha: { type: 'string' } }, required: ['commitSha', 'parentSha'] } })
+      if (!reCommit || !reCommit.commitSha || reCommit.commitSha === reCommit.parentSha) {
+        log(`Ship regression produced no commit (#155) — HEAD is still ${reCommit?.parentSha || 'unknown'}`)
+      }
+      const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.', { cwd: commitDir })
       if (retryShip?.result === 'PASS') {
         log('Ship passed after BUILD regression fix')
       } else {

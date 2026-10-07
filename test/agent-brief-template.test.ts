@@ -134,9 +134,31 @@ describe("Agent Brief Template Tests", () => {
   describe("AC-5: Existing briefs produce identical output after agentMeta migration", () => {
     const agents = ["marcus", "quinn", "rook", "serena", "aditi", "discovery"];
 
+    /**
+     * The roles config the scaffold actually generated these briefs from.
+     *
+     * Both tests below used to read the HARNESS's own `.claude/rungate.json`
+     * while the briefs were generated from the fixture's scaffold defaults
+     * into `OUTPUT`. Those are different projects. They agreed only by
+     * coincidence, and the coincidence ended the moment rungate raised Quinn
+     * and Rook to opus for its own runs — two unrelated diffs in a test that
+     * is supposed to be about the fixture.
+     */
+    function generatedRoles(): Record<string, any> {
+      const path = join(OUTPUT, ".claude", "rungate", "roles.json");
+      const parsed = JSON.parse(readFileSync(path, "utf-8"));
+      return parsed.roles ?? parsed;
+    }
+
+    test("the scaffold wrote a roles config to compare against", () => {
+      // Positive control: without it both sweeps below iterate an empty
+      // object and pass having compared nothing.
+      const roles = generatedRoles();
+      expect(Object.keys(roles).sort()).toEqual([...agents].sort());
+    });
+
     test("all 6 generated briefs contain correct frontmatter from config", () => {
-      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      const config = { roles: generatedRoles() };
 
       for (const agent of agents) {
         const briefPath = join(OUTPUT, ".claude/agents", `${agent}.md`);
@@ -150,8 +172,7 @@ describe("Agent Brief Template Tests", () => {
     });
 
     test("generated briefs have 0 fail diff lines against expected frontmatter", () => {
-      const configPath = join(import.meta.dir, "..", ".claude", "rungate.json");
-      const config = JSON.parse(readFileSync(configPath, "utf-8"));
+      const config = { roles: generatedRoles() };
       let failDiffs = 0;
 
       for (const agent of agents) {
