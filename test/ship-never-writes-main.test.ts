@@ -1,7 +1,7 @@
 /**
  * The ship workflow does not write to the default branch (#136)
  *
- * SC-539..SC-543 (HARNESS-GATES.md)
+ * SC-539..SC-543 (HARNESS-STANDARD.md)
  *
  * A run finished `SHIPPED` with its code on `main` as a direct, non-merge
  * commit — no pull request, no pre-merge CI. Two faults stacked:

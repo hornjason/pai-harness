@@ -2,7 +2,7 @@
 name: rook
 description: Security engineer — scans changed files for vulnerabilities
 tools: [Bash, Read]
-model: sonnet
+model: opus
 effort: low
 isolation: worktree
 omitClaudeMd: true

@@ -303,6 +303,49 @@ only path.
 - [x] SC-542: workflows/ship.js contains [const shipBranch = branchToReuse, --head ${shipBranch}] — the PR head is derived from the run, not read back out of a checkout
 - [x] SC-543: lib/workflow-security.ts contains [isSafeBranchName, SAFE_BRANCH] and workflows/ship.js contains [isSafeBranchName(shipBranch)] — a branch name reaching a shell is validated, and both copies are executed against the same inputs
 
+### A remediation round's work reaches the branch (#155)
+
+`commitDir` is fixed by the FIRST implement pass. The verify and ship
+remediation loops call `runImplement()` again — a new agent in a new worktree
+— and then commit from `commitDir`, which still points at the old one. Nothing
+is staged, `git commit` has nothing to commit, and the step reports the HEAD
+that was already there, because its schema asked only for a string.
+
+Measured on `wf_67f052e6-1a5` (shipping #143): three Marcus passes, 25 agents,
+67 minutes, 1.19M subagent tokens, and the SHA never moved off `d6a0c358`. Both
+remediation worktrees were still on disk afterwards, sitting at `origin/main`
+with the work uncommitted. Rook met the same fact from the other side and filed
+it as a SCOPE finding — the diff it was given was empty.
+
+The lost work is the visible half. The dangerous half is that the retry gate
+was handed the NEW worktree as its `cwd`, so it graded files that are not on
+the branch and cannot be fetched. That run only avoided recording a PASS for an
+unreachable tree because the remediation also failed.
+
+Collecting into the directory that owns the branch, rather than rebasing the
+new worktree onto it, is deliberate: the remediation worktree is cut from
+`origin/main` and does not contain the round before it, so a replay would
+conflict with the work it re-derived.
+
+- [x] SC-555: workflows/ship.js contains [collectAgentWork, COLLECT-AGENT-WORK-START] and not contains [reimpl.buildResult?.worktreePath] — one collection implementation, and no gate is pointed at a directory whose contents are not on the branch
+- [x] SC-556: workflows/ship.js contains [collect-verify-regression, collect-ship-regression] — both remediation loops collect before they commit, which is the half that was missing
+- [x] SC-557: workflows/ship.js contains [parentSha, reCommit.commitSha === reCommit.parentSha] — a recommit that committed nothing is a result the workflow sees, not a string it accepts
+- [x] SC-558: test/ship-remediation-commits.test.ts contains [remediationBlocks, there are exactly two of them] — the sweeps are bounded by a positive control, so a slicer that stops matching fails loudly instead of passing vacuously
+
+Collecting into `commitDir` rather than `PROJECT_ROOT` changed where the step
+can write. `PROJECT_ROOT` comes from the workflow's arguments; `commitDir` can
+be a path an **agent** reported as its worktree. The first commit of #155
+interpolated it raw, which is two hazards in one line — a destination outside
+the repository, and `$(...)` executing. `workflows/ship.js:377` is the record
+of that exact pairing shipping once before and being caught by review.
+
+Allowlist and quoting are independent layers and neither is sufficient:
+quoting a path to another project still commits another project's files, and
+an allowlist that forgets to quote still executes a substitution.
+
+- [x] SC-559: workflows/ship.js contains [collectDestination, COLLECT-DESTINATION-START] and not contains [cd ${dest}] — a destination is allowlisted and quoted, never sanitised into something that looks acceptable
+- [x] SC-560: test/ship-collect-destination.test.ts contains [loadCollectDestination, new Function, shellQuote(dest)] — the validator is executed rather than grepped, because "ship.js contains collectDestination" stays true after the body is reduced to `return dir`
+
 **Output:** Code committed, tests passing, deployed to test environment.
 
 **Quality bar:** Read project CLAUDE.md for test commands. Tests pass with 0 failures. Code deployed and reachable.

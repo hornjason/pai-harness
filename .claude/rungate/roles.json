@@ -6,7 +6,9 @@
     "tools": "[Bash, Read]",
     "model": "opus",
     "tiers": {
-      "reinforcement": ["Discovery Rules"]
+      "reinforcement": [
+        "Discovery Rules"
+      ]
     }
   },
   "marcus": {
@@ -17,8 +19,12 @@
     "tools": "[Bash, Read, Write, Edit]",
     "model": "opus",
     "tiers": {
-      "reinforcement": ["Testing Rules"],
-      "mechanical": ["Workflow"]
+      "reinforcement": [
+        "Testing Rules"
+      ],
+      "mechanical": [
+        "Workflow"
+      ]
     }
   },
   "quinn": {
@@ -27,9 +33,12 @@
     "standardTask": "Validate the latest commit passes all tests and type checks, report AC evidence",
     "description": "QA engineer — tests as a brand-new user using Playwright MCP tools",
     "tools": "[Bash, Read, mcp__playwright__*]",
-    "model": "sonnet",
+    "model": "opus",
     "tiers": {
-      "reinforcement": ["Project Type Detection", "CLI Testing Mode"]
+      "reinforcement": [
+        "Project Type Detection",
+        "CLI Testing Mode"
+      ]
     }
   },
   "rook": {
@@ -38,7 +47,7 @@
     "standardTask": "Review lib/ for security issues: input validation, path traversal, command injection",
     "description": "Security engineer — scans changed files for vulnerabilities",
     "tools": "[Bash, Read]",
-    "model": "sonnet"
+    "model": "opus"
   },
   "serena": {
     "brief": ".claude/agents/serena.md",
@@ -47,7 +56,10 @@
     "description": "Software architect — structural decisions, ADRs, module boundary review",
     "tools": "[Read]",
     "model": "sonnet",
-    "disallowedTools": ["Write", "Edit"]
+    "disallowedTools": [
+      "Write",
+      "Edit"
+    ]
   },
   "aditi": {
     "brief": ".claude/agents/aditi.md",
@@ -56,9 +68,14 @@
     "description": "UX/UI designer — component specs, visual review, accessibility",
     "tools": "[Read]",
     "model": "sonnet",
-    "disallowedTools": ["Write", "Edit"],
+    "disallowedTools": [
+      "Write",
+      "Edit"
+    ],
     "tiers": {
-      "reinforcement": ["Project Type Detection"]
+      "reinforcement": [
+        "Project Type Detection"
+      ]
     }
   }
 }
