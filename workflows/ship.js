@@ -1553,6 +1553,35 @@ const distinctWorktrees = [...new Set(agentResults.map(r => r.worktreePath).filt
 let commitDir = marcusWorktreePath !== PROJECT_ROOT ? marcusWorktreePath : PROJECT_ROOT
 let alreadyStaged = false
 
+// ──── COLLECT-DESTINATION-START ────
+/**
+ * Where a collection may write, or null.
+ *
+ * Returns the path only when it is this run's project root or sits under one
+ * of the two directories git puts this run's agent worktrees in. Everything
+ * else — a relative path, a traversal, a path carrying a newline or a NUL, a
+ * directory belonging to some other project — is refused rather than
+ * sanitised, because there is no legitimate caller that needs one and a
+ * "cleaned up" path is a guess about what the caller meant.
+ *
+ * This is a destination for `git add`, reached by interpolating a string into
+ * a shell command, and after #155 that string can originate in an agent's
+ * reply. The quoting at the call site is the second layer; this is the first,
+ * and neither is sufficient alone: quoting a path to another project still
+ * commits another project's files, and an allowlist that forgets to quote
+ * still executes `$(...)`.
+ */
+function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNESS_ROOT) {
+  const d = String(dir == null ? '' : dir)
+  if (!d.startsWith('/')) return null
+  if (/[\n\r\0]/.test(d)) return null
+  if (d.split('/').includes('..')) return null
+  if (d === projectRoot) return d
+  const bases = [`${projectRoot}/.claude/worktrees`, `${harnessRoot}/.claude/worktrees`]
+  return bases.some(b => d.startsWith(`${b}/`)) ? d : null
+}
+// ──── COLLECT-DESTINATION-END ────
+
 // ──── COLLECT-AGENT-WORK-START ────
 /**
  * Bring agents' work into the directory that is going to commit it.
@@ -1586,7 +1615,23 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   const elsewhere = worktrees.filter(w => w !== intoDir)
   if (elsewhere.length === 0) return { ok: true, collected: 0, staged: false }
 
-  log(`Collecting work from ${elsewhere.length} worktree(s) into ${intoDir} (#81, #155)`)
+  // The destination is where `git add` will run. Before #155 this step only
+  // ever wrote to PROJECT_ROOT, a value from the workflow's own arguments;
+  // collecting into commitDir means it can now be a path an AGENT reported
+  // as its worktree. Two separate hazards, and the first commit of #155 had
+  // both: a destination outside the repository, and — because the path was
+  // interpolated raw — command substitution. ship.js:377 already records the
+  // same mistake being made and caught once: `/tmp/$(touch pwned)` executes
+  // inside a double-quoted string.
+  const dest = collectDestination(intoDir)
+  if (!dest) {
+    return { ok: false, collected: 0, staged: false, detail: `refusing to collect into ${intoDir} — not this run's project root or one of its agent worktrees` }
+  }
+
+  log(`Collecting work from ${elsewhere.length} worktree(s) into ${dest} (#81, #155)`)
+  // Quoted heredoc delimiter, and JSON.stringify emits no literal newline, so
+  // an agent-chosen worktreePath cannot close the heredoc early — the same
+  // hazard prove.js carries heredocSafe() for.
   const groupsJson = JSON.stringify(list)
   // The script stages what it collects, in the process that validated it.
   // This step therefore reports an outcome; it does not hand back a file list.
@@ -1606,10 +1651,10 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   const out = await agent(`
 Run exactly this and report the result:
 
-cat > ${WORK_DIR}/worktree-groups.json <<'RUNGATE_GROUPS_EOF'
+cat > ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} <<'RUNGATE_GROUPS_EOF'
 ${groupsJson}
 RUNGATE_GROUPS_EOF
-cd ${intoDir} && bun ${HARNESS_ROOT}/scripts/collect-worktree-files.ts ${WORK_DIR}/worktree-groups.json ${intoDir} ${PROJECT_ROOT}/.claude/worktrees ${HARNESS_ROOT}/.claude/worktrees
+cd ${shellQuote(dest)} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/collect-worktree-files.ts`)} ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} ${shellQuote(dest)} ${shellQuote(`${PROJECT_ROOT}/.claude/worktrees`)} ${shellQuote(`${HARNESS_ROOT}/.claude/worktrees`)}
 
 Set ok to true ONLY if the command exited zero. Set collected to the number in
 its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
@@ -1780,7 +1825,12 @@ if (verifyResult?.result === 'FAIL') {
       const gathered = await collectAgentWork(
         reimpl.buildResult?.agentResults, commitDir, 'Verify', 'collect-verify-regression')
       if (!gathered.ok) {
-        log(`Verify regression work could not be collected (#155): ${gathered.detail}`)
+        // No early return, and that is not a fail-open: `verifyResult` is
+        // still FAIL and no verify PASS witness is written, so the ship gate
+        // refuses the run downstream. Returning here instead would skip the
+        // container rebuild and Quinn fanout, which are separate signals
+        // worth collecting even when this round could not be committed.
+        log(`Verify regression work could not be collected (#155) — verify stays FAIL: ${gathered.detail}`)
       } else {
       // #120 was reported here: the re-implementation's filesChanged were
       // absolute paths inside its own agent worktree, relativizePaths knew

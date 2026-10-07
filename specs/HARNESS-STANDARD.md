@@ -332,6 +332,20 @@ conflict with the work it re-derived.
 - [x] SC-557: workflows/ship.js contains [parentSha, reCommit.commitSha === reCommit.parentSha] — a recommit that committed nothing is a result the workflow sees, not a string it accepts
 - [x] SC-558: test/ship-remediation-commits.test.ts contains [remediationBlocks, there are exactly two of them] — the sweeps are bounded by a positive control, so a slicer that stops matching fails loudly instead of passing vacuously
 
+Collecting into `commitDir` rather than `PROJECT_ROOT` changed where the step
+can write. `PROJECT_ROOT` comes from the workflow's arguments; `commitDir` can
+be a path an **agent** reported as its worktree. The first commit of #155
+interpolated it raw, which is two hazards in one line — a destination outside
+the repository, and `$(...)` executing. `workflows/ship.js:377` is the record
+of that exact pairing shipping once before and being caught by review.
+
+Allowlist and quoting are independent layers and neither is sufficient:
+quoting a path to another project still commits another project's files, and
+an allowlist that forgets to quote still executes a substitution.
+
+- [x] SC-559: workflows/ship.js contains [collectDestination, COLLECT-DESTINATION-START] and not contains [cd ${dest}] — a destination is allowlisted and quoted, never sanitised into something that looks acceptable
+- [x] SC-560: test/ship-collect-destination.test.ts contains [loadCollectDestination, new Function, shellQuote(dest)] — the validator is executed rather than grepped, because "ship.js contains collectDestination" stays true after the body is reduced to `return dir`
+
 **Output:** Code committed, tests passing, deployed to test environment.
 
 **Quality bar:** Read project CLAUDE.md for test commands. Tests pass with 0 failures. Code deployed and reachable.
