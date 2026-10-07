@@ -26,6 +26,15 @@
  * re-running that write after the Verify phase erased it and the run reached
  * the PR step with no security record.
  *
+ * WHAT IT WILL NOT WRITE (#173). This script records a commit. It did not run
+ * the test suite, so it does not get to say the suite passed —
+ * `environments.local.tests` used to be the literal string `PASS` here, and
+ * the `tests-pass` check in gates/workflow.test.ts reads exactly that field.
+ * It did not run Quinn either, so a FAIL already recorded against Quinn is a
+ * measurement this script leaves alone. `environments.local` was an
+ * assignment for the same reason `agents` was, and #169 adds call sites that
+ * run after Quinn, which turns both overwrites from latent into live.
+ *
  * Every argument is refused rather than sanitised when it is not the shape it
  * must be. A SHA that needs quoting is not a SHA, and three consecutive
  * security reviews of this repo's shell surfaces each found a new hole in a
@@ -56,7 +65,25 @@ const SHA = /^[0-9a-f]{7,40}$/;
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
 const VERDICTS = new Set(["PASS", "FAIL", "SKIP"]);
 
+/**
+ * Verdicts this script will not overwrite once they are in the file (#173).
+ *
+ * A FAIL is the one verdict nobody records by accident, and this script never
+ * measured anything — so when the file already says an agent failed, the
+ * commit record is not the thing that gets to change its mind. Declared as a
+ * named constant on one line so test/record-build-commit.test.ts can build a
+ * copy of this file with it emptied and watch the overwrite come back
+ * (.claude/rules/checks-must-be-able-to-fail.md).
+ */
+export const PRESERVED_VERDICTS = new Set(["FAIL"]);
+
 class Refused extends Error {}
+
+/** The value at `key` if it is a plain object, otherwise an empty one. */
+function record(from: unknown, key: string): Record<string, unknown> {
+  const v = (from as Record<string, unknown> | null | undefined)?.[key];
+  return v && typeof v === "object" && !Array.isArray(v) ? { ...(v as Record<string, unknown>) } : {};
+}
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -84,10 +111,13 @@ function verdict(name: string, value: string | undefined, fallback?: string): st
 }
 
 /**
- * The new `agents` map: marcus and quinn set, everything else carried over.
+ * The new `agents` map: marcus and quinn updated, everything else carried over.
  *
  * Returns a new object rather than mutating the input, so a caller holding the
- * old map does not see it change underneath them.
+ * old map does not see it change underneath them. Each agent's own record is
+ * merged too (#173) — quinn arrives here carrying a port, screenshots and
+ * findings that this script knows nothing about, and replacing the record
+ * throws them away along with the verdict.
  */
 export function buildMarcusRecord(
   existing: Record<string, unknown> | null | undefined,
@@ -96,10 +126,13 @@ export function buildMarcusRecord(
   quinnVerdict: string,
 ): Record<string, unknown> {
   const base = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
+  const quinn = record(base, "quinn");
   return {
     ...base,
-    marcus: { branch, commitSha: sha, spawned: true, verdict: "PASS" },
-    quinn: { spawned: quinnVerdict !== "SKIP", verdict: quinnVerdict },
+    marcus: { ...record(base, "marcus"), branch, commitSha: sha, spawned: true, verdict: "PASS" },
+    quinn: PRESERVED_VERDICTS.has(String(quinn.verdict))
+      ? quinn
+      : { ...quinn, spawned: quinnVerdict !== "SKIP", verdict: quinnVerdict },
   };
 }
 
@@ -128,10 +161,16 @@ if (import.meta.main) {
     state.environments = {
       ...(state.environments || {}),
       local: {
+        ...record(state.environments, "local"),
         api,
         ui,
         uiSkipReason: args["ui-skip-reason"] || (ui === "SKIP" ? "No UI configured" : ""),
-        tests: "PASS",
+        // #173-NO-TESTS-VERDICT
+        // `tests` is deliberately absent. This script ran no tests, and the
+        // line that used to sit here said `PASS` unconditionally — over the
+        // top of whatever the Verify phase had measured. Absent is a state
+        // the `tests-pass` check reports ("local.tests not set"); PASS is a
+        // state it believes.
       },
     };
     state.changelog = state.changelog || [];

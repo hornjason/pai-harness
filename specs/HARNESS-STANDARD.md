@@ -424,6 +424,58 @@ the mutant must live beside the real script, because this one imports
 bun exits non-zero, and every mutant run reads as "the refusal was rejected on
 the merits" — a mutation harness that proves nothing while reporting success.
 
+### The commit recorder records measurements, it does not invent them (#173)
+
+SC-574 fixed the write and left two of its values unexamined. The script does
+not only record a commit: it also writes `agents.quinn` and the whole of
+`environments.local`, and two of those values were constants.
+
+`environments.local.tests` was the literal string `PASS`, written by a script
+that runs no tests. The `tests-pass` check in `gates/workflow.test.ts` reads
+exactly that field, and it distinguishes three states — PASS, SKIP, and not
+set, which it reports. The constant turned the third into the first. Quinn's
+verdict arrived from `ship.js` as the ceremony tier in disguise: PASS whenever
+the tier was not LIGHT. That is PASS whenever Quinn was *supposed* to run,
+including every path where the agent returned something unusable.
+
+Both were written by assignment, so they replaced rather than merged — the
+same defect SC-575 fixed one level up in `agents`, left in place one level
+down. Latent while the only call site ran before Quinn and before the Verify
+phase; #169 adds two that run after both, which is when a measured FAIL starts
+being overwritten by a constant PASS in the artefact the ship gate reads.
+
+The rule the fix encodes: a step may record what it measured. A FAIL already
+in the file is a measurement, and a step that measured nothing does not get to
+change its mind.
+
+- [x] SC-587: scripts/record-build-commit.ts contains [#173-NO-TESTS-VERDICT] and not contains [tests: "PASS"] — the recorder writes no test verdict at all, because it runs no tests, and absent is a state `tests-pass` reports while PASS is one it believes
+- [x] SC-588: scripts/record-build-commit.ts contains [PRESERVED_VERDICTS, ...record(state.environments, "local")] — `environments.local` and each agent's own record are merged rather than replaced, and a verdict already recorded as FAIL is never overwritten by the commit step
+- [x] SC-589: workflows/ship.js contains [QUINN-VERDICT-START, quinnVerdictFor(quinnLocalRan, quinnLocalResult)] and not contains [--quinn ${shellQuote(discovery.ceremonyTier] — the verdict handed to the recorder is the one Quinn returned, a reply that is not a verdict is FAIL rather than PASS, and the chooser is a marked function the test executes
+- [x] SC-590: test/record-build-commit.test.ts contains [quinn FAIL survives, tests verdict is not invented, makeMutant] — both overwrites are named cases, and each runs against a mutant that re-introduces the overwrite, so neither assertion can hold because the script wrote nothing
+
+What was broken to prove these fail — each run over
+`test/record-build-commit.test.ts` and `test/spec-compliance.test.ts`
+(83 pass, 0 fail unmutated), counted, reverted:
+
+| mutation | result |
+|---|---|
+| the hardcoded test verdict put back in the recorder | 3 fail |
+| `PRESERVED_VERDICTS` emptied | 2 fail |
+| `environments.local` assigned instead of spread | 3 fail |
+| `quinnVerdictFor` treats an unusable reply as a pass | 1 fail |
+| the commit step passes the tier ternary again | 2 fail |
+
+Two of those mutations are not described here, they are performed on every
+run: `makeMutant` builds the `tests: "PASS"` and empty-`PRESERVED_VERDICTS`
+copies inside the tests that assert against them, and each test asserts the
+mutant *does* overwrite. A preservation test is otherwise satisfied by a
+script that writes nothing at all.
+
+The reverse of the SC-575 trap also applies and cost a run here: the doc
+comment explaining the removed ternary contained the ternary, so the assertion
+that `ship.js` no longer has it failed against the comment describing why.
+Prose about a banned literal is the literal.
+
 **Output:** Code committed, tests passing, deployed to test environment.
 
 **Quality bar:** Read project CLAUDE.md for test commands. Tests pass with 0 failures. Code deployed and reachable.

@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { REFUSE_EXIT, buildMarcusRecord } from "../scripts/record-build-commit";
+import { PRESERVED_VERDICTS, REFUSE_EXIT, buildMarcusRecord } from "../scripts/record-build-commit";
 
 /**
  * scripts/record-build-commit.ts — the commit step's state write stops being
@@ -37,6 +37,36 @@ const SHA = "dd242a62aea9371d788abb58f3d26922d5dd6cbc";
 let DIR = "";
 let STATE = "";
 let MUTANT = "";
+/** Every mutant copy written into scripts/ by this file, cleaned in afterEach. */
+let MUTANTS: string[] = [];
+
+/**
+ * A copy of the real script in scripts/ with one line changed, or a thrown
+ * error if that line is no longer there.
+ *
+ * The same harness `MUTANT` uses, generalised for #173. Each negative property
+ * below is asserted twice — once that the real script has it, once that a
+ * script differing only in the line that implements it does NOT. Without the
+ * second half, "quinn's FAIL is still FAIL" is satisfied by a script that
+ * writes nothing at all (.claude/rules/checks-must-be-able-to-fail.md).
+ *
+ * It lives beside the real script, not in a temp dir, because this script
+ * imports `../gates/orchestrator`.
+ */
+function makeMutant(label: string, find: RegExp, replace: string): string {
+  const source = readFileSync(SCRIPT, "utf-8");
+  const mutated = source.replace(find, replace);
+  if (mutated === source) {
+    throw new Error(
+      `could not build the "${label}" mutant: ${find} no longer matches ` +
+        `scripts/record-build-commit.ts, so this test proves nothing`,
+    );
+  }
+  const path = join(REPO_ROOT, "scripts", `.record-build-commit.${label}.mutant.ts`);
+  writeFileSync(path, mutated);
+  MUTANTS.push(path);
+  return path;
+}
 
 /** The smallest workflow-state.json that writeWorkflowState will accept. */
 function baseState(extra: Record<string, unknown> = {}) {
@@ -83,11 +113,13 @@ beforeEach(() => {
   }
   MUTANT = join(REPO_ROOT, "scripts", ".record-build-commit.mutant.ts");
   writeFileSync(MUTANT, mutated);
+  MUTANTS = [MUTANT];
 });
 
 afterEach(() => {
   if (DIR) rmSync(DIR, { recursive: true, force: true });
-  if (MUTANT) rmSync(MUTANT, { force: true });
+  for (const m of MUTANTS) rmSync(m, { force: true });
+  MUTANTS = [];
 });
 
 function run(args: string[], script = SCRIPT) {
@@ -167,6 +199,165 @@ describe("#166: the write merges, it does not replace", () => {
   });
 });
 
+/**
+ * #173 — SC-587, SC-588, SC-589, SC-590.
+ *
+ * The recorder does not only record a commit. It also writes `agents.quinn`
+ * and the whole of `environments.local`, and two of the values it wrote were
+ * constants rather than measurements: `environments.local.tests` was the
+ * literal string `PASS`, and quinn's verdict reached it from ship.js as
+ * `ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'` — the tier, not the agent.
+ *
+ * `environments.local` was an assignment, so a measured `tests: "FAIL"` was
+ * replaced by the constant, and the `tests-pass` check in gates/workflow.test.ts
+ * reads exactly that field. #169 adds two call sites that run AFTER quinn, so
+ * both overwrites stop being latent.
+ */
+describe("#173: the recorder records measurements, it does not invent them", () => {
+  test("tests verdict is not invented", () => {
+    // SC-587. A real test result is in the file before the commit step runs;
+    // the commit step has not run any tests and must not say that it did.
+    writeFileSync(
+      STATE,
+      JSON.stringify(baseState({ environments: { local: { tests: "FAIL", api: "SKIP", ui: "SKIP" } } }), null, 2),
+    );
+    expect(run(okArgs()).code).toBe(0);
+    expect(
+      readState().environments.local.tests,
+      "a measured test failure was overwritten by the commit step",
+    ).toBe("FAIL");
+
+    // And with nothing measured, the field stays absent rather than becoming
+    // a PASS nobody earned. `tests-pass` treats absent as "not set" and says
+    // so; it treats PASS as a green suite.
+    writeFileSync(STATE, JSON.stringify(baseState(), null, 2));
+    expect(run(okArgs()).code).toBe(0);
+    expect(readState().environments.local.tests).toBeUndefined();
+
+    // The mutation, run on every suite rather than described in a PR: put the
+    // constant back and the first assertion above stops holding.
+    const mutant = makeMutant("tests-constant", /\/\/ #173-NO-TESTS-VERDICT\b/, 'tests: "PASS",');
+    writeFileSync(
+      STATE,
+      JSON.stringify(baseState({ environments: { local: { tests: "FAIL", api: "SKIP", ui: "SKIP" } } }), null, 2),
+    );
+    expect(run(okArgs(), mutant).code).toBe(0);
+    expect(
+      readState().environments.local.tests,
+      "the mutant that re-adds the hardcoded verdict did NOT overwrite the measurement — " +
+        "the test above passes for some other reason",
+    ).toBe("PASS");
+  });
+
+  test("the rest of environments.local merges rather than being replaced", () => {
+    // SC-588. Same shape as agents: an assignment erases whatever the Verify
+    // phase measured and this script was never told about.
+    writeFileSync(
+      STATE,
+      JSON.stringify(
+        baseState({ environments: { local: { tests: "PASS", quinn: { port: 4321 } }, prod: { smoke: "PASS" } } }),
+        null,
+        2,
+      ),
+    );
+    expect(run(okArgs()).code).toBe(0);
+    const s = readState();
+    expect(s.environments.local.quinn).toEqual({ port: 4321 });
+    expect(s.environments.prod).toEqual({ smoke: "PASS" });
+    expect(s.environments.local.api).toBe("SKIP");
+  });
+
+  test("quinn FAIL survives", () => {
+    // SC-588. The overwrite #169 makes live: quinn measured FAIL, and a later
+    // record-build-commit call hands this script the verdict it was given by
+    // its caller. A FAIL already in the file is a measurement, and nothing
+    // whose job is to record a commit may replace it with a pass.
+    const quinn = { spawned: true, verdict: "FAIL", findings: "AC-2: the row never renders", port: 4321 };
+    writeFileSync(STATE, JSON.stringify(baseState({ agents: { quinn } }), null, 2));
+
+    const a = okArgs();
+    a[a.indexOf("--quinn") + 1] = "PASS";
+    expect(run(a).code).toBe(0);
+    expect(
+      readState().agents.quinn,
+      "a measured Quinn FAIL was overwritten by the commit step",
+    ).toEqual(quinn);
+
+    // The mutation: empty the preserve list and the overwrite comes back.
+    const mutant = makeMutant("quinn-overwrite", /PRESERVED_VERDICTS = new Set\(\["FAIL"\]\)/, "PRESERVED_VERDICTS = new Set([])");
+    writeFileSync(STATE, JSON.stringify(baseState({ agents: { quinn } }), null, 2));
+    expect(run(a, mutant).code).toBe(0);
+    expect(
+      readState().agents.quinn.verdict,
+      "the mutant with an empty preserve list did NOT overwrite the FAIL — " +
+        "the assertion above is not what is holding the line",
+    ).toBe("PASS");
+  });
+
+  test("quinn's other fields merge instead of being dropped", () => {
+    // A PASS over a PASS still has to keep the evidence attached to it.
+    const quinn = { spawned: true, verdict: "PASS", port: 4321, screenshots: ["page-load.png"] };
+    writeFileSync(STATE, JSON.stringify(baseState({ agents: { quinn } }), null, 2));
+    const a = okArgs();
+    a[a.indexOf("--quinn") + 1] = "PASS";
+    expect(run(a).code).toBe(0);
+    expect(readState().agents.quinn).toEqual(quinn);
+  });
+
+  test("buildMarcusRecord keeps a recorded FAIL and does not mutate its input", () => {
+    const before = { quinn: { spawned: true, verdict: "FAIL", findings: "AC-2 failed" } };
+    const after = buildMarcusRecord(before, SHA, "ship-173", "PASS");
+    expect(after.quinn).toEqual(before.quinn);
+    expect(before.quinn.verdict).toBe("FAIL");
+    expect(PRESERVED_VERDICTS.has("FAIL")).toBe(true);
+  });
+});
+
+describe("#173: ship.js reports the verdict Quinn returned, not the one its tier implies", () => {
+  const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+
+  test("the ceremony tier no longer stands in for a Quinn verdict", () => {
+    // SC-589. The literal that was there: `ceremonyTier !== 'LIGHT' ? 'PASS'`.
+    expect(shipSource).not.toMatch(/ceremonyTier\s*!==\s*'LIGHT'\s*\?\s*'PASS'/);
+  });
+
+  /** The verdict chooser, extracted from its markers and executed. */
+  function loadQuinnVerdict(): (ran: boolean, result: unknown) => string {
+    const start = shipSource.indexOf("// ──── QUINN-VERDICT-START ────");
+    const end = shipSource.indexOf("// ──── QUINN-VERDICT-END ────");
+    expect(start, "ship.js is missing the QUINN-VERDICT markers").toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return new Function(`${shipSource.slice(start, end)}\nreturn quinnVerdictFor`)();
+  }
+
+  test("a Quinn that never ran is SKIP, and one that ran reports what it said", () => {
+    const quinnVerdictFor = loadQuinnVerdict();
+    expect(quinnVerdictFor(false, { result: "PASS" })).toBe("SKIP");
+    expect(quinnVerdictFor(true, { result: "PASS" })).toBe("PASS");
+    expect(quinnVerdictFor(true, { result: "FAIL" })).toBe("FAIL");
+    expect(quinnVerdictFor(true, { result: "SKIP" })).toBe("SKIP");
+  });
+
+  test("a Quinn that ran but said nothing usable is not a pass", () => {
+    // The positive control for the case above: returning 'PASS' for everything
+    // satisfies two of its four assertions.
+    const quinnVerdictFor = loadQuinnVerdict();
+    for (const reply of [undefined, null, {}, { result: "MAYBE" }, "PASS"]) {
+      expect(quinnVerdictFor(true, reply), `${JSON.stringify(reply)} was read as a verdict`).toBe("FAIL");
+    }
+  });
+
+  test("the commit step passes the chooser's answer to the recorder", () => {
+    // A function nothing calls is the shape #162's round one shipped.
+    const start = shipSource.indexOf("const commitResult = await agent(`");
+    const end = shipSource.indexOf("if (!commitResult?.commitSha)", start);
+    expect(start).toBeGreaterThan(-1);
+    const step = shipSource.slice(start, end);
+    expect(step).toContain("--quinn ${shellQuote(quinnLocalVerdict)}");
+    expect(shipSource).toMatch(/const quinnLocalVerdict = quinnVerdictFor\(quinnLocalRan, quinnLocalResult\)/);
+  });
+});
+
 describe("#166: refusals, each shown against a mutant that does not refuse", () => {
   const CASES: Array<[string, string[]]> = [
     ["no --state", ["--sha", SHA, "--branch", "b", "--quinn", "SKIP"]],
@@ -204,8 +395,13 @@ describe("#166: refusals, each shown against a mutant that does not refuse", () 
     // A leftover copy would be a second, silently weaker version of a refusal
     // script sitting in the tree, so its removal is asserted rather than
     // trusted to afterEach.
-    rmSync(MUTANT, { force: true });
+    for (const m of MUTANTS) rmSync(m, { force: true });
+    MUTANTS = [];
     expect(existsSync(MUTANT)).toBe(false);
+    // #173 added more of them, so the check is now "none of this shape",
+    // not "not the one I happen to be holding".
+    const strays = readdirSync(join(REPO_ROOT, "scripts")).filter(f => f.endsWith(".mutant.ts"));
+    expect(strays, "a mutant copy of a refusal script was left in scripts/").toEqual([]);
   });
 
   test("REFUSE_EXIT is assigned exactly once", () => {
