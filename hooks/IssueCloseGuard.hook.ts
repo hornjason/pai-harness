@@ -13,7 +13,7 @@
 import { createHmac } from 'crypto';
 import { readFileSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { parseHookInput, findWorkflowState, parseCloseTarget, redactSecrets, HARNESS_ROOT } from './lib/utils';
+import { parseHookInput, findWorkflowState, parseCloseTarget, resolveRepo, redactSecrets, HARNESS_ROOT } from './lib/utils';
 import { commentTemplateViolation, COMMENT_INVOCATION } from './lib/comment-template';
 import { createGitHubClient, getIssue } from '../lib/github';
 
@@ -66,7 +66,19 @@ async function main() {
   }
 
   const issueNum = target.issue;
-  const repo = target.repo || 'hornjason/pai-config';
+  // #143: this used to fall back to a hardcoded slug naming a DIFFERENT
+  // repository, so a close with no --repo was decided from the labels of an
+  // unrelated issue that merely shared its number. resolveRepo derives the
+  // repo the way gh does — flag, then GH_REPO, then the working directory's
+  // remote — and returns nothing when it cannot, which is a refusal here.
+  const repo = resolveRepo(command, process.env, process.cwd());
+  if (!repo) {
+    block(
+      `Cannot vet this close — no repository was named and none could be derived from the ` +
+      `working directory's git remote, so there is no way to tell which issue #${issueNum} is. ` +
+      `Pass --repo owner/name.`,
+    );
+  }
 
   const wf = findWorkflowState(issueNum);
   if (!wf) {

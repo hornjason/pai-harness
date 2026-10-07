@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, existsSync, statSync } from 'fs';
 import { join } from 'path';
+import { execFileSync } from 'child_process';
 
 export const WORK_DIR = join(process.env.RUNGATE_WORK_DIR || process.env.HOME!, '.rungate');
 export const HARNESS_ROOT = process.env.HARNESS_ROOT || join(process.env.HOME!, 'Projects', 'rungate');
@@ -249,21 +250,90 @@ export function parseRepoSlug(command: string, env: NodeJS.ProcessEnv = process.
   const matches = [...command.matchAll(/(?:--repo|-R)[\s=]+['"]?([A-Za-z0-9._-]+\/[A-Za-z0-9._-]+)/g)];
   const explicit = matches.length ? matches[matches.length - 1][1] : undefined;
   // `gh` falls back to GH_REPO when no flag is given.
-  const slug = explicit ?? env.GH_REPO?.trim();
-  if (!slug) return undefined;
+  return validRepoSlug(explicit ?? env.GH_REPO?.trim());
+}
 
-  // `[A-Za-z0-9._-]+` admits `.` and `..`, so `--repo ../..` parsed as a slug
-  // and reached Octokit, which built `/repos/../../issues/N` and issued it —
-  // the request normalises to a different endpoint entirely. Observed: the
-  // guard answering "Not Found - https://docs.github.com/rest" for a crafted
-  // `--repo`. A GET with the operator's own token is a small prize, but a
-  // relative segment is never part of a real `owner/name`, so refuse it.
+/**
+ * `owner/name`, or undefined if that is not what this is.
+ *
+ * `[A-Za-z0-9._-]+` admits `.` and `..`, so `--repo ../..` parsed as a slug and
+ * reached Octokit, which built `/repos/../../issues/N` and issued it — the
+ * request normalises to a different endpoint entirely. Observed: the guard
+ * answering "Not Found - https://docs.github.com/rest" for a crafted `--repo`.
+ * A GET with the operator's own token is a small prize, but a relative segment
+ * is never part of a real `owner/name`, so refuse it.
+ *
+ * One implementation, because #143 added a second source of slugs (the git
+ * remote) and two validators would mean the stricter one could be walked around
+ * by arriving through the other door.
+ */
+function validRepoSlug(slug: string | undefined): string | undefined {
+  if (!slug) return undefined;
   const parts = slug.split("/");
   if (parts.length !== 2) return undefined;
   if (parts.some(seg => !seg || seg === "." || seg === ".." || !/^[A-Za-z0-9._-]+$/.test(seg))) {
     return undefined;
   }
   return slug;
+}
+
+/**
+ * The repository a close will act on, or undefined when it cannot be known.
+ *
+ * #143: the caller used to fall back to a literal `owner/name` — a DIFFERENT
+ * repository from the one the harness ships. Issue numbers are per-repo, so a
+ * close naming no repository was decided from the labels of an unrelated
+ * issue: permitted when that issue was unlabelled, blocked when it happened to
+ * carry p1-ship-next. Neither answer had anything to do with the issue being
+ * closed.
+ *
+ * `gh` resolves an unqualified command against the working directory's remote,
+ * so that is what is read here. When neither the command nor the remote yields
+ * a slug there is nothing left to derive, and undefined means the caller must
+ * refuse — the same rule parseCloseTarget already applies to a command it
+ * cannot read: derive what can be derived, refuse what cannot, never guess.
+ */
+export function resolveRepo(
+  command: string,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string | undefined {
+  const named = parseRepoSlug(command, env);
+  if (named) return named;
+  // A flag or GH_REPO is present but unreadable. `gh` will act on whatever it
+  // expands to, which is by definition not the directory's remote, so falling
+  // back here would vet a repository the command is not going to touch.
+  if (/(?:--repo|-R)[\s=]/.test(command) || env.GH_REPO?.trim()) return undefined;
+  return gitRemoteSlug(cwd);
+}
+
+/**
+ * `origin`'s `owner/name`, or undefined for anything that is not a GitHub
+ * remote — another host, a bare path, a repo with no origin, a directory that
+ * is not a repo at all. Derived rather than assumed, and refused rather than
+ * approximated: inventing a slug out of a URL `gh` resolves differently is the
+ * same class of wrong answer as the literal this replaced.
+ *
+ * execFileSync, not execSync: no shell, so the remote URL is never anywhere a
+ * shell could read it. The timeout is there because this runs inside a
+ * PreToolUse hook, where a wedged git would stall the caller's tool call.
+ */
+function gitRemoteSlug(cwd: string): string | undefined {
+  let url: string;
+  try {
+    url = execFileSync("git", ["remote", "get-url", "origin"], {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
+    }).trim();
+  } catch {
+    return undefined;
+  }
+  // Covers every form git accepts for GitHub: https://, ssh://, and the scp
+  // shorthand `git@github.com:owner/name.git`.
+  const m = url.match(/github\.com[:/]+([^/]+)\/(.+?)(?:\.git)?\/?$/);
+  return m ? validRepoSlug(`${m[1]}/${m[2]}`) : undefined;
 }
 
 /**

@@ -32,7 +32,8 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { parseRepoSlug, parseCloseTarget, redactSecrets } from "../hooks/lib/utils";
+import { parseRepoSlug, parseCloseTarget, redactSecrets, resolveRepo } from "../hooks/lib/utils";
+import { readdirSync, statSync } from "fs";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const HOOK = join(REPO_ROOT, "hooks", "IssueCloseGuard.hook.ts");
@@ -54,6 +55,7 @@ afterEach(() => {
 function runGuard(
   command: string,
   env: Record<string, string | undefined> = {},
+  cwd?: string,
 ): { stdout: string; decision: string | null } {
   const childEnv: Record<string, string> = { ...process.env } as any;
   // Both names, always, so the test does not inherit whichever one the
@@ -75,6 +77,9 @@ function runGuard(
     input: JSON.stringify({ tool_name: "Bash", tool_input: { command } }),
     encoding: "utf-8",
     env: childEnv,
+    // The guard derives the repository from the working directory's git
+    // remote (#143), so the directory the hook runs in is part of its input.
+    cwd,
     timeout: 30000,
   });
   const stdout = r.stdout || "";
@@ -513,5 +518,153 @@ describe("#137: the guard follows the harness onto its new close path", () => {
       `gh issue close 1 --repo a/b && bun scripts/github-op.ts issue-update --repo c/d --issue 99 --state closed`,
     );
     expect(target.kind).toBe("ambiguous");
+  });
+});
+
+/**
+ * #143: a close that names no repository was vetted against a literal.
+ *
+ * `const repo = target.repo || '<owner>/<a different repo>'`. Issue numbers are
+ * per-repo, so `gh issue close 23` with no `--repo` sent the guard to read the
+ * labels of issue 23 in an unrelated repository and decide from them: it
+ * permits a close it should block whenever that issue is unlabelled, and blocks
+ * one it should permit whenever that issue happens to carry p1-ship-next.
+ *
+ * The fix applies the rule parseCloseTarget already follows — derive what can
+ * be derived, refuse what cannot. `gh` resolves an unqualified command against
+ * the working directory's remote, so that is what the guard reads; when neither
+ * the command nor the remote yields a slug there is nothing left to derive, and
+ * ambiguous is the only honest answer.
+ *
+ * These drive `resolveRepo` in-process. The git state under test is a planted
+ * remote in a scratch directory rather than this checkout, so the assertions
+ * say what they mean on a developer machine, in a worktree, and on CI alike.
+ */
+describe("#143: the repository is derived, never defaulted to an unrelated literal", () => {
+  const scratch: string[] = [];
+
+  /** A real git repo with a planted `origin`, because that is what is read. */
+  const repoWithRemote = (remote: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "close-guard-remote-"));
+    scratch.push(dir);
+    for (const args of [["init", "-q"], ["remote", "add", "origin", remote]]) {
+      const r = spawnSync("git", args, { cwd: dir, encoding: "utf-8" });
+      if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
+    }
+    return dir;
+  };
+
+  /** A directory that is not a git repo at all. */
+  const nonRepo = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), "close-guard-bare-"));
+    scratch.push(dir);
+    return dir;
+  };
+
+  afterEach(() => {
+    while (scratch.length) rmSync(scratch.pop()!, { recursive: true, force: true });
+  });
+
+  test.each([
+    ["https", "https://github.com/hornjason/pai-harness.git"],
+    ["https without .git", "https://github.com/hornjason/pai-harness"],
+    ["ssh scp form", "git@github.com:hornjason/pai-harness.git"],
+    ["ssh url form", "ssh://git@github.com/hornjason/pai-harness.git"],
+  ])("a %s remote resolves to the slug gh would use", (_label, remote) => {
+    expect(resolveRepo("gh issue close 23", {}, repoWithRemote(remote))).toBe("hornjason/pai-harness");
+  });
+
+  test("an explicit --repo still wins over the working directory", () => {
+    // Same precedence as gh: the flag beats the directory.
+    expect(
+      resolveRepo("gh issue close 23 --repo owner/name", {}, repoWithRemote("https://github.com/other/place.git")),
+    ).toBe("owner/name");
+  });
+
+  test("GH_REPO beats the working directory, as gh does", () => {
+    expect(
+      resolveRepo("gh issue close 23", { GH_REPO: "env/repo" }, repoWithRemote("https://github.com/other/place.git")),
+    ).toBe("env/repo");
+  });
+
+  test("a malformed GH_REPO is refused, not quietly replaced by the remote", () => {
+    // gh would act on GH_REPO (and fail); vetting the directory's remote
+    // instead would check a repository the command was never going to touch.
+    expect(
+      resolveRepo("gh issue close 23", { GH_REPO: "../.." }, repoWithRemote("https://github.com/other/place.git")),
+    ).toBeUndefined();
+  });
+
+  test("a directory that is not a git repo yields nothing to vet", () => {
+    expect(resolveRepo("gh issue close 23", {}, nonRepo())).toBeUndefined();
+  });
+
+  test("a repo with no origin yields nothing to vet", () => {
+    const dir = mkdtempSync(join(tmpdir(), "close-guard-noremote-"));
+    scratch.push(dir);
+    spawnSync("git", ["init", "-q"], { cwd: dir });
+    expect(resolveRepo("gh issue close 23", {}, dir)).toBeUndefined();
+  });
+
+  test.each([
+    ["a non-github host", "https://gitlab.com/owner/name.git"],
+    ["a local path remote", "/srv/git/bare.git"],
+    ["a host with no path", "https://github.com/"],
+  ])("%s is not forced into a slug", (_label, remote) => {
+    // Over-eager stripping would invent an `owner/name` that gh resolves
+    // differently — the same class of wrong answer the literal was.
+    expect(resolveRepo("gh issue close 23", {}, repoWithRemote(remote))).toBeUndefined();
+  });
+
+  test("this checkout resolves to the repository it lives in", () => {
+    // The real condition the hook runs in. A worktree shares the main
+    // checkout's config, so this holds here, in .claude/worktrees, and on CI.
+    expect(resolveRepo("gh issue close 23", {}, REPO_ROOT)).toBe("hornjason/pai-harness");
+  });
+
+  test("the guard refuses a close whose repository cannot be determined", () => {
+    // THE regression. Reinstating the literal keeps this a block — the literal
+    // sends the guard to GitHub, which it cannot reach without a credential —
+    // so asserting on `decision` alone would be shielded and prove nothing.
+    // The reason is what separates "this issue is protected" from "I never
+    // found out which issue you meant".
+    const { decision, stdout } = runGuard("gh issue close 23", {}, nonRepo());
+    expect(decision, `an unverifiable close was permitted:\n${stdout}`).toBe("block");
+    expect(stdout, "the guard did not say the repository was the problem").toMatch(/repository|--repo/i);
+    expect(
+      stdout,
+      "the guard went off and consulted some other repository's labels",
+    ).not.toMatch(/labels could not be read/);
+  });
+
+  test("the derived repository is actually used, not merely computed", () => {
+    // Mirror of the test above: with a readable remote the guard gets PAST the
+    // repository question and on to the labels, which is the only way to tell
+    // derivation from a blanket refusal. A fix that always returned undefined
+    // would pass the test above and fail this one.
+    const { decision, stdout } = runGuard(
+      "gh issue close 23",
+      {},
+      repoWithRemote("https://github.com/hornjason/pai-harness.git"),
+    );
+    expect(decision, stdout).toBe("block");
+    expect(stdout, "the guard never got as far as reading labels").toMatch(/labels could not be read/);
+  });
+
+  test("the literal appears nowhere under hooks/, in code or in comment", () => {
+    // A textual ratchet alongside the behavioural tests: the default could
+    // come back in a comment-shaped "restore this if…" note, and no behaviour
+    // test would see it until someone acted on it. Assembled from pieces so
+    // this file is not itself a hit when the same grep runs repo-wide.
+    const literal = "hornjason/pai" + "-config";
+    const walk = (dir: string): string[] =>
+      readdirSync(dir).flatMap(entry => {
+        const p = join(dir, entry);
+        return statSync(p).isDirectory() ? walk(p) : [p];
+      });
+    const offenders = walk(join(REPO_ROOT, "hooks")).filter(p =>
+      readFileSync(p, "utf-8").includes(literal),
+    );
+    expect(offenders, "the hardcoded fallback repository is back").toEqual([]);
   });
 });
