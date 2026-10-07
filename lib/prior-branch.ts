@@ -2,8 +2,24 @@ import { spawnSync } from 'child_process'
 import { createGitHubClient, listPRs, type GitHubClient } from './github'
 
 export interface PriorBranch {
+  /**
+   * Bare branch name, with no remote prefix — what a push target is written
+   * against (`HEAD:<branch>`). NOT guaranteed to resolve locally.
+   */
   branch: string;
-  commitCount: number;
+  /**
+   * Fully-qualified ref the detection actually matched, e.g.
+   * `refs/heads/164-x` or `refs/remotes/origin/164-x`. This is what
+   * `git merge` / `git worktree add` / `git rev-parse` must be handed: for an
+   * origin-only branch the bare name resolves to nothing (#164).
+   */
+  refName: string;
+  /**
+   * Commits on the branch that are not on `main`, or `null` when that could
+   * not be determined. Null is NOT zero — "fully merged" and "no idea" lead
+   * callers to opposite decisions.
+   */
+  commitCount: number | null;
   testsPass: boolean;
 }
 
@@ -39,53 +55,90 @@ function git(args: string[], cwd: string, timeout = 15_000) {
   return spawnSync('git', args, { cwd, encoding: 'utf-8', timeout })
 }
 
+/**
+ * The only two ref namespaces that belong to THIS repository.
+ *
+ * A checkout can have any number of remotes — this one has `asacc` pointing
+ * at a different project — and a sibling project's branch named for the same
+ * issue number is not this issue's prior work (#164).
+ */
+const LOCAL_PREFIX = 'refs/heads/'
+const ORIGIN_PREFIX = 'refs/remotes/origin/'
+
+interface Candidate {
+  branch: string;
+  refName: string;
+  ts: number;
+  local: boolean;
+}
+
+/**
+ * Branches in this repository whose name references `issueNumber`, newest
+ * first, with a resolvable ref attached to each.
+ *
+ * One `for-each-ref` supplies both the candidate set and the timestamps the
+ * old two-command version needed `git log --all` for — and `--all` was the
+ * other way foreign remotes got in.
+ */
+function listCandidates(projectRoot: string, issueNumber: number): Candidate[] {
+  const listed = git(
+    ['for-each-ref', '--format=%(refname)%09%(committerdate:unix)', LOCAL_PREFIX, ORIGIN_PREFIX],
+    projectRoot
+  )
+  if (listed.status !== 0) return []
+
+  const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
+  // Keyed by bare name so a branch present both locally and on origin is one
+  // candidate, not two — and the local head wins, because that is the ref a
+  // merge should move onto.
+  const byBranch = new Map<string, Candidate>()
+
+  for (const line of listed.stdout.split('\n')) {
+    const [refName, rawTs] = line.split('\t')
+    if (!refName) continue
+
+    const local = refName.startsWith(LOCAL_PREFIX)
+    const branch = local
+      ? refName.slice(LOCAL_PREFIX.length)
+      : refName.slice(ORIGIN_PREFIX.length)
+
+    if (!branch) continue
+    if (branch === 'main' || branch === 'master' || branch === 'HEAD') continue
+    if (branch.startsWith('worktree-')) continue
+    if (!pattern.test(branch)) continue
+
+    const parsedTs = parseInt(rawTs ?? '', 10)
+    const candidate: Candidate = {
+      branch,
+      refName,
+      ts: Number.isFinite(parsedTs) ? parsedTs : 0,
+      local,
+    }
+    const existing = byBranch.get(branch)
+    if (!existing || (local && !existing.local)) byBranch.set(branch, candidate)
+  }
+
+  return [...byBranch.values()].sort(
+    (a, b) => b.ts - a.ts || Number(b.local) - Number(a.local) || a.branch.localeCompare(b.branch)
+  )
+}
+
 export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranch | null> {
   const { issueNumber, projectRoot, runTests = true } = opts
 
-  const branchList = git(['branch', '-a', '--list'], projectRoot)
-  if (branchList.status !== 0) return null
+  const selected = listCandidates(projectRoot, issueNumber)[0]
+  if (!selected) return null
 
-  const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
-  const branches = branchList.stdout
-    .split('\n')
-    .map(line => line.trim().replace(/^[*+]\s+/, '').replace(/^remotes\/[^/]+\//, ''))
-    .filter(b => b.length > 0)
-    .filter((b, i, a) => a.indexOf(b) === i)
-    .filter(b => pattern.test(b) && !b.startsWith('worktree-') && b !== 'main' && b !== 'HEAD')
-
-  if (branches.length === 0) return null
-
-  // Pick most recent branch — single git command for all timestamps
-  let selectedBranch = branches[0]
-  if (branches.length > 1) {
-    const sortResult = git(
-      ['log', '--format=%ct %D', '--all', '--simplify-by-decoration', '-n', '200'],
-      projectRoot
-    )
-    if (sortResult.status === 0) {
-      const branchSet = new Set(branches)
-      let best = { branch: branches[0], ts: 0 }
-      for (const line of sortResult.stdout.split('\n')) {
-        const [ts, ...refs] = line.split(' ')
-        const timestamp = parseInt(ts, 10)
-        if (!timestamp) continue
-        for (const ref of refs.join(' ').split(',').map(r => r.trim().replace(/^.*\//, ''))) {
-          if (branchSet.has(ref) && timestamp > best.ts) {
-            best = { branch: ref, ts: timestamp }
-          }
-        }
-      }
-      selectedBranch = best.branch
-    }
-  }
-
-  const revList = git(['rev-list', `main..${selectedBranch}`, '--count'], projectRoot)
-  const commitCount = revList.status === 0 ? parseInt(revList.stdout.trim(), 10) : 0
+  // Read the ref, not the bare name: for an origin-only branch the bare name
+  // resolves to nothing and this exits non-zero.
+  const revList = git(['rev-list', `main..${selected.refName}`, '--count'], projectRoot)
+  const parsedCount = revList.status === 0 ? parseInt(revList.stdout.trim(), 10) : NaN
+  const commitCount = Number.isFinite(parsedCount) ? parsedCount : null
 
   let testsPass = false
   if (runTests) {
     const tmpDir = `/tmp/rungate-prior-test-${issueNumber}-${Date.now()}`
-    const add = git(['worktree', 'add', tmpDir, selectedBranch], projectRoot, 30_000)
+    const add = git(['worktree', 'add', tmpDir, selected.refName], projectRoot, 30_000)
     if (add.status === 0) {
       try {
         const testResult = spawnSync('bun', ['test'], {
@@ -98,7 +151,7 @@ export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranc
     }
   }
 
-  return { branch: selectedBranch, commitCount, testsPass }
+  return { branch: selected.branch, refName: selected.refName, commitCount, testsPass }
 }
 
 // ── detectExistingPR ────────────────────────────────────────

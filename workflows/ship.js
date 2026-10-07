@@ -899,7 +899,7 @@ console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
 cat ${PROJECT_ROOT}/.claude/rungate.json 2>/dev/null || echo "{}"
 
 3. Prior branch detect:
-bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
+bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
 Return: acCount from step 1, the full JSON from step 2 as config, and prior branch from step 3.
   `, { label: 'setup', phase: 'Discovery', schema: {
@@ -907,7 +907,7 @@ Return: acCount from step 1, the full JSON from step 2 as config, and prior bran
     properties: {
       acCount: { type: 'number' },
       config: { type: 'object', properties: { pages: { type: 'object' }, apiUrl: { type: 'string' }, uiUrl: { type: 'string' }, container: { type: 'object', properties: { port: { type: 'number' }, rebuildCommand: { type: 'string' }, healthPath: { type: 'string' }, hosts: { type: 'array', items: { type: 'string' } } } }, test: { type: 'object', properties: { command: { type: 'string' }, timeout: { type: 'number' } } }, roles: { type: 'object' } } },
-      priorBranch: { type: 'object', properties: { branch: { type: 'string' }, commitCount: { type: 'number' } } },
+      priorBranch: { type: 'object', properties: { branch: { type: 'string' }, refName: { type: 'string' }, commitCount: { type: ['number', 'null'] } } },
     },
     required: ['acCount'],
   } })
@@ -1082,7 +1082,14 @@ let priorBranchResult = parsedArgs.priorBranch || null
 if (!priorBranchResult) {
   const priorResult = await agent(`
 Run this command and report the result:
-bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'
+bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
+
+The result has two names in it and they are not interchangeable (#164):
+  - refName — the fully-qualified ref, e.g. refs/heads/164-x or
+    refs/remotes/origin/164-x. This is the only one git can resolve.
+  - branch  — the bare name, used later as the push target HEAD:<branch>.
+Use refName for the merge. Do NOT substitute the bare name, and do NOT
+rewrite refName into something shorter.
 
 If a prior branch exists (non-empty branch field), bring it into the working
 tree — but NOT onto the default branch (#136):
@@ -1091,22 +1098,30 @@ tree — but NOT onto the default branch (#136):
   branch=$(git branch --show-current)
   case "$branch" in
     main|master) echo "SKIPPED MERGE: checkout is on $branch" ;;
-    *) git merge <branch> --no-edit ;;
+    *) git merge <refName> --no-edit ;;
   esac
 
 If it skips, that is a correct outcome, not an error: this workflow does not
 write to the default branch, not even locally. Report priorBranch anyway — it
 is still the branch this run pushes to.
 
-Return: priorBranch (string, empty if none), priorCommitCount (number).
+Return: priorBranch (bare name, empty if none), priorRefName (the ref you
+merged, empty if none), priorCommitCount (number, or omit if unknown).
 `, { label: 'prior-branch', phase: 'Scope', schema: {
     type: 'object',
-    properties: { priorBranch: { type: 'string' }, priorCommitCount: { type: 'number' } },
+    properties: { priorBranch: { type: 'string' }, priorRefName: { type: 'string' }, priorCommitCount: { type: ['number', 'null'] } },
     required: ['priorBranch']
   }})
   if (priorResult?.priorBranch) {
-    priorBranchResult = { branch: priorResult.priorBranch, commitCount: priorResult.priorCommitCount || 0 }
-    log(`Prior branch merged: ${priorBranchResult.branch}`)
+    priorBranchResult = {
+      branch: priorResult.priorBranch,
+      // Fall back to the local head rather than to the bare name: an
+      // unqualified name that came back from a remote-only branch is exactly
+      // the unresolvable ref #164 is about.
+      refName: priorResult.priorRefName || `refs/heads/${priorResult.priorBranch}`,
+      commitCount: typeof priorResult.priorCommitCount === 'number' ? priorResult.priorCommitCount : null,
+    }
+    log(`Prior branch merged: ${priorBranchResult.branch} (${priorBranchResult.refName})`)
   }
 } else if (priorBranchResult.branch) {
   log(`Prior branch (pre-computed): ${priorBranchResult.branch}`)
