@@ -175,6 +175,45 @@ first commit and all three were real.
 - [x] SC-538: lib/github.ts contains [REPO_SEGMENT, is not a GitHub owner or repository name] — a repo slug cannot steer the request path. Measured, not assumed: `--repo "../x"` reached `GET /x/issues/7`, outside `/repos/` entirely
 - [x] SC-537: workflows/prove.js contains [HEREDOC-SAFE-START, heredocSafe] and test/workflow-security-integration.test.ts contains [loadHeredocSafe] — the proof body cannot break out of its quoted heredoc, proven by executing the extracted helper rather than grepping for it
 
+### Phase 8 — The guard vets the repository the command names (#143)
+
+`hooks/IssueCloseGuard.hook.ts` fell back to the literal `hornjason/pai-config`
+— a different repository — when a close named none. Issue numbers are
+per-repo, so the decision came from whatever issue shared that number over
+there: permitted when it was unlabelled, blocked when it happened to carry
+`p1-ship-next`. Neither answer had anything to do with the issue being closed.
+
+The first attempt derived the repo from the working directory's git remote,
+the way `gh` does. Review found two HIGH bypasses and it was discarded (PR
+#154, closed). Deriving from the machine is a second parser surface on a
+boundary that already has one too many (#144): a `cd` in a compound command,
+`gh repo set-default`, and URL-host parsing are each a differential. The
+repository now comes from the same parse as the issue number, and a close
+that names none is refused. A bare `gh issue close 23` blocks; that is the
+correct side to fail on.
+
+Removing the fallback made `parseCloseTarget`'s answer decisive, which
+promoted a latent defect to a live one. `ISSUE_URL` matched anywhere in the
+closing segment, so a URL in a `--comment` body took over the target — an
+ordinary dedup close made the guard read the linked issue's labels while `gh`
+closed a different one. The `direct` branch's own comment already said the
+positional number "is unambiguous even when other digits appear in a comment
+body"; the match order defeated the intent written beside it.
+
+- [x] SC-561: hooks/IssueCloseGuard.hook.ts contains [target.repo, the command names no repository] and not contains [hornjason/pai-config] — the repository comes from the parse that produced the issue number, or the close is refused
+- [x] SC-562: hooks/lib/utils.ts contains [positionalUrl, an issue URL appears but is not the issue being closed] — a URL counts only as the thing being closed, and a stray one is refused rather than ignored, because ignoring still pairs a URL's issue with a flag's repository
+- [x] SC-563: hooks/lib/utils.ts contains [GH_REPO is being set inside the command] — an assignment gh honours and the parser cannot see is refused rather than silently overridden by the session's environment
+- [x] SC-565: hooks/IssueCloseGuard.hook.ts contains [Re-run it naming one: --repo owner/name.] and not contains [or export GH_REPO] — the block text asks for the flag the parser can read, and stopped naming the one it cannot. The positive clause carries the matcher: a bare absence assertion has nothing to evaluate and would sit unchecked while reading as a requirement
+
+SC-563 and SC-565 are two criteria rather than one `X contains [...] and
+Y not contains [...]` because `scripts/detect-sc-drift.ts` applies a
+statement's keywords to EVERY path it mentions, so the combined form was
+reported stale for expecting utils.ts's keyword inside the hook. The
+conformity engine evaluated it correctly; the drift detector did not, and
+the flipper trusts the detector. Filed separately — splitting here keeps
+#143 to one subject.
+- [x] SC-564: test/issue-close-guard-target.test.ts contains [github.com in the PATH of another host, www and userinfo are still the real host] — the URL's host is anchored, with a positive control so refusing everything cannot pass
+
 ## Constraints
 
 - Auth MUST come from the environment — `GITHUB_TOKEN`, else `GH_TOKEN` — with no hardcoded tokens and no interactive auth. Blank counts as absent (#139)

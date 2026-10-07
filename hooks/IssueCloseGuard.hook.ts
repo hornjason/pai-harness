@@ -79,7 +79,11 @@ async function main() {
   if (!target.repo) {
     block(
       `Cannot close #${issueNum} — the command names no repository, so the guard cannot tell ` +
-      `which issue #${issueNum} is. Re-run it naming one: --repo owner/name (or export GH_REPO).`,
+      // Deliberately no GH_REPO suggestion. The parser matches --repo/-R
+      // only, so a
+      // GH_REPO set in the command is honoured by gh and invisible here —
+      // this message was telling operators how to create the bypass.
+      `which issue #${issueNum} is. Re-run it naming one: --repo owner/name.`,
     );
   }
   const repo = target.repo;
