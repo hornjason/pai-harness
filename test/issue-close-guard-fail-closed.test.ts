@@ -60,6 +60,12 @@ function runGuard(
   // developer's shell happens to export.
   delete childEnv.GITHUB_TOKEN;
   delete childEnv.GH_TOKEN;
+  // #143: same reasoning for GH_REPO. The guard now decides whether a repo
+  // was named at all, so a developer who exports GH_REPO would otherwise
+  // supply the very thing the "names no repository" cases are asserting is
+  // absent, and those tests would pass on this machine and nowhere else.
+  // Cases that want it set pass it explicitly via `env`.
+  delete childEnv.GH_REPO;
   childEnv.RUNGATE_WORK_DIR = workBase;
   // Belt and braces: even a case that unexpectedly acquires a credential
   // cannot reach the real API from here. The spec forbids tests touching
@@ -514,4 +520,164 @@ describe("#137: the guard follows the harness onto its new close path", () => {
     );
     expect(target.kind).toBe("ambiguous");
   });
+});
+
+/**
+ * #143: the guard's repository fallback was the literal `hornjason/pai-config`
+ * — a different repository from the one this harness closes issues in. A close
+ * that named no repo (`gh issue close 23`) was therefore vetted against
+ * whatever issue 23 happens to be in pai-config: its labels, its ship state,
+ * none of it related to the issue actually being closed. Protected and
+ * unprotected both decided by an unrelated ticket.
+ *
+ * The fix is to require an explicit repository and refuse when there is none.
+ * A bare `gh issue close 23` now blocks; that is the accepted cost, and it is
+ * the correct side to fail on — `.claude/rules/checks-must-be-able-to-fail.md`
+ * is the whole reason this guard stopped guessing in the first place.
+ *
+ * Deliberately NOT done: deriving the repo from the working directory's git
+ * remote. PR #154 tried that and security review found two HIGH bypasses in
+ * it. cwd-derivation is a new parser surface on an authorization boundary
+ * (`cd` inside a compound command, `gh repo set-default`, remote URL host
+ * parsing), and the guard already has one parser surface too many (#144).
+ */
+describe("#143: the guard vets the repository the command names, or none", () => {
+  const NO_REPO = "gh issue close 23";
+
+  test("a close naming no repository is refused", () => {
+    // Pre-fix this did not block here at all: `target.repo || <literal slug>`
+    // handed an unrelated repo to the label lookup, and the close was decided
+    // on that repo's issue 23.
+    const { decision, stdout } = runGuard(NO_REPO);
+    expect(decision, `an unverifiable close was permitted:\n${stdout}`).toBe("block");
+  });
+
+  test("the refusal tells the caller to name the repository", () => {
+    // An operator has to be able to act on this. "Something went wrong talking
+    // to GitHub" and "you did not say which repo" need different fixes.
+    const { stdout } = runGuard(NO_REPO);
+    expect(stdout, "the refusal does not say what to pass").toMatch(/--repo owner\/name/);
+  });
+
+  test("it refuses before the label lookup, not because the lookup failed", () => {
+    // THE discriminator for this issue. Pre-fix the command still blocked —
+    // #140 made an unreadable label set fail closed — but it blocked for the
+    // wrong reason, AFTER asking GitHub about the wrong repository's issue 23.
+    // Had a credential been present and that issue been unlabelled, the close
+    // would have gone through. Asserting only on "block" would have passed
+    // against the bug.
+    const { stdout } = runGuard(NO_REPO);
+    expect(
+      stdout,
+      "the guard consulted GitHub about an issue it could not identify",
+    ).not.toMatch(/labels in .+ could not be read/);
+  });
+
+  test("no hardcoded repository is left in the hook to fall back to", () => {
+    // Source-level, because the behavioural tests above can all be satisfied
+    // while a default slug sits in the file waiting for the next code path to
+    // reach for it. Comment lines are stripped so the prose explaining the
+    // defect does not count as the defect.
+    const hook = readFileSync(join(REPO_ROOT, "hooks", "IssueCloseGuard.hook.ts"), "utf-8");
+    const code = hook
+      .split("\n")
+      .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join("\n");
+    expect(code, "a literal owner/name default is back in the hook").not.toMatch(
+      /['"][A-Za-z0-9._-]+\/[A-Za-z0-9._-]+['"]/,
+    );
+  });
+
+  test("GH_REPO counts as naming the repository, because gh honours it", () => {
+    // The requirement is an unambiguous repo, not a flag specifically. If this
+    // goes red the fix has over-corrected into blocking closes that gh would
+    // resolve perfectly well — and a guard that blocks routine work gets
+    // switched off.
+    const { stdout } = runGuard(NO_REPO, { GH_REPO: "owner/name" });
+    expect(stdout).not.toMatch(/--repo owner\/name/);
+    expect(stdout, "the guard did not vet the repo gh would use").toContain("owner/name");
+  });
+});
+
+describe("#143: the repository comes from the segment that does the closing", () => {
+  // PR #154's first HIGH: it resolved the repo from the WHOLE command, so a
+  // `--repo` in a non-closing segment decided what was vetted — re-opening
+  // exactly the segment-pairing bypass parseCloseTarget was rewritten to
+  // prevent. These pin the repo to the same parse result that produced the
+  // issue number.
+  const SPLIT = `gh repo view --repo attacker/x && gh issue close 23`;
+
+  test("a --repo in a non-closing segment does not supply the repository", () => {
+    expect(parseCloseTarget(SPLIT, {})).toEqual({
+      kind: "one",
+      issue: "23",
+      repo: undefined,
+    });
+  });
+
+  test("and the hook refuses it rather than vetting the attacker's repo", () => {
+    const { decision, stdout } = runGuard(SPLIT);
+    expect(decision, stdout).toBe("block");
+    expect(stdout, "a repo from a non-closing segment decided the check").not.toContain(
+      "attacker/x",
+    );
+    expect(stdout).toMatch(/--repo owner\/name/);
+  });
+
+  test("the closing segment's own repo is the one used", () => {
+    expect(
+      parseCloseTarget(`gh repo view --repo other/x && gh issue close 23 --repo real/y`, {}),
+    ).toEqual({ kind: "one", issue: "23", repo: "real/y" });
+  });
+});
+
+describe("#143: an issue URL is vetted against the repository in the URL", () => {
+  // PR #154's second HIGH: it discarded target.repo entirely, so the URL form
+  // — which carries its own owner/name and overrides --repo in gh — was vetted
+  // against whatever the fallback produced. That is this issue's defect
+  // wearing a different hat.
+  const URL_CLOSE = `gh issue close https://github.com/urlowner/urlname/issues/7`;
+
+  test("the parse carries the URL's owner and name", () => {
+    expect(parseCloseTarget(URL_CLOSE, {})).toEqual({
+      kind: "one",
+      issue: "7",
+      repo: "urlowner/urlname",
+    });
+  });
+
+  test("the hook vets that repository and says so", () => {
+    // Observable because the refusal now names the repository it tried to
+    // read. Without that this could only be asserted on a network call the
+    // tests are forbidden from making.
+    const { stdout } = runGuard(URL_CLOSE);
+    expect(stdout, "the URL's repository was not the one checked").toContain("urlowner/urlname");
+  });
+
+  test("a URL inside a compound command keeps its own repository", () => {
+    expect(parseCloseTarget(`cd /tmp && ${URL_CLOSE}`, {})).toEqual({
+      kind: "one",
+      issue: "7",
+      repo: "urlowner/urlname",
+    });
+  });
+});
+
+describe("#143: the repository is never inferred from the machine", () => {
+  // A regression test against the approach, not just against PR #154's two
+  // bugs. cwd-derivation inherits every differential of a surface the guard
+  // cannot see: `cd` in a compound command, `gh repo set-default`, remote URL
+  // host parsing. Breaking this means adding one of those calls back.
+  test.each([["hooks/IssueCloseGuard.hook.ts"], ["hooks/lib/utils.ts"]])(
+    "%s derives no repository from git, cwd or a URL host",
+    relPath => {
+      const src = readFileSync(join(REPO_ROOT, relPath), "utf-8")
+        .split("\n")
+        .filter(l => !/^\s*(\/\/|\*|\/\*)/.test(l))
+        .join("\n");
+      expect(src).not.toMatch(/execSync|execFileSync|spawnSync|Bun\.spawn/);
+      expect(src).not.toMatch(/process\.cwd\(/);
+      expect(src).not.toMatch(/new URL\(/);
+    },
+  );
 });

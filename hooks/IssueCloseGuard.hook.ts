@@ -66,7 +66,27 @@ async function main() {
   }
 
   const issueNum = target.issue;
-  const repo = target.repo || 'hornjason/pai-config';
+
+  // #143: this fell back to a literal slug naming a DIFFERENT repository, so
+  // a close that named none was decided by whatever issue shared that number
+  // over there. The repo must come from the same parse result as the issue
+  // number — and only from the closing segment, since a `--repo` elsewhere in
+  // a compound command belongs to another invocation. It is not inferred from
+  // the machine either: PR #154 derived it from the git remote and review
+  // found two bypasses, because that is a second parser surface on a boundary
+  // that already has one too many (#144). A bare `gh issue close 23` now
+  // blocks; the guard either knows which issue it is vetting or says so.
+  if (!target.repo) {
+    block(
+      `Cannot close #${issueNum} — the command names no repository, so the guard cannot tell ` +
+      // Deliberately no GH_REPO suggestion. The parser matches --repo/-R
+      // only, so a
+      // GH_REPO set in the command is honoured by gh and invisible here —
+      // this message was telling operators how to create the bypass.
+      `which issue #${issueNum} is. Re-run it naming one: --repo owner/name.`,
+    );
+  }
+  const repo = target.repo;
 
   const wf = findWorkflowState(issueNum);
   if (!wf) {
@@ -91,8 +111,11 @@ async function main() {
       // block reason is echoed into transcripts and issue comments.
       const detail = redactSecrets(String(e?.message || e)).slice(0, 200);
       block(
-        `Cannot close #${issueNum} — no workflow-state.json, and its labels could not be ` +
-        `read to check whether it is protected: ${detail}\n` +
+        // Naming the repo is not decoration: it is the only way an operator —
+        // or a test — can see WHICH repository the guard decided to vet, and
+        // vetting the wrong one is exactly the defect #143 reports.
+        `Cannot close #${issueNum} — no workflow-state.json, and its labels in ${repo} could ` +
+        `not be read to check whether it is protected: ${detail}\n` +
         `Fix the GitHub access (GITHUB_TOKEN or GH_TOKEN) and retry, or close it on GitHub ` +
         `directly if you have already confirmed it does not need to ship.`,
       );

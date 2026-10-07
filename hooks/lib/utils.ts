@@ -156,7 +156,11 @@ const OP_CLOSE = /github-op\.ts\s+issue-update\b[^\n]*--state[\s=]+['"]?closed\b
 const CLOSE_INVOCATION = new RegExp(`${GH_CLOSE.source}|${OP_CLOSE.source}`);
 
 /** `https://github.com/owner/name/issues/123`, which `gh` accepts in place of a number. */
-const ISSUE_URL = /https?:\/\/[^\s"'`]*?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)/;
+// Host-anchored. `[^\\s"'`]*?github\\.com` matched the literal anywhere in
+// the URL, so https://evil.example/github.com/a/b/issues/1 yielded a/b — a
+// repository gh would never have touched. Userinfo and the www. prefix are
+// the only things allowed before the host.
+const ISSUE_URL = /https?:\/\/(?:[^/@\s]*@)?(?:www\.)?github\.com\/([A-Za-z0-9._-]+)\/([A-Za-z0-9._-]+)\/issues\/(\d+)/;
 
 export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = process.env): CloseTarget {
   // Detection is deliberately loose and requires NOTHING after `close`. The
@@ -208,16 +212,61 @@ export function parseCloseTarget(command: string, env: NodeJS.ProcessEnv = proce
     return { kind: "one", issue: last, repo };
   }
 
+  // An inline or exported GH_REPO is honoured by gh and invisible to the
+  // regex below, which matches only --repo/-R. Measured: with the session's
+  // GH_REPO set to this repo, `GH_REPO=unprotected/x gh issue close 23`
+  // resolved to this repo while gh would have closed it in unprotected/x.
+  // Reading the assignment properly means tracking shell variable scope, so
+  // refuse instead — the operator can pass --repo.
+  //
+  // Tested against the WHOLE command, not the closing segment. The first
+  // version checked the segment and so caught the inline-prefix form while
+  // missing the natural one: `export GH_REPO=unprotected/x && gh issue close
+  // 23` splits on `&&`, and the closing segment contains no assignment at
+  // all. A control that only covers the awkward spelling is not a control.
+  //
+  // Only when the close names no repository of its own. An explicit
+  // --repo/-R beats GH_REPO in gh too, so there is no differential left to
+  // refuse, and refusing anyway would block an ordinary command that happens
+  // to set the variable for an earlier step. Deliberately NOT parseRepoSlug's
+  // env-aware form — the environment is exactly what is in question here.
+  if (/\bGH_REPO=/.test(command) && !parseRepoSlug(segment, {} as NodeJS.ProcessEnv)) {
+    return ambiguous("GH_REPO is being set inside the command, which the guard cannot follow — pass --repo owner/name instead");
+  }
+
   // A URL carries its own owner/name, which overrides --repo. If both are
   // present and disagree, we cannot tell which gh will use.
-  const url = segment.match(ISSUE_URL);
+  //
+  // It counts only when it IS the thing being closed. Matching it anywhere in
+  // the segment meant a URL in a `--comment` body took over the whole target:
+  //
+  //   gh issue close 99 --comment "see https://github.com/unprotected/x/issues/1"
+  //   => { issue: '1', repo: 'unprotected/x' }
+  //
+  // The guard then read #1's labels in a repository nobody named while gh
+  // closed #99 here, and an unlabelled decoy was enough to permit the close
+  // of a protected issue. It needed no attacker: an ordinary dedup close
+  // links the duplicate. The `direct` branch below already says the
+  // positional number "is unambiguous even when other digits appear in a
+  // comment body" — the intent was written down and the match order defeated
+  // it.
+  //
+  // A stray URL is refused rather than ignored. Ignoring handles the comment
+  // case but not `gh issue close --repo a/b https://github.com/c/d/issues/5`,
+  // where the URL is the real target, is not positional because a flag comes
+  // first, and the number heuristic would then pair issue 5 with repo a/b.
   const flagRepo = parseRepoSlug(segment, env);
-  if (url) {
-    const urlRepo = `${url[1]}/${url[2]}`;
+  const positional = segment.match(/\bclose\b\s+['"]?([^\s'"]+)/)?.[1];
+  const positionalUrl = positional ? positional.match(ISSUE_URL) : null;
+  if (positionalUrl) {
+    const urlRepo = `${positionalUrl[1]}/${positionalUrl[2]}`;
     if (flagRepo && flagRepo !== urlRepo) {
       return ambiguous("the issue URL and --repo name different repositories — pass one of them");
     }
-    return { kind: "one", issue: url[3], repo: urlRepo };
+    return { kind: "one", issue: positionalUrl[3], repo: urlRepo };
+  }
+  if (ISSUE_URL.test(segment)) {
+    return ambiguous("an issue URL appears but is not the issue being closed — pass the issue number right after `close`, or the URL as the only argument");
   }
 
   // A flag is present but its value is not a literal slug (`--repo "$REPO"`).
