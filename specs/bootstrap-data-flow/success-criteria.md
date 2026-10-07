@@ -144,8 +144,8 @@ testable: true
 - [ ] SC-180: lib/conformity.ts contains [agnix, spawnSync]
 - [ ] SC-181: Conformity runs RepoRails via Bun.spawnSync with REPORAILS-{ruleId} prefix
 - [ ] SC-182: agentsmd score stored in findings JSON scores.agentsmd field
-- [ ] SC-183: External tools optional — if not installed, WARN TOOL-NOT-INSTALLED-{name}
-- [ ] SC-184: External tool findings include fixCommand from tool's fixHint/suggestion/fix field
+- [x] SC-183: External tools optional — if not installed, WARN TOOL-NOT-INSTALLED-{name}
+- [x] SC-184: External tool findings include fixCommand from tool's fixHint/suggestion/fix field
 - [ ] SC-230: Conformity runs ccinspect via Bun.spawnSync with CCINSPECT-{ruleId} prefix (56 rules: contradictions, scope/precedence, session analytics)
 
 - [ ] SC-185: Agent instruction files contain no TODO/FIXME — wrap agentsmd todo-rot

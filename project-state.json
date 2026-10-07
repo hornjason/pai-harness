@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-06",
+  "updated": "2026-10-07",
   "priorities": [
     "P0: #137 record-env-and-pr and finalize call mcp__github__* tools that workflow subagents cannot reach, so a run opens no PR and leaves no trace on the tracker. ROOT CAUSE NOW ESTABLISHED: spec decision D-7 (GITHUB-API-MIGRATION-SPEC) already mandates an Octokit fallback when MCP is unavailable, and it was never implemented. No SC covers it, which is why Phase 4 reported green without it. lib/github.ts already has createPR/updatePR/listPRs/addComment. The spec's own constraint says the fallback MUST live at the orchestrator level and NOT inline in agent prompts, so the shape is a script shelled out the way collect-worktree-files.ts is — which also preserves SC-501, since the MCP names must stay in ship.js.",
     "P0: #136 ship workflow merges and pushes straight to main, no PR and no pre-merge CI (ship.js:1838-1848, bare `git push`). Worse than filed: the merge runs in the VERIFY phase while PR creation runs later in SHIP (ship.js:2010-2040), so even with #137 fixed the PR would be opened for a branch already on main. ship.js:2047 tells the user 'The PR is open for Jason to review' — a documented false premise. Coupled to #137: this fix needs a working PR path, so do #137 first.",

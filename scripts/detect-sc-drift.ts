@@ -49,12 +49,32 @@ function extractFilePaths(statement: string): string[] {
 }
 
 /**
- * Extract keyword from "contains [keyword]" pattern.
- * Returns null if no keyword pattern found.
+ * The keywords a `contains [a, b, c]` clause requires.
+ *
+ * It used to return the bracket contents as ONE string, so a multi-keyword SC
+ * was checked for the literal text `"resolveSyncPaths, harnessRoot"` — comma
+ * and space included — which no source file ever contains. Every such SC was
+ * therefore reported stale no matter what the file held, and
+ * `scripts/sync-sc-status.ts` refuses to flip a stale SC. A criterion the
+ * conformity engine had just PASSED could not be marked done, and the reason
+ * printed was "keyword missing from file", which is not what was wrong.
+ *
+ * A comma inside a keyword would split wrongly, so only split where the parts
+ * look like separate terms: the registry's own syntax is comma-separated and
+ * no matcher keyword in this repo contains one.
  */
-function extractKeyword(statement: string): string | null {
-  const match = statement.match(/contains \[([^\]]+)\]/);
-  return match ? match[1] : null;
+export function extractKeywords(statement: string): string[] {
+  // `not contains [...]` is an absence clause, and this detector only answers
+  // "a file exists but lacks a term it should have". Reading it as a positive
+  // requirement inverted the SC: SC-539 says ship.js must NOT contain
+  // `git merge ${worktreeBranch}`, and the detector reported it stale FOR
+  // being correct.
+  const match = statement.match(/(?<!not )contains \[([^\]]+)\]/);
+  if (!match) return [];
+  return match[1]
+    .split(",")
+    .map(k => k.trim())
+    .filter(Boolean);
 }
 
 /**
@@ -99,15 +119,19 @@ export function detectDrift(specsDir: string, projectRoot: string): DriftResult 
           }
           drifted.get(specFile)!.push({ scId, statement, path });
         } else {
-          // File exists - check for keyword staleness
-          const keyword = extractKeyword(statement);
-          if (keyword) {
+          // File exists — check each required keyword separately.
+          const keywords = extractKeywords(statement);
+          if (keywords.length) {
             const fileContent = readFileSync(fullPath, "utf-8");
-            if (!fileContent.includes(keyword)) {
+            const missing = keywords.filter(k => !fileContent.includes(k));
+            if (missing.length) {
               if (!stale.has(specFile)) {
                 stale.set(specFile, []);
               }
-              stale.get(specFile)!.push({ scId, statement, path, keyword });
+              // Report every missing term, not just the first: a reader who
+              // fixes one and re-runs should not discover the next one by
+              // iteration.
+              stale.get(specFile)!.push({ scId, statement, path, keyword: missing.join(", ") });
             }
           }
         }
