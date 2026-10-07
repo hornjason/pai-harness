@@ -152,7 +152,10 @@ if (existsSync(configPath)) {
   }
 
   // ── 4. Prior branch detection ──
-  let priorBranch: { branch: string; commitCount: number } | undefined;
+  // refName is the git-resolvable ref; branch is the bare push target (#164).
+  // commitCount is null when git could not count — not 0, which would claim
+  // the prior branch holds nothing.
+  let priorBranch: { branch: string; refName: string; commitCount: number | null } | undefined;
   try {
     const priorResult = execSync(
       `bun -e "import {detectPriorBranch} from '${resolve(projectRoot)}/node_modules/@anthropic-ai/claude-code/lib/prior-branch.ts'; void 0;" 2>/dev/null || echo '{}'`,
@@ -161,12 +164,16 @@ if (existsSync(configPath)) {
     // Prior branch detection requires harness lib — try direct import
     const harnessRoot = getArg("harness-root") || resolve(projectRoot);
     const detectResult = execSync(
-      `bun -e "import {detectPriorBranch} from '${harnessRoot}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${issue},projectRoot:'${resolve(projectRoot)}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","commitCount":0}'`,
+      `bun -e "import {detectPriorBranch} from '${harnessRoot}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${issue},projectRoot:'${resolve(projectRoot)}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'`,
       { encoding: "utf-8", timeout: 15000, cwd: projectRoot }
     ).trim();
     const parsed = JSON.parse(detectResult);
     if (parsed.branch) {
-      priorBranch = { branch: parsed.branch, commitCount: parsed.commitCount || 0 };
+      priorBranch = {
+        branch: parsed.branch,
+        refName: parsed.refName || parsed.branch,
+        commitCount: parsed.commitCount ?? null,
+      };
     }
   } catch {
     // Prior branch detection failed — workflow will fall back to agent

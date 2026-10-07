@@ -66,15 +66,35 @@ describe('prior-branch', () => {
 
     if (result !== null) {
       expect(result).toHaveProperty('branch')
+      expect(result).toHaveProperty('refName')
       expect(result).toHaveProperty('commitCount')
       expect(result).toHaveProperty('testsPass')
       expect(typeof result.branch).toBe('string')
-      expect(typeof result.commitCount).toBe('number')
       expect(typeof result.testsPass).toBe('boolean')
+      // The ref has to be one git can resolve, not a bare name recovered by
+      // stripping a remote prefix off one it cannot (#164).
+      expect(result.refName).toMatch(/^refs\/(heads|remotes\/origin)\//)
+      expect(
+        spawnSync('git', ['rev-parse', '--verify', result.refName], {
+          cwd: PROJECT_ROOT, encoding: 'utf-8',
+        }).status,
+        `${result.refName} does not resolve in this repository`,
+      ).toBe(0)
     }
   })
 
-  test('commitCount is a number', async () => {
+  test('commitCount is the count, or null when the count cannot be taken (#164)', async () => {
+    // This test used to assert `typeof commitCount === 'number'`, and it only
+    // held because a developer checkout has a local `main`. CI checks out one
+    // detached commit, `main..<ref>` cannot be resolved, and the old code
+    // reported that as `commitCount: 0` — a failure wearing the costume of a
+    // branch with nothing new on it. #164 made the unanswerable case `null`,
+    // so the assertion has to name both cases rather than only the one this
+    // machine happens to be in.
+    const baseResolves = spawnSync('git', ['rev-parse', '--verify', 'main'], {
+      cwd: PROJECT_ROOT, encoding: 'utf-8',
+    }).status === 0
+
     const result = await detectPriorBranch({
       issueNumber: 550,
       projectRoot: PROJECT_ROOT,
@@ -82,8 +102,15 @@ describe('prior-branch', () => {
     })
 
     if (result !== null) {
-      expect(typeof result.commitCount).toBe('number')
-      expect(result.commitCount).toBeGreaterThanOrEqual(0)
+      if (baseResolves) {
+        expect(typeof result.commitCount).toBe('number')
+        expect(result.commitCount).toBeGreaterThanOrEqual(0)
+      } else {
+        expect(
+          result.commitCount,
+          'no base to count against, and 0 would read as "fully merged"',
+        ).toBeNull()
+      }
     }
   })
 
