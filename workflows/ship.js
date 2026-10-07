@@ -1763,52 +1763,6 @@ const ENV_CHECK_SCHEMA = {
   required: ['apiStatus', 'uiStatus', 'testsStatus'],
 }
 
-// ──── RECOMMIT-RECORD-START ────
-/**
- * The command that records a commit in workflow-state.json (#169).
- *
- * Built in one place because three steps commit to this run's branch — the
- * commit step and the two remediation recommits — and only the first of them
- * recorded anything. `buildCommit` therefore named the FIRST commit of the
- * run, which is the value the container check compares HEAD against and the
- * value the ship gate reads. On the #164 run the recorded SHA and the branch
- * tip were different commits whose diff rewrote every reviewed file.
- *
- * SELF-CONTAINED, including the `cd` and the `git rev-parse`. An agent runs
- * each command as its own tool call, so a shell variable set by an earlier
- * line of the prompt is not reliably there by the time this one runs; a
- * `--sha "$sha"` that expanded to nothing would be a refusal from the
- * recorder, but one that expanded to a STALE sha would not be.
- *
- * Every interpolated value is a workflow-owned constant, and all of them are
- * quoted anyway: ship.js:377 is this repo's record of an unquoted path that
- * was obviously safe until what fed it changed, and a project root with a
- * space in it is the ordinary case that breaks first.
- */
-function recordCommitCommand(repoDir, harnessRoot, statePath, branch, verdicts) {
-  // Local rather than the module-level shellQuote: this block is extracted by
-  // marker and executed standalone by test/record-build-commit.test.ts, so a
-  // reference to anything outside it is a test that cannot run.
-  const q = w => `'${String(w).replace(/'/g, "'\\''")}'`
-  return `cd ${q(repoDir)} && bun ${q(`${harnessRoot}/scripts/record-build-commit.ts`)} ` +
-    `--state ${q(statePath)} --sha "$(git rev-parse HEAD)" --branch ${q(branch)} ` +
-    `--quinn ${q(verdicts.quinn)} --api ${q(verdicts.api)} --ui ${q(verdicts.ui)}`
-}
-// ──── RECOMMIT-RECORD-END ────
-
-/**
- * The environment verdicts every recording of a commit carries.
- *
- * One object, because `scripts/record-build-commit.ts` REPLACES
- * `environments.local` on every call: a recommit that omitted `--api` would
- * quietly downgrade a PASS recorded by the commit step to SKIP.
- */
-const recordCommitVerdicts = {
-  quinn: discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP',
-  api: projectConfig.apiUrl ? 'PASS' : 'SKIP',
-  ui: hasUI ? 'PASS' : 'SKIP',
-}
-
 // Determine push target — reuse prior branch name to prevent orphan branches (#515)
 const branchToReuse = priorBranchResult?.branch || null
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
@@ -1911,15 +1865,18 @@ if (stateRefusal) {
 log(`Committed: ${commitResult.commitSha} on ${commitResult.branch}`)
 
 /**
- * The commit this run's branch currently ends at.
+ * The commit this run is currently shipping — NOT a constant (#169).
  *
- * `let`, and every step that commits again must move it (#169). It used to be
- * read once, from this step, and handed to the security review untouched —
- * but the Verify remediation loop commits to the same branch BEFORE the review
- * is spawned, so on a run with a regression the reviewer was pinned to a
- * commit that was already two rounds behind.
+ * Every regression round commits and pushes again, so the first commit's SHA
+ * stops describing the branch the moment one runs. It was treated as fixed:
+ * `reviewSha` was derived from it once, and on the #164 run the security
+ * review was pinned to 3fe336f1 while the branch tip was ef998b73, with all
+ * four reviewed files rewritten in between.
+ *
+ * Reassigned by each recommit step below, so the review is pinned to what is
+ * actually shipping rather than refusing a run that moved on legitimately.
  */
-let branchTipSha = commitResult.commitSha
+let buildSha = commitResult.commitSha
 
 const worktreeBranch = commitResult.branch
 
@@ -2000,16 +1957,22 @@ Do NOT run tests — they were already validated.
 cd ${commitDir}
 git rev-parse HEAD   # this is parentSha
 ${reimplGitAdd} && git commit -m "fix(#${ISSUE}): verify gate regression fix" && git push origin HEAD:${shipBranch}
-git rev-parse HEAD   # this is commitSha
+commitSha=$(git rev-parse HEAD)   # this is commitSha
+echo "$commitSha"
 
-Then record the new commit in workflow-state.json. Run exactly this, once:
-   ${recordCommitCommand(commitDir, HARNESS_ROOT, `${WORK_DIR}/workflow-state.json`, shipBranch, recordCommitVerdicts)}
+Then re-record the commit, so workflow-state.json names the commit the branch
+now ends at rather than the one the run started from (#169):
+   branch=$(git branch --show-current)
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
+     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
+     --sha "$commitSha" --branch "$branch" \\
+     --quinn ${shellQuote(discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP')} \\
+     --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
+     --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
 
-It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
-Do NOT edit workflow-state.json by hand, and do NOT report true if the command
-failed. \`buildCommit\` is what the container check and the ship gate read; a
-round that commits without re-recording it leaves the artefact naming the
-FIRST commit of the run (#169).
+   Run it even if nothing was committed — re-recording the same SHA is correct
+   and silence is not. It prints one JSON receipt on stdout; report its "ok"
+   field as stateRecorded, and report false if the command failed.
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -2023,13 +1986,20 @@ substitute another ref if it fails — report the failure instead (#136).
         // schema asked only for `commitSha`, so echoing the HEAD that was
         // already there satisfied it — three times, on wf_67f052e6-1a5.
         log(`Verify regression produced no commit (#155) — HEAD is still ${reCommit?.parentSha || 'unknown'}`)
-      } else {
-        // #169: the security review has NOT run yet at this point, so the fix
-        // here is to move the tip rather than to refuse. Pinning the review to
-        // `commitResult.commitSha` is what made rook review a two-round-old
-        // tree on the #164 run.
-        branchTipSha = reCommit.commitSha
-        log(`Branch tip moved to ${branchTipSha} by the verify regression (stateRecorded=${reCommit.stateRecorded === true})`)
+      }
+      // #169: re-pin the run to what the branch now ends at. The security
+      // review has not run yet at this point, so moving the pin here means it
+      // reviews this round's code — re-review rather than refuse, which keeps
+      // the common path passing and leaves the refusal for the rounds that
+      // happen after the review.
+      const rePinned = rookReviewSha(reCommit?.commitSha)
+      if (rePinned) buildSha = reCommit.commitSha
+      const reCommitState = commitStateRefusal(reCommit)
+      if (reCommitState) {
+        // Logged, not returned, for the same reason the collect failure above
+        // is: `verifyResult` is still FAIL and no verify PASS witness exists,
+        // so the ship gate refuses the run downstream anyway.
+        log(`${reCommitState} — buildCommit may still name ${buildSha} (#169)`)
       }
       const retryVerify = await runGateWithHeal('verify', 'Verify',
         'Fix remaining verify gate failures.',
@@ -2137,23 +2107,17 @@ function rookGateVerdict(scope, rook) {
 }
 
 /**
- * Whether the security review still describes the code being shipped (#169).
+ * Is the security review's PASS a statement about the commit being shipped?
  *
- * #129 made rook's verdict block the run; it did not make the verdict a
- * statement about the PR. The review is pinned to one commit and the
- * remediation rounds that follow it commit again to the same branch. Measured
- * on the #164 run: agents.rook.testedSha was 3fe336f1 while the branch tip was
- * ef998b73, and the diff between them rewrote ALL FOUR files rook reviewed —
- * 236 insertions, 254 deletions. That PR carried a rook PASS that was true of
- * nothing in it.
+ * #169, measured on the #164 run: agents.rook.testedSha was 3fe336f1 while the
+ * branch tip was ef998b73, and the diff between them rewrote all four files
+ * rook had read. Remediation rounds are where the risky code gets written and
+ * they run AFTER the review, so nothing downstream could tell a reviewed
+ * branch from a rewritten one.
  *
- * FAILS CLOSED. Anything that does not positively establish "both values are
- * real SHAs naming one commit" is stale.
- *
- * The comparison is by prefix, because the two values arrive at different
- * lengths by construction — the commit step reports `git rev-parse --short
- * HEAD` and the tip is read with `git rev-parse HEAD`. Exact equality would
- * report every run stale, and a gate that always refuses gets switched off.
+ * FAILS CLOSED on a missing, malformed or mismatched SHA. Abbreviations count
+ * as the same commit because the values compared are not guaranteed to be the
+ * same length — see lib/security-verdict.ts for the full reasoning.
  */
 function reviewIsCurrent(testedSha, headSha) {
   const describe = v => {
@@ -2163,6 +2127,7 @@ function reviewIsCurrent(testedSha, headSha) {
     if (typeof v === 'object') return 'an object'
     return JSON.stringify(v)
   }
+  const sameCommit = (a, b) => (a.length >= b.length ? a.startsWith(b) : b.startsWith(a))
 
   const tested = rookReviewSha(testedSha)
   const head = rookReviewSha(headSha)
@@ -2172,8 +2137,9 @@ function reviewIsCurrent(testedSha, headSha) {
       current: false,
       testedSha: null,
       headSha: head,
-      reason: `the security review is not pinned to a commit (got ${describe(testedSha)}), ` +
-        `so there is nothing to compare the branch tip against`,
+      reason: `the commit the security review was pinned to was never recorded ` +
+        `(testedSha was ${describe(testedSha)}) — a review nothing can locate cannot be ` +
+        `shown to cover this branch (#169)`,
     }
   }
   if (!head) {
@@ -2181,18 +2147,17 @@ function reviewIsCurrent(testedSha, headSha) {
       current: false,
       testedSha: tested,
       headSha: null,
-      reason: `the branch tip could not be read as a commit SHA (got ${describe(headSha)}), ` +
-        `so the review at ${tested} cannot be shown to describe it`,
+      reason: `the commit the branch ends at could not be read (headSha was ${describe(headSha)}) — ` +
+        `refusing to assume the reviewed commit is still the tip (#169)`,
     }
   }
-  const n = Math.min(tested.length, head.length)
-  if (tested.slice(0, n) !== head.slice(0, n)) {
+  if (!sameCommit(tested, head)) {
     return {
       current: false,
       testedSha: tested,
       headSha: head,
-      reason: `the security review was performed at ${tested} but the branch now ends at ${head} — ` +
-        `the reviewed commit is not the commit this run would ship (#169)`,
+      reason: `the security review passed ${tested}, but the branch now ends at ${head} — ` +
+        `the commit that was reviewed is not the commit being shipped (#169)`,
     }
   }
   return { current: true, testedSha: tested, headSha: head, reason: null }
@@ -2206,13 +2171,8 @@ function reviewIsCurrent(testedSha, headSha) {
  * interpolated anywhere. null when it is not a SHA, and null blocks the run:
  * there is no safe default commit to review. "HEAD" is the bug — rook's
  * worktree is cut from origin/main, so HEAD there produces an empty diff.
- *
- * `branchTipSha`, not `commitResult.commitSha`: the Verify remediation loop
- * above commits to this branch before the review is spawned, and reading the
- * first commit of the run here is half of #169 — on the #164 run it pinned
- * rook to a tree two rounds behind the branch.
  */
-const reviewSha = rookReviewSha(branchTipSha)
+const reviewSha = rookReviewSha(buildSha)
 
 /**
  * FAIL-CLOSED INITIALISER. If the fan-out below throws, or a later edit stops
@@ -2226,6 +2186,66 @@ const reviewSha = rookReviewSha(branchTipSha)
 // ──── SECURITY-DEFAULT-START ────
 let securityVerdict = { spawned: false, verdict: 'FAIL', failures: ['the security review did not run'] }
 // ──── SECURITY-DEFAULT-END ────
+
+/**
+ * FAIL-CLOSED INITIALISER, same contract as the one above (#169).
+ *
+ * "The review has not been checked against the branch" and "the review covers
+ * the branch" must not serialise to the same thing, so the starting value is
+ * the refusal. Marked so test/security-verdict-blocks.test.ts can execute this
+ * exact object and push it through the decision block.
+ */
+// ──── CURRENCY-DEFAULT-START ────
+let reviewCurrency = { current: false, testedSha: null, headSha: null, reason: 'the security review was never checked against the commit being shipped (#169)' }
+// ──── CURRENCY-DEFAULT-END ────
+
+// ──── SECURITY-CURRENCY-START ────
+/**
+ * Re-read the commit the branch ends at, and compare it with the commit the
+ * security review was recorded against.
+ *
+ * BOTH VALUES ARE READ HERE, at the moment of the comparison. Neither is
+ * carried from earlier in the run: #169 IS a value captured at one point and
+ * consumed later as though it still described the run, and so are #155 and
+ * #166. `testedSha` comes out of the run artefact rather than out of this
+ * file's own `reviewSha`, so the artefact and the branch are compared rather
+ * than the workflow's memory being compared with itself.
+ *
+ * The sandbox cannot exec or read files (#69), so this travels through an
+ * agent. What that buys is a fixed pair of commands run by a step with no
+ * stake in the verdict — not a cryptographic boundary.
+ */
+async function reviewCurrencyAt(stage, phaseName = 'Verify') {
+  const probe = await agent(`
+Report two values, exactly as the commands print them. Change nothing, commit
+nothing, and do not run the security review again.
+
+1. The commit the work now ends at:
+     cd ${commitDir} && git rev-parse HEAD
+   Report it as headSha.
+
+2. The commit the security review was recorded against:
+     bun -e "import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); console.log(s?.agents?.rook?.testedSha ?? '')"
+   Report it as testedSha. If it prints an empty line, report an empty string.
+
+Do NOT substitute a SHA from anywhere else, do NOT edit workflow-state.json,
+and do NOT make the two values match. A mismatch means the reviewed commit is
+not the commit being shipped, and that is the result this workflow needs to
+see — it blocks the run on purpose (#169).
+  `, { label: `review-currency-${stage}`, phase: phaseName, model: 'sonnet', schema: {
+    type: 'object',
+    properties: {
+      headSha: { type: 'string' },
+      testedSha: { type: 'string' },
+    },
+    required: ['headSha', 'testedSha'],
+  }})
+
+  const currency = reviewIsCurrent(probe?.testedSha, probe?.headSha)
+  log(`SECURITY CURRENCY (${stage}): ${currency.current ? 'current' : 'STALE'} — reviewed ${currency.testedSha || 'nothing'}, HEAD ${currency.headSha || 'unknown'}`)
+  return currency
+}
+// ──── SECURITY-CURRENCY-END ────
 
 // ──── VERIFY-FANOUT-START ────
 // Container rebuild + Quinn container (STANDARD+ only, requires container config)
@@ -2470,44 +2490,6 @@ by hand and do NOT retry with a different verdict if it fails — report the fai
 await parallel([runContainerVerify, runRookReview])
 // ──── VERIFY-FANOUT-END ────
 
-// ──── HEAD-SHA-START ────
-/**
- * The commit the branch actually ends at, read from git (#169).
- *
- * Read from `commitDir`, which is the directory that owns this run's branch.
- * Not from rook's worktree and not from PROJECT_ROOT-by-assumption: rook's
- * worktree is cut from origin/main, and measuring the wrong tree is the #129
- * defect one layer out.
- *
- * This is the value the PR will be opened from, so comparing it against the
- * reviewed commit is the whole question #169 asks. It is read AFTER the
- * fan-out — anything the Verify phase committed is already in it.
- *
- * It arrives through an agent because the sandbox cannot exec (#69). What
- * that buys is a fixed command run by a step with no stake in the verdict,
- * not a cryptographic boundary; an agent that invents a SHA defeats it. The
- * failure being fixed is systematic — every run with a remediation round —
- * rather than adversarial.
- */
-const headCheck = await agent(`
-Run exactly this command, once, and report what it prints:
-
-  cd ${shellQuote(commitDir)} && git rev-parse HEAD
-
-Report the 40-character SHA it prints as headSha, exactly as git printed it.
-Do NOT run a different git command, do NOT report a SHA from anywhere else,
-and do NOT invent one if the command fails — report whatever it printed. A tip
-this step could not read blocks the run on purpose (#169).
-`, { label: 'head-sha', phase: 'Verify', model: 'sonnet', schema: {
-  type: 'object',
-  properties: { headSha: { type: 'string' } },
-  required: ['headSha'],
-}})
-
-const headSha = headCheck?.headSha
-log(`Branch tip at the security decision: ${headSha || 'unreadable'} (reviewed ${reviewSha || 'nothing'})`)
-// ──── HEAD-SHA-END ────
-
 // ── #136: this workflow does not write to the default branch ──────────
 //
 // What used to be here merged the worktree branch into whatever branch
@@ -2559,61 +2541,31 @@ if (securityVerdict.verdict !== 'PASS') {
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
   }
 }
-
-// #169: a PASS is a statement about ONE COMMIT, and this run may have moved
-// past it. Checked here, on the same return path, rather than as a second
-// decision further down that a later edit could return before.
+// #169: a PASS is only a statement about the commit it read.
 //
-// `reviewSha` is the value scripts/record-security-verdict.ts persists as
-// `agents.rook.testedSha` — the scope report's `sha` field is the `--sha`
-// this workflow passed to scripts/rook-review-scope.ts, so the artefact and
-// this comparison are about the same commit by construction.
+// The verdict above can be a true PASS over a commit this branch has moved
+// past. On the #164 run agents.rook.testedSha was 3fe336f1, the branch tip
+// was ef998b73, and the diff between them rewrote all four files rook had
+// read — 236 insertions, 254 deletions. "rook: PASS" on that PR was a
+// statement about code that was no longer there.
 //
-// Measured on the #164 run: testedSha 3fe336f1, branch tip ef998b73, and a
-// diff between them that rewrote all four files rook had read. That PR
-// carried a rook PASS describing a tree it did not contain.
-const testedSha = reviewSha
-const currency = reviewIsCurrent(testedSha, headSha)
-if (!currency.current) {
-  log(`SECURITY BLOCK: SECURITY_REVIEW_STALE — ${currency.reason}`)
-  log('SECURITY: the run is blocked and no PR will be opened')
+// So HEAD is re-read HERE, beside the verdict, and compared with the SHA the
+// artefact says was reviewed. Same return path as the verdict refusal above,
+// and ahead of the PR step for the same reason.
+reviewCurrency = await reviewCurrencyAt('verify')
+if (!reviewCurrency.current) {
+  log(`SECURITY BLOCK: SECURITY_REVIEW_STALE — ${reviewCurrency.reason}`)
+  log('SECURITY: the run is blocked and no PR will be opened — the reviewed commit is not the one shipping')
   return {
     status: 'SHIP_FAILED',
-    reason: `SECURITY_REVIEW_STALE: ${currency.reason}`,
-    security: { ...securityVerdict, testedSha: currency.testedSha, headSha: currency.headSha },
+    reason: `SECURITY_REVIEW_STALE: ${reviewCurrency.reason}`,
+    security: securityVerdict,
+    reviewCurrency,
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
   }
 }
-log(`Security review PASSED at ${currency.testedSha}, which is the branch tip`)
+log(`Security review PASSED and is current with ${reviewCurrency.headSha}`)
 // ──── SECURITY-DECISION-END ────
-
-// ──── RECOMMIT-STALENESS-START ────
-/**
- * The refusal a commit made AFTER the security decision earns, or null (#169).
- *
- * The decision above is a single point in time, and the Ship remediation loop
- * runs past it: it re-implements, commits to the same branch and pushes to
- * the PR head. Remediation is where the hurried code is written, and it is
- * the one round nothing reviews.
- *
- * The reported post-commit SHA is compared against the reviewed commit
- * directly, with no separate "did it move?" test. A round that committed
- * nothing reports the tip it started from, which IS the reviewed commit, so
- * the ordinary outcome passes through on the same comparison — and a reply
- * this cannot read fails closed instead of being read as "nothing changed".
- */
-function recommitStaleRefusal(reviewedSha, reCommit, ctx) {
-  const tip = reCommit && typeof reCommit === 'object' ? reCommit.commitSha : null
-  const currency = reviewIsCurrent(reviewedSha, tip)
-  if (currency.current) return null
-  return {
-    status: 'SHIP_FAILED',
-    reason: `SECURITY_REVIEW_STALE: ${currency.reason} — the ${ctx.phase} remediation round committed after the security review, and nothing has reviewed it`,
-    security: { testedSha: currency.testedSha, headSha: currency.headSha, verdict: 'FAIL', failures: [currency.reason] },
-    issue: ctx.issue, slug: ctx.slug, workDir: ctx.workDir,
-  }
-}
-// ──── RECOMMIT-STALENESS-END ────
 
 // ── GRADE: Post-run compliance grading (#574 — runs before ship gate) ──
 // Moved from after PROVE to before SHIP so grading happens even when gate fails.
@@ -2860,15 +2812,22 @@ Do NOT run tests — they were already validated.
 cd ${commitDir}
 git rev-parse HEAD   # this is parentSha
 ${reimplShipGitAdd} && git commit -m "fix(#${ISSUE}): ship gate regression fix" && git push origin HEAD:${shipBranch}
-git rev-parse HEAD   # this is commitSha
+commitSha=$(git rev-parse HEAD)   # this is commitSha
+echo "$commitSha"
 
-Then record the new commit in workflow-state.json. Run exactly this, once:
-   ${recordCommitCommand(commitDir, HARNESS_ROOT, `${WORK_DIR}/workflow-state.json`, shipBranch, recordCommitVerdicts)}
+Then re-record the commit, so workflow-state.json names the commit the branch
+now ends at rather than the one the run started from (#169):
+   branch=$(git branch --show-current)
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
+     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
+     --sha "$commitSha" --branch "$branch" \\
+     --quinn ${shellQuote(discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP')} \\
+     --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
+     --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
 
-It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
-Do NOT edit workflow-state.json by hand, and do NOT report true if the command
-failed. A round that commits without re-recording it leaves \`buildCommit\`
-naming the FIRST commit of the run (#169).
+   Run it even if nothing was committed — re-recording the same SHA is correct
+   and silence is not. It prints one JSON receipt on stdout; report its "ok"
+   field as stateRecorded, and report false if the command failed.
 
 Report both SHAs exactly as git printed them. Do NOT invent a value for either
 one, and do NOT report the same SHA twice to make the step look successful —
@@ -2880,22 +2839,39 @@ substitute another ref if it fails — report the failure instead (#136).
       if (!reCommit || !reCommit.commitSha || reCommit.commitSha === reCommit.parentSha) {
         log(`Ship regression produced no commit (#155) — HEAD is still ${reCommit?.parentSha || 'unknown'}`)
       }
-
-      // #169: this round ran AFTER the security review and after the PR was
-      // opened. Whatever it just committed is on the PR head and nothing has
-      // reviewed it, so the run does not get to call itself shipped.
+      // ──── SHIP-RESTALE-START ────
+      // #169: this round is the one the security review cannot have seen.
       //
-      // Marked because the CALL SITE is what has to work, not the function:
-      // deleting the `return` here left all 126 tests green on the first pass
-      // (.claude/rules/checks-must-be-able-to-fail.md). The block is extracted
-      // and executed by test/security-verdict-blocks.test.ts.
-      // ──── SHIP-RECOMMIT-GUARD-START ────
-      const shipStale = recommitStaleRefusal(reviewSha, reCommit, { issue: ISSUE, slug: SLUG, workDir: WORK_DIR, phase: 'Ship' })
-      if (shipStale) {
-        log(`SECURITY BLOCK: ${shipStale.reason}`)
-        return shipStale
+      // The review ran in the Verify phase. This commit is written after it,
+      // on the branch the PR is already open against, and it is exactly where
+      // the risky code goes — a remediation round exists because something
+      // was wrong. Letting it through would mean a PR carrying a "rook: PASS"
+      // that describes a commit two pushes back.
+      //
+      // Two refusals, in order: the commit has to be in the artefact, and the
+      // review has to still describe it. Re-reviewing here instead was
+      // considered and rejected for now — it needs the full scope-and-review
+      // fan-out, and a refusal that names the two SHAs is honest about what
+      // is known, where a second review bolted on after the gate would be the
+      // same "verdict computed late" shape #129 was about.
+      const shipRecommitState = commitStateRefusal(reCommit)
+      if (shipRecommitState) {
+        log(`${shipRecommitState} — the ship regression commit is not in workflow-state.json (#169)`)
+        return { status: 'SHIP_FAILED', reason: shipRecommitState, issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
       }
-      // ──── SHIP-RECOMMIT-GUARD-END ────
+      const shipRecommitCurrency = await reviewCurrencyAt('ship-regression', 'Ship')
+      if (!shipRecommitCurrency.current) {
+        log(`SECURITY BLOCK: SECURITY_REVIEW_STALE — ${shipRecommitCurrency.reason}`)
+        log('SECURITY: the ship regression moved the branch past the reviewed commit — the run stops here (#169)')
+        return {
+          status: 'SHIP_FAILED',
+          reason: `SECURITY_REVIEW_STALE: ${shipRecommitCurrency.reason}`,
+          security: securityVerdict,
+          reviewCurrency: shipRecommitCurrency,
+          issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+        }
+      }
+      // ──── SHIP-RESTALE-END ────
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.', { cwd: commitDir })
       if (retryShip?.result === 'PASS') {
         log('Ship passed after BUILD regression fix')

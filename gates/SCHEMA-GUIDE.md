@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-09-14
+updated: 2026-10-07
 ---
 
 # workflow-state.json Schema Guide
@@ -101,6 +101,15 @@ A `PASS` or `SKIP` verdict may omit `failures` entirely.
 
 Write it with `scripts/record-security-verdict.ts`, not by hand — `workflows/ship.js`
 calls it in the Verify fan-out (#129).
+
+**`testedSha` is read back and compared with the branch tip** before the PR head is
+final, and again after any ship-gate regression commit (#169). A review recorded
+against a commit the branch has moved past is refused with `SECURITY_REVIEW_STALE`,
+because a PASS only describes the code it read — on the #164 run `testedSha` was
+`3fe336f1` while the tip was `ef998b73`, and every file rook reviewed had been
+rewritten in between. `buildCommit` is re-recorded by every commit step for the same
+reason, so it names the commit the PR is opened from rather than the first commit of
+the run.
 
 ## Changelog Actor Values
 

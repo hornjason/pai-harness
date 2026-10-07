@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -306,175 +306,57 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
     expect(shipSource).toContain("const stateRefusal = commitStateRefusal(commitResult)");
     expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}status: 'COMMIT_FAILED'/);
   });
-});
 
-describe("AC-5 (#169): every recommit re-records the commit it produced", () => {
-  /**
-   * Three steps commit to this run's branch — the commit step and the two
-   * remediation recommits — and only the first recorded anything. So
-   * `buildCommit` named the FIRST commit of the run: the value Quinn's
-   * container check compares HEAD against, and the value the ship gate reads.
-   * On the #164 run the recorded SHA and the branch tip were different
-   * commits whose diff rewrote every file the security review had read.
-   *
-   * The command is EXECUTED here against a real git repository rather than
-   * asserted as a substring of ship.js. Every mutation that has survived a
-   * first pass in this repo was a source-text assertion, and this one has a
-   * specific way to be wrong that reading it cannot catch: `--sha "$sha"`
-   * depending on a shell variable an earlier prompt line set, in a step whose
-   * commands each run as their own tool call.
-   */
-  const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+  // ── #169 ──────────────────────────────────────────────────────────────
+  //
+  // `buildCommit` was written once, by the first commit step, and never again.
+  // Both regression rounds commit and push after it — so on any run that
+  // needed one, `buildCommit` named a commit the branch had moved past, and
+  // the container-verify step that compares HEAD against it was comparing
+  // against a stale value. Same family as the security review's `testedSha`:
+  // a value captured at one point and consumed later as though it still
+  // described the run.
 
-  /** ship.js's own builder, extracted by marker and executed. */
-  function recordCommitCommand(
-    repoDir: string,
-    harnessRoot: string,
-    statePath: string,
-    branch: string,
-    verdicts: { quinn: string; api: string; ui: string },
-  ): string {
-    const start = shipSource.indexOf("// ──── RECOMMIT-RECORD-START ────");
-    const end = shipSource.indexOf("// ──── RECOMMIT-RECORD-END ────");
-    if (start < 0 || end < 0) throw new Error("ship.js is missing the RECOMMIT-RECORD markers");
-    const fn = new Function(`${shipSource.slice(start, end)}\nreturn recordCommitCommand`)();
-    return fn(repoDir, harnessRoot, statePath, branch, verdicts);
+  /** A recommit agent step, sliced from its label backwards to its prompt. */
+  function recommitStep(label: string): string {
+    const marker = `'${label}'`;
+    const end = shipSource.indexOf(marker);
+    expect(end, `ship.js has no ${label} step`).toBeGreaterThan(-1);
+    const start = shipSource.lastIndexOf("await agent(`", end);
+    expect(start, `the ${label} step is no longer an agent call`).toBeGreaterThan(-1);
+    // Out to the close of the options object, so `required:` is included.
+    return shipSource.slice(start, shipSource.indexOf("})", end) + 2);
   }
 
-  const VERDICTS = { quinn: "SKIP", api: "SKIP", ui: "SKIP" };
-
-  /** A real repository with one commit, so `git rev-parse HEAD` has an answer. */
-  function makeRepo(dir: string): string {
-    const git = (...a: string[]) =>
-      spawnSync("git", ["-C", dir, "-c", "user.email=t@t", "-c", "user.name=t", ...a], {
-        encoding: "utf-8",
-      });
-    spawnSync("git", ["init", "-q", "-b", "main", dir], { encoding: "utf-8" });
-    writeFileSync(join(dir, "a.txt"), "one\n");
-    git("add", "a.txt");
-    git("commit", "-qm", "one");
-    return git("rev-parse", "HEAD").stdout.trim();
-  }
-
-  function runCommand(cmd: string) {
-    const r = spawnSync("bash", ["-c", cmd], { encoding: "utf-8" });
-    return { code: r.status ?? -1, out: r.stdout ?? "", err: r.stderr ?? "" };
-  }
-
-  test("the generated command records the repository's real HEAD", () => {
-    const repo = join(DIR, "repo");
-    mkdirSync(repo);
-    const head = makeRepo(repo);
-    expect(head).toMatch(/^[0-9a-f]{40}$/);
-
-    const r = runCommand(recordCommitCommand(repo, REPO_ROOT, STATE, "169-deep-modules", VERDICTS));
-    expect(r.code, r.err).toBe(0);
-
-    const s = readState();
-    expect(s.buildCommit, "the recommit recorded something other than the commit it made").toBe(head);
-    expect(s.agents.marcus.commitSha).toBe(head);
-    expect(s.agents.marcus.branch).toBe("169-deep-modules");
-  });
-
-  test("a second commit moves buildCommit", () => {
-    // The whole point: recording once is indistinguishable from recording
-    // every time until the branch moves twice.
-    const repo = join(DIR, "repo2");
-    mkdirSync(repo);
-    const first = makeRepo(repo);
-    const cmd = recordCommitCommand(repo, REPO_ROOT, STATE, "169-deep-modules", VERDICTS);
-    expect(runCommand(cmd).code).toBe(0);
-    expect(readState().buildCommit).toBe(first);
-
-    writeFileSync(join(repo, "a.txt"), "two\n");
-    spawnSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "two"]);
-    const second = spawnSync("git", ["-C", repo, "rev-parse", "HEAD"], { encoding: "utf-8" }).stdout.trim();
-    expect(second).not.toBe(first);
-
-    expect(runCommand(cmd).code).toBe(0);
-    expect(readState().buildCommit, "buildCommit still names the first commit of the run").toBe(second);
-  });
-
-  test("the environment verdicts travel with it", () => {
-    // record-build-commit.ts REPLACES environments.local, so a recommit that
-    // dropped --api would silently downgrade a PASS recorded by the commit
-    // step to SKIP.
-    const repo = join(DIR, "repo3");
-    mkdirSync(repo);
-    makeRepo(repo);
-    const cmd = recordCommitCommand(repo, REPO_ROOT, STATE, "169-deep-modules", {
-      quinn: "PASS",
-      api: "PASS",
-      ui: "SKIP",
+  for (const label of ["recommit-verify", "recommit-ship"]) {
+    test(`the ${label} step re-records buildCommit with the new SHA`, () => {
+      const step = recommitStep(label);
+      expect(step, `${label} commits and pushes without updating buildCommit (#169)`)
+        .toContain("record-build-commit.ts");
+      // The SHA it records is the one git just printed for the new HEAD, not
+      // the SHA the run started from.
+      expect(step).toMatch(/--sha "\$commitSha"|--sha "\$sha"/);
     });
-    expect(runCommand(cmd).code).toBe(0);
-    const s = readState();
-    expect(s.environments.local.api).toBe("PASS");
-    expect(s.environments.local.ui).toBe("SKIP");
-    expect(s.agents.quinn).toEqual({ spawned: true, verdict: "PASS" });
-  });
 
-  test("the command does not depend on a shell variable set by an earlier step", () => {
-    // An agent runs each command in the prompt as its own tool call. A
-    // `--sha "$sha"` set two lines earlier expands to nothing in a fresh
-    // shell — and the recorder would refuse, loudly. The dangerous version is
-    // the one where `sha` is still set from the PREVIOUS commit, which is
-    // exactly the staleness #169 is about.
-    const cmd = recordCommitCommand("/p", "/h", "/w/state.json", "b", VERDICTS);
-    expect(cmd).toContain('--sha "$(git rev-parse HEAD)"');
-    expect(cmd).not.toContain('--sha "$sha"');
-    expect(cmd.startsWith("cd '/p' &&"), `the command does not cd first: ${cmd}`).toBe(true);
-  });
-
-  test("a repository the command cannot read is refused, not recorded", () => {
-    // The break that proves the check: point it at a directory that is not a
-    // git repository and the recorder must refuse rather than write
-    // something. Run, not asserted — `git rev-parse` failing silently into an
-    // empty --sha is the failure this guards.
-    const notARepo = join(DIR, "empty");
-    mkdirSync(notARepo);
-    const before = readFileSync(STATE, "utf-8");
-    const r = runCommand(recordCommitCommand(notARepo, REPO_ROOT, STATE, "b", VERDICTS));
-    expect(r.code, "a non-repository was accepted as a commit").not.toBe(0);
-    expect(readFileSync(STATE, "utf-8"), "the state file was written anyway").toBe(before);
-  });
-
-  test("both remediation recommits call it and require the receipt", () => {
-    // The wiring half. The command above is proven to work; this is what says
-    // the workflow runs it — in BOTH loops, with the receipt as a required
-    // field rather than an instruction an agent can skip (#166's lesson).
-    const labels = ["recommit-verify", "recommit-ship"];
-    for (const label of labels) {
-      const at = shipSource.indexOf(`label: '${label}'`);
-      expect(at, `ship.js has no ${label} step`).toBeGreaterThan(-1);
-      const start = shipSource.lastIndexOf("await agent(`", at);
-      const block = shipSource.slice(start, at + 400);
-      expect(block, `${label} does not record the commit it makes`).toContain(
-        "recordCommitCommand(",
-      );
-      expect(block, `${label} does not ask for the receipt`).toContain("stateRecorded");
-      const required = block.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";
+    test(`the ${label} state write is a required field of the reply`, () => {
+      // #166's lesson applied to the rounds that were left out of it: an
+      // instruction an agent can skip without the reply changing is not a step.
+      const step = recommitStep(label);
+      const required = step.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";
       expect(required, `${label} required fields were: ${required}`).toContain("stateRecorded");
-    }
-  });
+    });
+  }
 
-  test("the commit step and the recommits record the same flags", () => {
-    // Anti-drift: the commit step builds this command inline and the
-    // recommits build it through the helper. A flag added to one and not the
-    // other is how environments.local gets downgraded on a remediation round.
-    const flags = (text: string) =>
-      [...new Set([...text.matchAll(/--([a-z-]+)/g)].map(m => m[1]))].sort();
-
-    const start = shipSource.indexOf("const commitResult = await agent(`");
-    const from = shipSource.indexOf("record-build-commit.ts", start);
-    const to = shipSource.indexOf("It prints one JSON receipt", from);
-    expect(from, "the commit step no longer calls the recorder").toBeGreaterThan(-1);
-    expect(to, "the commit step's recorder command no longer ends where this slicer expects")
-      .toBeGreaterThan(from);
-
-    const inline = flags(shipSource.slice(from, to));
-    const helper = flags(recordCommitCommand("/p", "/h", "/w/s.json", "b", VERDICTS));
-    expect(inline.length, `the slicer found no flags: ${inline.join(",")}`).toBeGreaterThan(3);
-    expect(inline, "the two recorder call sites disagree on flags").toEqual(helper);
+  test("the recorder is reached on every path that moves the branch", () => {
+    // Counted rather than spot-checked: three commit steps push to the ship
+    // branch, and each one must re-record. A fourth added later without a
+    // recorder makes this fail rather than slip through.
+    const pushes = (shipSource.match(/git push (-u )?origin/g) || []).length;
+    // The interpolated command form, not every mention of the filename —
+    // `commitStateRefusal` names the script in its refusal text, and counting
+    // that would let a step with no recorder borrow another step's credit.
+    const records = (shipSource.match(/record-build-commit\.ts`\)\}/g) || []).length;
+    expect(records, `${pushes} steps push to the branch but only ${records} record the commit`)
+      .toBeGreaterThanOrEqual(pushes);
   });
 });

@@ -42,9 +42,12 @@ const DECISION_START = "// ──── SECURITY-DECISION-START ────";
 const DECISION_END = "// ──── SECURITY-DECISION-END ────";
 const FANOUT_START = "// ──── VERIFY-FANOUT-START ────";
 const FANOUT_END = "// ──── VERIFY-FANOUT-END ────";
-
-const RECOMMIT_START = "// ──── RECOMMIT-STALENESS-START ────";
-const RECOMMIT_END = "// ──── RECOMMIT-STALENESS-END ────";
+const CURRENCY_START = "// ──── SECURITY-CURRENCY-START ────";
+const CURRENCY_END = "// ──── SECURITY-CURRENCY-END ────";
+const CURRENCY_DEFAULT_START = "// ──── CURRENCY-DEFAULT-START ────";
+const CURRENCY_DEFAULT_END = "// ──── CURRENCY-DEFAULT-END ────";
+const RESTALE_START = "// ──── SHIP-RESTALE-START ────";
+const RESTALE_END = "// ──── SHIP-RESTALE-END ────";
 
 /** The inlined copies ship.js actually runs. */
 const inlined = new Function(
@@ -58,51 +61,18 @@ const inlined = new Function(
 };
 
 const SHA = "3192a75c4f1e2b8d9a0c5e6f7081a2b3c4d5e6f7";
-/** The #164 branch tip — a different commit from SHA, not a different string. */
-const OTHER_SHA = "ef998b73c4f1e2b8d9a0c5e6f7081a2b3c4d5e6f";
 const GOOD_SCOPE = { exitCode: 0, files: ["workflows/ship.js", "lib/security-verdict.ts"] };
-
-/**
- * Execute the decision block with the module-scope names ship.js gives it.
- * The block ends in `return { status: 'SHIP_FAILED', ... }` on a block, and
- * falls through returning undefined when the run may proceed.
- */
-function decide(opts: {
-  verifyResult: unknown;
-  securityVerdict: { spawned: boolean; verdict: string; failures: string[] };
-  /** What rook was pinned to. Defaults to a review of the current tip. */
-  reviewSha?: unknown;
-  /** What the branch ends at now, as the head-sha step reported it. */
-  headSha?: unknown;
-}) {
-  const logs: string[] = [];
-  const block = sliceBlock(DECISION_START, DECISION_END);
-  const factory = new Function(
-    "log", "verifyResult", "securityVerdict", "shipBranch", "ISSUE", "SLUG", "WORK_DIR",
-    "reviewSha", "headSha", "reviewIsCurrent",
-    `return (async () => {${block}\nreturn undefined})()`,
-  );
-  const result = factory(
-    (m: unknown) => logs.push(String(m)),
-    opts.verifyResult,
-    opts.securityVerdict,
-    "129-deep-modules",
-    129,
-    "pai-harness-129",
-    "/tmp/work",
-    "reviewSha" in opts ? opts.reviewSha : SHA,
-    "headSha" in opts ? opts.headSha : SHA,
-    // ship.js's own copy, not the library's — the decision runs the inlined
-    // one, and a test that wired in the library would pass while the two
-    // had drifted.
-    inlined.reviewIsCurrent,
-  ) as Promise<Record<string, unknown> | undefined>;
-  return { result, logs };
-}
 
 // ── AC-1 ────────────────────────────────────────────────────────────────
 
 describe("AC-1: a rook FAIL stops the run", () => {
+  /**
+   * Execute the decision block with the module-scope names ship.js gives it.
+   * The block ends in `return { status: 'SHIP_FAILED', ... }` on a block, and
+   * falls through returning undefined when the run may proceed.
+   */
+  const decide = decideFromShip;
+
   const PASSING = { spawned: true, verdict: "PASS", failures: [] as string[] };
 
   test("rook FAIL returns SHIP_FAILED", async () => {
@@ -474,6 +444,27 @@ describe("ship.js's inlined helpers match lib/security-verdict.ts", () => {
     expect(() => inlined.rookScopeCommand("/p", "/h", "HEAD", "/w/s.json")).toThrow();
   });
 
+  test("reviewIsCurrent agrees on every pair of SHAs (#169)", () => {
+    // One matrix, both implementations, every row compared — including the
+    // reason strings, because a refusal that names the wrong commit in one
+    // copy and the right one in the other is drift that still reads as a
+    // refusal. computeACHash drifted exactly this way in this repo.
+    const values: unknown[] = [
+      SHA, SHA.toUpperCase(), ` ${SHA} `, SHA.slice(0, 8), SHA.slice(0, 7),
+      "ef998b73c4f1e2b8d9a0c5e6f7081a2b3c4d5e6f", "ef998b7",
+      "HEAD", "main", "", "3192a7", "3192a75; rm -rf /",
+      null, undefined, 42, {}, [], "   ",
+    ];
+    for (const tested of values) {
+      for (const head of values) {
+        expect(
+          inlined.reviewIsCurrent(tested, head),
+          `drift at tested=${JSON.stringify(tested)} head=${JSON.stringify(head)}`,
+        ).toEqual(reviewIsCurrent(tested, head));
+      }
+    }
+  });
+
   test("rookGateVerdict agrees on every scope/rook pair", () => {
     const scopes: unknown[] = [
       undefined, null, "ok", {}, { exitCode: 0 }, { exitCode: 1, files: ["a"] },
@@ -494,7 +485,342 @@ describe("ship.js's inlined helpers match lib/security-verdict.ts", () => {
   });
 });
 
+// ── #169: the PASS has to be about the commit that ships ────────────────
+//
+// #129 gave the review a real scope and a verdict that can stop the run. The
+// hole left behind was measured on the #164 run: `agents.rook.testedSha` was
+// 3fe336f1 while the branch tip was ef998b73, and the diff between them
+// rewrote all four files rook had read — 236 insertions, 254 deletions. The
+// remediation round is where the risky code gets written, it runs AFTER the
+// review, and nothing compared the two SHAs. "rook: PASS" on that PR was a
+// statement about a commit the branch no longer ended at.
+
+const HEAD_SHA = "ef998b73c4f1e2b8d9a0c5e6f7081a2b3c4d5e6f";
+
+describe("#169 AC-3: reviewIsCurrent fails closed on anything but the same commit", () => {
+  test("the same commit is current", () => {
+    const r = reviewIsCurrent(SHA, SHA);
+    expect(r.current).toBe(true);
+    expect(r.reason).toBeNull();
+    expect(r.testedSha).toBe(SHA);
+    expect(r.headSha).toBe(SHA);
+  });
+
+  test("case and surrounding whitespace do not make a review stale", () => {
+    expect(reviewIsCurrent(SHA.toUpperCase(), ` ${SHA} `).current).toBe(true);
+  });
+
+  test("an abbreviation of the same commit is current", () => {
+    // Not a convenience. `git rev-parse --short HEAD` is what the commit step
+    // reports and `rook-review-scope.ts` resolves to a full SHA, so the two
+    // values this compares are not guaranteed to be the same length. Strict
+    // string equality there would mark every run stale — a check that refuses
+    // the common path gets switched off, and then it guards nothing.
+    expect(reviewIsCurrent(SHA.slice(0, 8), SHA).current).toBe(true);
+    expect(reviewIsCurrent(SHA, SHA.slice(0, 8)).current).toBe(true);
+  });
+
+  test("a different commit is stale, and the reason names both SHAs", () => {
+    const r = reviewIsCurrent(SHA, HEAD_SHA);
+    expect(r.current, "a review of another commit counted as current").toBe(false);
+    expect(r.reason).toContain(SHA);
+    expect(r.reason).toContain(HEAD_SHA);
+  });
+
+  test("an abbreviation of a DIFFERENT commit is stale", () => {
+    // The over-fix guard for the abbreviation case above: prefix tolerance
+    // must not become "the first 7 characters are close enough".
+    expect(reviewIsCurrent("3192a75", HEAD_SHA).current).toBe(false);
+    expect(reviewIsCurrent(SHA, "ef998b7").current).toBe(false);
+  });
+
+  const MISSING: Array<[string, unknown, unknown]> = [
+    ["no testedSha at all", undefined, SHA],
+    ["a null testedSha", null, SHA],
+    ["an empty testedSha", "", SHA],
+    ["a testedSha that is a ref name", "HEAD", SHA],
+    ["a testedSha too short to be one", "3192a7", SHA],
+    ["a testedSha with a command in it", "3192a75; rm -rf /", SHA],
+    ["a testedSha that is an object", {}, SHA],
+    ["no headSha at all", SHA, undefined],
+    ["a null headSha", SHA, null],
+    ["an empty headSha", SHA, ""],
+    ["a headSha that is a ref name", SHA, "HEAD"],
+    ["a headSha that is a number", SHA, 42],
+    ["neither SHA", null, null],
+  ];
+
+  for (const [label, tested, head] of MISSING) {
+    test(`fails closed on ${label}`, () => {
+      const r = reviewIsCurrent(tested, head);
+      expect(r.current, `${label} was read as a current review`).toBe(false);
+      expect(r.reason, `${label} produced no reason`).toBeTruthy();
+    });
+  }
+
+  test("the positive control: a well-formed matching pair is accepted", () => {
+    // Without this, returning `current: false` unconditionally satisfies every
+    // case above (.claude/rules/checks-must-be-able-to-fail.md).
+    expect(reviewIsCurrent(SHA, SHA).current).toBe(true);
+  });
+});
+
+describe("#169 AC-1/AC-2: a stale review stops the run before the PR", () => {
+  const PASSING = { spawned: true, verdict: "PASS", failures: [] as string[] };
+  const STALE = {
+    current: false,
+    testedSha: SHA,
+    headSha: HEAD_SHA,
+    reason: `the security review passed ${SHA}, but the branch now ends at ${HEAD_SHA}`,
+  };
+
+  test("a stale review returns SHIP_FAILED with SECURITY_REVIEW_STALE", async () => {
+    const { result, logs } = decideFromShip({
+      verifyResult: { result: "PASS" },
+      securityVerdict: PASSING,
+      currency: STALE,
+    });
+    const out = await result;
+    expect(out?.status, "a review of a commit the branch left behind let the run ship").toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("SECURITY_REVIEW_STALE");
+    expect(String(out?.reason)).toContain(HEAD_SHA);
+    expect(logs.some(l => /SECURITY_REVIEW_STALE/.test(l))).toBe(true);
+  });
+
+  test("the stale refusal carries the two SHAs that disagree", async () => {
+    const { result } = decideFromShip({
+      verifyResult: { result: "PASS" },
+      securityVerdict: PASSING,
+      currency: STALE,
+    });
+    const out = await result;
+    const currency = out?.reviewCurrency as Record<string, unknown>;
+    expect(currency?.testedSha).toBe(SHA);
+    expect(currency?.headSha).toBe(HEAD_SHA);
+    expect(out?.status).toBe("SHIP_FAILED");
+  });
+
+  test("a current review falls through so the run can continue", async () => {
+    // The positive control. Refusing every currency satisfies both cases above
+    // and would block every run.
+    const { result } = decideFromShip({
+      verifyResult: { result: "PASS" },
+      securityVerdict: PASSING,
+      currency: { current: true, testedSha: SHA, headSha: SHA, reason: null },
+    });
+    expect(await result, "a current security review stopped the run").toBeUndefined();
+  });
+
+  test("the staleness check reads HEAD at the decision point, not earlier", () => {
+    // AC-1: the comparison happens where the run decides it may proceed. A
+    // value captured 600 lines earlier is the defect, not the fix.
+    const block = sliceBlock(DECISION_START, DECISION_END);
+    expect(block).toContain("reviewCurrencyAt");
+    expect(block).toContain("SECURITY_REVIEW_STALE");
+  });
+
+  test("the fail-closed currency initialiser refuses a run nothing checked", () => {
+    // ship.js's REAL initialiser, executed. If the probe throws or a later
+    // edit stops assigning it, this is what the decision point sees.
+    const initialiser = new Function(
+      `${sliceBlock(CURRENCY_DEFAULT_START, CURRENCY_DEFAULT_END)}
+       return reviewCurrency`,
+    )() as { current: boolean; reason: string | null };
+    expect(initialiser.current, "ship.js starts the run with the review already current").toBe(false);
+    expect(initialiser.reason).toBeTruthy();
+  });
+
+  test("no PR step is invoked after the stale refusal", () => {
+    // Structural, for the same reason as the rook-FAIL version above: the PR
+    // step cannot be stubbed into the extracted block, so assert the refusal's
+    // `return` comes first in the file.
+    const refusal = shipSource.indexOf(DECISION_END);
+    const prStep = shipSource.indexOf("record-env-and-pr");
+    expect(prStep, "the PR step label moved — this guard no longer checks anything").toBeGreaterThan(-1);
+    expect(refusal, "the staleness decision now happens after the PR is opened").toBeLessThan(prStep);
+  });
+});
+
+describe("#169 AC-1: the currency probe reads git, not a value the run remembers", () => {
+  /** ship.js's reviewCurrencyAt, extracted and executed against a stub agent. */
+  function loadProbe(reply: unknown) {
+    const prompts: string[] = [];
+    const options: Array<Record<string, unknown>> = [];
+    const logs: string[] = [];
+    const factory = new Function(
+      "agent", "commitDir", "WORK_DIR", "reviewIsCurrent", "log",
+      `${sliceBlock(CURRENCY_START, CURRENCY_END)}
+       return reviewCurrencyAt`,
+    );
+    const probe = factory(
+      async (p: string, o: Record<string, unknown>) => {
+        prompts.push(p);
+        options.push(o);
+        return reply;
+      },
+      "/work/tree",
+      "/tmp/work",
+      inlined.reviewIsCurrent,
+      (m: unknown) => logs.push(String(m)),
+    ) as (stage: string, phase?: string) => Promise<{ current: boolean }>;
+    return { probe, prompts, options, logs };
+  }
+
+  test("it asks git for HEAD of the directory the commits are made in", async () => {
+    const { probe, prompts } = loadProbe({ headSha: SHA, testedSha: SHA });
+    await probe("verify");
+    expect(prompts[0]).toContain("cd /work/tree");
+    expect(prompts[0]).toContain("git rev-parse HEAD");
+  });
+
+  test("it reads the recorded testedSha out of the run artefact", async () => {
+    const { probe, prompts, options } = loadProbe({ headSha: SHA, testedSha: SHA });
+    await probe("verify");
+    expect(prompts[0]).toContain("/tmp/work/workflow-state.json");
+    expect(prompts[0]).toContain("testedSha");
+    const required = (options[0].schema as { required: string[] }).required;
+    expect(required, "a value the reply need not carry is a value the agent can skip (#166)")
+      .toEqual(expect.arrayContaining(["headSha", "testedSha"]));
+  });
+
+  test("a moved HEAD comes back stale", async () => {
+    const { probe } = loadProbe({ headSha: HEAD_SHA, testedSha: SHA });
+    expect((await probe("verify")).current, "the probe reported a moved HEAD as current").toBe(false);
+  });
+
+  test("a probe that returns nothing is stale, not current", async () => {
+    for (const reply of [null, undefined, {}, "ok", { headSha: SHA }, { testedSha: SHA }]) {
+      const { probe } = loadProbe(reply);
+      expect((await probe("verify")).current, `${JSON.stringify(reply)} was read as current`).toBe(false);
+    }
+  });
+
+  test("the positive control: matching SHAs come back current", async () => {
+    const { probe } = loadProbe({ headSha: SHA, testedSha: SHA });
+    expect((await probe("verify")).current).toBe(true);
+  });
+});
+
+describe("#169 AC-6: a recommit after the security decision is re-checked", () => {
+  /** ship.js's post-recommit block, extracted and executed. */
+  function afterShipRecommit(opts: { reCommit: unknown; currency: unknown }) {
+    const logs: string[] = [];
+    const stages: string[] = [];
+    const guard = new Function(
+      `${sliceBlock("// ──── COMMIT-STATE-GUARD-START ────", "// ──── COMMIT-STATE-GUARD-END ────")}
+       return commitStateRefusal`,
+    )() as (reply: unknown) => string | null;
+    const factory = new Function(
+      "log", "commitStateRefusal", "reCommit", "reviewCurrencyAt", "securityVerdict",
+      "ISSUE", "SLUG", "WORK_DIR",
+      `return (async () => {${sliceBlock(RESTALE_START, RESTALE_END)}\nreturn undefined})()`,
+    );
+    const result = factory(
+      (m: unknown) => logs.push(String(m)),
+      guard,
+      opts.reCommit,
+      async (stage: string) => { stages.push(String(stage)); return opts.currency },
+      { spawned: true, verdict: "PASS", failures: [] },
+      169, "pai-harness-169", "/tmp/work",
+    ) as Promise<Record<string, unknown> | undefined>;
+    return { result, logs, stages };
+  }
+
+  const RECORDED = { commitSha: HEAD_SHA, parentSha: SHA, stateRecorded: true };
+  const CURRENT = { current: true, testedSha: HEAD_SHA, headSha: HEAD_SHA, reason: null };
+
+  test("a ship recommit that moved HEAD past the review stops the run", async () => {
+    const { result, logs } = afterShipRecommit({
+      reCommit: RECORDED,
+      currency: { current: false, testedSha: SHA, headSha: HEAD_SHA, reason: `reviewed ${SHA}, HEAD ${HEAD_SHA}` },
+    });
+    const out = await result;
+    expect(out?.status, "code committed after the review shipped unreviewed").toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("SECURITY_REVIEW_STALE");
+    expect(logs.some(l => /SECURITY_REVIEW_STALE/.test(l))).toBe(true);
+  });
+
+  test("the recommit is re-checked rather than assumed stale", async () => {
+    // The positive control, and the thing that keeps the gate switched on: a
+    // remediation round that is still at the reviewed commit may proceed.
+    const { result, stages } = afterShipRecommit({ reCommit: RECORDED, currency: CURRENT });
+    expect(await result, "a re-checked recommit was refused anyway").toBeUndefined();
+    expect(stages.length, "nothing re-read HEAD after the recommit").toBe(1);
+  });
+
+  test("a recommit whose state write was not confirmed stops the run", async () => {
+    for (const reCommit of [
+      { commitSha: HEAD_SHA, parentSha: SHA },
+      { commitSha: HEAD_SHA, parentSha: SHA, stateRecorded: false },
+      { commitSha: HEAD_SHA, parentSha: SHA, stateRecorded: "true" },
+    ]) {
+      const { result } = afterShipRecommit({ reCommit, currency: CURRENT });
+      const out = await result;
+      expect(out?.status, `${JSON.stringify(reCommit)} was accepted as a recorded recommit`).toBe("SHIP_FAILED");
+      expect(String(out?.reason)).toContain("COMMIT_STATE_NOT_RECORDED");
+    }
+  });
+
+  test("a recommit step that returned nothing at all stops the run", async () => {
+    // The shape the token case above cannot cover: `commitStateRefusal` has no
+    // SHA to name, so it says so instead. Still a refusal.
+    const { result } = afterShipRecommit({ reCommit: null, currency: CURRENT });
+    const out = await result;
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("no reply");
+  });
+
+  test("the re-check sits between the ship recommit and the SHIPPED return", () => {
+    // Structural: the block above proves the refusal works, this proves it is
+    // in the path a shipping run takes. A guard nothing calls is #162's round
+    // one — 270 tested lines the workflow never executed.
+    const recommit = shipSource.indexOf("'recommit-ship'");
+    const start = shipSource.indexOf(RESTALE_START);
+    const shipped = shipSource.indexOf("SHIPPED_AND_PROVEN");
+    expect(recommit, "the recommit-ship label moved — this guard checks nothing").toBeGreaterThan(-1);
+    expect(start, "ship.js has no post-recommit staleness block").toBeGreaterThan(recommit);
+    expect(shipped).toBeGreaterThan(shipSource.indexOf(RESTALE_END));
+  });
+});
+
 // ── fan-out harness shared by the AC-2 and AC-4 tests ───────────────────
+
+/**
+ * Execute ship.js's SECURITY-DECISION block with the module-scope names it
+ * expects, and return what it returns — undefined when the run may proceed.
+ *
+ * `reviewCurrencyAt` is stubbed rather than the currency value alone, because
+ * #169 is a value read too early: a test that injected a pre-computed answer
+ * would pass against the exact defect being fixed.
+ */
+function decideFromShip(opts: {
+  verifyResult: unknown;
+  securityVerdict: { spawned: boolean; verdict: string; failures: string[] };
+  currency?: unknown;
+}) {
+  const logs: string[] = [];
+  const stages: string[] = [];
+  const block = sliceBlock(DECISION_START, DECISION_END);
+  const factory = new Function(
+    "log", "verifyResult", "securityVerdict", "shipBranch", "ISSUE", "SLUG", "WORK_DIR",
+    "reviewCurrency", "reviewCurrencyAt",
+    `return (async () => {${block}\nreturn undefined})()`,
+  );
+  const currency = opts.currency ?? { current: true, testedSha: SHA, headSha: SHA, reason: null };
+  const result = factory(
+    (m: unknown) => logs.push(String(m)),
+    opts.verifyResult,
+    opts.securityVerdict,
+    "129-deep-modules",
+    129,
+    "pai-harness-129",
+    "/tmp/work",
+    { current: false, testedSha: null, headSha: null, reason: "the currency was never checked" },
+    async (stage: string) => { stages.push(String(stage)); return currency },
+  ) as Promise<Record<string, unknown> | undefined>;
+  return { result, logs, stages };
+}
+
 
 /**
  * ship.js's own `shellQuote`, extracted rather than reimplemented.
@@ -558,411 +884,3 @@ async function runFanoutPrompts(): Promise<string[]> {
   await done;
   return prompts;
 }
-
-// ── #169: the verdict must describe the commit the PR is opened from ────
-//
-// #129 made rook's verdict block the run. It did not make the verdict a
-// statement about the PR. The review is pinned to one commit and the
-// remediation rounds that follow it commit again to the same branch, so a
-// `rook: PASS` can be — and on the #164 run was — a review of a tree the
-// branch no longer ends at: testedSha 3fe336f1, branch tip ef998b73, and a
-// diff between them that rewrote all four reviewed files.
-
-/** The #164 pair, as measured. */
-const TESTED_164 = "3fe336f1";
-const TIP_164 = "ef998b73";
-
-/**
- * ONE matrix, driven through the library copy (AC-3) and ship.js's inlined
- * copy (AC-4). Two matrices would let the copies disagree on a row only one of
- * them was ever given.
- */
-const CURRENCY_MATRIX: Array<[string, unknown, unknown, boolean]> = [
-  // ── current ──
-  ["two identical full SHAs", SHA, SHA, true],
-  ["an abbreviated review against the full tip", SHA.slice(0, 7), SHA, true],
-  ["a full review against an abbreviated tip", SHA, SHA.slice(0, 12), true],
-  ["uppercase on one side", SHA.toUpperCase(), SHA, true],
-  ["whitespace around one side", ` ${SHA} `, SHA, true],
-
-  // ── stale ──
-  ["the #164 pair", TESTED_164, TIP_164, false],
-  ["two full SHAs differing in the last character", SHA, `${SHA.slice(0, 39)}0`, false],
-  ["an abbreviation that differs at character 7", "3192a7f", SHA, false],
-  ["a review of an unrelated commit", SHA, OTHER_SHA, false],
-
-  // ── fails closed: no usable review SHA ──
-  ["no review SHA at all", null, SHA, false],
-  ["an undefined review SHA", undefined, SHA, false],
-  ["an empty review SHA", "", SHA, false],
-  ["a ref name as the review SHA", "HEAD", SHA, false],
-  ["a branch name as the review SHA", "main", SHA, false],
-  ["a six-character review SHA", "3192a7", SHA, false],
-  ["a 41-character review SHA", `${SHA}a`, SHA, false],
-  ["a non-hex review SHA", "g192a75", SHA, false],
-  ["a review SHA with a command in it", "3192a75; rm -rf /", SHA, false],
-  ["a numeric review SHA", 3192475, SHA, false],
-  ["an object as the review SHA", {}, SHA, false],
-
-  // ── fails closed: no usable branch tip ──
-  ["no branch tip at all", SHA, null, false],
-  ["an undefined branch tip", SHA, undefined, false],
-  ["an empty branch tip", SHA, "", false],
-  ["whitespace as the branch tip", SHA, "   ", false],
-  ["a ref name as the branch tip", SHA, "HEAD", false],
-  ["an error message as the branch tip", SHA, "fatal: not a git repository", false],
-  ["a tip with a command in it", SHA, "3192a75 && curl evil.sh", false],
-  ["an array as the branch tip", SHA, [SHA], false],
-  ["neither side usable", null, undefined, false],
-];
-
-describe("AC-3 (#169): reviewIsCurrent fails closed", () => {
-  for (const [label, tested, head, expected] of CURRENCY_MATRIX) {
-    test(`${expected ? "current" : "stale"}: ${label}`, () => {
-      const r = reviewIsCurrent(tested, head);
-      expect(
-        r.current,
-        expected
-          ? `${label} was reported stale, which would refuse a run that is fine`
-          : `${label} was reported current, so a review of another commit would ship`,
-      ).toBe(expected);
-      if (expected) {
-        expect(r.reason).toBeNull();
-      } else {
-        expect(r.reason, `${label} is stale with no reason to show anyone`).toBeTruthy();
-      }
-    });
-  }
-
-  test("the matrix contains both outcomes", () => {
-    // The positive control for the sweep above: a function returning
-    // `current: false` unconditionally — the easy way to make a staleness
-    // check "work" — satisfies every negative row, and nothing else here
-    // would notice.
-    const current = CURRENCY_MATRIX.filter(([, , , e]) => e).length;
-    expect(current, "no row expects a current review").toBeGreaterThan(0);
-    expect(CURRENCY_MATRIX.length - current, "no row expects a stale review").toBeGreaterThan(0);
-  });
-
-  test("the reason names both commits when they differ", () => {
-    const r = reviewIsCurrent(TESTED_164, TIP_164);
-    expect(r.reason).toContain(TESTED_164);
-    expect(r.reason).toContain(TIP_164);
-    expect(r.testedSha).toBe(TESTED_164);
-    expect(r.headSha).toBe(TIP_164);
-  });
-
-  test("normalised SHAs come back out, not the raw input", () => {
-    const r = reviewIsCurrent(` ${SHA.toUpperCase()} `, SHA);
-    expect(r.testedSha).toBe(SHA);
-    expect(r.headSha).toBe(SHA);
-  });
-});
-
-describe("AC-4 (#169): the inlined reviewIsCurrent agrees with the library", () => {
-  // Same reasoning as the three helpers above: ship.js cannot import, so it
-  // carries a copy, and computeACHash has already drifted this way once in
-  // this repo. Driven over the SAME matrix as AC-3 rather than a second list.
-  for (const [label, tested, head] of CURRENCY_MATRIX) {
-    test(`agrees on ${label}`, () => {
-      expect(
-        inlined.reviewIsCurrent(tested, head),
-        `drift at tested=${JSON.stringify(tested)} head=${JSON.stringify(head)}`,
-      ).toEqual(reviewIsCurrent(tested, head));
-    });
-  }
-});
-
-describe("AC-1/AC-2 (#169): a stale review stops the run", () => {
-  const PASSING = { spawned: true, verdict: "PASS", failures: [] as string[] };
-
-  test("a stale review returns SHIP_FAILED", async () => {
-    const { result, logs } = decide({
-      verifyResult: { result: "PASS" },
-      securityVerdict: PASSING,
-      reviewSha: TESTED_164,
-      headSha: TIP_164,
-    });
-    const out = await result;
-    expect(
-      out?.status,
-      "the branch moved after the review and the run was allowed to open a PR",
-    ).toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toContain("SECURITY_REVIEW_STALE");
-    expect(String(out?.reason)).toContain(TESTED_164);
-    expect(String(out?.reason)).toContain(TIP_164);
-    expect(logs.some(l => /SECURITY_REVIEW_STALE/.test(l))).toBe(true);
-  });
-
-  test("the stale refusal carries the two SHAs it compared", async () => {
-    const { result } = decide({
-      verifyResult: { result: "PASS" },
-      securityVerdict: PASSING,
-      reviewSha: TESTED_164,
-      headSha: TIP_164,
-    });
-    const out = await result;
-    const security = out?.security as Record<string, unknown>;
-    expect(security?.testedSha).toBe(TESTED_164);
-    expect(security?.headSha).toBe(TIP_164);
-    expect(out?.issue).toBe(129);
-    expect(out?.workDir).toBe("/tmp/work");
-  });
-
-  test("an unreadable branch tip is stale, not a pass", async () => {
-    for (const head of [undefined, null, "", "HEAD", "fatal: not a git repository"]) {
-      const { result } = decide({
-        verifyResult: { result: "PASS" },
-        securityVerdict: PASSING,
-        reviewSha: SHA,
-        headSha: head,
-      });
-      expect(
-        (await result)?.status,
-        `a branch tip of ${JSON.stringify(head)} was treated as matching the review`,
-      ).toBe("SHIP_FAILED");
-    }
-  });
-
-  test("a review of the current tip is not stale", async () => {
-    // The positive control. Without it, refusing every run satisfies every
-    // assertion above — and a gate that always refuses is the one failure mode
-    // this check cannot afford, because it gets switched off.
-    const { result } = decide({
-      verifyResult: { result: "PASS" },
-      securityVerdict: PASSING,
-      reviewSha: SHA,
-      headSha: SHA,
-    });
-    expect(await result, "a current review stopped the run").toBeUndefined();
-  });
-
-  test("the ordinary short-SHA case is not stale", async () => {
-    // The commit step reports `git rev-parse --short HEAD`; the tip is read
-    // with `git rev-parse HEAD`. Compared character for character, EVERY run
-    // would refuse here.
-    const { result } = decide({
-      verifyResult: { result: "PASS" },
-      securityVerdict: PASSING,
-      reviewSha: SHA.slice(0, 7),
-      headSha: SHA,
-    });
-    expect(await result, "the normal short-vs-full SHA pair was refused as stale").toBeUndefined();
-  });
-
-  test("a rook FAIL still blocks when the review is also stale", async () => {
-    const { result } = decide({
-      verifyResult: { result: "PASS" },
-      securityVerdict: { spawned: true, verdict: "FAIL", failures: ["guard bypass"] },
-      reviewSha: TESTED_164,
-      headSha: TIP_164,
-    });
-    const out = await result;
-    expect(out?.status).toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toContain("guard bypass");
-  });
-
-  test("the staleness check shares the rook FAIL return path", () => {
-    // AC-2: one place the run is refused, not a second one further down that a
-    // later edit can return before.
-    const block = sliceBlock(DECISION_START, DECISION_END);
-    expect(block).toContain("reviewIsCurrent");
-    expect(block).toContain("testedSha");
-    expect(block).toContain("headSha");
-    expect(block).toContain("SECURITY_REVIEW_STALE");
-    expect((block.match(/status: 'SHIP_FAILED'/g) || []).length).toBe(2);
-  });
-
-  test("the stale refusal is ahead of the PR step", () => {
-    // Structural for the same reason as the rook-FAIL version above: the PR
-    // step is 170 lines further down and cannot be stubbed into the block.
-    const refusal = shipSource.indexOf(DECISION_END);
-    const prStep = shipSource.indexOf("record-env-and-pr");
-    expect(prStep).toBeGreaterThan(-1);
-    expect(refusal, "the staleness decision now happens after the PR is opened").toBeLessThan(prStep);
-  });
-
-  test("the review is pinned to the tip, not to the first commit of the run", () => {
-    // The other half of #169, and the one that keeps the refusal above off
-    // the common path: the Verify remediation loop commits BEFORE the review
-    // is spawned, so pinning rook to `commitResult.commitSha` would both
-    // review a stale tree and then refuse the run for it.
-    //
-    // Ordering, not just presence — a tracked tip assigned after the value is
-    // read is the same bug with more code.
-    const declared = shipSource.indexOf("let branchTipSha = commitResult.commitSha");
-    const moved = shipSource.indexOf("branchTipSha = reCommit.commitSha");
-    const read = shipSource.indexOf("const reviewSha = rookReviewSha(branchTipSha)");
-    expect(declared, "ship.js does not track the branch tip").toBeGreaterThan(-1);
-    expect(moved, "no remediation round moves the tracked tip").toBeGreaterThan(declared);
-    expect(read, "the review is not pinned to the tracked tip").toBeGreaterThan(moved);
-    expect(shipSource).not.toContain("rookReviewSha(commitResult.commitSha)");
-  });
-
-  /**
-   * The HEAD-SHA block, executed with a stubbed agent.
-   *
-   * Asserting that the block CONTAINS "git rev-parse HEAD" is not enough, and
-   * that is measured rather than assumed: `const headSha = reviewSha` — the
-   * comparison reduced to comparing the review against itself — left the
-   * whole file green while the prompt text sat there unused
-   * (.claude/rules/checks-must-be-able-to-fail.md).
-   */
-  async function readHead(reply: unknown, reviewShaValue: unknown = SHA) {
-    const block = sliceBlock("// ──── HEAD-SHA-START ────", "// ──── HEAD-SHA-END ────");
-    const prompts: string[] = [];
-    const calls: Array<{ label: string }> = [];
-    const headSha = await (new Function(
-      "agent", "shellQuote", "commitDir", "log", "reviewSha",
-      `return (async () => {${block}\nreturn headSha})()`,
-    )(
-      async (p: string, o: { label: string }) => {
-        prompts.push(p);
-        calls.push(o);
-        return reply;
-      },
-      (w: unknown) => `'${String(w).replace(/'/g, "'\\''")}'`,
-      "/Users/dev/proj/.claude/worktrees/wf_a-1",
-      () => {},
-      reviewShaValue,
-    ) as Promise<unknown>);
-    return { headSha, prompt: prompts[0] ?? "", opts: calls[0] ?? { label: "" } };
-  }
-
-  test("the branch tip comes from git, not from the reviewed SHA", async () => {
-    const { headSha, prompt, opts } = await readHead({ headSha: OTHER_SHA }, SHA);
-    expect(
-      headSha,
-      "headSha did not come from the step that read git — the comparison is against itself",
-    ).toBe(OTHER_SHA);
-    expect(opts.label).toBe("head-sha");
-    expect(prompt).toContain("git rev-parse HEAD");
-    // Read from the directory that owns the branch. Anywhere else measures the
-    // wrong tree: rook's own worktree is cut from origin/main, which is the
-    // #129 defect one layer out.
-    expect(prompt).toContain("cd '/Users/dev/proj/.claude/worktrees/wf_a-1'");
-  });
-
-  test("an unreadable branch tip stays unreadable", async () => {
-    // No fallback. "The step said nothing, so assume it matches" is the
-    // fail-open this whole issue is about.
-    for (const reply of [undefined, null, {}, { headSha: "" }]) {
-      const { headSha } = await readHead(reply, SHA);
-      expect(headSha, `${JSON.stringify(reply)} was substituted with something`).not.toBe(SHA);
-    }
-  });
-
-  test("the tip is read before the decision that uses it", () => {
-    expect(shipSource.indexOf("// ──── HEAD-SHA-START ────")).toBeLessThan(
-      shipSource.indexOf(DECISION_START),
-    );
-  });
-});
-
-describe("AC-6 (#169): a recommit after the security decision is refused", () => {
-  /** The guard ship.js runs, extracted and executed. */
-  function loadRecommitGuard(): (
-    reviewedSha: unknown,
-    reCommit: unknown,
-    ctx: { issue: number; slug: string; workDir: string; phase: string },
-  ) => Record<string, unknown> | null {
-    const block = sliceBlock(RECOMMIT_START, RECOMMIT_END);
-    return new Function("reviewIsCurrent", `${block}\nreturn recommitStaleRefusal`)(
-      inlined.reviewIsCurrent,
-    );
-  }
-
-  const CTX = { issue: 169, slug: "pai-harness-169", workDir: "/tmp/work", phase: "Ship" };
-
-  test("a recommit that moved the branch is refused", () => {
-    const refusal = loadRecommitGuard()(SHA, { parentSha: SHA, commitSha: OTHER_SHA }, CTX);
-    expect(refusal, "the ship regression recommit shipped code nobody reviewed").not.toBeNull();
-    expect(refusal?.status).toBe("SHIP_FAILED");
-    expect(String(refusal?.reason)).toContain("SECURITY_REVIEW_STALE");
-    expect(String(refusal?.reason)).toContain(OTHER_SHA);
-    expect(refusal?.issue).toBe(169);
-    expect(refusal?.workDir).toBe("/tmp/work");
-  });
-
-  test("a recommit that committed nothing is not refused", () => {
-    // The positive control, and the ordinary outcome of the ship remediation
-    // loop: the gate failed on ceremony, nothing was committed, and the tip is
-    // still the reviewed commit.
-    expect(loadRecommitGuard()(SHA, { parentSha: SHA, commitSha: SHA }, CTX)).toBeNull();
-  });
-
-  test("a recommit reporting an abbreviation of the reviewed commit is not refused", () => {
-    expect(loadRecommitGuard()(SHA, { parentSha: SHA, commitSha: SHA.slice(0, 7) }, CTX)).toBeNull();
-  });
-
-  test("a recommit that reports nothing usable is refused", () => {
-    for (const reply of [undefined, null, "ok", {}, { parentSha: SHA }, { commitSha: "HEAD" }]) {
-      expect(
-        loadRecommitGuard()(SHA, reply, CTX),
-        `${JSON.stringify(reply)} left the run free to report SHIPPED`,
-      ).not.toBeNull();
-    }
-  });
-
-  /**
-   * The CALL SITE, extracted and executed.
-   *
-   * The first version of this suite asserted that ship.js contains
-   * `recommitStaleRefusal(reviewSha, reCommit` and that the call comes before
-   * the SHIPPED return. Deleting the `return shipStale` left all 126 tests
-   * green: the call was still there, it just did nothing with its answer.
-   * That mutation was run, and this is what it bought
-   * (.claude/rules/checks-must-be-able-to-fail.md).
-   */
-  function runShipGuard(reviewedSha: unknown, reCommit: unknown) {
-    const logs: string[] = [];
-    const block = sliceBlock(
-      "// ──── SHIP-RECOMMIT-GUARD-START ────",
-      "// ──── SHIP-RECOMMIT-GUARD-END ────",
-    );
-    const out = new Function(
-      "recommitStaleRefusal", "reviewSha", "reCommit", "log", "ISSUE", "SLUG", "WORK_DIR",
-      `${block}\nreturn undefined`,
-    )(
-      loadRecommitGuard(),
-      reviewedSha,
-      reCommit,
-      (m: unknown) => logs.push(String(m)),
-      169,
-      "pai-harness-169",
-      "/tmp/work",
-    ) as Record<string, unknown> | undefined;
-    return { out, logs };
-  }
-
-  test("the ship loop returns the recommit refusal rather than logging it", () => {
-    const { out, logs } = runShipGuard(SHA, { parentSha: SHA, commitSha: OTHER_SHA });
-    expect(out?.status, "the ship remediation round continued to SHIPPED").toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toContain("SECURITY_REVIEW_STALE");
-    expect(logs.some(l => /SECURITY BLOCK/.test(l))).toBe(true);
-  });
-
-  test("the ship loop carries on when the recommit changed nothing", () => {
-    // The positive control for the call site: a guard that returns on every
-    // round would make the remediation loop unusable.
-    const { out } = runShipGuard(SHA, { parentSha: SHA, commitSha: SHA });
-    expect(out, "a recommit that committed nothing stopped the run").toBeUndefined();
-  });
-
-  test("the recommit guard sits after the recommit it guards", () => {
-    const callSite = shipSource.indexOf("recommitStaleRefusal(reviewSha, reCommit");
-    expect(callSite, "nothing calls recommitStaleRefusal").toBeGreaterThan(-1);
-    const recommitShip = shipSource.indexOf("label: 'recommit-ship'");
-    expect(recommitShip).toBeGreaterThan(-1);
-    expect(callSite, "the staleness guard runs before the recommit it guards").toBeGreaterThan(
-      recommitShip,
-    );
-  });
-
-  test("the recommit refusal comes before the run can report SHIPPED", () => {
-    const callSite = shipSource.indexOf("recommitStaleRefusal(reviewSha, reCommit");
-    const shipped = shipSource.indexOf("status: proveVerdict === 'PROVEN'");
-    expect(shipped, "the SHIPPED return moved — this guard checks nothing").toBeGreaterThan(-1);
-    expect(callSite, "a post-decision recommit can still reach SHIPPED").toBeLessThan(shipped);
-  });
-});

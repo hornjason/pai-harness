@@ -47,56 +47,49 @@ export function rookReviewSha(value: unknown): string | null {
   return SHA.test(trimmed) ? trimmed.toLowerCase() : null;
 }
 
-/** Whether the security review still describes the commit the branch ends at. */
+/** Whether the review still describes the commit the branch ends at. */
 export interface ReviewCurrency {
   /** True only when both SHAs are real and name the same commit. */
   current: boolean;
-  /** The commit the review was pinned to, normalised, or null if it was not one. */
+  /** The commit the review was pinned to, normalised, or null. */
   testedSha: string | null;
-  /** The commit the branch ends at now, normalised, or null if it was not one. */
+  /** The commit the branch now ends at, normalised, or null. */
   headSha: string | null;
-  /** Why the review is not current. Null when it is. */
+  /** Why the review does not describe this branch. Null when it does. */
   reason: string | null;
 }
 
 /**
- * Two SHAs name the same commit.
+ * Two SHAs name the same commit, allowing one to be an abbreviation.
  *
- * Prefix comparison, because the two values reach this check at different
- * lengths by construction: the commit step reports `git rev-parse --short
- * HEAD` and the branch tip is read with `git rev-parse HEAD`. Requiring
- * character-for-character equality would report EVERY run stale, which is the
- * failure mode a staleness check can least afford — a gate that always refuses
- * gets switched off.
- *
- * This is git's own abbreviation rule and both inputs are already validated as
- * 7-40 hex, so the weakest comparison this makes is 28 bits. That is a real
- * limit and it is stated rather than hidden: a crafted collision would defeat
- * it. The failure being caught is a branch that moved on, not an adversary
- * choosing SHAs, and `git rev-parse` resolves abbreviations the same way.
+ * Not a convenience. The commit step reports `git rev-parse --short HEAD`
+ * while `scripts/rook-review-scope.ts` resolves its argument to a full SHA, so
+ * the two values compared here are not guaranteed to be the same length.
+ * Strict string equality would mark every run stale, and a check that refuses
+ * the common path is a check somebody switches off
+ * (.claude/rules/checks-must-be-able-to-fail.md). Prefix equality is how git
+ * itself resolves an abbreviation, and an abbreviation that matches a
+ * DIFFERENT commit is a hash collision, not a bypass.
  */
 function sameCommit(a: string, b: string): boolean {
-  const n = Math.min(a.length, b.length);
-  return a.slice(0, n) === b.slice(0, n);
+  return a.length >= b.length ? a.startsWith(b) : b.startsWith(a);
 }
 
 /**
- * Whether the security review's verdict still describes the code being shipped
- * (#169).
+ * Is the security review's PASS a statement about the commit being shipped?
  *
- * #129 made rook's verdict block the run. It did not make the verdict a
- * statement about the PR: the review is pinned to one commit, and the
- * remediation rounds that follow it commit again to the same branch. Measured
- * on the #164 run — `agents.rook.testedSha` was 3fe336f1 while the branch tip
- * was ef998b73, and the diff between them rewrote ALL FOUR files rook had
- * reviewed, 236 insertions and 254 deletions. Rook passed a tree that no
- * longer existed, and the PR carried a `rook: PASS` that was true of nothing
- * in it.
+ * #169, measured on the #164 run: `agents.rook.testedSha` was 3fe336f1 while
+ * the branch tip was ef998b73, and the diff between them rewrote all four
+ * files rook had read. The remediation round is where the risky code gets
+ * written and it runs AFTER the review, so "rook: PASS" on that PR was a
+ * statement about a commit the branch no longer ended at. Nothing compared
+ * the two.
  *
- * FAILS CLOSED. A missing SHA, a ref name, a SHA with a shell command in it,
- * an unreadable branch tip — none of them establishes that the reviewed code
- * is the shipped code, and absence of evidence is not evidence here either.
- * `current` is true only when both values are real SHAs and name one commit.
+ * FAILS CLOSED. A missing SHA, a ref name, a value that is not a string, two
+ * SHAs that disagree — all of them are the absence of evidence that the
+ * reviewed code is the shipping code. There is no safe default here: the one
+ * fallback anybody would reach for, "assume it is still current", is exactly
+ * the assumption the production failure was made of.
  */
 export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCurrency {
   const tested = rookReviewSha(testedSha);
@@ -108,8 +101,9 @@ export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCur
       testedSha: null,
       headSha: head,
       reason:
-        `the security review is not pinned to a commit (got ${describe(testedSha)}), ` +
-        `so there is nothing to compare the branch tip against`,
+        `the commit the security review was pinned to was never recorded ` +
+        `(testedSha was ${describe(testedSha)}) — a review nothing can locate cannot be ` +
+        `shown to cover this branch (#169)`,
     };
   }
   if (!head) {
@@ -118,8 +112,8 @@ export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCur
       testedSha: tested,
       headSha: null,
       reason:
-        `the branch tip could not be read as a commit SHA (got ${describe(headSha)}), ` +
-        `so the review at ${tested} cannot be shown to describe it`,
+        `the commit the branch ends at could not be read (headSha was ${describe(headSha)}) — ` +
+        `refusing to assume the reviewed commit is still the tip (#169)`,
     };
   }
   if (!sameCommit(tested, head)) {
@@ -128,8 +122,8 @@ export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCur
       testedSha: tested,
       headSha: head,
       reason:
-        `the security review was performed at ${tested} but the branch now ends at ${head} — ` +
-        `the reviewed commit is not the commit this run would ship (#169)`,
+        `the security review passed ${tested}, but the branch now ends at ${head} — ` +
+        `the commit that was reviewed is not the commit being shipped (#169)`,
     };
   }
   return { current: true, testedSha: tested, headSha: head, reason: null };
