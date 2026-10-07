@@ -54,7 +54,7 @@ flowchart TD
     BASELINE_CHECK -->|"YES — drift detected"| GOAL_AUDIT
     BASELINE_CHECK -->|"NO — baselines valid"| VERIFICATION
 
-    VERIFICATION["5. VERIFICATION<br/>Default-FAIL — evidence required<br/>├ Every AC checked with evidence<br/>├ Full test suite (unit + integration)<br/>├ Quinn UI (if .tsx changed)<br/>├ Rook security (if M+)<br/>├ Consumer contract (if consumer changed)<br/>├ Goal statement check<br/>└ Docs cascade check"]
+    VERIFICATION["5. VERIFICATION<br/>Default-FAIL — evidence required<br/>├ Every AC checked with evidence<br/>├ Full test suite (unit + integration)<br/>├ Quinn UI (if .tsx changed)<br/>├ Rook security (every ship run)<br/>├ Consumer contract (if consumer changed)<br/>├ Goal statement check<br/>└ Docs cascade check"]
     VERIFICATION --> RESULT
 
     RESULT{"All gates<br/>pass?"}
@@ -367,14 +367,14 @@ an allowlist that forgets to quote still executes a substitution.
 2. Full test suite: `bun test` (all tests in test/ directory)
 3. Tests pass on test env — read project CLAUDE.md for test port (e.g., 7776 for DailyBriefDashboard). Do not assume port.
 4. If UI change (any `.tsx` file modified) → spawn Quinn with Playwright MCP tools (browser_navigate, browser_snapshot, browser_take_screenshot)
-5. If M+ size → spawn Rook (security scan on changed files)
+5. Spawn Rook (security scan on changed files) — every ship run, unconditionally. Rook derives its own scope from `git diff --name-only origin/main...HEAD`, so the step needs no inputs and no qualifier. Any qualifier on this step — ceremony tier, issue estimate, whether a `.tsx` changed — is how the review came to run 0 times across 3,555 workflow agents (#126, #127).
 6. If consumer change (read project PRINCIPLES.md consumer list; if any changed file is in consumer list → mandatory) → Consumer 4-layer verification (→ ~/.claude/skills/ship/SKILL.md)
 7. Goal statement check (→ `project_application_mission.md`)
 8. Docs cascade check (→ Ship SKILL.md DURABILITY matrix)
 
 **Output:** PASS/FAIL per AC with evidence. Completion report (→ ~/.claude/skills/ship/SKILL.md template).
 
-**Quality bar:** ALL ACs have evidence. ALL tests pass (zero tolerance). Quinn PASS if UI. Rook PASS if M+.
+**Quality bar:** ALL ACs have evidence. ALL tests pass (zero tolerance). Quinn PASS if UI. Rook must PASS.
 
 **Handoff to ITERATION:** PASS → close issue, go to FEEDBACK. FAIL → enter ITERATION.
 
@@ -561,7 +561,7 @@ FEEDBACK    → ratings.jsonl + memories + docs + closed issue
 | PLANNING | `Skill("grill-with-docs")` | M+ size |
 | PLANNING | `Skill("to-prd")` → `Skill("to-issues")` | L size |
 | EXECUTION | `Skill("ship")` → `Skill("tdd")` → `Skill("simplify")` → `npx fallow` | Always |
-| VERIFICATION | verify workflow + Quinn + Rook | Always (Quinn/Rook conditional) |
+| VERIFICATION | verify workflow + Quinn + Rook | Always — Rook every run; Quinn when UI changed |
 | ITERATION | (built into this standard) | When verification fails |
 | FEEDBACK | `Skill("doc-hygiene")` | Always — docs must match what shipped |
 | FEEDBACK | (automatic — hooks) | Always |

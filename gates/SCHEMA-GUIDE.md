@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-09-14
+updated: 2026-10-07
 ---
 
 # workflow-state.json Schema Guide
@@ -71,6 +71,31 @@ Paths must be relative to projectRoot (not `~/`). The gate resolves: `join(proje
   "detectedFrom": "ship-workflow-discovery" }
 ```
 Path must be absolute (starts with `/`) or relative to projectRoot. `~` is NOT expanded.
+
+## agents.rook
+
+The security reviewer's result lives at `agents.rook`. Three fields carry it:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `spawned` | boolean | Whether rook actually ran on this ship run |
+| `verdict` | `PASS` \| `FAIL` \| `SKIP` \| `null` | The review outcome |
+| `failures` | string[] | One entry per blocking problem found |
+
+**A `FAIL` verdict must carry a non-empty `failures` list.** A FAIL with an empty
+or absent list is a verdict nobody can act on — it blocks the run without naming
+what to fix. `failures` must be an array of strings; a bare string is rejected at
+write time, so put one finding per entry rather than joining them into prose.
+
+```json
+{ "agents": { "rook": {
+  "spawned": true,
+  "verdict": "FAIL",
+  "failures": ["secret logged at gates/run-gate.ts:120", "unvalidated path join in lib/github.ts"]
+} } }
+```
+
+A `PASS` or `SKIP` verdict may omit `failures` entirely.
 
 ## Changelog Actor Values
 
