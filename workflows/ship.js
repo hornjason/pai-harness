@@ -902,6 +902,8 @@ cat ${PROJECT_ROOT}/.claude/rungate.json 2>/dev/null || echo "{}"
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
 Return: acCount from step 1, the full JSON from step 2 as config, and prior branch from step 3.
+Report priorBranch exactly as detection returned it — branch (bare name), refName
+(the git-resolvable ref) and commitCount, which is null when git could not count.
   `, { label: 'setup', phase: 'Discovery', schema: {
     type: 'object',
     properties: {
@@ -1084,15 +1086,15 @@ if (!priorBranchResult) {
 Run this command and report the result:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
-The result has two names in it and they are not interchangeable (#164):
-  - refName — the fully-qualified ref, e.g. refs/heads/164-x or
-    refs/remotes/origin/164-x. This is the only one git can resolve.
-  - branch  — the bare name, used later as the push target HEAD:<branch>.
-Use refName for the merge. Do NOT substitute the bare name, and do NOT
-rewrite refName into something shorter.
+Detection returns two names and they are NOT interchangeable (#164):
+  branch  — the bare name, e.g. 164-deep-modules. This is the push target.
+  refName — a ref this repository resolves, e.g. refs/remotes/origin/164-deep-modules.
+Merge refName. Merging the bare name of a branch that only exists on origin
+fails, because nothing here resolves it.
 
 If a prior branch exists (non-empty branch field), bring it into the working
-tree — but NOT onto the default branch (#136):
+tree — but NOT onto the default branch (#136). Substitute the refName field
+from the JSON above for <refName>:
 
   cd ${PROJECT_ROOT}
   branch=$(git branch --show-current)
@@ -1106,7 +1108,8 @@ write to the default branch, not even locally. Report priorBranch anyway — it
 is still the branch this run pushes to.
 
 Return: priorBranch (bare name, empty if none), priorRefName (the ref you
-merged, empty if none), priorCommitCount (number, or omit if unknown).
+merged, empty if none), priorCommitCount (number, or null if detection
+reported null — do not substitute 0, that would claim the branch is merged).
 `, { label: 'prior-branch', phase: 'Scope', schema: {
     type: 'object',
     properties: { priorBranch: { type: 'string' }, priorRefName: { type: 'string' }, priorCommitCount: { type: ['number', 'null'] } },
@@ -1115,16 +1118,15 @@ merged, empty if none), priorCommitCount (number, or omit if unknown).
   if (priorResult?.priorBranch) {
     priorBranchResult = {
       branch: priorResult.priorBranch,
-      // Fall back to the local head rather than to the bare name: an
-      // unqualified name that came back from a remote-only branch is exactly
-      // the unresolvable ref #164 is about.
-      refName: priorResult.priorRefName || `refs/heads/${priorResult.priorBranch}`,
-      commitCount: typeof priorResult.priorCommitCount === 'number' ? priorResult.priorCommitCount : null,
+      refName: priorResult.priorRefName || priorResult.priorBranch,
+      commitCount: priorResult.priorCommitCount ?? null,
     }
     log(`Prior branch merged: ${priorBranchResult.branch} (${priorBranchResult.refName})`)
   }
 } else if (priorBranchResult.branch) {
-  log(`Prior branch (pre-computed): ${priorBranchResult.branch}`)
+  // A pre-computed result from an older caller may carry only the bare name.
+  if (!priorBranchResult.refName) priorBranchResult.refName = priorBranchResult.branch
+  log(`Prior branch (pre-computed): ${priorBranchResult.branch} (${priorBranchResult.refName})`)
 }
 
 // AC evidence/threshold pre-validation

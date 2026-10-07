@@ -3,21 +3,19 @@ import { createGitHubClient, listPRs, type GitHubClient } from './github'
 
 export interface PriorBranch {
   /**
-   * Bare branch name, with no remote prefix — what a push target is written
-   * against (`HEAD:<branch>`). NOT guaranteed to resolve locally.
+   * Bare branch name, with no namespace. This is the push target —
+   * ship.js builds `HEAD:${branch}` from it — so it must stay bare even
+   * when the branch was only found on origin.
    */
   branch: string;
   /**
-   * Fully-qualified ref the detection actually matched, e.g.
-   * `refs/heads/164-x` or `refs/remotes/origin/164-x`. This is what
-   * `git merge` / `git worktree add` / `git rev-parse` must be handed: for an
-   * origin-only branch the bare name resolves to nothing (#164).
+   * A ref THIS repository resolves: `refs/heads/x` or `refs/remotes/origin/x`.
+   * Anything that merges, diffs or checks out the prior work uses this.
    */
   refName: string;
   /**
-   * Commits on the branch that are not on `main`, or `null` when that could
-   * not be determined. Null is NOT zero — "fully merged" and "no idea" lead
-   * callers to opposite decisions.
+   * Commits ahead of the base branch, or `null` when git could not answer.
+   * `0` is a claim ("nothing to resume"); `null` is the absence of one.
    */
   commitCount: number | null;
   testsPass: boolean;
@@ -56,16 +54,23 @@ function git(args: string[], cwd: string, timeout = 15_000) {
 }
 
 /**
- * The only two ref namespaces that belong to THIS repository.
+ * The only ref namespaces a prior branch may come from (#164).
  *
- * A checkout can have any number of remotes — this one has `asacc` pointing
- * at a different project — and a sibling project's branch named for the same
- * issue number is not this issue's prior work (#164).
+ * `git branch -a --list` enumerates EVERY configured remote and the old code
+ * then stripped `remotes/<anything>/` off the result, so a sibling project
+ * added as a second remote donated its branch names to this repo's issues.
+ * for-each-ref over an explicit namespace list cannot do that: a ref outside
+ * these two is never returned in the first place.
  */
-const LOCAL_PREFIX = 'refs/heads/'
-const ORIGIN_PREFIX = 'refs/remotes/origin/'
+const CANDIDATE_REF_NAMESPACES = [
+  'refs/heads',
+  'refs/remotes/origin',
+] as const
 
-interface Candidate {
+/** The base the prior branch's commits are counted against. */
+const BASE_BRANCH = 'main'
+
+interface RefCandidate {
   branch: string;
   refName: string;
   ts: number;
@@ -73,72 +78,67 @@ interface Candidate {
 }
 
 /**
- * Branches in this repository whose name references `issueNumber`, newest
- * first, with a resolvable ref attached to each.
- *
- * One `for-each-ref` supplies both the candidate set and the timestamps the
- * old two-command version needed `git log --all` for — and `--all` was the
- * other way foreign remotes got in.
+ * Every local or origin branch, as a bare name paired with a ref that
+ * resolves. Returns [] when git cannot be asked at all.
  */
-function listCandidates(projectRoot: string, issueNumber: number): Candidate[] {
-  const listed = git(
-    ['for-each-ref', '--format=%(refname)%09%(committerdate:unix)', LOCAL_PREFIX, ORIGIN_PREFIX],
+function listCandidateRefs(projectRoot: string): RefCandidate[] {
+  const result = git(
+    ['for-each-ref', '--format=%(refname) %(committerdate:unix)', ...CANDIDATE_REF_NAMESPACES],
     projectRoot
   )
-  if (listed.status !== 0) return []
+  if (result.status !== 0) return []
 
-  const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
-  // Keyed by bare name so a branch present both locally and on origin is one
-  // candidate, not two — and the local head wins, because that is the ref a
-  // merge should move onto.
-  const byBranch = new Map<string, Candidate>()
+  // Local heads win over the origin copy of the same name: both resolve, but
+  // the local one is what a worktree can check out without detaching.
+  const byName = new Map<string, RefCandidate>()
+  for (const line of result.stdout.split('\n')) {
+    const sep = line.lastIndexOf(' ')
+    if (sep <= 0) continue
+    const refName = line.slice(0, sep)
+    const ts = parseInt(line.slice(sep + 1), 10)
 
-  for (const line of listed.stdout.split('\n')) {
-    const [refName, rawTs] = line.split('\t')
-    if (!refName) continue
+    const namespace = CANDIDATE_REF_NAMESPACES.find(ns => refName.startsWith(`${ns}/`))
+    if (!namespace) continue
+    const branch = refName.slice(namespace.length + 1)
 
-    const local = refName.startsWith(LOCAL_PREFIX)
-    const branch = local
-      ? refName.slice(LOCAL_PREFIX.length)
-      : refName.slice(ORIGIN_PREFIX.length)
-
-    if (!branch) continue
-    if (branch === 'main' || branch === 'master' || branch === 'HEAD') continue
+    // `refs/remotes/origin/HEAD` is a symref to the default branch, not work.
+    if (!branch || branch === 'HEAD' || branch === 'main' || branch === 'master') continue
     if (branch.startsWith('worktree-')) continue
-    if (!pattern.test(branch)) continue
 
-    const parsedTs = parseInt(rawTs ?? '', 10)
-    const candidate: Candidate = {
+    const candidate: RefCandidate = {
       branch,
       refName,
-      ts: Number.isFinite(parsedTs) ? parsedTs : 0,
-      local,
+      ts: Number.isFinite(ts) ? ts : 0,
+      local: namespace === 'refs/heads',
     }
-    const existing = byBranch.get(branch)
-    if (!existing || (local && !existing.local)) byBranch.set(branch, candidate)
+    const existing = byName.get(branch)
+    if (!existing || (candidate.local && !existing.local)) byName.set(branch, candidate)
   }
-
-  return [...byBranch.values()].sort(
-    (a, b) => b.ts - a.ts || Number(b.local) - Number(a.local) || a.branch.localeCompare(b.branch)
-  )
+  return [...byName.values()]
 }
 
 export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranch | null> {
   const { issueNumber, projectRoot, runTests = true } = opts
 
-  const selected = listCandidates(projectRoot, issueNumber)[0]
-  if (!selected) return null
+  const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
+  const matches = listCandidateRefs(projectRoot).filter(c => pattern.test(c.branch))
+  if (matches.length === 0) return null
 
-  // Read the ref, not the bare name: for an origin-only branch the bare name
-  // resolves to nothing and this exits non-zero.
-  const revList = git(['rev-list', `main..${selected.refName}`, '--count'], projectRoot)
-  const parsedCount = revList.status === 0 ? parseInt(revList.stdout.trim(), 10) : NaN
-  const commitCount = Number.isFinite(parsedCount) ? parsedCount : null
+  // Most recent wins; a local head breaks a tie with its origin twin.
+  const selected = matches.reduce((best, c) =>
+    c.ts > best.ts || (c.ts === best.ts && c.local && !best.local) ? c : best
+  )
+
+  // A rev-list that cannot run has not told us the branch is fully merged.
+  const revList = git(['rev-list', '--count', `${BASE_BRANCH}..${selected.refName}`], projectRoot)
+  const parsedCount = parseInt(revList.stdout.trim(), 10)
+  const commitCount =
+    revList.status === 0 && Number.isFinite(parsedCount) ? parsedCount : null
 
   let testsPass = false
   if (runTests) {
     const tmpDir = `/tmp/rungate-prior-test-${issueNumber}-${Date.now()}`
-    const add = git(['worktree', 'add', tmpDir, selected.refName], projectRoot, 30_000)
+    const add = git(['worktree', 'add', '--detach', tmpDir, selected.refName], projectRoot, 30_000)
     if (add.status === 0) {
       try {
         const testResult = spawnSync('bun', ['test'], {

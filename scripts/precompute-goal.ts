@@ -152,8 +152,9 @@ if (existsSync(configPath)) {
   }
 
   // ── 4. Prior branch detection ──
-  // refName is the git-resolvable ref; branch is the bare push target. They
-  // differ for an origin-only branch, and conflating them is #164.
+  // refName is the git-resolvable ref; branch is the bare push target (#164).
+  // commitCount is null when git could not count — not 0, which would claim
+  // the prior branch holds nothing.
   let priorBranch: { branch: string; refName: string; commitCount: number | null } | undefined;
   try {
     const priorResult = execSync(
@@ -170,10 +171,8 @@ if (existsSync(configPath)) {
     if (parsed.branch) {
       priorBranch = {
         branch: parsed.branch,
-        refName: parsed.refName || `refs/heads/${parsed.branch}`,
-        // `?? null`, not `|| 0`: an unknown count must not arrive downstream
-        // wearing the value that means "already fully merged".
-        commitCount: typeof parsed.commitCount === "number" ? parsed.commitCount : null,
+        refName: parsed.refName || parsed.branch,
+        commitCount: parsed.commitCount ?? null,
       };
     }
   } catch {

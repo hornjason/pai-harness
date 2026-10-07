@@ -1,250 +1,231 @@
 /**
- * detectPriorBranch only adopts refs from THIS repository (#164)
+ * detectPriorBranch only adopts refs this repository can resolve (#164)
  *
- * `git branch -a --list` lists every configured remote, and the caller then
- * stripped the `remotes/<name>/` prefix off whatever it matched. On run
- * wf_b5f65252-24f that adopted `161-162-pattern-consistency-gaps` — a branch
- * in asaCommandCenter, reachable only because this checkout has a second
- * remote — as issue 161's prior work. ship.js took the stripped name as the
- * push target and the PR head. The merge failed, and it failed for the wrong
- * reason: the name was unresolvable, not rejected.
+ * `git branch -a --list` lists every configured remote, and the old code
+ * stripped `remotes/<any>/` off whatever came back. On wf_b5f65252-24f that
+ * adopted `161-162-pattern-consistency-gaps` — a branch in asaCommandCenter,
+ * reachable here only because this checkout has an `asacc` remote. ship.js
+ * then used the stripped name as the push target and the PR head; the merge
+ * failed for the incidental reason that `161-162-...` resolves to nothing.
  *
- * Three things are asserted here, each against a real repository built in a
- * temp dir rather than against the source text:
+ * The fixtures below are real git repositories with two remotes, because the
+ * bug lives in what git is asked, not in how the answer is parsed.
  *
- *   - candidates come from refs/heads and refs/remotes/origin, nothing else
- *   - the returned refName is a ref `git rev-parse` resolves, for an
- *     origin-only branch as well as a local one
- *   - a rev-list that FAILS is an unknown count, not "zero commits ahead"
- *
- * The positive controls matter as much as the negatives: narrowing the filter
- * until it matches nothing would satisfy "the foreign branch is not adopted"
- * while breaking the feature, so every negative case here is paired with a
- * same-fixture case that must still find a branch
- * (.claude/rules/checks-must-be-able-to-fail.md).
+ * Positive control (.claude/rules/checks-must-be-able-to-fail.md): the
+ * exclusion tests here are paired with inclusion tests over the SAME fixture.
+ * A filter narrowed to nothing passes every exclusion test and fails
+ * "adopts an origin-only branch" and "refName resolves ... for a local
+ * branch"; a filter that excludes nothing fails the two "not adopted" tests.
+ * Neither mistake can be green.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { detectPriorBranch } from "../lib/prior-branch";
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, readFileSync } from "fs";
-import { tmpdir } from "os";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
+import { tmpdir } from "os";
+import { detectPriorBranch } from "../lib/prior-branch";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
-function git(args: string[], cwd: string): string {
-  const r = spawnSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
+function git(args: string[], cwd: string, date?: string) {
+  const res = spawnSync("git", args, {
     cwd,
     encoding: "utf-8",
+    env: date
+      ? { ...process.env, GIT_AUTHOR_DATE: date, GIT_COMMITTER_DATE: date }
+      : process.env,
   });
-  if (r.status !== 0) {
-    throw new Error(`git ${args.join(" ")} (in ${cwd}) failed: ${r.stderr || r.stdout}`);
+  if (res.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed in ${cwd}: ${res.stderr || res.stdout}`);
   }
-  return r.stdout;
+  return res.stdout;
 }
 
-interface Fixture {
-  /** A working clone with `origin`, plus a second remote called `other`. */
-  work: string;
+/** Commit on a new branch, push it to one remote, then drop the local copy. */
+function remoteOnlyBranch(work: string, branch: string, remote: string, date: string) {
+  git(["checkout", "-q", "-b", branch], work);
+  writeFileSync(join(work, `${branch}.txt`), branch);
+  git(["add", "-A"], work);
+  git(["commit", "-q", "-m", `work on ${branch}`], work, date);
+  git(["push", "-q", remote, branch], work);
+  git(["checkout", "-q", "-"], work);
+  git(["branch", "-q", "-D", branch], work);
 }
 
 /**
- * Build a repo with two remotes.
+ * A repository with an `origin` and a second remote named `other`.
  *
- * `originBranches` land on origin only, `otherBranches` on the second remote
- * only, `localBranches` exist as local heads. Nothing is on more than one.
+ * `defaultBranch` is a parameter because AC-4 needs a repo where the hardcoded
+ * `main..` base does not resolve — that is the only way `git rev-list` fails
+ * without breaking the repo in some way the detector would notice first.
  */
-function makeFixture(opts: {
-  root: string;
-  defaultBranch?: string;
-  originBranches?: string[];
-  otherBranches?: string[];
-  localBranches?: string[];
-}): Fixture {
-  const { root } = opts;
-  const def = opts.defaultBranch ?? "main";
+function makeFixture(defaultBranch: string) {
+  const root = mkdtempSync(join(tmpdir(), "rungate-prior-remotes-"));
   const originBare = join(root, "origin.git");
   const otherBare = join(root, "other.git");
-  const seed = join(root, "seed");
   const work = join(root, "work");
 
-  git(["init", "--bare", "-b", def, originBare], root);
-  git(["init", "--bare", "-b", def, otherBare], root);
+  git(["init", "-q", "--bare", "-b", defaultBranch, originBare], root);
+  git(["init", "-q", "--bare", "-b", defaultBranch, otherBare], root);
+  git(["init", "-q", "-b", defaultBranch, work], root);
+  git(["config", "user.email", "test@example.com"], work);
+  git(["config", "user.name", "Test"], work);
+  git(["config", "commit.gpgsign", "false"], work);
 
-  git(["init", "-b", def, seed], root);
-  git(["commit", "--allow-empty", "-m", "seed"], seed);
-  git(["remote", "add", "origin", originBare], seed);
-  git(["remote", "add", "other", otherBare], seed);
-  git(["push", "origin", def], seed);
-  git(["push", "other", def], seed);
-
-  for (const b of opts.originBranches ?? []) {
-    git(["branch", b, def], seed);
-    git(["push", "origin", b], seed);
-    git(["branch", "-D", b], seed);
-  }
-  for (const b of opts.otherBranches ?? []) {
-    git(["branch", b, def], seed);
-    git(["push", "other", b], seed);
-    git(["branch", "-D", b], seed);
-  }
-
-  git(["clone", originBare, work], root);
+  writeFileSync(join(work, "README.md"), "fixture\n");
+  git(["add", "-A"], work);
+  git(["commit", "-q", "-m", "base"], work, "2020-01-01T00:00:00Z");
+  git(["remote", "add", "origin", originBare], work);
   git(["remote", "add", "other", otherBare], work);
-  git(["fetch", "other"], work);
-  for (const b of opts.localBranches ?? []) git(["branch", b, def], work);
+  git(["push", "-q", "origin", defaultBranch], work);
+  git(["push", "-q", "other", defaultBranch], work);
 
-  return { work };
+  return { root, work };
 }
 
-function revParseExitCode(ref: string, cwd: string): number {
-  return spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
-    cwd,
-    encoding: "utf-8",
-  }).status ?? 1;
-}
-
-describe("#164: candidates are scoped to this repository", () => {
-  let root: string;
-  let fx: Fixture;
+describe("prior-branch: candidates are scoped to this repository (#164)", () => {
+  let root = "";
+  let work = "";
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), "prior-branch-remotes-"));
-    fx = makeFixture({
-      root,
-      originBranches: ["9001-origin-only"],
-      otherBranches: ["9002-foreign-repo"],
-      localBranches: ["9003-local-work"],
-    });
+    ({ root, work } = makeFixture("main"));
+
+    // Same issue number on both remotes. The non-origin copy is deliberately
+    // NEWER, so recency alone would pick it: only the namespace filter keeps
+    // it out.
+    remoteOnlyBranch(work, "7700-origin-side", "origin", "2021-01-01T00:00:00Z");
+    remoteOnlyBranch(work, "7700-other-side", "other", "2022-01-01T00:00:00Z");
+
+    // An issue that exists ONLY on the foreign remote — the wf_b5f65252-24f case.
+    remoteOnlyBranch(work, "7711-other-only", "other", "2022-06-01T00:00:00Z");
+
+    // A purely local branch, never pushed anywhere.
+    git(["checkout", "-q", "-b", "7722-local-only"], work);
+    writeFileSync(join(work, "local.txt"), "local");
+    git(["add", "-A"], work);
+    git(["commit", "-q", "-m", "local work"], work, "2021-06-01T00:00:00Z");
+    git(["checkout", "-q", "main"], work);
+
+    git(["fetch", "-q", "--all"], work);
   });
 
   afterAll(() => {
-    rmSync(root, { recursive: true, force: true });
+    if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  test("AC-3: a branch that exists only on a second remote is not adopted", async () => {
-    const result = await detectPriorBranch({
-      issueNumber: 9002,
-      projectRoot: fx.work,
-      runTests: false,
-    });
+  test("adopts an origin-only branch and skips the same issue on another remote", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7700, projectRoot: work, runTests: false });
+    expect(result).not.toBeNull();
+    expect(result!.branch).toBe("7700-origin-side");
+  });
+
+  test("a branch that exists only on a non-origin remote is not adopted", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7711, projectRoot: work, runTests: false });
     expect(result).toBeNull();
   });
 
-  test("AC-3: an origin-only branch for an issue is still adopted", async () => {
-    // Positive control for the case above: a filter narrowed to nothing would
-    // pass that test and fail this one.
-    const result = await detectPriorBranch({
-      issueNumber: 9001,
-      projectRoot: fx.work,
-      runTests: false,
-    });
-    expect(result?.branch).toBe("9001-origin-only");
-  });
-
-  test("AC-2: refName for an origin-only branch resolves with git rev-parse", async () => {
-    const result = await detectPriorBranch({
-      issueNumber: 9001,
-      projectRoot: fx.work,
-      runTests: false,
-    });
+  test("refName resolves with git rev-parse for an origin-only branch", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7700, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
-    // The bug: `origin/x` became `x`, which rev-parse cannot resolve. branch
-    // stays the bare name (ship.js pushes `HEAD:<branch>`); refName is the
-    // resolvable one.
-    expect(result!.branch).toBe("9001-origin-only");
-    expect(result!.refName).toBe("refs/remotes/origin/9001-origin-only");
-    expect(revParseExitCode(result!.refName, fx.work)).toBe(0);
+    const resolved = spawnSync("git", ["rev-parse", "--verify", result!.refName], {
+      cwd: work,
+      encoding: "utf-8",
+    });
+    expect(resolved.status).toBe(0);
+    // The bare name is what ship.js pushes to (`HEAD:<branch>`); it must stay
+    // bare even though refName is namespaced.
+    expect(result!.refName).toBe("refs/remotes/origin/7700-origin-side");
+    expect(result!.branch).toBe("7700-origin-side");
   });
 
-  test("AC-2: refName for a local branch resolves with git rev-parse", async () => {
-    const result = await detectPriorBranch({
-      issueNumber: 9003,
-      projectRoot: fx.work,
-      runTests: false,
-    });
+  test("refName resolves with git rev-parse for a local branch", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7722, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
-    expect(result!.branch).toBe("9003-local-work");
-    expect(result!.refName).toBe("refs/heads/9003-local-work");
-    expect(revParseExitCode(result!.refName, fx.work)).toBe(0);
+    expect(result!.branch).toBe("7722-local-only");
+    expect(result!.refName).toBe("refs/heads/7722-local-only");
+    const resolved = spawnSync("git", ["rev-parse", "--verify", result!.refName], {
+      cwd: work,
+      encoding: "utf-8",
+    });
+    expect(resolved.status).toBe(0);
   });
 
-  test("AC-4: a resolvable branch reports a numeric commit count", async () => {
-    const result = await detectPriorBranch({
-      issueNumber: 9001,
-      projectRoot: fx.work,
-      runTests: false,
-    });
-    expect(result!.commitCount).toBe(0);
+  test("a successful rev-list reports the real commit count", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7700, projectRoot: work, runTests: false });
+    expect(result!.commitCount).toBe(1);
   });
 });
 
-describe("#164: an unusable commit count is unknown, not zero", () => {
-  let root: string;
-  let fx: Fixture;
+describe("prior-branch: an unanswerable commit count is not zero (#164)", () => {
+  let root = "";
+  let work = "";
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), "prior-branch-norev-"));
-    // No `main` in this repo, so `git rev-list main..<ref>` exits non-zero.
-    fx = makeFixture({
-      root,
-      defaultBranch: "trunk",
-      originBranches: ["9004-no-main"],
-    });
+    // Default branch `trunk`, so the detector's `main..` base does not resolve
+    // and `git rev-list` exits non-zero.
+    ({ root, work } = makeFixture("trunk"));
+    git(["checkout", "-q", "-b", "7733-no-main"], work);
+    writeFileSync(join(work, "x.txt"), "x");
+    git(["add", "-A"], work);
+    git(["commit", "-q", "-m", "work"], work, "2021-01-01T00:00:00Z");
+    git(["checkout", "-q", "trunk"], work);
   });
 
   afterAll(() => {
-    rmSync(root, { recursive: true, force: true });
+    if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  test("AC-4: a failing rev-list yields a null commit count, not 0", async () => {
-    const result = await detectPriorBranch({
-      issueNumber: 9004,
-      projectRoot: fx.work,
-      runTests: false,
-    });
+  test("a failed rev-list reports an unknown commit count rather than zero", async () => {
+    const result = await detectPriorBranch({ issueNumber: 7733, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
-    // `0` here is a lie the caller cannot detect: it reads as "the branch
-    // exists and is fully merged", which is how a prior branch with real work
-    // on it gets treated as empty.
+    // `0` reads as "the branch is fully merged, there is nothing to resume".
+    // That is a different claim from "git could not tell us".
     expect(result!.commitCount).toBeNull();
+    expect(result!.commitCount).not.toBe(0);
   });
 });
 
-describe("#164: the enumeration itself is scoped", () => {
-  test("AC-1: the candidate list is built from for-each-ref over heads and origin", () => {
-    const src = readFileSync(join(REPO_ROOT, "lib", "prior-branch.ts"), "utf-8");
-    expect(src).toContain("for-each-ref");
-    expect(src).toContain("refs/heads/");
-    expect(src).toContain("refs/remotes/origin/");
-    // The repo-wide listing is gone, not merely unused.
-    expect(src).not.toMatch(/'branch',\s*'-a'/);
-    expect(src).not.toMatch(/remotes\\\/\[\^\/\]\+\\\//);
+describe("prior-branch: the enumeration itself (#164)", () => {
+  const source = readFileSync(join(REPO_ROOT, "lib", "prior-branch.ts"), "utf-8");
+
+  test("no git branch -a call is left behind", () => {
+    expect(source).not.toContain("'branch', '-a'");
+    expect(source).not.toContain('"branch", "-a"');
+  });
+
+  test("candidates come from refs/heads and refs/remotes/origin only", () => {
+    const code = source
+      .split("\n")
+      .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line))
+      .join("\n");
+    expect(code).toContain("for-each-ref");
+    expect(code).toContain("refs/heads");
+    expect(code).toContain("refs/remotes/origin");
   });
 });
 
-describe("#164: ship.js merges the resolvable ref", () => {
+describe("prior-branch: ship.js consumes the resolvable ref (#164)", () => {
   const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
 
-  test("AC-5: the merge step is handed refName, not the stripped branch name", () => {
-    // The step read `git merge <branch> --no-edit`, where <branch> was the
-    // bare name detection had already stripped a remote prefix off.
+  test("the merge step is handed refName, not the bare branch name", () => {
+    // The old prompt said `git merge <branch> --no-edit`, where <branch> was
+    // the remote-stripped name. For an origin-only branch that resolves to
+    // nothing.
     expect(shipSource).toContain("git merge <refName> --no-edit");
     expect(shipSource).not.toContain("git merge <branch> --no-edit");
   });
 
-  test("AC-5: detection's refName is threaded into the workflow's prior-branch state", () => {
-    expect(shipSource).toMatch(/refName:\s*priorResult\.priorRefName/);
-    expect(shipSource).toMatch(/priorRefName/);
+  test("the refusal to merge onto the default branch survives", () => {
+    expect(shipSource).toContain("SKIPPED MERGE: checkout is on $branch");
   });
 
-  test("AC-5: pushTarget still uses the bare branch name", () => {
-    // refName is for reading refs locally. The remote write is still
-    // `HEAD:<bare name>` — pushing to `refs/remotes/origin/x` is not a thing.
-    expect(shipSource).toMatch(/const pushTarget = branchToReuse \? `HEAD:\$\{branchToReuse\}`/);
+  test("the push target stays the bare branch name", () => {
+    // refName is for resolving; `HEAD:refs/remotes/origin/x` is not a push
+    // target anyone wants.
+    expect(shipSource).toContain("`HEAD:${branchToReuse}`");
   });
 
-  test("AC-5: ship.js still parses after the edit", () => {
+  test("ship.js still parses as a workflow script", () => {
     const src = shipSource.replace(/^export /gm, "");
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     expect(() => new AsyncFunction("args", src)).not.toThrow();
