@@ -1779,22 +1779,71 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    branch=$(git branch --show-current)
    sha=$(git rev-parse --short HEAD)
 
-3. Update workflow-state.json with environments.local.api, environments.local.ui, environments.local.tests:
-   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.buildCommit = process.argv[1]; s.agents = {marcus: {branch: process.argv[2], commitSha: process.argv[1], spawned: true, verdict: 'PASS'}, quinn: {spawned: ${discovery.ceremonyTier !== 'LIGHT'}, verdict: '${discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP'}'}}; s.environments = {local: {api: '${projectConfig.apiUrl ? 'PASS' : 'SKIP'}', ui: '${hasUI ? 'PASS' : 'SKIP'}', uiSkipReason: '${hasUI ? '' : 'No UI configured'}', tests: 'PASS'}}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);" "$sha" "$branch"
+3. Record the commit in workflow-state.json. Run exactly this:
+   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
+     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
+     --sha "$sha" --branch "$branch" \\
+     --quinn ${shellQuote(discovery.ceremonyTier !== 'LIGHT' ? 'PASS' : 'SKIP')} \\
+     --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
+     --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
 
-Report: branch name, commit SHA, pushed (true/false)
+   It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
+   Do NOT edit workflow-state.json by hand, and do NOT report true if the
+   command failed — report the failure. This step used to be an instruction
+   with no field in the reply, and an agent that skipped it looked identical
+   to one that ran it (#166).
+
+Report: branch name, commit SHA, pushed (true/false), stateRecorded (true/false)
 `, { label: 'commit', phase: 'Commit', schema: {
   type: 'object',
   properties: {
     branch: { type: 'string' },
     commitSha: { type: 'string' },
     pushed: { type: 'boolean' },
+    stateRecorded: { type: 'boolean' },
   },
-  required: ['branch', 'commitSha'],
+  required: ['branch', 'commitSha', 'stateRecorded'],
 }})
 
 if (!commitResult?.commitSha) {
   return { status: 'COMMIT_FAILED', workDir: WORK_DIR }
+}
+
+// ──── COMMIT-STATE-GUARD-START ────
+/**
+ * Whether the commit step's reply says the state write happened, or a reason.
+ *
+ * A function rather than an inline `if` so test/record-build-commit.test.ts
+ * can EXECUTE it. Asserting that ship.js contains "COMMIT_STATE_NOT_RECORDED"
+ * stayed true after the branch was reduced to `if (false)`, which is the
+ * mutation that survived the first pass here.
+ */
+function commitStateRefusal(reply) {
+  if (!reply || typeof reply !== 'object') return 'the commit step returned no reply'
+  if (reply.stateRecorded === true) return null
+  return `COMMIT_STATE_NOT_RECORDED: scripts/record-build-commit.ts did not report success for ${String(reply.commitSha).slice(0, 80)} (stateRecorded was ${JSON.stringify(reply.stateRecorded ?? null)})`
+}
+// ──── COMMIT-STATE-GUARD-END ────
+
+// #166: stop here rather than at the ship gate six agents later.
+//
+// `buildCommit` and `agents.marcus` used to be written by an unobserved side
+// effect of this step — step 3 of a three-step prompt whose schema asked only
+// for `{branch, commitSha, pushed}`. On wf_b5f65252-24f the agent committed,
+// pushed, answered correctly and never ran it; the run then spent a full BUILD
+// remediation round and two ship gates failing on "neither buildCommit nor
+// agents.marcus.branch present", which no amount of re-implementing could fix
+// because the missing thing was never in the code.
+const stateRefusal = commitStateRefusal(commitResult)
+if (stateRefusal) {
+  log(`${stateRefusal} — the commit is at ${commitResult.commitSha} but workflow-state.json does not say so`)
+  return {
+    status: 'COMMIT_FAILED',
+    reason: stateRefusal,
+    issue: ISSUE,
+    slug: SLUG,
+    workDir: WORK_DIR,
+  }
 }
 log(`Committed: ${commitResult.commitSha} on ${commitResult.branch}`)
 

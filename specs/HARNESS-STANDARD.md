@@ -375,6 +375,55 @@ dependencies, in the manner of SC-560.
 - [x] SC-572: workflows/ship.js contains [!Array.isArray(results), a caller that cannot say what to collect is a failure] — the collector refuses a caller that did not say what to collect, while an empty list stays an ordinary success, so the two situations stop sharing one answer
 - [x] SC-573: test/ship-remediation-commits.test.ts contains [loadCollectAgentWork, loadRunImplement, new Function] — the collector and runImplement are extracted and run, because a source-text assertion is exactly what failed to notice this for the length of #155
 
+### The commit step reports its state write (#166)
+
+The same run that found the collector defect was refused by the ship gate for
+an unrelated one: `buildCommit` and `agents.marcus` were absent from
+`workflow-state.json`. They were written by step 3 of a three-step commit
+prompt — a `bun -e` one-liner — while the schema the agent answered with asked
+only for `{branch, commitSha, pushed}`. So an agent could commit, push, answer
+correctly and never run step 3, and the workflow read that as a fully
+successful commit.
+
+Intermittent rather than broken: `wf_7c91ba3a-a22` and `wf_14bb327b-5d2` both
+have the fields, `wf_b5f65252-24f` does not. The run then spent a BUILD
+remediation round and two ship gates failing on something no amount of
+re-implementing could fix, because the missing thing was never in the code.
+
+An instruction an agent can skip without the reply changing is not a step. The
+same shape as SC-557 one phase earlier, and it was not looked for here.
+
+The one-liner carried a second defect. `s.agents = {marcus, quinn}` is an
+assignment, safe only because it ran before rook. Since SC-569, `agents.rook`
+is the record of whether the security review ran, so anything re-running that
+write after the Verify phase erases it and the run reaches the PR step with no
+security record at all.
+
+- [x] SC-574: scripts/record-build-commit.ts contains [REFUSE_EXIT, buildMarcusRecord] — the state write is a script with a receipt and one refusal exit code, so every argument that is not the shape it must be is refused rather than sanitised
+- [x] SC-575: workflows/ship.js contains [stateRecorded, COMMIT-STATE-GUARD-START] and not contains [s.agents = {marcus] — the reply must say the write happened, the run stops at the commit step when it does not, and the agents map is merged rather than replaced
+- [x] SC-576: test/record-build-commit.test.ts contains [loadGuard, an existing agents.rook survives] — the guard is extracted and executed, and the merge is proven against a state that already carries a security verdict
+
+What was broken to prove these fail — run, counted, reverted:
+
+| mutation | result |
+|---|---|
+| the guard always returns null | 2 fail |
+| the guard defined but not wired into the run | 1 fail |
+| the recorder replaces `agents` instead of spreading it | 2 fail |
+| `stateRecorded` dropped from the step's `required` list | 1 fail |
+| `REFUSE_EXIT = 0` in the real source | the harness refuses to build its mutant and the file aborts |
+
+The first row is the one worth recording. The first version of SC-575's test
+asserted only that `ship.js` contained the string `COMMIT_STATE_NOT_RECORDED`,
+and reducing the branch to `if (false)` left all 21 tests green. The mutation
+survived its first pass, as every source-text assertion in this repo has.
+
+A second trap was hit and is now a property of the test rather than a note:
+the mutant must live beside the real script, because this one imports
+`../gates/orchestrator`. From a temp directory that import does not resolve,
+bun exits non-zero, and every mutant run reads as "the refusal was rejected on
+the merits" — a mutation harness that proves nothing while reporting success.
+
 **Output:** Code committed, tests passing, deployed to test environment.
 
 **Quality bar:** Read project CLAUDE.md for test commands. Tests pass with 0 failures. Code deployed and reachable.
