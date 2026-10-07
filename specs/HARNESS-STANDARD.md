@@ -565,6 +565,56 @@ properties make that work and both are asserted rather than assumed:
 so the mutant can run from a temp directory instead of dying on module
 resolution and reading as a refusal on the merits.
 
+### A verdict names a commit, and the commit moves (#169)
+
+#129 gave the review a real scope and made its verdict block the run. It left
+the verdict pinned to a commit the branch no longer ends at, and nothing
+compared the two.
+
+Field evidence from the #164 run: `agents.rook.testedSha` was `3fe336f1` while
+the branch tip was `ef998b73`, and all four reviewed files had been rewritten
+between them — 236 insertions, 254 deletions. The review ran, the verdict was
+read, the verdict was PASS, and it was a PASS about code the pull request did
+not contain. The #129 defect one commit out.
+
+**A verdict is usable only while the branch tip still matches `testedSha`.**
+`reviewSha` is captured once, from the commit step, before any remediation
+round can move the branch, so no variable in this file notices the move.
+Beside the decision that reads the verdict, `ship.js` now re-reads the commit
+the branch ends at and compares it with `agents.rook.testedSha` from
+`workflow-state.json`, through an inlined copy of `reviewIsCurrent`. Both
+values are read at the point of comparison rather than carried: #169, #155 and
+#166 are all one shape, a value captured early and consumed later as though it
+still described the run.
+
+A review that is not current returns `SHIP_FAILED` with a reason prefixed
+`SECURITY_REVIEW_STALE`, on the return path the FAIL verdict already uses and
+ahead of the PR step. The comparison fails closed — a missing SHA, a malformed
+SHA and two different SHAs are one answer, because none of them is evidence
+that what was read is what will ship. It tolerates abbreviation, because the
+commit step reports `rev-parse --short` while the scope script resolves a full
+SHA, and a check that refuses every run is switched off rather than obeyed.
+
+**The Verify round re-pins; the Ship round refuses.** They are not the same
+situation. The security review has not run when the Verify round recommits, so
+moving the pin there means the review reads the remediated code. It has run by
+the time the Ship round recommits, so a mismatch there is a refusal — that
+round is where the risky code goes, and a second review bolted on after the
+gate would be the "verdict computed late" shape #129 was about.
+
+- [x] SC-583: workflows/ship.js contains [testedSha, HEAD, stale] — the security record is compared against the commit the run is about to open a PR for, rather than trusted because it exists
+- [x] SC-584: workflows/ship.js contains [SECURITY_REVIEW_STALE] and not contains [securityVerdict.verdict === 'PASS' ? ] — a mismatch is a named refusal on the same path as every other security failure, not a warning in the log
+- [x] SC-585: lib/security-verdict.ts contains [reviewIsCurrent] — the comparison lives beside `rookGateVerdict`, so the inlined copy in ship.js and the library are driven over one input matrix by `test/security-verdict-blocks.test.ts`, as #129 established
+- [x] SC-586: workflows/ship.js contains [recommit, buildCommit] — `buildCommit` names the commit the PR is opened from, because a stale `buildCommit` is the same defect in the field the ship gate already reads
+
+**SC-598 is NOT satisfied by this section and is deliberately left open.** Both
+remediation recommits still hand the recorder `quinnLocalVerdict`, computed in
+the Validate phase, while the Ship round runs after `quinn-container`. That is
+#173's overwrite one call site along, and it is tracked on #169 rather than
+claimed here. A spec that ticks a criterion the source does not meet is worse
+than one that admits the gap — see the note in
+`.claude/rules/checks-must-be-able-to-fail.md`.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection
