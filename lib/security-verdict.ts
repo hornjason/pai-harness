@@ -47,6 +47,94 @@ export function rookReviewSha(value: unknown): string | null {
   return SHA.test(trimmed) ? trimmed.toLowerCase() : null;
 }
 
+/** Whether the security review still describes the commit the branch ends at. */
+export interface ReviewCurrency {
+  /** True only when both SHAs are real and name the same commit. */
+  current: boolean;
+  /** The commit the review was pinned to, normalised, or null if it was not one. */
+  testedSha: string | null;
+  /** The commit the branch ends at now, normalised, or null if it was not one. */
+  headSha: string | null;
+  /** Why the review is not current. Null when it is. */
+  reason: string | null;
+}
+
+/**
+ * Two SHAs name the same commit.
+ *
+ * Prefix comparison, because the two values reach this check at different
+ * lengths by construction: the commit step reports `git rev-parse --short
+ * HEAD` and the branch tip is read with `git rev-parse HEAD`. Requiring
+ * character-for-character equality would report EVERY run stale, which is the
+ * failure mode a staleness check can least afford — a gate that always refuses
+ * gets switched off.
+ *
+ * This is git's own abbreviation rule and both inputs are already validated as
+ * 7-40 hex, so the weakest comparison this makes is 28 bits. That is a real
+ * limit and it is stated rather than hidden: a crafted collision would defeat
+ * it. The failure being caught is a branch that moved on, not an adversary
+ * choosing SHAs, and `git rev-parse` resolves abbreviations the same way.
+ */
+function sameCommit(a: string, b: string): boolean {
+  const n = Math.min(a.length, b.length);
+  return a.slice(0, n) === b.slice(0, n);
+}
+
+/**
+ * Whether the security review's verdict still describes the code being shipped
+ * (#169).
+ *
+ * #129 made rook's verdict block the run. It did not make the verdict a
+ * statement about the PR: the review is pinned to one commit, and the
+ * remediation rounds that follow it commit again to the same branch. Measured
+ * on the #164 run — `agents.rook.testedSha` was 3fe336f1 while the branch tip
+ * was ef998b73, and the diff between them rewrote ALL FOUR files rook had
+ * reviewed, 236 insertions and 254 deletions. Rook passed a tree that no
+ * longer existed, and the PR carried a `rook: PASS` that was true of nothing
+ * in it.
+ *
+ * FAILS CLOSED. A missing SHA, a ref name, a SHA with a shell command in it,
+ * an unreadable branch tip — none of them establishes that the reviewed code
+ * is the shipped code, and absence of evidence is not evidence here either.
+ * `current` is true only when both values are real SHAs and name one commit.
+ */
+export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCurrency {
+  const tested = rookReviewSha(testedSha);
+  const head = rookReviewSha(headSha);
+
+  if (!tested) {
+    return {
+      current: false,
+      testedSha: null,
+      headSha: head,
+      reason:
+        `the security review is not pinned to a commit (got ${describe(testedSha)}), ` +
+        `so there is nothing to compare the branch tip against`,
+    };
+  }
+  if (!head) {
+    return {
+      current: false,
+      testedSha: tested,
+      headSha: null,
+      reason:
+        `the branch tip could not be read as a commit SHA (got ${describe(headSha)}), ` +
+        `so the review at ${tested} cannot be shown to describe it`,
+    };
+  }
+  if (!sameCommit(tested, head)) {
+    return {
+      current: false,
+      testedSha: tested,
+      headSha: head,
+      reason:
+        `the security review was performed at ${tested} but the branch now ends at ${head} — ` +
+        `the reviewed commit is not the commit this run would ship (#169)`,
+    };
+  }
+  return { current: true, testedSha: tested, headSha: head, reason: null };
+}
+
 /**
  * The command the workflow hands the scope step.
  *
