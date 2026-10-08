@@ -4,7 +4,13 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { PRESERVED_VERDICTS, REFUSE_EXIT, buildMarcusRecord } from "../scripts/record-build-commit";
+import {
+  PRESERVED_VERDICTS,
+  PRESERVE_MEASURED_ENVIRONMENTS,
+  REFUSE_EXIT,
+  buildLocalEnvironment,
+  buildMarcusRecord,
+} from "../scripts/record-build-commit";
 
 /**
  * scripts/record-build-commit.ts — the commit step's state write stops being
@@ -264,7 +270,10 @@ describe("#173: the recorder records measurements, it does not invent them", () 
     const s = readState();
     expect(s.environments.local.quinn).toEqual({ port: 4321 });
     expect(s.environments.prod).toEqual({ smoke: "PASS" });
-    expect(s.environments.local.api).toBe("SKIP");
+    // #176: `api` used to default to "SKIP" here. A caller that said nothing
+    // about the API now leaves the field untouched, the same way `tests` is
+    // left untouched — see the #176 block below.
+    expect(s.environments.local.api).toBeUndefined();
   });
 
   test("quinn FAIL survives", () => {
@@ -649,5 +658,103 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
     // 270-line script, fully tested, that the workflow never executed.
     expect(shipSource).toContain("const stateRefusal = commitStateRefusal(commitResult)");
     expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}status: 'COMMIT_FAILED'/);
+  });
+});
+
+/**
+ * #176: the commit step does not get a vote on the api or the ui either.
+ *
+ * `environments.local.api` and `.ui` were assigned unconditionally from flags
+ * `workflows/ship.js` derived from rungate.json — `--api PASS` whenever
+ * `projectConfig.apiUrl` was merely truthy, `--ui PASS` whenever a `pages`
+ * entry existed. Quinn runs during Validate and this script runs after it, so
+ * a measured FAIL was replaced by a restatement of the config file, and the
+ * `local-api-validated` / `local-ui-validated` checks in gates/workflow.test.ts
+ * read exactly those two fields. Same defect as `tests` in #173, one field
+ * over.
+ */
+describe("#176: api and ui verdicts belong to whoever measured them", () => {
+  test("a measured api FAIL survives a commit that was handed PASS", () => {
+    writeFileSync(
+      STATE,
+      JSON.stringify(baseState({ environments: { local: { api: "FAIL", ui: "FAIL" } } }), null, 2),
+    );
+    const a = [...okArgs(), "--api", "PASS", "--ui", "PASS"];
+    expect(run(a).code).toBe(0);
+    const local = readState().environments.local;
+    expect(local.api, "a measured api FAIL was overwritten by the commit step").toBe("FAIL");
+    expect(local.ui, "a measured ui FAIL was overwritten by the commit step").toBe("FAIL");
+
+    // The mutation, run rather than described: turn the preserve off and the
+    // overwrite comes back. Without this, "the FAIL survived" is also
+    // satisfied by a script that stopped writing the fields at all.
+    const mutant = makeMutant(
+      "env-overwrite",
+      /PRESERVE_MEASURED_ENVIRONMENTS = true\b/,
+      "PRESERVE_MEASURED_ENVIRONMENTS = false",
+    );
+    writeFileSync(
+      STATE,
+      JSON.stringify(baseState({ environments: { local: { api: "FAIL", ui: "FAIL" } } }), null, 2),
+    );
+    expect(run(a, mutant).code).toBe(0);
+    const mutated = readState().environments.local;
+    expect(
+      [mutated.api, mutated.ui],
+      "the mutant with preservation disabled did NOT overwrite the measurements — " +
+        "the assertions above are not what is holding the line",
+    ).toEqual(["PASS", "PASS"]);
+  });
+
+  test("an unmeasured field is filled in, not skipped", () => {
+    // The positive control for the case above: preserving everything would
+    // make this script incapable of recording a verdict it was legitimately
+    // given by a caller that did measure.
+    writeFileSync(STATE, JSON.stringify(baseState(), null, 2));
+    expect(run([...okArgs(), "--api", "FAIL", "--ui", "SKIP", "--ui-skip-reason", "no pages"]).code).toBe(0);
+    const local = readState().environments.local;
+    expect(local.api).toBe("FAIL");
+    expect(local.ui).toBe("SKIP");
+    expect(local.uiSkipReason).toBe("no pages");
+  });
+
+  test("omitting the flags writes nothing rather than defaulting to SKIP", () => {
+    // `SKIP` is a verdict: it says the check was considered and waived. A
+    // commit step that was told nothing has not considered anything, and
+    // `local-api-validated` accepts SKIP — so the default was the thing
+    // keeping that check from ever going red on a configured project.
+    writeFileSync(STATE, JSON.stringify(baseState(), null, 2));
+    expect(run(okArgs()).code).toBe(0);
+    const local = readState().environments.local;
+    expect(local.api).toBeUndefined();
+    expect(local.ui).toBeUndefined();
+    expect(local.uiSkipReason).toBeUndefined();
+  });
+
+  test("buildLocalEnvironment keeps measurements and does not mutate its input", () => {
+    const before = { api: "FAIL", tests: "PASS" };
+    const after = buildLocalEnvironment(before, { api: "PASS", ui: "PASS" });
+    expect(after.api).toBe("FAIL");
+    expect(after.ui).toBe("PASS");
+    expect(after.tests).toBe("PASS");
+    expect(before).toEqual({ api: "FAIL", tests: "PASS" });
+    expect(PRESERVE_MEASURED_ENVIRONMENTS).toBe(true);
+  });
+
+  test("a non-verdict sitting in the field is not treated as a measurement", () => {
+    // `api: ""` and `api: "pending"` are not verdicts. Reading them as
+    // measurements would let one bad write freeze the field forever.
+    expect(buildLocalEnvironment({ api: "" }, { api: "PASS" }).api).toBe("PASS");
+    expect(buildLocalEnvironment({ api: "pending" }, { api: "PASS" }).api).toBe("PASS");
+    expect(buildLocalEnvironment({ api: "SKIP" }, { api: "PASS" }).api).toBe("SKIP");
+  });
+
+  test("ship.js does not turn configuration presence into a verdict", () => {
+    const ship = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+    expect(
+      ship.match(/(apiUrl|hasUI)\s*\?\s*'PASS'/g) || [],
+      "ship.js is deriving an environment verdict from rungate.json again",
+    ).toEqual([]);
+    expect(ship.match(/--api \$\{shellQuote\(projectConfig/g) || []).toEqual([]);
   });
 });

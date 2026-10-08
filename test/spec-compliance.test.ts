@@ -150,19 +150,23 @@ describe("evidence-requirements: mechanical evidence checks", () => {
     // would pass while the workflow stopped calling it.
     const commitSection = sliceBetween(SHIP_JS, "PHASE 6: COMMIT", "PHASE 7: VERIFY");
     expect(commitSection).toContain("record-build-commit.ts");
-    expect(commitSection).toContain("--api");
-    expect(commitSection).toContain("--ui");
+    expect(commitSection).toContain("--quinn");
+    // #176: `--api` and `--ui` are NOT asserted here any more — their absence
+    // is. They were `projectConfig.apiUrl ? 'PASS' : 'SKIP'` and
+    // `hasUI ? 'PASS' : 'SKIP'`, which is the config file talking, not a
+    // measurement, and it overwrote Quinn's. Same reversal `tests` got in
+    // #173, and for the same reason.
+    expect(
+      commitSection.match(/--(api|ui)\b/g) || [],
+      "the commit step is reporting an environment verdict it did not measure",
+    ).toEqual([]);
 
     const recorder = readFileSync(
       join(import.meta.dir, "..", "scripts", "record-build-commit.ts"),
       "utf-8",
     );
     expect(recorder).toContain("local: {");
-    for (const field of ["api", "ui"]) {
-      expect(recorder, `the recorder no longer writes environments.local.${field}`).toMatch(
-        new RegExp(`\\b${field}[,:]`),
-      );
-    }
+    expect(recorder).toContain("buildLocalEnvironment");
     // `tests` is NOT in that list any more (#173). It was the literal string
     // "PASS" written by a script that runs no tests, over the top of whatever
     // the Verify phase measured — so this asserts its absence, not its
@@ -202,9 +206,12 @@ describe("evidence-requirements: mechanical evidence checks", () => {
         "--state", state,
         "--sha", "dd242a62aea9371d788abb58f3d26922d5dd6cbc",
         "--branch", "ship-166", "--quinn", "SKIP", "--api", "PASS", "--ui", "SKIP",
+        "--ui-skip-reason", "No UI configured",
       ], { encoding: "utf-8" });
       expect(r.status, r.stderr ?? "").toBe(0);
       const written = JSON.parse(readFileSync(state, "utf-8"));
+      // A caller that measured both still gets both recorded (#176); what
+      // changed is that ship.js no longer claims to have measured them.
       expect(written.environments.local).toEqual({
         api: "PASS", ui: "SKIP", uiSkipReason: "No UI configured", tests: "FAIL",
       });

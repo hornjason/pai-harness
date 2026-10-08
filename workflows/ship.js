@@ -2002,9 +2002,14 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
      --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
      --sha "$sha" --branch "$branch" \\
-     --quinn ${shellQuote(quinnLocalVerdict)} \\
-     --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
-     --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
+     --quinn ${shellQuote(quinnLocalVerdict)}
+
+   That is the whole command. It carries no environment verdicts: this step
+   commits, it does not curl the API and it does not open the UI. Those two
+   flags used to be passed as PASS whenever rungate.json named a URL, which
+   overwrote whatever Quinn measured during Validate and left the
+   local-api-validated and local-ui-validated gate checks with no state they
+   could fail on (#176). Both fields belong to whoever measured them.
 
    It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
    Do NOT edit workflow-state.json by hand, and do NOT report true if the
@@ -2158,9 +2163,10 @@ Then record the new commit in workflow-state.json. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --sha "$sha" --branch ${shellQuote(shipBranch)} \\
-    --quinn ${shellQuote(quinnLocalVerdict)} \\
-    --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
-    --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
+    --quinn ${shellQuote(quinnLocalVerdict)}
+
+That is the whole command — no environment verdicts. This step measured
+neither the API nor the UI, and config presence is not a measurement (#176).
 
 It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
 This round MOVED the branch, so the buildCommit written by the commit step now
@@ -3013,9 +3019,10 @@ Then record the new commit in workflow-state.json. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --sha "$sha" --branch ${shellQuote(shipBranch)} \\
-    --quinn ${shellQuote(quinnShipVerdictValue)} \\
-    --api ${shellQuote(projectConfig.apiUrl ? 'PASS' : 'SKIP')} \\
-    --ui ${shellQuote(hasUI ? 'PASS' : 'SKIP')}
+    --quinn ${shellQuote(quinnShipVerdictValue)}
+
+That is the whole command — no environment verdicts. This step measured
+neither the API nor the UI, and config presence is not a measurement (#176).
 
 It prints one JSON receipt on stdout. Report its "ok" field as stateRecorded.
 The PR for this branch is already open, so buildCommit must name the commit
