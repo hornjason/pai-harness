@@ -35,6 +35,13 @@
  * assignment for the same reason `agents` was, and #169 adds call sites that
  * run after Quinn, which turns both overwrites from latent into live.
  *
+ * #176 finishes that: `api` and `ui` were assigned unconditionally too, from
+ * `--api PASS` / `--ui PASS` that ship.js derived from whether rungate.json
+ * named a URL. The gate checks that read those two fields therefore saw PASS
+ * on every configured project and nothing at all on every unconfigured one —
+ * two branches, neither of them red. An omitted flag now writes nothing, and
+ * a verdict already in the file is left where it is.
+ *
  * Every argument is refused rather than sanitised when it is not the shape it
  * must be. A SHA that needs quoting is not a SHA, and three consecutive
  * security reviews of this repo's shell surfaces each found a new hole in a
@@ -44,6 +51,9 @@
  *   bun scripts/record-build-commit.ts --state <workflow-state.json> \
  *     --sha <commit sha> --branch <branch> --quinn PASS|FAIL|SKIP \
  *     [--api PASS|FAIL|SKIP] [--ui PASS|FAIL|SKIP] [--ui-skip-reason <text>]
+ *
+ * --api and --ui are for a caller that MEASURED the environment. Omit them
+ * otherwise; they have no default (#176).
  */
 
 import { readFileSync } from "fs";
@@ -136,6 +146,55 @@ export function buildMarcusRecord(
   };
 }
 
+/**
+ * Whether a verdict already in the file wins over the one this script is
+ * handed (#176).
+ *
+ * Declared as a one-line constant so test/record-build-commit.test.ts can
+ * build a copy of this file with it set to `false` and watch the overwrite
+ * come back. Without that second run, "the measured value survived" is also
+ * satisfied by a script that stopped writing the field at all
+ * (.claude/rules/checks-must-be-able-to-fail.md).
+ */
+export const PRESERVE_MEASURED_ENVIRONMENTS = true;
+
+/** A verdict somebody recorded, as opposed to a field nobody has touched. */
+function measured(v: unknown): boolean {
+  return typeof v === "string" && VERDICTS.has(v);
+}
+
+/**
+ * The new `environments.local`: whatever was measured stays measured (#176).
+ *
+ * Same shape as `tests` just below, and for the same reason. This script
+ * records a commit; it did not curl an API and it did not open a browser. The
+ * api and ui fields were assigned unconditionally from values `workflows/ship.js`
+ * derived from `rungate.json` — `--api PASS` whenever `projectConfig.apiUrl`
+ * was merely truthy — so the commit step overwrote Quinn's measurement from
+ * the Validate phase with a restatement of the config file. The
+ * `local-api-validated` and `local-ui-validated` checks read exactly these two
+ * fields, which made a configured project pass them unconditionally and an
+ * unconfigured one pass them by early return. There was no third branch.
+ *
+ * So: a value already in the file is left alone, and a value this script was
+ * not given is not invented. `uiSkipReason` travels with the ui verdict it
+ * explains rather than being written next to one it does not.
+ */
+export function buildLocalEnvironment(
+  existing: Record<string, unknown> | null | undefined,
+  given: { api?: string; ui?: string; uiSkipReason?: string },
+): Record<string, unknown> {
+  const base = existing && typeof existing === "object" && !Array.isArray(existing) ? { ...existing } : {};
+  const keep = (field: "api" | "ui") => PRESERVE_MEASURED_ENVIRONMENTS && measured(base[field]);
+
+  if (given.api !== undefined && !keep("api")) base.api = given.api;
+  if (given.ui !== undefined && !keep("ui")) {
+    base.ui = given.ui;
+    if (given.uiSkipReason) base.uiSkipReason = given.uiSkipReason;
+  }
+  return base;
+}
+
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
@@ -152,8 +211,11 @@ if (import.meta.main) {
       throw new Refused(`--branch "${String(args.branch).slice(0, 80)}" is not a usable branch name`);
     }
     const quinnVerdict = verdict("quinn", args.quinn);
-    const api = verdict("api", args.api, "SKIP");
-    const ui = verdict("ui", args.ui, "SKIP");
+    // #176: no "SKIP" fallback. An omitted --api is "this run has nothing to
+    // say about the API", which is not the same fact as "the API check was
+    // skipped" and must not be written as one.
+    const api = args.api === undefined ? undefined : verdict("api", args.api);
+    const ui = args.ui === undefined ? undefined : verdict("ui", args.ui);
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
     state.buildCommit = args.sha;
@@ -161,16 +223,18 @@ if (import.meta.main) {
     state.environments = {
       ...(state.environments || {}),
       local: {
-        ...record(state.environments, "local"),
-        api,
-        ui,
-        uiSkipReason: args["ui-skip-reason"] || (ui === "SKIP" ? "No UI configured" : ""),
+        ...buildLocalEnvironment(record(state.environments, "local"), {
+          api,
+          ui,
+          uiSkipReason: args["ui-skip-reason"],
+        }),
         // #173-NO-TESTS-VERDICT
         // `tests` is deliberately absent. This script ran no tests, and the
         // line that used to sit here said `PASS` unconditionally — over the
         // top of whatever the Verify phase had measured. Absent is a state
         // the `tests-pass` check reports ("local.tests not set"); PASS is a
-        // state it believes.
+        // state it believes. #176 extends the same rule to api and ui, in
+        // buildLocalEnvironment above.
       },
     };
     state.changelog = state.changelog || [];

@@ -1,10 +1,11 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
 import { extractTestFailureCount, subtractTestBaseline } from "./gate-executor";
+import { typecheckFailures } from "./typecheck-gate";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -383,13 +384,40 @@ describe("verify checks", () => {
   });
 
   // 21. tsc-pass (GAP → PORTED)
+  //
+  // #176: this was two early returns and an empty tail — no expect, no tsc
+  // invocation, no baseline comparison. The second return read
+  // `environments.local.tests` and bailed with a comment deferring to the
+  // engineer, so the gate asked the agent it was gating whether it needed to
+  // run. No gate defers to its subject. It now runs the
+  // compiler and compares the count against the project's declared baseline.
+  // What was broken to prove it fails: a project with one bad assignment and
+  // `.claude/typecheck-baseline.json` at 0 — see
+  // test/gate-vacuous-checks.test.ts, which plants exactly that and watches
+  // this go red, then removes it and watches it go green.
   test("tsc-pass: no new TypeScript errors above baseline", () => {
     if (!isVerifyPlus()) return;
     const root = sf("projectRoot");
+    // No tsconfig means there is nothing for tsc to check; that is a real
+    // early return, not a skipped measurement.
     if (!root || !existsSync(join(root, "tsconfig.json"))) return;
-    // Check if Marcus recorded it
-    const tests = sf("environments")?.local?.tests;
-    if (tests === "PASS" || tests === "SKIP") return; // trust Marcus
+
+    const baselineFile = join(root, ".claude", "typecheck-baseline.json");
+    const baselineRaw = existsSync(baselineFile) ? readFileSync(baselineFile, "utf-8") : null;
+
+    const run = spawnSync("bunx", ["tsc", "--noEmit"], {
+      cwd: root,
+      encoding: "utf-8",
+      timeout: 240000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const failures = run.error
+      ? [`could not run tsc: ${run.error.message}`]
+      : typecheckFailures(
+          { status: run.status, output: `${run.stdout ?? ""}${run.stderr ?? ""}` },
+          baselineRaw,
+        );
+    expect(failures, failures.join("\n")).toEqual([]);
   });
 
   // 22. code-committed (GAP → PORTED)

@@ -4,6 +4,9 @@ node_modules/
 .pai-work/
 .gate-salt
 .fallow/
+# test/gate-vacuous-checks.test.ts plants a project here; it lives inside the
+# repo so `bunx tsc` resolves the same compiler the real check uses (#176).
+.gate-vacuous-test/
 
 # Added by rungate scaffold
 dist/
