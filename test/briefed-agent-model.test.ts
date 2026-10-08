@@ -55,14 +55,20 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
   // `import`ing it, which the Workflow sandbox makes impossible. Already the
   // established pattern in test/decomposed-ship-dispatch.test.ts. It must never
   // be given a path or a source from anywhere else.
+  //
+  // HARNESS_ROOT is module scope in ship.js and briefedAgent now reads it
+  // (#190, SC-624). Omitting it here throws ReferenceError, which is the
+  // correct signal — this harness has to supply every binding the real block
+  // closes over, not the subset that happened to be enough once.
   const factory = new Function(
-    "ROLES", "PROJECT_ROOT", "agent", "loadContextPaths", "loadReinforcementRules",
+    "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "agent", "loadContextPaths", "loadReinforcementRules",
     `${block}\nreturn briefedAgent;`,
   );
 
   const call = factory(
     roles,
     "/project",
+    "/harness",
     async (prompt: string, opts: Record<string, unknown>) => {
       calls.push({ prompt, opts: { ...opts } });
       return { ok: true };

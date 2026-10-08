@@ -15,7 +15,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { resolve, join } from "path";
-import { harnessRoot } from "../lib/paths";
+import { harnessRootFor } from "../lib/paths";
 
 /**
  * Where this script reads specs and writes tests (#141).
@@ -57,8 +57,34 @@ export function resolveSyncPaths(root: string): SyncPaths {
   };
 }
 
-const ROOT = harnessRoot();
-const { specsDir: SPECS_DIR, outputPath: OUTPUT_PATH } = resolveSyncPaths(ROOT);
+/**
+ * The tree this script WRITES to, stated rather than inherited (#190).
+ *
+ * It was `const ROOT = harnessRoot()` at module scope, which made the
+ * destination of a write depend on two things the caller never said: the
+ * `HARNESS_ROOT` environment variable, and which checkout happened to load
+ * `lib/paths.ts`. `gates/gate-executor.ts` runs this on every scope gate, so a
+ * gate whose root was resolved elsewhere regenerated a DIFFERENT checkout's
+ * `test/spec-compliance-auto.test.ts` and left its own stale — silently, since
+ * both files exist and both are real.
+ *
+ * Resolution order:
+ *
+ *   1. `argv[2]`, when a caller names the tree it means.
+ *   2. Otherwise the checkout this script file lives in.
+ *
+ * `bun <checkout>/scripts/sync-spec-tests.ts` therefore writes into
+ * `<checkout>`, whatever the cwd and whatever the environment says. Deliberately
+ * NOT `harnessRoot()`: a writer that can be aimed by an env var is how #141
+ * happened, and `HARNESS_ROOT` is set by the ship workflow for reasons that
+ * have nothing to do with where generated tests belong.
+ */
+export function syncRoot(argv: string[] = process.argv): string {
+  const arg = argv[2];
+  // `join(dir, "..")` because this file sits in `scripts/`; `harnessRootFor`
+  // resolves and validates the path it is handed, it does not search upward.
+  return arg ? harnessRootFor(arg) : harnessRootFor(join(import.meta.dir, ".."));
+}
 
 function parseTestable(content: string): boolean | null {
   const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
@@ -68,11 +94,11 @@ function parseTestable(content: string): boolean | null {
   return testableMatch[1] === "true";
 }
 
-function discoverTestableSpecs(): { path: string; name: string }[] {
-  const files = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
+function discoverTestableSpecs(specsDir: string): { path: string; name: string }[] {
+  const files = readdirSync(specsDir).filter(f => f.endsWith(".md"));
   const testable: { path: string; name: string }[] = [];
   for (const f of files) {
-    const fullPath = join(SPECS_DIR, f);
+    const fullPath = join(specsDir, f);
     const content = readFileSync(fullPath, "utf-8");
     if (parseTestable(content) === true) {
       testable.push({ path: fullPath, name: f });
@@ -199,12 +225,19 @@ function generateTest(claims: Claim[]): string {
     `import { test, expect, describe } from "bun:test";`,
     `import { readFileSync } from "fs";`,
     `import { join } from "path";`,
-    `import { harnessRoot } from "../lib/paths";`,
+    `import { harnessRootFor } from "../lib/paths";`,
     ``,
     `// Resolved at run time, not baked in: an absolute path written by whoever`,
     `// last ran the generator makes the file unrunnable anywhere else, CI`,
     `// included.`,
-    `const HR = harnessRoot();`,
+    `//`,
+    `// Resolved from THIS file's own location, not from the implicit`,
+    `// module-relative root (#190). These cases grade workflows/ship.js, and`,
+    `// the implicit root honours HARNESS_ROOT — so a run with it set read a`,
+    `// different checkout's ship.js than the one this file was generated`,
+    `// from. A generated test grading a tree it does not belong to reports`,
+    `// failures that exist in nobody's checkout.`,
+    `const HR = harnessRootFor(join(import.meta.dir, ".."));`,
     `const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");`,
     `const PROVE_JS = readFileSync(join(HR, "workflows/prove.js"), "utf-8");`,
     ``,
@@ -258,19 +291,21 @@ function generateTest(claims: Claim[]): string {
 // helpers does not rewrite a test file as a side effect of the import. The
 // test that covers resolveSyncPaths does exactly that import, and without
 // this guard it regenerated the suite's own source mid-run.
-function main() {
+export function main(root: string) {
+  const { specsDir: SPECS_DIR, outputPath: OUTPUT_PATH } = resolveSyncPaths(root);
+
   // Fail loudly on a missing spec directory. The previous version could not:
   // `~/.claude/PAI/Specs` happened to exist, so reading the wrong tree looked
   // exactly like reading the right one.
   if (!existsSync(SPECS_DIR)) {
     console.error(
       `sync-spec-tests: no spec directory at ${SPECS_DIR}\n` +
-        `  (harness root resolved to ${ROOT} — set HARNESS_ROOT if that is wrong)`,
+        `  (harness root given as ${root} — pass the root as argv[2] if that is wrong)`,
     );
     process.exit(1);
   }
 
-  const testableSpecs = discoverTestableSpecs();
+  const testableSpecs = discoverTestableSpecs(SPECS_DIR);
   const allFiles = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
 
   console.log(`Spec discovery: ${allFiles.length} specs scanned, ${testableSpecs.length} testable`);
@@ -295,4 +330,4 @@ function main() {
   }
 }
 
-if (import.meta.main) main();
+if (import.meta.main) main(syncRoot());

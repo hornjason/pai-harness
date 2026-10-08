@@ -12,7 +12,6 @@ import {
 } from "./orchestrator";
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
-import { harnessRoot } from "../lib/paths";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import {
   slugExists,
@@ -113,6 +112,15 @@ export interface GateExecutorInput {
   issue: number;
   workDir: string;
   stateFilePath: string;
+  /**
+   * The tree this gate runs its own subprocesses in, resolved once by the
+   * caller (#190). Required, not optional: a gate that resolves its own root
+   * can run its subprocesses — including `bun scripts/sync-spec-tests.ts`,
+   * which WRITES — in a different tree from the run it is grading, and say
+   * nothing, because both trees exist. `gates/run-gate.ts resolveRunRoot()`
+   * is where it comes from.
+   */
+  harnessRoot: string;
 }
 
 export interface GateExecutorResult {
@@ -388,7 +396,7 @@ function checkVerifyPendingACs(state: Record<string, any>): { results: GateResul
 
 // ── Prove reproducer (B3) ───────────────────────────────────────────────
 
-async function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string): Promise<void> {
+async function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string, harnessRoot: string): Promise<void> {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier === "LIGHT") {
     console.log("prove gate: LIGHT tier — skipping reproducer (API check only)");
@@ -470,7 +478,7 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
     try {
       reproducerOutput = execSync(
         `cat '${proveInputPath}' | claude -p - --model sonnet --system-prompt-file "${provePromptPath}" --output-format text --allowedTools "Bash,Read" --max-turns 10`,
-        { encoding: "utf-8", timeout: 180000, cwd: harnessRoot() }
+        { encoding: "utf-8", timeout: 180000, cwd: harnessRoot }
       );
     } catch (e: any) {
       reproducerOutput = e.stdout || "";
@@ -503,7 +511,7 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
 
 // ── Scope pre-flight checks ─────────────────────────────────────────────
 
-function runScopePreflights(state: Record<string, any>): void {
+function runScopePreflights(state: Record<string, any>, harnessRoot: string): void {
   // Duplicate slug check (SC-44)
   const existingSlug = slugExists(state.issue);
   if (existingSlug && existingSlug !== state.slug) {
@@ -536,13 +544,13 @@ function runScopePreflights(state: Record<string, any>): void {
 
   // Spec-compliance check
   try {
-    execSync(`bun scripts/sync-spec-tests.ts 2>&1`, { encoding: "utf-8", timeout: 10000, cwd: harnessRoot() });
+    execSync(`bun scripts/sync-spec-tests.ts 2>&1`, { encoding: "utf-8", timeout: 10000, cwd: harnessRoot });
   } catch { /* sync script failure is non-blocking */ }
 
   try {
     const complianceOutput = execSync(
       `bun test test/spec-compliance.test.ts test/spec-compliance-auto.test.ts 2>&1`,
-      { encoding: "utf-8", timeout: 30000, cwd: harnessRoot() }
+      { encoding: "utf-8", timeout: 30000, cwd: harnessRoot }
     );
     const complianceFails = complianceOutput.match(/(\d+)\s+fail/);
     if (complianceFails && parseInt(complianceFails[1]) > 0) {
@@ -666,7 +674,7 @@ function runTypeCheck(state: Record<string, any>): void {
 
 // ── Test execution ──────────────────────────────────────────────────────
 
-function runGateTests(gate: string, workDir: string, state: Record<string, any>): { testOutput: string; testExitCode: number } {
+function runGateTests(gate: string, workDir: string, state: Record<string, any>, harnessRoot: string): { testOutput: string; testExitCode: number } {
   let testOutput: string;
   let testExitCode = 0;
   try {
@@ -675,7 +683,7 @@ function runGateTests(gate: string, workDir: string, state: Record<string, any>)
       {
         encoding: "utf-8",
         timeout: 120000,
-        cwd: harnessRoot(),
+        cwd: harnessRoot,
         env: { ...process.env, TEST_WORK_DIR: workDir, GATE: gate, PROJECT_ROOT: state.projectRoot || process.cwd() },
       },
     );
@@ -777,7 +785,7 @@ function printBatchDiagnosis(fails: number, results: GateResult[]): void {
 
 // ── B1/B2 agent logic ───────────────────────────────────────────────────
 
-function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string): void {
+function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string, harnessRoot: string): void {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier === "LIGHT") return;
 
@@ -796,7 +804,7 @@ function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string): v
   const { spawn } = require("child_process");
   const child = spawn("sh", ["-c",
     `claude -p "$(cat '${acInputFile}')" --model haiku --system-prompt-file "${promptPath}" --output-format json --allowedTools "" --max-turns 3 > "${reportPath}.tmp" 2>/dev/null && mv "${reportPath}.tmp" "${reportPath}"`
-  ], { detached: true, stdio: "ignore", cwd: harnessRoot() });
+  ], { detached: true, stdio: "ignore", cwd: harnessRoot });
   child.unref();
   console.log("B1: AC Adversary spawned in background — verify gate will check result");
 }
@@ -952,7 +960,7 @@ function runB2EvidenceValidation(state: Record<string, any>): void {
   }
 }
 
-function runB2EvidenceValidatorAgent(state: Record<string, any>, workDir: string, results: GateResult[]): { agentResult: any; warns: number } {
+function runB2EvidenceValidatorAgent(state: Record<string, any>, workDir: string, results: GateResult[], harnessRoot: string): { agentResult: any; warns: number } {
   let addedWarns = 0;
   let agentResult: any = null;
   const tier = state.sizing?.ceremonyTier || "STANDARD";
@@ -981,7 +989,7 @@ function runB2EvidenceValidatorAgent(state: Record<string, any>, workDir: string
   try {
     b2Output = execSync(
       `cat '${b2InputPath}' | claude -p - --model haiku --system-prompt-file "${b2PromptPath}" --output-format text --allowedTools "" --max-turns 3`,
-      { encoding: "utf-8", timeout: 60000, cwd: harnessRoot() },
+      { encoding: "utf-8", timeout: 60000, cwd: harnessRoot },
     );
   } catch (e: any) {
     b2Output = e.stdout || "";
@@ -1017,7 +1025,7 @@ function runB2EvidenceValidatorAgent(state: Record<string, any>, workDir: string
   return { agentResult, warns: addedWarns };
 }
 
-function runB1AdversaryAtVerify(state: Record<string, any>, workDir: string, results: GateResult[]): { agentResult: any; warns: number } {
+function runB1AdversaryAtVerify(state: Record<string, any>, workDir: string, results: GateResult[], harnessRoot: string): { agentResult: any; warns: number } {
   let addedWarns = 0;
   let agentResult: any = null;
   const tier = state.sizing?.ceremonyTier || "STANDARD";
@@ -1043,7 +1051,7 @@ function runB1AdversaryAtVerify(state: Record<string, any>, workDir: string, res
   try {
     b1Output = execSync(
       `cat '${b1InputPath}' | claude -p - --model haiku --system-prompt-file "${b1PromptPath}" --output-format text --allowedTools "" --max-turns 3`,
-      { encoding: "utf-8", timeout: 60000, cwd: harnessRoot() },
+      { encoding: "utf-8", timeout: 60000, cwd: harnessRoot },
     );
   } catch (e: any) {
     b1Output = e.stdout || "";
@@ -1255,7 +1263,7 @@ export function applyCeremonyOverrides(
 // ── Main executor ───────────────────────────────────────────────────────
 
 export async function executeGate(input: GateExecutorInput): Promise<GateExecutorResult> {
-  const { gate, slug, issue, workDir, stateFilePath: sf } = input;
+  const { gate, slug, issue, workDir, stateFilePath: sf, harnessRoot } = input;
 
   const baseCeremonyProfile = existsSync(join(__dirname, "ceremony-profiles.json"))
     ? join(__dirname, "ceremony-profiles.json")
@@ -1325,12 +1333,12 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // B3: Prove Reproducer
   if (gate === "prove") {
-    await runProveReproducer(state, issue, issueRepo, workDir);
+    await runProveReproducer(state, issue, issueRepo, workDir, harnessRoot);
   }
 
   // Scope pre-flight checks
   if (gate === "scope") {
-    runScopePreflights(state);
+    runScopePreflights(state, harnessRoot);
   }
 
   // Type check (scope or verify)
@@ -1359,7 +1367,7 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   }
 
   // Run tests
-  const { testOutput, testExitCode } = runGateTests(gate, workDir, state);
+  const { testOutput, testExitCode } = runGateTests(gate, workDir, state, harnessRoot);
 
   // Parse results
   let { passes, fails, warns, results } = parseGateResults(testOutput, earlyResults, earlyFails);
@@ -1387,7 +1395,7 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   let b1VerifyAgentResult: any = null;
 
   if (gate === "scope" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
-    spawnB1AdversaryAtScope(state, workDir);
+    spawnB1AdversaryAtScope(state, workDir, harnessRoot);
   }
 
   if (gate === "verify" && fails === 0 && testExitCode === 0) {
@@ -1405,13 +1413,13 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   }
 
   if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
-    const b2 = runB2EvidenceValidatorAgent(state, workDir, results);
+    const b2 = runB2EvidenceValidatorAgent(state, workDir, results, harnessRoot);
     b2AgentResult = b2.agentResult;
     warns += b2.warns;
   }
 
   if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
-    const b1 = runB1AdversaryAtVerify(state, workDir, results);
+    const b1 = runB1AdversaryAtVerify(state, workDir, results, harnessRoot);
     b1VerifyAgentResult = b1.agentResult;
     warns += b1.warns;
   }
