@@ -2921,6 +2921,82 @@ pass. Change nothing else.
   log('GRADE: skipped (skipGrade=true)')
 }
 
+// ──── BLOCKING-GRADES-START ────
+// #188: the grades above were computed, logged, persisted, fed to the brief
+// hill-climb and returned in the run summary — and read by nothing that could
+// decide anything. This is the consumer. Nothing moved to add it; grading
+// already ran ahead of the PR step and ahead of the ship gate, which is what
+// makes the fix cheap.
+//
+// The case that forced it: on run wf_5dd989db-fda Marcus was graded
+// TDD_SEQUENCE_VIOLATED — "no test run after writing source (missing green
+// phase)" — so the `regressions: 0` that run reported came from a suite run
+// predating its final source change. The harness scored that, wrote it to
+// disk, opened a PR, passed the ship gate, reported SHIPPED, and CI went red.
+//
+// NARROW ON PURPOSE. A violation belongs here only when it means A NUMBER
+// THIS RUN REPORTS IS FALSE. TDD_SEQUENCE_VIOLATED qualifies: a missing green
+// phase makes the test evidence describe a tree that is not the one being
+// shipped. COMP-9 (tool call budget) does not — it says a run was expensive,
+// not that it lied — and neither does COMP-2 or any DIR-L* brief directive.
+// The advisory majority stays advisory; a blocking set that grows to cover
+// everything stops every run and gets switched off, which is how a gate dies.
+const BLOCKING_GRADE_VIOLATIONS = ['TDD_SEQUENCE_VIOLATED']
+
+// grade-deterministic.ts writes flagged entries as `${id}: ${evidence}`
+// (scripts/grade-deterministic.ts:206, :230, :244) and the evidence varies run
+// to run, so this matches the id BEFORE the colon. Equality against the whole
+// string would be a check that never fires.
+//
+// Everything is shape-checked rather than trusted: `grades` crosses an agent
+// boundary, and a non-array `flagged` must not throw its way past a refusal.
+function blockingGradeViolations(grades) {
+  const found = []
+  for (const g of Array.isArray(grades) ? grades : []) {
+    const flagged = Array.isArray(g?.flagged) ? g.flagged : []
+    for (const entry of flagged) {
+      const id = String(entry).split(':')[0].trim()
+      if (BLOCKING_GRADE_VIOLATIONS.includes(id)) {
+        found.push(`${g?.role || 'unknown'}: ${entry}`)
+      }
+    }
+  }
+  return found
+}
+
+if (SKIP_GRADE) {
+  // Deliberate, and the two absent-grade cases are NOT the same thing.
+  // skipGrade is a caller-supplied argument (ship.js:181) — an authorised
+  // opt-out, so refusing every skipped run would break the flag outright.
+  // It does not pass silently either: the run records that no blocking-grade
+  // check happened, so a green summary cannot be mistaken for a measured one.
+  log('GRADE BLOCK: skipped (skipGrade=true) — NO blocking-grade check ran for this run')
+} else if (!gradeResult || !Array.isArray(gradeResult.grades)) {
+  // No flag, no grades: the grading step itself failed. "We could not measure
+  // it" is not "it passed" — the #129 fail-open, one level out.
+  const reason = 'BLOCKING_GRADE_MISSING: grading was not skipped but returned no grades array — the run cannot show its compliance evidence'
+  log(`GRADE BLOCK: ${reason}`)
+  return {
+    status: 'SHIP_FAILED',
+    reason,
+    grades: [],
+    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+  }
+} else {
+  const blocked = blockingGradeViolations(gradeResult.grades)
+  if (blocked.length > 0) {
+    for (const b of blocked) log(`GRADE BLOCK: ${b}`)
+    log('GRADE BLOCK: the run is blocked and no PR will be opened')
+    return {
+      status: 'SHIP_FAILED',
+      reason: `blocking compliance violation(s): ${blocked.join('; ')}`,
+      grades: gradeResult.grades,
+      issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+    }
+  }
+}
+// ──── BLOCKING-GRADES-END ────
+
 // ════════════════════════════════════════════════════════════
 // PHASE 8: SHIP (container verify + PR creation + gate)
 // ════════════════════════════════════════════════════════════
