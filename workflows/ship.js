@@ -3040,6 +3040,40 @@ workflow-state.json by hand, and do NOT report true if the command failed.
         log(`${reShipStateRefusal} — buildCommit still names the pre-regression commit (#169)`)
         return { status: 'SHIP_FAILED', reason: reShipStateRefusal, issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
       }
+      // ──── STALE-REFUSAL-START ────
+      // #169, the Ship half. The currency check inside SECURITY-DECISION runs
+      // once, before this phase. The Verify regression loop commits upstream of
+      // it, so its rounds are covered; this one commits here, after the verdict
+      // has already been read and accepted, and until now nothing looked again.
+      // A Ship-round remediation therefore shipped exactly the #164 artefact —
+      // a PASS about a commit the branch had moved past — with the difference
+      // that a remediation round exists *because* something failed, which makes
+      // it where the risky code goes.
+      //
+      // Compared here rather than carried: `testedSha` is what the review read
+      // and `reCommit.commitSha` is the tip this round just pushed, validated
+      // one statement above by `commitStateRefusal`. Both are read at the point
+      // of comparison, which is the lesson #155, #166 and #169 share.
+      //
+      // No warn-only branch, and no ternary on the currency verdict that turns
+      // the mismatch into a log line while the run carries on — that is #129
+      // rewritten with one extra commit in it. Re-reviewing the new tip is the
+      // better long-run answer and is the follow-on; refusing is what keeps the
+      // gap visible instead of silent in the meantime.
+      const shipRoundCurrency = reviewIsCurrent(testedSha, reCommit?.commitSha)
+      if (!shipRoundCurrency.current) {
+        const shipRoundReason = `SECURITY_REVIEW_STALE: ${shipRoundCurrency.reason}`
+        log(`SECURITY BLOCK: ${shipRoundReason}`)
+        log('SECURITY: the ship regression round moved the branch past the reviewed commit — the run stops here, and the issue is neither labelled proven nor closed')
+        return {
+          status: 'SHIP_FAILED',
+          reason: shipRoundReason,
+          security: securityVerdict,
+          issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+        }
+      }
+      log(`Security review is still current after the ship round, at ${reCommit?.commitSha}`)
+      // ──── STALE-REFUSAL-END ────
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.', { cwd: commitDir })
       if (retryShip?.result === 'PASS') {
         log('Ship passed after BUILD regression fix')

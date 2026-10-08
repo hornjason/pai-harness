@@ -595,31 +595,47 @@ that what was read is what will ship. It tolerates abbreviation, because the
 commit step reports `rev-parse --short` while the scope script resolves a full
 SHA, and a check that refuses every run is switched off rather than obeyed.
 
-**The check runs once, and the Ship round is still uncovered.** The comparison
-sits inside `SECURITY-DECISION-START/END`, which is reached after the review
-and before the PR step. The Verify regression loop commits before that point,
-so its rounds are covered: the head is re-read from git afterwards. The Ship
-regression loop commits at `recommit-ship`, which is *after* the decision
-block, and nothing compares again — so a Ship-round remediation still moves the
-branch past the reviewed commit exactly as #164 did.
+**The check runs twice, once per remediation loop.** The first comparison sits
+inside `SECURITY-DECISION-START/END`, which is reached after the review and
+before the PR step, and it covers the Verify regression loop: that loop commits
+upstream of the decision, and the head is re-read from git afterwards. The Ship
+regression loop commits at `recommit-ship`, *after* the decision block, so for
+one release it was uncovered — a Ship-round remediation moved the branch past
+the reviewed commit exactly as #164 did, and nothing looked again.
 
-That is the half of #169 this section does not close, and it is written here
-rather than left for someone to find. It is the half that matters most: a
-remediation round exists because something failed, which makes it where the
-risky code goes.
+`STALE-REFUSAL-START/END` is the second comparison, immediately after
+`recommit-ship` and before the ship gate is retried. It reads the tip the round
+just pushed — `reCommit.commitSha`, already validated one statement earlier by
+`commitStateRefusal` — against the same `testedSha`, through the same inlined
+`reviewIsCurrent`, and refuses the same way. Neither check is a warning. It is
+the half that matters most: a remediation round exists because something
+failed, which makes it where the risky code goes.
+
+Both the refusal and its positive control are named cases in
+`test/security-verdict-blocks.test.ts`, extracted from `ship.js` by marker and
+executed rather than grepped for, because a block that refuses every Ship round
+is switched off rather than obeyed and reads identical to a correct one in a
+source-text assertion.
 
 - [x] SC-583: workflows/ship.js contains [testedSha, HEAD, stale] — the security record is compared against the commit the run is about to open a PR for, rather than trusted because it exists
 - [x] SC-584: workflows/ship.js contains [SECURITY_REVIEW_STALE] and not contains [securityVerdict.verdict === 'PASS' ? ] — a mismatch is a named refusal on the same path as every other security failure, not a warning in the log
 - [x] SC-585: lib/security-verdict.ts contains [reviewIsCurrent] — the comparison lives beside `rookGateVerdict`, so the inlined copy in ship.js and the library are driven over one input matrix by `test/security-verdict-blocks.test.ts`, as #129 established
 - [x] SC-586: workflows/ship.js contains [recommit, buildCommit] — `buildCommit` names the commit the PR is opened from, because a stale `buildCommit` is the same defect in the field the ship gate already reads
+- [x] SC-603: workflows/ship.js contains [STALE-REFUSAL-START, reviewIsCurrent(testedSha] — the Ship regression round's new tip is compared against the reviewed commit after `recommit-ship`, not only before it, so the loop that exists because something failed is the one that is checked
+- [x] SC-604: workflows/ship.js contains [shipRoundCurrency.current, reason: shipRoundReason] — the Ship-round mismatch returns SHIP_FAILED on the path the Verify-side mismatch already uses, and no branch in the file turns a currency verdict into a log line the run continues past
+- [x] SC-605: test/security-verdict-blocks.test.ts contains [the ship round moves the branch past the review, a ship round that changes nothing still ships] — the refusal and its positive control are both named cases over the block extracted from ship.js, so a check that refuses every Ship round fails this file
 
-**Two gaps are deliberately left open and tracked on #169, not claimed here.**
+**One gap remains open and is tracked on #169, not claimed here.** The refusal
+stops the run; it does not re-review the new tip. Re-running rook against the
+post-remediation commit is the better long-run answer, and until it exists a
+Ship-round remediation costs the run rather than silently shipping unreviewed
+code. Refusing is what keeps that visible.
 
-1. **No currency check after `recommit-ship`.** Described above. The Ship
-   regression round still ships a commit the review never read.
-2. **SC-598.** Both remediation recommits hand the recorder
-   `quinnLocalVerdict`, computed in the Validate phase, while the Ship round
-   runs after `quinn-container` — #173's overwrite one call site along.
+SC-598 — both remediation recommits handing the recorder `quinnLocalVerdict`
+while the Ship round runs after `quinn-container` — was closed by `bd0b91b9`,
+which gave the Ship recommit `quinnShipVerdict(quinnContainerRan, …)`; the
+chooser is executed by `test/record-build-commit.test.ts`. It is listed here
+because this section previously recorded it as open.
 
 Also stated rather than implied: the two SHAs reach this file through an agent,
 because the sandbox cannot exec or read files (#69). What that buys is a fixed
