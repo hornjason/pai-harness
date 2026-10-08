@@ -204,15 +204,20 @@ type CollectResult = { ok: boolean; collected: number; staged: boolean; detail?:
  * The real `collectAgentWork`, with the real `collectDestination` beside it,
  * running against an injected `agent`.
  *
- * Both marker blocks go into one function body so the allowlist under test is
- * the shipped one rather than a stand-in — `collectAgentWork` calls
- * `collectDestination(intoDir)` with one argument and relies on its
- * module-scope defaults, which are passed in here as parameters. Same
+ * All three marker blocks go into one function body so the allowlist and the
+ * claim check under test are the shipped ones rather than stand-ins —
+ * `collectAgentWork` calls `collectDestination(intoDir)` with one argument and
+ * relies on its module-scope defaults, which are passed in here as parameters,
+ * and `auditWorktreeClaims(results)` from COLLECT-CLAIM (#178). Same
  * extraction pattern as `loadCollectDestination` in
  * test/ship-collect-destination.test.ts.
  */
 function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
-  const body = `${markedBlock("COLLECT-DESTINATION")}\n${markedBlock("COLLECT-AGENT-WORK")}`;
+  const body = [
+    markedBlock("COLLECT-DESTINATION"),
+    markedBlock("COLLECT-CLAIM"),
+    markedBlock("COLLECT-AGENT-WORK"),
+  ].join("\n");
   return new Function(
     "PROJECT_ROOT",
     "HARNESS_ROOT",
