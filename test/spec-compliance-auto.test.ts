@@ -6,12 +6,19 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { harnessRoot } from "../lib/paths";
+import { harnessRootFor } from "../lib/paths";
 
 // Resolved at run time, not baked in: an absolute path written by whoever
 // last ran the generator makes the file unrunnable anywhere else, CI
 // included.
-const HR = harnessRoot();
+//
+// Resolved from THIS file's own location, not from the implicit
+// module-relative root (#190). These cases grade workflows/ship.js, and
+// the implicit root honours HARNESS_ROOT — so a run with it set read a
+// different checkout's ship.js than the one this file was generated
+// from. A generated test grading a tree it does not belong to reports
+// failures that exist in nobody's checkout.
+const HR = harnessRootFor(join(import.meta.dir, ".."));
 const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
 const PROVE_JS = readFileSync(join(HR, "workflows/prove.js"), "utf-8");
 

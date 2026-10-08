@@ -459,6 +459,25 @@ async function briefedAgent(prompt, opts = {}) {
     if (!('model' in opts) && roleConfig?.model) opts.model = roleConfig.model
     if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT
 
+    // This run's harness root, set once here rather than at each of the call
+    // sites (#190, SC-624).
+    //
+    // `harnessRoot()` in lib/paths.ts resolves to the checkout that loaded it
+    // when HARNESS_ROOT is unset. Every role above defaults to
+    // `isolation: 'worktree'`, so for a spawned agent that is the agent's own
+    // worktree — not the tree the run is grading. The agent then measures one
+    // tree and reports the number as if it were the other, and nothing errors,
+    // because a worktree is a real checkout with real tests in it.
+    //
+    // A caller's own keys win, so a call site can still aim an agent
+    // deliberately; what must not happen is the value being ABSENT, because
+    // absence does not fail — it silently resolves the worktree.
+    //
+    // One line, one marker: test/ship-collect-destination.test.ts executes
+    // this block with the marked line removed and asserts the root then
+    // reaches the agent by no other route.
+    opts.env = { HARNESS_ROOT, ...(opts.env || {}) } // ── RUN-ENV ──
+
     let fullPrompt = ''
 
     if (taskContextExcerpts && taskContextExcerpts.length > 0) {
@@ -487,6 +506,16 @@ async function briefedAgent(prompt, opts = {}) {
       }
 
       fullPrompt += `MANDATORY FIRST STEPS — do these BEFORE anything else:\n${readSteps.join('\n')}\n\nDo NOT start the task until you have completed ALL Read steps above.\n\n`
+    }
+
+    // The same root again, in the channel that does not depend on the agent
+    // runtime honouring an option it may not know about. `opts.env` above is
+    // the structured one; this is what the agent's own shell commands read.
+    if (opts.env?.HARNESS_ROOT) {
+      fullPrompt += `ENVIRONMENT — this run's harness root is ${opts.env.HARNESS_ROOT}, which is NOT your worktree.\n` +
+        `Prefix every command that loads harness code (tests, gates, scripts under lib/ or gates/) with ` +
+        `HARNESS_ROOT=${opts.env.HARNESS_ROOT} — without it the harness resolves your worktree and the ` +
+        `numbers you report are measured against a different tree than the one being graded (#190).\n\n`
     }
 
     const reinforcement = await loadReinforcementRules(role, briefPath)

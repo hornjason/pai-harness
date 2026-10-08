@@ -23,8 +23,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
-import { resolveSyncPaths } from "../scripts/sync-spec-tests";
-import { harnessRoot } from "../lib/paths";
+import { resolveSyncPaths, syncRoot } from "../scripts/sync-spec-tests";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
@@ -54,12 +53,39 @@ describe("#141: the generator resolves to the repo it lives in", () => {
     try {
       // This is the assertion the old default failed. It passed `~/.claude`
       // every time, and `~/.claude/PAI/Specs` exists, so nothing complained.
-      expect(harnessRoot()).toBe(REPO_ROOT);
-      expect(resolveSyncPaths(harnessRoot()).specsDir).toBe(join(REPO_ROOT, "specs"));
+      expect(syncRoot([])).toBe(REPO_ROOT);
+      expect(resolveSyncPaths(syncRoot([])).specsDir).toBe(join(REPO_ROOT, "specs"));
     } finally {
       if (saved === undefined) delete process.env.HARNESS_ROOT;
       else process.env.HARNESS_ROOT = saved;
     }
+  });
+
+  test("argv[2] is the root, so a caller can state the tree it means", () => {
+    expect(syncRoot(["bun", "sync-spec-tests.ts", "/some/other/tree"])).toBe("/some/other/tree");
+  });
+
+  test("HARNESS_ROOT does NOT redirect the write", () => {
+    // The whole of AC-3. `gates/gate-executor.ts` runs this script on every
+    // scope gate, and the ship workflow sets HARNESS_ROOT for reasons that
+    // have nothing to do with where generated tests belong. A writer aimed by
+    // an env var regenerates one checkout's test file and leaves another's
+    // stale, silently, because both are real files.
+    const saved = process.env.HARNESS_ROOT;
+    process.env.HARNESS_ROOT = "/nonexistent/env/override";
+    try {
+      expect(syncRoot([])).toBe(REPO_ROOT);
+    } finally {
+      if (saved === undefined) delete process.env.HARNESS_ROOT;
+      else process.env.HARNESS_ROOT = saved;
+    }
+  });
+
+  test("the positive control: an empty root is refused, not resolved", () => {
+    // `harnessRootFor` is what makes the two cases above answers rather than
+    // guesses. Hand it nothing and it throws; a plain `resolve()` in its place
+    // would hand back the cwd and the write would land somewhere nobody named.
+    expect(() => syncRoot(["bun", "sync-spec-tests.ts", "   "])).toThrow(/empty root/);
   });
 
   test("the directories it resolves to are real", () => {
@@ -76,11 +102,15 @@ describe("#141: the generator resolves to the repo it lives in", () => {
 describe("#141: the generated file is runnable where it lands", () => {
   const generated = readFileSync(join(REPO_ROOT, "test", "spec-compliance-auto.test.ts"), "utf-8");
 
-  test("it reads the workflows through harnessRoot(), not a baked-in path", () => {
+  test("it reads the workflows through its own location, not a baked-in path", () => {
     // The generator used to interpolate absolute paths from whoever last ran
     // it, which makes the committed file unrunnable anywhere else, CI
-    // included.
-    expect(generated).toContain('import { harnessRoot } from "../lib/paths"');
+    // included. It then used `harnessRoot()`, which honours HARNESS_ROOT — so
+    // a run with that set graded a different checkout's ship.js than the one
+    // the file was generated from (#190).
+    expect(generated).toContain('import { harnessRootFor } from "../lib/paths"');
+    expect(generated).toContain('harnessRootFor(join(import.meta.dir, ".."))');
+    expect(generated).not.toMatch(/\bharnessRoot\(\)/);
     expect(generated).not.toMatch(/readFileSync\("\/Users\//);
     expect(generated).not.toMatch(/readFileSync\("\/home\//);
   });

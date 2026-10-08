@@ -59,10 +59,37 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **FAIL:** Any AC evidence command fails, any AC verdict is FAIL, or any gate check returns FAIL
 
 ### SC-388: gate-executor pass/fail criteria
-- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, harnessRoot
 - **Output:** `GateExecutorResult` — resultVal, passes, fails, warns, results, attempt, exitCode
 - **PASS:** All gate checks pass, all AC verdicts are PASS or SKIP, exitCode is 0
 - **FAIL:** Any gate check fails, any AC verdict is FAIL, or exitCode is non-zero
+
+**`harnessRoot` is part of the input contract, and it is required (#190).** The
+gate executor does not resolve a root of its own. It receives one, already
+resolved, and every subprocess it starts — `bun test gates/`,
+`bun scripts/sync-spec-tests.ts`, and the B1/B2/B3 agents — runs with that
+directory as `cwd`.
+
+The reason is the failure it prevents: **a gate that resolves its own root can
+run its subprocesses in a different tree than the run it is grading.** The
+executor used to call `harnessRoot()` at seven separate `cwd:` sites, so the
+tree it executed in was decided seven times over by the environment and by
+wherever `lib/paths.ts` had been loaded from. `bun scripts/sync-spec-tests.ts`
+WRITES, so the drift was not only observed in the wrong tree, it was created
+there — and nothing errored, because both trees are real checkouts.
+
+`gates/run-gate.ts` resolves the root once, in the exported `resolveRunRoot()`,
+and threads it into the single `executeGate(...)` call. `HARNESS_ROOT` wins when
+set; otherwise the root is the checkout `run-gate.ts` itself lives in — NOT the
+main repository. `git rev-parse --git-common-dir` returns the main checkout from
+inside a linked worktree, which is the opposite of what a gate needs: the files
+a worktree run is grading are the worktree's. An empty root is refused by
+`harnessRootFor` rather than replaced by a fallback.
+
+Call sites that keep an implicit root are the ones about the project under test
+rather than the harness: the type check, the dev-server liveness curl,
+`git rev-parse HEAD` for prove evidence, and `writeGateResult` all use
+`state.projectRoot`. Those are a different tree on purpose.
 
 ### SC-380: orchestrator pass/fail criteria
 - **Input:** `WriteGateResultInput` — state file path, gate name, pass/fail/warn counts, results array
@@ -114,7 +141,7 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 - **FAIL:** N/A — recording is best-effort; missing state dir silently skips
 
 ### SC-388: gate-executor pass/fail criteria
-- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, projectRoot, issueRepo
+- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, harnessRoot, projectRoot, issueRepo
 - **Output:** `GateExecutorResult` — passes, fails, warns, results array, testOutput
 - **PASS:** All delegated gate functions complete without error, aggregated fails === 0
 - **FAIL:** Any delegated function reports failures; consumer (run-gate.ts) aggregates and writes gate result
