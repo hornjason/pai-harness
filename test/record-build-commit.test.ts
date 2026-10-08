@@ -11,6 +11,7 @@ import {
   buildLocalEnvironment,
   buildMarcusRecord,
 } from "../scripts/record-build-commit";
+import { WorkflowStateSchema } from "../gates/schema";
 
 /**
  * scripts/record-build-commit.ts — the commit step's state write stops being
@@ -524,6 +525,11 @@ describe("#166: refusals, each shown against a mutant that does not refuse", () 
     ["a SHA with a command in it", ["--state", "", "--sha", "dd242a6; rm -rf /", "--branch", "b", "--quinn", "SKIP"]],
     ["a branch name that is not one", ["--state", "", "--sha", SHA, "--branch", "a b; c", "--quinn", "SKIP"]],
     ["a quinn verdict nobody recognises", ["--state", "", "--sha", SHA, "--branch", "b", "--quinn", "MAYBE"]],
+    // #174. A relative path is refused because the gate resolves it against
+    // its own cwd, not the caller's — the exact "which repository is this
+    // about" ambiguity the field exists to remove.
+    ["a worktreePath that is not absolute", ["--state", "", "--sha", SHA, "--branch", "b", "--quinn", "SKIP", "--worktree-path", "."]],
+    ["a worktreePath with a command in it", ["--state", "", "--sha", SHA, "--branch", "b", "--quinn", "SKIP", "--worktree-path", "/tmp/x; touch /tmp/pwned"]],
     ["an unknown flag", ["--state", "", "--sha", SHA, "--branch", "b", "--quinn", "SKIP", "--force", "1"]],
   ];
 
@@ -756,5 +762,81 @@ describe("#176: api and ui verdicts belong to whoever measured them", () => {
       "ship.js is deriving an environment verdict from rungate.json again",
     ).toEqual([]);
     expect(ship.match(/--api \$\{shellQuote\(projectConfig/g) || []).toEqual([]);
+  });
+});
+
+/**
+ * #174: the directory the run committed in survives into the artefact.
+ *
+ * The ship gate's `code-pushed` and `code-committed` checks used to run git in
+ * `projectRoot`, which under `isolation: worktree` is a main checkout sitting
+ * clean and level with its upstream — a PASS about a branch the run never
+ * touched. They now read `agents.marcus.worktreePath`, so the value has to get
+ * there: ship.js has to pass it, this script has to write it, and
+ * gates/schema.ts has to declare it or Zod drops it on the way through. Any
+ * one of the three missing puts the checks silently back on projectRoot.
+ */
+describe("#174: worktreePath reaches the gate", () => {
+  const WT = "/Users/jhorn/Projects/rungate/.claude/worktrees/wf_174";
+
+  test("worktreePath is written onto agents.marcus", () => {
+    const r = run([...okArgs(), "--worktree-path", WT]);
+    expect(r.code, r.err).toBe(0);
+    expect(readState().agents.marcus.worktreePath).toBe(WT);
+  });
+
+  test("the receipt names the worktreePath it recorded", () => {
+    const r = run([...okArgs(), "--worktree-path", WT]);
+    const receipt = JSON.parse(r.out.trim().split("\n").pop()!);
+    expect(receipt.ok).toBe(true);
+    expect(receipt.worktreePath).toBe(WT);
+  });
+
+  test("an omitted worktreePath is not invented", () => {
+    // Same rule as api and ui (#176): a caller that did not say is not a
+    // caller that said "the project root". Absent makes the gate fall back
+    // explicitly; "" would make it measure the process's own cwd.
+    expect(run(okArgs()).code).toBe(0);
+    expect(readState().agents.marcus.worktreePath).toBeUndefined();
+  });
+
+  test("a worktreePath already in the file survives a round that omits it", () => {
+    // The remediation rounds re-run this script. An assignment would erase the
+    // value the commit step recorded — the #166/#173 shape, one field over.
+    writeFileSync(
+      STATE,
+      JSON.stringify(baseState({ agents: { marcus: { worktreePath: WT } } }), null, 2),
+    );
+    expect(run(okArgs()).code).toBe(0);
+    expect(readState().agents.marcus.worktreePath).toBe(WT);
+  });
+
+  test("buildMarcusRecord carries worktreePath without touching the other agents", () => {
+    const after = buildMarcusRecord({ rook: { spawned: true, verdict: "PASS" } }, SHA, "ship-174", "SKIP", WT);
+    expect((after.marcus as Record<string, unknown>).worktreePath).toBe(WT);
+    expect(after.rook).toEqual({ spawned: true, verdict: "PASS" });
+  });
+
+  test("AgentSchema declares worktreePath, so parsing does not strip it", () => {
+    // Executed, not asserted on source text. Zod's object parser drops keys it
+    // does not know, so deleting the `worktreePath` line from gates/schema.ts
+    // turns this red while every assertion above stays green — the write would
+    // still happen and the gate would still read undefined.
+    const parsed = WorkflowStateSchema.passthrough().parse(
+      baseState({ agents: { marcus: { branch: "ship-174", commitSha: SHA, worktreePath: WT } } }),
+    ) as Record<string, any>;
+    expect(parsed.agents.marcus.worktreePath, "AgentSchema stripped worktreePath").toBe(WT);
+    expect(parsed.agents.marcus.commitSha, "AgentSchema stripped commitSha").toBe(SHA);
+  });
+
+  test("every recorder call site in ship.js passes a worktreePath", () => {
+    // Three call sites — the commit step and the two remediation rounds — and
+    // each one commits in `commitDir`. A fourth that forgot the flag would put
+    // the gate back on projectRoot for that round only, which is the kind of
+    // intermittent false PASS #166 was.
+    const ship = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
+    const callSites = ship.split("scripts/record-build-commit.ts`)}").length - 1;
+    const flags = ship.split("--worktree-path ${shellQuote(commitDir)}").length - 1;
+    expect(flags, `${callSites} recorder call sites but ${flags} --worktree-path flags`).toBe(callSites);
   });
 });

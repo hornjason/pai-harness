@@ -122,6 +122,15 @@ export const AgentSchema = z.object({
   testedSha: z.string().optional(),
   testedPaths: z.array(z.string()).optional(),
   port: z.number().optional(),
+  // The commit the agent made and the directory it made it in. Declared for
+  // the same reason `failures` is: Zod strips undeclared keys, so an agent
+  // record that round-trips through this schema loses them. #174 makes that
+  // load-bearing — the `code-pushed` and `code-committed` checks in
+  // gates/workflow.test.ts resolve the git working directory and branch they
+  // measure from `worktreePath` and `branch`, and an undefined worktreePath
+  // silently puts them back on projectRoot, which is the defect being fixed.
+  commitSha: z.string().optional(),
+  worktreePath: z.string().optional(),
 }).optional();
 
 export const EnvironmentLocalSchema = z.object({
