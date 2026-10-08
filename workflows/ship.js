@@ -1330,6 +1330,10 @@ Also report worktreePath: your current working directory (run pwd and include th
     success: true,
     buildResult: {
       ...buildResult,
+      // No `claimedFiles`: this path issues no per-worktree claim, because
+      // there is one worktree and nothing to contest. The audit reads a
+      // missing claim as "unconstrained" rather than "claimed nothing" —
+      // see auditWorktreeClaims — so an ordinary run collects as before.
       agentResults: [{
         worktreePath: buildResult.worktreePath || '',
         filesChanged: buildResult.filesChanged || [],
@@ -1415,6 +1419,10 @@ Also report worktreePath: your current working directory.
           agentResults: completed.map(r => ({
             worktreePath: r.buildResult?.worktreePath || '',
             filesChanged: r.buildResult?.filesChanged || [],
+            // The claim travels with the result (#178, SC-413). Sent to the
+            // agent as prose it is advice; carried back alongside what the
+            // agent actually changed, it is checkable.
+            claimedFiles: r.subIssue?.filesToModify || [],
           })),
         }
       }
@@ -1429,10 +1437,12 @@ Also report worktreePath: your current working directory.
         success: true,
         filesChanged: allFilesChanged,
         worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
-        // See the failure branch above — the pairing is what #81 lost.
+        // See the failure branch above — the pairing is what #81 lost, and
+        // the claim is what #178 lost.
         agentResults: completed.map(r => ({
           worktreePath: r.buildResult?.worktreePath || '',
           filesChanged: r.buildResult?.filesChanged || [],
+          claimedFiles: r.subIssue?.filesToModify || [],
         })),
       }
     }
@@ -1672,6 +1682,119 @@ function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNE
 }
 // ──── COLLECT-DESTINATION-END ────
 
+// ──── COLLECT-CLAIM-START ────
+/**
+ * A worktree's reported path, as the collector will see it (#178).
+ *
+ * `groupFilesByWorktree` accepts both an absolute path inside the worktree and
+ * a worktree-relative one, and normalises to the latter. The claim comparison
+ * has to use the SAME normalisation or it compares
+ * "/…/wf_a/workflows/ship.js" against the claim "workflows/ship.js", finds no
+ * match, and refuses the entire collection on the most common reporting style.
+ *
+ * Anything that does not reduce to a path inside the worktree — another
+ * worktree's absolute path, a `..` segment — is deliberately left as-is. It
+ * then matches no claim and is refused, which is the right answer: the
+ * collector would discard it anyway, silently.
+ */
+function claimKey(worktreePath, p) {
+  let s = String(p == null ? '' : p).trim()
+  if (!s) return ''
+  const wt = String(worktreePath == null ? '' : worktreePath).trim().replace(/\/+$/, '')
+  if (wt && s.startsWith(`${wt}/`)) s = s.slice(wt.length + 1)
+  return s.replace(/^(?:\.\/)+/, '').replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+}
+
+/**
+ * Check what each agent actually changed against what it was told it owned.
+ *
+ * SC-413 of PARALLEL-AGENT-COORDINATION-SPEC.md: "Post-wave integration check
+ * detects unclaimed file modifications". Until this existed, the claim was
+ * PROSE in the sub-issue prompt ("## Files — modify ONLY these") and nothing
+ * downstream compared the reply to it. On wf_2b3ff032-a4b three of four
+ * worktrees changed workflows/ship.js; exactly one had claimed it, so SC-411's
+ * pairwise overlap check had nothing to catch, and the collection copied all
+ * three in sequence. The commit that resulted described controls that were not
+ * in the file it committed.
+ *
+ * Returns both halves on purpose, because either alone is insufficient:
+ *
+ *   violations — the refusal. Each names the worktree, the path, and the
+ *                claimant, because "an unclaimed file was modified" is not
+ *                actionable without knowing whose work is about to be lost.
+ *   candidates — the collection input, pruned to claimed files only. This is
+ *                what gets written to the groups file, so the claimant's copy
+ *                is the only copy of a contested file that can ever be
+ *                written, independently of whether the refusal fires.
+ *
+ * A missing `claimedFiles` means NO CLAIM WAS ISSUED — the single-agent and
+ * remediation paths, where there is one worktree and nothing to contest.
+ * Reading that as "claimed nothing" would refuse every ordinary run. Such an
+ * agent is unconstrained, with one exception: it still cannot contribute a
+ * file some other worktree explicitly claimed.
+ */
+function auditWorktreeClaims(results) {
+  const violations = []
+  const candidates = []
+  if (!Array.isArray(results)) return { violations, candidates }
+
+  // Ownership first, across every worktree — a file's claimant has to be known
+  // before any worktree's report can be judged against it.
+  const claimants = {}
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt || !Array.isArray(r.claimedFiles)) continue
+    for (const c of r.claimedFiles) {
+      const key = claimKey(wt, c)
+      if (!key) continue
+      if (!claimants[key]) claimants[key] = []
+      if (!claimants[key].includes(wt)) claimants[key].push(wt)
+    }
+  }
+
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt) continue
+    const claims = Array.isArray(r.claimedFiles)
+      ? r.claimedFiles.map(c => claimKey(wt, c)).filter(Boolean)
+      : null
+    const kept = []
+
+    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
+      const key = claimKey(wt, raw)
+      if (!key) continue
+      const owners = claimants[key] || []
+      // Exactly one owner is the only state in which a claimant exists. Two
+      // worktrees claiming one file is a scheduling failure SC-411 should have
+      // caught; collecting both copies is the #178 bug with extra steps.
+      const claimant = owners.length === 1 ? owners[0] : null
+
+      if (owners.length > 1) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, which ${owners.length} worktrees claim (${owners.join(', ')}) — a file may have one claimant`,
+        })
+        continue
+      }
+      if (claims ? claims.includes(key) : (claimant === null || claimant === wt)) {
+        kept.push(key)
+        continue
+      }
+      violations.push({
+        worktreePath: wt, path: key, claimant,
+        detail: claimant
+          ? `${wt} reported ${key}, which it did not claim — that file is claimed by ${claimant}`
+          : `${wt} reported ${key}, which it did not claim — no worktree claimed that file`,
+      })
+    }
+
+    if (kept.length > 0) candidates.push({ worktreePath: wt, filesChanged: kept })
+  }
+
+  return { violations, candidates }
+}
+// ──── COLLECT-CLAIM-END ────
+
 // ──── COLLECT-AGENT-WORK-START ────
 /**
  * Bring agents' work into the directory that is going to commit it.
@@ -1714,6 +1837,26 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
       detail: `refusing to collect: the caller passed no list of agent results (got ${results === null ? 'null' : typeof results}) — a caller that cannot say what to collect is a failure, not an empty success (#162)`,
     }
   }
+  // SC-413, before anything is spawned or staged: a worktree may only
+  // contribute the files it claimed. Refuse rather than prefer one copy — the
+  // other agents' edits exist and are not this collection's to discard, and a
+  // run that silently dropped them is how #178 produced a commit documenting
+  // controls it did not contain.
+  const audit = auditWorktreeClaims(results)
+  if (audit.violations.length > 0) {
+    return {
+      ok: false,
+      collected: 0,
+      staged: false,
+      detail: `refusing to collect: ${audit.violations.length} unclaimed file modification(s) (#178, SC-413) — ` +
+        audit.violations.map(v => v.detail).join('; '),
+    }
+  }
+  // The worktree SET comes from what the agents reported, not from the pruned
+  // candidates. Deriving it from the candidates skips the destination
+  // allowlist and the fail-closed checks below whenever pruning empties the
+  // list — a reported worktree with no usable files would short-circuit to
+  // {ok: true, collected: 0}, which is the #162 shape all over again.
   const list = results
   const worktrees = [...new Set(list.map(r => r.worktreePath).filter(Boolean))]
   const elsewhere = worktrees.filter(w => w !== intoDir)
@@ -1736,7 +1879,10 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // Quoted heredoc delimiter, and JSON.stringify emits no literal newline, so
   // an agent-chosen worktreePath cannot close the heredoc early — the same
   // hazard prove.js carries heredocSafe() for.
-  const groupsJson = JSON.stringify(list)
+  // The PRUNED list, not the raw one: whatever reaches the collector is
+  // claim-filtered, so a contested file can only ever be written from its
+  // claimant's worktree even if the refusal above is ever relaxed (#178).
+  const groupsJson = JSON.stringify(audit.candidates)
   // The script stages what it collects, in the process that validated it.
   // This step therefore reports an outcome; it does not hand back a file list.
   // Parsing paths out of an agent's reply would put a language model inside a

@@ -50,7 +50,7 @@ Post-wave, an integration check verifies no unclaimed file modifications slipped
 | SC-410 | Not started | — |
 | SC-411 | Partial — holds within a single issue's sub-issue decomposition, not yet across a wave of issues | `workflows/ship.js` `runDecomposedShip()`; `test/decomposed-ship-dispatch.test.ts` |
 | SC-412 | Partial — sub-issue agents receive an explicit "modify ONLY these" file list | `workflows/ship.js` `runDecomposedShip()` |
-| SC-413 | Not started | — |
+| SC-413 | Done — the claim travels back with each agent's result and the collection is refused when a worktree reports a file it did not claim | `workflows/ship.js` `auditWorktreeClaims()` (COLLECT-CLAIM block), `collectAgentWork()`; `test/collect-claim-enforcement.test.ts` |
 | SC-414 | Not started | — |
 | SC-415 | Not started | — |
 
@@ -58,6 +58,17 @@ Issue #66 fixed the disjoint-dispatch path: `runDecomposedShip()` computed the D
 overlap check and then serialized both branches anyway, while logging that it had
 dispatched in parallel. Disjoint sub-issues now run concurrently, and a failing
 sub-issue reports its completed siblings rather than discarding them (D-4).
+
+Issue #178 closed SC-413. On run wf_2b3ff032-a4b three of four worktrees modified
+`workflows/ship.js`; the claims were correct and disjoint, so SC-411 had nothing to
+catch, and SC-412's manifest reached the agents as prose that nothing afterwards
+compared the replies against. `claimedFiles` now travels back beside each agent's
+`filesChanged`, `auditWorktreeClaims()` refuses any worktree reporting a path it did
+not claim — naming the worktree, the path and the claimant — and the groups handed to
+the collector are pruned to claimed files, so a contested file can only ever be
+written from its claimant's worktree. A missing claim means no claim was issued (the
+single-agent and remediation paths) and is unconstrained, except that it still cannot
+take a file another worktree claimed.
 
 Still open: nothing coordinates *across* issues or across concurrent human-driven
 sessions. That is issue #23.
