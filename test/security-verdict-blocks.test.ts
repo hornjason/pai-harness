@@ -43,7 +43,18 @@ const shipSource = readFileSync(SHIP_PATH, "utf-8");
  * falls through to undefined when the run may proceed.
  */
 function runDecisionBlock(scope: Record<string, unknown>) {
-  const block = sliceBlock(DECISION_START, DECISION_END);
+  return runMarkedBlock(sliceBlock(DECISION_START, DECISION_END), scope);
+}
+
+/**
+ * Execute one marker-delimited region of ship.js over a sandbox.
+ *
+ * Shared by the Verify-side decision block and the Ship-round refusal, which
+ * are two copies of the same decision at two points in the file and so have to
+ * be exercised the same way — a Ship-round test that stubbed its own runner
+ * could agree with a block production never reaches.
+ */
+function runMarkedBlock(block: string, scope: Record<string, unknown>) {
   const sandbox = new Proxy(scope, {
     has: () => true,
     get: (target, key) => {
@@ -117,6 +128,19 @@ const FANOUT_START = "// ──── VERIFY-FANOUT-START ────";
 const FANOUT_END = "// ──── VERIFY-FANOUT-END ────";
 const CURRENCY_START = "// ──── REVIEW-CURRENCY-START ────";
 const CURRENCY_END = "// ──── REVIEW-CURRENCY-END ────";
+const STALE_REFUSAL_START = "// ──── STALE-REFUSAL-START ────";
+const STALE_REFUSAL_END = "// ──── STALE-REFUSAL-END ────";
+
+/**
+ * The Ship-round refusal, extracted at module scope on purpose.
+ *
+ * If the markers go missing, `sliceBlock` throws here and every test in this
+ * file fails to load, the same way `inlinedReviewIsCurrent` does. Resolving it
+ * lazily inside the tests would turn "ship.js lost its second currency check"
+ * into a quiet green run — the shape
+ * .claude/rules/checks-must-be-able-to-fail.md is about.
+ */
+const STALE_REFUSAL_BLOCK = sliceBlock(STALE_REFUSAL_START, STALE_REFUSAL_END);
 
 /** The inlined copies ship.js actually runs. */
 const inlined = new Function(
@@ -759,6 +783,157 @@ describe("#169 refusal path: a stale review stops the run", () => {
     expect(probe).toContain("workflow-state.json");
     const required = probe.match(/required:\s*\[([^\]]*)\]/)?.[1] ?? "";
     expect(required, `the probe's required fields were: ${required}`).toContain("headSha");
+  });
+});
+
+// ── #169 Ship round ─────────────────────────────────────────────────────
+
+/**
+ * Run the Ship-round refusal over a run whose ship-gate remediation has just
+ * recommitted.
+ *
+ * `tested` is `agents.rook.testedSha` — the commit the review read, captured
+ * before the Ship phase. `commitSha` is what `recommit-ship` reports the branch
+ * now ends at. The default pair is the same commit, so a test about a mismatch
+ * sets only the mismatch.
+ */
+function shipRoundScope(
+  logs: string[],
+  overrides: { tested?: unknown; commitSha?: unknown } & Record<string, unknown> = {},
+): Record<string, unknown> {
+  const tested = "tested" in overrides ? overrides.tested : SHA;
+  const commitSha = "commitSha" in overrides ? overrides.commitSha : SHA;
+  const rest = { ...overrides };
+  delete rest.tested;
+  delete rest.commitSha;
+  return {
+    log: (m: unknown) => logs.push(String(m)),
+    reviewIsCurrent: inlinedReviewIsCurrent,
+    securityVerdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+    shipBranch: "169-deep-modules",
+    ISSUE: 169,
+    SLUG: "pai-harness-169",
+    WORK_DIR: "/tmp/work",
+    testedSha: tested,
+    reCommit: { commitSha, parentSha: SHA, stateRecorded: true },
+    ...rest,
+  };
+}
+
+describe("#169 ship round: the review is checked again after recommit-ship", () => {
+  test("the ship round moves the branch past the review", async () => {
+    // The #164 artefact, one phase later: the review read 3fe336f1, the ship
+    // gate's BUILD regression then committed and pushed, and nothing looked
+    // again. Everything else about this run is fine — the only defect is that
+    // the PASS describes code the branch no longer carries.
+    const logs: string[] = [];
+    const out = await runMarkedBlock(
+      STALE_REFUSAL_BLOCK,
+      shipRoundScope(logs, { tested: "3fe336f1", commitSha: OTHER_SHA }),
+    );
+    expect(out?.status, "a ship-round remediation reached Prove on a stale review").toBe(
+      "SHIP_FAILED",
+    );
+    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(out?.reason)).toContain("3fe336f1");
+    expect(String(out?.reason)).toContain(OTHER_SHA);
+    expect(out?.issue).toBe(169);
+    expect(out?.slug).toBe("pai-harness-169");
+    expect(logs.some(l => /SECURITY_REVIEW_STALE/.test(l)), "the refusal was never logged").toBe(
+      true,
+    );
+  });
+
+  test("a ship round that changes nothing still ships", async () => {
+    // The positive control, and the reason the test above is worth anything: a
+    // block that refused every Ship round would satisfy every assertion there.
+    // A regression round that healed ceremony without committing leaves the tip
+    // where the review found it, and that run is still shippable.
+    expect(
+      await runMarkedBlock(STALE_REFUSAL_BLOCK, shipRoundScope([])),
+      "a ship round that moved nothing was refused — the check refuses everything",
+    ).toBeUndefined();
+    // Abbreviation is the same commit in either direction: testedSha arrives
+    // through an agent and the recommit step reports whatever git printed.
+    expect(
+      await runMarkedBlock(STALE_REFUSAL_BLOCK, shipRoundScope([], { commitSha: SHA.slice(0, 7) })),
+    ).toBeUndefined();
+    expect(
+      await runMarkedBlock(STALE_REFUSAL_BLOCK, shipRoundScope([], { tested: SHA.slice(0, 7) })),
+    ).toBeUndefined();
+  });
+
+  test("an unreadable post-round commit is stale, not waved through", async () => {
+    for (const commitSha of [undefined, null, "", "HEAD", {}, []]) {
+      const out = await runMarkedBlock(STALE_REFUSAL_BLOCK, shipRoundScope([], { commitSha }));
+      expect(
+        out?.status,
+        `recommit-ship reported commitSha=${JSON.stringify(commitSha)} and the run carried on`,
+      ).toBe("SHIP_FAILED");
+      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    }
+  });
+
+  test("a missing testedSha is stale here too", async () => {
+    for (const tested of [undefined, null, "", "HEAD"]) {
+      const out = await runMarkedBlock(STALE_REFUSAL_BLOCK, shipRoundScope([], { tested }));
+      expect(out?.status, `testedSha=${JSON.stringify(tested)} was waved through`).toBe(
+        "SHIP_FAILED",
+      );
+    }
+  });
+
+  test("the refusal returns the same shape as the Verify-side one", async () => {
+    const shipRound = await runMarkedBlock(
+      STALE_REFUSAL_BLOCK,
+      shipRoundScope([], { commitSha: OTHER_SHA }),
+    );
+    const verifySide = await runDecisionBlock(decisionScope([], { tested: SHA, head: OTHER_SHA }));
+    expect(
+      Object.keys(shipRound!).sort(),
+      "the two staleness refusals return different shapes",
+    ).toEqual(Object.keys(verifySide!).sort());
+    expect(shipRound!.status).toBe(verifySide!.status);
+  });
+
+  test("the block sits after recommit-ship and ahead of Prove", () => {
+    // AC-1 is positional and the surrounding steps cannot be stubbed into an
+    // extracted block, so it is asserted over the file. The Verify-side check
+    // is upstream of `recommit-ship`; this one has to be downstream of it, or
+    // it is the first check again under a second name.
+    const recommitShip = shipSource.indexOf("label: 'recommit-ship'");
+    const refusal = shipSource.indexOf(STALE_REFUSAL_START);
+    const prove = shipSource.indexOf("PHASE 9: PROVE");
+    expect(recommitShip, "ship.js has no recommit-ship step").toBeGreaterThan(-1);
+    expect(refusal, "ship.js has no STALE-REFUSAL block").toBeGreaterThan(-1);
+    expect(prove, "ship.js has no Prove phase").toBeGreaterThan(-1);
+    expect(refusal, "the second currency check runs before the ship round commits").toBeGreaterThan(
+      recommitShip,
+    );
+    expect(refusal, "the second currency check runs after Prove has already labelled the issue")
+      .toBeLessThan(prove);
+    expect(STALE_REFUSAL_BLOCK).toContain("SECURITY_REVIEW_STALE");
+    expect(STALE_REFUSAL_BLOCK).toContain("status: 'SHIP_FAILED'");
+  });
+
+  test("no branch logs a currency mismatch and lets the run continue", () => {
+    // AC-2, asserted over the whole file rather than the block: the cheap
+    // version of this change is `currency.current ? proceed : log(...)`, and
+    // writing it one line outside the markers would be the same defect. #129
+    // was exactly a verdict that reached the transcript and nothing else.
+    expect(
+      shipSource.match(/[Cc]urrency\.current\s*\?/g) || [],
+      "ship.js turns a currency mismatch into a ternary instead of a refusal",
+    ).toEqual([]);
+    const refusals = shipSource.match(/SECURITY_REVIEW_STALE/g) || [];
+    expect(refusals.length, "one of the two staleness checks is missing").toBeGreaterThanOrEqual(2);
+    for (const marker of [STALE_REFUSAL_START, STALE_REFUSAL_END]) {
+      expect(
+        (shipSource.match(new RegExp(marker.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"), "g")) || [])
+          .length,
+        `${marker} appears more than once, so the extracted block is ambiguous`,
+      ).toBe(1);
+    }
   });
 });
 
