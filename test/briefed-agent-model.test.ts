@@ -31,22 +31,35 @@ const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8"
 
 const BLOCK_START = "// ──── BRIEFED-AGENT-START ────";
 const BLOCK_END = "// ──── BRIEFED-AGENT-END ────";
+const TIMING_START = "// ──── AGENT-TIMING-START ────";
+const TIMING_END = "// ──── AGENT-TIMING-END ────";
 
 interface Captured { prompt: string; opts: Record<string, unknown> }
 
 type BriefedAgent = (prompt: string, opts: Record<string, unknown>) => Promise<unknown>;
 
-/** Evaluate the real briefedAgent block against fakes for everything it closes over. */
-function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent; calls: Captured[] } {
-  const start = shipSource.indexOf(BLOCK_START);
-  const end = shipSource.indexOf(BLOCK_END);
+function sliceBlock(startMarker: string, endMarker: string): string {
+  const start = shipSource.indexOf(startMarker);
+  const end = shipSource.indexOf(endMarker);
   if (start === -1 || end === -1) {
     throw new Error(
-      `${BLOCK_START} / ${BLOCK_END} markers missing from workflows/ship.js — ` +
+      `${startMarker} / ${endMarker} markers missing from workflows/ship.js — ` +
         `this test extracts the real function rather than a copy of it`,
     );
   }
-  const block = shipSource.slice(start, end);
+  return shipSource.slice(start, end);
+}
+
+/** Evaluate the real briefedAgent block against fakes for everything it closes over. */
+function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent; calls: Captured[] } {
+  // Both blocks, because briefedAgent hands its composed prompt to
+  // `timedAgent` now (#227) and the thing under test here is the FINAL string
+  // the agent sees — brief read step first, timing instruction after it.
+  // Loading briefedAgent alone would capture the prompt one layer too early
+  // and the ordering assertion below would compare against a string the
+  // timing text is not in yet, which passes for the wrong reason.
+  const block = `${shipSource.match(/function shellQuote\(word\)[\s\S]*?\n}/)?.[0] ?? ""}\n` +
+    `${sliceBlock(TIMING_START, TIMING_END)}\n${sliceBlock(BLOCK_START, BLOCK_END)}`;
   const calls: Captured[] = [];
 
   // `new Function` with an interpolated body is a code-injection shape, and a
@@ -61,7 +74,8 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
   // correct signal — this harness has to supply every binding the real block
   // closes over, not the subset that happened to be enough once.
   const factory = new Function(
-    "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "agent", "loadContextPaths", "loadReinforcementRules",
+    "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR", "log", "agent",
+    "loadContextPaths", "loadReinforcementRules",
     `${block}\nreturn briefedAgent;`,
   );
 
@@ -69,6 +83,8 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
     roles,
     "/project",
     "/harness",
+    "/work",
+    () => {},
     async (prompt: string, opts: Record<string, unknown>) => {
       calls.push({ prompt, opts: { ...opts } });
       return { ok: true };
@@ -147,6 +163,74 @@ describe("wiring the model did not disturb what already worked", () => {
     const { call, calls } = loadBriefedAgent({ marcus: { brief: "a.md", model: "opus" } });
     await call("x", { role: "marcus", label: "a" });
     expect("role" in calls[0].opts).toBe(false);
+  });
+});
+
+describe("AC-3 (#227): the brief stays ahead of the timing instruction", () => {
+  /**
+   * Order is the whole claim. The timing bracket is an instruction to run two
+   * shell commands, and it is appended to every prompt — including the ones
+   * whose first line is "MANDATORY FIRST STEP: read your brief". Put the
+   * bracket first and the agent's first instruction becomes bookkeeping, which
+   * is exactly the displacement `prompts/` is organised to avoid: identity
+   * first, process after.
+   *
+   * Asserted on index positions in the ONE composed string the agent receives,
+   * not on two separate greps, because "both substrings are present" stays
+   * true in either order.
+   */
+  const composed = async (roles: Record<string, unknown>, opts: Record<string, unknown>) => {
+    const { call, calls } = loadBriefedAgent(roles);
+    await call("do the task", opts);
+    return calls[0]!.prompt;
+  };
+
+  test("the brief read step comes before the timing instruction", async () => {
+    const prompt = await composed(
+      { marcus: { brief: ".claude/agents/marcus.md", model: "opus" } },
+      { role: "marcus", label: "marcus" },
+    );
+    const brief = prompt.indexOf("/project/.claude/agents/marcus.md");
+    const timing = prompt.indexOf("TIMING —");
+    expect(brief, "the composed prompt no longer names the brief").toBeGreaterThan(-1);
+    expect(timing, "the composed prompt carries no timing instruction").toBeGreaterThan(-1);
+    expect(
+      brief,
+      "the timing bracket displaced the brief as the agent's first instruction",
+    ).toBeLessThan(timing);
+  });
+
+  test("the same holds in injected-context mode", async () => {
+    // The excerpt path builds a different prompt and would be an easy place
+    // for the ordering to diverge unnoticed.
+    const prompt = await composed(
+      { quinn: { brief: ".claude/agents/quinn.md" } },
+      {
+        role: "quinn",
+        label: "quinn-local-1",
+        contextExcerpts: [{ source: "AGENTS.md", section: "Rules", content: "be good" }],
+      },
+    );
+    expect(prompt.indexOf("/project/.claude/agents/quinn.md")).toBeLessThan(
+      prompt.indexOf("TIMING —"),
+    );
+  });
+
+  test("the task itself also precedes the timing instruction", async () => {
+    const prompt = await composed(
+      { marcus: { brief: "a.md" } },
+      { role: "marcus", label: "marcus" },
+    );
+    expect(prompt.indexOf("do the task")).toBeLessThan(prompt.indexOf("TIMING —"));
+  });
+
+  test("the bracket carries this call site's label at both ends", async () => {
+    const prompt = await composed(
+      { marcus: { brief: "a.md" } },
+      { role: "marcus", label: "marcus-fix-2" },
+    );
+    expect(prompt).toContain("start --label 'marcus-fix-2'");
+    expect(prompt).toContain("end --label 'marcus-fix-2'");
   });
 });
 

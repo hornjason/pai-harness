@@ -359,7 +359,7 @@ describe("#173: ship.js reports the verdict Quinn returned, not the one its tier
 
   test("the commit step passes the chooser's answer to the recorder", () => {
     // A function nothing calls is the shape #162's round one shipped.
-    const start = shipSource.indexOf("const commitResult = await agent(`");
+    const start = shipSource.indexOf("const commitResult = await timedAgent(`");
     const end = shipSource.indexOf("if (!commitResult?.commitSha)", start);
     expect(start).toBeGreaterThan(-1);
     const step = shipSource.slice(start, end);
@@ -390,7 +390,7 @@ describe("#169 recommit: both remediation rounds re-record the commit", () => {
   function step(label: string): string {
     const at = shipSource.indexOf(`label: '${label}'`);
     expect(at, `ship.js has no ${label} step`).toBeGreaterThan(-1);
-    const start = shipSource.lastIndexOf("await agent(`", at);
+    const start = shipSource.lastIndexOf("await timedAgent(`", at);
     expect(start, `${label} is not an agent() call — this slicer is stale`).toBeGreaterThan(-1);
     const end = shipSource.indexOf("\n", at);
     return shipSource.slice(start, end === -1 ? shipSource.length : end);
@@ -582,8 +582,8 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
 
   /** The `commit` agent call, sliced from its label to the close of its options. */
   function commitStep(): string {
-    const start = shipSource.indexOf("const commitResult = await agent(`");
-    expect(start, "ship.js no longer has a `commitResult = await agent(` step").toBeGreaterThan(-1);
+    const start = shipSource.indexOf("const commitResult = await timedAgent(`");
+    expect(start, "ship.js no longer has a `commitResult = await timedAgent(` step").toBeGreaterThan(-1);
     const end = shipSource.indexOf("if (!commitResult?.commitSha)", start);
     expect(end, "the commit step's guard moved — this slicer is stale").toBeGreaterThan(start);
     return shipSource.slice(start, end);

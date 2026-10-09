@@ -1013,7 +1013,7 @@ function runFanout(opts: { rook?: unknown; scope?: unknown } = {}) {
   const logs: string[] = [];
 
   const factory = new Function(
-    "log", "agent", "briefedAgent", "parallel", "discovery", "projectConfig",
+    "log", "timedAgent", "briefedAgent", "parallel", "discovery", "projectConfig",
     "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR", "ISSUE", "GATE_RESULT_SCHEMA",
     "reviewSha", "rookScopeCommand", "rookGateVerdict", "securityVerdict",
     "shellQuote",

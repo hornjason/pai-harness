@@ -184,7 +184,7 @@ describe("AC-6: grade output includes timing", () => {
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true });
   });
 
-  test("compliance-grade.json includes timing field with role and durationSeconds per agent", async () => {
+  test("compliance-grade.json includes a timing entry per agent, keyed by call-site label", async () => {
     const proc = Bun.spawnSync(
       ["bun", GRADE_SCRIPT, "--transcripts", FIXTURES, tmpDir],
       { stdout: "pipe", stderr: "pipe" }
@@ -197,8 +197,30 @@ describe("AC-6: grade output includes timing", () => {
     expect(gradeOutput.timing.length).toBeGreaterThan(0);
     for (const entry of gradeOutput.timing) {
       expect(typeof entry.role).toBe("string");
-      expect(typeof entry.durationSeconds).toBe("number");
-      expect(entry.durationSeconds).toBeGreaterThanOrEqual(0);
+      expect(typeof entry.label).toBe("string");
+      expect(entry.label.length).toBeGreaterThan(0);
+      expect(typeof entry.measured).toBe("boolean");
+      if (entry.measured) {
+        expect(typeof entry.durationSeconds).toBe("number");
+        expect(entry.durationSeconds).toBeGreaterThanOrEqual(0);
+      } else {
+        expect(entry.durationSeconds).toBeUndefined();
+      }
+    }
+  });
+
+  test("#227: with no run timing artifact every agent is unmeasured, never zero seconds", async () => {
+    // The fixture work dir has no run-timing.json. Under the old birthtime
+    // derivation this produced a durationSeconds for every agent regardless.
+    Bun.spawnSync(
+      ["bun", GRADE_SCRIPT, "--transcripts", FIXTURES, tmpDir],
+      { stdout: "pipe", stderr: "pipe" }
+    );
+    const gradeOutput = JSON.parse(readFileSync(join(tmpDir, "compliance-grade.json"), "utf-8"));
+    expect(gradeOutput.timing.length).toBeGreaterThan(0);
+    for (const entry of gradeOutput.timing) {
+      expect(entry.measured).toBe(false);
+      expect(entry.durationSeconds).toBeUndefined();
     }
   });
 

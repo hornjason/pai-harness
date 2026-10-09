@@ -226,7 +226,7 @@ function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
     "HARNESS_ROOT",
     "WORK_DIR",
     "log",
-    "agent",
+    "timedAgent",
     "shellQuote",
     `${body}\nreturn collectAgentWork`,
   )(
