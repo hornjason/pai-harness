@@ -94,12 +94,26 @@ Each of these has happened in this repo and was mistaken for progress.
   0 fail. On `COMMIT-STATE-GUARD` (#166): 52 pass / 0 fail. Marker extraction
   proves the extracted text refuses correctly. It does not prove the block is
   reached.
-  **Partly fixed 2026-10-08 by #200** (`64e5ac1a`): `lib/reachability.ts` reads
-  the marked region's AST ancestor chain instead of its text. Re-measured on the
-  merged tree — the same mutation now gives `test/reachability-refusals.test.ts`
-  50 pass / **3 fail**, so CI goes red. But `test/blocking-grades.test.ts` is
-  still 19 pass / 0 fail: the check is caught by a *different* file than the one
-  that owns the guard. #201 wires it in directly.
+  **Fixed 2026-10-09** by #200 (`64e5ac1a`) and #201 (`43dd9997`).
+  `lib/reachability.ts` reads the marked region's AST ancestor chain instead of
+  its text, and all three suites now call it. Same mutation, re-measured on the
+  merged tree:
+
+  | suite | before | after |
+  |---|---|---|
+  | `test/blocking-grades.test.ts` | 19 pass, 0 fail | 19 pass, **1 fail** |
+  | `test/security-verdict-blocks.test.ts` | 113 pass, 0 fail | 113 pass, **1 fail** |
+  | `test/record-build-commit.test.ts` | 52 pass, 0 fail | 51 pass, **1 fail** |
+
+  The third went 52 → 51+1 because the old check — a test literally named *"the
+  guard is wired into the run, not merely defined"*, whose assertions matched
+  call-site **text** — was replaced rather than supplemented.
+
+  Residual gap, stated because the fix does not cover it: this is a **parse-time**
+  property. A block the parser says is unconditionally reached can still never
+  execute — an earlier `return` that fires on every real input, an `await` that
+  never settles, a config-gated early exit. The `new Function` mutant tests
+  remain and prove the complementary property.
 - **An agent reporting it complied.** Marcus has exceeded the full-suite cap on
   every measured run while the rule text asking otherwise got longer each time.
   Compliance is measured from transcripts, never self-reported (#194).
@@ -119,7 +133,7 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 
 | Claim | Standing (2026-10-08) |
 |---|---|
-| 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), and #200 now makes a disabled guard detectable at all — but only via the new suite until #201. `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176). `TestSuiteGuard` cannot fire (#194). Five hooks never fire (#199). |
+| 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), and as of #200 + #201 a *disabled* guard is caught by the suite that owns it — measured, three for three. Still open: `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176); `TestSuiteGuard` cannot fire (#194); five hooks never fire (#199); the B1 adversary can only fail on a missing file; `parseGateResults` reads bun's stdout and never the exit code. |
 | 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168). |
 | 3 — bad ships are stopped | Partial. Security and compliance verdicts now refuse. Not yet audited for every computed verdict. |
 | 4 — absence ≠ clean | **No.** `grade-deterministic.ts` writes `{grades:[]}` and exits 0 on no transcripts; the ship.js prompt instructs the same shape (#195, open). |
