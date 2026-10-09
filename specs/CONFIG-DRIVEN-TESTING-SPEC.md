@@ -81,12 +81,25 @@ The goal: for static file verification SCs, editing a spec is the only action ne
 - [x] SC-383: `rungate audit-specs` reads all specs, classifies every SC as matched/unmatched/behavioral, and auto-rewrites unmatched SCs to matchable patterns
 - [x] SC-384: Consumers can extend matcher config with custom matchers for their domain (behavioral)
 - [x] SC-393: `rungate audit-specs --fix` rewrites unmatched SCs in-place to matchable patterns — flags ambiguous cases for human review
-- [x] SC-394: scripts/scaffold-project.ts contains [auditSpecs]
+- [x] SC-394: lib/scaffold/steps.ts contains [auditSpecs] — the scaffold step that runs the spec audit moved out of scripts/scaffold-project.ts during decomposition
 - [x] SC-395: Consumers running create-spec get SC validation identical to RunGate's own (behavioral)
 - [x] SC-396: `rungate create-sc` CLI accepts `--pattern` and `--params` — generates SC text from structured input, no freeform prose
 - [x] SC-397: `rungate create-sc --list` shows all available patterns with syntax and examples from matcher registry config
 - [x] SC-398: All RunGate specs at compliance: strict — zero unmatched SCs (behavioral)
 - [x] SC-399: AGENTS.md Commands table includes `rungate create-sc` — one-line instruction, no pattern docs needed in agent context
+
+### Checked SCs bind to behaviour (#209)
+
+`extractSCs` collected only `- [ ]` lines, and the one test it generated per SC
+wrapped the assertion in `try { } catch { }`. Both halves meant the same thing:
+nothing an SC said could turn the suite red. 261 criteria were marked done and
+252 of them had never been evaluated. A checked SC now runs as a real
+assertion; an unchecked one is `test.todo`, which is the honest version of what
+the swallow was doing.
+
+- [x] SC-607: test/conformity-sc-binding.test.ts exists — drives the engine against a scratch spec in a child `bun test` and reads the pass/fail/todo counts, so "a checked SC can fail" is distinguishable from "a checked SC is never run"
+- [x] SC-608: lib/conformity.ts contains [runSpecConformityTests, frontmatterBlockKeys] — the spec-driven half is callable on its own so it can be observed, and a nested-block frontmatter key counts as present
+- [x] SC-609: test/phase-1-5.test.ts contains [at least 200 SCs across testable specs] — a floor on collection, so narrowing the extraction pattern fails loudly instead of quietly shrinking the measure
 
 ### The generator read a different repository (#141)
 

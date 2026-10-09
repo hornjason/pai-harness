@@ -15,6 +15,7 @@ import {
   readFileSync,
   readdirSync,
 } from 'fs';
+import { checkDocHygiene } from './doc-hygiene';
 
 export interface GateFailure {
   check: string;
@@ -225,4 +226,72 @@ export function logSignal(signalsDir: string, signalsFile: string, event: Record
   } catch (err) {
     console.error(`[GateEnforcement] Signal log write failed: ${err}`);
   }
+}
+
+/**
+ * Record one gate-enforcement outcome.
+ *
+ * Lifted out of GateEnforcement.hook.ts (SC-369): the block and nag branches
+ * each assembled this event inline, which meant the only way to check that a
+ * block is attributed to `outcome_ac_failure` rather than `max_strikes` was to
+ * drive a PreToolUse payload through stdin.
+ */
+export function logEnforcementSignal(
+  signalsDir: string,
+  signalsFile: string,
+  pending: GatePending,
+  toolName: string,
+  action: Extract<EnforcementAction, 'block' | 'nag'>,
+  strike: number,
+): void {
+  logSignal(signalsDir, signalsFile, {
+    ts: new Date().toISOString(),
+    type: 'gate_enforcement',
+    gate: pending.gate,
+    issue: pending.issue,
+    strike,
+    tool: toolName,
+    action,
+    ...(action === 'block'
+      ? { reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes' }
+      : {}),
+  });
+}
+
+interface HygieneFinding { checkId: string; file: string; level: string; message: string }
+interface HygieneResult { pass: boolean; findings: HygieneFinding[] }
+
+/**
+ * SC-508: emit one signal per doc-hygiene finding, for promotion tracking.
+ *
+ * `check` is injectable so the emitter can be tested without a project tree,
+ * and defaults to the real scan. Best-effort: a throwing scan is swallowed,
+ * because this rides along on a gate nag and must not replace it with a crash.
+ */
+export function logDocHygieneSignals(
+  signalsDir: string,
+  signalsFile: string,
+  projectRoot: string,
+  check?: (root: string) => HygieneResult,
+): void {
+  try {
+    // Statically imported, not `require`d inside this try. A require here
+    // would throw in any environment without CommonJS loading, the catch
+    // below would swallow it, and SC-508 would be silently switched off while
+    // every run still looked normal — the exact shape
+    // .claude/rules/checks-must-be-able-to-fail.md is about.
+    const run = check ?? checkDocHygiene;
+    const result = run(projectRoot) as HygieneResult;
+    if (result.pass) return;
+    for (const finding of result.findings) {
+      logSignal(signalsDir, signalsFile, {
+        ts: new Date().toISOString(),
+        type: 'doc-hygiene',
+        checkId: finding.checkId,
+        file: finding.file,
+        level: finding.level,
+        message: finding.message,
+      });
+    }
+  } catch { /* doc-hygiene signals are best-effort */ }
 }

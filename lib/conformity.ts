@@ -28,6 +28,27 @@ export function parseFrontmatter(content: string): Record<string, string> | null
 }
 
 /**
+ * Frontmatter keys whose value is a nested YAML block rather than an inline
+ * scalar — `tiers:` followed by indented lines.
+ *
+ * `parseFrontmatter` is line-oriented and only records `key: value`, so these
+ * keys are invisible to it. A bare `key:` with nothing indented beneath it is
+ * NOT reported: that is an empty field, not a block, and treating the two the
+ * same would turn "the field is missing its contents" into a pass.
+ */
+export function frontmatterBlockKeys(content: string): Set<string> {
+  const keys = new Set<string>();
+  const match = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return keys;
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const bare = lines[i].match(/^(\w[\w-]*):\s*$/);
+    if (bare && /^\s+\S/.test(lines[i + 1] ?? "")) keys.add(bare[1]);
+  }
+  return keys;
+}
+
+/**
  * SC-286: Resolve and validate file paths - reject traversal and absolute paths
  * Returns resolved path or null if path is unsafe
  */
@@ -237,6 +258,15 @@ export interface ParsedSC {
   id: string;
   statement: string;
   specFile: string;
+  /**
+   * True when the spec marks this criterion done (`- [x]`), false for `- [ ]`.
+   *
+   * Optional only so that the many call sites that construct a ParsedSC by
+   * hand (unit tests, matcher probes) keep compiling; the parser always sets
+   * it. Consumers that branch on it must treat `undefined` as "unchecked",
+   * which is what `=== true` gives them for free.
+   */
+  checked?: boolean;
 }
 
 // ── Behavioral SC detection ───────────────────────────────
@@ -284,12 +314,27 @@ export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: stri
   };
 }
 
-function extractSCs(content: string, specFile: string): ParsedSC[] {
+/**
+ * Parse `- [ ] SC-N: statement` and `- [x] SC-N: statement` lines out of a
+ * spec.
+ *
+ * Both states are collected. The pattern used to read `- \[ \]` only, which
+ * meant the 261 criteria this project reports as DONE were never handed to a
+ * matcher and so could not fail anything — the measure and the thing measured
+ * had come apart. `checked` carries the distinction forward so the caller, not
+ * the parser, decides what a done criterion is worth.
+ */
+export function extractSCs(content: string, specFile: string): ParsedSC[] {
   const scs: ParsedSC[] = [];
-  const pattern = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
+  const pattern = /^- \[([ xX])\] (SC-\w+):\s*(.+)$/gm;
   let match;
   while ((match = pattern.exec(content)) !== null) {
-    scs.push({ id: match[1], statement: match[2].trim(), specFile });
+    scs.push({
+      id: match[2],
+      statement: match[3].trim(),
+      specFile,
+      checked: match[1] !== " ",
+    });
   }
   return scs;
 }
@@ -761,10 +806,17 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       const content = readFileSync(path, "utf-8");
       const fm = parseFrontmatter(content);
       expect(fm).toBeDefined();
-      expect(fm?.[field]).toBeDefined();
       if (expectedValue !== undefined) {
+        // An expected value can only come from an inline `key: value`.
         expect(fm?.[field]).toBe(expectedValue);
+        return;
       }
+      // Presence only. A key whose value is a nested YAML block has nothing
+      // after the colon, so the line parser above never records it — which is
+      // how `tiers:` in an agent brief read as absent while sitting in the
+      // file. Accept either shape.
+      const present = fm?.[field] !== undefined || frontmatterBlockKeys(content).has(field);
+      expect(present).toBe(true);
     };
   },
 
@@ -840,7 +892,17 @@ export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean 
 
 // ── Exported test runners ───────────────────────────────────
 
-export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
+/**
+ * The spec-driven half of the conformity suite: one test per SC that has a
+ * pattern matcher.
+ *
+ * Split out of runScaffoldConformity so it can be pointed at a scratch
+ * project and observed — see test/conformity-sc-binding.test.ts, which runs
+ * this against a fixture spec and reads the pass/fail/todo counts out of a
+ * child `bun test`. Asserting on the engine's own output is the only way to
+ * tell "a checked SC can fail" apart from "a checked SC is never run".
+ */
+export function runSpecConformityTests(root: string, opts?: { extraSpecDirs?: string[] }) {
   const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? []);
   const specsDir = join(root, "specs");
 
@@ -878,6 +940,7 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
     for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
         const unmatched: string[] = [];
+        const unboundChecked: string[] = [];
         const behavioral: string[] = [];
         for (const sc of metadata.scs) {
           if (isBehavioralSC(sc)) {
@@ -887,7 +950,20 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           }
           const assertion = matchPattern(sc);
           if (!assertion) {
-            if (metadata.status === "draft") {
+            if (sc.checked === true) {
+              // A criterion marked done with nothing mechanical behind it.
+              // Reported and ratcheted (see test/conformity-sc-binding.test.ts)
+              // rather than failed here: the spec text is the defect, and
+              // turning 54 of them red at once would be a wall nobody reads.
+              unboundChecked.push(`${sc.id}: ${sc.statement}`);
+              addFinding({
+                ruleId: "SC-UNBOUND",
+                severity: "WARN",
+                file: specFile,
+                message: `${sc.id} is checked but no pattern matcher binds it to code`,
+                fixCommand: `Rewrite ${sc.id} using a matchable pattern, or tag it (behavioral)`,
+              });
+            } else if (metadata.status === "draft") {
               // bun-types declares test.todo as requiring a body even though the
               // runtime accepts a bare label. A no-op body satisfies both: todo
               // tests are not executed unless `bun test --todo` is passed.
@@ -897,14 +973,25 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
             }
             continue;
           }
+          if (sc.checked !== true) {
+            // Not claimed done. Visible as outstanding work, never executed —
+            // which is the honest version of what the old try/catch did while
+            // reporting a pass.
+            test.todo(`${sc.id}: ${sc.statement}`, () => {});
+            continue;
+          }
           const specPath = resolveSpecPath(specFile);
           test(`${sc.id}: ${sc.statement}`, () => {
-            try {
-              assertion(root);
-              recordPassingSC(sc.id, specPath);
-            } catch {
-              // Unchecked SC assertion failure = work not done yet, not a regression
-            }
+            // No try/catch. A checked SC claims the work is done; if its
+            // assertion does not hold, that is a regression and the run is red.
+            assertion(root);
+            recordPassingSC(sc.id, specPath);
+          });
+        }
+        if (unboundChecked.length > 0) {
+          test(`INFO: ${unboundChecked.length} checked SCs have no pattern matcher (unbound)`, () => {
+            console.warn(`Unbound checked SCs in ${specFile}:\n  ${unboundChecked.join("\n  ")}`);
+            expect(true).toBe(true);
           });
         }
         if (behavioral.length > 0) {
@@ -931,6 +1018,10 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       });
     }
   });
+}
+
+export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
+  runSpecConformityTests(root, opts);
 
   describe("Scaffold: structural checks", () => {
     test("AGENTS.md has required standard sections", () => {

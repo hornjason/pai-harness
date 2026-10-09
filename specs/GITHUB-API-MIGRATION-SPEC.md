@@ -139,7 +139,7 @@ this directory; that divergence is its own issue.
 - [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
 - [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
-- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [could not be, redactSecrets] and not contains [} catch {}] — a failed label read blocks instead of being swallowed. The positive clause is not decoration: a bare absence assertion has no matcher, so written that way it could not be evaluated and sat unchecked while reading as a requirement
+- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [redactSecrets, Fix the GitHub access] — a failed label read blocks instead of being swallowed, and the block reason is scrubbed before it reaches a transcript. The behaviour itself is exercised by test/issue-close-guard-fail-closed.test.ts. The original wording failed on both clauses for the same reason — a detector narrower than what it detects: "could not be" is split across two concatenated source lines, and "} catch {}" legitimately appears elsewhere in the file, so the absence clause banned a shape the guard does not use
 
 ### Phase 6 — The agent layer reaches GitHub at all (#137)
 

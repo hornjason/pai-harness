@@ -16,11 +16,150 @@ import {
   loadStrikeCount,
   makeEnforcementDecision,
   logSignal,
+  logEnforcementSignal,
+  logDocHygieneSignals,
   type GateFailure,
   type GatePending,
   type WorkflowGateFailure,
   type EnforcementDecision,
 } from '../lib/gate-enforcement';
+import { readFileSync, existsSync } from 'fs';
+
+function pendingFixture(over: Partial<GatePending> = {}): GatePending {
+  return {
+    session_id: 's1',
+    gate: 'verify',
+    issue: 42,
+    slug: 'slug',
+    failures: [{ check: 'ac', detail: 'nope' }],
+    strike_count: 1,
+    max_strikes: 3,
+    outcome_ac_failure: false,
+    created_at: new Date().toISOString(),
+    expires_ts: Date.now() + 1000,
+    ...over,
+  };
+}
+
+// SC-369 / AC-6: these two used to be inline in GateEnforcement.hook.ts, where
+// nothing could reach them without simulating a PreToolUse payload on stdin.
+describe('gate-enforcement signal emitters (extracted from the hook)', () => {
+  let dir: string;
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'gate-signal-')); });
+  afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+
+  const readEvents = (file: string) =>
+    existsSync(file)
+      ? readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+      : [];
+
+  it('logEnforcementSignal records a block with its reason', () => {
+    const file = join(dir, 'signals.jsonl');
+    logEnforcementSignal(dir, file, pendingFixture({ outcome_ac_failure: true }), 'Skill', 'block', 3);
+    const [e] = readEvents(file);
+    expect(e.type).toBe('gate_enforcement');
+    expect(e.action).toBe('block');
+    expect(e.reason).toBe('outcome_ac_failure');
+    expect(e.strike).toBe(3);
+    expect(e.gate).toBe('verify');
+    expect(e.issue).toBe(42);
+    expect(e.tool).toBe('Skill');
+  });
+
+  it('logEnforcementSignal attributes a strike block to max_strikes', () => {
+    const file = join(dir, 'signals.jsonl');
+    logEnforcementSignal(dir, file, pendingFixture(), 'Skill', 'block', 3);
+    expect(readEvents(file)[0].reason).toBe('max_strikes');
+  });
+
+  it('logEnforcementSignal records a nag without a reason', () => {
+    const file = join(dir, 'signals.jsonl');
+    logEnforcementSignal(dir, file, pendingFixture(), 'Bash', 'nag', 2);
+    const [e] = readEvents(file);
+    expect(e.action).toBe('nag');
+    expect(e.reason).toBeUndefined();
+    expect(e.strike).toBe(2);
+  });
+
+  it('logDocHygieneSignals writes one event per finding', () => {
+    const file = join(dir, 'signals.jsonl');
+    logDocHygieneSignals(dir, file, dir, () => ({
+      pass: false,
+      findings: [
+        { checkId: 'HYGIENE-1', file: 'specs/A.md', level: 'warn', message: 'no governs' },
+        { checkId: 'HYGIENE-2', file: 'specs/B.md', level: 'warn', message: 'no updated' },
+      ],
+    }));
+    const events = readEvents(file);
+    expect(events).toHaveLength(2);
+    expect(events[0].type).toBe('doc-hygiene');
+    expect(events[0].checkId).toBe('HYGIENE-1');
+    expect(events[1].file).toBe('specs/B.md');
+  });
+
+  it('logDocHygieneSignals writes nothing when the check passes', () => {
+    const file = join(dir, 'signals.jsonl');
+    logDocHygieneSignals(dir, file, dir, () => ({ pass: true, findings: [] }));
+    expect(readEvents(file)).toHaveLength(0);
+  });
+
+  // The injected `check` above makes the emitter testable but leaves the real
+  // wiring unproven, which is how a feature ends up switched off while its
+  // tests stay green. This one runs the DEFAULT path end to end.
+  it('defaults to the real doc-hygiene scan and emits its findings', () => {
+    const file = join(dir, 'signals.jsonl');
+    mkdirSync(join(dir, 'specs'), { recursive: true });
+    writeFileSync(join(dir, 'specs', 'UNGOVERNED-SPEC.md'), '---\ndoc-type: spec\ntestable: true\n---\n\n# Ungoverned\n');
+    logDocHygieneSignals(dir, file, dir);
+    const events = readEvents(file);
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events.map(e => e.checkId)).toContain('GOVERNS-MISSING');
+  });
+
+  // Best-effort by design: a hygiene scan that throws must not take down the
+  // gate nag it is piggybacking on.
+  it('logDocHygieneSignals swallows a throwing check', () => {
+    const file = join(dir, 'signals.jsonl');
+    expect(() => logDocHygieneSignals(dir, file, dir, () => { throw new Error('boom'); })).not.toThrow();
+    expect(readEvents(file)).toHaveLength(0);
+  });
+});
+
+// Moving logic out of a hook is only safe if the hook still calls it. Grepping
+// the hook for the function name would pass on a call sitting after an early
+// `process.exit`, so this drives the real hook with a real payload.
+describe('GateEnforcement.hook.ts still emits both signal kinds', () => {
+  let home: string;
+  afterEach(() => { try { rmSync(home, { recursive: true, force: true }); } catch {} });
+
+  it('writes a gate_enforcement nag and doc-hygiene findings', () => {
+    home = mkdtempSync(join(tmpdir(), 'gate-hook-'));
+    const paiDir = join(home, '.claude');
+    const workDir = join(home, 'work');
+    mkdirSync(join(paiDir, 'MEMORY', 'STATE'), { recursive: true });
+    mkdirSync(join(workDir, 'slug'), { recursive: true });
+    // BASE_DIR/.. is the project root the hygiene sweep scans.
+    mkdirSync(join(home, 'specs'), { recursive: true });
+    writeFileSync(join(home, 'specs', 'UNGOVERNED-SPEC.md'), '---\ndoc-type: spec\ntestable: true\n---\n\n# x\n');
+    writeFileSync(join(workDir, 'slug', 'workflow-state.json'), JSON.stringify({
+      phase: 'VERIFY', issue: 209, slug: 'slug', acs: [],
+      gates: { verify: { result: 'FAIL', failures: [{ check: 'ac', detail: 'AC-1 unmet' }] } },
+    }));
+
+    const res = Bun.spawnSync({
+      cmd: ['bun', join(import.meta.dir, '..', 'hooks', 'GateEnforcement.hook.ts')],
+      stdin: Buffer.from(JSON.stringify({ tool_name: 'Bash', session_id: 'sess-1', tool_input: {} })),
+      env: { ...process.env, PAI_DIR: paiDir, RUNGATE_WORK_DIR: workDir },
+    });
+    expect(res.exitCode).toBe(0);
+
+    const signals = join(paiDir, 'MEMORY', 'LEARNING', 'SIGNALS', 'signals.jsonl');
+    expect(existsSync(signals)).toBe(true);
+    const types = readFileSync(signals, 'utf-8').trim().split('\n').map(l => JSON.parse(l).type);
+    expect(types).toContain('gate_enforcement');
+    expect(types).toContain('doc-hygiene');
+  });
+});
 
 describe('gate-enforcement', () => {
   let tempDir: string;

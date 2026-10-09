@@ -3,12 +3,12 @@
  *
  * GREEN phase - importing real implementations
  */
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, afterAll } from "bun:test";
 import { join } from "path";
-import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from "fs";
 
 // Import the real implementations
-import { resolveAndContain, matchPattern } from "../lib/conformity";
+import { resolveAndContain, matchPattern, extractSCs } from "../lib/conformity";
 
 interface ParsedSC {
   id: string;
@@ -137,6 +137,77 @@ describe("SC-291: json-field-equals matcher", () => {
     };
     const matcher = matchPattern(sc);
     expect(matcher).not.toBeNull();
+  });
+});
+
+// ── frontmatter-field matcher: nested block keys ─────────────────
+
+describe("frontmatter-field matcher: block-valued keys", () => {
+  const dir = join(FIXTURE_ROOT, "frontmatter-block");
+
+  function write(body: string) {
+    if (existsSync(dir)) rmSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "brief.md"), body);
+  }
+
+  afterAll(() => { if (existsSync(dir)) rmSync(dir, { recursive: true }); });
+
+  const sc = { id: "SC-FM", statement: "brief.md frontmatter has tiers", specFile: "test.md" };
+
+  // A key whose value is a nested YAML block has nothing after the colon, so
+  // the `key: value` line parser never saw it. `.claude/agents/marcus.md`
+  // carries exactly that shape, which is why SC-423 read as missing while the
+  // field was sitting in the file.
+  test("passes when the field is a nested block", () => {
+    write("---\nname: marcus\ntiers:\n  reinforcement: ['Testing Rules']\n---\n\nbody\n");
+    const matcher = matchPattern(sc);
+    expect(matcher).not.toBeNull();
+    expect(() => matcher!(dir)).not.toThrow();
+  });
+
+  test("still fails when the field is absent", () => {
+    write("---\nname: marcus\n---\n\nbody\n");
+    const matcher = matchPattern(sc);
+    expect(() => matcher!(dir)).toThrow();
+  });
+
+  test("a bare key with no nested block does not count as present", () => {
+    write("---\nname: marcus\ntiers:\n---\n\nbody\n");
+    const matcher = matchPattern(sc);
+    expect(() => matcher!(dir)).toThrow();
+  });
+
+  // Every other matcher terminates its payload at a bracket. This one read to
+  // end of line, so the rationale an SC carries after an em dash became part
+  // of the value being compared and the assertion could never hold.
+  test("rationale after an em dash is not part of the expected value", () => {
+    write("---\nname: marcus\nmodel: opus\n---\n\nbody\n");
+    const m = matchPattern({
+      id: "SC-FM4",
+      statement: "brief.md frontmatter has model = opus — owned by roles.json, pinned here",
+      specFile: "t.md",
+    });
+    expect(m).not.toBeNull();
+    expect(() => m!(dir)).not.toThrow();
+  });
+
+  test("rationale does not rescue a wrong value", () => {
+    write("---\nname: marcus\nmodel: opus\n---\n\nbody\n");
+    const m = matchPattern({
+      id: "SC-FM5",
+      statement: "brief.md frontmatter has model = sonnet — owned by roles.json",
+      specFile: "t.md",
+    });
+    expect(() => m!(dir)).toThrow();
+  });
+
+  test("inline values still work and are still compared", () => {
+    write("---\nname: marcus\nmodel: opus\n---\n\nbody\n");
+    const ok = matchPattern({ id: "SC-FM2", statement: "brief.md frontmatter has model = opus", specFile: "t.md" });
+    expect(() => ok!(dir)).not.toThrow();
+    const bad = matchPattern({ id: "SC-FM3", statement: "brief.md frontmatter has model = sonnet", specFile: "t.md" });
+    expect(() => bad!(dir)).toThrow();
   });
 });
 
@@ -276,6 +347,27 @@ describe("#570: hook-wiring SCs rewritten to static patterns", () => {
     const statement = sc392Line!.replace(/^.*?SC-392:\s*/, "");
     const matcher = matchPattern({ id: "SC-392", statement, specFile: "HOOK-ARCHITECTURE-SPEC.md" });
     expect(matcher).not.toBeNull();
+  });
+
+  // A floor, not an exact count, because adding an SC is routine and should
+  // not break this. Narrowing the extraction pattern is what this catches:
+  // before #209 the pattern read only `- [ ]`, so 261 of the 314 SCs on disk
+  // were invisible to the engine and the collected total sat near 53.
+  // Dropping below the floor means the engine stopped seeing SCs that exist.
+  test("extractSCs collects at least 200 SCs across testable specs", () => {
+    let total = 0;
+    let checked = 0;
+    for (const f of readdirSync(specRoot).filter(f => f.endsWith(".md"))) {
+      const content = readFileSync(join(specRoot, f), "utf-8");
+      const fm = content.match(/^---\n([\s\S]*?)\n---/);
+      if (!fm || !/^testable:\s*true\s*$/m.test(fm[1])) continue;
+      const scs = extractSCs(content, f);
+      total += scs.length;
+      checked += scs.filter(sc => sc.checked).length;
+    }
+    expect(total).toBeGreaterThanOrEqual(200);
+    // The checked half is the part a narrowed pattern loses first.
+    expect(checked).toBeGreaterThanOrEqual(200);
   });
 
   test("no behavioral hook-wiring language remains in specs", () => {

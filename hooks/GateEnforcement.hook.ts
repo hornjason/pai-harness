@@ -38,10 +38,10 @@ import {
   buildGatePending,
   findWorkflowGateFailure,
   loadStrikeCount,
-  logSignal,
+  logDocHygieneSignals,
+  logEnforcementSignal,
   makeEnforcementDecision,
 } from '../lib/gate-enforcement';
-import { checkDocHygiene } from '../lib/doc-hygiene';
 
 const SIGNALS_DIR = join(BASE_DIR, 'MEMORY', 'LEARNING', 'SIGNALS');
 const SIGNALS_FILE = join(SIGNALS_DIR, 'signals.jsonl');
@@ -65,12 +65,7 @@ async function main() {
 
     if (decision.action === 'block') {
       console.log(JSON.stringify({ decision: 'block', reason: decision.reason }));
-      logSignal(SIGNALS_DIR, SIGNALS_FILE, {
-        ts: new Date().toISOString(), type: 'gate_enforcement',
-        gate: pending.gate, issue: pending.issue, strike: pending.strike_count,
-        tool: toolName, action: 'block',
-        reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes',
-      });
+      logEnforcementSignal(SIGNALS_DIR, SIGNALS_FILE, pending, toolName, 'block', pending.strike_count);
       process.exit(0);
     }
 
@@ -83,26 +78,9 @@ async function main() {
       } catch {}
     }
 
-    logSignal(SIGNALS_DIR, SIGNALS_FILE, {
-      ts: new Date().toISOString(), type: 'gate_enforcement',
-      gate: pending.gate, issue: pending.issue,
-      strike: decision.newStrikeCount, tool: toolName, action: 'nag',
-    });
-
+    logEnforcementSignal(SIGNALS_DIR, SIGNALS_FILE, pending, toolName, 'nag', decision.newStrikeCount);
     // SC-508: doc-hygiene signal check — log findings for promotion tracking
-    try {
-      const projectRoot = join(BASE_DIR, '..');
-      const hygieneResult = checkDocHygiene(projectRoot);
-      if (!hygieneResult.pass) {
-        for (const finding of hygieneResult.findings) {
-          logSignal(SIGNALS_DIR, SIGNALS_FILE, {
-            ts: new Date().toISOString(), type: 'doc-hygiene',
-            checkId: finding.checkId, file: finding.file,
-            level: finding.level, message: finding.message,
-          });
-        }
-      }
-    } catch { /* doc-hygiene signals are best-effort */ }
+    logDocHygieneSignals(SIGNALS_DIR, SIGNALS_FILE, join(BASE_DIR, '..'));
 
     process.exit(0);
   } catch (err) {
