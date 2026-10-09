@@ -71,9 +71,13 @@ describe("Phase 5 — Instruction Compliance (custom checks)", () => {
     const shipPath = join(ROOT, "workflows", "ship.js");
     const content = readFileSync(shipPath, "utf-8");
     expect(content).not.toContain("agentType:");
-    expect(content).toContain("role: 'marcus'");
-    expect(content).toContain("role: 'quinn'");
-    expect(content).toContain("role: 'rook'");
+    // #195 wraps each spawn's role in recordSpawnedRole() so the
+    // blocking-grade check can tell a missing grade from a clean one. The
+    // assertion is still "the role is named at the spawn site", which is what
+    // SC-249 is about; it just no longer requires the bare literal.
+    for (const role of ["marcus", "quinn", "rook"]) {
+      expect(content).toMatch(new RegExp(`role:[^,\\n]*'${role}'`));
+    }
     expect(content).toContain("briefedAgent(");
   });
 

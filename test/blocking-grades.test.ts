@@ -78,9 +78,16 @@ async function runBlock(block: string, scope: Record<string, unknown> = {}): Pro
     ISSUE: 188,
     SLUG: "pai-harness-188",
     WORK_DIR: "/tmp/pai-harness-188",
-    gradeResult: { grades: [] },
+    // #195 changed the default from `{ grades: [] }`: an empty grade set is now
+    // a REFUSAL, so it can no longer stand in for "nothing interesting here".
+    gradeResult: wellFormed([{ role: "marcus", total: 12, followed: 12 }]),
     ...scope,
   };
+  // #195 added a coverage check against the roles the run spawned. These tests
+  // are about the BLOCKING DECISION, not about coverage — coverage has its own
+  // file, test/blocking-grades-trust.test.ts, where the ledger is set
+  // explicitly — so unless a case says otherwise the ledger matches the grades.
+  if (!("SPAWNED_ROLES" in scope)) full.SPAWNED_ROLES = rolesOf(full.gradeResult);
   const sandbox = new Proxy(full, {
     has: () => true,
     get: (target, key) => {
@@ -105,6 +112,49 @@ const shipped = (o: Outcome) => o.result?.__shipped === true;
 const refused = (o: Outcome) => o.result?.status === "SHIP_FAILED";
 
 // ── Fixtures ────────────────────────────────────────────────────────────
+
+/**
+ * #195: the block now requires every grade set to carry the grading script's
+ * own stdout, to declare violation ids structurally, and to cover every role
+ * the run spawned. These helpers build a result that satisfies all three from
+ * a single list, so the cases below keep asserting what they always asserted —
+ * which violations block — without each one restating the new schema.
+ */
+interface RawGrade {
+  role: string;
+  total: number;
+  followed: number;
+  flagged?: string[];
+}
+
+const idOf = (entry: string) => (entry.includes(":") ? entry.slice(0, entry.indexOf(":")) : entry).trim();
+
+function wellFormed(grades: RawGrade[]) {
+  return {
+    grades: grades.map(g => ({
+      role: g.role,
+      total: g.total,
+      followed: g.followed,
+      flagged: g.flagged ?? [],
+      violationIds: (g.flagged ?? []).map(idOf),
+    })),
+    rawGradeOutput: JSON.stringify({
+      grades: grades.map(g => ({ role: g.role, total: g.total, followed: g.followed, flagged: g.flagged ?? [] })),
+      timing: [],
+    }),
+  };
+}
+
+function rolesOf(gradeResult: unknown): string[] {
+  const grades = (gradeResult as { grades?: unknown })?.grades;
+  if (!Array.isArray(grades)) return [];
+  const roles: string[] = [];
+  for (const g of grades) {
+    const role = String((g as { role?: unknown })?.role ?? "").trim();
+    if (role && !roles.includes(role)) roles.push(role);
+  }
+  return roles;
+}
 
 /** One jsonl transcript line carrying a single tool call. */
 function call(name: string, input: Record<string, unknown>): string {
@@ -132,21 +182,17 @@ const TDD_FLAG = (() => {
   return `TDD_SEQUENCE_VIOLATED: ${tdd.evidence}`;
 })();
 
-const violatingGrades = () => ({
-  grades: [{ role: "marcus", total: 12, followed: 9, flagged: [TDD_FLAG] }],
-});
+const violatingGrades = () => wellFormed([{ role: "marcus", total: 12, followed: 9, flagged: [TDD_FLAG] }]);
 
 /**
  * COMP-9 is "Tool call budget" (lib/compliance-report.ts) — a heuristic about
  * how expensive a run was, not a claim that anything it reported is false.
  * COMP-2 is the suite-run limit, same category. Both must stay advisory.
  */
-const advisoryGrades = () => ({
-  grades: [
-    { role: "marcus", total: 12, followed: 10, flagged: ["COMP-9: Tool call budget", "COMP-2: Full test suite run limit"] },
-    { role: "quinn", total: 6, followed: 5, flagged: ["DIR-L29: Run full suite at most twice"] },
-  ],
-});
+const advisoryGrades = () => wellFormed([
+  { role: "marcus", total: 12, followed: 10, flagged: ["COMP-9: Tool call budget", "COMP-2: Full test suite run limit"] },
+  { role: "quinn", total: 6, followed: 5, flagged: ["DIR-L29: Run full suite at most twice"] },
+]);
 
 // ── AC-1 / AC-3: the grade reaches a decision ───────────────────────────
 
@@ -181,19 +227,17 @@ describe("AC-1: a run whose test evidence predates its final source change is re
 
   test("a clean run ships", async () => {
     const outcome = await runBlock(BLOCK, {
-      gradeResult: { grades: [{ role: "marcus", total: 12, followed: 12 }] },
+      gradeResult: wellFormed([{ role: "marcus", total: 12, followed: 12 }]),
     });
     expect(shipped(outcome)).toBe(true);
   });
 
   test("one violating role among passing roles still refuses", async () => {
     const outcome = await runBlock(BLOCK, {
-      gradeResult: {
-        grades: [
-          { role: "quinn", total: 6, followed: 6, flagged: ["COMP-9: Tool call budget"] },
-          { role: "marcus", total: 12, followed: 9, flagged: [TDD_FLAG] },
-        ],
-      },
+      gradeResult: wellFormed([
+        { role: "quinn", total: 6, followed: 6, flagged: ["COMP-9: Tool call budget"] },
+        { role: "marcus", total: 12, followed: 9, flagged: [TDD_FLAG] },
+      ]),
     });
     expect(refused(outcome)).toBe(true);
   });
@@ -218,14 +262,14 @@ describe("AC-2: the declared blocking set", () => {
     // Real entries are `${id}: ${evidence}` and the evidence varies run to
     // run. An equality match would never fire in production.
     const outcome = await runBlock(BLOCK, {
-      gradeResult: { grades: [{ role: "marcus", total: 1, followed: 0, flagged: ["TDD_SEQUENCE_VIOLATED: something else entirely"] }] },
+      gradeResult: wellFormed([{ role: "marcus", total: 1, followed: 0, flagged: ["TDD_SEQUENCE_VIOLATED: something else entirely"] }]),
     });
     expect(refused(outcome)).toBe(true);
   });
 
   test("a flagged id that merely contains a blocking id does not block", async () => {
     const outcome = await runBlock(BLOCK, {
-      gradeResult: { grades: [{ role: "marcus", total: 1, followed: 0, flagged: ["NOT_TDD_SEQUENCE_VIOLATED_EITHER: x"] }] },
+      gradeResult: wellFormed([{ role: "marcus", total: 1, followed: 0, flagged: ["NOT_TDD_SEQUENCE_VIOLATED_EITHER: x"] }]),
     });
     expect(shipped(outcome)).toBe(true);
   });
@@ -254,7 +298,15 @@ describe("an absent grade", () => {
   });
 
   test("a grade with no flagged array at all is clean, not malformed", async () => {
-    const outcome = await runBlock(BLOCK, { gradeResult: { grades: [{ role: "marcus", total: 3, followed: 3 }] } });
+    // Written out rather than built by wellFormed(): the point of this case is
+    // a grade carrying NEITHER flagged NOR violationIds, which #195 must still
+    // read as clean. No flagged entries means there are no ids to mis-parse.
+    const outcome = await runBlock(BLOCK, {
+      gradeResult: {
+        grades: [{ role: "marcus", total: 3, followed: 3 }],
+        rawGradeOutput: JSON.stringify({ grades: [{ role: "marcus", total: 3, followed: 3 }] }),
+      },
+    });
     expect(shipped(outcome)).toBe(true);
   });
 });

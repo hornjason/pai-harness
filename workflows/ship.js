@@ -181,6 +181,32 @@ const DRY_RUN = parsedArgs.dryRun || false
 const SKIP_GRADE = parsedArgs.skipGrade || false
 const MAX_REGRESSIONS = 2
 
+// ── Spawn ledger (#195) ──────────────────────────────────────
+// The blocking-grade check at the end of this file has to answer "is a grade
+// MISSING?", and it cannot do that without knowing what should be there. An
+// empty grades array is otherwise indistinguishable from a clean run, which is
+// exactly how a failed measurement shipped as compliance.
+//
+// Recorded AT THE SPAWN SITE rather than inferred from the ceremony tier or
+// the sizing: those are decisions about what the run INTENDS to do, and the
+// question here is what it actually did. `role:` is the same field
+// grade-deterministic.ts infers from the transcript label (:100), so what is
+// recorded here and what comes back graded are the same vocabulary.
+//
+// Each call site is written `typeof recordSpawnedRole === 'function' ? ... : ...`
+// because ship.js is not importable (#69) and a dozen test files execute ONE
+// marked region of it at a time with an explicit parameter list — this
+// declaration is not in those scopes, and a bare call would throw there. In a
+// real run it is always in scope, so the fallback is never taken. It is not a
+// fail-open either: test/blocking-grades-trust.test.ts asserts that EVERY
+// role-bearing spawn site in this file records itself, so a new spawn that
+// forgets is caught by the suite rather than by a run that ships unmeasured.
+const SPAWNED_ROLES = new Set()
+function recordSpawnedRole(role) {
+  if (role) SPAWNED_ROLES.add(String(role))
+  return role
+}
+
 // ── Shell-safe command construction (#57, #69) ───────────────
 // ──── SECURITY-HELPERS-START ────
 // These primitives are INLINED, not imported. The workflow sandbox provides no
@@ -1333,7 +1359,7 @@ If tests fail, fix them before reporting.
 Report: success, branch name, files changed, test output, evidence per AC.
 Also report worktreePath: your current working directory (run pwd and include the result).
   `, {
-    label: 'marcus', phase: 'Implement', role: 'marcus',
+    label: 'marcus', phase: 'Implement', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('marcus') : 'marcus',
     contextExcerpts: useExcerpts ? contextExcerpts : null,
     contextFiles: !useExcerpts && acContextFiles.length > 0 ? acContextFiles : null,
     schema: BUILD_RESULT_SCHEMA
@@ -1413,7 +1439,7 @@ Do NOT commit or push yet — Quinn will validate first.
 Report: success, files changed, test output.
 Also report worktreePath: your current working directory.
       `, {
-        label: `marcus-sub-${subIssue.number}`, phase: 'Implement', role: 'marcus',
+        label: `marcus-sub-${subIssue.number}`, phase: 'Implement', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('marcus') : 'marcus',
         schema: BUILD_RESULT_SCHEMA
       })
 
@@ -1624,7 +1650,7 @@ Do NOT screenshot after every browser_snapshot().
 ## Verdict
 - PASS: all pre-conditions + all ACs + all anti-checks pass
 - FAIL: any failure — report which AC or anti-check failed with evidence
-    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: 'quinn', isolation: undefined, schema: GATE_RESULT_SCHEMA })
+    `, { label: `quinn-local-${validateAttempt}`, phase: 'Validate', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('quinn') : 'quinn', isolation: undefined, schema: GATE_RESULT_SCHEMA })
 
     if (!quinnLocalResult) {
       log(`Quinn local: agent failed (network/API error) — attempt ${validateAttempt}/3`)
@@ -1653,7 +1679,7 @@ ${(quinnLocalResult?.failures || []).join('\n')}
 
 Fix the code. Run targeted tests again. Do NOT commit — Quinn will retest.
 Report what you fixed.
-    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: 'marcus', isolation: undefined })
+    `, { label: `marcus-fix-${validateAttempt}`, phase: 'Validate', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('marcus') : 'marcus', isolation: undefined })
   }
 } else {
   log('Quinn local: SKIPPED (LIGHT tier)')
@@ -2480,7 +2506,7 @@ Read ${PROJECT_ROOT}/.claude/rungate.json for page paths.
 
 ### ACs to Verify
 ${discovery.acs.map(ac => `- ${ac.id}: ${ac.statement}`).join('\n')}
-      `, { label: 'quinn-container', phase: 'Verify', role: 'quinn', schema: GATE_RESULT_SCHEMA })
+      `, { label: 'quinn-container', phase: 'Verify', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('quinn') : 'quinn', schema: GATE_RESULT_SCHEMA })
       // Set after the await, so a throw leaves this false and the ship-phase
       // recommit falls back to the local measurement rather than reporting a
       // container verdict that was never produced.
@@ -2623,7 +2649,7 @@ verdict nobody can act on, and is recorded as exactly that.
 
 Then return {"result": "PASS"} or {"result": "FAIL", "failures": [...]}.
 A FAIL blocks the run and no pull request is opened.
-  `, { label: 'rook', phase: 'Verify', role: 'rook', schema: GATE_RESULT_SCHEMA })
+  `, { label: 'rook', phase: 'Verify', role: typeof recordSpawnedRole === 'function' ? recordSpawnedRole('rook') : 'rook', schema: GATE_RESULT_SCHEMA })
 
 // The verdict is now READ. It used to be discarded: rook could return FAIL
 // with a reproduced guard bypass and the workflow returned SHIPPED and opened
@@ -2799,8 +2825,9 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
    find ~/.claude/projects/ -maxdepth 6 -name "agent-*.jsonl" -path "*/workflows/*" -newer ${WORK_DIR}/workflow-state.json 2>/dev/null | head -1
    Extract the directory from that path (dirname of the found file).
 
-2. Run grading:
-   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${PROJECT_ROOT} ${WORK_DIR}
+2. Run grading. Use tee so the script's stdout is both captured and visible —
+   you must return it VERBATIM below as rawGradeOutput:
+   bun ${HARNESS_ROOT}/scripts/grade-deterministic.ts --transcripts "$TDIR" --project ${PROJECT_ROOT} ${WORK_DIR} | tee ${WORK_DIR}/grade-stdout.txt
 
 3. Run efficiency analysis. Use tee, not a plain redirect — the file is read by
    the persist step and you still need to see the output to report it below:
@@ -2817,19 +2844,37 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
      fi
    done
 
-5. Return a JSON object with grades array, efficiency metrics, and timing. If no transcripts found, return {"grades": [], "efficiency": null, "timing": []}.
+5. Return a JSON object with grades array, efficiency metrics, and timing, plus
+   rawGradeOutput: the COMPLETE, UNEDITED stdout of the step-2 command, copied
+   verbatim. Do not summarise it, do not reformat it, do not substitute your own
+   JSON for it — it is the evidence your grades array is checked against, and a
+   summary that disagrees with it blocks the run.
+
+   For every grade, violationIds must list the id PREFIX of each flagged entry —
+   the token before the first colon, e.g. "TDD_SEQUENCE_VIOLATED" from
+   "TDD_SEQUENCE_VIOLATED: no test run after writing source". Copy these ids
+   exactly as the script printed them; never paraphrase one and never omit one.
+   A grade with no flagged entries gets violationIds: [].
+
+6. If step 1 finds no transcript directory, or step 2 does not print a JSON
+   object, that is a FAILED MEASUREMENT, not a clean run. Report what went
+   wrong: return rawGradeOutput with whatever the command actually printed and
+   leave grades empty. Do NOT invent an empty-but-successful result — the
+   workflow refuses runs it could not measure, and that refusal is the point.
   `, { label: 'grade', phase: 'Verify', schema: {
     type: 'object',
     properties: {
+      rawGradeOutput: { type: 'string' },
       grades: { type: 'array', items: {
         type: 'object',
         properties: {
           role: { type: 'string' },
           total: { type: 'number' },
           followed: { type: 'number' },
-          flagged: { type: 'array', items: { type: 'string' } }
+          flagged: { type: 'array', items: { type: 'string' } },
+          violationIds: { type: 'array', items: { type: 'string' } }
         },
-        required: ['role', 'total', 'followed']
+        required: ['role', 'total', 'followed', 'violationIds']
       }},
       efficiency: { type: 'object', properties: {
         fileEfficiency: { type: 'string' },
@@ -2847,7 +2892,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
         required: ['agent', 'seconds']
       }}
     },
-    required: ['grades']
+    required: ['grades', 'rawGradeOutput']
   }})
 
   if (gradeResult?.grades) {
@@ -2943,22 +2988,166 @@ pass. Change nothing else.
 // everything stops every run and gets switched off, which is how a gate dies.
 const BLOCKING_GRADE_VIOLATIONS = ['TDD_SEQUENCE_VIOLATED']
 
+// #195: the decision above was right and its INPUTS were trusted too far. Two
+// independent security reviews found the same three holes, and all three are
+// one shape — the first one .claude/rules/checks-must-be-able-to-fail.md names:
+// "a parse failure defaulting to an empty violation list".
+//
+//  1. EMPTY READ AS CLEAN. The shape check below is `!Array.isArray(grades)`,
+//     and `[]` IS an array, so a run whose grading found nothing fell through
+//     blockingGradeViolations([]) and shipped. The grading prompt made that
+//     reachable on purpose: it told the agent to return {"grades": []} when no
+//     transcripts were found, so a FAILED MEASUREMENT reported as a CLEAN RUN.
+//  2. MODEL IN THE DATA PATH. gradeResult is `await agent(...)`. The
+//     deterministic work is scripts/grade-deterministic.ts, but what reached
+//     this decision was the agent's restatement of it. #69 is not contested —
+//     the sandbox has no filesystem and no exec, so the agent STAYS in the
+//     path; the job is to BOUND what is taken on its word, by making it hand
+//     back the script's own stdout and checking its summary against it.
+//  3. PARSER DIFFERENTIAL. split(':')[0] ran against text the agent wrote. A
+//     flagged entry phrased as prose produced an "id" that matched nothing,
+//     and a check that cannot see a violation is a check that passes.
+//
+// The fix for all three is the same sentence: ABSENCE IS NOT COMPLIANCE. This
+// file knows which roles it spawned (SPAWNED_ROLES, recorded at each spawn
+// site), so a grade set that is missing one of them is a failed measurement
+// and says so, instead of being read as nothing to report.
+//
+// Each refusal is enumerated here, and test/blocking-grades-trust.test.ts
+// mutates this array to [] to prove every one of them can actually fail — the
+// same mutation handle BLOCKING_GRADE_VIOLATIONS gives the #188 decision.
+// Emptying it makes gradeTrustProblem() a no-op, so the block stops refusing
+// and each negative case is run twice: real refuses, mutant ships.
+const GRADE_TRUST_REFUSALS = ['RAW_UNREADABLE', 'SUMMARY_DISAGREES', 'ID_UNREADABLE', 'ROLE_UNGRADED', 'ROLES_UNKNOWN']
+
+// What an id looks like: TDD_SEQUENCE_VIOLATED, COMP-9, DIR-L29. Deliberately
+// strict — the point is that anything which is NOT one of these is reported
+// rather than quietly compared against the blocking set and found absent.
+const GRADE_VIOLATION_ID = /^[A-Z][A-Z0-9]*(?:[_-][A-Z0-9]+)*$/
+
+function gradeTrustProblem(problems, id, detail) {
+  if (GRADE_TRUST_REFUSALS.includes(id)) problems.push(`BLOCKING_GRADE_${id}: ${detail}`)
+}
+
+function gradeRoleName(g) {
+  return String(g && g.role ? g.role : '').trim()
+}
+
+// Accepts the Set production uses and the array a caller or test may pass.
+// A check that only understands one container shape stops firing after a
+// refactor nobody thought touched it.
+function normaliseRoleList(roles) {
+  let source = []
+  if (typeof roles === 'string') source = [roles]
+  else if (Array.isArray(roles)) source = roles
+  else if (roles && typeof roles.forEach === 'function') roles.forEach(r => source.push(r))
+  const out = []
+  for (const r of source) {
+    const name = String(r === null || r === undefined ? '' : r).trim()
+    if (name && !out.includes(name)) out.push(name)
+  }
+  return out.sort()
+}
+
 // grade-deterministic.ts writes flagged entries as `${id}: ${evidence}`
 // (scripts/grade-deterministic.ts:206, :230, :244) and the evidence varies run
-// to run, so this matches the id BEFORE the colon. Equality against the whole
-// string would be a check that never fires.
-//
+// to run, so the id is the token BEFORE the first colon. Equality against the
+// whole string would be a check that never fires — and an entry whose id is
+// not a token is NOT "no violation found", it is a parse failure.
+function idsFromFlagged(grade, where, problems) {
+  const out = []
+  const role = gradeRoleName(grade) || 'unknown'
+  const flagged = Array.isArray(grade && grade.flagged) ? grade.flagged : []
+  for (const entry of flagged) {
+    const text = String(entry)
+    const colon = text.indexOf(':')
+    const id = (colon === -1 ? text : text.slice(0, colon)).trim()
+    if (!GRADE_VIOLATION_ID.test(id)) {
+      gradeTrustProblem(problems, 'ID_UNREADABLE', `${where} grade for ${role} has a flagged entry with no readable violation id: ${JSON.stringify(text.slice(0, 120))}`)
+      continue
+    }
+    if (!out.includes(id)) out.push(id)
+  }
+  return out.sort()
+}
+
+// The STRUCTURED channel. `flagged` is prose the agent may have reworded;
+// violationIds is the list the decision reads. It has to be readable AND to
+// account for every id the prose carries, so "keep the evidence, drop the id
+// that blocks" is a refusal rather than a quieter report.
+function idsFromSummary(grade, problems) {
+  const role = gradeRoleName(grade) || 'unknown'
+  const derived = idsFromFlagged(grade, 'the summary', problems)
+  const declaredRaw = Array.isArray(grade && grade.violationIds) ? grade.violationIds : null
+  if (declaredRaw === null) {
+    const flagged = Array.isArray(grade && grade.flagged) ? grade.flagged : []
+    if (flagged.length > 0) {
+      gradeTrustProblem(problems, 'ID_UNREADABLE', `the summary grade for ${role} carries ${flagged.length} flagged entr${flagged.length === 1 ? 'y' : 'ies'} but no structured violationIds array`)
+    }
+    return []
+  }
+  const declared = []
+  for (const rawId of declaredRaw) {
+    const id = String(rawId).trim()
+    if (!GRADE_VIOLATION_ID.test(id)) {
+      gradeTrustProblem(problems, 'ID_UNREADABLE', `the summary grade for ${role} declares an unreadable violation id: ${JSON.stringify(String(rawId).slice(0, 120))}`)
+      continue
+    }
+    if (!declared.includes(id)) declared.push(id)
+  }
+  for (const id of derived) {
+    if (!declared.includes(id)) {
+      gradeTrustProblem(problems, 'ID_UNREADABLE', `the summary grade for ${role} flags ${id} in prose but omits it from violationIds`)
+    }
+  }
+  return declared.sort()
+}
+
+// The grading script prints its result as JSON on stdout
+// (scripts/grade-deterministic.ts:387). Surrounding progress lines are
+// tolerated — refusing those would make this brittle enough to be switched
+// off — but the no-transcripts path prints "Wrote empty compliance-grade.json"
+// and no JSON at all (:338), and that MUST NOT read as a clean run.
+function parseRawGradeOutput(raw) {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return { ok: false, detail: 'the grading step returned no rawGradeOutput, so its summary cannot be corroborated against the grading script' }
+  }
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start === -1 || end <= start) {
+    return { ok: false, detail: `rawGradeOutput carries no JSON object — the grading command printed ${JSON.stringify(raw.trim().slice(0, 160))}` }
+  }
+  let parsed = null
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1))
+  } catch (err) {
+    return { ok: false, detail: `rawGradeOutput is not parsable JSON: ${String((err && err.message) || err)}` }
+  }
+  if (!parsed || !Array.isArray(parsed.grades)) {
+    return { ok: false, detail: 'rawGradeOutput parsed as JSON but carries no grades array' }
+  }
+  return { ok: true, grades: parsed.grades }
+}
+
+function mergeIds(existing, incoming) {
+  const out = Array.isArray(existing) ? existing.slice() : []
+  for (const id of incoming) if (!out.includes(id)) out.push(id)
+  return out.sort()
+}
+
 // Everything is shape-checked rather than trusted: `grades` crosses an agent
 // boundary, and a non-array `flagged` must not throw its way past a refusal.
 function blockingGradeViolations(grades) {
   const found = []
   for (const g of Array.isArray(grades) ? grades : []) {
-    const flagged = Array.isArray(g?.flagged) ? g.flagged : []
-    for (const entry of flagged) {
-      const id = String(entry).split(':')[0].trim()
-      if (BLOCKING_GRADE_VIOLATIONS.includes(id)) {
-        found.push(`${g?.role || 'unknown'}: ${entry}`)
-      }
+    const role = gradeRoleName(g) || 'unknown'
+    const ids = Array.isArray(g && g.violationIds) ? g.violationIds : []
+    const flagged = Array.isArray(g && g.flagged) ? g.flagged : []
+    for (const rawId of ids) {
+      const id = String(rawId).trim()
+      if (!BLOCKING_GRADE_VIOLATIONS.includes(id)) continue
+      const evidence = flagged.find(e => String(e).trim().indexOf(id) === 0)
+      found.push(`${role}: ${evidence ? String(evidence) : id}`)
     }
   }
   return found
@@ -2983,6 +3172,80 @@ if (SKIP_GRADE) {
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
   }
 } else {
+  // ── #195: can this grade set be believed at all? ──
+  //
+  // Ordered deliberately. Every question here is "is the EVIDENCE sound",
+  // and none of them may be answered by what the evidence happens to omit.
+  const trustProblems = []
+
+  // (a) corroboration — the agent's summary against the grading script's own
+  //     stdout. The script is the measurement; the summary is a restatement.
+  const rawGrades = parseRawGradeOutput(gradeResult.rawGradeOutput)
+  if (!rawGrades.ok) gradeTrustProblem(trustProblems, 'RAW_UNREADABLE', rawGrades.detail)
+
+  // (b) read the ids structurally, from both sides, recording every entry
+  //     whose id cannot be extracted rather than treating it as no violation.
+  const summaryIdsByRole = {}
+  for (const g of gradeResult.grades) {
+    const ids = idsFromSummary(g, trustProblems)
+    const role = gradeRoleName(g)
+    if (!role) continue
+    summaryIdsByRole[role] = mergeIds(summaryIdsByRole[role], ids)
+  }
+  const rawIdsByRole = {}
+  if (rawGrades.ok) {
+    for (const g of rawGrades.grades) {
+      const ids = idsFromFlagged(g, 'the grading script output', trustProblems)
+      const role = gradeRoleName(g)
+      if (!role) continue
+      rawIdsByRole[role] = mergeIds(rawIdsByRole[role], ids)
+    }
+  }
+
+  // (c) the two must say the same thing. This is what keeps the model out of
+  //     the decision while leaving it in the data path: it may carry the
+  //     evidence, it may not edit it.
+  if (rawGrades.ok) {
+    const summaryRoles = Object.keys(summaryIdsByRole).sort()
+    const rawRoles = Object.keys(rawIdsByRole).sort()
+    if (summaryRoles.join(',') !== rawRoles.join(',')) {
+      gradeTrustProblem(trustProblems, 'SUMMARY_DISAGREES', `the summary grades [${summaryRoles.join(', ')}] but the grading script graded [${rawRoles.join(', ')}]`)
+    } else {
+      for (const role of summaryRoles) {
+        const fromSummary = summaryIdsByRole[role].join(', ')
+        const fromScript = rawIdsByRole[role].join(', ')
+        if (fromSummary !== fromScript) {
+          gradeTrustProblem(trustProblems, 'SUMMARY_DISAGREES', `for ${role} the summary reports violations [${fromSummary}] but the grading script reported [${fromScript}]`)
+        }
+      }
+    }
+  }
+
+  // (d) coverage — the whole point. An empty grades array is only clean if
+  //     nothing was spawned, and a run that cannot say what it spawned cannot
+  //     make that claim either.
+  const expectedGradeRoles = normaliseRoleList(SPAWNED_ROLES)
+  if (expectedGradeRoles.length === 0) {
+    gradeTrustProblem(trustProblems, 'ROLES_UNKNOWN', 'the run recorded no spawned roles, so an empty grade set cannot be told apart from a clean one')
+  } else {
+    const gradedRoles = Object.keys(summaryIdsByRole)
+    const missing = expectedGradeRoles.filter(r => !gradedRoles.includes(r))
+    if (missing.length > 0) {
+      gradeTrustProblem(trustProblems, 'ROLE_UNGRADED', `the run spawned [${expectedGradeRoles.join(', ')}] and grading returned ${missing.map(r => `no grade for ${r}`).join(', ')}`)
+    }
+  }
+
+  if (trustProblems.length > 0) {
+    for (const p of trustProblems) log(`GRADE BLOCK: ${p}`)
+    log('GRADE BLOCK: the compliance grade cannot be trusted; the run is blocked and no PR will be opened')
+    return {
+      status: 'SHIP_FAILED',
+      reason: `the compliance grade cannot be trusted: ${trustProblems.join('; ')}`,
+      grades: gradeResult.grades,
+      issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+    }
+  }
+
   const blocked = blockingGradeViolations(gradeResult.grades)
   if (blocked.length > 0) {
     for (const b of blocked) log(`GRADE BLOCK: ${b}`)
