@@ -90,9 +90,16 @@ Each of these has happened in this repo and was mistaken for progress.
 - **A guard with a passing mutant test.** Measured 2026-10-08: wrapping the
   `BLOCKING-GRADES` block (#188) in `if (false)` — wrapper *outside* the markers,
   so the extracted slice is byte-identical — leaves `test/blocking-grades.test.ts`
-  at 19 pass / 0 fail. The same mutation on `SECURITY-DECISION` (#129) leaves
-  113 pass / 0 fail. Marker extraction proves the extracted text refuses
-  correctly. It does not prove the block is reached. See #200.
+  at 19 pass / 0 fail. Same mutation on `SECURITY-DECISION` (#129): 113 pass /
+  0 fail. On `COMMIT-STATE-GUARD` (#166): 52 pass / 0 fail. Marker extraction
+  proves the extracted text refuses correctly. It does not prove the block is
+  reached.
+  **Partly fixed 2026-10-08 by #200** (`64e5ac1a`): `lib/reachability.ts` reads
+  the marked region's AST ancestor chain instead of its text. Re-measured on the
+  merged tree — the same mutation now gives `test/reachability-refusals.test.ts`
+  50 pass / **3 fail**, so CI goes red. But `test/blocking-grades.test.ts` is
+  still 19 pass / 0 fail: the check is caught by a *different* file than the one
+  that owns the guard. #201 wires it in directly.
 - **An agent reporting it complied.** Marcus has exceeded the full-suite cap on
   every measured run while the rule text asking otherwise got longer each time.
   Compliance is measured from transcripts, never self-reported (#194).
@@ -112,7 +119,7 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 
 | Claim | Standing (2026-10-08) |
 |---|---|
-| 1 — gates can fail | Partial. Security gate proven (#129), blocking grades proven (#188). `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176). `TestSuiteGuard` cannot fire (#194). |
+| 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), and #200 now makes a disabled guard detectable at all — but only via the new suite until #201. `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176). `TestSuiteGuard` cannot fire (#194). Five hooks never fire (#199). |
 | 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168). |
 | 3 — bad ships are stopped | Partial. Security and compliance verdicts now refuse. Not yet audited for every computed verdict. |
 | 4 — absence ≠ clean | **No.** `grade-deterministic.ts` writes `{grades:[]}` and exits 0 on no transcripts; the ship.js prompt instructs the same shape (#195, open). |
