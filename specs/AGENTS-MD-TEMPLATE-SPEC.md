@@ -134,7 +134,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
 - [ ] SC-270: Large specs with multiple intents split into single-intent files (behavioral)
 - [x] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
-- [x] SC-272: AGENTS.md contains [Spec, Governs, Testable]
+- [x] SC-272: .claude/rules/specs-routing.md contains [Spec, Governs, Testable] — D-15 capped AGENTS.md at 100 lines and moved the specs table into a scoped rule file. The table still exists; the criterion was pointed at where it used to live
 - [x] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Satisfied by SC-17 (150-line cap)
 - [x] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
 - [x] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
@@ -154,7 +154,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-300: PROJECT-STATE.md is under [200] lines
 - [x] SC-301: docs/session-log/ directory exists
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
-- [x] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
+- [x] SC-303: .git/hooks/pre-commit contains [--diff-filter=A, git diff --cached] — the hook scans the staged diff rather than files on disk. The `.sh` half named a helper script the hook no longer shells out to, so half the criterion asserted the presence of something deliberately removed
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)

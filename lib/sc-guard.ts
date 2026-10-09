@@ -15,7 +15,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { spawnSync } from "child_process";
 import { parseFrontmatter, isMatchablePattern, isBehavioralSC } from "./conformity";
-import type { ParsedSC } from "./conformity";
+import type { SCPattern } from "./conformity";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -79,7 +79,7 @@ export function validateNewSCs(
   const results: SCValidationResult[] = [];
 
   for (const sc of newSCs) {
-    const parsed: ParsedSC = {
+    const parsed: SCPattern = {
       id: sc.id,
       statement: sc.statement,
       specFile: "",

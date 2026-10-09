@@ -58,9 +58,9 @@
   {
     "name": "content-not-contains",
     "syntax": "{file} must NOT contain [{item1}, {item2}, ...]",
-    "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|has\\s+no)\\s+\\[([^\\]]+)\\]",
+    "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|not\\s+contains?|has\\s+no)\\s+\\[([^\\]]+)\\]",
     "example": "AGENTS.md must NOT contain [deprecated-section]",
-    "notes": "Checks that a file does NOT contain any of the listed items. Supports both 'must NOT contain' and 'has no' syntax."
+    "notes": "Checks that a file does NOT contain any of the listed items. Supports 'must NOT contain', 'not contains' and 'has no' syntax."
   },
   {
     "name": "count-threshold",
@@ -131,5 +131,12 @@
     "regex": "^command-output\\s+`([^`]+)`\\s+contains\\s+\\[([^\\]]+)\\]",
     "example": "command-output `bun test --help` contains [test, run]",
     "notes": "Runs a shell command via spawnSync with a 10-second timeout and checks that stdout contains all listed strings. Returns FAIL (not crash) on non-zero exit."
+  },
+  {
+    "name": "path-prefixed-contains",
+    "syntax": "`{path/to/file.ext}` {prose} contains [{item1}, {item2}, ...]",
+    "regex": "^`?([\\w./-]+\\.(?:ts|tsx|js|jsx|json|md|ya?ml|sh))`?\\s+\\S.*?\\bcontains?\\s+\\[([^\\]]+)\\]",
+    "example": "`lib/generators/types.ts` AgentMeta interface contains [memory, hooks]",
+    "notes": "Same check as content-contains, for criteria that name the file in backticks and put prose between the path and 'contains'. Deliberately last in the registry: content-contains and source-contains match the adjacent form first, so this only picks up what would otherwise fall through. The leading token must carry a known file extension, so a sentence that merely mentions a word before 'contains' cannot steer it at a file."
   }
 ]

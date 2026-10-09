@@ -30,16 +30,18 @@
  *  - exit(0): always
  */
 
-import { existsSync, unlinkSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { BASE_DIR, WORK_DIR } from './lib/paths';
 import { parseHookInput } from './lib/parseStdin';
 import {
   buildGatePending,
+  clearGatePending,
   findWorkflowGateFailure,
   loadStrikeCount,
+  logDocHygieneSignals,
   logSignal,
   makeEnforcementDecision,
+  persistStrikeCount,
 } from '../lib/gate-enforcement';
 import { checkDocHygiene } from '../lib/doc-hygiene';
 
@@ -54,7 +56,7 @@ async function main() {
   try {
     const wfFailure = findWorkflowGateFailure(WORK_DIR);
     if (!wfFailure) {
-      if (existsSync(PENDING_FILE)) { try { unlinkSync(PENDING_FILE); } catch {} }
+      clearGatePending(PENDING_FILE);
       process.exit(0);
     }
 
@@ -75,13 +77,7 @@ async function main() {
     }
 
     console.log(decision.reminder);
-    if (toolName === 'Skill') {
-      try {
-        writeFileSync(PENDING_FILE, JSON.stringify(
-          { ...pending, strike_count: decision.newStrikeCount }, null, 2
-        ), 'utf-8');
-      } catch {}
-    }
+    persistStrikeCount(PENDING_FILE, pending, decision.newStrikeCount, toolName);
 
     logSignal(SIGNALS_DIR, SIGNALS_FILE, {
       ts: new Date().toISOString(), type: 'gate_enforcement',
@@ -90,19 +86,7 @@ async function main() {
     });
 
     // SC-508: doc-hygiene signal check — log findings for promotion tracking
-    try {
-      const projectRoot = join(BASE_DIR, '..');
-      const hygieneResult = checkDocHygiene(projectRoot);
-      if (!hygieneResult.pass) {
-        for (const finding of hygieneResult.findings) {
-          logSignal(SIGNALS_DIR, SIGNALS_FILE, {
-            ts: new Date().toISOString(), type: 'doc-hygiene',
-            checkId: finding.checkId, file: finding.file,
-            level: finding.level, message: finding.message,
-          });
-        }
-      }
-    } catch { /* doc-hygiene signals are best-effort */ }
+    logDocHygieneSignals(SIGNALS_DIR, SIGNALS_FILE, join(BASE_DIR, '..'), checkDocHygiene);
 
     process.exit(0);
   } catch (err) {

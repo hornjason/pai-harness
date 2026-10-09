@@ -9,13 +9,17 @@ import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
+import { existsSync, readFileSync } from 'fs';
 import {
   buildGatePending,
+  clearGatePending,
   findWorkflowGateFailure,
   formatFailures,
   loadStrikeCount,
+  logDocHygieneSignals,
   makeEnforcementDecision,
   logSignal,
+  persistStrikeCount,
   type GateFailure,
   type GatePending,
   type WorkflowGateFailure,
@@ -357,6 +361,87 @@ describe('gate-enforcement', () => {
       expect(() => {
         logSignal('/nonexistent/dir', '/nonexistent/dir/file.jsonl', { type: 'test' });
       }).not.toThrow();
+    });
+  });
+
+  // ── Branches moved out of the hook for SC-369 (#209) ────────────────────
+  //
+  // These three were `if` statements inside GateEnforcement.hook.ts, where the
+  // only way to reach them was to simulate a PreToolUse payload — so nothing
+  // did. Each test below names what was broken to prove it can fail.
+
+  describe('persistStrikeCount', () => {
+    const pending: GatePending = {
+      session_id: 's', gate: 'verify', issue: 7, slug: 'x', failures: [],
+      strike_count: 1, max_strikes: 3, outcome_ac_failure: false,
+      created_at: 'now', expires_ts: Date.now() + 1000,
+    };
+
+    // Broken to prove it: dropping the `toolName !== 'Skill'` guard writes the
+    // file for every tool call and turns this red.
+    it('writes nothing for a tool that does not earn a strike', () => {
+      const f = join(tempDir, 'pending.json');
+      expect(persistStrikeCount(f, pending, 2, 'Bash')).toBe(false);
+      expect(existsSync(f)).toBe(false);
+    });
+
+    it('writes the incremented count for a Skill call', () => {
+      const f = join(tempDir, 'pending.json');
+      expect(persistStrikeCount(f, pending, 2, 'Skill')).toBe(true);
+      expect(JSON.parse(readFileSync(f, 'utf-8')).strike_count).toBe(2);
+    });
+
+    it('reports failure instead of throwing when the path is unwritable', () => {
+      expect(persistStrikeCount('/nonexistent/dir/p.json', pending, 2, 'Skill')).toBe(false);
+    });
+  });
+
+  describe('clearGatePending', () => {
+    it('removes an existing pending record', () => {
+      const f = join(tempDir, 'pending.json');
+      writeFileSync(f, '{}');
+      clearGatePending(f);
+      expect(existsSync(f)).toBe(false);
+    });
+
+    it('is a no-op when there is nothing to clear', () => {
+      expect(() => clearGatePending(join(tempDir, 'absent.json'))).not.toThrow();
+    });
+  });
+
+  describe('logDocHygieneSignals', () => {
+    const signalsFile = () => join(tempDir, 'signals', 'signals.jsonl');
+
+    it('writes one signal per finding and returns the count', () => {
+      const n = logDocHygieneSignals(join(tempDir, 'signals'), signalsFile(), tempDir, () => ({
+        pass: false,
+        findings: [
+          { checkId: 'HYGIENE-1', file: 'a.md', level: 'warn', message: 'no governs' },
+          { checkId: 'HYGIENE-2', file: 'b.md', level: 'warn', message: 'no updated' },
+        ],
+      }));
+      expect(n).toBe(2);
+      const lines = readFileSync(signalsFile(), 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('"checkId":"HYGIENE-1"');
+    });
+
+    it('writes nothing when the scan passes', () => {
+      expect(
+        logDocHygieneSignals(join(tempDir, 'signals'), signalsFile(), tempDir, () => ({ pass: true, findings: [] })),
+      ).toBe(0);
+      expect(existsSync(signalsFile())).toBe(false);
+    });
+
+    // The hook swallowed this with a bare `catch {}`, so a hygiene checker that
+    // threw on every call was indistinguishable from one that found nothing.
+    // Broken to prove it: returning 0 from the catch turns this red.
+    it('reports -1 rather than 0 when the checker throws', () => {
+      expect(
+        logDocHygieneSignals(join(tempDir, 'signals'), signalsFile(), tempDir, () => {
+          throw new Error('scan exploded');
+        }),
+      ).toBe(-1);
     });
   });
 });

@@ -15,7 +15,7 @@ import {
   parseFrontmatter,
   matchPattern,
   isBehavioralSC,
-  type ParsedSC,
+  type SCPattern,
 } from "../lib/conformity";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -83,8 +83,8 @@ function loadRegistry(): RegistryEntry[] {
 
 // ── SC extraction ─────────────────────────────────────────────
 
-function extractSCs(content: string, specFile: string): ParsedSC[] {
-  const scs: ParsedSC[] = [];
+function extractSCs(content: string, specFile: string): SCPattern[] {
+  const scs: SCPattern[] = [];
   const pattern = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
   let match;
   while ((match = pattern.exec(content)) !== null) {

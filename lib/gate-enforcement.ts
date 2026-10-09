@@ -14,6 +14,8 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
+  writeFileSync,
 } from 'fs';
 
 export interface GateFailure {
@@ -224,5 +226,78 @@ export function logSignal(signalsDir: string, signalsFile: string, event: Record
     appendFileSync(signalsFile, JSON.stringify(event) + '\n', 'utf-8');
   } catch (err) {
     console.error(`[GateEnforcement] Signal log write failed: ${err}`);
+  }
+}
+
+/**
+ * Persist the incremented strike count, but only for the tool class that
+ * earns a strike.
+ *
+ * SC-369 (#209): this branch and the doc-hygiene one below were the last
+ * decision logic left in the hook file. A hook is a trigger; a branch that
+ * decides whether state is written is logic, and it belongs where a test can
+ * reach it without simulating a PreToolUse payload.
+ */
+export function persistStrikeCount(
+  pendingFile: string,
+  pending: GatePending,
+  newStrikeCount: number,
+  toolName: string,
+): boolean {
+  if (toolName !== 'Skill') return false;
+  try {
+    writeFileSync(
+      pendingFile,
+      JSON.stringify({ ...pending, strike_count: newStrikeCount }, null, 2),
+      'utf-8',
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove a stale pending record. Called when no workflow gate is failing.
+ */
+export function clearGatePending(pendingFile: string): void {
+  if (!existsSync(pendingFile)) return;
+  try { unlinkSync(pendingFile); } catch { /* best effort */ }
+}
+
+/**
+ * SC-508: emit one signal per doc-hygiene finding, for promotion tracking.
+ *
+ * Takes the checker as a parameter so the caller owns the import and a test
+ * can drive the failure path without a real project tree. Best-effort by
+ * design — a hygiene scan must never decide whether a gate nag is delivered —
+ * and it returns the count so "it ran and found nothing" is distinguishable
+ * from "it threw", which a bare try/catch here would have hidden.
+ */
+export function logDocHygieneSignals(
+  signalsDir: string,
+  signalsFile: string,
+  projectRoot: string,
+  check: (root: string) => {
+    pass: boolean;
+    findings: ReadonlyArray<{ checkId?: string; file?: string; level?: string; message?: string }>;
+  },
+): number {
+  try {
+    const result = check(projectRoot);
+    if (result.pass) return 0;
+    for (const finding of result.findings) {
+      logSignal(signalsDir, signalsFile, {
+        ts: new Date().toISOString(),
+        type: 'doc-hygiene',
+        checkId: finding.checkId,
+        file: finding.file,
+        level: finding.level,
+        message: finding.message,
+      });
+    }
+    return result.findings.length;
+  } catch {
+    return -1;
   }
 }

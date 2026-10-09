@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
-import { matchPattern, type ParsedSC } from "../lib/conformity";
+import { matchPattern, type SCPattern } from "../lib/conformity";
 
 const ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(ROOT, "scripts", "create-sc.ts");
@@ -177,7 +177,7 @@ testable: true
         expect(scMatch).not.toBeNull();
 
         const statement = scMatch![2].trim();
-        const sc: ParsedSC = { id: "SC-999", statement, specFile: "test.md" };
+        const sc: SCPattern = { id: "SC-999", statement, specFile: "test.md" };
         const assertion = matchPattern(sc);
         expect(assertion).not.toBeNull();
       });

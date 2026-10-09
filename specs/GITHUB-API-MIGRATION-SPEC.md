@@ -139,7 +139,7 @@ this directory; that divergence is its own issue.
 - [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
 - [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
-- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [could not be, redactSecrets] and not contains [} catch {}] — a failed label read blocks instead of being swallowed. The positive clause is not decoration: a bare absence assertion has no matcher, so written that way it could not be evaluated and sat unchecked while reading as a requirement
+- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [not be read to check, redactSecrets] — `could not be` spanned a string-concatenation line break in the source, so the expected token was never contiguous text and the clause could not have passed; a failed label read blocks instead of being swallowed. The positive clause is not decoration: a bare absence assertion has no matcher, so written that way it could not be evaluated and sat unchecked while reading as a requirement
 
 ### Phase 6 — The agent layer reaches GitHub at all (#137)
 

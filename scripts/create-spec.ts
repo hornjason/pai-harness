@@ -15,7 +15,7 @@
 
 import { existsSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
-import { isMatchablePattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
+import { isMatchablePattern, isBehavioralSC, type SCPattern } from "../lib/conformity";
 import { loadRegistry, type RegistryEntry } from "../lib/create-sc";
 
 // ── Argument parsing ──────────────────────────────────────────
@@ -88,7 +88,7 @@ if (scStatements.length > 0) {
   const failures: Array<{ statement: string; suggestions: RegistryEntry[] }> = [];
 
   for (const statement of scStatements) {
-    const sc: ParsedSC = { id: "SC-DRAFT", statement, specFile: filename };
+    const sc: SCPattern = { id: "SC-DRAFT", statement, specFile: filename };
 
     // Behavioral SCs bypass matchPattern validation
     if (isBehavioralSC(sc)) {

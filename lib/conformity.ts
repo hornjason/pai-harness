@@ -237,6 +237,51 @@ export interface ParsedSC {
   id: string;
   statement: string;
   specFile: string;
+  /**
+   * `true` for `- [x]`, `false` for `- [ ]`.
+   *
+   * Until #209 the extractor matched only `- [ ]`, so a criterion marked done
+   * left the suite entirely: ticking a box deleted its test. The flag is what
+   * lets the generator bind the done ones for real and defer the rest.
+   */
+  checked: boolean;
+}
+
+/**
+ * What the matchers actually need: a statement and where it came from.
+ *
+ * `checked` is required on anything extractSCs produces, because the generator
+ * branches on it. It is optional here so a caller testing a matcher in
+ * isolation does not have to invent a checkbox state the matcher never reads.
+ */
+export type SCPattern = Omit<ParsedSC, "checked"> & { checked?: boolean };
+
+/**
+ * A criterion allowed to reach matchPattern fallthrough without failing a
+ * strict spec. The reason is required, and is the only thing separating this
+ * from a mute.
+ */
+export interface SCExemption {
+  id: string;
+  spec: string;
+  reason: string;
+}
+
+/** Shortest reason that is a sentence rather than a shrug. */
+const MIN_EXEMPTION_REASON = 10;
+
+/**
+ * Read the project's SC exemptions. An entry without a usable reason is not an
+ * exemption — it is dropped here, so the criterion falls through and fails.
+ */
+export function collectExemptions(root: string): SCExemption[] {
+  const raw = loadConformityAllowlists(root).unmatchedSCs ?? [];
+  return raw.filter(
+    e =>
+      e && typeof e.id === "string" && e.id.length > 0 &&
+      typeof e.spec === "string" && e.spec.length > 0 &&
+      typeof e.reason === "string" && e.reason.trim().length >= MIN_EXEMPTION_REASON,
+  );
 }
 
 // ── Behavioral SC detection ───────────────────────────────
@@ -246,14 +291,14 @@ export interface ParsedSC {
  * runtime verification (agent sessions, transcripts, auditing) and cannot
  * be tested by static file checks.
  */
-export function isBehavioralSC(sc: ParsedSC): boolean {
+export function isBehavioralSC(sc: SCPattern): boolean {
   return /\(behavioral\)\s*$/.test(sc.statement);
 }
 
 /**
  * Counts behavioral SCs in a list.
  */
-export function countBehavioralSCs(scs: ParsedSC[]): number {
+export function countBehavioralSCs(scs: SCPattern[]): number {
   return scs.filter(isBehavioralSC).length;
 }
 
@@ -262,7 +307,7 @@ export function countBehavioralSCs(scs: ParsedSC[]): number {
  * Behavioral SCs are verified via SESSION-AUDIT-SPEC's two feedback loops,
  * not via static conformity checks.
  */
-export function getBehavioralRouting(sc: ParsedSC): string | null {
+export function getBehavioralRouting(sc: SCPattern): string | null {
   if (!isBehavioralSC(sc)) return null;
   return "Verified via SESSION-AUDIT-SPEC § Two Feedback Loops (runtime behavioral check)";
 }
@@ -272,7 +317,7 @@ export function getBehavioralRouting(sc: ParsedSC): string | null {
  * Returns null when no fresh cache entry exists (treated as unmatchable).
  * Stale entries (>= 7 days old) return null so they're treated as unmatchable.
  */
-export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: string) => void) | null {
+export function behavioralPattern(sc: SCPattern, cachePath: string): ((root: string) => void) | null {
   const cache = readFreshCache(cachePath);
   const entry = cache[sc.id];
   if (!entry) return null;
@@ -284,12 +329,17 @@ export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: stri
   };
 }
 
-function extractSCs(content: string, specFile: string): ParsedSC[] {
+export function extractSCs(content: string, specFile: string): ParsedSC[] {
   const scs: ParsedSC[] = [];
-  const pattern = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
+  const pattern = /^- \[([ xX])\] (SC-\w+):\s*(.+)$/gm;
   let match;
   while ((match = pattern.exec(content)) !== null) {
-    scs.push({ id: match[1], statement: match[2].trim(), specFile });
+    scs.push({
+      id: match[2],
+      statement: match[3].trim(),
+      specFile,
+      checked: match[1].toLowerCase() === "x",
+    });
   }
   return scs;
 }
@@ -346,7 +396,7 @@ function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<strin
 // ── Pattern matchers ────────────────────────────────────────
 
 type AssertionFn = (root: string) => void;
-type MatcherHandler = (sc: ParsedSC, match: RegExpMatchArray) => AssertionFn | null;
+type MatcherHandler = (sc: SCPattern, match: RegExpMatchArray) => AssertionFn | null;
 
 // Config loading with caching
 const _registryCache = new Map<string, Array<{ name: string; regex: string }>>();
@@ -368,6 +418,7 @@ const _registryCache = new Map<string, Array<{ name: string; regex: string }>>()
 function loadConformityAllowlists(root: string): {
   untestedSpecs?: string[];
   orphanFiles?: string[];
+  unmatchedSCs?: SCExemption[];
 } {
   try {
     const p = join(root, ".claude", "conformity-allowlists.json");
@@ -376,6 +427,7 @@ function loadConformityAllowlists(root: string): {
     return {
       untestedSpecs: Array.isArray(parsed.untestedSpecs) ? parsed.untestedSpecs : undefined,
       orphanFiles: Array.isArray(parsed.orphanFiles) ? parsed.orphanFiles : undefined,
+      unmatchedSCs: Array.isArray(parsed.unmatchedSCs) ? parsed.unmatchedSCs : undefined,
     };
   } catch {
     return {};
@@ -761,10 +813,19 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       const content = readFileSync(path, "utf-8");
       const fm = parseFrontmatter(content);
       expect(fm).toBeDefined();
-      expect(fm?.[field]).toBeDefined();
       if (expectedValue !== undefined) {
         expect(fm?.[field]).toBe(expectedValue);
+        return;
       }
+      // parseFrontmatter only records `key: value` pairs, so a key whose value
+      // is a nested block (`tiers:` followed by indented lines) reads as
+      // absent. Presence-only checks fall back to the raw block — a detector
+      // narrower than what it detects is the defect, not the frontmatter.
+      const block = content.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+      const declared =
+        fm?.[field] !== undefined ||
+        new RegExp(`^${field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}:\\s*$`, "m").test(block);
+      expect(declared).toBe(true);
     };
   },
 
@@ -782,6 +843,22 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       const lineCount = content.trimEnd().split("\n").length;
       expect(lineCount).toBeGreaterThanOrEqual(min);
       expect(lineCount).toBeLessThanOrEqual(max);
+    };
+  },
+
+  "path-prefixed-contains": (sc, match) => {
+    const file = match[1].replace(/`/g, "");
+    const items = match[2].split(",").map(i => i.trim());
+    return (root) => {
+      const path = resolveFilePath(root, file);
+      if (!existsSync(path)) {
+        expect(existsSync(path)).toBe(true);
+        return;
+      }
+      const content = readFileSync(path, "utf-8");
+      for (const item of items) {
+        expect(content).toContain(item);
+      }
     };
   },
 
@@ -805,7 +882,7 @@ const matcherHandlers: Record<string, MatcherHandler> = {
   },
 };
 
-export function matchPattern(sc: ParsedSC, projectRoot?: string): AssertionFn | null {
+export function matchPattern(sc: SCPattern, projectRoot?: string): AssertionFn | null {
   const registry = loadRegistry(projectRoot);
   for (const entry of registry) {
     const regex = new RegExp(entry.regex, "i");
@@ -827,7 +904,7 @@ export function matchPattern(sc: ParsedSC, projectRoot?: string): AssertionFn | 
  * Used by create-spec for SC validation: a consumer custom pattern without a handler
  * is still a valid SC pattern for specification purposes.
  */
-export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean {
+export function isMatchablePattern(sc: SCPattern, projectRoot?: string): boolean {
   const registry = loadRegistry(projectRoot);
   for (const entry of registry) {
     const regex = new RegExp(entry.regex, "i");
@@ -843,6 +920,7 @@ export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
   const specMap = collectTestableSpecs(root, opts?.extraSpecDirs ?? []);
   const specsDir = join(root, "specs");
+  const exemptions = collectExemptions(root);
 
   function resolveSpecPath(specFile: string): string {
     if (specFile.includes("/")) {
@@ -879,32 +957,47 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       describe(specFile, () => {
         const unmatched: string[] = [];
         const behavioral: string[] = [];
+        const staleExemptions: string[] = [];
+        const specExemptions = new Map(
+          exemptions.filter(e => e.spec === specFile).map(e => [e.id, e]),
+        );
         for (const sc of metadata.scs) {
+          if (!sc.checked) {
+            // An unchecked criterion is work not started, not a regression.
+            // It gets a todo rather than an assertion wrapped in a swallowing
+            // catch — the shape this replaced, which could not go red (#209).
+            // bun-types declares test.todo as requiring a body even though the
+            // runtime accepts a bare label. A no-op body satisfies both: todo
+            // tests are not executed unless `bun test --todo` is passed.
+            test.todo(`${sc.id}: ${sc.statement}`, () => {});
+            continue;
+          }
           if (isBehavioralSC(sc)) {
             const routing = getBehavioralRouting(sc);
             behavioral.push(`${sc.id}: ${sc.statement} → ${routing}`);
             continue;
           }
           const assertion = matchPattern(sc);
+          const exemption = specExemptions.get(sc.id);
           if (!assertion) {
-            if (metadata.status === "draft") {
-              // bun-types declares test.todo as requiring a body even though the
-              // runtime accepts a bare label. A no-op body satisfies both: todo
-              // tests are not executed unless `bun test --todo` is passed.
-              test.todo(`${sc.id}: ${sc.statement}`, () => {});
-            } else {
-              unmatched.push(`${sc.id}: ${sc.statement}`);
-            }
+            if (!exemption) unmatched.push(`${sc.id}: ${sc.statement}`);
             continue;
+          }
+          if (exemption) {
+            staleExemptions.push(`${sc.id} — exempted for "${exemption.reason}", but it matches a matcher now`);
           }
           const specPath = resolveSpecPath(specFile);
           test(`${sc.id}: ${sc.statement}`, () => {
-            try {
-              assertion(root);
-              recordPassingSC(sc.id, specPath);
-            } catch {
-              // Unchecked SC assertion failure = work not done yet, not a regression
-            }
+            assertion(root);
+            recordPassingSC(sc.id, specPath);
+          });
+        }
+        if (staleExemptions.length > 0) {
+          // Ratchet, not a mute: an entry that stopped being a violation has to
+          // leave the list, or the list becomes a place things go to be forgotten.
+          test(`EXEMPT-RATCHET: ${staleExemptions.length} stale SC exemptions`, () => {
+            console.error(`Stale exemptions in ${specFile}:\n  ${staleExemptions.join("\n  ")}`);
+            expect(staleExemptions).toEqual([]);
           });
         }
         if (behavioral.length > 0) {

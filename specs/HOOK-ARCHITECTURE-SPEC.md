@@ -31,7 +31,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | Hook | File | Lines | Governing SCs | Assessment |
 |------|------|-------|---------------|-----------|
 | AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
-| GateEnforcement | GateEnforcement.hook.ts | 275 | SC-369, SC-370 | Borderline — review what's logic vs trigger |
+| GateEnforcement | GateEnforcement.hook.ts | 98 | SC-369, SC-370 | Thin trigger — strike persistence, pending cleanup and doc-hygiene signalling live in lib/gate-enforcement.ts |
 | AgentVerdictCapture | AgentVerdictCapture.hook.ts | 182 | SC-370, SC-371 | Acceptable |
 | StaleTTLCleanup | StaleTTLCleanup.hook.ts | 170 | SC-370, SC-371 | Acceptable |
 | CommitEnforcement | CommitEnforcement.hook.ts | 146 | SC-304, SC-370 | Acceptable |

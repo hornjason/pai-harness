@@ -15,18 +15,18 @@ import {
   matchPattern,
   writeFindingsReport,
   clearFindings,
-  type ParsedSC,
+  type SCPattern,
 } from "../../lib/conformity";
 import { existsSync, readFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 
 // ── Helpers ─────────────────────────────────────────────────
 
-function makeBehavioralSC(id: string, statement: string): ParsedSC {
+function makeBehavioralSC(id: string, statement: string): SCPattern {
   return { id, statement: `${statement} (behavioral)`, specFile: "TEST-SPEC.md" };
 }
 
-function makeStructuralSC(id: string, statement: string): ParsedSC {
+function makeStructuralSC(id: string, statement: string): SCPattern {
   return { id, statement, specFile: "TEST-SPEC.md" };
 }
 
@@ -57,7 +57,7 @@ describe("Behavioral SCs excluded from unmatched count", () => {
     // The SC statement in a spec file: "SC-318: Something (behavioral)"
     // extractSCs should parse it, and isBehavioralSC should detect the suffix
     const { isBehavioralSC } = require("../../lib/conformity");
-    const sc: ParsedSC = {
+    const sc: SCPattern = {
       id: "SC-345",
       statement: "Agent completes standard task with >80% directive compliance (behavioral)",
       specFile: "INSTRUCTION-COMPLIANCE-SPEC.md",
@@ -67,7 +67,7 @@ describe("Behavioral SCs excluded from unmatched count", () => {
 
   test("countBehavioralSCs returns correct count from SC list", () => {
     const { countBehavioralSCs } = require("../../lib/conformity");
-    const scs: ParsedSC[] = [
+    const scs: SCPattern[] = [
       makeBehavioralSC("SC-318", "Cold-start agent finds PROJECT-STATE within first 3 tool calls"),
       makeStructuralSC("SC-309", "scripts/session-end.ts exists"),
       makeBehavioralSC("SC-400", "test-brief CLI spawns agent in isolated worktree"),

@@ -17,7 +17,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
+import { matchPattern, isBehavioralSC, type SCPattern } from "../lib/conformity";
 import { readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
 
@@ -176,7 +176,7 @@ export function checkConformitySCs(uncheckedSCs: UncheckedSC[], root: string): C
   for (const sc of uncheckedSCs) {
     const statement = sc.statement || "";
     const key = scopedKey(sc.specFile, sc.id);
-    const parsed: ParsedSC = { id: sc.id, statement, specFile: sc.specFile };
+    const parsed: SCPattern = { id: sc.id, statement, specFile: sc.specFile };
 
     // Check behavioral cache first for behavioral SCs
     if (isBehavioralSC(parsed) && behavioralCache[sc.id]) {

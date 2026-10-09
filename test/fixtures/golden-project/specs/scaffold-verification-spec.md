@@ -17,7 +17,7 @@ Auto-verified by conformity engine. Each SC uses a matchable pattern so `runScaf
 
 ### Core scaffold files
 
-- [x] SC-S00: scaffold output verification is active
+- [x] SC-S00: specs/scaffold-verification-spec.md exists
 - [ ] SC-S01: CLAUDE.md exists
 - [ ] SC-S02: AGENTS.md exists
 - [ ] SC-S03: CODE-MAP.md exists
