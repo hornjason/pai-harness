@@ -1713,6 +1713,17 @@ function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNE
 
 // ──── COLLECT-CLAIM-START ────
 /**
+ * Whether the only worktree in a run is held to its own claim (#228).
+ *
+ * Declared ONCE, as a flag, so a test can build a mutant copy of this block
+ * with it set to false and watch the exemption's removal re-break the run it
+ * was added for — .claude/rules/checks-must-be-able-to-fail.md. Without that,
+ * "the lone worktree was not refused" is indistinguishable from an audit that
+ * refuses nothing at all, which is the defect this repo has shipped most.
+ */
+const SINGLE_WORKTREE_EXEMPT = true
+
+/**
  * A worktree's reported path, as the collector will see it (#178).
  *
  * `groupFilesByWorktree` accepts both an absolute path inside the worktree and
@@ -1761,11 +1772,36 @@ function claimKey(worktreePath, p) {
  * Reading that as "claimed nothing" would refuse every ordinary run. Such an
  * agent is unconstrained, with one exception: it still cannot contribute a
  * file some other worktree explicitly claimed.
+ *
+ * #228: that exemption was conditioned on the WRONG THING — on `claimedFiles`
+ * being absent, rather than on there being another worktree to contest with.
+ * A lone agent that reported a claim naming fewer files than it changed took
+ * the strict branch and had its whole collection refused over a file nobody
+ * else was touching. Run wf_74366574-136: correct work, refused, SHIP_FAILED,
+ * only copy left loose in the worktree. What makes a claim meaningful is a
+ * second claimant, so the exemption is now keyed on the number of
+ * PARTICIPATING WORKTREES, which is what the docblock above always described.
+ *
+ * It is an exemption from the CLAIM, not from the worktree boundary: a path
+ * that does not reduce to a location inside the reporting worktree is refused
+ * whatever the claim says, because the collector would discard it anyway and
+ * a silent discard is how work goes missing.
  */
+function escapesWorktree(key) {
+  return key.startsWith('/') || key.split('/').includes('..')
+}
+
 function auditWorktreeClaims(results) {
   const violations = []
   const candidates = []
   if (!Array.isArray(results)) return { violations, candidates }
+
+  // Participants, not result ROWS: a worktree that reports in two parts is
+  // still one worktree, and counting rows would reinstate #228 for it.
+  const participants = [...new Set(
+    results.map(r => String(r && r.worktreePath || '').trim()).filter(Boolean),
+  )]
+  const unconstrained = SINGLE_WORKTREE_EXEMPT && participants.length === 1
 
   // Ownership first, across every worktree — a file's claimant has to be known
   // before any worktree's report can be judged against it.
@@ -1792,6 +1828,23 @@ function auditWorktreeClaims(results) {
     for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
       const key = claimKey(wt, raw)
       if (!key) continue
+      // The boundary, checked before any exemption. claimKey only strips the
+      // worktree prefix off paths that are inside it, so anything still
+      // absolute or still carrying a `..` is a path this worktree cannot
+      // contribute — another worktree's copy, or something outside the repo.
+      if (escapesWorktree(key)) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, which is not inside its own worktree — a worktree may only contribute files beneath its own directory`,
+        })
+        continue
+      }
+      // One worktree in the run means nothing is contested and the claim has
+      // no one to protect anything from (#228).
+      if (unconstrained) {
+        kept.push(key)
+        continue
+      }
       const owners = claimants[key] || []
       // Exactly one owner is the only state in which a claimant exists. Two
       // worktrees claiming one file is a scheduling failure SC-411 should have
@@ -1823,6 +1876,88 @@ function auditWorktreeClaims(results) {
   return { violations, candidates }
 }
 // ──── COLLECT-CLAIM-END ────
+
+// ──── PRESERVE-REFUSED-START ────
+/**
+ * Give refused work a name before the run ends (#228).
+ *
+ * A refused collection used to return SHIP_FAILED and stop. The agents'
+ * changes stayed in their worktrees, uncommitted: reachable from no ref,
+ * absent from every log, and deleted by the next `git worktree remove
+ * --force`. On wf_74366574-136 that was the ONLY copy of a correct
+ * implementation. The refusal itself was right; losing the work was not.
+ *
+ * This preserves, it does not collect. Nothing is merged, copied into the
+ * project root, or staged — the refusal stands and the run still fails. All
+ * that changes is that each worktree's dirty tree is committed onto its own
+ * current branch, and the branch is named in the failure message, so the
+ * operator can reach the work from the refusal alone.
+ *
+ * `collectDestination` gates which paths are handed to the script, for the
+ * same reason it gates the collection: these become arguments to git commands
+ * that commit whatever they find. The project root is excluded outright —
+ * `git add -A` there would sweep up unrelated working-tree state and commit
+ * it under a preserve message.
+ *
+ * Best effort, and loud when it fails. A preserve step that could not confirm
+ * anything still names the worktrees, because "your work is in a directory
+ * and reachable from nothing" is precisely the state nobody must be able to
+ * end a run in without being told.
+ */
+async function preserveRefusedWork(results, phaseName, label) {
+  const paths = [...new Set(
+    (Array.isArray(results) ? results : [])
+      .map(r => String(r && r.worktreePath || '').trim())
+      .filter(Boolean),
+  )].filter(w => w !== PROJECT_ROOT && collectDestination(w))
+
+  if (paths.length === 0) return { preserved: [], detail: '' }
+
+  log(`Collection refused — preserving ${paths.length} worktree(s) onto their own branches (#228)`)
+
+  const out = await agent(`
+Run exactly this and report the result:
+
+bun ${shellQuote(`${HARNESS_ROOT}/scripts/preserve-worktree-work.ts`)} ${paths.map(p => shellQuote(p)).join(' ')}
+
+The command prints one JSON line: [{ worktreePath, branch, sha, status, detail }].
+Report that array verbatim as "entries". Do not invent, summarise or reorder it.
+If the command printed no JSON line at all, report entries as an empty array.
+  `, {
+    label,
+    phase: phaseName,
+    schema: {
+      type: 'object',
+      properties: {
+        entries: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              worktreePath: { type: 'string' },
+              branch: { type: 'string' },
+              sha: { type: 'string' },
+              status: { type: 'string' },
+              detail: { type: 'string' },
+            },
+            required: ['worktreePath', 'status'],
+          },
+        },
+      },
+      required: ['entries'],
+    },
+  })
+
+  const entries = Array.isArray(out && out.entries) ? out.entries : []
+  const preserved = entries.filter(e => e && e.worktreePath && e.branch && e.status !== 'failed')
+  const parts = preserved.map(e => `${e.worktreePath} → branch ${e.branch}${e.sha ? ` (${e.sha})` : ''}`)
+  const unconfirmed = paths.filter(p => !preserved.some(e => e.worktreePath === p))
+  if (unconfirmed.length > 0) {
+    parts.push(`could not confirm preservation of ${unconfirmed.join(', ')} — the work may still be uncommitted there`)
+  }
+  return { preserved, detail: ` — uncollected work preserved: ${parts.join('; ')}` }
+}
+// ──── PRESERVE-REFUSED-END ────
 
 // ──── COLLECT-AGENT-WORK-START ────
 /**
@@ -1871,15 +2006,22 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // other agents' edits exist and are not this collection's to discard, and a
   // run that silently dropped them is how #178 produced a commit documenting
   // controls it did not contain.
+  //
+  // Every refusal from here on goes through `refuse`, which preserves the
+  // worktrees first (#228). A refusal that returns without doing that leaves
+  // the only copy of the work unreachable from any ref, so the two belong in
+  // one place rather than at three return statements.
+  const refuse = async (detail) => {
+    const kept = await preserveRefusedWork(results, phaseName, `${label}-preserve`)
+    return { ok: false, collected: 0, staged: false, detail: `${detail}${kept.detail}` }
+  }
+
   const audit = auditWorktreeClaims(results)
   if (audit.violations.length > 0) {
-    return {
-      ok: false,
-      collected: 0,
-      staged: false,
-      detail: `refusing to collect: ${audit.violations.length} unclaimed file modification(s) (#178, SC-413) — ` +
-        audit.violations.map(v => v.detail).join('; '),
-    }
+    return refuse(
+      `refusing to collect: ${audit.violations.length} unclaimed file modification(s) (#178, SC-413) — ` +
+      audit.violations.map(v => v.detail).join('; '),
+    )
   }
   // The worktree SET comes from what the agents reported, not from the pruned
   // candidates. Deriving it from the candidates skips the destination
@@ -1901,7 +2043,7 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // inside a double-quoted string.
   const dest = collectDestination(intoDir)
   if (!dest) {
-    return { ok: false, collected: 0, staged: false, detail: `refusing to collect into ${intoDir} — not this run's project root or one of its agent worktrees` }
+    return refuse(`refusing to collect into ${intoDir} — not this run's project root or one of its agent worktrees`)
   }
 
   log(`Collecting work from ${elsewhere.length} worktree(s) into ${dest} (#81, #155)`)
@@ -1955,7 +2097,10 @@ its "COLLECTED <n>" stdout line, or 0 if there is none. Put stderr in detail.
   // is a failure. A malformed reply, a missing field, or a claim of success
   // with nothing collected all land here rather than proceeding to commit.
   if (!out || out.ok !== true || !(out.collected > 0)) {
-    return { ok: false, collected: 0, staged: false, detail: out?.detail || 'no usable result from the collect step' }
+    // Also a refused collection, and the one that most often follows a
+    // finished implementation: the claim audit passed, the collector failed,
+    // and before #228 the run ended with the work still loose in a worktree.
+    return refuse(out?.detail || 'no usable result from the collect step')
   }
   return { ok: true, collected: out.collected, staged: true }
 }
