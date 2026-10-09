@@ -2,11 +2,11 @@
 
 **Current phase: All phases complete**
 
-**Session 35 (2026-10-07)** — The security gate can now fail a run. #129 and #127 closed, #161 merged as ae04da67. #127 turned out to be ALREADY FIXED by PR #128 and I had been carrying the stale claim into three places — corrected on #126 and closed with the proof it was waiting for: run wf_7c91ba3a-a22 sized XS, forced LIGHT, and graded rook 2/2. The third live run of the pipeline demonstrated #129 a third time: rook returned FAIL on an empty scope and the workflow opened PR #161 anyway. That run also lost two of its three implementations (#162) and committed the one that was not mergeable — two of four parallel agents had solved the same problem twice, leaving a 270-line script with 353 lines of tests that ship.js never called. The discarded third round was the one that wired it in; recovered from its worktree by hand and merged.
+**Session 36 (2026-10-09)** — The harness can land and measure its own work. #228 merged (73c056ab): a single-worktree run no longer refuses its own output on a multi-worktree guard, and a collect refusal now commits the worktree before returning. #227 merged (e9465ff1): all 35 agent call sites in ship.js are instrumented and grade-deterministic.ts no longer derives duration from file mtime/birthtime. Both were merged only after re-running by hand the mutation each PR claimed. Three runs this session had their verdict disagree with their artifact in both directions — SHIP_FAILED and IMPLEMENT_FAILED over correct work, SHIPPED over a red branch.
 
-Suite: 2956 pass, 17 skip, 50 todo, 0 fail under bun scripts/test-clean-env.ts; typecheck 0 errors; node --check clean on ship.js wrapped for its top-level return; CI test + gates + GitGuardian green on the merge. Four mutations on the new controls, all caught, all reverted.
-Issues opened: #162
-Issues closed: #127, #129, #160
+Suite: 4121 pass, 17 skip, 154 todo, 0 fail, 4292 tests across 182 files under bun scripts/test-clean-env.ts at e9465ff1; 4030/4201/180 at c60a7b00 earlier the same day
+Issues opened: #227, #228, #229, #232
+Issues closed: #227, #228
 
 Read this before anything else. The suite is green under a CLEAN ENVIRONMENT, which is a stronger claim than the one this file made yesterday — run `bun scripts/test-clean-env.ts`, not `bun test`, before believing any gate. Plain `bun test` passes on this machine for reasons that have nothing to do with the code.
 
