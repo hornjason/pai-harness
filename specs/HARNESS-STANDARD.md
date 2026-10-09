@@ -845,6 +845,53 @@ ITERATION   → Updated issue comments + new sub-issues (if any)
 FEEDBACK    → ratings.jsonl + memories + docs + closed issue
 ```
 
+### Run timing — one record per agent call site (#227)
+
+**Artifact:** `<WORK_DIR>/agent-timings.json`, where `WORK_DIR` is the run's
+directory (`~/.rungate/<slug>` unless the caller passed `workDir`).
+
+**Shape** — an append-only list. `version` is the artifact format, `records`
+is in the order the stamps arrived:
+
+```json
+{
+  "version": 1,
+  "records": [
+    { "label": "read-issue",   "startedAt": "2026-10-09T10:00:00.000Z", "endedAt": "2026-10-09T10:00:12.000Z", "durationSeconds": 12 },
+    { "label": "marcus-fix-1", "startedAt": "2026-10-09T10:01:00.000Z", "endedAt": null,                       "durationSeconds": null }
+  ]
+}
+```
+
+`endedAt: null` is an **unclosed** record: the call site started and its agent
+never stamped the end. It is reported as `UNCLOSED`, never as zero and never
+dropped. `startedAt: null` is an orphan end — an end stamp with nothing open —
+kept for the same reason.
+
+**The rule: every agent call site must be labelled.** The key is the call site's own
+`label`, not its `role`: `quinn-local-1` and `quinn-local-2` are two
+measurements, and `marcus-sub-204` is not "marcus". `timedAgent` in
+`workflows/ship.js` refuses a call with no `label` rather than recording one
+as `undefined`, and `test/record-agent-timings.test.ts` asserts that no
+`await agent(` call site bypasses it.
+
+**Writer:** `scripts/record-agent-timings.ts`, invoked by the agent itself as
+its first and last Bash command. It appends on `--start` and closes the most
+recent still-open record for that label on `--end`, so a re-entrant label — a
+retry, a heal loop — produces a second record instead of overwriting the
+first. A corrupt artifact is refused, not replaced.
+
+**Reader:** the GRADE step runs the same script with `--report` and logs every
+line it prints, including the `UNCLOSED` ones. It does not derive durations
+from transcript file timestamps: a transcript filename is an agent id rather
+than a call site, and birth time is unavailable on some filesystems — where it
+was, the old loop printed nothing and the step reported `"timing": []`.
+
+- [x] SC-607: scripts/record-agent-timings.ts contains [TIMING_FILENAME, applyStart, applyEnd, REFUSE_EXIT] — the recorder appends rather than assigns, so a retry of the same label is a second record and not a lost one, and every refusal runs through one exit code a mutant can zero
+- [x] SC-608: workflows/ship.js contains [AGENT-TIMING-START, timedAgent, record-agent-timings.ts] and not contains [stat -c '%W'] — every call site is timed through one wrapper keyed by label, and no duration is derived from a file's birth time
+- [x] SC-609: test/record-agent-timings.test.ts contains [a retry of the same call site produces a second record, remains outside the timing wrapper] — re-entrancy and the absence of bypassing call sites are both executed assertions, because "ship.js contains timedAgent" stays true with thirty raw call sites beside it
+- [x] SC-610: specs/HARNESS-STANDARD.md contains [agent-timings.json, durationSeconds, every agent call site must be labelled] — the artifact path, the record shape and the labelling rule are written down where the next run's agents read
+
 ---
 
 ## Skills Invoked Per Step

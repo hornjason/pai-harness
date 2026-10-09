@@ -188,7 +188,9 @@ describe("#190: the run's harness root reaches spawned agents", () => {
     // sandbox makes impossible. Established pattern, see
     // test/briefed-agent-model.test.ts. Never give it a source from elsewhere.
     const factory = new Function(
-      "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "agent",
+      // timedAgent, not agent: briefedAgent spawns through the timing
+      // wrapper (#227).
+      "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "timedAgent",
       "loadContextPaths", "loadReinforcementRules",
       `${block}\nreturn briefedAgent;`,
     );

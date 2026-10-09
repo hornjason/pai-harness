@@ -60,8 +60,11 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
   // (#190, SC-624). Omitting it here throws ReferenceError, which is the
   // correct signal — this harness has to supply every binding the real block
   // closes over, not the subset that happened to be enough once.
+  // timedAgent is the same requirement one issue later (#227): briefedAgent
+  // spawns through the timing wrapper rather than the raw sandbox primitive,
+  // so the wrapper is the binding this harness has to supply.
   const factory = new Function(
-    "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "agent", "loadContextPaths", "loadReinforcementRules",
+    "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "timedAgent", "loadContextPaths", "loadReinforcementRules",
     `${block}\nreturn briefedAgent;`,
   );
 

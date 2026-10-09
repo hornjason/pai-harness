@@ -116,7 +116,7 @@ describe('ship.js pipeline hardening (#53)', () => {
     // The prompt is the template literal immediately preceding the options
     // object that carries the label.
     const promptEnd = shipContent.lastIndexOf('`', labelIdx)
-    const promptStart = shipContent.lastIndexOf('await agent(`', Math.max(0, promptEnd - 1))
+    const promptStart = shipContent.lastIndexOf('await timedAgent(`', Math.max(0, promptEnd - 1))
     expect(promptStart).toBeGreaterThan(-1)
 
     const commitPrompt = shipContent.slice(promptStart, promptEnd)

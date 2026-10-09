@@ -107,7 +107,9 @@ function loadCollectAgentWork(agentReply: unknown = { ok: true, collected: 1 }) 
 
   const collectAgentWork = new Function(
     "log",
-    "agent",
+    // The timing wrapper, not the raw sandbox primitive (#227): every call
+    // site in ship.js spawns through it, this one included.
+    "timedAgent",
     "shellQuote",
     "WORK_DIR",
     "PROJECT_ROOT",

@@ -223,7 +223,8 @@ function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
     "HARNESS_ROOT",
     "WORK_DIR",
     "log",
-    "agent",
+    // The timing wrapper every call site spawns through (#227).
+    "timedAgent",
     "shellQuote",
     `${body}\nreturn collectAgentWork`,
   )(

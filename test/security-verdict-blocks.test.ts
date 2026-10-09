@@ -1013,7 +1013,9 @@ function runFanout(opts: { rook?: unknown; scope?: unknown } = {}) {
   const logs: string[] = [];
 
   const factory = new Function(
-    "log", "agent", "briefedAgent", "parallel", "discovery", "projectConfig",
+    // timedAgent, not agent: every call site in ship.js spawns through the
+    // timing wrapper (#227), so that is the binding this block closes over.
+    "log", "timedAgent", "briefedAgent", "parallel", "discovery", "projectConfig",
     "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR", "ISSUE", "GATE_RESULT_SCHEMA",
     "reviewSha", "rookScopeCommand", "rookGateVerdict", "securityVerdict",
     "shellQuote",

@@ -83,7 +83,9 @@ function invokeFanout(b: Bindings): Promise<void> {
   const block = sliceBlock(BLOCK_START, BLOCK_END);
   const factory = new Function(
     "log",
-    "agent",
+    // timedAgent, not agent: every call site in ship.js spawns through the
+    // timing wrapper (#227), so that is the binding this block closes over.
+    "timedAgent",
     "briefedAgent",
     "parallel",
     "discovery",

@@ -87,7 +87,7 @@ describe("ship.js MCP migration (#25) + Goal determinism (#48)", () => {
     // indistinguishable from one that did — which is half of why #136 went
     // unnoticed for as long as it did.
     expect(shipContent).toContain("label: 'record-env-and-pr'");
-    expect(shipContent).toMatch(/prStep\s*=\s*await agent\(/);
+    expect(shipContent).toMatch(/prStep\s*=\s*await timedAgent\(/);
     expect(shipContent).toContain("prStep.ok");
   });
 });
