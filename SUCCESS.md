@@ -118,14 +118,23 @@ Each of these has happened in this repo and was mistaken for progress.
   every measured run while the rule text asking otherwise got longer each time.
   Compliance is measured from transcripts, never self-reported (#194).
 - **A spec marked done.** Measured 2026-10-08: **no success criterion in this
-  repo can fail the conformity suite.** `lib/conformity.ts:289` collects only
-  `- [ ] SC-N`, so the 467 checked SCs generate no test; the 107 unchecked ones
-  get a body that is `try { assertion(root) } catch { }` with no `expect`
-  (`:901-907`). The only test in the block that can go red checks SC *syntax*.
-  Promotion is one-way (`scripts/update-project-state.ts:150`), so an SC is
-  asserted at most once, on the run that flips it. **The SC count is a tally of
-  checkboxes, not evidence**, and no number derived from it belongs in an
-  argument.
+  repo could fail the conformity suite.** `lib/conformity.ts:289` collected only
+  `- [ ] SC-N`, so the 467 checked SCs generated no test; the 107 unchecked ones
+  got a body that was `try { assertion(root) } catch { }` with no `expect`
+  (`:901-907`). The only test in the block that could go red checked SC *syntax*.
+  **The SC count was a tally of checkboxes, not evidence.**
+  **Fixed 2026-10-09 by #209** (`c60a7b00`): the pattern is now
+  `/^- \[([ xX])\] (SC-\w+):…/gm`, a checked SC generates a bare
+  `entry.assertion(root)` with no surrounding catch, and an unchecked SC emits
+  `test.todo` instead of a swallowed pass. Measured on the merged tree:
+  **4030 pass / 0 fail / 4201 tests**, against 3236 / 3303 before — +794
+  passing, +898 collected. The first thing binding caught was `SC-297`/`SC-303`
+  asserting on `.git/hooks/pre-commit`, which git never tracks: green on a
+  developer machine, red in CI, and never about this repository at all.
+  **Still only 55% of the corpus.** The engine does not recurse into `specs/`
+  subdirectories, so the 254 SCs in `specs/bootstrap-data-flow/` — 45% of 564 —
+  are collected by nothing (#225). Quote SC numbers against 564 and say which
+  half you measured, or do not quote them.
 
 ## Where we actually stand
 
@@ -133,17 +142,21 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 
 | Claim | Standing (2026-10-08) |
 |---|---|
-| 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), and as of #200 + #201 a *disabled* guard is caught by the suite that owns it — measured, three for three. Still open: `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176); `TestSuiteGuard` cannot fire (#194); five hooks never fire (#199); the B1 adversary can only fail on a missing file; `parseGateResults` reads bun's stdout and never the exit code. |
-| 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168). |
-| 3 — bad ships are stopped | Partial. Security and compliance verdicts now refuse. Not yet audited for every computed verdict. |
+| 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), a *disabled* guard caught by the suite that owns it (#200 + #201), and as of #209 **a success criterion can fail** — it immediately caught two SCs asserting on untracked local state. Still open: only 55% of SCs are collected at all (#225, 254 invisible); `content-contains` discards everything after the first bracket list (#220); nothing reconciles the matcher registry with its handlers (#212); `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176); `TestSuiteGuard` cannot fire (#194); five hooks never fire (#199). |
+| 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168) — reproduced live on PR #219, green locally and 11 failures in CI. Prior-work detection measures ACs against `main` rather than the issue's branch, so a re-run re-implements and opens a second PR (#223). |
+| 3 — bad ships are stopped | **Weaker than previously recorded.** Security and compliance verdicts refuse, and the stale-review gate correctly blocked a run on 2026-10-09. But a run returned `SHIPPED` with `regressions: 0` on a branch with a failing test that an existing guard raised (#224), `SHIPPED` is returned without merging anything (#222), and a *skipped* prove step maps to the only unqualified success status in the system. |
 | 4 — absence ≠ clean | **No.** `grade-deterministic.ts` writes `{grades:[]}` and exits 0 on no transcripts; the ship.js prompt instructs the same shape (#195, open). |
 | 5 — works on another repo | **No, and never attempted.** Every run in this repo's history is rungate shipping rungate. The `~/.rungate/ddb-*` directories are rungate runs under a stale slug, not DDB runs. |
 | consumer list | **Surveyed 2026-10-08, and it fails.** Twelve blocking defects found by adversarial audit without running anything. See below. |
 
-Last full suite under `bun scripts/test-clean-env.ts` (2026-10-08): **3181 pass,
-0 fail**, 17 skip, 50 todo, across 178 files — 3248 tests run. Quote the pass
-count, not the run count; they differ by 67. That figure is the floor, not the
-claim — see "What is not success".
+Last full suite under `bun scripts/test-clean-env.ts`, measured on `origin/main`
+at `c60a7b00` (2026-10-09): **4030 pass, 0 fail**, 17 skip, 154 todo, across 180
+files — 4201 tests run. Quote the pass count, not the run count; they differ by
+171. That figure is the floor, not the claim — see "What is not success".
+
+**A local green is not a CI green.** On 2026-10-09 this exact command reported
+0 fail on a branch CI then failed with 11. Until #168 is closed, a figure from
+this script is a necessary condition and never a sufficient one.
 
 ### The consumer survey, 2026-10-08
 
