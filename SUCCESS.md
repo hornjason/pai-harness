@@ -87,6 +87,12 @@ Each of these has happened in this repo and was mistaken for progress.
 - **A passing gate.** `tsc-pass` was two early returns and an empty tail (#176).
 - **A merged PR.** PR #187 merged, reported `regressions: 0`, and went red in CI,
   because the count predated the final edit.
+- **A guard with a passing mutant test.** Measured 2026-10-08: wrapping the
+  `BLOCKING-GRADES` block (#188) in `if (false)` — wrapper *outside* the markers,
+  so the extracted slice is byte-identical — leaves `test/blocking-grades.test.ts`
+  at 19 pass / 0 fail. The same mutation on `SECURITY-DECISION` (#129) leaves
+  113 pass / 0 fail. Marker extraction proves the extracted text refuses
+  correctly. It does not prove the block is reached. See #200.
 - **An agent reporting it complied.** Marcus has exceeded the full-suite cap on
   every measured run while the rule text asking otherwise got longer each time.
   Compliance is measured from transcripts, never self-reported (#194).
