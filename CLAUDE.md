@@ -24,7 +24,12 @@ If you skip any step, the session is invalid.
 
 ## Rules
 
+- **SUCCESS.md is the measure** — it states what we are building and the five
+  falsifiable claims that mean it works. Before filing an issue, reviewing a PR,
+  or acting on an audit finding, say which claim it moves. Something that moves
+  none of them is cleanup and should say so rather than borrowing urgency.
 - **PROJECT-STATE.md at milestones** — update after every merge, SC, or milestone.
+  Update SUCCESS.md's standing table in the same edit.
 - **SCs without tests are wishes** — add the test in the same session you add the SC.
 
 ## Project-Specific References
