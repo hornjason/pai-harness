@@ -93,15 +93,22 @@ const { auditWorktreeClaims, claimKey } = loadClaimAudit();
 
 /**
  * `collectAgentWork` with its collaborators injected, so the refusal can be
- * observed as behaviour — including the fact that it happens BEFORE any agent
- * is spawned.
+ * observed as behaviour — including which steps it does and does not spawn.
+ *
+ * `agentReply` may be a value or a function of the prompt, because a refused
+ * collection now makes a SECOND kind of agent call: the preserve step (#228).
+ * One fixed reply for both would make the preserve step look like a collect
+ * step that succeeded.
  */
-function loadCollectAgentWork(agentReply: unknown = { ok: true, collected: 1 }) {
+function loadCollectAgentWork(
+  agentReply: unknown | ((prompt: string) => unknown) = { ok: true, collected: 1 },
+) {
   const calls: Array<{ prompt: string; label: string }> = [];
   const logs: string[] = [];
   const body = [
     block("COLLECT-DESTINATION"),
     block("COLLECT-CLAIM"),
+    block("PRESERVE-REFUSED"),
     block("COLLECT-AGENT-WORK"),
   ].join("\n");
 
@@ -117,7 +124,9 @@ function loadCollectAgentWork(agentReply: unknown = { ok: true, collected: 1 }) 
     (m: string) => logs.push(String(m)),
     async (prompt: string, opts: { label: string }) => {
       calls.push({ prompt, label: opts.label });
-      return agentReply;
+      return typeof agentReply === "function"
+        ? (agentReply as (p: string) => unknown)(prompt)
+        : agentReply;
     },
     (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`,
     "/tmp/work",
@@ -239,9 +248,12 @@ describe("AC-2: the collector refuses a worktree that reports an unclaimed path"
     expect(out.detail).toContain(WT_B); // the claimant
     expect(out.detail).toMatch(/claim/i);
 
-    // Refused before anything was spawned: no agent, nothing staged, nothing
-    // for a later step to mistake for a collection that happened.
-    expect(calls, "an agent was spawned despite the refusal").toHaveLength(0);
+    // Nothing was COLLECTED: the collect script is never reached, nothing is
+    // staged, and no later step can mistake this for a collection that
+    // happened. The one call that does go out is the preserve step (#228),
+    // asserted on its own below.
+    const collectCalls = calls.filter(c => c.prompt.includes("collect-worktree-files.ts"));
+    expect(collectCalls, "the collect script ran despite the refusal").toHaveLength(0);
   });
 
   test("the same two worktrees pass once the claim matches what was reported", async () => {
@@ -440,5 +452,353 @@ describe("AC-5: positive control — a disjoint collection still succeeds", () =
     expect(readFileSync(join(mainRepo, "lib", "beta.ts"), "utf-8")).toBe("NEW BETA\n");
     expect(git(mainRepo, "diff", "--cached", "--name-only").trim().split("\n").sort())
       .toEqual(["lib/alpha.ts", "lib/beta.ts"]);
+  });
+});
+
+// ── #228 ─────────────────────────────────────────────────────
+//
+// Run wf_74366574-136: one worktree, correct work, a partial `claimedFiles`
+// list — and the audit refused the whole collection because one changed file
+// had no claimant. Nothing was being contested; there was nobody to contest
+// with. The refusal then returned SHIP_FAILED without committing anything, so
+// the only copy of the work stayed loose in the worktree.
+
+describe("#228 / AC-1: a lone worktree is not held to its own claim", () => {
+  test("a partial claim from the only worktree produces no violations", () => {
+    // The exact shape from wf_74366574-136: more changed than claimed, and no
+    // other worktree in the run.
+    const audit = auditWorktreeClaims([
+      {
+        worktreePath: WT_A,
+        filesChanged: ["lib/a.ts", "lib/b.ts", "workflows/ship.js"],
+        claimedFiles: ["lib/a.ts"],
+      },
+    ]);
+    expect(audit.violations, JSON.stringify(audit.violations)).toEqual([]);
+    expect(audit.candidates).toEqual([
+      { worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/b.ts", "workflows/ship.js"] },
+    ]);
+  });
+
+  test("an empty claim list from the only worktree is treated the same way", () => {
+    // `claimedFiles: []` is "claimed nothing yet", and it took the same strict
+    // branch — the worst version of the bug, refusing every file in the run.
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["lib/a.ts"], claimedFiles: [] },
+    ]);
+    expect(audit.violations).toEqual([]);
+    expect(audit.candidates).toEqual([{ worktreePath: WT_A, filesChanged: ["lib/a.ts"] }]);
+  });
+
+  test("the same worktree reporting twice is still one participant", () => {
+    // Two result rows, one worktree. Counting rows rather than worktrees would
+    // make a remediation round that reports in two parts fail the exemption.
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: WT_A, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/a.ts"] },
+    ]);
+    expect(audit.violations).toEqual([]);
+  });
+});
+
+describe("#228 / AC-2: the exemption does not reach a contested run", () => {
+  test("two worktrees, one claimed path, the non-claimant is still refused", () => {
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["lib/a.ts", "workflows/ship.js"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: WT_B, filesChanged: ["workflows/ship.js"], claimedFiles: ["workflows/ship.js"] },
+    ]);
+    expect(audit.violations).toHaveLength(1);
+    expect(audit.violations[0]!.worktreePath).toBe(WT_A);
+    expect(audit.violations[0]!.path).toBe("workflows/ship.js");
+    expect(audit.violations[0]!.claimant).toBe(WT_B);
+  });
+
+  test("two worktrees, a path nobody claimed, still refused", () => {
+    // The exemption is about there being nobody to contest with. With a second
+    // worktree in the run, an unclaimed file is the #178 shape again.
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["workflows/ship.js"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+    ]);
+    expect(audit.violations.map(v => [v.worktreePath, v.path, v.claimant])).toEqual([
+      [WT_A, "workflows/ship.js", null],
+    ]);
+  });
+});
+
+describe("#228 / AC-6: the exemption does not exempt escaping paths", () => {
+  test("a lone worktree reporting outside itself is still refused", () => {
+    const audit = auditWorktreeClaims([
+      {
+        worktreePath: WT_A,
+        filesChanged: [`${WT_B}/lib/a.ts`, "../outside.ts", "lib/a.ts"],
+        claimedFiles: ["lib/a.ts"],
+      },
+    ]);
+    expect(audit.violations).toHaveLength(2);
+    expect(audit.violations.map(v => v.path).sort()).toEqual(
+      [`${WT_B}/lib/a.ts`, "../outside.ts"].sort(),
+    );
+    expect(audit.candidates).toEqual([{ worktreePath: WT_A, filesChanged: ["lib/a.ts"] }]);
+  });
+
+  test("...and refused with no claim at all, where the exemption is widest", () => {
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["/etc/passwd", "a/../../b.ts"] },
+    ]);
+    expect(audit.violations).toHaveLength(2);
+    expect(audit.candidates).toEqual([]);
+  });
+
+  test("a nested path inside the worktree is not mistaken for an escape", () => {
+    // Positive control. Without it the previous two pass against "refuse
+    // everything", which is the bug this issue is about.
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT_A, filesChanged: ["lib/deep/nested/file.ts", `${WT_A}/lib/x.ts`] },
+    ]);
+    expect(audit.violations).toEqual([]);
+    expect(audit.candidates[0]!.filesChanged).toEqual(["lib/deep/nested/file.ts", "lib/x.ts"]);
+  });
+});
+
+// ── AC-5: the exemption reverted, and observed ───────────────
+
+describe("#228 / AC-5: the single-worktree exemption is mutated and watched", () => {
+  /**
+   * A mutant copy of the claim audit with the exemption switched off. Without
+   * it, "the lone worktree is not refused" is indistinguishable from an audit
+   * that refuses nothing at all — the decorative-check shape counted five
+   * times in one day in .claude/rules/checks-must-be-able-to-fail.md.
+   *
+   * Same contract as test/rook-review-scope.test.ts: one declaration, mutated
+   * by name, and the harness throws rather than silently no-opping if the
+   * declaration moves.
+   */
+  const claimSource = block("COLLECT-CLAIM");
+
+  function loadMutant() {
+    const mutated = claimSource.replace(
+      /SINGLE_WORKTREE_EXEMPT\s*=\s*true\b/,
+      "SINGLE_WORKTREE_EXEMPT = false",
+    );
+    if (mutated === claimSource) {
+      throw new Error(
+        "could not build the mutant: no `SINGLE_WORKTREE_EXEMPT = true` in the COLLECT-CLAIM block of ship.js",
+      );
+    }
+    return new Function(`${mutated}\nreturn auditWorktreeClaims`)() as (r: unknown) => ClaimAudit;
+  }
+
+  test("the flag is declared exactly once, so the mutation cannot be half-applied", () => {
+    const decls = claimSource.match(/SINGLE_WORKTREE_EXEMPT\s*=/g) || [];
+    expect(
+      decls.length,
+      "more than one assignment — the mutant would only neutralise one of them",
+    ).toBe(1);
+  });
+
+  test("the mutant refuses the partial-claim case that the real audit allows", () => {
+    const results = [
+      { worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/b.ts"], claimedFiles: ["lib/a.ts"] },
+    ];
+    expect(auditWorktreeClaims(results).violations, "the real audit still refuses #228").toEqual([]);
+
+    const mutantViolations = loadMutant()(results).violations;
+    expect(
+      mutantViolations.map(v => v.path),
+      "the exemption was removed and nothing changed — this test is not watching it",
+    ).toEqual(["lib/b.ts"]);
+  });
+
+  test("the contested case is refused by BOTH copies — the exemption is not the whole check", () => {
+    const contested = [
+      { worktreePath: WT_A, filesChanged: ["workflows/ship.js"], claimedFiles: ["lib/a.ts"] },
+      { worktreePath: WT_B, filesChanged: ["workflows/ship.js"], claimedFiles: ["workflows/ship.js"] },
+    ];
+    expect(auditWorktreeClaims(contested).violations).toHaveLength(1);
+    expect(
+      loadMutant()(contested).violations,
+      "the mutant lost the contested-path refusal, so the comparison above proves nothing",
+    ).toHaveLength(1);
+  });
+});
+
+// ── AC-3 / AC-4: a refusal preserves, and says where ─────────
+
+describe("#228 / AC-3+AC-4: a refused collection preserves the work and says where it is", () => {
+  const contested = [
+    { worktreePath: WT_A, filesChanged: ["lib/a.ts", "workflows/ship.js"], claimedFiles: ["lib/a.ts"] },
+    { worktreePath: WT_B, filesChanged: ["workflows/ship.js"], claimedFiles: ["workflows/ship.js"] },
+  ];
+
+  const preserveReply = (prompt: string) => {
+    if (!prompt.includes("preserve-worktree-work.ts")) return { ok: true, collected: 1 };
+    return {
+      entries: [
+        { worktreePath: WT_A, branch: "agent-a", sha: "aaaaaaa", status: "committed" },
+        { worktreePath: WT_B, branch: "agent-b", sha: "bbbbbbb", status: "committed" },
+      ],
+    };
+  };
+
+  test("the preserve script is invoked on every participating worktree", async () => {
+    const { collectAgentWork, calls } = loadCollectAgentWork(preserveReply);
+    await collectAgentWork(contested, PROJECT, "Commit", "collect");
+
+    const preserve = calls.filter(c => c.prompt.includes("preserve-worktree-work.ts"));
+    expect(preserve, "a refusal returned without preserving anything").toHaveLength(1);
+    expect(preserve[0]!.prompt).toContain(`${HARNESS}/scripts/preserve-worktree-work.ts`);
+    expect(preserve[0]!.prompt).toContain(WT_A);
+    expect(preserve[0]!.prompt).toContain(WT_B);
+  });
+
+  test("the refusal names the worktree and branch holding each preserved commit", async () => {
+    const { collectAgentWork } = loadCollectAgentWork(preserveReply);
+    const out = await collectAgentWork(contested, PROJECT, "Commit", "collect");
+
+    expect(out.ok).toBe(false);
+    expect(out.staged).toBe(false);
+    // The refusal reason is what reaches SHIP_FAILED, and it is the only thing
+    // the operator gets. Everything needed to reach the work must be in it.
+    for (const token of [WT_A, "agent-a", WT_B, "agent-b"]) {
+      expect(out.detail, `the refusal does not mention ${token}`).toContain(token);
+    }
+    // ...and it still says why it refused.
+    expect(out.detail).toMatch(/claim/i);
+  });
+
+  test("a preserve step that reports nothing still names the worktrees it could not confirm", async () => {
+    // Fail loud. An unparseable reply that produced a tidy refusal message
+    // would hide exactly the state this issue is about — work on disk,
+    // reachable from nothing, and nobody told.
+    const { collectAgentWork } = loadCollectAgentWork((p: string) =>
+      p.includes("preserve-worktree-work.ts") ? { entries: [] } : { ok: true, collected: 1 },
+    );
+    const out = await collectAgentWork(contested, PROJECT, "Commit", "collect");
+    expect(out.ok).toBe(false);
+    expect(out.detail).toMatch(/not confirm|could not preserve|unconfirmed/i);
+    expect(out.detail).toContain(WT_A);
+    expect(out.detail).toContain(WT_B);
+  });
+
+  test("a successful collection preserves nothing — there is nothing to rescue", async () => {
+    const { collectAgentWork, calls } = loadCollectAgentWork({ ok: true, collected: 2 });
+    const out = await collectAgentWork(
+      [
+        { worktreePath: WT_A, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/b.ts"], claimedFiles: ["lib/b.ts"] },
+      ],
+      PROJECT,
+      "Commit",
+      "collect",
+    );
+    expect(out.ok).toBe(true);
+    expect(calls.filter(c => c.prompt.includes("preserve-worktree-work.ts"))).toHaveLength(0);
+  });
+
+  test("a collect step that fails also preserves, not just the claim refusal", async () => {
+    // The other way a finished implementation is lost: the claim audit passes,
+    // the collector itself fails, and the run ends with the work still loose.
+    const { collectAgentWork } = loadCollectAgentWork((p: string) =>
+      p.includes("preserve-worktree-work.ts")
+        ? { entries: [{ worktreePath: WT_A, branch: "agent-a", sha: "aaaaaaa", status: "committed" }] }
+        : { ok: false, collected: 0, detail: "collect script exited 1" },
+    );
+    const out = await collectAgentWork(
+      [{ worktreePath: WT_A, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] }],
+      PROJECT,
+      "Commit",
+      "collect",
+    );
+    expect(out.ok).toBe(false);
+    expect(out.detail).toContain("agent-a");
+    expect(out.detail).toContain(WT_A);
+  });
+
+  test("every path on the preserve command line is quoted", async () => {
+    // The worktree paths originate in an AGENT's reply and are interpolated
+    // into a shell command, exactly as the collect step's were (#155).
+    // collectDestination is the first layer and shellQuote the second;
+    // ship.js:377 records what happens when a line has only the first.
+    const preserveBlock = block("PRESERVE-REFUSED");
+    const commandLine = preserveBlock
+      .split("\n")
+      .find(l => l.includes("preserve-worktree-work.ts"));
+    expect(commandLine, "no preserve command line found").toBeDefined();
+
+    // Every interpolation on that line, taken whole (brace-balanced, so a
+    // nested `${HARNESS_ROOT}` inside a shellQuote argument is part of its
+    // parent rather than a finding of its own), must route through shellQuote.
+    const spans: string[] = [];
+    for (let i = 0; i < commandLine!.length; ) {
+      const at = commandLine!.indexOf("${", i);
+      if (at < 0) break;
+      let depth = 0;
+      let j = at + 1;
+      for (; j < commandLine!.length; j++) {
+        if (commandLine![j] === "{") depth++;
+        else if (commandLine![j] === "}" && --depth === 0) break;
+      }
+      spans.push(commandLine!.slice(at, j + 1));
+      i = j + 1;
+    }
+    expect(spans.length, "nothing is interpolated — this line is not the command").toBeGreaterThan(0);
+    for (const s of spans) {
+      expect(s, `${s} reaches the shell without shellQuote`).toContain("shellQuote(");
+    }
+
+    // Observed rather than grepped: a metacharacter-laden worktree path comes
+    // back single-quoted, so the shell cannot act on it.
+    const { collectAgentWork, calls } = loadCollectAgentWork((p: string) =>
+      p.includes("preserve-worktree-work.ts") ? { entries: [] } : { ok: true, collected: 1 },
+    );
+    const nasty = `${PROJECT}/.claude/worktrees/wf_$(touch pwned)`;
+    await collectAgentWork(
+      [
+        { worktreePath: nasty, filesChanged: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] },
+      ],
+      PROJECT,
+      "Commit",
+      "collect",
+    );
+    const preserve = calls.find(c => c.prompt.includes("preserve-worktree-work.ts"))!;
+    const emitted = preserve.prompt.split("\n").find(l => l.startsWith("bun "))!;
+    expect(emitted).toContain(`'${nasty}'`);
+
+    // Inside single quotes the shell expands nothing, so the test is whether
+    // the substitution is ever reached OUTSIDE them. Walk the line rather
+    // than pattern-match it: `/[^']\$\(/` passes on `wf_$(touch pwned)`
+    // regardless of the quoting, which is a check that cannot fail.
+    let inQuote = false;
+    const unquoted: string[] = [];
+    for (let i = 0; i < emitted.length; i++) {
+      if (emitted[i] === "'") { inQuote = !inQuote; continue; }
+      if (!inQuote && emitted.startsWith("$(", i)) unquoted.push(emitted.slice(i, i + 20));
+    }
+    expect(unquoted, "a command substitution reaches the shell unquoted").toEqual([]);
+    expect(inQuote, "the quoting is unbalanced — the line does not parse as intended").toBe(false);
+  });
+
+  test("the preserve step is never pointed at the project root", async () => {
+    // `git add -A` in the project root would sweep up unrelated working-tree
+    // state and commit it under a preserve message.
+    const { collectAgentWork, calls } = loadCollectAgentWork((p: string) =>
+      p.includes("preserve-worktree-work.ts") ? { entries: [] } : { ok: true, collected: 1 },
+    );
+    await collectAgentWork(
+      [
+        { worktreePath: PROJECT, filesChanged: ["lib/a.ts"] },
+        { worktreePath: WT_B, filesChanged: ["lib/a.ts"], claimedFiles: ["lib/a.ts"] },
+      ],
+      PROJECT,
+      "Commit",
+      "collect",
+    );
+    const preserve = calls.filter(c => c.prompt.includes("preserve-worktree-work.ts"));
+    expect(preserve, "no preserve step ran at all").toHaveLength(1);
+    const args = preserve[0]!.prompt.split("preserve-worktree-work.ts'")[1] || "";
+    expect(args, "the project root was handed to the preserve step").not.toContain(`'${PROJECT}'`);
+    expect(args).toContain(WT_B);
   });
 });

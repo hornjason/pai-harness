@@ -216,6 +216,9 @@ function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
   const body = [
     markedBlock("COLLECT-DESTINATION"),
     markedBlock("COLLECT-CLAIM"),
+    // Every refusal preserves the worktrees before returning (#228), so the
+    // collector no longer stands up without it.
+    markedBlock("PRESERVE-REFUSED"),
     markedBlock("COLLECT-AGENT-WORK"),
   ].join("\n");
   return new Function(
@@ -396,7 +399,12 @@ describe("#162: the refusals that were already there still hold", () => {
     const gathered = await collect(
       [{ worktreePath: WORKTREE_B }], "/tmp/$(touch pwned)", "Verify", "l");
     expect(gathered.ok).toBe(false);
-    expect(calls.length).toBe(0);
+    // No COLLECTION ran. The refusal does now spawn a preserve step (#228),
+    // which commits the refused worktree onto its own branch and touches the
+    // destination not at all — so count the collect step, not every call.
+    const collectCalls = calls.filter(c => String(c.prompt).includes("collect-worktree-files.ts"));
+    expect(collectCalls.length).toBe(0);
+    expect(calls.every(c => !String(c.prompt).includes("touch pwned"))).toBe(true);
   });
 
   test("the project root is a valid destination", async () => {
