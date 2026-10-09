@@ -20,9 +20,25 @@ export function parseFrontmatter(content: string): Record<string, string> | null
   const match = content.match(/^---\n([\s\S]*?)\n---/);
   if (!match) return null;
   const fields: Record<string, string> = {};
-  for (const line of match[1].split("\n")) {
-    const kv = line.match(/^(\w[\w-]*):\s*(.+)$/);
-    if (kv) fields[kv[1]] = kv[2].trim();
+  const lines = match[1].split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const kv = lines[i].match(/^(\w[\w-]*):\s*(.+)$/);
+    if (kv) {
+      fields[kv[1]] = kv[2].trim();
+      continue;
+    }
+    // Block-style key — `tiers:` with its value on the indented lines below.
+    // Without this branch the key reads as ABSENT, so a presence check on a
+    // field that is plainly there (marcus.md's `tiers`, SC-423) fails against
+    // correct input. The value is the flattened block, which is enough for the
+    // presence and substring checks the conformity matchers make of it.
+    const blockKey = lines[i].match(/^(\w[\w-]*):\s*$/);
+    if (!blockKey) continue;
+    const block: string[] = [];
+    while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1])) {
+      block.push(lines[++i].trim());
+    }
+    fields[blockKey[1]] = block.join("; ");
   }
   return fields;
 }
@@ -237,6 +253,22 @@ export interface ParsedSC {
   id: string;
   statement: string;
   specFile: string;
+  /**
+   * Whether the SC's checkbox is ticked — `- [x]` rather than `- [ ]`.
+   *
+   * This drives the whole binding: a CHECKED SC claims to be done, so it is
+   * run as a real assertion and may fail the suite; an UNCHECKED one is work
+   * not started, so it is emitted as `test.todo`. Optional only because
+   * ParsedSC is constructed by hand in a dozen call sites that predate the
+   * field; `extractSCs` always sets it, and the planner treats a missing
+   * value as unchecked.
+   */
+  checked?: boolean;
+}
+
+/** A ParsedSC as produced by extractSCs, where the checkbox state is known. */
+export interface ExtractedSC extends ParsedSC {
+  checked: boolean;
 }
 
 // ── Behavioral SC detection ───────────────────────────────
@@ -284,23 +316,37 @@ export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: stri
   };
 }
 
-function extractSCs(content: string, specFile: string): ParsedSC[] {
-  const scs: ParsedSC[] = [];
-  const pattern = /^- \[ \] (SC-\w+):\s*(.+)$/gm;
+/**
+ * Pull every success criterion out of a spec, in BOTH checkbox states.
+ *
+ * This used to be `/^- \[ \] (SC-\w+)/` — unchecked only. Every SC marked
+ * done was therefore invisible to the engine: 261 of them in this repo,
+ * none asserted, and the suite reported 0 fail because it never looked.
+ * Narrowing this pattern again is caught by the floor test in
+ * test/phase-1-5.test.ts.
+ */
+export function extractSCs(content: string, specFile: string): ExtractedSC[] {
+  const scs: ExtractedSC[] = [];
+  const pattern = /^- \[([ xX])\] (SC-\w+):\s*(.+)$/gm;
   let match;
   while ((match = pattern.exec(content)) !== null) {
-    scs.push({ id: match[1], statement: match[2].trim(), specFile });
+    scs.push({
+      id: match[2],
+      statement: match[3].trim(),
+      specFile,
+      checked: match[1].toLowerCase() === "x",
+    });
   }
   return scs;
 }
 
-interface SpecMetadata {
-  scs: ParsedSC[];
+export interface SpecMetadata {
+  scs: ExtractedSC[];
   compliance: "strict" | "permissive";
   status: "active" | "draft";
 }
 
-function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<string, SpecMetadata> {
+export function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Map<string, SpecMetadata> {
   const specMap = new Map<string, SpecMetadata>();
 
   const localSpecs = join(root, "specs");
@@ -838,6 +884,39 @@ export function isMatchablePattern(sc: ParsedSC, projectRoot?: string): boolean 
   return false;
 }
 
+// ── SC → test binding ───────────────────────────────────────
+
+/**
+ * How a single SC becomes (or fails to become) a test.
+ *
+ * Kept as data, separate from `describe`/`test`, so the binding rules can be
+ * asserted directly — see test/conformity-sc-binding.test.ts. The important
+ * property is that an `assert` entry hands back the RAW assertion: nothing
+ * here catches, so a failing checked SC fails the suite.
+ */
+export type SCPlanEntry =
+  | { kind: "behavioral"; sc: ParsedSC; routing: string | null }
+  | { kind: "todo"; sc: ParsedSC }
+  | { kind: "unmatched"; sc: ParsedSC }
+  | { kind: "assert"; sc: ParsedSC; assertion: AssertionFn };
+
+/**
+ * Decide what each SC becomes:
+ *   behavioral  — runtime-only, routed to SESSION-AUDIT-SPEC
+ *   todo        — unchecked, i.e. work not started; never a silent assertion
+ *   assert      — checked and matchable; runs for real and may fail
+ *   unmatched   — checked but the statement binds to no matcher: a coverage
+ *                 gap, reported and ratcheted rather than silently dropped
+ */
+export function planSCTests(scs: ParsedSC[], projectRoot?: string): SCPlanEntry[] {
+  return scs.map((sc): SCPlanEntry => {
+    if (isBehavioralSC(sc)) return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
+    if (!sc.checked) return { kind: "todo", sc };
+    const assertion = matchPattern(sc, projectRoot);
+    return assertion ? { kind: "assert", sc, assertion } : { kind: "unmatched", sc };
+  });
+}
+
 // ── Exported test runners ───────────────────────────────────
 
 export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: string[] }) {
@@ -879,33 +958,28 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       describe(specFile, () => {
         const unmatched: string[] = [];
         const behavioral: string[] = [];
-        for (const sc of metadata.scs) {
-          if (isBehavioralSC(sc)) {
-            const routing = getBehavioralRouting(sc);
-            behavioral.push(`${sc.id}: ${sc.statement} → ${routing}`);
-            continue;
-          }
-          const assertion = matchPattern(sc);
-          if (!assertion) {
-            if (metadata.status === "draft") {
-              // bun-types declares test.todo as requiring a body even though the
-              // runtime accepts a bare label. A no-op body satisfies both: todo
-              // tests are not executed unless `bun test --todo` is passed.
-              test.todo(`${sc.id}: ${sc.statement}`, () => {});
-            } else {
-              unmatched.push(`${sc.id}: ${sc.statement}`);
-            }
-            continue;
-          }
-          const specPath = resolveSpecPath(specFile);
-          test(`${sc.id}: ${sc.statement}`, () => {
-            try {
-              assertion(root);
+        const specPath = resolveSpecPath(specFile);
+        for (const entry of planSCTests(metadata.scs)) {
+          const { sc } = entry;
+          if (entry.kind === "behavioral") {
+            behavioral.push(`${sc.id}: ${sc.statement} → ${entry.routing}`);
+          } else if (entry.kind === "todo") {
+            // bun-types declares test.todo as requiring a body even though the
+            // runtime accepts a bare label. A no-op body satisfies both: todo
+            // tests are not executed unless `bun test --todo` is passed.
+            test.todo(`${sc.id}: ${sc.statement}`, () => {});
+          } else if (entry.kind === "unmatched") {
+            unmatched.push(`${sc.id}: ${sc.statement}`);
+          } else {
+            // A CHECKED SC claims the work is done. Run its assertion for
+            // real: no try/catch, so it fails the suite when the claim is
+            // false. The old body swallowed the throw, which is why 13 false
+            // claims sat green for months (#209).
+            test(`${sc.id}: ${sc.statement}`, () => {
+              entry.assertion(root);
               recordPassingSC(sc.id, specPath);
-            } catch {
-              // Unchecked SC assertion failure = work not done yet, not a regression
-            }
-          });
+            });
+          }
         }
         if (behavioral.length > 0) {
           addBehavioralCount(behavioral.length);
@@ -915,18 +989,21 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           });
         }
         if (unmatched.length > 0) {
-          // SC-287: strict mode (default) fails on unmatched, permissive mode warns
-          if (metadata.compliance === "permissive") {
-            test(`WARN: ${unmatched.length} SCs have no pattern matcher`, () => {
-              console.warn(`Unmatched SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
-              expect(true).toBe(true);
-            });
-          } else {
-            test(`FAIL: ${unmatched.length} SCs have no pattern matcher (strict mode)`, () => {
-              console.error(`Unmatched SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
-              expect(unmatched).toEqual([]);
-            });
-          }
+          // SC-287 used to FAIL here in strict mode. That branch had never
+          // fired: the only SCs that reached it were unchecked ones, and
+          // unchecked SCs now become `todo` before the matcher runs. The
+          // population is now CHECKED SCs written in prose no matcher binds
+          // to — 54 of them on the day they first became visible (#209).
+          //
+          // Failing 54 specs at once would get the whole file skipped, so the
+          // teeth live in a single repo-wide ratchet instead:
+          // test/conformity-sc-binding.test.ts asserts the total may fall but
+          // never rise. Here we name them, per spec, so they are findable.
+          const level = metadata.compliance === "permissive" ? "WARN" : "WARN (strict)";
+          test(`${level}: ${unmatched.length} checked SCs have no pattern matcher`, () => {
+            console.warn(`Unmatched checked SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
+            expect(unmatched.length).toBeGreaterThan(0);
+          });
         }
       });
     }

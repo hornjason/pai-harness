@@ -31,7 +31,7 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | Hook | File | Lines | Governing SCs | Assessment |
 |------|------|-------|---------------|-----------|
 | AgentBriefGuard | AgentBriefGuard.hook.ts | 589 | SC-367, SC-370 | Deep logic in hook — extract to lib/ |
-| GateEnforcement | GateEnforcement.hook.ts | 275 | SC-369, SC-370 | Borderline — review what's logic vs trigger |
+| GateEnforcement | GateEnforcement.hook.ts | 92 | SC-369, SC-370 | Thin trigger — signal shaping and the doc-hygiene sweep live in lib/gate-enforcement.ts |
 | AgentVerdictCapture | AgentVerdictCapture.hook.ts | 182 | SC-370, SC-371 | Acceptable |
 | StaleTTLCleanup | StaleTTLCleanup.hook.ts | 170 | SC-370, SC-371 | Acceptable |
 | CommitEnforcement | CommitEnforcement.hook.ts | 146 | SC-304, SC-370 | Acceptable |
@@ -71,8 +71,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 3. Add unit tests for brief-validator
 4. Verify: hook still fires correctly, same behavior
 
-### Phase 2: GateEnforcement review
-1. Audit GateEnforcement.hook.ts (273 lines) for extractable logic
+### Phase 2: GateEnforcement review (done — #209)
+1. Audit GateEnforcement.hook.ts for extractable logic
 2. Extract enforcement logic to lib/ if over 100 lines remain
 3. Add tests
 

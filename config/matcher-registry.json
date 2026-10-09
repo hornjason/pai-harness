@@ -114,9 +114,9 @@
   {
     "name": "frontmatter-field",
     "syntax": "{file} frontmatter has {field} [= {value}]",
-    "regex": "^(\\S+)\\s+frontmatter\\s+has\\s+(\\S+)(?:\\s*=\\s*(.+))?$",
+    "regex": "^(\\S+)\\s+frontmatter\\s+has\\s+(\\S+)(?:\\s*=\\s*(.+?))?(?:\\s+—\\s.*)?$",
     "example": "specs/CONFIG-DRIVEN-TESTING-SPEC.md frontmatter has testable = true",
-    "notes": "Checks YAML frontmatter in a file. Verifies field exists, optionally checks its value. Used for spec and agent file metadata."
+    "notes": "Checks YAML frontmatter in a file. Verifies field exists, optionally checks its value. Used for spec and agent file metadata. The value stops at an em-dash separator so an SC can carry its rationale without that prose becoming part of the compared value. A field whose value is a nested YAML block counts as present."
   },
   {
     "name": "file-line-range",

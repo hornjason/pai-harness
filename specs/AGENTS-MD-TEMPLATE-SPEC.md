@@ -134,7 +134,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
 - [ ] SC-270: Large specs with multiple intents split into single-intent files (behavioral)
 - [x] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
-- [x] SC-272: AGENTS.md contains [Spec, Governs, Testable]
+- [x] SC-272: .claude/rules/specs-routing.md contains [Spec, Governs, Testable] — D-15 capped AGENTS.md at 100 lines and moved the specs table to the scoped rule file; the SC kept naming AGENTS.md and so asserted against a file the table had deliberately left
 - [x] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Satisfied by SC-17 (150-line cap)
 - [x] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
 - [x] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
@@ -148,13 +148,13 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 
 ### PROJECT-STATE.md Automation
 - [x] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
-- [x] SC-297: .git/hooks/pre-commit contains [update-project-state]
+- [x] SC-297: lib/scaffold/steps.ts contains [update-project-state] — asserts the generator, not `.git/hooks/pre-commit`. The installed hook is untracked, so the old target passed on a developer machine and could never pass in CI; #209 made checked SCs bind and the gap surfaced immediately
 - [ ] SC-298: scripts/update-project-state.ts contains [scanSpecSCStatus, frontmatter]
 - [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
 - [x] SC-300: PROJECT-STATE.md is under [200] lines
 - [x] SC-301: docs/session-log/ directory exists
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
-- [x] SC-303: .git/hooks/pre-commit contains [.sh, --diff-filter=A]
+- [x] SC-303: lib/scaffold/steps.ts contains [/bin/sh, --diff-filter=A] — two corrections. The token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually emits. And the target was `.git/hooks/pre-commit`, which git never tracks, so the assertion was about one machine's local state rather than about the repository
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)

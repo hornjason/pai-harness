@@ -8,7 +8,8 @@ import { join } from "path";
 import { existsSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
 
 // Import the real implementations
-import { resolveAndContain, matchPattern } from "../lib/conformity";
+import { resolveAndContain, matchPattern, collectTestableSpecs } from "../lib/conformity";
+import { resolve } from "path";
 
 interface ParsedSC {
   id: string;
@@ -17,6 +18,37 @@ interface ParsedSC {
 }
 
 const FIXTURE_ROOT = join(import.meta.dir, "fixtures", "phase-1-5");
+
+// ── Extraction floor (SC-343: this file is the engine's unit-test home) ──
+
+/**
+ * A floor, not an equality: SCs are added all the time, so an exact count
+ * would be noise. What it catches is the pattern SILENTLY NARROWING — which
+ * is exactly what had happened: extractSCs matched `- [ ]` only, so all 261
+ * checked SCs were invisible and the conformity suite asserted nothing about
+ * them while reporting 0 fail.
+ *
+ * Measured at 284 across 18 testable specs when this was written. Broken to
+ * prove it fails: restoring the `- \[ \]`-only pattern drops the count to 32
+ * and turns this red.
+ */
+const SC_COLLECTION_FLOOR = 200;
+
+describe("Conformity engine: SC extraction floor", () => {
+  test(`collects at least ${SC_COLLECTION_FLOOR} SCs across testable specs`, () => {
+    const root = resolve(import.meta.dir, "..");
+    let total = 0;
+    let checked = 0;
+    for (const [, meta] of collectTestableSpecs(root)) {
+      total += meta.scs.length;
+      checked += meta.scs.filter(sc => sc.checked).length;
+    }
+    expect(total).toBeGreaterThanOrEqual(SC_COLLECTION_FLOOR);
+    // Checked SCs are the half that was missing entirely; assert they are
+    // present so a regression to unchecked-only cannot hide behind the total.
+    expect(checked).toBeGreaterThanOrEqual(SC_COLLECTION_FLOOR);
+  });
+});
 
 // ── SC-286: resolveAndContain() utility tests ────────────────────
 

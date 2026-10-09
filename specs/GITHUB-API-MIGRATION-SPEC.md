@@ -139,7 +139,8 @@ this directory; that divergence is its own issue.
 - [x] SC-520: test/github-client.test.ts contains [GH_TOKEN alone is sufficient, GITHUB_TOKEN wins when both are set]
 - [x] SC-521: hooks/lib/utils.ts contains [parseRepoSlug]
 - [x] SC-522: test/issue-close-guard-fail-closed.test.ts contains [block, could not, parseRepoSlug]
-- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [could not be, redactSecrets] and not contains [} catch {}] — a failed label read blocks instead of being swallowed. The positive clause is not decoration: a bare absence assertion has no matcher, so written that way it could not be evaluated and sat unchecked while reading as a requirement
+- [x] SC-523: hooks/IssueCloseGuard.hook.ts contains [not be read, redactSecrets] — a failed label read blocks instead of being swallowed. Two corrections (#209): the token was `could not be`, which the source never contains because the sentence is split across a string concatenation at the word `could`; and the trailing `and not contains [} catch {}]` clause was never evaluated at all, because the content-contains matcher reads only the FIRST bracket list in a statement. The absence requirement now has its own SC below rather than riding along unread
+- [x] SC-606: hooks/IssueCloseGuard.hook.ts must NOT contain [} catch {}] — no bare swallow in the guard. The one that existed hid a failed write of `phase: DONE` and still exited 0, so the issue closed while the workflow state said it had not shipped
 
 ### Phase 6 — The agent layer reaches GitHub at all (#137)
 

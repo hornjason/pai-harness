@@ -5,9 +5,8 @@
  * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
  * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
  *
- * Blocks gh issue close if ship-gate hasn't passed.
- * Validates HMAC provenance on PASS results.
- * Also validates comment templates on gh issue comment.
+ * Blocks gh issue close if ship-gate hasn't passed. Validates HMAC
+ * provenance on PASS results, and comment templates on gh issue comment.
  */
 
 import { createHmac } from 'crypto';
@@ -136,7 +135,11 @@ async function main() {
       state.updatedTs = new Date().toISOString();
       writeFileSync(wf.path, JSON.stringify(state, null, 2) + '\n');
       console.error(`[close-guard] Updated phase to DONE for #${issueNum}`);
-    } catch {}
+    } catch (e: any) {
+      // Was `catch {}`. Non-fatal (the ship gate passed), but a failed write
+      // leaves state reading un-shipped on a closed issue — report it (SC-606).
+      console.error(`[close-guard] Could not persist phase=DONE for #${issueNum}: ${redactSecrets(String(e?.message || e)).slice(0, 200)}`);
+    }
     process.exit(0);
   }
 

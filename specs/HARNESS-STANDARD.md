@@ -239,7 +239,7 @@ If Discovery returns >6 ACs, the issue MUST be decomposed before implementation:
 
 This is not a judgment call. If AC count > 6, decomposition is mandatory and automatic.
 
-- [x] SC-503: workflows/ship.js contains [DECOMPOSE_REQUIRED, sub-issue, ac.length, 6]
+- [x] SC-503: workflows/ship.js contains [DECOMPOSE_REQUIRED, sub-issue, acs.length, MAX_ACS_PER_ISSUE = 6] — the token was `ac.length`, which the file has never contained; the limit is a named constant, so asserting the bare literal `6` would have passed on any stray 6 in a 1000-line file
 
 **Output:**
 - ACs posted to GitHub issue via `gh issue comment` (BEFORE execution starts)
@@ -478,7 +478,7 @@ in the file is a measurement, and a step that measured nothing does not get to
 change its mind.
 
 - [x] SC-587: scripts/record-build-commit.ts contains [#173-NO-TESTS-VERDICT] and not contains [tests: "PASS"] — the recorder writes no test verdict at all, because it runs no tests, and absent is a state `tests-pass` reports while PASS is one it believes
-- [x] SC-588: scripts/record-build-commit.ts contains [PRESERVED_VERDICTS, ...record(state.environments, "local")] — `environments.local` and each agent's own record are merged rather than replaced, and a verdict already recorded as FAIL is never overwritten by the commit step
+- [x] SC-588: scripts/record-build-commit.ts contains [PRESERVED_VERDICTS, buildLocalEnvironment] — the old token embedded a comma inside the bracket list, and the matcher splits on commas, so it searched for the fragment `...record(state.environments` which no source line contains. `environments.local` and each agent's own record are merged rather than replaced, and a verdict already recorded as FAIL is never overwritten by the commit step
 - [x] SC-589: workflows/ship.js contains [QUINN-VERDICT-START, quinnVerdictFor(quinnLocalRan, quinnLocalResult)] and not contains [--quinn ${shellQuote(discovery.ceremonyTier] — the verdict handed to the recorder is the one Quinn returned, a reply that is not a verdict is FAIL rather than PASS, and the chooser is a marked function the test executes
 - [x] SC-590: test/record-build-commit.test.ts contains [quinn FAIL survives, tests verdict is not invented, makeMutant] — both overwrites are named cases, and each runs against a mutant that re-introduces the overwrite, so neither assertion can hold because the script wrote nothing
 
