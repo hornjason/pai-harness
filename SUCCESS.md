@@ -119,8 +119,10 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 | 5 — works on another repo | **No, and never attempted.** Every run in this repo's history is rungate shipping rungate. The `~/.rungate/ddb-*` directories are rungate runs under a stale slug, not DDB runs. |
 | consumer list | **Surveyed 2026-10-08, and it fails.** Twelve blocking defects found by adversarial audit without running anything. See below. |
 
-Last full suite: 3248 pass / 0 fail under `bun scripts/test-clean-env.ts`
-(2026-10-08). That figure is the floor, not the claim — see "What is not success".
+Last full suite under `bun scripts/test-clean-env.ts` (2026-10-08): **3181 pass,
+0 fail**, 17 skip, 50 todo, across 178 files — 3248 tests run. Quote the pass
+count, not the run count; they differ by 67. That figure is the floor, not the
+claim — see "What is not success".
 
 ### The consumer survey, 2026-10-08
 
