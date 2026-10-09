@@ -14,6 +14,8 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  unlinkSync,
+  writeFileSync,
 } from 'fs';
 import { checkDocHygiene } from './doc-hygiene';
 
@@ -229,69 +231,107 @@ export function logSignal(signalsDir: string, signalsFile: string, event: Record
 }
 
 /**
- * Record one gate-enforcement outcome.
- *
- * Lifted out of GateEnforcement.hook.ts (SC-369): the block and nag branches
- * each assembled this event inline, which meant the only way to check that a
- * block is attributed to `outcome_ac_failure` rather than `max_strikes` was to
- * drive a PreToolUse payload through stdin.
+ * Everything the hook needs from its environment. Passed in rather than
+ * read from module scope so the whole decision path is callable from a test.
  */
-export function logEnforcementSignal(
-  signalsDir: string,
-  signalsFile: string,
-  pending: GatePending,
-  toolName: string,
-  action: Extract<EnforcementAction, 'block' | 'nag'>,
-  strike: number,
-): void {
-  logSignal(signalsDir, signalsFile, {
-    ts: new Date().toISOString(),
-    type: 'gate_enforcement',
-    gate: pending.gate,
-    issue: pending.issue,
-    strike,
-    tool: toolName,
-    action,
-    ...(action === 'block'
-      ? { reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes' }
-      : {}),
-  });
+export interface GateEnforcementInput {
+  /** Directory holding the per-issue workflow-state.json files. */
+  workDir: string;
+  /** Directory for the signals log; created on demand. */
+  signalsDir: string;
+  /** Signals JSONL path. */
+  signalsFile: string;
+  /** gate-pending.json path — the strike counter's home. */
+  pendingFile: string;
+  /** Project root, scanned for doc-hygiene findings (SC-508). */
+  projectRoot: string;
+  sessionId: string;
+  toolName: string;
 }
 
-interface HygieneFinding { checkId: string; file: string; level: string; message: string }
-interface HygieneResult { pass: boolean; findings: HygieneFinding[] }
+export interface GateEnforcementResult {
+  /** What the hook should print on stdout, or null to stay silent. */
+  stdout: string | null;
+  action: EnforcementAction;
+}
 
 /**
- * SC-508: emit one signal per doc-hygiene finding, for promotion tracking.
+ * The whole GateEnforcement decision, extracted from the hook (SC-369).
  *
- * `check` is injectable so the emitter can be tested without a project tree,
- * and defaults to the real scan. Best-effort: a throwing scan is swallowed,
- * because this rides along on a gate nag and must not replace it with a crash.
+ * The hook is now a trigger: parse stdin, call this, print, exit 0. Keeping
+ * the logic here is what makes it reachable by test/gate-enforcement.test.ts
+ * without simulating a PreToolUse payload.
  */
-export function logDocHygieneSignals(
-  signalsDir: string,
-  signalsFile: string,
-  projectRoot: string,
-  check?: (root: string) => HygieneResult,
-): void {
+export function runGateEnforcement(input: GateEnforcementInput): GateEnforcementResult {
+  const wfFailure = findWorkflowGateFailure(input.workDir);
+  if (!wfFailure) {
+    if (existsSync(input.pendingFile)) {
+      try {
+        unlinkSync(input.pendingFile);
+      } catch (err) {
+        console.error(`[GateEnforcement] Could not clear ${input.pendingFile}: ${err}`);
+      }
+    }
+    return { stdout: null, action: 'pass' };
+  }
+
+  const strikeCount = loadStrikeCount(input.pendingFile, wfFailure.issue, wfFailure.gate);
+  const pending = buildGatePending(wfFailure, input.sessionId, strikeCount);
+  const decision = makeEnforcementDecision(pending, input.toolName);
+  const ts = new Date().toISOString();
+
+  if (decision.action === 'block') {
+    logSignal(input.signalsDir, input.signalsFile, {
+      ts, type: 'gate_enforcement', gate: pending.gate, issue: pending.issue,
+      strike: pending.strike_count, tool: input.toolName, action: 'block',
+      reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes',
+    });
+    return {
+      stdout: JSON.stringify({ decision: 'block', reason: decision.reason }),
+      action: 'block',
+    };
+  }
+
+  if (input.toolName === 'Skill') {
+    try {
+      writeFileSync(
+        input.pendingFile,
+        JSON.stringify({ ...pending, strike_count: decision.newStrikeCount }, null, 2),
+        'utf-8',
+      );
+    } catch (err) {
+      console.error(`[GateEnforcement] Strike count write failed: ${err}`);
+    }
+  }
+
+  logSignal(input.signalsDir, input.signalsFile, {
+    ts, type: 'gate_enforcement', gate: pending.gate, issue: pending.issue,
+    strike: decision.newStrikeCount, tool: input.toolName, action: 'nag',
+  });
+  logHygieneSignals(input.signalsDir, input.signalsFile, input.projectRoot);
+
+  return { stdout: decision.reminder ?? null, action: 'nag' };
+}
+
+/**
+ * SC-508: doc-hygiene findings ride along as signals for promotion tracking.
+ * Best-effort by design — a hygiene scan failure must not block a tool call —
+ * but it says so on stderr rather than vanishing.
+ */
+export function logHygieneSignals(signalsDir: string, signalsFile: string, projectRoot: string): number {
   try {
-    // Statically imported, not `require`d inside this try. A require here
-    // would throw in any environment without CommonJS loading, the catch
-    // below would swallow it, and SC-508 would be silently switched off while
-    // every run still looked normal — the exact shape
-    // .claude/rules/checks-must-be-able-to-fail.md is about.
-    const run = check ?? checkDocHygiene;
-    const result = run(projectRoot) as HygieneResult;
-    if (result.pass) return;
+    const result = checkDocHygiene(projectRoot);
+    if (result.pass) return 0;
     for (const finding of result.findings) {
       logSignal(signalsDir, signalsFile, {
-        ts: new Date().toISOString(),
-        type: 'doc-hygiene',
-        checkId: finding.checkId,
-        file: finding.file,
-        level: finding.level,
-        message: finding.message,
+        ts: new Date().toISOString(), type: 'doc-hygiene',
+        checkId: finding.checkId, file: finding.file,
+        level: finding.level, message: finding.message,
       });
     }
-  } catch { /* doc-hygiene signals are best-effort */ }
+    return result.findings.length;
+  } catch (err) {
+    console.error(`[GateEnforcement] doc-hygiene signal sweep skipped: ${err}`);
+    return 0;
+  }
 }

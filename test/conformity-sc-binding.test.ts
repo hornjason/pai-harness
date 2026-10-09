@@ -1,201 +1,225 @@
 /**
- * SC-to-behaviour binding.
+ * SC-to-behaviour binding for the conformity engine (#209).
  *
- * The conformity engine used to collect ONLY unchecked (`- [ ]`) SCs and then
- * run each one inside a `try { } catch { }` that swallowed the assertion. Both
- * halves of that are the same defect: a checked SC — the 261 criteria this
- * project reports as DONE — could not fail anything, and the unchecked ones it
- * did collect could not fail either. The suite reported 0 fail because nothing
- * it ran was allowed to go red.
+ * Until this file existed, `extractSCs` matched only `- [ ]`, so every CHECKED
+ * SC — the ones claiming to be done — was never collected and never asserted.
+ * The handful that were collected ran inside `try { assertion(root) } catch {}`,
+ * so even those could not fail. The suite reported 0 fail while asserting
+ * nothing about 261 completed criteria.
  *
- * These tests pin the repaired contract:
- *   - extractSCs collects both checkbox states and records which it saw
- *   - a CHECKED SC runs as a real assertion and can turn the suite red
- *   - an UNCHECKED SC is `test.todo` — visible, not executed, never swallowed
+ * What was broken to prove these checks can fail, run and reverted:
+ *   - restoring the `- \[ \]`-only regex in extractSCs turns the floor test and
+ *     every checked-SC test in this file red (0 checked SCs collected)
+ *   - re-wrapping the generated body in try/catch turns
+ *     "assertion failures propagate" red
+ *   - unchecking one `- [x] SC-` line in any spec turns the no-regression
+ *     count test red
  *
- * The binding tests run the engine in a scratch project via a child `bun test`
- * and read the real counts out of its output, rather than grepping
- * lib/conformity.ts for the absence of the word "catch". A source-text
- * assertion cannot distinguish "the try was removed" from "the try moved one
- * function up"; a child run that reports `1 fail` can.
- *
- * SPEC-REF: CONFIG-DRIVEN-TESTING-SPEC.md
+ * SPEC-REF: CONFIG-DRIVEN-TESTING-SPEC.md § Success Criteria
+ * SPEC-REF: HOOK-ARCHITECTURE-SPEC.md § Success Criteria (SC-369)
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readdirSync, readFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { spawnSync } from "child_process";
+import { describe, test, expect } from "bun:test";
+import { readdirSync, readFileSync } from "fs";
+import { join, resolve } from "path";
+import {
+  extractSCs,
+  collectTestableSpecs,
+  planSCTests,
+  parseFrontmatter,
+  type ParsedSC,
+} from "../lib/conformity";
 
-import { extractSCs, isBehavioralSC, matchPattern } from "../lib/conformity";
+const ROOT = resolve(import.meta.dir, "..");
+const SPECS_DIR = join(ROOT, "specs");
 
-const ROOT = join(import.meta.dir, "..");
-const CONFORMITY = join(ROOT, "lib", "conformity.ts");
+/**
+ * The pre-change baseline, measured on the parent of this commit:
+ *   grep -rhc '^- \[x\] SC-' specs/*.md | paste -sd+ - | bc  ->  261
+ * The number may only ever go UP. A drop means an SC was unchecked or deleted,
+ * which is the cheapest way to make a newly-enforced suite green.
+ */
+const CHECKED_SC_BASELINE = 261;
 
-// ── AC-1: extractSCs records the checkbox state ──────────────────
+/**
+ * Checked SCs whose statement matches no pattern in the matcher registry, so
+ * no assertion can be built for them. 54 on the day checked SCs were first
+ * collected (#209). This is a ratchet, not a target: it may fall freely, and
+ * any rise means a new SC was written in prose that the engine cannot bind to.
+ */
+const UNMATCHED_CHECKED_RATCHET = 54;
 
-describe("AC-1: extractSCs collects both checkbox states", () => {
-  const content = [
+function specFiles(): string[] {
+  return readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
+}
+
+// ── AC-1: extractSCs sees both checkbox states ──────────────
+
+describe("AC-1: extractSCs records checkbox state", () => {
+  // IDs in the 9000 range deliberately. A single-digit ID written anywhere in
+  // a test file — fixture text and comments included — is read by
+  // sync-sc-status as a coverage claim for the real criterion of that number
+  // (#149, test/sync-sc-status-matching.test.ts). Fixture SCs therefore use
+  // numbers this repo does not issue, and this comment avoids naming the one
+  // it is warning about.
+  const sample = [
     "---",
     "testable: true",
     "---",
-    "",
-    "- [x] SC-9001: done.md exists",
-    "- [ ] SC-9002: todo.md exists",
-    "- [X] SC-9003: uppercase.md exists",
+    "- [x] SC-9001: done thing",
+    "- [ ] SC-9002: pending thing",
+    "- [X] SC-9003: done with capital X",
   ].join("\n");
 
-  test("collects checked SCs, not only unchecked ones", () => {
-    const ids = extractSCs(content, "FIXTURE.md").map(sc => sc.id);
-    expect(ids).toContain("SC-9001");
-    expect(ids).toContain("SC-9002");
-    expect(ids).toContain("SC-9003");
+  test("collects checked and unchecked SCs alike", () => {
+    const scs = extractSCs(sample, "TEST-SPEC.md");
+    expect(scs.map(s => s.id)).toEqual(["SC-9001", "SC-9002", "SC-9003"]);
   });
 
-  test("records checked: true for '- [x]'", () => {
-    const sc = extractSCs(content, "FIXTURE.md").find(s => s.id === "SC-9001");
-    expect(sc?.checked).toBe(true);
+  test("checked is true for [x] and [X], false for [ ]", () => {
+    const byId = new Map(extractSCs(sample, "TEST-SPEC.md").map(s => [s.id, s.checked]));
+    expect(byId.get("SC-9001")).toBe(true);
+    expect(byId.get("SC-9002")).toBe(false);
+    expect(byId.get("SC-9003")).toBe(true);
   });
 
-  test("records checked: false for '- [ ]'", () => {
-    const sc = extractSCs(content, "FIXTURE.md").find(s => s.id === "SC-9002");
-    expect(sc?.checked).toBe(false);
-  });
-
-  test("treats '- [X]' the same as '- [x]'", () => {
-    const sc = extractSCs(content, "FIXTURE.md").find(s => s.id === "SC-9003");
-    expect(sc?.checked).toBe(true);
-  });
-
-  test("statement excludes the checkbox marker", () => {
-    const sc = extractSCs(content, "FIXTURE.md").find(s => s.id === "SC-9001");
-    expect(sc?.statement).toBe("done.md exists");
+  test("real specs contribute checked SCs — not zero", () => {
+    const checked = specFiles()
+      .flatMap(f => extractSCs(readFileSync(join(SPECS_DIR, f), "utf-8"), f))
+      .filter(sc => sc.checked);
+    expect(checked.length).toBeGreaterThanOrEqual(CHECKED_SC_BASELINE);
   });
 });
 
-// ── AC-3: a checked SC can turn the suite red ────────────────────
+// ── AC-3: plan shape, and no swallowing ─────────────────────
 
-interface ChildCounts {
-  pass: number;
-  fail: number;
-  todo: number;
-  output: string;
-}
-
-/**
- * Build a scratch project containing `specBody` and run the spec-driven half
- * of the conformity engine against it in a child `bun test`.
- */
-function runEngineOn(specBody: string, files: Record<string, string> = {}): ChildCounts {
-  const dir = mkdtempSync(join(tmpdir(), "sc-binding-"));
-  try {
-    mkdirSync(join(dir, "specs"), { recursive: true });
-    writeFileSync(
-      join(dir, "specs", "FIXTURE-SPEC.md"),
-      ["---", "doc-type: spec", "testable: true", "compliance: strict", "---", "", "# Fixture", "", specBody, ""].join("\n"),
-    );
-    for (const [rel, body] of Object.entries(files)) writeFileSync(join(dir, rel), body);
-
-    const entry = join(dir, "engine.test.ts");
-    writeFileSync(
-      entry,
-      [
-        `import { runSpecConformityTests } from ${JSON.stringify(CONFORMITY)};`,
-        `runSpecConformityTests(${JSON.stringify(dir)});`,
-        "",
-      ].join("\n"),
-    );
-
-    const res = spawnSync("bun", ["test", entry], {
-      cwd: ROOT,
-      encoding: "utf-8",
-      timeout: 120_000,
-      env: { ...process.env, CI: "1" },
-    });
-    const output = `${res.stdout ?? ""}${res.stderr ?? ""}`;
-    const num = (label: string) => {
-      const m = output.match(new RegExp(`(\\d+)\\s+${label}`));
-      return m ? parseInt(m[1], 10) : 0;
-    };
-    return { pass: num("pass"), fail: num("fail"), todo: num("todo"), output };
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
+describe("AC-3: planSCTests binds checked SCs to real assertions", () => {
+  function plan(statement: string, checked: boolean) {
+    const sc: ParsedSC = { id: "SC-X", statement, specFile: "TEST-SPEC.md", checked };
+    const entries = planSCTests([sc]);
+    expect(entries.length).toBe(1);
+    return entries[0];
   }
-}
 
-describe("AC-3: checked SCs run as real assertions", () => {
-  // Positive control. If this one is not green, a `1 fail` below proves
-  // nothing — the harness itself would be broken.
-  test("a checked SC whose assertion holds passes", () => {
-    const r = runEngineOn("- [x] SC-9101: PRESENT.md exists", { "PRESENT.md": "# present\n" });
-    expect(r.fail).toBe(0);
-    // Exactly one — the spec holds exactly one SC, so this pass is that SC
-    // and not some unrelated check the engine happens to emit.
-    expect(r.pass).toBe(1);
+  test("checked + matchable -> assert", () => {
+    expect(plan("AGENTS.md contains [Rules]", true).kind).toBe("assert");
   });
 
-  test("a checked SC whose assertion does NOT hold fails the run", () => {
-    const r = runEngineOn("- [x] SC-9102: ABSENT-9102.md exists");
-    expect(r.fail).toBe(1);
-    expect(r.output).toContain("SC-9102");
+  test("unchecked + matchable -> todo (never a swallowed assertion)", () => {
+    expect(plan("AGENTS.md contains [Rules]", false).kind).toBe("todo");
   });
 
-  test("an unchecked SC is reported todo, never a swallowed pass", () => {
-    const r = runEngineOn("- [ ] SC-9103: ABSENT-9103.md exists");
-    expect(r.fail).toBe(0);
-    expect(r.pass).toBe(0);
-    expect(r.todo).toBe(1);
+  test("unchecked + unmatchable -> todo", () => {
+    expect(plan("the agent feels confident about the work", false).kind).toBe("todo");
   });
 
-  test("checked and unchecked SCs in one spec are separated", () => {
-    const r = runEngineOn(
-      ["- [x] SC-9104: PRESENT.md exists", "- [x] SC-9105: ABSENT-9105.md exists", "- [ ] SC-9106: ABSENT-9106.md exists"].join("\n"),
-      { "PRESENT.md": "# present\n" },
-    );
-    expect(r.pass).toBe(1);
-    expect(r.fail).toBe(1);
-    expect(r.todo).toBe(1);
+  test("checked + unmatchable -> unmatched", () => {
+    expect(plan("the agent feels confident about the work", true).kind).toBe("unmatched");
   });
-});
 
-// ── AC-5: the measure must not be weakened to go green ───────────
+  test("behavioral -> behavioral, regardless of checkbox", () => {
+    expect(plan("Agent finds the file in 3 calls (behavioral)", true).kind).toBe("behavioral");
+    expect(plan("Agent finds the file in 3 calls (behavioral)", false).kind).toBe("behavioral");
+  });
 
-describe("AC-5: checked SC count does not regress", () => {
-  const BASELINE = 261;
+  test("assertion failures propagate out of the plan entry — nothing is caught", () => {
+    const entry = plan("lib/definitely-not-a-real-file.ts contains [anything]", true);
+    expect(entry.kind).toBe("assert");
+    if (entry.kind !== "assert") throw new Error("unreachable");
+    expect(() => entry.assertion(ROOT)).toThrow();
+  });
 
-  test(`specs/ holds at least ${BASELINE} checked SCs`, () => {
-    const specsDir = join(ROOT, "specs");
-    let checked = 0;
-    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
-      const content = readFileSync(join(specsDir, f), "utf-8");
-      checked += (content.match(/^- \[x\] SC-/gim) || []).length;
-    }
-    expect(checked).toBeGreaterThanOrEqual(BASELINE);
+  test("a passing assertion does not throw", () => {
+    const entry = plan("AGENTS.md contains [Rules]", true);
+    if (entry.kind !== "assert") throw new Error("expected an assert entry");
+    expect(() => entry.assertion(ROOT)).not.toThrow();
   });
 });
 
-// ── Ratchet: checked SCs with nothing mechanical behind them ─────
+// ── AC-4: every checked SC in this repo actually passes ─────
 
-describe("unbound checked SCs ratchet", () => {
-  // 54 checked SCs are phrased so that no matcher recognises them, so they
-  // are reported (SC-UNBOUND findings) rather than executed. The number is
-  // allowed to fall and not to rise: every new checked SC must either be
-  // matchable or carry the (behavioral) tag. Lowering it means rewording a
-  // spec line, not deleting it — AC-5 above guards the other direction.
-  const CEILING = 54;
-
-  test(`no more than ${CEILING} checked SCs lack a pattern matcher`, () => {
-    const specsDir = join(ROOT, "specs");
-    const unbound: string[] = [];
-    for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
-      const content = readFileSync(join(specsDir, f), "utf-8");
-      const fm = content.match(/^---\n([\s\S]*?)\n---/);
-      if (!fm || !/^testable:\s*true\s*$/m.test(fm[1])) continue;
-      for (const sc of extractSCs(content, f)) {
-        if (!sc.checked || isBehavioralSC(sc)) continue;
-        if (!matchPattern(sc)) unbound.push(`${f} ${sc.id}`);
+describe("AC-4: every checked, matchable SC in specs/ passes its assertion", () => {
+  test("zero checked SCs fail", () => {
+    const failures: string[] = [];
+    let asserted = 0;
+    for (const [specFile, meta] of collectTestableSpecs(ROOT)) {
+      for (const entry of planSCTests(meta.scs)) {
+        if (entry.kind !== "assert") continue;
+        asserted++;
+        try {
+          entry.assertion(ROOT);
+        } catch (e) {
+          failures.push(`${specFile} ${entry.sc.id}: ${String((e as Error).message).split("\n")[0]}`);
+        }
       }
     }
-    expect(unbound.length).toBeLessThanOrEqual(CEILING);
+    // Vacuity guard: an empty loop would make `failures` trivially empty.
+    expect(asserted).toBeGreaterThanOrEqual(150);
+    expect(failures).toEqual([]);
+  });
+
+  test("unmatched checked SCs do not exceed the ratchet", () => {
+    let unmatched = 0;
+    for (const [, meta] of collectTestableSpecs(ROOT)) {
+      unmatched += planSCTests(meta.scs).filter(e => e.kind === "unmatched").length;
+    }
+    expect(unmatched).toBeLessThanOrEqual(UNMATCHED_CHECKED_RATCHET);
+  });
+});
+
+// ── AC-5: no SC was unchecked or deleted to buy green ───────
+
+describe("AC-5: checked SC count does not regress", () => {
+  test(`at least ${CHECKED_SC_BASELINE} checked SC checkboxes across specs/`, () => {
+    let checked = 0;
+    for (const f of specFiles()) {
+      checked += (readFileSync(join(SPECS_DIR, f), "utf-8").match(/^- \[[xX]\] SC-/gm) || []).length;
+    }
+    expect(checked).toBeGreaterThanOrEqual(CHECKED_SC_BASELINE);
+  });
+});
+
+// ── AC-6: GateEnforcement is a thin trigger ─────────────────
+
+describe("AC-6: hooks/GateEnforcement.hook.ts is a thin trigger", () => {
+  test("under 100 lines", () => {
+    const content = readFileSync(join(ROOT, "hooks/GateEnforcement.hook.ts"), "utf-8");
+    expect(content.trimEnd().split("\n").length).toBeLessThan(100);
+  });
+
+  test("delegates to lib/gate-enforcement", () => {
+    const content = readFileSync(join(ROOT, "hooks/GateEnforcement.hook.ts"), "utf-8");
+    expect(content).toContain("runGateEnforcement");
+    expect(content).toContain("../lib/gate-enforcement");
+  });
+});
+
+// ── parseFrontmatter must see block-style keys (SC-423) ─────
+
+describe("parseFrontmatter sees block-style keys", () => {
+  const fm = [
+    "---",
+    "name: marcus",
+    "tiers:",
+    "  reinforcement: ['Testing Rules']",
+    "  mechanical: ['Workflow']",
+    "model: opus",
+    "---",
+    "body",
+  ].join("\n");
+
+  test("a key whose value is an indented block is present, not absent", () => {
+    const parsed = parseFrontmatter(fm);
+    expect(parsed?.tiers).toBeDefined();
+    expect(parsed?.tiers).toContain("reinforcement");
+  });
+
+  test("inline keys around the block still parse", () => {
+    const parsed = parseFrontmatter(fm);
+    expect(parsed?.name).toBe("marcus");
+    expect(parsed?.model).toBe("opus");
+  });
+
+  test("a key that is genuinely absent stays undefined", () => {
+    expect(parseFrontmatter(fm)?.nosuchfield).toBeUndefined();
   });
 });

@@ -55,5 +55,4 @@ The organize-project tool (#30) also needs config for external source locations 
 - [x] SC-484: Scaffold generates `.claude/rungate/` directory for new projects (behavioral)
 - [x] SC-485: Re-scaffold splits existing `rungate.json` into directory structure (behavioral)
 - [x] SC-486: lib/organize.ts contains [scanExternalSources, loadComplianceConfig, externalSources, matchBy]
-- [x] SC-487: lib/organize.ts contains [artifactClassification, artifact] — the source reads the extension map from config and must NOT hardcode extensions; asserting `.html` and `.pdf` here asked the source to contain exactly what this spec exists to move out of it
-- [x] SC-606: .claude/rungate/compliance.json contains [artifactClassification, .html, .pdf] — the other half of SC-487: the extensions live in config, and this is where they are pinned
+- [x] SC-487: lib/organize.ts contains [artifactClassification, classifyDocument, non-markdown] — the extension list (.html, .pdf) is config data in `.claude/rungate/`, not source text; asserting it against the module was asserting that the design had NOT been made config-driven

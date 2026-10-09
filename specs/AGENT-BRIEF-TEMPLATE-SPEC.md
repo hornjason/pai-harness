@@ -72,9 +72,10 @@ These fields are emitted by the scaffold generator and leverage Claude Code's na
 
 - [x] SC-348: templates/agent-briefs/ directory exists
 - [x] SC-349: templates/agent-briefs/_shared.md exists
-- [x] SC-350: lib/generators/agent-briefs.ts contains [templates/agent-briefs] — SCAFFOLD-DECOMPOSITION-SPEC moved brief generation out of scaffold-project.ts into lib/generators/
+- [x] SC-350: lib/generators/agent-briefs.ts contains [templates/agent-briefs] — the generator moved out of scaffold-project.ts (SCAFFOLD-DECOMPOSITION-SPEC); the SC did not follow it
 - [x] SC-351: Each generated brief has all 8 required sections (behavioral)
-- [x] SC-352: .claude/agents/marcus.md frontmatter has model = opus — the model is owned by `.claude/rungate/roles.json`, which sets opus for marcus; AGENT-8 is what keeps brief and config in step. This line pins the generated value, and it said sonnet while every other mechanism in the repo said opus
+- [x] SC-352: .claude/agents/marcus.md frontmatter has model
+  - The VALUE is deliberately not asserted here. Models are routed per role in `.claude/rungate/roles.json` (marcus is opus), and AGENT-8 already checks every brief against that config. Hard-coding `sonnet` in this SC asserted a second, contradictory source of truth — and the frontmatter-field matcher is anchored at end-of-statement, so any trailing prose on this line silently unbinds it.
 - [x] SC-353: .claude/agents/marcus.md is under [120] lines
 - [x] SC-354: Editing a template file and re-scaffolding updates the generated brief (behavioral)
 - [x] SC-355: lib/generators/agent-briefs.ts contains [_shared] — same move as SC-350
@@ -154,7 +155,7 @@ Sections not listed default to `identity`. The field is set in `agentMeta` in sc
 - [x] SC-424: lib/rule-registry.ts exists
 - [x] SC-425: workflows/ship.js contains [briefedAgent]
 - [x] SC-426: lib/rule-registry.ts contains [reinforcement]
-- [x] SC-427: lib/generators/agent-briefs.ts contains [tiers, agentMeta] — same move as SC-350
+- [x] SC-427: lib/create-brief.ts contains [tiers, agentMeta] — `agentMeta` and the tier map live in the brief factory now, not in scaffold-project.ts
 - [x] SC-428: lib/rule-registry.ts contains [identity]
 
 ## Cautions

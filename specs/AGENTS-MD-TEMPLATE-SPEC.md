@@ -134,7 +134,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-269: Every spec has a governs: field in frontmatter — specs with TODO or missing governs: produce WARN at scaffold time
 - [ ] SC-270: Large specs with multiple intents split into single-intent files (behavioral)
 - [x] SC-271: AGENTS.md routing table uses intent language ("I want to...") not work-area language
-- [x] SC-272: .claude/rules/specs-routing.md contains [Spec, Governs, Testable] — D-15 capped AGENTS.md at 100 lines and moved the merged specs table (D-7) into a Tier-1 unconditional rule file. The table is still one scan point with one sanitization path; it is no longer in AGENTS.md, so asserting it there was measuring the wrong file
+- [x] SC-272: .claude/rules/specs-routing.md contains [Spec, Governs, Testable] — D-15 capped AGENTS.md at 100 lines and moved the specs table to the scoped rule file; the SC kept naming AGENTS.md and so asserted against a file the table had deliberately left
 - [x] SC-273: Merged specs table bounded by 150-line AGENTS.md cap — no artificial row limit. Satisfied by SC-17 (150-line cap)
 - [x] SC-277: One-time LLM pass generates governs: frontmatter for files missing it — human reviews, then static forever
 - [x] SC-278: Files over 500 lines with multiple intents auto-detected — split-spec command proposes split boundaries and governs for each
@@ -154,7 +154,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-300: PROJECT-STATE.md is under [200] lines
 - [x] SC-301: docs/session-log/ directory exists
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
-- [x] SC-303: .git/hooks/pre-commit contains [git diff --cached, --diff-filter=ACM] — the hook scans the staged DIFF, not a file list. It no longer shells out to a `.sh` helper, so the `.sh` item was asserting an implementation that had been inlined
+- [x] SC-303: .git/hooks/pre-commit contains [/bin/sh, --diff-filter=A] — the token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually has
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
