@@ -262,6 +262,34 @@ export interface GateEnforcementResult {
  * the logic here is what makes it reachable by test/gate-enforcement.test.ts
  * without simulating a PreToolUse payload.
  */
+/**
+ * One emitter for both enforcement outcomes, so a block and a nag cannot drift
+ * into different event shapes. `reason` is attributed only for a block: a nag
+ * has no reason, and emitting one anyway would make every nag look like a
+ * near-block in the signal history.
+ */
+export function logEnforcementSignal(
+  signalsDir: string,
+  signalsFile: string,
+  pending: GatePending,
+  tool: string,
+  action: 'block' | 'nag',
+  strike: number,
+): void {
+  logSignal(signalsDir, signalsFile, {
+    ts: new Date().toISOString(),
+    type: 'gate_enforcement',
+    gate: pending.gate,
+    issue: pending.issue,
+    strike,
+    tool,
+    action,
+    ...(action === 'block'
+      ? { reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes' }
+      : {}),
+  });
+}
+
 export function runGateEnforcement(input: GateEnforcementInput): GateEnforcementResult {
   const wfFailure = findWorkflowGateFailure(input.workDir);
   if (!wfFailure) {
@@ -278,14 +306,11 @@ export function runGateEnforcement(input: GateEnforcementInput): GateEnforcement
   const strikeCount = loadStrikeCount(input.pendingFile, wfFailure.issue, wfFailure.gate);
   const pending = buildGatePending(wfFailure, input.sessionId, strikeCount);
   const decision = makeEnforcementDecision(pending, input.toolName);
-  const ts = new Date().toISOString();
 
   if (decision.action === 'block') {
-    logSignal(input.signalsDir, input.signalsFile, {
-      ts, type: 'gate_enforcement', gate: pending.gate, issue: pending.issue,
-      strike: pending.strike_count, tool: input.toolName, action: 'block',
-      reason: pending.outcome_ac_failure ? 'outcome_ac_failure' : 'max_strikes',
-    });
+    logEnforcementSignal(
+      input.signalsDir, input.signalsFile, pending, input.toolName, 'block', pending.strike_count,
+    );
     return {
       stdout: JSON.stringify({ decision: 'block', reason: decision.reason }),
       action: 'block',
@@ -304,11 +329,10 @@ export function runGateEnforcement(input: GateEnforcementInput): GateEnforcement
     }
   }
 
-  logSignal(input.signalsDir, input.signalsFile, {
-    ts, type: 'gate_enforcement', gate: pending.gate, issue: pending.issue,
-    strike: decision.newStrikeCount, tool: input.toolName, action: 'nag',
-  });
-  logHygieneSignals(input.signalsDir, input.signalsFile, input.projectRoot);
+  logEnforcementSignal(
+    input.signalsDir, input.signalsFile, pending, input.toolName, 'nag', decision.newStrikeCount,
+  );
+  logDocHygieneSignals(input.signalsDir, input.signalsFile, input.projectRoot);
 
   return { stdout: decision.reminder ?? null, action: 'nag' };
 }
@@ -318,9 +342,14 @@ export function runGateEnforcement(input: GateEnforcementInput): GateEnforcement
  * Best-effort by design — a hygiene scan failure must not block a tool call —
  * but it says so on stderr rather than vanishing.
  */
-export function logHygieneSignals(signalsDir: string, signalsFile: string, projectRoot: string): number {
+export function logDocHygieneSignals(
+  signalsDir: string,
+  signalsFile: string,
+  projectRoot: string,
+  check: typeof checkDocHygiene = checkDocHygiene,
+): number {
   try {
-    const result = checkDocHygiene(projectRoot);
+    const result = check(projectRoot);
     if (result.pass) return 0;
     for (const finding of result.findings) {
       logSignal(signalsDir, signalsFile, {

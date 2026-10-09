@@ -86,8 +86,8 @@ describe('gate-enforcement signal emitters (extracted from the hook)', () => {
     logDocHygieneSignals(dir, file, dir, () => ({
       pass: false,
       findings: [
-        { checkId: 'HYGIENE-1', file: 'specs/A.md', level: 'warn', message: 'no governs' },
-        { checkId: 'HYGIENE-2', file: 'specs/B.md', level: 'warn', message: 'no updated' },
+        { checkId: 'HYGIENE-1', file: 'specs/A.md', level: 'WARN', message: 'no governs' },
+        { checkId: 'HYGIENE-2', file: 'specs/B.md', level: 'WARN', message: 'no updated' },
       ],
     }));
     const events = readEvents(file);
