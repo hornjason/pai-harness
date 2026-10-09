@@ -1,0 +1,1 @@
+{"title":"Scheduler loses a job on a millisecond collision","labels":[],"body":"> The scheduler drops a job whenever two runs finish in the same millisecond, because the second write wins and no error is raised anywhere.\n\n## Steps to reproduce\n1. Start two runs that finish together\n"}

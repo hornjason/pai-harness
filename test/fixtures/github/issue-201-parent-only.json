@@ -1,0 +1,1 @@
+{"title":"#200 Phase 2: refusal plumbing","labels":[],"body":"Parent: #200\n\n## Acceptance Criteria\n- AC-1: a goal that resolves to metadata only is refused\n\n## Files\n- scripts/precompute-goal.ts\n"}
