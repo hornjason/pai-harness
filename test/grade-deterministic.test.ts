@@ -1,7 +1,16 @@
 import { describe, test, expect } from "bun:test";
 import { join } from "path";
 import { readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
-import { gradeTranscript, loadValidRoles, loadRoleBriefPaths, inferRole } from "../scripts/grade-deterministic.js";
+import {
+  gradeTranscript,
+  loadValidRoles,
+  loadRoleBriefPaths,
+  inferRole,
+  callSiteLabel,
+  loadRunTiming,
+  buildTimingEntry,
+  RUN_TIMING_FILENAME,
+} from "../scripts/grade-deterministic.js";
 import type { GradeOutput } from "../scripts/grade-deterministic.js";
 
 const FIXTURE_DIR = join(import.meta.dir, "fixtures", "transcripts");
@@ -348,6 +357,125 @@ describe("grade-deterministic", () => {
         expect(result!.total).toBe(checkableRules.length);
       } finally {
         rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  // ── #227: durations come from the run timing artifact, never from file birthtime ──
+  describe("timing from the run artifact", () => {
+    const GRADE_SCRIPT = join(PROJECT_ROOT, "scripts", "grade-deterministic.ts");
+
+    test("AC-1: grade-deterministic.ts contains zero occurrences of birthtime", () => {
+      const source = readFileSync(GRADE_SCRIPT, "utf-8");
+      expect(source).not.toContain("birthtime");
+    });
+
+    test("callSiteLabel prefers the meta label over the transcript filename", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_label_meta");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const metaPath = join(tmpDir, "agent-marcus-impl1.meta.json");
+        const transcriptPath = join(tmpDir, "agent-marcus-impl1.jsonl");
+        writeFileSync(metaPath, JSON.stringify({ label: "marcus-impl", agentType: "marcus" }));
+        writeFileSync(transcriptPath, "");
+
+        expect(callSiteLabel(metaPath, transcriptPath)).toBe("marcus-impl");
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("callSiteLabel falls back to the transcript basename when meta has no label", () => {
+      const label = callSiteLabel("/nonexistent/agent-quinn-validate1.meta.json", "/nonexistent/agent-quinn-validate1.jsonl");
+      expect(label).toBe("quinn-validate1");
+    });
+
+    test("loadRunTiming derives seconds from the artifact's start and end timestamps", () => {
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_timing_artifact");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const artifactPath = join(tmpDir, RUN_TIMING_FILENAME);
+        writeFileSync(artifactPath, JSON.stringify({
+          calls: [
+            { label: "marcus-impl", startedAt: "2026-10-09T00:00:00.000Z", endedAt: "2026-10-09T00:12:57.000Z" },
+            { label: "grade", durationSeconds: 42 },
+            { label: "malformed", startedAt: "not-a-date", endedAt: "also-not-a-date" },
+          ],
+        }));
+
+        const timings = loadRunTiming(artifactPath);
+        expect(timings.get("marcus-impl")).toBe(777);
+        expect(timings.get("grade")).toBe(42);
+        // A call site whose timestamps cannot be parsed is absent, not zero.
+        expect(timings.has("malformed")).toBe(false);
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("loadRunTiming returns an empty map when the artifact is missing or unparseable", () => {
+      expect(loadRunTiming("/nonexistent/run-timing.json").size).toBe(0);
+
+      const tmpDir = join(import.meta.dir, "fixtures", "transcripts", "_tmp_timing_broken");
+      mkdirSync(tmpDir, { recursive: true });
+      try {
+        const artifactPath = join(tmpDir, RUN_TIMING_FILENAME);
+        writeFileSync(artifactPath, "{ not json");
+        expect(loadRunTiming(artifactPath).size).toBe(0);
+      } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    test("AC-3: buildTimingEntry reports a role with no artifact entry as unmeasured, not zero", () => {
+      const timings = new Map<string, number>([["marcus-impl", 777]]);
+
+      const measured = buildTimingEntry("marcus", "marcus-impl", timings);
+      expect(measured).toEqual({ role: "marcus", label: "marcus-impl", measured: true, durationSeconds: 777 });
+
+      const unmeasured = buildTimingEntry("quinn", "quinn-validate", timings);
+      expect(unmeasured.measured).toBe(false);
+      expect(unmeasured).not.toHaveProperty("durationSeconds");
+      expect(unmeasured.durationSeconds).toBeUndefined();
+    });
+
+    test("AC-2 + AC-3: CLI reads durations from the artifact and marks the rest unmeasured", async () => {
+      const { tmpdir } = await import("os");
+      const base = join(tmpdir(), `grade-timing-${Date.now()}`);
+      const transcriptDir = join(base, "transcripts");
+      const workDir = join(base, "work");
+      mkdirSync(transcriptDir, { recursive: true });
+      mkdirSync(workDir, { recursive: true });
+      try {
+        for (const [label, role] of [["marcus-impl", "marcus"], ["quinn-validate", "quinn"]]) {
+          writeFileSync(join(transcriptDir, `agent-${label}.meta.json`), JSON.stringify({ label, agentType: role }));
+          writeFileSync(join(transcriptDir, `agent-${label}.jsonl`), [
+            JSON.stringify({ type: "user", message: { content: "do the task" } }),
+            JSON.stringify({ type: "assistant", message: { content: [
+              { type: "tool_use", name: "Read", input: { file_path: "/path/AGENTS.md" } },
+            ] } }),
+          ].join("\n"));
+        }
+
+        // Only marcus-impl is in the artifact — quinn-validate must come back unmeasured.
+        writeFileSync(join(workDir, RUN_TIMING_FILENAME), JSON.stringify({
+          calls: [{ label: "marcus-impl", startedAt: "2026-10-09T00:00:00.000Z", endedAt: "2026-10-09T00:12:57.000Z" }],
+        }));
+
+        const proc = Bun.spawnSync([
+          "bun", GRADE_SCRIPT, "--transcripts", transcriptDir, workDir,
+        ], { cwd: PROJECT_ROOT });
+        expect(proc.exitCode).toBe(0);
+
+        const output: GradeOutput = JSON.parse(readFileSync(join(workDir, "compliance-grade.json"), "utf-8"));
+        const marcus = output.timing!.find(t => t.label === "marcus-impl");
+        expect(marcus).toEqual({ role: "marcus", label: "marcus-impl", measured: true, durationSeconds: 777 });
+
+        const quinn = output.timing!.find(t => t.label === "quinn-validate");
+        expect(quinn!.measured).toBe(false);
+        expect(quinn!.durationSeconds).toBeUndefined();
+      } finally {
+        rmSync(base, { recursive: true, force: true });
       }
     });
   });
