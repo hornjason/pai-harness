@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "@octokit/rest": "^22.0.1",
+    "acorn": "^8.19.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {
