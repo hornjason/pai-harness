@@ -90,8 +90,15 @@ Each of these has happened in this repo and was mistaken for progress.
 - **An agent reporting it complied.** Marcus has exceeded the full-suite cap on
   every measured run while the rule text asking otherwise got longer each time.
   Compliance is measured from transcripts, never self-reported (#194).
-- **A spec marked done.** SC-478, SC-479 and SC-511 are source-text existence
-  assertions still ticked. A criterion satisfiable by a comment is a wish.
+- **A spec marked done.** Measured 2026-10-08: **no success criterion in this
+  repo can fail the conformity suite.** `lib/conformity.ts:289` collects only
+  `- [ ] SC-N`, so the 467 checked SCs generate no test; the 107 unchecked ones
+  get a body that is `try { assertion(root) } catch { }` with no `expect`
+  (`:901-907`). The only test in the block that can go red checks SC *syntax*.
+  Promotion is one-way (`scripts/update-project-state.ts:150`), so an SC is
+  asserted at most once, on the run that flips it. **The SC count is a tally of
+  checkboxes, not evidence**, and no number derived from it belongs in an
+  argument.
 
 ## Where we actually stand
 
@@ -103,11 +110,43 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 | 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168). |
 | 3 — bad ships are stopped | Partial. Security and compliance verdicts now refuse. Not yet audited for every computed verdict. |
 | 4 — absence ≠ clean | **No.** `grade-deterministic.ts` writes `{grades:[]}` and exits 0 on no transcripts; the ship.js prompt instructs the same shape (#195, open). |
-| 5 — works on another repo | **No, and never attempted.** Every run in this repo's history is rungate shipping rungate. |
-| consumer list | Unmeasured. All five items await the first DDB run. |
+| 5 — works on another repo | **No, and never attempted.** Every run in this repo's history is rungate shipping rungate. The `~/.rungate/ddb-*` directories are rungate runs under a stale slug, not DDB runs. |
+| consumer list | **Surveyed 2026-10-08, and it fails.** Twelve blocking defects found by adversarial audit without running anything. See below. |
 
 Last full suite: 3248 pass / 0 fail under `bun scripts/test-clean-env.ts`
 (2026-10-08). That figure is the floor, not the claim — see "What is not success".
+
+### The consumer survey, 2026-10-08
+
+Two adversarial sweeps audited the specs and the never-exercised consumer path
+against the claims above. The verdict was **not ready**, and the reasoning is
+worth keeping because it is specific:
+
+> On DDB it would execute roughly 2.5% of the test suite, build no container,
+> grade no container, discard the only measurement it makes against the
+> committed tree, and then open a PR whose body states "Unit tests: PASS."
+
+The worst of it, measured rather than inferred:
+
+- DDB's `dev.testCmd` is `bun test src/**/*.test.ts` — **12 of 491 test files**,
+  excluding the conformity test rungate itself scaffolded into DDB and every
+  playwright spec DDB's own mandatory gate depends on.
+- The container path keys off a `container` config key that **no schema defines,
+  no generator emits, and DDB does not have** — so the harness composes its own
+  `SKIP: no container` for rebuild, smoke and Quinn, and its ship gate accepts
+  all three. DDB's `prod.rebuild` is set and never read.
+- Nothing makes DDB non-LIGHT. The tier is only ever *downgraded* in code
+  (`ship.js:990`); the upgrade is the discovery agent's free choice. A LIGHT
+  verdict skips Quinn, container verify, B1 and B2, and the run still reports
+  DONE.
+- `runB2EvidenceValidation` is the **only** code that measures the committed
+  tree. Its verdicts are written in memory and then discarded by a re-read from
+  disk at `gate-executor.ts:1445`.
+
+**Run 1 is an instrument, not a ship.** Low-stakes issue, PR not merged, every
+reported number re-measured by hand once. If run 1 reports PASS and the numbers
+cannot be independently reproduced, the conclusion is that the harness is still
+lying — not that it worked.
 
 ## How to use this file
 
