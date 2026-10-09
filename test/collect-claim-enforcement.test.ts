@@ -114,7 +114,7 @@ function loadCollectAgentWork(
 
   const collectAgentWork = new Function(
     "log",
-    "agent",
+    "timedAgent",
     "shellQuote",
     "WORK_DIR",
     "PROJECT_ROOT",

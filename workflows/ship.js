@@ -397,6 +397,73 @@ function safeSSHCommand(host, remoteCmd) {
 
 // ──── SECURITY-HELPERS-END ────
 
+// ──── AGENT-TIMING-START ────
+/**
+ * Per-call-site wall-clock timing, written by the agent being timed (#227).
+ *
+ * This workflow cannot time itself. The Workflow sandbox has no filesystem and
+ * no `Date.now()` — both would break resume — so ship.js can neither read a
+ * clock nor write a file. The only participant that can do both is the agent
+ * it is about to spawn, which has Bash. So every prompt carries a bracket:
+ * run `start` before the work, `end` after it, under this call site's label,
+ * into one JSONL artifact for the whole run.
+ *
+ * What this replaces: the grade step used to `stat` each agent-*.jsonl and
+ * subtract creation time from modification time. That is a FILE's lifetime,
+ * not a CALL's. A transcript flushed once at the end read as zero seconds, one
+ * the runtime touched later read as longer than the call, and two call sites
+ * sharing a transcript were not separable at all. Every "TIMING: x = Ns" line
+ * a ship run has ever printed was that number.
+ *
+ * The label is the join key, and it is read from `opts.label` at runtime
+ * rather than written per call site, because two call sites take their label
+ * from their caller (preserveRefusedWork, collectAgentWork) and a per-site
+ * literal would have left exactly those two untimed.
+ *
+ * The bracket is lossy by construction — an agent that dies or skips the end
+ * leaves a start open. scripts/record-agent-timings.ts reports that as
+ * UNTERMINATED rather than dropping it; a dropped start is indistinguishable
+ * from a call that never happened, which is the defect above all over again.
+ */
+const TIMING_ARTIFACT = `${WORK_DIR}/agent-timings.jsonl`
+const TIMING_SCRIPT = `${HARNESS_ROOT}/scripts/record-agent-timings.ts`
+
+function timingInstruction(label) {
+  const cmd = (event) =>
+    `bun ${shellQuote(TIMING_SCRIPT)} ${event} --label ${shellQuote(label)} --artifact ${shellQuote(TIMING_ARTIFACT)}`
+  return (
+    `TIMING — this call is measured, and you are the only thing that can measure it (#227).\n` +
+    `Run this once, before you begin the task work (after any mandatory reads above):\n` +
+    `  ${cmd('start')}\n` +
+    `Run this once, as your last action, after the work is done and your answer is ready:\n` +
+    `  ${cmd('end')}\n` +
+    `Both are required, neither is part of the task, and neither replaces reporting.\n` +
+    `A start with no end is reported as UNTERMINATED, not dropped — skipping the end\n` +
+    `marks this call unmeasured rather than fast.`
+  )
+}
+
+/**
+ * The single door every agent call in this workflow goes through.
+ *
+ * One wrapper rather than an edit at each call site: 39 call sites each
+ * remembering to bracket themselves is 39 chances to forget, and a forgotten
+ * one is invisible — it just never appears in the artifact.
+ * test/agent-timings.test.ts parses ship.js and fails on any `agent(` call
+ * outside this block.
+ */
+async function timedAgent(prompt, opts = {}) {
+  const label = opts.label
+  if (!label) {
+    // Not a refusal: a missing label must not kill a ship run, and inventing
+    // one would merge two call sites into a single row. Run it, and say so.
+    log('WARN: an agent call reached timedAgent with no label — this call is UNTIMED (#227)')
+    return agent(prompt, opts)
+  }
+  return agent(`${prompt}\n\n${timingInstruction(label)}`, opts)
+}
+// ──── AGENT-TIMING-END ────
+
 // ── Agent brief loader (config-driven) ────────────────────
 // Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
 // Roles from args.roles (passed by skill from rungate.json) or convention fallback.
@@ -406,7 +473,7 @@ const ROLES = parsedArgs.roles || {}
 const CONTEXT_CACHE = {}
 async function loadContextPaths(role, briefPath) {
   if (CONTEXT_CACHE[role]) return CONTEXT_CACHE[role]
-  const result = await agent(`
+  const result = await timedAgent(`
 Read ${briefPath} and extract ALL file paths from the Context section.
 Return the paths as a JSON object with a "paths" array. Example: {"paths": ["/path/to/file1.md", "/path/to/file2.ts"]}
 If there is no Context section or no paths, return {"paths": []}.
@@ -421,7 +488,7 @@ If there is no Context section or no paths, return {"paths": []}.
 const REINFORCEMENT_CACHE = {}
 async function loadReinforcementRules(role, briefPath) {
   if (REINFORCEMENT_CACHE[role]) return REINFORCEMENT_CACHE[role]
-  const result = await agent(`
+  const result = await timedAgent(`
 Read ${briefPath}. Look at the YAML frontmatter for a "tiers" field with "reinforcement" and/or "mechanical" arrays listing section names.
 Find all bullet points and numbered items under the sections listed in "reinforcement".
 Return them as a JSON object: {"rules": ["rule text 1", "rule text 2", ...]}.
@@ -536,9 +603,9 @@ async function briefedAgent(prompt, opts = {}) {
     }
 
     fullPrompt += prompt
-    return agent(fullPrompt, opts)
+    return timedAgent(fullPrompt, opts)
   }
-  return agent(prompt, opts)
+  return timedAgent(prompt, opts)
 }
 // ──── BRIEFED-AGENT-END ────
 
@@ -549,7 +616,7 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
   const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
   const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const result = await agent(`
+    const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
 
 1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
@@ -570,7 +637,7 @@ Run the ${gateName} gate and classify any failures:
     if (result.regressionTarget) return result
 
     log(`${gateName} attempt ${attempt}/3 FAILED (${result.category || 'unknown'}) — healing`)
-    await agent(`
+    await timedAgent(`
 ${gateName} gate failed. Category: ${result.category || 'unknown'}
 Failures: ${(result.failures || []).join('\n')}
 Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md. Read ${WORK_DIR}/workflow-state.json.
@@ -594,7 +661,7 @@ log(`Ship #${ISSUE}: reading issue`)
 let goalData = parsedArgs.goalData || null
 if (!goalData) {
   // Pre-computed goalData not provided — fetch via a single agent that runs gh CLI
-  goalData = await agent(`
+  goalData = await timedAgent(`
 Run this exact command and parse the JSON output:
 gh issue view ${ISSUE} --repo ${ISSUE_REPO} --json title,body,labels
 
@@ -635,7 +702,7 @@ if (preflightResults) {
     .filter(h => h.cmd)
 
   if (hostChecks.length > 0) {
-    const batchResult = await agent(`
+    const batchResult = await timedAgent(`
 Run each of these SSH commands and report success/failure for each host:
 
 ${hostChecks.map((h, i) => `${i + 1}. ${h.name}: ${h.cmd}`).join('\n')}
@@ -678,7 +745,7 @@ if (parsedArgs.preloadedContexts) {
     return { role, path: rc?.brief ? `${PROJECT_ROOT}/${rc.brief}` : `${PROJECT_ROOT}/.claude/agents/${role}.md` }
   })
 
-  const preloadResult = await agent(`
+  const preloadResult = await timedAgent(`
 For each agent brief file below, extract:
 1. All file paths from the "## Context" section (if any)
 2. All bullet/numbered items from sections listed under "tiers.reinforcement" in the YAML frontmatter
@@ -848,7 +915,7 @@ Project root: ${PROJECT_ROOT}
     const specPath = discovery.governingSpec || ''
     log(`DECOMPOSE_REQUIRED: ${discovery.acs.length} ACs exceeds limit of ${MAX_ACS_PER_ISSUE}. Creating sub-issues from spec phases.`)
 
-    const decomposeResult = await agent(`
+    const decomposeResult = await timedAgent(`
 You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX_ACS_PER_ISSUE} AC limit per ship run. Decompose into sub-issues.
 
 1. Read the governing spec at ${PROJECT_ROOT}/${specPath} — find phase headers (### Phase N or similar groupings)
@@ -899,7 +966,7 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
     }
   }
 
-  setupResult = await agent(`
+  setupResult = await timedAgent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 
 1. Init workflow state:
@@ -945,7 +1012,7 @@ Report priorBranch exactly as detection returned it — branch (bare name), refN
 
   if (!setupResult || setupResult.acCount === 0) {
     log('FATAL: workflow-state.json has 0 ACs after setup — writeACs likely failed. Re-writing.')
-    await agent(`
+    await timedAgent(`
 Re-write ACs to workflow-state.json:
 bun -e "
 import {writeACs} from '${HARNESS_ROOT}/gates/orchestrator.ts';
@@ -1033,7 +1100,7 @@ if (PHASE_TARGET === 'discovery') {
 let mDecomposition = null
 if (discovery.sizing === 'M' && (discovery.filesToModify || []).length >= 3) {
   log(`M-SIZE DECOMPOSITION via to-issues: ${discovery.acs.length} ACs across ${discovery.filesToModify.length} files — decomposing into 2-4 XS/S sub-issues`)
-  const decompResult = await agent(`
+  const decompResult = await timedAgent(`
 You are the to-issues decomposition skill. Decompose this M-size issue into 2-4 smaller sub-issues.
 
 Parent issue #${ISSUE}: ${discovery.issueGoal || 'see ACs below'}
@@ -1111,7 +1178,7 @@ if (DRY_RUN) {
 // Prior branch detection: pre-computed via args or agent
 let priorBranchResult = parsedArgs.priorBranch || null
 if (!priorBranchResult) {
-  const priorResult = await agent(`
+  const priorResult = await timedAgent(`
 Run this command and report the result:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
 
@@ -1159,7 +1226,7 @@ reported null — do not substitute 0, that would claim the branch is merged).
 }
 
 // AC evidence/threshold pre-validation
-const preflightResult = await agent(`
+const preflightResult = await timedAgent(`
 AC pre-validation (evidence/threshold type checking):
 Read ${WORK_DIR}/workflow-state.json. For each AC with evidenceMethod.command:
   Run the command (timeout 10s, allow non-zero exit). Check if threshold can evaluate output:
@@ -1200,7 +1267,7 @@ async function runCeremonyOnce() {
   log('IMPLEMENT: brief preflight + compliance gate + assemble + context extraction')
 
   // Step 1: Brief pre-flight + assemble (batched into single agent)
-  await agent(`
+  await timedAgent(`
 Run these TWO commands in order and report the output of each:
 
 1. Brief pre-flight:
@@ -1236,7 +1303,7 @@ bun run ${HARNESS_ROOT}/gates/brief-assembler.ts --slug ${SLUG} --work-dir ${WOR
   `, { label: 'brief-preflight-assemble', phase: 'Implement' })
 
   // Step 2: Compliance gate
-  const complianceCheck = await agent(`
+  const complianceCheck = await timedAgent(`
 Run this command and return the JSON:
 bun -e "
 const fs = require('fs');
@@ -1282,7 +1349,7 @@ try {
       { path: `${PROJECT_ROOT}/PROJECT-STATE.md`, reason: 'current priorities, session context', maxLines: 50 },
       { path: `${PROJECT_ROOT}/prompts/coding-principles.md`, reason: 'coding and testing standards', maxLines: 100 },
     ]
-    const excerptResult = await agent(`
+    const excerptResult = await timedAgent(`
 Run this command and return the JSON output:
 bun -e "
 const fs = require('fs');
@@ -1488,7 +1555,7 @@ Also report worktreePath: your current working directory.
 let implementResult
 if (priorBranchResult?.testsPass) {
   log('Skipping Implement phase — using prior branch implementation')
-  const diffResult = await agent(`
+  const diffResult = await timedAgent(`
 Run: cd ${PROJECT_ROOT} && git diff --name-only main...HEAD
 Return only the file list, one per line.
   `, { label: 'prior-diff', phase: 'Implement' })
@@ -1915,7 +1982,7 @@ async function preserveRefusedWork(results, phaseName, label) {
 
   log(`Collection refused — preserving ${paths.length} worktree(s) onto their own branches (#228)`)
 
-  const out = await agent(`
+  const out = await timedAgent(`
 Run exactly this and report the result:
 
 bun ${shellQuote(`${HARNESS_ROOT}/scripts/preserve-worktree-work.ts`)} ${paths.map(p => shellQuote(p)).join(' ')}
@@ -2069,7 +2136,7 @@ async function collectAgentWork(results, intoDir, phaseName, label) {
   // ship.js has no I/O in the sandbox (#69), so everything crossing back from
   // a script must pass through an agent. Removing the agent entirely needs the
   // sandbox to offer a direct exec primitive; tracked separately.
-  const out = await agent(`
+  const out = await timedAgent(`
 Run exactly this and report the result:
 
 cat > ${shellQuote(`${WORK_DIR}/worktree-groups.json`)} <<'RUNGATE_GROUPS_EOF'
@@ -2152,7 +2219,7 @@ const gitAddForCommit = alreadyStaged
 // What Quinn said, as opposed to what the ceremony tier implies she would have
 // said if she had run (#173).
 const quinnLocalVerdict = quinnVerdictFor(quinnLocalRan, quinnLocalResult)
-const commitResult = await agent(`
+const commitResult = await timedAgent(`
 Do ALL of these steps in order. Do NOT run tests — the test suite was already validated.
 
 1. Commit and push. Run these in order, exactly as written:
@@ -2319,7 +2386,7 @@ if (verifyResult?.result === 'FAIL') {
       // completed fix. Staging from git status removes the file list from
       // the path entirely, so there is nothing left to relativize.
       const reimplGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
-      const reCommit = await agent(`
+      const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
 cd ${commitDir}
 git rev-parse HEAD   # this is parentSha
@@ -2568,7 +2635,7 @@ if (discovery.ceremonyTier !== 'LIGHT' && containerConfig) {
   const containerHealthPath = containerConfig.healthPath || '/'
 
   if (rebuildCmd) {
-    await agent(`
+    await timedAgent(`
 You have ONE task: rebuild the test container. Run this EXACT command and report the output:
 
 cd ${PROJECT_ROOT} && ${rebuildCmd} 2>&1 | tail -20
@@ -2582,7 +2649,7 @@ Report the full output.
     const hostSchema = {}
     containerHosts.forEach((h, i) => { hostSchema['host' + i] = { type: 'boolean' } })
 
-    const envCheck = await agent(`
+    const envCheck = await timedAgent(`
 Check if the rebuilt container is available:
 ${hostChecks}
     `, { label: 'env-check', phase: 'Verify', schema: {
@@ -2720,7 +2787,7 @@ if (!reviewSha) {
 const scopePath = `${WORK_DIR}/rook-scope.json`
 const findingsPath = `${WORK_DIR}/rook-findings.json`
 
-const rookScope = await agent(`
+const rookScope = await timedAgent(`
 Establish the security review scope. Run exactly this command, once:
 
   ${rookScopeCommand(PROJECT_ROOT, HARNESS_ROOT, reviewSha, scopePath)}
@@ -2781,7 +2848,7 @@ log(`SECURITY: ${securityVerdict.verdict} (spawned=${securityVerdict.spawned})`)
 // Persist it, so the run artefact answers "did security run, and what did it
 // say?". Only workflow-computed scalars and workflow-owned paths reach this
 // command; rook's own text is read off disk by the script, never interpolated.
-await agent(`
+await timedAgent(`
 Run exactly this command and report its output:
 
   cd ${shellQuote(PROJECT_ROOT)} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-security-verdict.ts`)} \\
@@ -2841,7 +2908,7 @@ await parallel([runContainerVerify, runRookReview])
 // Two values, no judgement: the agent reports what it read, and
 // reviewIsCurrent — the same function lib/security-verdict.ts exports and
 // test/security-verdict-blocks.test.ts drives — decides.
-const currencyProbe = await agent(`
+const currencyProbe = await timedAgent(`
 Report two values. Do NOT reconcile, normalise or correct them, and do NOT
 substitute one for the other — reporting them as equal when they are not is
 the failure this step exists to catch (#169).
@@ -2937,7 +3004,7 @@ log(`Security review PASSED, and is current at ${headSha}`)
 // Uses deterministic evaluation via evaluateCriteria() instead of LLM grading.
 let gradeResult = null
 if (!SKIP_GRADE) {
-  gradeResult = await agent(`
+  gradeResult = await timedAgent(`
 Find the workflow transcript directory and run grading + efficiency analysis + wall-clock timing:
 
 1. Find the transcript dir — look for agent-*.jsonl files:
@@ -2951,16 +3018,16 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
    the persist step and you still need to see the output to report it below:
    bun ${HARNESS_ROOT}/scripts/analyze-transcript.ts "$TDIR" --json | tee ${WORK_DIR}/efficiency.json
 
-4. Wall-clock timing per agent — for each agent-*.jsonl file, get file timestamps:
-   for f in "$TDIR"/agent-*.jsonl; do
-     name=$(basename "$f" .jsonl)
-     created=$(stat -f '%B' "$f" 2>/dev/null || stat -c '%W' "$f" 2>/dev/null)
-     modified=$(stat -f '%m' "$f" 2>/dev/null || stat -c '%Y' "$f" 2>/dev/null)
-     if [ -n "$created" ] && [ -n "$modified" ]; then
-       el=$((modified - created))
-       echo "$name: $el seconds"
-     fi
-   done
+4. Wall-clock timing per CALL SITE — read this run's timing artifact (#227):
+   bun ${shellQuote(TIMING_SCRIPT)} report --artifact ${shellQuote(TIMING_ARTIFACT)} --json
+   It prints {"timing":[{agent,seconds,unterminated,orphanEnd}...],"unterminated":[...],"missing":bool}.
+   Report its "timing" array, including every entry with unterminated true — those
+   are calls whose agent never wrote an end. Carry unterminated/orphanEnd through as
+   given, and OMIT "seconds" entirely for those entries rather than inventing a
+   number or dropping the entry. If the artifact is missing, report timing as [].
+   Do NOT derive durations from file timestamps of any kind: an agent-*.jsonl file's
+   mtime is the file's lifetime, not the call's, and that is the measurement this
+   step replaced.
 
 5. Return a JSON object with grades array, efficiency metrics, and timing. If no transcripts found, return {"grades": [], "efficiency": null, "timing": []}.
   `, { label: 'grade', phase: 'Verify', schema: {
@@ -2987,9 +3054,16 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
         type: 'object',
         properties: {
           agent: { type: 'string' },
-          seconds: { type: 'number' }
+          // `seconds` is no longer REQUIRED: a bracket the agent never closed
+          // has no duration, and demanding a number here would make the grade
+          // step invent one (#227). Omitted rather than nullable — a union
+          // type is not guaranteed to survive the tool-schema layer, and a
+          // schema that throws would take the whole grade step down with it.
+          seconds: { type: 'number' },
+          unterminated: { type: 'boolean' },
+          orphanEnd: { type: 'boolean' }
         },
-        required: ['agent', 'seconds']
+        required: ['agent']
       }}
     },
     required: ['grades']
@@ -3005,7 +3079,11 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   }
   if (gradeResult?.timing?.length) {
     for (const t of gradeResult.timing) {
-      log(`TIMING: ${t.agent} = ${t.seconds}s`)
+      // An unmeasured call says so. Printing `= nulls` or silently skipping it
+      // would restore the thing #227 removed: a timing line nobody can act on.
+      if (t.orphanEnd) log(`TIMING: ${t.agent} = END WITH NO START (#227)`)
+      else if (t.unterminated || typeof t.seconds !== 'number') log(`TIMING: ${t.agent} = UNTERMINATED — the agent wrote a start and no end (#227)`)
+      else log(`TIMING: ${t.agent} = ${t.seconds}s`)
     }
   }
 
@@ -3028,7 +3106,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
   // already wrote that file and the agent's return value is a restatement of
   // it, so reading the file keeps a language model out of the data path (#81).
   // Nothing agent-derived is interpolated into the command below.
-  const persistResult = await agent(`
+  const persistResult = await timedAgent(`
 Run exactly this command and report its result:
 
   cd ${PROJECT_ROOT} && bun ${HARNESS_ROOT}/scripts/persist-compliance.ts ${WORK_DIR} ${HARNESS_ROOT} ${ISSUE}
@@ -3159,7 +3237,7 @@ let prStep = null
 if (containerConfig) {
   const containerPort = containerConfig.port || 3000
   const containerHealthPath = containerConfig.healthPath || '/'
-  await agent(`
+  await timedAgent(`
 Check test container status, then update workflow-state.json via writeWorkflowState():
 
 1. Check test container: curl -s -o /dev/null -w "%{http_code}" http://${(containerConfig.hosts || [])[0]}:${containerPort}${containerHealthPath} 2>/dev/null
@@ -3175,7 +3253,7 @@ Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 } else {
   // No container — batch record-env + create-pr into one agent
-  prStep = await agent(`
+  prStep = await timedAgent(`
 Do BOTH tasks:
 
 1. Record env as SKIP:
@@ -3251,7 +3329,7 @@ if (shipResult?.result !== 'PASS') {
       // The most recent Quinn measurement this run has, which by the Ship
       // phase is the container one when it ran (#169 AC-6). Never the tier.
       const quinnShipVerdictValue = quinnShipVerdict(quinnContainerRan, quinnContainerResult, quinnLocalVerdict)
-      const reCommit = await agent(`
+      const reCommit = await timedAgent(`
 Do NOT run tests — they were already validated.
 cd ${commitDir}
 git rev-parse HEAD   # this is parentSha
@@ -3365,7 +3443,7 @@ log(`Prove: ${proveVerdict}`)
 
 // ── Telemetry ──────────────────────────────────────────────
 // Batched: prove-label + telemetry + worktree-cleanup + stale-scan (was 4 agents, now 1)
-await agent(`
+await timedAgent(`
 Do ALL of these tasks in order:
 
 1. Post the prove result on the issue:

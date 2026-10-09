@@ -678,6 +678,55 @@ refused it. See `.claude/rules/checks-must-be-able-to-fail.md` and #178.
 
 ---
 
+### A run's timing measures calls, not files (#227)
+
+The grade step reports wall-clock time per agent. It used to derive that number
+by running `stat` on each `agent-*.jsonl` transcript and subtracting the file's
+creation time from its modification time.
+
+That is the FILE's lifetime, not the CALL's, and the two come apart in every
+direction: a transcript flushed once at the end reads as zero seconds, one the
+runtime touches afterwards reads as longer than the call, and two call sites
+that share a transcript are not separable at all. Nothing downstream could tell
+any of those apart from a real duration. Every `TIMING: x = Ns` line a ship run
+has printed was that number.
+
+**The artifact.** `$RUNGATE_WORK_DIR/{slug}/agent-timings.jsonl`, one JSON line
+per bracket event (`{label, event, at}`), written by `scripts/record-agent-timings.ts`.
+The grade step reads it with `report --artifact … --json` instead of statting
+anything.
+
+**Who writes it.** The agent being timed. `workflows/ship.js` runs in the
+Workflow sandbox, which has no filesystem and no `Date.now()` — both would break
+resume — so the workflow can neither read a clock nor write a file. The only
+participant that can do both is the agent it spawns, which has Bash. ship.js
+therefore appends a timing instruction to every prompt and routes all 39 agent
+call sites through one wrapper, `timedAgent`, so no spawn can forget.
+
+**The label is the join key, read at runtime.** Two call sites take their label
+from their caller (`preserveRefusedWork`, `collectAgentWork`), so a per-site
+literal would have left exactly those two untimed. `timedAgent` reads
+`opts.label`.
+
+**Order inside the prompt.** The brief read step comes first; the timing
+instruction is appended last. An agent whose first instruction is bookkeeping is
+an agent whose identity was displaced by it. Asserted by index comparison on the
+composed string in `test/briefed-agent-model.test.ts`, not by two greps — "both
+substrings present" is true in either order.
+
+**It is lossy, and says so.** An agent that dies, is skipped, or ignores the
+instruction leaves a start with no end. That is reported as `unterminated`,
+never dropped: a dropped start is indistinguishable from a call that never
+happened, which is the same class of defect the stat-based version had, only
+quieter. `unterminated` defaults to true and is cleared only by an observed end.
+
+- [x] SC-607: workflows/ship.js contains [AGENT-TIMING-START, TIMING_ARTIFACT, await timedAgent(] — every spawn goes through the one wrapper that brackets it
+- [x] SC-608: workflows/ship.js must NOT contain [stat -f, stat -c, modified - created] — no prompt derives a duration from a file timestamp any more
+- [x] SC-609: scripts/record-agent-timings.ts contains [unterminated: true, TIMING_USAGE_EXIT] — the reader fails closed on an unclosed bracket and routes every usage refusal through one exit-code constant
+- [x] SC-610: test/agent-timings.test.ts contains [the only raw agent() call is the one inside the timing wrapper] — AC-1 is enforced by parsing ship.js rather than grepping it, so converting one call site of thirty-nine does not pass
+
+---
+
 ## 6. ITERATION — Convergence + stuck detection
 
 **Purpose:** Decide what to do when verification fails. Replan, don't just retry.

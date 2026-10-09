@@ -83,7 +83,7 @@ function invokeFanout(b: Bindings): Promise<void> {
   const block = sliceBlock(BLOCK_START, BLOCK_END);
   const factory = new Function(
     "log",
-    "agent",
+    "timedAgent",
     "briefedAgent",
     "parallel",
     "discovery",
