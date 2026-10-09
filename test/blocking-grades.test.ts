@@ -29,6 +29,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { assertMarkedBlockReachable } from "../lib/reachability";
 import { checkTDD } from "../lib/transcript-checker";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -329,5 +330,22 @@ describe("the block sits where it can stop a PR", () => {
     const grade = shipSource.indexOf("let gradeResult = null");
     expect(grade).toBeGreaterThan(-1);
     expect(shipSource.indexOf(BLOCK_START)).toBeGreaterThan(grade);
+  });
+
+  /**
+   * #201. The two tests above read byte OFFSETS, and the execution tests above
+   * them read the SLICE between the markers — so wrapping the whole marked
+   * region in `if (false)`, with the wrapper placed outside the marker
+   * comments, leaves the slice byte-identical and every offset in the right
+   * order. Measured on 2026-10-08: that mutation left this file at 19 pass /
+   * 0 fail. The block was dead and nothing here could say so.
+   *
+   * This reads the block's position off the PARSE instead: its chain of
+   * enclosing AST nodes must be `["Program"]` — the module body, which
+   * workflows/ship.js runs top to bottom. An `if`, a loop, a `catch` or a
+   * function anywhere above it puts its own node in the chain and is refused.
+   */
+  test("the marked block is reachable — it sits at module top level, not inside a conditional", () => {
+    expect(assertMarkedBlockReachable(shipSource, "BLOCKING-GRADES")).toEqual(["Program"]);
   });
 });

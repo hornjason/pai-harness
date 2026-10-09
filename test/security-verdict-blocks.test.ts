@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { assertMarkedBlockReachable } from "../lib/reachability";
 import {
   reviewIsCurrent,
   rookGateVerdict,
@@ -290,6 +291,24 @@ describe("AC-1: a rook FAIL stops the run", () => {
       refusal,
       "the security decision now happens AFTER the PR is opened, which is the bug",
     ).toBeLessThan(prStep);
+  });
+
+  /**
+   * #201. Every check above is blind to whether the decision block RUNS.
+   * `sliceBlock` returns the text between the markers and the two structural
+   * tests compare byte offsets, so wrapping the marked region in
+   * `if (false)` — wrapper outside the marker comments — leaves the slice
+   * byte-identical and the offsets in the same order. Measured on 2026-10-08:
+   * that mutation left this file at 113 pass / 0 fail with the security gate
+   * switched off.
+   *
+   * The ancestor chain is read off the parse: `["Program"]` means the block is
+   * a statement of the module body, which ship.js executes top to bottom. Any
+   * conditional owner — `if`, loop, `catch`, function — appears in the chain
+   * under its own type and is refused.
+   */
+  test("the decision block is reachable — it sits at module top level, not inside a conditional", () => {
+    expect(assertMarkedBlockReachable(shipSource, "SECURITY-DECISION")).toEqual(["Program"]);
   });
 });
 

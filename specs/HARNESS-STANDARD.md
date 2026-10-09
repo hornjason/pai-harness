@@ -408,15 +408,44 @@ What was broken to prove these fail — run, counted, reverted:
 | mutation | result |
 |---|---|
 | the guard always returns null | 2 fail |
-| the guard defined but not wired into the run | 1 fail |
+| the call-site TEXT removed — `const stateRefusal = commitStateRefusal(commitResult)` deleted | 1 fail |
+| the guard defined but not wired into the run — marked region wrapped in `if (false)`, wrapper outside the markers | **0 fail (52 pass)** before #201; **1 fail** after |
 | the recorder replaces `agents` instead of spreading it | 2 fail |
 | `stateRecorded` dropped from the step's `required` list | 1 fail |
 | `REFUSE_EXIT = 0` in the real source | the harness refuses to build its mutant and the file aborts |
 
-The first row is the one worth recording. The first version of SC-575's test
-asserted only that `ship.js` contained the string `COMMIT_STATE_NOT_RECORDED`,
-and reducing the branch to `if (false)` left all 21 tests green. The mutation
-survived its first pass, as every source-text assertion in this repo has.
+Rows two and three were one row until #201, recorded as "the guard defined but
+not wired into the run | 1 fail". That credited the test with more than it
+had. Re-measured on 2026-10-08, the two halves come apart:
+
+- Deleting the call-site text does cost 1 fail, because the test asserted on
+  that exact string.
+- Making the guard unreachable while leaving every character of it in place —
+  wrap the `COMMIT-STATE-GUARD` region in `if (false)`, with the wrapper
+  OUTSIDE the marker comments so `loadGuard`'s slice stays byte-identical —
+  cost **nothing**. 52 pass, 0 fail, with the declaration never binding and
+  the call below it reaching for a name that was never created. Wrapping a
+  region does not change the characters inside it, so neither the `toContain`
+  nor the `toMatch` noticed.
+
+Same measurement on the two sibling suites, same day: the `BLOCKING-GRADES`
+region wrapped that way left test/blocking-grades.test.ts at 19 pass / 0 fail,
+and `SECURITY-DECISION` left test/security-verdict-blocks.test.ts at 113 pass
+/ 0 fail — a dead compliance gate and a dead security gate, both green.
+
+#201 closed all three with `assertMarkedBlockReachable` from
+`lib/reachability.ts`, which reads the block's chain of enclosing AST nodes
+rather than its text and refuses anything outside `PERMITTED_ENCLOSING`. Each
+of the three suites now asserts its marked region's chain is `["Program"]`,
+and record-build-commit.test.ts additionally asserts the call site's chain is
+`["Program", "VariableDeclaration"]`, so both halves of "wired into the run"
+are read off the parse. Re-run with the same three mutations: 1 fail each,
+reverted, `git status` clean.
+
+The first version of SC-575's test asserted only that `ship.js` contained the
+string `COMMIT_STATE_NOT_RECORDED`, and reducing the branch to `if (false)`
+left all 21 tests green. The mutation survived its first pass, as every
+source-text assertion in this repo has.
 
 A second trap was hit and is now a property of the test rather than a note:
 the mutant must live beside the real script, because this one imports
