@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "os";
 import { join } from "path";
 
+import { assertMarkedBlockReachable, enclosingChain } from "../lib/reachability";
 import {
   PRESERVED_VERDICTS,
   PRESERVE_MEASURED_ENVIRONMENTS,
@@ -653,10 +654,42 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
     expect(reason).toContain("COMMIT_STATE_NOT_RECORDED");
   });
 
+  /**
+   * #201 — this test used to be two call-site TEXT assertions, and text is
+   * exactly what the mutation that matters leaves alone.
+   *
+   * Wrapping the COMMIT-STATE-GUARD region in `if (false)`, with the wrapper
+   * placed OUTSIDE the marker comments so `loadGuard`'s slice stays
+   * byte-identical, kills the guard: the declaration never binds and the call
+   * below it reaches for a name that was never created. Measured on
+   * 2026-10-08, that mutation left this file at 52 pass / 0 fail — the
+   * `toContain` and the `toMatch` below were both still true of the source,
+   * because wrapping a region does not change the characters inside it.
+   *
+   * "Wired into the run" now has both halves read off the PARSE. The guard's
+   * marked region must be a statement of the module body — `["Program"]`,
+   * which workflows/ship.js executes top to bottom — and the call that uses
+   * it must be a top-level `const`. A conditional owner of either one (`if`,
+   * loop, `catch`, function) appears in the chain under its own node type and
+   * fails the comparison.
+   *
+   * A function nothing calls is the shape #162's round one shipped: a
+   * 270-line script, fully tested, that the workflow never executed.
+   */
   test("the guard is wired into the run, not merely defined", () => {
-    // A function nothing calls is the shape #162's round one shipped: a
-    // 270-line script, fully tested, that the workflow never executed.
-    expect(shipSource).toContain("const stateRefusal = commitStateRefusal(commitResult)");
+    expect(assertMarkedBlockReachable(shipSource, "COMMIT-STATE-GUARD")).toEqual(["Program"]);
+
+    const CALL = "const stateRefusal = commitStateRefusal(commitResult)";
+    const at = shipSource.indexOf(CALL);
+    expect(at, "the call site text moved — this test would check nothing").toBeGreaterThan(-1);
+    expect(
+      shipSource.indexOf(CALL, at + 1),
+      "the call site appears more than once — which one is being checked?",
+    ).toBe(-1);
+    expect(enclosingChain(shipSource, at, at + CALL.length)).toEqual([
+      "Program",
+      "VariableDeclaration",
+    ]);
     expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}status: 'COMMIT_FAILED'/);
   });
 });
