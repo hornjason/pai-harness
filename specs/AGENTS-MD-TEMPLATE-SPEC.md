@@ -148,13 +148,13 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 
 ### PROJECT-STATE.md Automation
 - [x] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
-- [x] SC-297: .git/hooks/pre-commit contains [update-project-state]
+- [x] SC-297: lib/scaffold/steps.ts contains [update-project-state] — asserts the generator, not `.git/hooks/pre-commit`. The installed hook is untracked, so the old target passed on a developer machine and could never pass in CI; #209 made checked SCs bind and the gap surfaced immediately
 - [ ] SC-298: scripts/update-project-state.ts contains [scanSpecSCStatus, frontmatter]
 - [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
 - [x] SC-300: PROJECT-STATE.md is under [200] lines
 - [x] SC-301: docs/session-log/ directory exists
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
-- [x] SC-303: .git/hooks/pre-commit contains [/bin/sh, --diff-filter=A] — the token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually has
+- [x] SC-303: lib/scaffold/steps.ts contains [/bin/sh, --diff-filter=A] — two corrections. The token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually emits. And the target was `.git/hooks/pre-commit`, which git never tracks, so the assertion was about one machine's local state rather than about the repository
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
