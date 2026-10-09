@@ -9,7 +9,7 @@
  * role-specific criteria, and writes compliance-grade.json.
  */
 
-import { readFileSync, readdirSync, writeFileSync, existsSync, statSync } from "fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync } from "fs";
 import { join, basename } from "path";
 import {
   type TranscriptData,
@@ -38,9 +38,28 @@ interface RuleResult {
   category?: DirectiveCategory;
 }
 
-interface TimingEntry {
+/**
+ * A duration is only ever reported when the run itself recorded it (#227).
+ * `measured: false` means the call site produced no timing record — it does
+ * NOT mean the agent took no time, which is what the file-timestamp
+ * derivation this replaced silently implied for every unrecorded call.
+ */
+export interface TimingEntry {
   role: string;
-  durationSeconds: number;
+  /** Stable call-site label, the key into the run timing artifact. */
+  label: string;
+  measured: boolean;
+  durationSeconds?: number;
+}
+
+/** Written into the run's work dir by the orchestrator; keyed by call-site label. */
+export const RUN_TIMING_FILENAME = "run-timing.json";
+
+interface RunTimingCall {
+  label?: unknown;
+  startedAt?: unknown;
+  endedAt?: unknown;
+  durationSeconds?: unknown;
 }
 
 export interface GradeOutput {
@@ -269,11 +288,78 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>,
   };
 }
 
-function computeTiming(transcriptPath: string, role: string): TimingEntry {
-  const stats = statSync(transcriptPath);
-  const durationMs = stats.mtime.getTime() - stats.birthtime.getTime();
-  const durationSeconds = Math.max(0, Math.round(durationMs / 1000));
-  return { role, durationSeconds };
+/**
+ * The call-site label a transcript belongs to. The orchestrator stamps it into
+ * the transcript's meta.json; the filename is the fallback for transcripts
+ * written before the label was recorded.
+ */
+export function callSiteLabel(metaPath: string, transcriptPath: string): string {
+  if (existsSync(metaPath)) {
+    try {
+      const meta = JSON.parse(readFileSync(metaPath, "utf-8"));
+      for (const key of ["label", "name"]) {
+        const value = meta[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    } catch { /* fall through to the filename */ }
+  }
+  return basename(transcriptPath).replace(/\.jsonl$/, "").replace(/^agent-/, "");
+}
+
+/**
+ * Read the run timing artifact into a label → seconds map.
+ *
+ * A call site is in the map ONLY when the artifact carries a usable duration
+ * for it. A missing file, unparseable JSON, or an entry whose timestamps do
+ * not parse all yield absence — never a zero — so an unrecorded call site
+ * cannot be mistaken for an instant one.
+ */
+export function loadRunTiming(artifactPath: string): Map<string, number> {
+  const durations = new Map<string, number>();
+  if (!existsSync(artifactPath)) return durations;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(artifactPath, "utf-8"));
+  } catch (err) {
+    console.error(`Run timing artifact ${artifactPath} is unreadable — all call sites report unmeasured:`, err);
+    return durations;
+  }
+
+  const calls: RunTimingCall[] = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray((parsed as { calls?: unknown })?.calls)
+      ? (parsed as { calls: RunTimingCall[] }).calls
+      : [];
+
+  for (const call of calls) {
+    const label = typeof call?.label === "string" ? call.label.trim() : "";
+    if (!label) continue;
+
+    const seconds = callDurationSeconds(call);
+    if (seconds === null) continue;
+    durations.set(label, seconds);
+  }
+  return durations;
+}
+
+function callDurationSeconds(call: RunTimingCall): number | null {
+  const started = Date.parse(String(call.startedAt));
+  const ended = Date.parse(String(call.endedAt));
+  if (Number.isFinite(started) && Number.isFinite(ended) && ended >= started) {
+    return Math.round((ended - started) / 1000);
+  }
+  const explicit = call.durationSeconds;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) {
+    return Math.round(explicit);
+  }
+  return null;
+}
+
+export function buildTimingEntry(role: string, label: string, durations: Map<string, number>): TimingEntry {
+  const durationSeconds = durations.get(label);
+  if (durationSeconds === undefined) return { role, label, measured: false };
+  return { role, label, measured: true, durationSeconds };
 }
 
 function main() {
@@ -285,6 +371,8 @@ function main() {
       flags.transcripts = rawArgs[++i];
     } else if (rawArgs[i] === "--project" && rawArgs[i + 1]) {
       flags.project = rawArgs[++i];
+    } else if (rawArgs[i] === "--timing" && rawArgs[i + 1]) {
+      flags.timing = rawArgs[++i];
     } else {
       positional.push(rawArgs[i]);
     }
@@ -293,7 +381,7 @@ function main() {
   const workDir = positional[0];
 
   if (!workDir) {
-    console.error("Usage: bun scripts/grade-deterministic.ts [--transcripts <dir>] [--project <root>] <work-dir>");
+    console.error("Usage: bun scripts/grade-deterministic.ts [--transcripts <dir>] [--project <root>] [--timing <file>] <work-dir>");
     process.exit(1);
   }
 
@@ -344,16 +432,34 @@ function main() {
   const grades: GradeOutput["grades"] = [];
   const timing: TimingEntry[] = [];
 
+  const timingPath = flags.timing || join(workDir, RUN_TIMING_FILENAME);
+  const durations = loadRunTiming(timingPath);
+  console.error(
+    durations.size > 0
+      ? `Run timing artifact ${timingPath}: ${durations.size} call site(s) measured`
+      : `No run timing artifact at ${timingPath} — every call site reports unmeasured`
+  );
+
   let skipped = 0;
   for (const transcriptPath of transcriptFiles) {
     const grade = gradeTranscript(transcriptPath, validRoles, flags.project);
     if (grade) {
       grades.push(grade);
-      timing.push(computeTiming(transcriptPath, grade.role));
-      console.error(`Graded ${basename(transcriptPath)}: ${grade.role} - ${grade.followed}/${grade.total}`);
+      const label = callSiteLabel(transcriptPath.replace(".jsonl", ".meta.json"), transcriptPath);
+      const entry = buildTimingEntry(grade.role, label, durations);
+      timing.push(entry);
+      console.error(
+        `Graded ${basename(transcriptPath)}: ${grade.role} - ${grade.followed}/${grade.total}` +
+        ` (${entry.measured ? `${entry.durationSeconds}s` : "unmeasured"})`
+      );
     } else {
       skipped++;
     }
+  }
+
+  const unmeasured = timing.filter(t => !t.measured);
+  if (unmeasured.length > 0) {
+    console.error(`UNMEASURED: ${unmeasured.length}/${timing.length} graded call site(s) have no timing record: ${unmeasured.map(t => t.label).join(", ")}`);
   }
   if (skipped > 0) {
     console.error(`Skipped ${skipped} agent(s) — no matching role in config`);
