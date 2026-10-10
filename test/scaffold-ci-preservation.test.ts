@@ -225,6 +225,228 @@ describe("AC-2: a write that would drop unowned content is refused", () => {
   });
 });
 
+// ── AC-7 ───────────────────────────────────────────────────────────────────
+
+/**
+ * The real consumer, and the hole every case above is blind to.
+ *
+ * AC-2's fixture plants a consumer JOB, and the refusal it proves names a
+ * dropped job. That cannot distinguish "refuses when it would lose content"
+ * from "refuses when it would lose a job" — and the live implementation only
+ * ever did the second. Measured against a throwaway worktree of the real
+ * DailyBriefDashboard at e8ef2823: all twelve jobs survived, all eleven
+ * `self-hosted` labels survived, and `concurrency`, `cancel-in-progress`,
+ * `paths-ignore`, the top-level `workflow_dispatch` trigger and the consumer's
+ * header comments were all destroyed — reported as a preserving `REPLACED
+ * (+0 lines, preserved ...)` with `0 refused`.
+ *
+ * `cancel-in-progress` is not cosmetic there: that CI runs on one self-hosted
+ * Mac Mini driving podman against fixed ports, so losing it means three
+ * quickly-merged PRs start three concurrent container suites on the same ports.
+ *
+ * The fixture is taken verbatim from that file rather than written here, for
+ * the reason the issue gave: a synthetic one is shaped by the same assumptions
+ * as the code, and those assumptions are what was wrong.
+ */
+const DDB_CI = readFileSync(
+  join(import.meta.dir, "fixtures", "consumer-ci", "ddb-ci.yml"),
+  "utf-8",
+);
+
+/** Every non-blank, non-comment line of the consumer's file. */
+const consumerLines = (src: string) =>
+  src.split("\n").map(l => l.trim()).filter(l => l !== "");
+
+describe("AC-7: content outside a job is consumer content too", () => {
+  beforeEach(() => {
+    writeFileSync(join(ROOT, CI_REL), DDB_CI);
+  });
+
+  test("no non-blank consumer line is lost, whether or not it sits in a job", () => {
+    // The strong form, and the one that fails today. Stated over every line
+    // rather than over a named key, because naming the keys would make this
+    // exactly as narrow as the check it is replacing.
+    createCiWorkflows(ROOT, []);
+    const after = new Set(consumerLines(readCi()));
+    const missing = consumerLines(DDB_CI).filter(l => !after.has(l));
+    expect(
+      missing,
+      `${missing.length} consumer line(s) were dropped by a write that reported success`,
+    ).toEqual([]);
+  });
+
+  test("the keys the real consumer lost are each present by name", () => {
+    // Redundant with the line sweep above on purpose: when the sweep fails it
+    // prints a list, and a reader needs to know which of these mattered.
+    createCiWorkflows(ROOT, []);
+    const after = readCi();
+    for (const needle of [
+      "concurrency:",
+      "cancel-in-progress: true",
+      "paths-ignore:",
+      "workflow_dispatch:",
+      "group: ci-${{ github.ref }}",
+    ]) {
+      expect(after, `${needle} was dropped`).toContain(needle);
+    }
+  });
+
+  test("the consumer's header comments survive", () => {
+    createCiWorkflows(ROOT, []);
+    expect(readCi()).toContain("Council 4-gate model");
+  });
+
+  test("the self-hosted runner labels and lockfile flags survive", () => {
+    createCiWorkflows(ROOT, []);
+    const after = readCi();
+    expect((after.match(/mac-mini-live/g) || []).length).toBe(
+      (DDB_CI.match(/mac-mini-live/g) || []).length,
+    );
+    expect((after.match(/--no-optional --frozen-lockfile/g) || []).length).toBe(
+      (DDB_CI.match(/--no-optional --frozen-lockfile/g) || []).length,
+    );
+  });
+
+  test("the harness still adds its own job — preservation is not a skip", () => {
+    // The positive control. A write that preserved everything by writing
+    // nothing would pass every case above and onboard no one.
+    createCiWorkflows(ROOT, []);
+    const jobs = jobsOf(readCi());
+    expect(jobs).toContain("shellcheck");
+    expect(jobs.length).toBeGreaterThan(jobsOf(DDB_CI).length);
+  });
+
+  test("the result still parses as YAML", () => {
+    createCiWorkflows(ROOT, []);
+    expect(() => Bun.YAML.parse(readCi())).not.toThrow();
+  });
+
+  test("a second scaffold over the result changes nothing", () => {
+    // Idempotency over a REAL consumer file, which is where a merge that
+    // re-appends its own carry-forward every run shows up.
+    createCiWorkflows(ROOT, []);
+    const once = readCi();
+    createCiWorkflows(ROOT, []);
+    expect(readCi()).toBe(once);
+  });
+
+  test("losing consumer content is refused, not reported as a success", () => {
+    // The binding between the two halves: if the merge ever stops carrying
+    // something, the write must refuse rather than report a verb. Asserted by
+    // measuring the written file against the report, so a relabelled
+    // destructive write cannot satisfy it.
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    const after = new Set(consumerLines(readCi()));
+    const missing = consumerLines(DDB_CI).filter(l => !after.has(l));
+    const refused = actions.some(a => a.startsWith("REFUSED:"));
+    expect(
+      missing.length === 0 || refused,
+      `${missing.length} line(s) lost and the run reported: ${actions.join(" | ")}`,
+    ).toBe(true);
+  });
+});
+
+describe("AC-7: exactly one preservation implementation, and production calls it", () => {
+  const LIB = join(import.meta.dir, "..", "lib", "scaffold");
+
+  test("the live write path imports the section-aware merge", () => {
+    // Stated as a POSITIVE binding, not as "nothing imports the dead module".
+    // The negative form is the self-reference trap this repo has been bitten
+    // by: a test that names the file it is checking for becomes a reference to
+    // it, and goes green by mentioning it. An import specifier in the module
+    // that actually runs cannot be satisfied by a comment anywhere.
+    const steps = readFileSync(join(LIB, "steps.ts"), "utf-8");
+    expect(
+      /from\s+"\.\/managed-workflow"/.test(steps),
+      "lib/scaffold/steps.ts does not import ./managed-workflow — the merge that " +
+        "understands top-level sections is not the one production runs",
+    ).toBe(true);
+  });
+
+  test("the refusal counts lines, not jobs", () => {
+    // Behavioural rather than a source-text ban, which would have to name the
+    // very expression the correct code also uses. One consumer line outside
+    // any job, dropped: the refusal has to describe it as content outside a
+    // job, which the job-name loss set could not express because a line that
+    // belongs to no job never entered it.
+    // A comment in the `jobs:` mapping head, above the first job. The merge
+    // rebuilds that head from the generated file, so this is content it
+    // genuinely cannot carry — which is what the refusal is the backstop for.
+    // Named here because a refusal with no reachable trigger is a check that
+    // cannot fail, and this is the trigger.
+    const withJobsHeadComment = [
+      "name: CI",
+      "",
+      "jobs:",
+      "  # consumer note about job ordering",
+      "  deploy:",
+      "    runs-on: self-hosted",
+      "    steps:",
+      "      - run: ./scripts/deploy.sh",
+      "",
+    ].join("\n");
+    const resolved = resolveManagedWrite(withJobsHeadComment, GENERATED_CI);
+    expect(resolved.refusal, "a dropped non-job line did not refuse").not.toBeNull();
+    expect(resolved.refusal!).toContain("content outside any job");
+    expect(resolved.refusal!).toMatch(/\d+ line\(s\)/);
+  });
+
+  test("an edit inside a harness-owned job is overwritten, and said so", () => {
+    // The case that is ALLOWED and still has to be reported. The file's own
+    // banner says "do not edit", so regenerating it is correct — and
+    // DailyBriefDashboard had edited the harness's gates job anyway, adding
+    // `bun install --no-optional` for CI resilience on its self-hosted runner.
+    // Refusing on this would make every update refuse; staying quiet about it
+    // is the log that said CREATED while 470 lines went.
+    const edited = GENERATED_CI.replace("- run: bun install", "- run: bun install --no-optional");
+    expect(edited, "fixture broken: the generated ci.yml has no `bun install` step").not.toBe(
+      GENERATED_CI,
+    );
+    writeFileSync(join(ROOT, CI_REL), edited);
+
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    const line = actions.find(a => a.includes(CI_REL))!;
+
+    expect(line, "the overwrite was not reported at all").toContain("overwrote");
+    expect(line, "the report does not name what it overwrote").toContain("--no-optional");
+    expect(line.startsWith("REFUSED:"), "an edit to a harness-owned job refused").toBe(false);
+    expect(readCi(), "the harness did not actually regenerate its own job").not.toContain(
+      "--no-optional",
+    );
+  });
+
+  test("a clean regeneration reports no overwrite", () => {
+    // Positive control for the clause above: if it were appended
+    // unconditionally it would be decoration rather than a signal.
+    writeFileSync(join(ROOT, CI_REL), DDB_CI);
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    expect(actions.find(a => a.includes(CI_REL))!).not.toContain("overwrote");
+  });
+
+  test("a trailing top-level comment no longer costs the consumer every job", () => {
+    // Found while looking for a case the refusal could fire on. A `# note` at
+    // column zero after the jobs is not a top-level key, so it landed in the
+    // jobs section and set the mapping's base indentation to 0 — every job
+    // then failed the `indent === base` test, the whole mapping was read as
+    // section head, and the merge dropped all four consumer lines including
+    // the job itself. The loss count refused it rather than writing it, so it
+    // was never destructive; it was one refusal away from being so.
+    const trailing = [
+      "name: CI", "", "jobs:",
+      "  deploy:", "    runs-on: self-hosted", "    steps:", "      - run: ./scripts/deploy.sh",
+      "", "# consumer trailing note", "",
+    ].join("\n");
+    const resolved = resolveManagedWrite(trailing, GENERATED_CI);
+    expect(resolved.refusal, `refused instead of merging: ${resolved.refusal}`).toBeNull();
+    expect(resolved.content).toContain("deploy:");
+    expect(resolved.content).toContain("# consumer trailing note");
+    expect(Object.keys((Bun.YAML.parse(resolved.content) as any).jobs)).toContain("deploy");
+  });
+});
+
 // ── AC-5 ───────────────────────────────────────────────────────────────────
 
 describe("AC-5: action verbs are derived from the measured before/after", () => {

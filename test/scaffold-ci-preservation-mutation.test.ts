@@ -50,7 +50,7 @@ const BINDING_SIGNATURE =
 
 /** The mutation: preservation and refusal replaced by unconditional overwrite. */
 const UNCONDITIONAL_OVERWRITE =
-  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], refusal: null }; // MUTANT: preservation removed';
+  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], overwrittenLines: [], refusal: null }; // MUTANT: preservation removed';
 
 export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): string {
   const occurrences = src.split(signature).length - 1;

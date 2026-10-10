@@ -107,6 +107,13 @@ function parseJobsSection(lines: string[]): { head: string[]; jobs: JobBlock[] }
   let base = -1;
   for (const l of body) {
     if (l.trim() === "") continue;
+    // Comments do not set the indentation of a YAML mapping, and a consumer's
+    // trailing `# note` at column zero lands in this section because it is not
+    // a top-level key. Letting it set `base` to 0 made every job fail the
+    // `indent === base` test, so the whole mapping was read as section head
+    // and the merge dropped every consumer job — caught by the loss count
+    // rather than written, but a silent destruction one refusal away.
+    if (l.trimStart().startsWith("#")) continue;
     const indent = l.length - l.trimStart().length;
     if (base < 0 || indent < base) base = indent;
   }
@@ -170,11 +177,26 @@ export function mergeManagedWorkflow(before: string, generated: string): string 
   const g = splitTopLevel(generated);
   const generatedKeys = new Set(g.map(s => s.key));
   const beforeJobs = jobsSectionOf(b);
+  const beforeByKey = new Map(b.filter(s => s.key !== "").map(s => [s.key, s] as const));
 
   const out: string[] = [];
   for (const section of g) {
+    // The ownership rule, and the only one this file needs to state:
+    //
+    //   the harness owns the JOBS it generates, and its own preamble.
+    //   every other top-level key belongs to the consumer, if the consumer
+    //   already has one.
+    //
+    // The generated `on:` is a default for a file that does not exist yet, not
+    // a claim on one that does. Replacing a consumer's `on:` wholesale is how
+    // DailyBriefDashboard lost its `workflow_dispatch` trigger and its
+    // `paths-ignore` list to a write that reported success — and a consumer's
+    // trailing comments live in the section of the key above them, so this is
+    // also what keeps those.
     if (section.key === "jobs" && beforeJobs) out.push(...mergeJobsSection(beforeJobs, section));
-    else out.push(...section.lines);
+    else if (section.key !== "" && beforeByKey.has(section.key)) {
+      out.push(...beforeByKey.get(section.key)!.lines);
+    } else out.push(...section.lines);
   }
 
   const extraSections = b.filter(s => s.key !== "" && !generatedKeys.has(s.key));

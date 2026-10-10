@@ -15,6 +15,7 @@ import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/ag
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
+import { mergeManagedWorkflow } from "./managed-workflow";
 import { tryLoadRungateConfig } from "../config-loader";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
@@ -1449,6 +1450,17 @@ export interface ManagedWrite {
   preservedJobs: string[];
   /** Jobs that could not be carried forward. Non-empty ⇒ refusal. */
   droppedJobs: string[];
+  /**
+   * Lines inside a harness-owned job that the regeneration overwrote.
+   *
+   * Not a refusal: a file whose banner says "do not edit" is the harness's to
+   * rewrite, and refusing on any edit to it would make every update refuse.
+   * It IS reported, because the whole of #216 is that a consumer reading the
+   * log had no signal anything of theirs had gone. DailyBriefDashboard had
+   * added `bun install --no-optional` inside the harness's own gates job for
+   * CI resilience, and "REPLACED (+33 lines)" does not tell anyone that.
+   */
+  overwrittenLines: string[];
   /** Non-null ⇒ the write must not happen. Names the dropped jobs and the line delta. */
   refusal: string | null;
 }
@@ -1549,7 +1561,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
 export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
-    preservedJobs: [], droppedJobs: [], refusal: null,
+    preservedJobs: [], droppedJobs: [], overwrittenLines: [], refusal: null,
   };
   if (existing === null) return base;
 
@@ -1566,37 +1578,95 @@ export function resolveManagedWrite(existing: string | null, generated: string):
     return { ...unchanged, refusal: `the existing file could not be read as a workflow, so its jobs cannot be carried forward (line delta ${signed(lineCount(generated) - before)})` };
   }
 
-  const blocks = sliceJobBlocks(existing);
-  const preservedJobs: string[] = [];
-  const droppedJobs: string[] = [];
-  let content = generated;
-
-  for (const name of existingJobs.filter(j => !generatedJobs.includes(j))) {
-    const block = blocks.get(name);
-    if (block === undefined) { droppedJobs.push(name); continue; }
-    content = `${content.replace(/\n*$/, "\n")}\n${block}\n`;
-    preservedJobs.push(name);
-  }
-
+  // One merge, and it understands the whole file rather than only its jobs.
+  //
+  // The previous form appended consumer-only JOB blocks and computed its loss
+  // set as a list of job NAMES, so content outside a job could not enter it and
+  // therefore could not make a write refuse. Measured against a throwaway
+  // worktree of DailyBriefDashboard at e8ef2823: every job survived and
+  // `concurrency`, `cancel-in-progress`, `paths-ignore`, the top-level
+  // `workflow_dispatch` trigger and the consumer's header comments were all
+  // destroyed, reported as `REPLACED (+0 lines, preserved ...)` with 0 refused.
+  // A refusal that is structurally incapable of firing on the thing being
+  // destroyed is the defect class .claude/rules/checks-must-be-able-to-fail.md
+  // exists for, and it was in the fix written to prevent a data-loss bug.
+  const content = mergeManagedWorkflow(existing, generated);
   const lineDelta = lineCount(content) - before;
 
-  // Verify rather than assume: re-read the bytes about to be written. A
-  // preservation that produced unparseable YAML, or that lost a job on the
-  // way back in, must refuse like any other destructive write.
-  const resultJobs = droppedJobs.length === 0 ? workflowJobNames(content) : null;
-  const lost = droppedJobs.length > 0
-    ? droppedJobs
-    : existingJobs.filter(j => !(resultJobs ?? []).includes(j));
+  const preservedJobs = existingJobs.filter(j => !generatedJobs.includes(j));
 
-  if (lost.length > 0) {
+  // Verify rather than assume: re-read the bytes about to be written. A merge
+  // that produced unparseable YAML must refuse like any other destructive
+  // write, because the consumer cannot run a file that will not parse.
+  const resultJobs = workflowJobNames(content);
+  if (resultJobs === null) {
     return {
-      ...unchanged, preservedJobs, droppedJobs: lost, lineDelta,
-      refusal: `${lost.length} job(s) the harness did not author would be dropped: ${lost.join(", ")} (line delta ${signed(lineDelta)})`,
+      ...unchanged, preservedJobs: [], droppedJobs: existingJobs, overwrittenLines: [], lineDelta,
+      refusal: `the merged workflow does not parse, so it cannot be written (line delta ${signed(lineDelta)})`,
     };
   }
 
-  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], refusal: null };
+  // The loss set is LINES, not job names. Every non-blank line the consumer
+  // has that the merge did not carry is content the harness is about to drop,
+  // wherever in the file it sits.
+  //
+  // Minus the lines the harness is entitled to rewrite, which is the same
+  // ownership rule the merge states: the jobs the generator emits are the
+  // harness's. Without that subtraction the harness's own stale output reads
+  // as consumer content, and a regenerated `bun-version` would refuse its own
+  // update — preservation by declining to write, which freezes the managed
+  // half while passing every preservation assertion.
+  const blocks = sliceJobBlocks(existing);
+  const harnessOwned = new Set<string>();
+  for (const name of generatedJobs) {
+    const block = blocks.get(name);
+    if (block !== undefined) for (const l of nonBlankLines(block)) harnessOwned.add(l);
+  }
+  // The harness's own banner is the harness's to reword. Without this, the
+  // first run after the banner's text changed refused to update a file the
+  // harness had written itself, naming its own previous sentence as consumer
+  // content it declined to drop — a refusal is only useful if it is about
+  // somebody else's work.
+  for (const l of nonBlankLines(existing)) {
+    if (l.startsWith(MANAGED_BANNER_PREFIX)) harnessOwned.add(l);
+  }
+
+  const kept = new Set(nonBlankLines(content));
+  const gone = nonBlankLines(existing).filter(l => !kept.has(l));
+  const lostLines = gone.filter(l => !harnessOwned.has(l));
+  const overwrittenLines = gone.filter(l => harnessOwned.has(l) && !l.startsWith(MANAGED_BANNER_PREFIX));
+  const droppedJobs = existingJobs.filter(j => !resultJobs.includes(j));
+
+  if (lostLines.length > 0) {
+    const where = droppedJobs.length > 0
+      ? `job(s) ${droppedJobs.join(", ")}`
+      : "content outside any job";
+    return {
+      ...unchanged, preservedJobs, droppedJobs, overwrittenLines: [], lineDelta,
+      refusal:
+        `${lostLines.length} line(s) the harness did not author would be dropped from ${where}` +
+        `: ${lostLines.slice(0, 3).map(l => JSON.stringify(l)).join(", ")}` +
+        `${lostLines.length > 3 ? ` and ${lostLines.length - 3} more` : ""}` +
+        ` (line delta ${signed(lineDelta)})`,
+    };
+  }
+
+  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, refusal: null };
 }
+
+/** Non-blank lines, trimmed — the unit the loss set is counted in. */
+function nonBlankLines(text: string): string[] {
+  return text.split("\n").map(l => l.trim()).filter(l => l !== "");
+}
+
+/**
+ * Opening of the banner every generated workflow carries.
+ *
+ * Deliberately the stable prefix and not the whole sentence: the rest of it
+ * names the config path, and that is exactly the part that changed and caused
+ * the harness to refuse to update its own file.
+ */
+const MANAGED_BANNER_PREFIX = "# Managed by rungate";
 
 /**
  * Write a harness-managed file, preserving whatever the harness did not author.
@@ -1637,6 +1707,16 @@ export function writeManagedFile(
   // one tells a consumer the preservation is actually running.
   const kept = resolved.preservedJobs.length > 0 ? `, preserved ${resolved.preservedJobs.join(", ")}` : "";
 
+  // The other half of the same honesty. A regeneration that overwrote an edit
+  // a consumer made inside a harness-owned job is allowed, and it is the thing
+  // they most need told: #216 is a log that said CREATED while 470 lines went.
+  const over = resolved.overwrittenLines;
+  const overwrote = over.length === 0
+    ? ""
+    : `, overwrote ${over.length} edited line(s) in harness-owned jobs: ` +
+      `${over.slice(0, 2).map(l => JSON.stringify(l)).join(", ")}` +
+      `${over.length > 2 ? ` and ${over.length - 2} more` : ""}`;
+
   if (resolved.verb === "SKIP") {
     actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
@@ -1644,7 +1724,7 @@ export function writeManagedFile(
 
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, resolved.content);
-  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept})`);
+  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
 }
 
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {

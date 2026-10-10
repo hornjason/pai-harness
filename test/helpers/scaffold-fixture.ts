@@ -40,7 +40,11 @@ const SCAFFOLD = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.
 export const ROLES_CANARY_MODEL = "canary-model-from-roles-json";
 
 /** Copy the golden project to `dest`, optionally seed it, then scaffold it. */
-export function scaffoldFixture(dest: string, seed?: () => void): void {
+export function scaffoldFixture(
+  dest: string,
+  seed?: () => void,
+  opts: { commit?: boolean } = {},
+): void {
   try { execSync(`rm -rf ${dest}`, { stdio: "pipe" }); } catch {}
   mkdirSync(dest, { recursive: true });
   execSync(`cp -r ${FIXTURE}/. ${dest}/`);
@@ -51,12 +55,16 @@ export function scaffoldFixture(dest: string, seed?: () => void): void {
   commitFixture(dest, "init fixture");
   try {
     // --commit because the callers assert on the post-scaffold commit
-    // (SC-99/SC-100). #216 made committing opt-in: re-scaffolding is how a
-    // consumer takes an update, and the documented command may not create a
-    // commit in their repo unasked. The DEFAULT is covered by
+    // (SC-99/SC-100). #216 made committing opt-in for a CONSUMER: re-scaffolding
+    // is how they take an update, and the documented command may not create a
+    // commit in their repo unasked. That default is covered by
     // test/unit/post-scaffold-commit.test.ts, which asserts zero commits
     // without the flag — asserting it here too would just re-run the fixture.
-    execSync(`bun run ${SCAFFOLD} ${dest} --fix --commit`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
+    //
+    // It stays on by default for THIS helper, whose callers are fixtures that
+    // want a committed tree. `commit: false` is for a caller that does not.
+    const commit = opts.commit !== false ? " --commit" : "";
+    execSync(`bun run ${SCAFFOLD} ${dest} --fix${commit}`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
   } catch {
     // Scaffold may not exist yet or may fail — tests should still run and FAIL
   }

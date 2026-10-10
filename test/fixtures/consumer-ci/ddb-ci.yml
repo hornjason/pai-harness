@@ -1,0 +1,56 @@
+name: CI
+# Gate 2 — checks run on PRs, container build+publish on main push.
+# E2E and wizard tests live in release.yml (Gate 4) only.
+# Council 4-gate model: docs/DOMAIN-CONTEXT.md CI gates, issue #138.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/pull_request_template.md'
+
+# When multiple pushes to main land quickly (e.g., merging 3 PRs),
+# cancel in-progress runs and only build the latest commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shellcheck:
+    name: Shellcheck
+    runs-on: [self-hosted, mac-mini-live]
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install shellcheck
+        run: brew install shellcheck 2>/dev/null || true  # install if not present on mac-mini-live
+      - name: Run shellcheck
+        run: shellcheck scripts/setup.sh scripts/check-env-drift.sh
+
+  drift-gate:
+    name: Env drift gate (.env.example / setup.sh)
+    runs-on: [self-hosted, mac-mini-live]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bun install --no-optional --frozen-lockfile
+      - run: ./scripts/check-env-drift.sh
+
+  bats:
+    name: BATS tests
+    runs-on: [self-hosted, mac-mini-live]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bats tests/setup.bats tests/drift.bats
+
+  typecheck:
+    name: TypeScript type check
+    runs-on: [self-hosted, mac-mini-live]
+    steps:
+      - uses: actions/checkout@v4
+      - run: bun install --no-optional --frozen-lockfile
+      - run: bunx tsc --noEmit
