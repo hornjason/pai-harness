@@ -143,29 +143,38 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 | Claim | Standing (2026-10-09) |
 |---|---|
 | 1 — gates can fail | Partial, improving. Security gate proven (#129), blocking grades proven (#188), a *disabled* guard caught by the suite that owns it (#200 + #201), and as of #209 **a success criterion can fail** — it immediately caught two SCs asserting on untracked local state. Still open: only 55% of SCs are collected at all (#225, 254 invisible); `content-contains` discards everything after the first bracket list (#220); nothing reconciles the matcher registry with its handlers (#212); `tsc-pass`, `local-api-validated`, `local-ui-validated` cannot fail (#176); `TestSuiteGuard` cannot fire (#194); five hooks never fire (#199). |
-| 2 — numbers describe the tree | Partial. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169). `test-clean-env.ts` still models the environment, not the CI checkout (#168) — reproduced live on PR #219, green locally and 11 failures in CI. Prior-work detection measures ACs against `main` rather than the issue's branch, so a re-run re-implements and opens a second PR (#223). |
-| 3 — bad ships are stopped | **Weaker than previously recorded, and the inverse now also fails.** Security and compliance verdicts refuse, and the stale-review gate correctly blocked a run on 2026-10-09. But a run returned `SHIPPED` with `regressions: 0` on a branch with a failing test that an existing guard raised (#224), `SHIPPED` is returned without merging anything (#222), and a *skipped* prove step maps to the only unqualified success status in the system. Measured 2026-10-09, the mirror defect: **three consecutive runs where the verdict and the artifact disagreed** — #209 run 1 returned `SHIP_FAILED` having produced the branch that merged, run 2 returned `SHIPPED` for a red branch, and #227's run returned `IMPLEMENT_FAILED` over correct work. A harness that is a poor witness to itself in both directions fails this claim twice. #228 landed preservation on the collect-refusal path so a refusal no longer destroys the work it refuses; #232 is open because that covers one exit and not the class. |
+| 2 — numbers describe the tree | Partial, materially better. `TDD_SEQUENCE_VIOLATED` now blocks. Review currency closed post-commit (#169), and as of #224 **the suite count is bound to the commit it was measured against**: a recorder writes the SHA from the tree rather than an agent typing one, a count whose SHA does not match the branch tip is a `SHIP_FAILED` refusal raised before the PR step, and a count with no SHA reads `UNMEASURED` rather than zero. ship.js's inlined copy of that rule is held to the library by a 28-row matrix run over both, with two mutations of the extracted block checked on every test run — the first binding in this repo whose duplicate cannot drift silently. `test-clean-env.ts` still models the environment, not the CI checkout (#168) — reproduced live on PR #219, green locally and 11 failures in CI. Prior-work detection measures ACs against `main` rather than the issue's branch, so a re-run re-implements and opens a second PR (#223). |
+| 3 — bad ships are stopped | **Weaker than previously recorded, and the inverse now also fails.** Security and compliance verdicts refuse, and the stale-review gate correctly blocked a run on 2026-10-09. The two worst instances are now closed: a run returned `SHIPPED` with `regressions: 0` on a branch with a failing test that an existing guard raised (#224, fixed — the count is bound to its commit and a stale one refuses), and `SHIPPED` was returned without merging anything while a *skipped* prove step mapped to the only unqualified success status in the system (#222, fixed — `SHIPPED_UNPROVEN` and `SHIP_PASSED_PROVE_FAILED` now exist and an unmeasured suite caps the status). Measured 2026-10-09, the mirror defect: **three consecutive runs where the verdict and the artifact disagreed** — #209 run 1 returned `SHIP_FAILED` having produced the branch that merged, run 2 returned `SHIPPED` for a red branch, and #227's run returned `IMPLEMENT_FAILED` over correct work. A harness that is a poor witness to itself in both directions fails this claim twice. #228 landed preservation on the collect-refusal path so a refusal no longer destroys the work it refuses; #232 is open because that covers one exit and not the class. |
 | 4 — absence ≠ clean | **No for grades, yes for timing as of #227.** `grade-deterministic.ts` still writes `{grades:[]}` and exits 0 on no transcripts; the ship.js prompt instructs the same shape (#195, open). Timing is now the counter-example to copy: before #227 four of 31 call sites were measured and the rest were invisible, and the `stat`-based reader was `2>/dev/null`-chained so a filesystem with no birth time reported `"timing": []` silently. An agent with no record now reports `unmeasured`, never zero seconds, and the mutation returning `durationSeconds: 0` for the unmeasured branch turns four tests red. |
 | 5 — works on another repo | **No, and never attempted.** Every run in this repo's history is rungate shipping rungate. The `~/.rungate/ddb-*` directories are rungate runs under a stale slug, not DDB runs. |
 | consumer list | **Surveyed 2026-10-08, and it fails.** Twelve blocking defects found by adversarial audit without running anything. See below. |
 
-Last full suite under `bun scripts/test-clean-env.ts`, measured on `origin/main`
-at `e9465ff1` (2026-10-09): **4121 pass, 0 fail**, 17 skip, 154 todo, across 182
-files — 4292 tests run. Quote the pass count, not the run count; they differ by
-171. That figure is the floor, not the claim — see "What is not success".
+Last full suite measured on `origin/main` at `49f95550` (2026-10-09):
+**4276 pass, 0 fail**, 13 skip, 154 todo, across 186 files — 4443 tests run.
+Quote the pass count, not the run count; they differ by 167. That figure is the
+floor, not the claim — see "What is not success".
 
-Against `c60a7b00` earlier the same day (4030 / 4201 / 180): **+91 passing**,
-from #228 (claim audit and refusal preservation) and #227 (agent timing). Both
-were merged only after the mutation each PR claimed was re-run by hand on the
-branch and observed going red — `SINGLE_WORKTREE_EXEMPT = false` takes
-`test/collect-claim-enforcement.test.ts` from 36 pass to 31 pass / 5 fail, and
-reverting one `timedAgent(` to `agent(` takes `test/agent-timings.test.ts` from
-27 pass to 26 pass / 1 fail. A PR's own account of its mutation is the thing
-most worth re-running, not least worth it.
+Against `c60a7b00` earlier the same day (4030 / 4201 / 180): **+246 passing**,
+from #228 (claim audit and refusal preservation), #227 (agent timing), #222
+(ship status vocabulary) and #224 (suite-to-commit binding). Every one was
+merged only after the mutation its PR claimed was re-run by hand on the branch
+and observed going red:
 
-**A local green is not a CI green.** On 2026-10-09 this exact command reported
-0 fail on a branch CI then failed with 11. Until #168 is closed, a figure from
-this script is a necessary condition and never a sufficient one.
+| mutation | effect, observed |
+|---|---|
+| `SINGLE_WORKTREE_EXEMPT = false` | `test/collect-claim-enforcement.test.ts` 36 pass → 31 pass / 5 fail |
+| one `timedAgent(` reverted to `agent(` | `test/agent-timings.test.ts` 27 pass → 26 pass / 1 fail |
+| `suiteVerdictViolations` → `return []` | 3 red across `test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts` |
+
+A PR's own account of its mutation is the thing most worth re-running, not
+least worth it — and on #234 the re-read caught a cited line that did not say
+what the comment claimed, in a PR that was otherwise correct.
+
+**A local green is not a CI green.** On 2026-10-09 `bun scripts/test-clean-env.ts`
+reported 0 fail on a branch CI then failed with 11. The figure above is a local
+`bun test`, and CI agreed with it on PR #236 — but agreeing once is not the same
+as being able to disagree. Until #168 is closed, any locally measured figure is a
+necessary condition and never a sufficient one.
 
 ### The consumer survey, 2026-10-08
 

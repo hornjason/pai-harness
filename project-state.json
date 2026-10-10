@@ -632,9 +632,9 @@
   "session": {
     "number": 36,
     "date": "2026-10-09",
-    "summary": "The harness can land and measure its own work. #228 merged (73c056ab): a single-worktree run no longer refuses its own output on a multi-worktree guard, and a collect refusal now commits the worktree before returning. #227 merged (e9465ff1): all 35 agent call sites in ship.js are instrumented and grade-deterministic.ts no longer derives duration from file mtime/birthtime. Both were merged only after re-running by hand the mutation each PR claimed. Three runs this session had their verdict disagree with their artifact in both directions — SHIP_FAILED and IMPLEMENT_FAILED over correct work, SHIPPED over a red branch.",
-    "suite": "4121 pass, 17 skip, 154 todo, 0 fail, 4292 tests across 182 files under bun scripts/test-clean-env.ts at e9465ff1; 4030/4201/180 at c60a7b00 earlier the same day",
-    "issues_created": "#227, #228, #229, #232",
-    "issues_closed": "#227, #228"
+    "summary": "The harness can land and measure its own work, and four of its own blocking defects are closed. #228 (73c056ab): a single-worktree run no longer refuses its own output on a multi-worktree guard, and a collect refusal commits the worktree before returning. #227 (e9465ff1): all 35 agent call sites in ship.js are instrumented and grade-deterministic.ts no longer derives duration from file mtime/birthtime — the first real timing data showed 59% agents / 41% orchestration overhead, and following the second-costliest call site (ac-prevalidation, 231s) found #235. #222 (89f953dd): SHIPPED no longer means 'the prove step was skipped' — SHIPPED_UNPROVEN and SHIP_PASSED_PROVE_FAILED exist and an unmeasured suite caps the status. #224 (49f95550): the suite count is bound to the commit it was measured against, a stale count is a SHIP_FAILED refusal raised before the PR step, and ship.js's inlined copy of that rule is held to lib/suite-measurement.ts by a 28-row matrix run over both with two mutations checked every run. Every merge re-ran by hand the mutation its PR claimed. #224 took three attempts: two pipeline runs failed, the first being a clean instance of #189 where three worktrees independently authored the same new module with disjoint APIs (51 min, 744k tokens, zero merged output) — #228's preservation fired correctly for the first time there and nothing was stranded.",
+    "suite": "4276 pass, 13 skip, 154 todo, 0 fail, 4443 tests across 186 files under bun test at 49f95550; 4121/4292/182 at e9465ff1 and 4030/4201/180 at c60a7b00 earlier the same day. CI green on PR #236.",
+    "issues_created": "#227, #228, #229, #232, #235",
+    "issues_closed": "#227, #228, #222, #224"
   }
 }
