@@ -9,16 +9,23 @@ paths:
 
 These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**
 
-The workflow files are the one exception, and only partly (#216): re-scaffold
-regenerates **the jobs rungate wrote** and carries over jobs and top-level keys
-it did not. Add your own job and it survives. Edit a job rungate owns and the
-next re-scaffold **refuses** rather than overwriting it — it names the job and
-the line delta, and `--force` is the only thing that overrides it.
-
 | File | How to customize | What NOT to do |
 |------|-----------------|----------------|
-| `.github/workflows/ci.yml` | Set `ci` fields in `.claude/rungate/config.json`; add your own jobs freely | Don't edit the `test` job — re-scaffold refuses until you move it out |
-| `.github/workflows/gates.yml` | Settings from `.claude/rungate/config.json`; add your own jobs freely | Don't edit the `gates` job — re-scaffold refuses until you move it out |
+| `.github/workflows/ci.yml` | Set `ci` fields in `.claude/rungate/config.json`; add your own jobs alongside the generated `test` job | Don't edit the generated `test` job |
+| `.github/workflows/gates.yml` | Settings from `.claude/rungate/config.json`; add your own jobs alongside the generated `gates` job | Don't edit the generated `gates` job |
 | `.claude/agents/*.md` | Settings from `.claude/rungate/roles.json` | Don't edit briefs |
 | `test/scaffold-conformity.test.ts` | Runs automatically | Don't edit |
 | `CODE-MAP.md` | Auto-generated from code scan | Don't edit |
+
+### The workflow files are job-owned, not file-owned (#216)
+
+rungate owns the `test` job in `ci.yml` and the `gates` job in
+`gates.yml`, and regenerates exactly those. **Jobs you add are yours and are
+carried forward verbatim on every re-scaffold** — re-scaffolding is how you
+take an update, so it must not delete your pipeline.
+
+Write added jobs as ordinary indented blocks under `jobs:`. If re-scaffold
+cannot carry a job forward — a flow mapping (`jobs: {deploy: {...}}`), or a
+file it cannot parse — it **refuses the write**, names the jobs at risk and
+the line delta, and leaves your file untouched. Re-run with `--force` only
+if you mean to discard them.

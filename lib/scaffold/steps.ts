@@ -16,7 +16,6 @@ import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
 import { tryLoadRungateConfig } from "../config-loader";
-import { planManagedWrite } from "./managed-workflow";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
 
@@ -1422,84 +1421,233 @@ export function createClaudeMdBridge(root: string, actions: string[]): void {
   }
 }
 
-/**
- * The placeholder spec a `workflow` project is seeded with. Lived inline in
- * scripts/scaffold-project.ts; moved here so the orchestrator stays an
- * orchestrator (SCAFFOLD-DECOMPOSITION-SPEC D-3, SC-363).
- */
-export function createWorkflowDefinitionSpec(root: string, actions: string[]): void {
-  const workflowDef = `---
-doc-type: spec
-testable: no
-governs: workflow-definition
----
+// ── Managed writes that cannot destroy a consumer's content (#216) ─────────
+//
+// Re-scaffolding is the documented way to BOTH onboard and update a consumer,
+// and `createCiWorkflows` ended in two unconditional `writeFileSync` calls.
+// The first real consumer that added a deploy job to `.github/workflows/ci.yml`
+// would have lost it the moment they took an update — and the harness cannot
+// generate a deploy job, so nothing could have put it back. That is SUCCESS.md
+// claim 5 (the harness works on a repo that is not this one) failing in the
+// most expensive way available.
+//
+// The design is one binding, `resolveManagedWrite`, that turns the BEFORE and
+// AFTER content into the bytes to write, the verb to report, and — when the
+// write would destroy something — a refusal. Detection is semantic (a YAML
+// parse) and preservation is textual (a verbatim line slice). Where the two
+// disagree the write is refused rather than guessed at, because a guess here
+// deletes someone's pipeline.
 
-# Workflow Definition
-
-## Trigger
-
-When should this workflow run?
-
-## Inputs
-
-What inputs does this workflow require?
-
-## Process
-
-What steps does this workflow perform?
-
-## Output
-
-What does this workflow produce?
-`;
-  safeWrite(join(root, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+export interface ManagedWrite {
+  /** The bytes to write: generated content plus every job the harness did not author. */
+  content: string;
+  /** Derived from the measured before/after, never assumed by the caller. */
+  verb: "CREATED" | "UPDATED" | "REPLACED" | "SKIP";
+  /** after − before, in lines. Negative means content was removed. */
+  lineDelta: number;
+  /** Jobs carried forward from the existing file. */
+  preservedJobs: string[];
+  /** Jobs that could not be carried forward. Non-empty ⇒ refusal. */
+  droppedJobs: string[];
+  /** Non-null ⇒ the write must not happen. Names the dropped jobs and the line delta. */
+  refusal: string | null;
 }
 
-export interface ManagedWriteOptions {
-  /** Overwrite content the harness cannot prove it authored. Opt-in only. */
-  force?: boolean;
+const lineCount = (s: string): number => (s === "" ? 0 : s.split("\n").length);
+const signed = (n: number): string => `${n >= 0 ? "+" : ""}${n}`;
+
+/**
+ * Top-level job names, or null when the source cannot be read as a workflow.
+ *
+ * Null is handled as a refusal by every caller, never as "no jobs" — a parse
+ * failure that defaults to an empty list is the fail-open this whole mechanism
+ * exists to avoid (.claude/rules/checks-must-be-able-to-fail.md).
+ */
+function workflowJobNames(src: string): string[] | null {
+  let doc: unknown;
+  try {
+    doc = Bun.YAML.parse(src);
+  } catch {
+    return null;
+  }
+  if (!doc || typeof doc !== "object" || Array.isArray(doc)) return null;
+  const jobs = (doc as Record<string, unknown>).jobs;
+  if (!jobs || typeof jobs !== "object" || Array.isArray(jobs)) return null;
+  return Object.keys(jobs as Record<string, unknown>);
 }
 
 /**
- * The single site through which every harness-managed workflow file is
- * written (#216).
+ * Verbatim text of each job block, keyed by job name.
  *
- * Both halves of this function matter and both are mutated by
- * test/scaffold-ci-preservation-mutation.test.ts: the decision (what, if
- * anything, to write) comes from `planManagedWrite`, and the REPORT comes from
- * the same measurement rather than from whether the path happened to exist.
- * The old code wrote unconditionally and pushed "CREATED" unconditionally, so
- * a run that deleted a consumer's deploy job reported having created a file.
- *
- * A refusal is pushed as an action rather than thrown: the rest of the
- * scaffold is still worth running, and `scripts/scaffold-project.ts` exits
- * non-zero when any action is a refusal, so the run is still loud.
+ * Deliberately narrower than the parser: it only understands a top-level
+ * `jobs:` key followed by indented `name:` blocks, which is the form every
+ * generator and every hand-written workflow in practice uses. A job the
+ * parser can see and this cannot is reported as dropped, which refuses the
+ * write — the narrowness fails closed.
  */
-export function writeManagedWorkflow(filePath: string, generated: string, label: string, actions: string[], opts: ManagedWriteOptions = {}): void {
-  const before = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
-  const plan = planManagedWrite(before, generated, { force: opts.force === true });
+function sliceJobBlocks(src: string): Map<string, string> {
+  const lines = src.split("\n");
+  const out = new Map<string, string>();
 
-  if (plan.verb === "REFUSED") {
-    actions.push(`REFUSED: ${label} — ${plan.refusal}`);
+  let i = lines.findIndex(l => /^jobs:\s*$/.test(l));
+  if (i < 0) return out;
+  i++;
+
+  let childIndent = -1;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === "") { i++; continue; }
+    const indent = line.length - line.trimStart().length;
+    if (indent === 0) break; // left the jobs block
+    if (childIndent < 0) childIndent = indent;
+    const m = indent === childIndent ? /^\s*([A-Za-z0-9_.\-]+):\s*$/.exec(line) : null;
+    if (!m) { i++; continue; }
+
+    const start = i;
+    i++;
+    while (i < lines.length) {
+      const l = lines[i];
+      if (l.trim() === "") { i++; continue; }
+      if (l.length - l.trimStart().length <= childIndent) break;
+      i++;
+    }
+    let end = i;
+    while (end > start + 1 && lines[end - 1].trim() === "") end--;
+    out.set(m[1], lines.slice(start, end).join("\n"));
+  }
+  return out;
+}
+
+/** True when any non-blank line of `before` is absent from `after`. */
+function removesContent(before: string, after: string): boolean {
+  const kept = new Set(after.split("\n").map(l => l.trim()).filter(Boolean));
+  return before.split("\n").map(l => l.trim()).filter(Boolean).some(l => !kept.has(l));
+}
+
+/**
+ * The one place a scaffold action verb comes from: a comparison of the bytes
+ * that were there with the bytes going out. Nothing passes a verb in, so no
+ * write that removes content can be reported as a CREATED.
+ */
+function measureWrite(existing: string | null, next: string): { verb: ManagedWrite["verb"]; lineDelta: number } {
+  if (existing === null) return { verb: "CREATED", lineDelta: lineCount(next) };
+  if (next === existing) return { verb: "SKIP", lineDelta: 0 };
+  return {
+    verb: removesContent(existing, next) ? "REPLACED" : "UPDATED",
+    lineDelta: lineCount(next) - lineCount(existing),
+  };
+}
+
+/**
+ * The single site that decides what a managed write does.
+ *
+ * Short-circuiting this to `return { content: generated, ... }` is an
+ * unconditional overwrite — which is exactly the mutation
+ * test/scaffold-ci-preservation-mutation.test.ts performs, so that
+ * "preservation works" is a claim with a demonstrated way of being false.
+ */
+export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {
+  const base: ManagedWrite = {
+    content: generated, verb: "CREATED", lineDelta: lineCount(generated),
+    preservedJobs: [], droppedJobs: [], refusal: null,
+  };
+  if (existing === null) return base;
+
+  const before = lineCount(existing);
+  const unchanged = { ...base, content: existing, verb: "SKIP" as const, lineDelta: 0 };
+
+  const generatedJobs = workflowJobNames(generated);
+  if (generatedJobs === null) {
+    return { ...unchanged, refusal: `the generated workflow could not be parsed, so nothing can be compared against it (line delta ${signed(lineCount(generated) - before)})` };
+  }
+
+  const existingJobs = workflowJobNames(existing);
+  if (existingJobs === null) {
+    return { ...unchanged, refusal: `the existing file could not be read as a workflow, so its jobs cannot be carried forward (line delta ${signed(lineCount(generated) - before)})` };
+  }
+
+  const blocks = sliceJobBlocks(existing);
+  const preservedJobs: string[] = [];
+  const droppedJobs: string[] = [];
+  let content = generated;
+
+  for (const name of existingJobs.filter(j => !generatedJobs.includes(j))) {
+    const block = blocks.get(name);
+    if (block === undefined) { droppedJobs.push(name); continue; }
+    content = `${content.replace(/\n*$/, "\n")}\n${block}\n`;
+    preservedJobs.push(name);
+  }
+
+  const lineDelta = lineCount(content) - before;
+
+  // Verify rather than assume: re-read the bytes about to be written. A
+  // preservation that produced unparseable YAML, or that lost a job on the
+  // way back in, must refuse like any other destructive write.
+  const resultJobs = droppedJobs.length === 0 ? workflowJobNames(content) : null;
+  const lost = droppedJobs.length > 0
+    ? droppedJobs
+    : existingJobs.filter(j => !(resultJobs ?? []).includes(j));
+
+  if (lost.length > 0) {
+    return {
+      ...unchanged, preservedJobs, droppedJobs: lost, lineDelta,
+      refusal: `${lost.length} job(s) the harness did not author would be dropped: ${lost.join(", ")} (line delta ${signed(lineDelta)})`,
+    };
+  }
+
+  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], refusal: null };
+}
+
+/**
+ * Write a harness-managed file, preserving whatever the harness did not author.
+ *
+ * Throws on refusal. Callers decide whether a refusal aborts the run or is
+ * recorded and reported; what they may not do is write anyway.
+ */
+export function writeManagedFile(
+  filePath: string,
+  generated: string,
+  label: string,
+  actions: string[],
+  opts: { force?: boolean } = {},
+): void {
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  const resolved = resolveManagedWrite(existing, generated);
+
+  if (opts.force) {
+    // The escape hatch, and it still reports a measured verb: --force changes
+    // what is ALLOWED, not what gets claimed about it. The dropped jobs are
+    // still named, because an operator who overrides the refusal should be
+    // told in the report exactly what they overrode.
+    const { verb, lineDelta } = measureWrite(existing, generated);
+    if (verb === "SKIP") { actions.push(`SKIP: ${label} (unchanged)`); return; }
+    const dropped = resolved.droppedJobs.length > 0 ? `, dropped ${resolved.droppedJobs.join(", ")}` : "";
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, generated);
+    actions.push(`${verb}: ${label} (--force, ${signed(lineDelta)} lines${dropped})`);
     return;
   }
-  if (plan.verb === "SKIP") {
-    actions.push(`SKIP: ${label} (unchanged)`);
+
+  if (resolved.refusal) {
+    throw new Error(`${label}: ${resolved.refusal}. Re-run the scaffold with --force to overwrite it anyway.`);
+  }
+
+  // Named even on the no-op path: "unchanged" and "unchanged because three of
+  // your jobs were carried back in" are different facts, and only the second
+  // one tells a consumer the preservation is actually running.
+  const kept = resolved.preservedJobs.length > 0 ? `, preserved ${resolved.preservedJobs.join(", ")}` : "";
+
+  if (resolved.verb === "SKIP") {
+    actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
   }
 
   mkdirSync(dirname(filePath), { recursive: true });
-  writeFileSync(filePath, plan.content);
-  actions.push(
-    plan.verb === "CREATED"
-      ? `CREATED: ${label} (harness-owned)`
-      : plan.verb === "REPLACED"
-        ? `REPLACED: ${label} (${plan.lineDelta} lines, --force)`
-        : `UPDATED: ${label} (consumer content preserved)`,
-  );
+  writeFileSync(filePath, resolved.content);
+  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept})`);
 }
 
-export function createCiWorkflows(root: string, actions: string[], opts: ManagedWriteOptions = {}): void {
+export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
   const workflowsDir = join(root, ".github", "workflows");
   if (!existsSync(workflowsDir)) {
     mkdirSync(workflowsDir, { recursive: true });
@@ -1622,8 +1770,19 @@ jobs:
           echo "Secret scan clean"
 `;
 
-  writeManagedWorkflow(join(workflowsDir, "ci.yml"), ciYml, ".github/workflows/ci.yml", actions, opts);
-  writeManagedWorkflow(join(workflowsDir, "gates.yml"), gatesYml, ".github/workflows/gates.yml", actions, opts);
+  // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
+  // not own the file, and a consumer's own jobs have to survive the update
+  // that re-scaffolding IS. A refusal is recorded rather than thrown so that
+  // one unpreservable workflow does not abandon the rest of the scaffold
+  // half-done — scripts/scaffold-project.ts exits non-zero on it.
+  for (const [name, content] of [["ci.yml", ciYml], ["gates.yml", gatesYml]] as const) {
+    const label = `.github/workflows/${name}`;
+    try {
+      writeManagedFile(join(workflowsDir, name), content, label, actions, opts);
+    } catch (e) {
+      actions.push(`REFUSED: ${(e as Error).message}`);
+    }
+  }
 }
 
 // ── Consumer hook deployment ─────────────────────────────────
@@ -1889,6 +2048,9 @@ export function addPaiHarnessDevDep(root: string, actions: string[]): void {
   }
 
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
+  // Names the PATH it wrote, not just what it did (#216). An action that does
+  // not name its file is invisible to the stager and, worse, now reads as an
+  // unexplained modification to the dirty-tree check.
   actions.push("UPDATED: package.json (rungate devDep)");
 }
 
@@ -1906,47 +2068,66 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
   const result = auditSpecs(root, { fix: true });
   const rewriteCount = result.rewrites?.length ?? 0;
   if (rewriteCount > 0) {
-    // One action per FILE, naming the file. The old single line said "rewrote
-    // 2 SCs" and named no path, so postScaffoldCommit could not stage the
-    // specs this step had just edited — they were left behind by every commit,
-    // and the dirty-tree guard (#216) then read them as somebody else's work.
-    // `specFile` is a bare filename off readdirSync(specs/); the report is
-    // repo-relative, because that is what `git add` and `git status` speak.
-    for (const file of [...new Set((result.rewrites ?? []).map(r => r.specFile))]) {
-      actions.push(`UPDATED: ${file.includes("/") ? file : `specs/${file}`} (audit-specs --fix)`);
-    }
-    actions.push(`AUDITED: audit-specs --fix rewrote ${rewriteCount} SCs`);
+    // One action per spec file actually rewritten, naming the path (#216).
+    // "rewrote 2 SCs" named no file, so the rewritten specs were never staged
+    // and showed up to the dirty-tree check as somebody else's edit.
+    const touched = [...new Set((result.rewrites ?? []).map(r => `specs/${r.specFile}`))];
+    for (const file of touched) actions.push(`UPDATED: ${file} (audit-specs --fix)`);
+    actions.push(`SKIP: audit-specs summary (rewrote ${rewriteCount} SCs across ${touched.length} spec file(s))`);
   } else {
     actions.push("SKIP: audit-specs (all SCs already matchable)");
   }
 }
 
-export interface PostScaffoldCommitOptions {
-  /** Commit the generated files. Opt-in: `scaffold-project.ts --commit`. */
-  commit?: boolean;
+/**
+ * Paths with TRACKED modifications that this scaffold run did not produce.
+ *
+ * Untracked files are excluded on purpose: they were never going to be
+ * committed, and treating a stray scratch file as "dirty" would refuse on
+ * nearly every real repo, which is how a safety check gets switched off.
+ */
+function dirtyPaths(root: string, generated: string[]): string[] {
+  const porcelain = Bun.spawnSync(["git", "-C", root, "status", "--porcelain"]).stdout.toString();
+  const owned = (p: string) => generated.some(g => p === g || p.startsWith(`${g}/`));
+  return porcelain
+    .split("\n")
+    .filter(Boolean)
+    .filter(l => !l.startsWith("??"))
+    // Rename entries read `R  old -> new`; the destination is what matters.
+    .map(l => l.slice(3).trim().split(" -> ").pop()!.replace(/^"|"$/g, ""))
+    .filter(p => p && !owned(p));
 }
 
 /**
- * Commit the scaffold's output — but only when asked, and only into a tree
- * where nothing else is in flight (#216).
+ * Print the run's action list and return how many of them were refusals.
  *
- * This used to be unconditional. Running `scaffold-project.ts --fix` on a
- * consumer repo therefore wrote a commit into someone else's history as a side
- * effect of what reads like an audit, and a consumer cannot undo a commit they
- * did not know was coming. Two separate guards, because they fail differently:
- *
- *  - no `--commit`: the caller never asked, so nothing is committed at all.
- *  - dirty tree: the caller asked, but there is unrelated work in the tree.
- *    Staging only generated paths (the earlier fix) keeps that work OUT of the
- *    commit, but it still leaves a commit landing underneath someone mid-edit.
- *    Refuse and say which paths stopped it.
+ * Lives here rather than in the orchestrator for the reason the whole file
+ * exists (SCAFFOLD-DECOMPOSITION-SPEC): scripts/scaffold-project.ts sequences
+ * steps, it does not implement them. The caller decides what a refusal costs;
+ * this only counts them, so it stays callable from a test.
  */
-export function postScaffoldCommit(root: string, actions: string[], opts: PostScaffoldCommitOptions = {}): void {
+export function reportScaffoldActions(actions: string[]): number {
+  console.log("\n=== Scaffold Report ===");
+  for (const action of actions) console.log(`  ${action}`);
+  const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
+  console.log(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("SKIP")} skipped, ${count("REFUSED")} refused`);
+  return count("REFUSED");
+}
+
+export function postScaffoldCommit(
+  root: string,
+  actions: string[],
+  opts: { commit?: boolean } = {},
+): void {
+  // #216: this used to commit unconditionally. On a consumer repo that meant
+  // the documented onboarding command created a commit nobody asked for —
+  // and, since it ran after a write that could destroy their ci.yml, it
+  // committed the destruction too. Committing is the operator's call now.
+  if (!opts.commit) {
+    actions.push("SKIP: post-scaffold commit (--commit not passed)");
+    return;
+  }
   try {
-    if (opts.commit !== true) {
-      actions.push("SKIP: post-scaffold commit (not requested — pass --commit)");
-      return;
-    }
     // Stage ONLY what this scaffold run generated, never `git add -A`.
     //
     // The blanket add swept up whatever else was in the working tree and
@@ -1959,7 +2140,7 @@ export function postScaffoldCommit(root: string, actions: string[], opts: PostSc
         // Verbs that mean "scaffold wrote this path". Deliberately excludes
         // SKIP / GAP / WARN / AUDIT (no write happened) — and all of them,
         // because missing one silently leaves generated files uncommitted.
-        .map(a => a.trim().match(/^(?:CREATED|UPDATED|REPLACED|REGENERATED|REFRESHED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
+        .map(a => a.trim().match(/^(?:CREATED|UPDATED|REPLACED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
         .filter((p): p is string => Boolean(p))
         // .git/ contents are not tracked; hooks live there.
         // .git/ contents are never tracked. Directories are kept — scaffold
@@ -1975,24 +2156,11 @@ export function postScaffoldCommit(root: string, actions: string[], opts: PostSc
       return;
     }
 
-    // Dirty means "dirty with work this scaffold run did not produce".
-    // The scaffold's own output makes the tree dirty by definition, so the
-    // generated set is subtracted first — otherwise the guard would refuse on
-    // every run and be removed within a week.
-    //
-    // -uall, not the default: porcelain collapses an untracked directory to
-    // `.claude/`, which matches no generated path and would make every run
-    // that created a new directory refuse itself.
-    const unrelated = Bun.spawnSync(["git", "-C", root, "status", "--porcelain", "-uall"])
-      .stdout.toString().split("\n")
-      .map(l => l.slice(3).trim().replace(/^.* -> /, "").replace(/^"|"$/g, ""))
-      .filter(Boolean)
-      .filter(p => !generated.some(g => p === g || p.startsWith(`${g}/`)));
-    if (unrelated.length > 0) {
-      actions.push(
-        `REFUSED: post-scaffold commit (dirty working tree: ${unrelated.slice(0, 5).join(", ")}` +
-        `${unrelated.length > 5 ? `, +${unrelated.length - 5} more` : ""}) — commit or stash first`,
-      );
+    // Refuse before staging, not after. A commit made on top of someone
+    // else's half-finished edit is not something an operator can un-see.
+    const dirty = dirtyPaths(root, generated);
+    if (dirty.length > 0) {
+      actions.push(`REFUSED: post-scaffold commit (dirty working tree: ${dirty.join(", ")})`);
       return;
     }
 

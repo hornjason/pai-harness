@@ -1,330 +1,288 @@
 /**
- * scaffold-ci-preservation.test.ts — #216. Re-scaffold must not destroy a
- * consumer's CI.
+ * scaffold-ci-preservation.test.ts — re-scaffold must not destroy a consumer's
+ * CI file (#216, SUCCESS.md claim 5: the harness works on a repo that is not
+ * this one).
  *
- * `createCiWorkflows` ended in two unconditional `writeFileSync` calls. Every
- * re-scaffold therefore replaced `.github/workflows/ci.yml` wholesale, and
- * re-scaffolding is the documented way to onboard AND to update a consumer. On
- * our first real consumer that is a destroyed build, which is why SUCCESS.md
- * claim 5 ("the harness works on a repo that is not this one") cannot be made
- * until this holds.
+ * `createCiWorkflows` used to end in two unconditional `writeFileSync` calls.
+ * Re-scaffolding is the documented way to onboard AND to update a consumer, so
+ * the first real consumer that had added a job of its own to `.github/workflows/
+ * ci.yml` would have had that job deleted by the act of taking an update. The
+ * harness cannot generate a deploy job, so it cannot regenerate one either.
  *
  * AC-1: a consumer job the harness cannot generate survives re-scaffold
  *       verbatim, read back out of the written file
  * AC-2: a write that would remove content the harness did not author is
- *       REFUSED, and the refusal names the jobs and the line delta
- * AC-5: the reported verb is derived from the measured before/after content —
- *       a content-removing write reports REPLACED with its line delta, and
+ *       REFUSED, and the refusal names the dropped jobs and the line delta
+ * AC-5: every reported action verb is derived from the measured before/after
+ *       content — a content-removing write reports REPLACED with its delta,
  *       never CREATED
  *
  * AC-3 lives in test/scaffold-idempotent.test.ts (it needs the real pipeline),
- * AC-4 in test/unit/post-scaffold-commit.test.ts, AC-6 in
+ * AC-4 in test/unit/post-scaffold-commit.test.ts, and AC-6 in
  * test/scaffold-ci-preservation-mutation.test.ts.
  */
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createCiWorkflows } from "../lib/scaffold/steps";
-import { harnessRegion, planManagedWrite } from "../lib/scaffold/managed-workflow";
+import { createCiWorkflows, resolveManagedWrite, writeManagedFile } from "../lib/scaffold/steps";
+
+const CI_REL = join(".github", "workflows", "ci.yml");
+
+function plantConfig(root: string): void {
+  mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
+  writeFileSync(
+    join(root, ".claude", "rungate", "config.json"),
+    JSON.stringify(
+      { project: "preservation-fixture", ci: { runner: "ubuntu-latest", bunVersion: "1.2.0", branches: ["main"] } },
+      null,
+      2,
+    ) + "\n",
+  );
+}
+
+/**
+ * The canonical generated ci.yml, MEASURED by running the real generator into
+ * a throwaway directory rather than pasted in here. A hand-written copy would
+ * drift from the generator and the "removed content" fixtures below would then
+ * be testing a file the harness never writes.
+ */
+let GENERATED_CI = "";
+
+beforeAll(() => {
+  const probe = mkdtempSync(join(tmpdir(), "ci-preserve-probe-"));
+  try {
+    plantConfig(probe);
+    createCiWorkflows(probe, []);
+    GENERATED_CI = readFileSync(join(probe, CI_REL), "utf-8");
+  } finally {
+    rmSync(probe, { recursive: true, force: true });
+  }
+});
+
+/** A job no rungate generator emits, in the block form a human writes. */
+const CONSUMER_JOB = [
+  "",
+  "  deploy-to-staging:",
+  "    needs: test",
+  "    runs-on: self-hosted",
+  "    steps:",
+  "      - uses: actions/checkout@v4",
+  "      - name: a step the harness knows nothing about",
+  "        run: ./scripts/deploy.sh staging",
+].join("\n");
 
 let ROOT = "";
-const CI = () => join(ROOT, ".github", "workflows", "ci.yml");
-const readCi = () => readFileSync(CI(), "utf-8");
 
 beforeEach(() => {
-  ROOT = mkdtempSync(join(tmpdir(), "ci-preservation-"));
+  ROOT = mkdtempSync(join(tmpdir(), "ci-preserve-"));
+  plantConfig(ROOT);
+  mkdirSync(join(ROOT, ".github", "workflows"), { recursive: true });
 });
+
 afterEach(() => {
   rmSync(ROOT, { recursive: true, force: true });
 });
 
-/**
- * A job rungate has no way to generate: it deploys to the consumer's own
- * infrastructure with the consumer's own secret. Nothing in rungate's config
- * schema can produce it, so "regenerate from config" cannot reproduce it and
- * overwriting it is data loss rather than a refresh.
- */
-const DEPLOY_JOB = [
-  "  deploy:",
-  "    needs: test",
-  "    if: github.ref == 'refs/heads/main'",
-  "    runs-on: ubuntu-latest",
-  "    environment: production",
-  "    steps:",
-  "      - uses: actions/checkout@v4",
-  "      - name: Publish to the consumer's own registry",
-  "        run: ./scripts/publish.sh --tag release",
-  "        env:",
-  "          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}",
-];
-
-/** A step a consumer added INSIDE the harness-authored `test` job. */
-const CONSUMER_STEP = ["      - name: consumer smoke test", "        run: ./scripts/smoke.sh"];
-
-/** Scaffold ci.yml once, the way a consumer is first onboarded. */
-function firstScaffold(): string[] {
-  const actions: string[] = [];
-  createCiWorkflows(ROOT, actions);
-  return actions;
-}
+const readCi = () => readFileSync(join(ROOT, CI_REL), "utf-8");
+const jobsOf = (src: string) => Object.keys((Bun.YAML.parse(src) as any)?.jobs ?? {});
 
 /**
- * Change the harness-owned half of the output.
- *
- * Without this the second run regenerates byte-identical content, the merge is
- * a no-op, and "the consumer's job survived" is satisfied by the harness never
- * having written anything — a vacuous pass of exactly the shape
- * .claude/rules/checks-must-be-able-to-fail.md names. Re-pointing the bun
- * version forces a real rewrite of the harness jobs around the consumer's one.
+ * Add one extra step inside the harness-OWNED `test` job, at whatever
+ * indentation the generator actually used. Hard-coding the indent would make
+ * the fixture silently stop being a content-removing write the first time the
+ * generated YAML is reindented, and the AC-5 cases would pass vacuously.
  */
-function changeHarnessConfig(bunVersion: string): void {
-  mkdirSync(join(ROOT, ".claude", "rungate"), { recursive: true });
-  writeFileSync(
-    join(ROOT, ".claude", "rungate", "config.json"),
-    JSON.stringify({ project: "consumer", ci: { bunVersion } }, null, 2) + "\n",
-  );
+function withExtraHarnessStep(src: string): string {
+  const lines = src.split("\n");
+  const i = lines.findIndex(l => /^\s+- run: bun install$/.test(l));
+  if (i < 0) throw new Error("fixture broken: generated ci.yml no longer has a `- run: bun install` step");
+  const indent = lines[i].slice(0, lines[i].indexOf("-"));
+  lines.splice(i + 1, 0, `${indent}- run: echo extra-step-the-harness-will-remove`);
+  return lines.join("\n");
 }
 
-function appendDeployJob(): void {
-  writeFileSync(CI(), readCi() + DEPLOY_JOB.join("\n") + "\n");
-}
-
-/** Insert a consumer step into the harness-authored `test` job. */
-function editHarnessJob(): void {
-  const lines = readCi().split("\n");
-  const at = lines.findIndex(l => l.trim() === "- run: bun test");
-  expect(at).toBeGreaterThan(-1);
-  lines.splice(at + 1, 0, ...CONSUMER_STEP);
-  writeFileSync(CI(), lines.join("\n"));
-}
-
-// ── AC-1 ────────────────────────────────────────────────────────────────────
+// ── AC-1 ───────────────────────────────────────────────────────────────────
 
 describe("AC-1: a consumer-authored job survives re-scaffold verbatim", () => {
-  test("zero consumer-authored job lines are removed, read back out of the file", () => {
-    changeHarnessConfig("1.2.0");
-    firstScaffold();
-    appendDeployJob();
-    const planted = readCi();
+  beforeEach(() => {
+    writeFileSync(join(ROOT, CI_REL), GENERATED_CI.replace(/\n*$/, "\n") + CONSUMER_JOB + "\n");
+  });
 
-    changeHarnessConfig("1.3.0");
+  test("zero consumer-authored job lines are removed", () => {
     createCiWorkflows(ROOT, []);
-
-    const after = readCi().split("\n");
-    const removed = DEPLOY_JOB.filter(l => !after.includes(l));
+    const after = readCi();
+    const removed = CONSUMER_JOB.split("\n")
+      .map(l => l.trimEnd())
+      .filter(Boolean)
+      .filter(line => !after.includes(line));
     expect(removed).toEqual([]);
-    // Not vacuous: the harness half really was rewritten under the consumer's job.
-    expect(readCi()).not.toBe(planted);
-    expect(readCi()).toContain('bun-version: "1.3.0"');
-    expect(readCi()).not.toContain('bun-version: "1.2.0"');
   });
 
-  test("the job survives as one contiguous block, in order", () => {
-    changeHarnessConfig("1.2.0");
-    firstScaffold();
-    appendDeployJob();
-    changeHarnessConfig("1.3.0");
+  test("the consumer job is still a job, not just surviving text", () => {
     createCiWorkflows(ROOT, []);
-
-    const after = readCi().split("\n");
-    const start = after.indexOf(DEPLOY_JOB[0]);
-    expect(start).toBeGreaterThan(-1);
-    expect(after.slice(start, start + DEPLOY_JOB.length)).toEqual(DEPLOY_JOB);
+    const jobs = jobsOf(readCi());
+    expect(jobs).toContain("deploy-to-staging");
+    expect(jobs).toContain("test");
   });
 
-  test("the merged file still parses, and carries both jobs", () => {
-    firstScaffold();
-    appendDeployJob();
+  test("the preserved job keeps its steps intact", () => {
     createCiWorkflows(ROOT, []);
-
-    const parsed = Bun.YAML.parse(readCi()) as any;
-    expect(Object.keys(parsed.jobs).sort()).toEqual(["deploy", "test"]);
-    expect(parsed.jobs.deploy.environment).toBe("production");
-    // and the harness half is still regenerated, not frozen
-    expect(parsed.jobs.test.steps.some((s: any) => s.run === "bun test")).toBe(true);
+    const deploy = (Bun.YAML.parse(readCi()) as any).jobs["deploy-to-staging"];
+    expect(deploy["runs-on"]).toBe("self-hosted");
+    expect(deploy.needs).toBe("test");
+    expect(JSON.stringify(deploy.steps)).toContain("./scripts/deploy.sh staging");
   });
 
-  test("a consumer top-level key the harness never emits also survives", () => {
-    firstScaffold();
-    writeFileSync(CI(), readCi() + "\nconcurrency:\n  group: consumer-ci\n  cancel-in-progress: true\n");
+  test("the harness still regenerates its OWN job — preservation is not a skip", () => {
+    // A guard that preserved by declining to write at all would pass every
+    // assertion above while silently freezing the harness-owned half.
+    writeFileSync(
+      join(ROOT, CI_REL),
+      GENERATED_CI.replace('bun-version: "1.2.0"', 'bun-version: "0.0.1-stale"').replace(/\n*$/, "\n") +
+        CONSUMER_JOB + "\n",
+    );
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    const after = readCi();
+    expect(after).toContain('bun-version: "1.2.0"');
+    expect(after).not.toContain("0.0.1-stale");
+    expect(jobsOf(after)).toContain("deploy-to-staging");
+  });
 
+  test("the written file still parses as YAML", () => {
     createCiWorkflows(ROOT, []);
+    expect(() => Bun.YAML.parse(readCi())).not.toThrow();
+  });
 
-    const parsed = Bun.YAML.parse(readCi()) as any;
-    expect(parsed.concurrency).toEqual({ group: "consumer-ci", "cancel-in-progress": true });
+  test("the action reports which job was carried forward", () => {
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    expect(actions.join("\n")).toContain("deploy-to-staging");
   });
 });
+
+// ── AC-2 ───────────────────────────────────────────────────────────────────
 
 /**
- * The marker's whole value rests on one claim: the harness-authored region can
- * be reconstructed out of the merged file byte-for-byte. If it cannot, the
- * hash never matches, every config change looks like consumer content, and the
- * scaffold refuses forever — which is how a fail-closed guard gets deleted.
+ * Detection is semantic (`Bun.YAML.parse`) and preservation is textual (a
+ * verbatim line slice). A flow mapping is the shape where the two disagree:
+ * the parser sees the job, the slicer has no block to carry forward. The whole
+ * point of the design is that THAT disagreement refuses rather than guessing,
+ * because guessing is how the consumer's build gets deleted.
  */
-describe("the harness region is the exact inverse of the merge", () => {
-  test("extracting the region from a merged file returns the generated bytes", () => {
-    firstScaffold();
-    const generated = readCi().split("\n").filter(l => !l.startsWith("# rungate-managed-sha256:")).join("\n");
-    appendDeployJob();
-    const merged = readCi().split("\n").filter(l => !l.startsWith("# rungate-managed-sha256:")).join("\n");
+const FLOW_MAPPING_CI = [
+  "name: CI",
+  'on: {push: {branches: ["main"]}}',
+  "jobs: {release: {runs-on: ubuntu-latest, steps: [{run: ./release.sh}]}}",
+  "",
+].join("\n");
 
-    expect(merged).not.toBe(generated); // not vacuous: the file really grew
-    expect(harnessRegion(merged, generated)).toBe(generated);
+describe("AC-2: a write that would drop unowned content is refused", () => {
+  beforeEach(() => {
+    writeFileSync(join(ROOT, CI_REL), FLOW_MAPPING_CI);
   });
 
-  test("a consumer edit INSIDE a harness job makes the region differ", () => {
-    firstScaffold();
-    const generated = readCi().split("\n").filter(l => !l.startsWith("# rungate-managed-sha256:")).join("\n");
-    editHarnessJob();
-    const edited = readCi().split("\n").filter(l => !l.startsWith("# rungate-managed-sha256:")).join("\n");
-
-    expect(harnessRegion(edited, generated)).not.toBe(generated);
+  test("writeManagedFile throws, naming the dropped job and the line delta", () => {
+    let message = "";
+    try {
+      writeManagedFile(join(ROOT, CI_REL), GENERATED_CI, CI_REL, []);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toContain("release");
+    expect(message).toMatch(/line delta [+-]\d+/);
   });
-});
 
-// ── AC-2 ────────────────────────────────────────────────────────────────────
-
-describe("AC-2: a write that would remove unauthored content is refused", () => {
-  test("re-scaffold refuses, and the refusal names the job and the line delta", () => {
-    firstScaffold();
-    const before = readCi();
-    editHarnessJob();
-    const planted = readCi();
-
+  test("createCiWorkflows records REFUSED rather than destroying the file", () => {
     const actions: string[] = [];
     createCiWorkflows(ROOT, actions);
-
     const refusal = actions.find(a => a.startsWith("REFUSED:"));
     expect(refusal).toBeDefined();
-    expect(refusal!).toContain("ci.yml");
-    expect(refusal!).toContain("test"); // the job whose content would be lost
-    expect(refusal!).toContain(`-${CONSUMER_STEP.length}`); // the line delta
-    expect(refusal!).toContain("--force");
-
-    // The refusal is the point: the consumer's file is untouched.
-    expect(readCi()).toBe(planted);
-    expect(readCi()).not.toBe(before);
+    expect(refusal!).toContain("release");
+    expect(refusal!).toMatch(/line delta [+-]\d+/);
   });
 
-  test("a consumer ci.yml the harness never wrote is refused rather than replaced", () => {
-    // No marker, and jobs whose content the merge cannot carry: this is the
-    // "onboard a repo that already has CI" case, and it is the one that
-    // destroys a real build.
-    const handWritten = [
-      "name: build",
-      "on: [push]",
-      "jobs:",
-      "  test:",
-      "    runs-on: ubuntu-latest",
-      "    steps:",
-      "      - run: make check",
-      "",
-    ].join("\n");
-    mkdirSync(join(ROOT, ".github", "workflows"), { recursive: true });
-    writeFileSync(join(ROOT, ".github", "workflows", "ci.yml"), handWritten);
+  test("the consumer's bytes are untouched after the refusal", () => {
+    createCiWorkflows(ROOT, []);
+    expect(readCi()).toBe(FLOW_MAPPING_CI);
+  });
 
+  test("an unreadable existing file is refused, not overwritten", () => {
+    const garbage = "\tthis: is not: valid yaml: at all\n\t\t- [unclosed\n";
+    writeFileSync(join(ROOT, CI_REL), garbage);
     const actions: string[] = [];
     createCiWorkflows(ROOT, actions);
-    expect(actions.some(a => a.startsWith("REFUSED:"))).toBe(true);
-    expect(readCi()).toBe(handWritten);
+    expect(readCi()).toBe(garbage);
+    expect(actions.join("\n")).toContain("REFUSED:");
   });
 
-  test("planManagedWrite reports the refusal with both the job names and the delta", () => {
-    firstScaffold();
-    const generated = readCi().split("\n").filter(l => !l.startsWith("# rungate-managed-sha256:")).join("\n");
-    editHarnessJob();
-    const plan = planManagedWrite(readCi(), generated);
-
-    expect(plan.verb).toBe("REFUSED");
-    expect(plan.atRiskJobs).toEqual(["test"]);
-    expect(plan.lineDelta).toBe(-CONSUMER_STEP.length);
-    expect(plan.refusal).toContain("test");
-    expect(plan.refusal).toContain(`-${CONSUMER_STEP.length}`);
-  });
-
-  test("--force is what overrides it, and nothing else does", () => {
-    firstScaffold();
-    editHarnessJob();
-
-    const refused: string[] = [];
-    createCiWorkflows(ROOT, refused);
-    expect(readCi()).toContain("./scripts/smoke.sh");
-
-    const forced: string[] = [];
-    createCiWorkflows(ROOT, forced, { force: true });
-    expect(readCi()).not.toContain("./scripts/smoke.sh");
+  test("--force is the documented escape hatch, and it is opt-in", () => {
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions, { force: true });
+    expect(readCi()).toBe(GENERATED_CI);
+    expect(actions.join("\n")).not.toContain("REFUSED:");
   });
 });
 
-// ── AC-5 ────────────────────────────────────────────────────────────────────
+// ── AC-5 ───────────────────────────────────────────────────────────────────
 
-describe("AC-5: the action verb is measured, not assumed", () => {
-  test("a first write reports CREATED", () => {
-    const actions = firstScaffold();
-    expect(actions.filter(a => a.startsWith("CREATED:")).length).toBe(2);
-  });
-
-  test("an unchanged re-write reports SKIP and does not touch the file", () => {
-    firstScaffold();
-    const before = readCi();
-    const actions: string[] = [];
-    createCiWorkflows(ROOT, actions);
-    expect(actions.every(a => a.startsWith("SKIP:"))).toBe(true);
-    expect(readCi()).toBe(before);
-  });
-
-  test("a merge that regenerates the harness half reports UPDATED", () => {
-    changeHarnessConfig("1.2.0");
-    firstScaffold();
-    appendDeployJob();
-    changeHarnessConfig("1.3.0");
+describe("AC-5: action verbs are derived from the measured before/after", () => {
+  test("a content-removing write reports REPLACED with its line delta", () => {
+    // One extra line inside the harness-OWNED `test` job: regeneration removes
+    // it, which is allowed (the harness authored that job) but must be
+    // reported as a removal rather than as a creation.
+    writeFileSync(join(ROOT, CI_REL), withExtraHarnessStep(GENERATED_CI));
 
     const actions: string[] = [];
     createCiWorkflows(ROOT, actions);
-    const ci = actions.find(a => a.includes("ci.yml"))!;
-    expect(ci.startsWith("UPDATED:")).toBe(true);
-    // A harness-owned line DID disappear (the old bun version). That is not a
-    // loss, because the harness can prove it wrote it — which is the whole
-    // reason the marker exists, and the case a line-count guard would refuse.
-    expect(ci).not.toContain("REFUSED");
+
+    const entry = actions.find(a => a.includes("ci.yml"));
+    expect(entry).toBeDefined();
+    expect(entry!.startsWith("REPLACED:")).toBe(true);
+    expect(entry!).toMatch(/-1 lines/);
   });
 
-  test("a content-removing write reports REPLACED with its line delta, never CREATED", () => {
-    firstScaffold();
-    editHarnessJob();
-    const beforeLines = readCi().split("\n").length;
-
-    const actions: string[] = [];
-    createCiWorkflows(ROOT, actions, { force: true });
-
-    const afterLines = readCi().split("\n").length;
-    expect(afterLines).toBeLessThan(beforeLines);
-
-    const ci = actions.find(a => a.includes("ci.yml"))!;
-    expect(ci.startsWith("REPLACED:")).toBe(true);
-    expect(ci).toContain(`${afterLines - beforeLines}`);
-    expect(ci).not.toContain("CREATED");
-
-    // the AC's threshold, stated as the AC states it
-    const contentRemovingReportedAsCreated = actions.filter(
-      a => a.startsWith("CREATED:") && a.includes("ci.yml"),
+  test("no content-removing write is ever reported as CREATED", () => {
+    // The same removal, this time alongside a consumer job that must be
+    // carried forward: the net line count GROWS, and the verb must still be
+    // the one the removed line earns.
+    writeFileSync(
+      join(ROOT, CI_REL),
+      withExtraHarnessStep(GENERATED_CI).replace(/\n*$/, "\n") + CONSUMER_JOB + "\n",
     );
-    expect(contentRemovingReportedAsCreated).toEqual([]);
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    const entry = actions.find(a => a.includes("ci.yml"))!;
+    expect(entry.startsWith("CREATED:")).toBe(false);
+    expect(entry.startsWith("REPLACED:")).toBe(true);
+    expect(jobsOf(readCi())).toContain("deploy-to-staging");
   });
 
-  test("the verb comes from the content, not from whether the path existed", () => {
-    // Same path, three different readings, three different verbs.
-    const seen: string[] = [];
-    const take = () => {
-      const a: string[] = [];
-      createCiWorkflows(ROOT, a, { force: true });
-      seen.push(a.find(x => x.includes("ci.yml"))!.split(":")[0]);
-    };
-    take();            // CREATED
-    take();            // SKIP — identical content
-    appendDeployJob();
-    take();            // REPLACED — force drops the consumer job
-    expect(seen).toEqual(["CREATED", "SKIP", "REPLACED"]);
+  test("CREATED is reported only when there was no file before", () => {
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    expect(actions.some(a => a.startsWith("CREATED:") && a.includes("ci.yml"))).toBe(true);
+  });
+
+  test("an identical regeneration reports SKIP, not UPDATED", () => {
+    writeFileSync(join(ROOT, CI_REL), GENERATED_CI);
+    const actions: string[] = [];
+    createCiWorkflows(ROOT, actions);
+    const entry = actions.find(a => a.includes("ci.yml"));
+    expect(entry!.startsWith("SKIP:")).toBe(true);
+  });
+
+  test("resolveManagedWrite measures the verb rather than being told it", () => {
+    expect(resolveManagedWrite(null, "a\nb\n").verb).toBe("CREATED");
+    expect(resolveManagedWrite("a\nb\n", "a\nb\n").verb).toBe("SKIP");
+    expect(resolveManagedWrite("jobs:\n  test:\n    runs-on: x\n", "jobs:\n  test:\n    runs-on: x\n    env: y\n").verb).toBe("UPDATED");
+
+    const shrink = resolveManagedWrite(
+      "jobs:\n  test:\n    runs-on: x\n    env: y\n",
+      "jobs:\n  test:\n    runs-on: x\n",
+    );
+    expect(shrink.verb).toBe("REPLACED");
+    expect(shrink.lineDelta).toBe(-1);
   });
 });

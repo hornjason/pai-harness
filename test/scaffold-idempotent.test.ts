@@ -93,6 +93,76 @@ governs: Test spec
     // reads as a slow pass. Raise it off a new measurement, never off a guess.
   }, 30_000);
 
+  /**
+   * #216 AC-3 — the idempotency claim above never looked at .github/workflows.
+   *
+   * It compared AGENTS.md and CODE-MAP.md, which are regenerated from a scan
+   * and so were always going to match. The file that re-scaffold DESTROYED was
+   * the consumer's ci.yml, and no run-it-twice test could see that, because
+   * the destruction is stable: overwriting the same file with the same bytes
+   * twice is perfectly idempotent and perfectly wrong.
+   *
+   * So this one plants a job the harness cannot generate, and measures the
+   * whole tree with `git status` rather than two named files.
+   */
+  test("#216 AC-3: a consumer's own CI job survives, and a second run changes nothing", () => {
+    const fixtureRoot = join(tmpRoot, "consumer-ci-fixture");
+    mkdirSync(join(fixtureRoot, "src"), { recursive: true });
+    mkdirSync(join(fixtureRoot, ".github", "workflows"), { recursive: true });
+
+    writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({
+      name: "consumer-ci-fixture",
+      version: "1.0.0",
+      type: "module",
+      scripts: { test: "bun test" },
+    }, null, 2) + "\n");
+    writeFileSync(join(fixtureRoot, "src", "index.ts"), "export const hello = 'world';\n");
+    writeFileSync(join(fixtureRoot, ".github", "workflows", "ci.yml"), [
+      "name: CI",
+      "",
+      "on:",
+      "  push:",
+      "    branches:",
+      '      - "main"',
+      "",
+      "jobs:",
+      "  test:",
+      '    runs-on: "ubuntu-latest"',
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "      - run: bun test",
+      "",
+      "  deploy-to-staging:",
+      "    needs: test",
+      "    runs-on: self-hosted",
+      "    steps:",
+      "      - run: ./scripts/deploy.sh staging",
+      "",
+    ].join("\n"));
+
+    initFixtureRepo(fixtureRoot);
+    commitFixture(fixtureRoot, "init consumer with its own CI job");
+
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+
+    const ciPath = join(fixtureRoot, ".github", "workflows", "ci.yml");
+    const afterFirst = readFileSync(ciPath, "utf-8");
+    expect(afterFirst).toContain("./scripts/deploy.sh staging");
+    expect(Object.keys((Bun.YAML.parse(afterFirst) as any).jobs)).toContain("deploy-to-staging");
+
+    // The scaffold no longer commits for you (#216 AC-4), so bank its output
+    // here — the second run's diff is only meaningful against a clean tree.
+    commitFixture(fixtureRoot, "scaffold run 1");
+    expect(execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" }).trim()).toBe("");
+
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+
+    const changed = execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" })
+      .split("\n").map(l => l.trim()).filter(Boolean);
+    expect(changed).toEqual([]);
+    expect(readFileSync(ciPath, "utf-8")).toBe(afterFirst);
+  }, 120_000);
+
   test("#72 AC-2: re-scaffolding leaves an existing tsconfig.json byte-for-byte unchanged", () => {
     const fixtureRoot = join(tmpRoot, "tsconfig-fixture");
     mkdirSync(join(fixtureRoot, "src"), { recursive: true });
@@ -125,52 +195,6 @@ governs: Test spec
     expect(afterFirst).toBe(handWritten);
     expect(afterSecond).toBe(handWritten);
   }, 60_000);
-
-  /**
-   * #216 AC-3. The twice-run test above compares AGENTS.md and CODE-MAP.md and
-   * never looks at .github/workflows/ci.yml — which is the file re-scaffold was
-   * destroying. Measuring "nothing changed" with git rather than with a list of
-   * filenames is the point: a file nobody thought to name cannot hide in it.
-   */
-  test("#216 AC-3: a second scaffold over a consumer leaves an empty git diff", () => {
-    const fixtureRoot = join(tmpRoot, "consumer-fixture");
-    mkdirSync(join(fixtureRoot, "src"), { recursive: true });
-    writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({
-      name: "consumer-fixture",
-      version: "1.0.0",
-      type: "module",
-      scripts: { test: "bun test" },
-    }, null, 2) + "\n");
-    writeFileSync(join(fixtureRoot, "src", "index.ts"), "export const hello = 'world';\n");
-
-    // A consumer job rungate cannot generate, in a file rungate owns.
-    const consumerJob = [
-      "  deploy:",
-      "    needs: test",
-      "    runs-on: ubuntu-latest",
-      "    steps:",
-      "      - run: ./scripts/publish.sh",
-      "",
-    ].join("\n");
-
-    initFixtureRepo(fixtureRoot);
-    commitFixture(fixtureRoot, "init");
-
-    // Run 1 — onboarding. Then the consumer adds their job and commits it.
-    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
-    const ciPath = join(fixtureRoot, ".github", "workflows", "ci.yml");
-    writeFileSync(ciPath, readFileSync(ciPath, "utf-8") + consumerJob);
-    commitFixture(fixtureRoot, "scaffold + consumer deploy job");
-    expect(execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" }).trim()).toBe("");
-
-    // Run 2 — the update path. Nothing may change.
-    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
-
-    const dirty = execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" })
-      .split("\n").map(l => l.trim()).filter(Boolean);
-    expect(dirty).toEqual([]);
-    expect(readFileSync(ciPath, "utf-8")).toContain("./scripts/publish.sh");
-  }, 180_000);
 
   test("SC-364: generator determinism — generateAgentsMd produces identical output", () => {
     // Call generator twice with same input

@@ -28,12 +28,12 @@ import {
   generateProjectState,
   createClaudeMdBridge,
   createCiWorkflows,
-  createWorkflowDefinitionSpec,
   createGitHooks,
   deployHooksToConsumers,
   addPaiHarnessDevDep,
   runAuditSpecsFix,
   postScaffoldCommit,
+  reportScaffoldActions,
 } from "../lib/scaffold/steps";
 import {
   addFrontmatterToSpecs, addFrontmatterToAdrs, detectOversizedSpecs,
@@ -48,11 +48,8 @@ const projectPath = args.find(arg => !arg.startsWith('--'));
 const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
                  (args.indexOf('--type') !== -1 ? args[args.indexOf('--type') + 1] : null);
 const fix = args.includes('--fix');
-// #216: both opt-in. --force overwrites consumer content in harness-managed
-// workflow files; --commit lets the run write to the consumer's git history.
-// Defaulting either to true is how a re-scaffold destroys a consumer's build.
-const force = args.includes('--force');
-const commit = args.includes('--commit');
+// #216: both default false — re-scaffold is how a consumer takes an UPDATE.
+const force = args.includes('--force'), commit = args.includes('--commit');
 
 if (!projectPath) {
   console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix] [--force] [--commit]");
@@ -131,7 +128,33 @@ detectUnconvertedSpecs(join(projectPath, "specs"), actions);
 
 if (fix) {
   // Phase 0.8: Workflow project setup
-  if (projectType === "workflow") createWorkflowDefinitionSpec(projectPath, actions);
+  if (projectType === "workflow") {
+    const workflowDef = `---
+doc-type: spec
+testable: no
+governs: workflow-definition
+---
+
+# Workflow Definition
+
+## Trigger
+
+When should this workflow run?
+
+## Inputs
+
+What inputs does this workflow require?
+
+## Process
+
+What steps does this workflow perform?
+
+## Output
+
+What does this workflow produce?
+`;
+    safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+  }
 
   // Phase 1.5: Harness config + briefs for ALL project types
   generateOrAuditProjectHarness(projectPath, actions);
@@ -173,13 +196,5 @@ if (fix) {
 
 // ── Report ─────────────────────────────────────────────────────
 
-console.log("\n=== Scaffold Report ===");
-for (const action of actions) {
-  console.log(`  ${action}`);
-}
-const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
-console.log(`\nTotal: ${count("CREATED")} created, ${count("SKIP")} skipped, ${count("REPLACED")} replaced, ${count("REFUSED")} refused`);
-// A refusal means a consumer's file was NOT written over. Exiting 0 would make
-// that indistinguishable from a clean run in CI, which is how a preserved file
-// turns into a silently stale one (#216).
-if (count("REFUSED") > 0) process.exit(2);
+// A refusal that only prints is one nobody's CI notices (#216).
+if (reportScaffoldActions(actions) > 0) process.exit(1);
