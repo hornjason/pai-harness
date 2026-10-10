@@ -208,15 +208,31 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
       } else {
         title = titleFrom(flags);
       }
-      return await upsertPR(client, repo, {
+      const wantsDraft = flags.draft !== undefined;
+      const result = await upsertPR(client, repo, {
         head: required(flags, "head"),
         base: flags.base || "main",
         title,
         body: readBody(flags, { allowEmpty: true }),
         // `--draft` with no value parses as the empty string, so presence is
         // the test rather than truthiness (#252).
-        draft: flags.draft !== undefined,
+        draft: wantsDraft,
       });
+      // A draft that was asked for and not granted is a FAILURE here, not a
+      // field the caller may notice later. GitHub does not always honour
+      // `draft` — it is unavailable on some plans — and the create succeeds
+      // anyway. The run would then carry on believing it had the protection,
+      // and a missing protection looks exactly like one that was never
+      // requested. Refuse where the cause is still visible, and name the PR,
+      // because by this point one exists and somebody has to go and look at
+      // it.
+      if (wantsDraft && result.draft !== true) {
+        throw new Error(
+          `draft was requested but PR #${result.number} is not a draft — ` +
+            `it is open and mergeable at ${result.html_url}, and this run has no way to gate it`,
+        );
+      }
+      return result;
     }
 
     case "pr-ready": {

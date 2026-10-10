@@ -138,7 +138,11 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     // and produces the mergeable PR this is here to prevent.
     reset();
     stub("GET", "/repos/owner/name/pulls", []);
-    stub("POST", "/repos/owner/name/pulls", { number: 12, html_url: "https://x/pull/12" });
+    // The response carries `draft: true` because that is what GitHub returns
+    // for a granted draft, and the script now refuses when it asked for one
+    // and did not get it. A stub that omitted the field would be asserting
+    // against a response shape the API does not produce.
+    stub("POST", "/repos/owner/name/pulls", { number: 12, html_url: "https://x/pull/12", draft: true });
 
     const { exitCode } = await runOp([
       "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--base", "main",
@@ -248,6 +252,40 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     expect(exitCode).toBe(1);
     expect(stdout).toBe("");
     expect(stderr).toContain("node_id");
+  });
+
+  test("a draft that was asked for and not granted is a failure, not a quiet pass (#252)", async () => {
+    // GitHub does not always honour `draft` — draft PRs are unavailable on
+    // some plans, and the create succeeds anyway with `draft: false`. The run
+    // would then proceed believing it had the protection, and the ABSENCE of
+    // the protection is indistinguishable from never having asked for it,
+    // except in a field nothing checks at that point. Refuse here, where the
+    // cause is still visible.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 14, html_url: "https://x/pull/14", draft: false });
+
+    const { stdout, stderr, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("draft was requested");
+    expect(stderr, "the refusal does not say which PR is now sitting there ungated").toContain("14");
+  });
+
+  test("a granted draft reports success", async () => {
+    // Positive control: a check that refused whenever --draft was passed would
+    // satisfy the case above and break the mechanism outright.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 15, html_url: "https://x/pull/15", draft: true });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b", "--draft",
+    ]);
+    expect(exitCode).toBe(0);
   });
 
   test("pr-upsert updates the existing PR instead of failing a second time", async () => {

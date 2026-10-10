@@ -1034,6 +1034,26 @@ command.
 - [x] SC-634: test/ship-pr-draft.test.ts contains [pr-ready runs before the ship gate, every terminal status the run can report is ranked by this decision, an unrankable threshold] — position is asserted, not just presence, and both fail-open directions are ruled out: an unranked status and an unrankable threshold each leave the draft alone
 - [x] SC-635: lib/github.ts contains [convertPullRequestToDraft, it cannot be converted to a draft] — an upsert that is asked for a draft converts an already-ready PR back, because protecting the first run on a branch and nothing after it is no protection in a workflow that re-enters its own phases
 - [x] SC-636: workflows/ship.js contains [function observedDraft(, is NOT a draft] — the recorded draft state is what the PR step reported, three-valued so "nobody looked" is distinguishable from "it is mergeable", and the dangerous combination is logged at the moment it becomes true
+- [x] SC-637: scripts/github-op.ts contains [draft was requested but PR #, and this run has no way to gate it] — a draft that was asked for and not granted exits non-zero, because GitHub does not always honour the field and an absent protection is indistinguishable from one that was never requested
+
+Two constraints this mechanism does NOT remove, recorded rather than papered
+over:
+
+- **The run learns its PR's state from an agent's transcription, not from the
+  API.** `workflows/ship.js` runs in a sandbox with no module loading (#69), so
+  every field it knows about the PR — `prNumber` as much as `prDraft` — is
+  what a language model reported after reading command output. `github-op.ts`
+  refusing non-zero on an ungranted draft is the mitigation that does not
+  depend on the transcription being faithful: the step fails, and a failed
+  step is the one thing the schema makes hard to misreport.
+- **The PR step is unreachable when a container is configured** (#254, filed
+  from the same review). `pr-upsert` appears once in the file, inside the
+  `else` arm of `if (containerConfig)`, so a consumer with a container gets no
+  PR and therefore no draft lifecycle at all. `prReadiness` reports `NO_PR`,
+  which is accurate, so this criterion holds — but a whole branch of the
+  workflow has no PR at all, and that is its own defect rather than part of
+  this one. DailyBriefDashboard is not affected: its `.claude/rungate.json`
+  carries no `container` key, checked rather than assumed.
 
 **The first version of the draft fix was wrong, and the way it was wrong is
 the point.** `upsertPR` passed `draft` only to the create path, with a comment
@@ -1061,9 +1081,10 @@ it.
 | `upsertPR` stops converting an already-ready PR back to draft | 2 |
 | `observedDraft` returns `true` instead of reading the step's report | 2 |
 | the convert fires unconditionally, even on an already-draft PR | 1 |
+| the ungranted-draft refusal removed, so an unhonoured `draft` passes quietly | 1 |
 
 Measured over `test/ship-failure-report.test.ts` + `test/ship-pr-draft.test.ts`
-+ `test/github-op.test.ts` + `test/github-client.test.ts` (130 tests); none
++ `test/github-op.test.ts` + `test/github-client.test.ts` (132 tests); none
 left in the tree.
 
 The third one is recorded for a second reason: **the first attempt at it
