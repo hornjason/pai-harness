@@ -33,6 +33,7 @@ import {
   addPaiHarnessDevDep,
   runAuditSpecsFix,
   postScaffoldCommit,
+  reportScaffoldActions,
 } from "../lib/scaffold/steps";
 import {
   addFrontmatterToSpecs, addFrontmatterToAdrs, detectOversizedSpecs,
@@ -47,9 +48,11 @@ const projectPath = args.find(arg => !arg.startsWith('--'));
 const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
                  (args.indexOf('--type') !== -1 ? args[args.indexOf('--type') + 1] : null);
 const fix = args.includes('--fix');
+// #216: both default false — re-scaffold is how a consumer takes an UPDATE.
+const force = args.includes('--force'), commit = args.includes('--commit');
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix]");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix] [--force] [--commit]");
   process.exit(1);
 }
 
@@ -164,7 +167,7 @@ What does this workflow produce?
   runAuditSpecsFix(projectPath, actions);
   addPaiHarnessDevDep(projectPath, actions);
   createClaudeMdBridge(projectPath, actions);
-  createCiWorkflows(projectPath, actions);
+  createCiWorkflows(projectPath, actions, { force });
   createGitHooks(projectPath, actions);
   deployHooksToConsumers(projectPath, actions);
 
@@ -174,7 +177,7 @@ What does this workflow produce?
     generateCodeMapStep(projectPath, actions);
   }
 
-  postScaffoldCommit(projectPath, actions);
+  postScaffoldCommit(projectPath, actions, { commit });
 } else {
   // Dry-run: report gaps for items that --fix would generate
   if (projectType === "code" && !existsSync(join(projectPath, "CODE-MAP.md"))) {
@@ -193,8 +196,5 @@ What does this workflow produce?
 
 // ── Report ─────────────────────────────────────────────────────
 
-console.log("\n=== Scaffold Report ===");
-for (const action of actions) {
-  console.log(`  ${action}`);
-}
-console.log(`\nTotal: ${actions.filter(a => a.startsWith("CREATED")).length} created, ${actions.filter(a => a.startsWith("SKIP")).length} skipped`);
+// A refusal that only prints is one nobody's CI notices (#216).
+if (reportScaffoldActions(actions) > 0) process.exit(1);

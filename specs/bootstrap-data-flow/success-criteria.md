@@ -61,8 +61,8 @@ testable: true
 - [x] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
 - [x] SC-97: Pre-flight checks git repo (git init if not), package.json (bun init if not), .gitignore (create if not)
 - [x] SC-98: Pre-flight runs BEFORE Phase 0 — .gitignore exists before any git add
-- [x] SC-99: Post-scaffold commits all harness files — "scaffold: initialize" for new, "scaffold: update" for existing
-- [x] SC-100: Post-scaffold commit only runs if there are actual changes (no empty commits)
+- [x] SC-99: Post-scaffold commits all harness files when `--commit` is passed — opt-in since #216, because a scaffold run must not write to a consumer's git history unasked
+- [x] SC-100: Post-scaffold commit only runs if there are actual changes (no empty commits), and refuses outright on a tree holding work the scaffold did not generate
 - [x] SC-101: rungate.json uses field-level merge — auto-detected fields overwritten, manual fields preserved
 - [x] SC-107: Makefile fallback chain: each field tries Makefile → package.json → null in order
 - [x] SC-114: AGENTS.md has section [Research Tools] listing available tools with usage examples

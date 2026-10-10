@@ -9,7 +9,9 @@ const OUTPUT = "/tmp/rungate-phase0-test";
 const ROLES_OUTPUT = "/tmp/rungate-phase0-roles-test";
 
 beforeAll(() => {
-  scaffoldFixture(OUTPUT);
+  // --commit, because SC-99/SC-100 below are about the commit. It became
+  // opt-in in #216; a fixture that wants it has to ask, like a consumer does.
+  scaffoldFixture(OUTPUT, undefined, { commit: true });
   scaffoldFixture(ROLES_OUTPUT, seedRolesConfig(ROLES_OUTPUT));
   // 60s: two scaffolds, ~6.2s each. The 5s default only passed before because
   // the fixture commit died first (#71).
