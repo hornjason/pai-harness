@@ -449,7 +449,16 @@ function timingInstruction(label) {
     `  ${cmd('end')}\n` +
     `Both are required, neither is part of the task, and neither replaces reporting.\n` +
     `A start with no end is reported as UNTERMINATED, not dropped — skipping the end\n` +
-    `marks this call unmeasured rather than fast.`
+    `marks this call unmeasured rather than fast.\n` +
+    `\n` +
+    `If the full-suite guard REFUSES a \`bun test\` and you wait for the budget or a\n` +
+    `slot, bracket the wait as well (#239) — otherwise sleeping on a harness limit\n` +
+    `is indistinguishable from slow work, which is how 22 minutes of it went\n` +
+    `unnoticed on run wf_18abb197-f03:\n` +
+    `  ${cmd('queued-start')}\n` +
+    `  ${cmd('queued-end')}\n` +
+    `Queued time is reported beside your work time, never added to it, and it\n` +
+    `counts against the harness rather than against you.`
   )
 }
 
@@ -3423,11 +3432,14 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
 
 4. Wall-clock timing per CALL SITE — read this run's timing artifact (#227):
    bun ${shellQuote(TIMING_SCRIPT)} report --artifact ${shellQuote(TIMING_ARTIFACT)} --json
-   It prints {"timing":[{agent,seconds,unterminated,orphanEnd}...],"unterminated":[...],"missing":bool}.
+   It prints {"timing":[{agent,kind,seconds,unterminated,orphanEnd}...],"unterminated":[...],"queuedSeconds":{...},"missing":bool}.
    Report its "timing" array, including every entry with unterminated true — those
-   are calls whose agent never wrote an end. Carry unterminated/orphanEnd through as
-   given, and OMIT "seconds" entirely for those entries rather than inventing a
-   number or dropping the entry. If the artifact is missing, report timing as [].
+   are calls whose agent never wrote an end. Carry kind/unterminated/orphanEnd through
+   as given, and OMIT "seconds" entirely for those entries rather than inventing a
+   number or dropping the entry. Entries with kind "queued" are time an agent spent
+   WAITING on the full-suite budget (#239); report them as their own rows and never
+   add them to the work row for the same label. If the artifact is missing, report
+   timing as [].
    Do NOT derive durations from file timestamps of any kind: an agent-*.jsonl file's
    mtime is the file's lifetime, not the call's, and that is the measurement this
    step replaced.
@@ -3463,6 +3475,11 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
           // type is not guaranteed to survive the tool-schema layer, and a
           // schema that throws would take the whole grade step down with it.
           seconds: { type: 'number' },
+          // "work" or "queued" (#239). A field the schema does not declare is
+          // dropped at the tool boundary, so without this a 22-minute wait on
+          // the full-suite budget arrives indistinguishable from 22 minutes of
+          // work — which is exactly how it went unnoticed.
+          kind: { type: 'string' },
           unterminated: { type: 'boolean' },
           orphanEnd: { type: 'boolean' }
         },
@@ -3484,9 +3501,13 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
     for (const t of gradeResult.timing) {
       // An unmeasured call says so. Printing `= nulls` or silently skipping it
       // would restore the thing #227 removed: a timing line nobody can act on.
-      if (t.orphanEnd) log(`TIMING: ${t.agent} = END WITH NO START (#227)`)
-      else if (t.unterminated || typeof t.seconds !== 'number') log(`TIMING: ${t.agent} = UNTERMINATED — the agent wrote a start and no end (#227)`)
-      else log(`TIMING: ${t.agent} = ${t.seconds}s`)
+      // A wait is labelled QUEUED and never added to the work line: the two
+      // numbers have different causes, and the total hides the one that names
+      // a harness defect (#239).
+      const what = t.kind === 'queued' ? `${t.agent} QUEUED` : t.agent
+      if (t.orphanEnd) log(`TIMING: ${what} = END WITH NO START (#227)`)
+      else if (t.unterminated || typeof t.seconds !== 'number') log(`TIMING: ${what} = UNTERMINATED — the agent wrote a start and no end (#227)`)
+      else log(`TIMING: ${what} = ${t.seconds}s`)
     }
   }
 

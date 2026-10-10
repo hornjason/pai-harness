@@ -9,7 +9,7 @@
  */
 
 import { parseHookInput } from './lib/utils';
-import { evaluateFullSuiteRequest } from '../lib/test-suite-lock';
+import { evaluateFullSuiteRequest, workerIdFromHook } from '../lib/test-suite-lock';
 
 async function main() {
   const input = await parseHookInput();
@@ -18,10 +18,14 @@ async function main() {
 
   const command = (input.tool_input?.command as string) || '';
   const sessionId = input.session_id || 'default';
+  // Sub-agents share their parent's session_id, so the rate budget needs a
+  // narrower key than the session or a fan-out spends one budget between all
+  // of them (#239). Release must derive this the same way.
+  const workerId = workerIdFromHook(input);
 
   // Fails open: a broken guard must never be able to block the suite it guards.
   try {
-    const decision = evaluateFullSuiteRequest(sessionId, command);
+    const decision = evaluateFullSuiteRequest(sessionId, command, { workerId });
     if (!decision.allow) {
       console.log(JSON.stringify({
         decision: 'block',

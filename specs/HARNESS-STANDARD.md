@@ -781,6 +781,35 @@ quieter. `unterminated` defaults to true and is cleared only by an observed end.
 - [x] SC-609: scripts/record-agent-timings.ts contains [unterminated: true, TIMING_USAGE_EXIT] — the reader fails closed on an unclosed bracket and routes every usage refusal through one exit-code constant
 - [x] SC-610: test/agent-timings.test.ts contains [the only raw agent() call is the one inside the timing wrapper] — AC-1 is enforced by parsing ship.js rather than grepping it, so converting one call site of thirty-nine does not pass
 
+**Waiting is measured separately from working (#239).** A bracket that records
+only work cannot tell a slow agent from a blocked one. Run wf_18abb197-f03 fanned
+out to three implementers; two took the session's two full-suite runs and the
+third spent roughly 22 minutes in `sleep 580` loops waiting out the DIR-L29
+window, twenty of them after its siblings had finished. In the artifact that was
+one long call. The number that would have named the defect was the one number
+the artifact did not have.
+
+So the event set is two pairs rather than one: `start`/`end` for work, and
+`queued-start`/`queued-end` for time spent waiting on a harness limit. The
+summarizer pairs per LABEL AND PER KIND — a queued interval nests inside the
+work bracket it delays, so pairing on the label alone would close the work
+bracket with the queued end and report a call that lasted exactly as long as
+its own wait. Queued seconds are reported BESIDE work seconds for the same
+label and never summed into them, because a single total is precisely what hid
+this. `kind` is declared in the grade step's schema for the same reason the
+label is read at runtime: an undeclared field is dropped at the tool boundary,
+and the queued row would arrive indistinguishable from work.
+
+- [x] SC-624: scripts/record-agent-timings.ts contains [queued-start, queued-end, queuedSeconds] — time an agent spends waiting on the full-suite budget is appended to the run's timing artifact as its own interval, and the summarizer reports queued seconds separately from work seconds for the same label (#239)
+- [x] SC-626: workflows/ship.js contains [queued-start, QUEUED, kind: { type: 'string' }] — every spawned agent is told how to bracket a wait, and `kind` is declared in the grade step's schema so the queued row is not dropped at the tool boundary and is logged as a wait rather than as work (#239)
+
+What was broken to prove SC-624 can fail, run and counted rather than asserted,
+over `test/agent-timings-queued.test.ts` + `test/agent-timings.test.ts` (41
+tests): decoding `queued-start` / `queued-end` as `work` — the fold that hid the
+defect in the first place — turns 7 of 41 red, including the CLI round-trip and
+the human-readable `QUEUED` line. It is not left in the tree; it was run and
+reverted.
+
 ### A run's final status says what was proved, and no more (#222)
 
 **Nothing in this harness merges.** #136 removed the auto-merge outright, and

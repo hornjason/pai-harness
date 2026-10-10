@@ -44,8 +44,8 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 | TaskCompleted | TaskCompleted.hook.ts | 51 | SC-370, SC-372 | Good — logic in lib/task-completion-checks.ts |
 | SpecConformityTrigger | SpecConformityTrigger.hook.ts | 43 | SC-370, SC-371 | Good — thin trigger pattern |
 | WorkflowStateGuard | WorkflowStateGuard.hook.ts | 40 | SC-370, SC-371 | Ideal thin trigger |
-| TestSuiteGuard | TestSuiteGuard.hook.ts | 32 | SC-473, SC-370 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
-| TestSuiteRelease | TestSuiteRelease.hook.ts | 32 | SC-370, SC-516, SC-517, SC-518 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
+| TestSuiteGuard | TestSuiteGuard.hook.ts | 45 | SC-473, SC-370, SC-621, SC-622 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
+| TestSuiteRelease | TestSuiteRelease.hook.ts | 46 | SC-370, SC-516, SC-517, SC-518, SC-622 | Ideal thin trigger — logic in lib/test-suite-lock.ts |
 
 ## Success Criteria
 
@@ -62,6 +62,23 @@ Hooks should follow the same deep module / thin consumer pattern that the migrat
 - [x] SC-516: TestSuiteGuard caps concurrent full suites across sessions at 2 — issue #67. The per-session cap in SC-473 does not bound the machine: N sessions obeying the CLAUDE.md pre-implementation gate means N simultaneous 5.4 GB suites, which exhausted the VM compressor and rebooted the machine on 2026-10-05. Slots are files, not a process count — the agentgrit suite leaks ~31 dangling bun processes per run, and BSD `pgrep` has no `-c` flag so the obvious count silently returns nothing. Fails open, never silent.
 - [x] SC-517: A slot is one running suite, not one session — issue #67-B. Subagent Bash calls reach PreToolUse with the PARENT session's id (hook `session_id` is the same identifier as the transcript `sessionId`, and all 292 records of a live three-agent run carried the parent's). Keying ownership on the session therefore blocked Quinn's mandatory suite behind Marcus's slot and surfaced it as a test failure. Each live suite takes its own slot and releases exactly one; the cap counts suites, so no distribution across session ids can exceed it.
 - [x] SC-518: Machine-wide hooks are registered in user settings, not project settings — issue #67-A. Project `.claude/settings.json` only loads for sessions started in that directory, so a cross-session cap registered there is inert for every session rooted elsewhere, including sessions working on the repo via an added working directory. Registration must appear in exactly one scope: the two are not de-duplicated, so dual registration fires the hook twice and consumes two slots per suite.
+- [x] SC-621: lib/test-suite-lock.ts contains [export function budgetKey, workerId] — the DIR-L29 rate budget is keyed on a WORKER, not on a session (issue #239). Sub-agents reach PreToolUse under the PARENT session's id, the same fact SC-517 records for slots, so a ship run that fanned out to three implementers gave all of them two runs per 30 minutes between them — spent by whoever asked first. On run wf_18abb197-f03 sub-agent 235002 spent ~22 minutes in `sleep 580` loops, twenty of them after its siblings had finished. Raising maxRuns would be the wrong fix: the budget exists because concurrent full suites rebooted this machine on 2026-10-05. The budget is right; its key was wrong.
+- [x] SC-622: hooks/TestSuiteGuard.hook.ts contains [workerIdFromHook, workerId] — the guard derives the worker identity from the `cwd` and `transcript_path` already present in the hook payload and now typed in hooks/lib/utils.ts, and passes it to the gate. The cap is untouched: it counts slot FILES, so no number of keys can add a suite (SC-516, SC-517 hold).
+- [x] SC-625: hooks/TestSuiteRelease.hook.ts contains [workerIdFromHook, workerId] — release derives the identity the same way the guard did. Acquire and release must agree or the slot is unreleasable and leaks for the full 420s TTL, which is the wedge this hook exists to prevent.
+
+**What was broken to prove SC-621..SC-623 can fail**, run and counted rather
+than asserted, over `test/test-suite-lock.test.ts` +
+`test/unit/test-suite-guard.test.ts` + `test/test-suite-lock-key-mutation.test.ts`
+(125 tests):
+
+| Mutation | Red |
+|---|---|
+| `budgetKey` short-circuited to `return sessionId` — the pre-#239 key | 6 of 125 — both sibling-isolation cases, the hook-level sibling case, the mutant case's real half, the filename-safety case, and the concurrency case (whose refusal changes from "already running" to DIR-L29 once siblings share a budget) |
+| `budgetKey` renamed | 4 of 125 — every case in the mutation file, each throwing `could not build the mutant: the key signature appears 0 times` rather than mutating nothing |
+| a refusal made to append its own timestamp to the window | 2 of 125 — the #239 re-arming case and the pre-existing "a run refused for concurrency does not burn the session budget" |
+
+None is left in the tree; all three were run and reverted.
+- [x] SC-623: test/test-suite-lock-key-mutation.test.ts contains [MUTANT: counter key reverted to the bare session id] — the key change is proved by mutation, per .claude/rules/checks-must-be-able-to-fail.md: a copy of lib/test-suite-lock.ts with `budgetKey` short-circuited to `return sessionId` runs the same sibling scenario in its own process and is watched refusing the sibling the real source allows. Both halves assert the same positive control (worker A's third run is refused in each), so a mutant that failed to load cannot pass for a mutant that was caught.
 
 ## Implementation
 

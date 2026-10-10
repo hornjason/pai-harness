@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -15,6 +17,7 @@ import { join } from "path";
 
 import {
   acquireFullSuiteSlot,
+  budgetKey,
   evaluateFullSuiteRequest,
   heldSlots,
   isFullSuiteCommand,
@@ -951,5 +954,219 @@ describe("wouldAllowFullSuite — asking is not running (#103)", () => {
     expect(
       wouldAllowFullSuite("next", "bun test", live({ now: 500_000 })).allow,
     ).toBe(true);
+  });
+});
+
+/**
+ * Issue #239 — the rate budget was keyed on the session id alone.
+ *
+ * Concurrency and rate were correctly separated by #67-B: ONE SLOT IS ONE
+ * RUNNING SUITE, NOT ONE SESSION. The rolling window never got the same
+ * treatment. `counterPath` built `rungate-test-suite-count-${sessionId}`, and
+ * workflow sub-agents reach PreToolUse carrying the PARENT session's id, so a
+ * ship run that fans out to three implementers had three workers sharing two
+ * runs per 30 minutes — spent by whoever asked first.
+ *
+ * Measured on run wf_18abb197-f03: both runs went to sub-agents 235001 and
+ * 235003, and 235002 spent ~22 minutes in `sleep 580` loops waiting for the
+ * window to age out, twenty of those minutes after its siblings had finished.
+ *
+ * Raising maxRuns is the wrong fix — the budget exists because concurrent full
+ * suites exhausted the VM compressor and rebooted this machine on 2026-10-05.
+ * The budget is right; its key was wrong. SC-621, SC-622, SC-623.
+ */
+describe("#239: the full-suite rate budget is keyed on the worker, not the session", () => {
+  const MINUTE = 60_000;
+  const t0 = 1_700_000_000_000;
+  const WORKER_A = "/Users/jhorn/Projects/rungate/.claude/worktrees/wf_a";
+  const WORKER_B = "/Users/jhorn/Projects/rungate/.claude/worktrees/wf_b";
+
+  /** Injected clock and liveness answer, so nothing here depends on the real ones. */
+  const at = (ms: number, extra: Record<string, unknown> = {}) =>
+    opts({ now: t0 + ms, suitesRunning: () => true, ...extra });
+
+  const counters = (lockDir = dir) =>
+    readdirSync(lockDir).filter((f) => f.startsWith("rungate-test-suite-count-"));
+
+  /** Spend one worker's whole budget, releasing each slot the way the hook does. */
+  function spendBudget(workerId: string, firstAt = 0) {
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(firstAt, { workerId })).allow,
+    ).toBe(true);
+    releaseFullSuiteSlot("parent", opts({ workerId }));
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(firstAt + MINUTE, { workerId })).allow,
+    ).toBe(true);
+    releaseFullSuiteSlot("parent", opts({ workerId }));
+  }
+
+  test("AC-1: sibling workers sharing one session id spend separate rate budgets", () => {
+    spendBudget(WORKER_A);
+
+    // Worker A is out of budget, which is DIR-L29 doing its job.
+    const exhausted = evaluateFullSuiteRequest(
+      "parent",
+      "bun test",
+      at(2 * MINUTE, { workerId: WORKER_A }),
+    );
+    expect(exhausted.allow).toBe(false);
+    expect(exhausted.reason).toContain("DIR-L29");
+
+    // Worker B is a different sub-agent in a different worktree that happens to
+    // carry the same session id. Before #239 it was refused here, and slept.
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(2 * MINUTE, { workerId: WORKER_B })).allow,
+    ).toBe(true);
+
+    // Separate budgets are separate files, not one file with a bigger number.
+    expect(counters()).toHaveLength(2);
+  });
+
+  test("AC-1: one sibling worker's spending is invisible to the other's window", () => {
+    spendBudget(WORKER_A);
+
+    // B has its whole budget: two runs, and only the third is refused.
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(2 * MINUTE, { workerId: WORKER_B })).allow,
+    ).toBe(true);
+    releaseFullSuiteSlot("parent", opts({ workerId: WORKER_B }));
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(3 * MINUTE, { workerId: WORKER_B })).allow,
+    ).toBe(true);
+    releaseFullSuiteSlot("parent", opts({ workerId: WORKER_B }));
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(4 * MINUTE, { workerId: WORKER_B })).allow,
+    ).toBe(false);
+  });
+
+  test("a worker with no id behaves exactly as the session did before #239", () => {
+    // The hook can fail to learn a worker identity, and that must degrade to
+    // the old behaviour rather than to no budget at all.
+    expect(evaluateFullSuiteRequest("parent", "bun test", at(0)).allow).toBe(true);
+    releaseFullSuiteSlot("parent", opts());
+    expect(evaluateFullSuiteRequest("parent", "bun test", at(MINUTE)).allow).toBe(true);
+    releaseFullSuiteSlot("parent", opts());
+    expect(evaluateFullSuiteRequest("parent", "bun test", at(2 * MINUTE)).allow).toBe(false);
+  });
+
+  test("AC-2: distinct workers cannot exceed the concurrency capacity (SC-516, SC-517 intact)", () => {
+    // The cap counts SUITES. Per-worker budgets must not become a route to
+    // extra concurrency — that is the 3 x 5.4 GB condition that rebooted the
+    // machine, reachable again if the key change leaked into the slot count.
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(0, { workerId: WORKER_A })).allow,
+    ).toBe(true);
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(0, { workerId: WORKER_B })).allow,
+    ).toBe(true);
+
+    const third = evaluateFullSuiteRequest("parent", "bun test", at(0, { workerId: "/wt/c" }));
+    expect(third.allow).toBe(false);
+    expect(third.reason).toContain("already running");
+    expect(heldSlots(dir, t0)).toHaveLength(2);
+  });
+
+  test("AC-2: a worker releases exactly its own slot, not its sibling's", () => {
+    evaluateFullSuiteRequest("parent", "bun test", at(0, { workerId: WORKER_A }));
+    evaluateFullSuiteRequest("parent", "bun test", at(0, { workerId: WORKER_B }));
+    expect(heldSlots(dir, t0)).toHaveLength(2);
+
+    releaseFullSuiteSlot("parent", opts({ workerId: WORKER_A }));
+    expect(heldSlots(dir, t0)).toHaveLength(1);
+
+    // Acquire and release have to agree on the identity, or the surviving slot
+    // is unreleasable and leaks for a full TTL.
+    releaseFullSuiteSlot("parent", opts({ workerId: WORKER_B }));
+    expect(heldSlots(dir, t0)).toHaveLength(0);
+  });
+
+  test("AC-3: a refused run neither consumes nor re-arms the budget window", () => {
+    spendBudget(WORKER_A);
+    const spent = JSON.parse(readFileSync(join(dir, counters()[0]!), "utf-8")) as {
+      runs: number[];
+    };
+    expect(spent.runs).toEqual([t0, t0 + MINUTE]);
+
+    // Three refusals, spread across the window. Every one must be free.
+    for (const minute of [2, 10, 29]) {
+      const refused = evaluateFullSuiteRequest(
+        "parent",
+        "bun test",
+        at(minute * MINUTE, { workerId: WORKER_A }),
+      );
+      expect(refused.allow).toBe(false);
+      expect(refused.reason).toContain("DIR-L29");
+    }
+
+    // The file still holds the two runs that actually happened. A refusal that
+    // appended its own timestamp, or rewrote the oldest one, would push the
+    // window forward on every retry — a lockout that an agent polling for a
+    // free slot can never wait out.
+    const after = JSON.parse(readFileSync(join(dir, counters()[0]!), "utf-8")) as {
+      runs: number[];
+    };
+    expect(after.runs).toEqual([t0, t0 + MINUTE]);
+
+    // So the budget frees up 30 minutes after the FIRST run, not 30 minutes
+    // after the last time somebody asked.
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(29 * MINUTE, { workerId: WORKER_A })).allow,
+    ).toBe(false);
+    expect(
+      evaluateFullSuiteRequest("parent", "bun test", at(30 * MINUTE + 1, { workerId: WORKER_A }))
+        .allow,
+    ).toBe(true);
+  });
+
+  test("AC-6: the worker key is one filename-safe segment", () => {
+    // A worker identity is a working directory, so it arrives full of
+    // separators, and `join(lockDir, 'rungate-test-suite-count-' + cwd)` is a
+    // path the caller chose. Two failure modes, both silent: the write lands
+    // outside the lock directory, or it lands in a directory that does not
+    // exist, throws, is swallowed as best-effort, and the budget stops counting
+    // while every message still looks normal.
+    for (const hostile of ["/../../escaped", "../../etc/passwd", "a/b/c", "..", "with space", ""]) {
+      const key = budgetKey("parent", hostile);
+      expect(key).not.toContain("/");
+      expect(key).not.toContain("\\");
+      expect(key.split("-")).not.toContain("..");
+      expect(key).toMatch(/^[A-Za-z0-9_-]+$/);
+    }
+
+    // A hostile session id is the same problem one argument over.
+    expect(budgetKey("../../escaped", WORKER_A)).toMatch(/^[A-Za-z0-9_-]+$/);
+
+    // Distinct workers must still get distinct keys after sanitising, or the
+    // fix collapses back into one shared budget for every sibling.
+    expect(budgetKey("parent", WORKER_A)).not.toBe(budgetKey("parent", WORKER_B));
+    expect(budgetKey("parent", WORKER_A)).toBe(budgetKey("parent", WORKER_A));
+    expect(budgetKey("parent", WORKER_A)).not.toBe(budgetKey("other", WORKER_A));
+  });
+
+  test("AC-6: a traversing worker id cannot steer the counter file out of the lock directory", () => {
+    const lockDir = join(dir, "lock");
+    mkdirSync(lockDir, { recursive: true });
+    // `join(lockDir, 'rungate-test-suite-count-' + '/../../escaped')` resolves
+    // to a sibling of lockDir, which exists — so an unsanitised key really does
+    // write there rather than merely failing.
+    const escaped = join(dir, "escaped");
+
+    const decision = evaluateFullSuiteRequest("parent", "bun test", {
+      lockDir,
+      now: t0,
+      suitesRunning: () => true,
+      workerId: "/../../escaped",
+    });
+
+    expect(decision.allow).toBe(true);
+    expect(existsSync(escaped)).toBe(false);
+    expect(counters(lockDir)).toHaveLength(1);
+    // And the budget is genuinely being counted for that worker, not lost to a
+    // swallowed ENOENT.
+    expect(
+      (JSON.parse(readFileSync(join(lockDir, counters(lockDir)[0]!), "utf-8")) as {
+        runs: number[];
+      }).runs,
+    ).toEqual([t0]);
   });
 });

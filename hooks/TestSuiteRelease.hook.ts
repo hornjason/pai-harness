@@ -12,7 +12,11 @@
  */
 
 import { parseHookInput } from './lib/utils';
-import { isFullSuiteCommand, releaseFullSuiteSlot } from '../lib/test-suite-lock';
+import {
+  isFullSuiteCommand,
+  releaseFullSuiteSlot,
+  workerIdFromHook,
+} from '../lib/test-suite-lock';
 
 async function main() {
   const input = await parseHookInput();
@@ -28,7 +32,11 @@ async function main() {
 
   try {
     if (!isFullSuiteCommand(command)) process.exit(0);
-    releaseFullSuiteSlot(input.session_id || 'default');
+    // Derived exactly as TestSuiteGuard derived it (#239): the slot is recorded
+    // under the worker, and a release that disagrees frees nothing — the slot
+    // would then leak for the full TTL, which is what this hook exists to avoid.
+    const workerId = workerIdFromHook(input);
+    releaseFullSuiteSlot(input.session_id || 'default', { workerId });
   } catch {
     // A failed release is recovered by the TTL; never surface it as a tool error.
     process.exit(0);

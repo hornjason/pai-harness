@@ -9,6 +9,15 @@ export interface HookInput {
   tool_input?: { command?: string; name?: string; subagent_type?: string; prompt?: string; [k: string]: unknown };
   tool_response?: { output?: string; content?: string; [k: string]: unknown } | string;
   session_id?: string;
+  /**
+   * The two fields that tell sibling workers apart (#239). `session_id` does
+   * not: a sub-agent's Bash call arrives under the PARENT session's id, so the
+   * full-suite rate budget was shared by every agent in a fan-out. Both were
+   * already present in the payload and neither was typed, which is why nothing
+   * could read them. See `workerIdFromHook` in lib/test-suite-lock.ts.
+   */
+  cwd?: string;
+  transcript_path?: string;
   [k: string]: unknown;
 }
 
