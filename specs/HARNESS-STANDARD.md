@@ -1032,6 +1032,46 @@ command.
 - [x] SC-632: test/ship-failure-report.test.ts contains [the run that shipped this bug names both failed gates, a gate that failed and then healed to PASS is not reported as failed] — the ledger is EXECUTED over the real run's recorded failures, and a healed gate is not reported, because a report with false entries in it is a report nobody reads twice
 - [x] SC-633: workflows/ship.js contains [PR-READINESS-START, SHIP_STATUS_READY_THRESHOLD, github-op.ts pr-ready] — the PR is opened as a draft and undrafted only at the terminal, and the readiness decision is its own named block rather than a condition inside the undraft step
 - [x] SC-634: test/ship-pr-draft.test.ts contains [pr-ready runs before the ship gate, every terminal status the run can report is ranked by this decision, an unrankable threshold] — position is asserted, not just presence, and both fail-open directions are ruled out: an unranked status and an unrankable threshold each leave the draft alone
+- [x] SC-635: lib/github.ts contains [convertPullRequestToDraft, it cannot be converted to a draft] — an upsert that is asked for a draft converts an already-ready PR back, because protecting the first run on a branch and nothing after it is no protection in a workflow that re-enters its own phases
+- [x] SC-636: workflows/ship.js contains [function observedDraft(, is NOT a draft] — the recorded draft state is what the PR step reported, three-valued so "nobody looked" is distinguishable from "it is mergeable", and the dangerous combination is logged at the moment it becomes true
+
+**The first version of the draft fix was wrong, and the way it was wrong is
+the point.** `upsertPR` passed `draft` only to the create path, with a comment
+justifying it: "a PR a human already marked ready is theirs." That reasoning
+does not survive contact with how this harness runs. A re-ship pushes new
+commits to the SAME branch, so run A undrafts #N, run B updates it and then
+refuses, and #N is mergeable carrying run B's unproven code — and whatever the
+human approved is not what is on the branch any more. Re-runs are not the
+exception here: #155, #164, #169 and #171 all exist because this workflow
+re-enters its own phases.
+
+The second half is worse and smaller. `shipFailed` recorded
+`pr: { draft: true }` on the reasoning that the undraft step had not run. That
+is **a claim about a state it never looked at**, false exactly when it matters,
+in the artefact a reader consults to find out whether the refusal left anything
+behind. It is now three-valued and observed: `false` is the dangerous reading
+and has to be distinguishable from "the step did not say", which a boolean
+cannot do.
+
+Found by security review of the PR, before merge, not by the tests written for
+it.
+
+| Mutation | Red |
+|---|---|
+| `upsertPR` stops converting an already-ready PR back to draft | 2 |
+| `observedDraft` returns `true` instead of reading the step's report | 2 |
+| the convert fires unconditionally, even on an already-draft PR | 1 |
+
+Measured over `test/ship-failure-report.test.ts` + `test/ship-pr-draft.test.ts`
++ `test/github-op.test.ts` + `test/github-client.test.ts` (130 tests); none
+left in the tree.
+
+The third one is recorded for a second reason: **the first attempt at it
+reported green because the `perl` substitution silently matched nothing.** A
+mutation harness that no-ops when its target moves is indistinguishable from a
+mutation the code survived, which is this rule's own subject turned on the
+tooling used to check it. Re-run with a substitution that throws when the
+target is absent, it is 1 red.
 
 What was broken to prove it, run and counted rather than asserted, over
 `test/ship-failure-report.test.ts` + `test/ship-pr-draft.test.ts` +

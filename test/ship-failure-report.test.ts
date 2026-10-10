@@ -65,13 +65,15 @@ interface Result {
   reason: string;
   immediateReason: string | null;
   failures: Entry[];
-  pr: { number: number | null; readiness: string; draft: boolean };
+  pr: { number: number | null; readiness: string; reason: string | null; draft: boolean | null };
 }
 interface Ledger {
   recordRefusal: (kind: unknown, phase: unknown, detail: unknown) => Entry;
   recordGateRefusal: (phase: unknown, gate: unknown, result: unknown) => Entry[];
   /** The real `shipFailed`, which records the immediate reason and then summarises. */
   shipFailed: (phase: unknown, immediate?: unknown) => Result;
+  /** Plant what the PR step reported, the way ship.js's Ship phase does. */
+  setOpenedPr: (pr: unknown) => void;
 }
 
 /**
@@ -83,15 +85,17 @@ interface Ledger {
  * instance per test, because the ledger is stateful and a shared one would
  * make every assertion depend on execution order.
  */
-function loadLedger(block: string): Ledger {
+function loadLedger(block: string, logs: string[] = []): Ledger {
   // The three names ship.js reads from module scope, supplied so the REAL
   // shipFailed can be returned rather than a reimplementation of its first two
   // lines — the ordering bug lives in exactly those two lines.
   const prelude = "var ISSUE = 252, SLUG = 'pai-harness-252', WORK_DIR = '/tmp/work';\n";
   const out = new Function(
-    `${prelude}${block}\nreturn { recordRefusal, recordGateRefusal, shipFailed }`,
-  )();
-  for (const name of ["recordRefusal", "recordGateRefusal", "shipFailed"]) {
+    "__log__",
+    `var log = __log__;\n${prelude}${block}\n` +
+      "return { recordRefusal, recordGateRefusal, shipFailed, setOpenedPr: (p) => { openedPr = p } }",
+  )((m: unknown) => logs.push(String(m)));
+  for (const name of ["recordRefusal", "recordGateRefusal", "shipFailed", "setOpenedPr"]) {
     if (typeof (out as any)[name] !== "function") {
       throw new Error(`the FAILURE-LEDGER block does not define ${name}`);
     }
@@ -280,14 +284,60 @@ describe("#252: every SHIP_FAILED return goes through the helper", () => {
     expect(calls.length, "a refusal path went missing in the conversion").toBeGreaterThanOrEqual(14);
   });
 
-  test("a failed run records that its PR was left a draft", () => {
-    // The draft criterion's other half: SHIP_FAILED never reaches the undraft
-    // call, so the invariant holds by construction — but which of "left a
-    // draft" and "never opened" happened still has to be written down.
-    const fnAt = shipSource.indexOf("function shipFailed(");
-    const body = shipSource.slice(fnAt, fnAt + 1600);
-    expect(body).toContain("LEAVE_DRAFT");
-    expect(body).toContain("NO_PR");
+  test("the recorded draft state is observed, never inferred (#252 follow-up)", () => {
+    // The first version wrote `draft: true` on every refusal, reasoning that
+    // the undraft step had not run. That is a claim about a state it never
+    // looked at, and `upsertPR` can be updating a PR an EARLIER run already
+    // marked ready — so it was false exactly when it mattered. Three-valued
+    // now: `false` is the dangerous reading and has to be distinguishable
+    // from "nobody looked", which a boolean cannot do.
+    const cases: Array<[string, any, boolean | null]> = [
+      ["the step observed a draft", { ok: true, prNumber: 9, prDraft: true }, true],
+      ["the step observed a ready PR", { ok: true, prNumber: 9, prDraft: false }, false],
+      ["the step did not report it", { ok: true, prNumber: 9 }, null],
+      ["the step reported a non-boolean", { ok: true, prNumber: 9, prDraft: "yes" }, null],
+    ];
+    for (const [label, pr, expected] of cases) {
+      const l = loadLedger(BLOCK);
+      l.setOpenedPr(pr);
+      const out = l.shipFailed("Ship", "something refused");
+      expect(out.pr.draft, `${label}: reported ${JSON.stringify(out.pr.draft)}`).toBe(expected as any);
+      expect(out.pr.number).toBe(9);
+      expect(out.pr.readiness).toBe("LEAVE_DRAFT");
+    }
+  });
+
+  test("a refusal with a mergeable PR says so out loud", () => {
+    // The combination nobody should have to infer from a JSON field: this run
+    // will not ship and there is a mergeable PR on the branch.
+    const logs: string[] = [];
+    const l = loadLedger(BLOCK, logs);
+    l.setOpenedPr({ ok: true, prNumber: 9, prDraft: false });
+    l.shipFailed("Ship", "something refused");
+    expect(logs.join("\n"), "a refusal left a mergeable PR and logged nothing").toMatch(/NOT a draft/);
+  });
+
+  test("a refusal whose PR is a draft does not cry wolf", () => {
+    const logs: string[] = [];
+    const l = loadLedger(BLOCK, logs);
+    l.setOpenedPr({ ok: true, prNumber: 9, prDraft: true });
+    l.shipFailed("Ship", "something refused");
+    expect(logs.join("\n")).not.toMatch(/NOT a draft/);
+  });
+
+  test("a run that opened no PR says so, rather than claiming a draft", () => {
+    // Executed rather than grepped. The source-text version of this read a
+    // fixed window of characters after `function shipFailed(` and broke the
+    // moment a comment grew — a check whose view of the input can silently
+    // shrink is the second shape in checks-must-be-able-to-fail.md.
+    const l = loadLedger(BLOCK);
+    const out = l.shipFailed("Ship", "something refused");
+    expect(out.pr).toEqual({
+      number: null,
+      readiness: "NO_PR",
+      reason: "no PR was opened or updated by this run",
+      draft: null,
+    });
   });
 });
 

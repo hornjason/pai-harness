@@ -123,7 +123,7 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     ]);
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ number: 11, html_url: "https://x/pull/11", action: "created" });
+    expect(JSON.parse(stdout)).toEqual({ number: 11, html_url: "https://x/pull/11", action: "created", draft: false });
     // Owner-qualified head is the documented filter form. Without it the list
     // is unfiltered, the match is done client-side, and it misses as soon as
     // the repo has more than one page of open PRs.
@@ -165,6 +165,91 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     expect(captured[1].body).toMatchObject({ draft: false });
   });
 
+  test("pr-upsert --draft drags an already-ready PR back into draft (#252)", async () => {
+    // The gap the first attempt left, found by security review before merge.
+    // `upsertPR` passed `draft` only to the create path, so the protection
+    // covered the FIRST run on a branch and nothing after it — and a re-run on
+    // the same branch is this harness's common case (#155, #164, #169, #171 all
+    // exist because the workflow re-enters its own phases). Run A undrafts #N,
+    // run B pushes new commits to the same branch and refuses, and #N is
+    // mergeable carrying unproven code.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+    stub("POST", "/graphql", { data: { convertPullRequestToDraft: { clientMutationId: null } } });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ number: 9, action: "updated", draft: true });
+    const graphql = captured.find(c => c.path === "/graphql");
+    expect(graphql, "an already-ready PR was updated and left mergeable").toBeDefined();
+    expect(graphql!.body.query).toContain("convertPullRequestToDraft");
+    expect(graphql!.body.variables).toEqual({ id: "PR_node_9" });
+  });
+
+  test("pr-upsert --draft leaves an already-draft PR alone", async () => {
+    // Positive control: converting unconditionally would satisfy the case
+    // above while issuing a pointless mutation on every single re-run, and a
+    // test that cannot tell those apart is not testing the condition.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: true, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ draft: true });
+    expect(captured.some(c => c.path === "/graphql")).toBe(false);
+  });
+
+  test("pr-upsert without --draft never converts anything", async () => {
+    // The other direction, and the one that would quietly change what every
+    // non-ship caller produces.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ draft: false });
+    expect(captured.some(c => c.path === "/graphql")).toBe(false);
+  });
+
+  test("a PR the API reports without a node_id fails rather than reporting it drafted", async () => {
+    // The mutation is keyed on the node id. Reporting `draft: true` with
+    // nothing sent is the fail-open this whole area keeps producing.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, stderr, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("node_id");
+  });
+
   test("pr-upsert updates the existing PR instead of failing a second time", async () => {
     reset();
     stub("GET", "/repos/owner/name/pulls", [{ number: 9, html_url: "https://x/pull/9", head: { ref: "fix-137" } }]);
@@ -176,7 +261,7 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     ]);
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ number: 9, html_url: "https://x/pull/9", action: "updated" });
+    expect(JSON.parse(stdout)).toEqual({ number: 9, html_url: "https://x/pull/9", action: "updated", draft: false });
     expect(captured.map(c => `${c.method} ${c.path}`)).toEqual([
       "GET /repos/owner/name/pulls",
       "PATCH /repos/owner/name/pulls/9",

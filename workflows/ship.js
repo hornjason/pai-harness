@@ -750,8 +750,26 @@ function failureSummary(entries, immediateReason) {
  * are not the same thing: the refusal belongs to the phase whose check
  * refused, and several of these sites refuse on behalf of an earlier one.
  */
+/**
+ * What the PR step last reported about the PR's draft state, or null.
+ *
+ * Three-valued on purpose. `false` on a refusal is the dangerous reading —
+ * a run that would not ship, with a mergeable PR on the branch — and it has
+ * to be distinguishable from "nobody looked", which a boolean cannot do.
+ */
+function observedDraft(pr) {
+  if (!pr || pr.ok !== true) return null
+  return typeof pr.prDraft === 'boolean' ? pr.prDraft : null
+}
+
 function shipFailed(phaseName, immediateReason, extra = {}) {
   if (immediateReason) recordRefusal('REFUSAL', phaseName, immediateReason)
+  // The one combination nobody should have to infer from a JSON field: this
+  // run will not ship and there is a mergeable PR on the branch. Said out
+  // loud, at the moment it becomes true.
+  if (observedDraft(openedPr) === false) {
+    log(`WARN: this run refused and PR #${openedPr.prNumber} is NOT a draft — it is mergeable and carries code this run did not stand behind`)
+  }
   const summary = failureSummary(refusals, immediateReason)
   const number = openedPr && openedPr.ok === true ? openedPr.prNumber : undefined
   const hasPr = typeof number === 'number' && Number.isInteger(number) && number > 0
@@ -763,12 +781,21 @@ function shipFailed(phaseName, immediateReason, extra = {}) {
     // fields is itself the thing #252 is about.
     immediateReason: immediateReason || null,
     failures: summary.failures,
-    // The PR was opened as a draft and this path never reaches the undraft
-    // step, so it stays one. Recorded because "left a draft" and "never
-    // opened" are indistinguishable from outside (SC-3).
+    // This path never reaches the undraft step, so the PR is whatever the PR
+    // step last observed it to be. OBSERVED, not inferred: the first version
+    // wrote `draft: true` here on the reasoning that the undraft step had not
+    // run, and that is a claim about a state it never looked at — false
+    // exactly when it matters, because `upsertPR` can be updating a PR an
+    // earlier run already marked ready. `null` is "the step did not say",
+    // which is a reading a reader can act on; a guessed `true` is not.
     pr: hasPr
-      ? { number, readiness: 'LEAVE_DRAFT', reason: `the run refused in the ${phaseName} phase`, draft: true }
-      : { number: null, readiness: 'NO_PR', reason: 'no PR was opened or updated by this run', draft: true },
+      ? {
+          number,
+          readiness: 'LEAVE_DRAFT',
+          reason: `the run refused in the ${phaseName} phase`,
+          draft: observedDraft(openedPr),
+        }
+      : { number: null, readiness: 'NO_PR', reason: 'no PR was opened or updated by this run', draft: null },
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
     ...extra,
   }
@@ -3850,16 +3877,24 @@ The title is composed by the script from the issue itself. Do NOT pass --title,
 and do NOT paste the issue title into the command — it is text someone else
 wrote, and a shell would read the quotes in it.
 
-The last command prints one JSON object: {"number":N,"html_url":"...","action":"created|updated"}.
-Set prNumber and prUrl from it and ok to true ONLY if it exited zero. On any
-non-zero exit, set ok to false and put the command's stderr in detail — do NOT
-retry with gh, and do NOT report success.
+The last command prints one JSON object:
+{"number":N,"html_url":"...","action":"created|updated","draft":true|false}.
+Set prNumber, prUrl and prDraft from it, and ok to true ONLY if it exited zero.
+On any non-zero exit, set ok to false and put the command's stderr in detail —
+do NOT retry with gh, and do NOT report success.
+
+Report prDraft from what the command PRINTED. Do not assume it is true because
+--draft was passed: the run records this as the state of the artefact, and a
+field it asked for is not a field it observed. Omit prDraft entirely if the
+output did not carry it — "unknown" is a reading this workflow can act on and
+a guessed true is not.
   `, { label: 'record-env-and-pr', phase: 'Ship', schema: {
     type: 'object',
     properties: {
       ok: { type: 'boolean' },
       prNumber: { type: 'number' },
       prUrl: { type: 'string' },
+      prDraft: { type: 'boolean' },
       detail: { type: 'string' },
     },
     required: ['ok'],
@@ -4268,7 +4303,10 @@ return {
     number: prState.number,
     readiness: prState.action,
     reason: prState.reason,
-    draft: !prMarkedReady,
+    // After a successful undraft this is false by measurement — the pr-ready
+    // step reported it. Otherwise it is whatever the PR step observed, which
+    // may be null. Never inferred from "the undraft did not run".
+    draft: prMarkedReady ? false : observedDraft(prStep),
   },
   regressions: regressionCount,
   workDir: WORK_DIR,
