@@ -3,7 +3,7 @@
     "COMP-2": {
       "description": "Full test suite run limit",
       "directives": ["DIR-L29"],
-      "reinforcement": "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
+      "reinforcement": "Run the full suite (bun test) sparingly. A per-worker rate limit enforces this mechanically and will refuse the run; do not plan around a specific number. Use targeted tests for iteration.",
       "tiers": {
         "1": { "action": "reinforce-brief" },
         "3": { "action": "deploy-hook", "hook": "TestSuiteGuard" }
