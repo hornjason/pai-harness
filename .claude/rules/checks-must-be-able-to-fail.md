@@ -226,63 +226,40 @@ None is left in the tree; all were run and reverted. The three mutations
 recorded above for SC-618..620 were also re-run against this tree and reproduce
 their counts exactly — 3, 4 and 3 red of 29.
 
-## When the thing being checked is a document
+### When the guard is a spawn, not a comparison (#171)
 
-### The re-review record and the check that guards it (#171)
+#169's refusal was correct and incomplete: it stopped a run whose branch had
+moved past the reviewed commit, and nothing looked at the new tip. #171 makes
+the run re-review instead, which means the thing that must be able to fail is
+no longer a comparison but a SPAWN — and a spawn is the easiest thing in a
+workflow to prove present and never prove load-bearing. "The decision block
+called a function" is satisfied by a function that does nothing.
 
-A spec section is the easiest place in a repository to write a check that
-cannot fail. Grepping a document for a phrase the same commit just added is a
-test of the author's spelling. The #171 record — the decision to re-review the
-tip after a remediation round instead of refusing the run — is guarded by
-`test/harness-standard-security.test.ts`, and three properties are what make it
-a check rather than a restatement. Each is asserted, not left as a convention:
+So the binding is the one call that re-reviews, declared as a literal in
+`test/security-verdict-blocks.test.ts` (`REREVIEW_SPAWN`) and removed from a
+copy of `workflows/ship.js`'s decision block. The assertion is not merely "the
+mutant goes red" but something narrower: **the mutant must REFUSE.** A mutation
+that made the run ship anyway would mean the fall-through never depended on the
+review at all, which is this whole file's subject.
 
-- **The criteria are read out of the spec, not listed in the test.** A
-  hand-maintained list of four ids is satisfied by a section that lists five,
-  which is the vacuous shape from the top of this file wearing a registry's
-  clothes. `rereviewCriteria` parses the section and the ids are compared with
-  `EXPECTED_REREVIEW_SCS` in both directions, so an SC added to the spec with
-  nothing behind it fails, and an assertion that outlived its SC fails too.
-- **The count is asserted before anything iterates.** The per-criterion
-  assertions are generated in a loop over the parse. A parser that returns
-  nothing generates no tests at all, and a file that runs zero of its cases
-  reports the same green as a file that passes all of them.
-- **A criterion naming the spec cannot be its own evidence.** Two of these four
-  say `specs/HARNESS-STANDARD.md contains [...]`, and the SC line itself
-  contains those tokens. The search removes the SC line before looking, so the
-  tokens have to be earned by the prose — the same self-reference trap an
-  exemption list falls into when naming a file counts as referencing it.
-- **The phrasing being retired lives in the test.** The acceptance condition is
-  that #169's open-gap sentences are *gone* from the spec, so the test holds
-  them as banned literals. Holding them in the spec, even as a quotation of
-  what was removed, would be reintroducing them — prose about a banned literal
-  is the literal.
-
-What was broken to prove it, run and counted rather than asserted, over
-`test/harness-standard-security.test.ts` (17 tests):
+What was broken to prove it, run and counted rather than asserted:
 
 | Mutation | Red |
 |---|---|
-| `rereviewCriteria` short-circuited to `return []` | 7 of 17 — the count, the id registry, the SC-621 numbering, and all four per-criterion cases, each reporting "not listed" |
-| `SC-625` planted in the section with no registry entry | 2 of 17 — the count and the both-directions comparison; the per-criterion loop still passes, which is why the registry exists |
-| the #169 open-gap sentence restored to the spec | 1 of 17 — the reintroduction case, which is the whole acceptance condition |
-| the token `ran out of attempts` deleted from the spec prose | 2 of 17 — the SC-622 binding and the three-reasons case |
+| the re-review spawn short-circuited to `undefined` in the real source | 11 of 201 in `test/security-verdict-blocks.test.ts` — including the remediate-then-ship case, which then refuses rather than shipping |
+| the spawn renamed | 13 of 200 — every mutant-building case throws `could not build the mutant: the re-review spawn appears 0 times` |
+| `--base` dropped from ship.js's inlined `rookScopeCommand` | 2 of 200 — the re-review reads the whole branch again, and the parity matrix catches the divergence from the library |
+| `--base` dropped from `lib/security-verdict.ts` instead | 2 of 200 — the same pair from the other side, which is what a parity matrix is for |
+| exhaustion collapsed into the staleness refusal (`const spent = false`) | 4 of 200 — the two refusals stop being distinguishable and the artefact stops recording the round count |
+| the loop stops writing the re-reviewed commit back to `testedSha` | 5 of 201 — the Ship-round check would then measure against a review two commits old, and the loop would re-spend its whole budget reviewing the same tip |
+| the rook slot pointed back at the unrefined `AgentSchema` | 5 of 33 in `test/record-security-verdict.test.ts` — `refusal` and `rounds` are stripped, and a `PASS` carrying the refusal is accepted |
+| `failureList`'s `EXHAUSTED` early return removed | 2 of 33 — an exhausted record starts carrying findings, so it reads as a review that found something |
+| `rereviewCriteria` short-circuited to `return []` | 7 of 19 in `test/harness-standard-security.test.ts` — the count, both id comparisons, the numbering, and all four per-criterion cases |
+| `SC-625` planted in the section with no registry entry | 2 of 19 — the count and the both-directions comparison; the per-criterion loop still passes, which is why the registry exists |
+| the phrase naming spent attempts deleted from the spec prose | 2 of 19 — and only because the search removes SC lines first: the phrase survives inside the SC line that demands it, so a whole-section search would have gone green over a spec that no longer explained itself |
 
-The last row caught a real defect in this check twice rather than confirming
-it, and both times the defect was the same self-reference wearing a different
-coat.
-
-Run first, it turned **1** test red, not 2: the three-reasons case searched the
-whole section, and the phrase it looked for survived inside the SC line that
-demands it. The slice now stops at the first bullet.
-
-Re-run after that fix, it turned 1 red again — a different one. The mutation
-table in the spec quotes the phrase it reports deleting, so the SC-622 binding
-found it in the table and passed over a spec whose prose no longer said it. The
-inverse of "prose about a banned literal is the literal", and the same trap an
-exemption list falls into by naming the files it exempts. The row now describes
-the phrase instead of quoting it, and the mutation turns 2 red. That is the
-only reason these counts are worth anything: they were measured, they
-disagreed, and the check changed both times.
-
-None of the four mutations is left in the tree; all were run and reverted.
+That last row is the self-reference trap, met from the other direction and
+caught by the guard it describes: an SC line that names its own tokens is not
+evidence for them. None of the eleven mutations is left in the tree; all were
+run and reverted, and the two counted over 201 tests were re-measured after the
+write-back case was added.

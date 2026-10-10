@@ -114,7 +114,7 @@ closes.
   "spawned": true,
   "verdict": "EXHAUSTED",
   "refusal": "SECURITY_REREVIEW_EXHAUSTED",
-  "rounds": 3,
+  "rounds": 2,
   "testedSha": "3192a75...", "testedPaths": ["gates/run-gate.ts"]
 } } }
 ```

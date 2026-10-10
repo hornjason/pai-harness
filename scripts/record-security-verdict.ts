@@ -45,7 +45,7 @@ export { SECURITY_REREVIEW_EXHAUSTED };
 
 const OPTIONS = new Set(["state", "verdict", "spawned", "findings", "scope", "rounds"]);
 
-/** The verdicts this script will write. EXHAUSTED is #171's; see below. */
+/** The verdicts this script will write. EXHAUSTED is #171's; see above. */
 const VERDICTS = new Set(["PASS", "FAIL", "SKIP", "EXHAUSTED"]);
 
 function parseArgs(argv: string[]): Record<string, string> {

@@ -213,178 +213,179 @@ describe("failureList / buildRookRecord", () => {
   });
 });
 
-/**
- * Running out of re-review attempts is not a pass (#171, SC-3).
+/* ------------------------------------------------------------------------ *
+ * #171 — the third outcome: the cycle ran out of attempts
  *
- * The remediate → re-review → remediate loop is capped. When the cap is spent
- * the run has code nobody reviewed, which is the one thing the #129 gate exists
- * to stop — so "we ran out of attempts" must not serialise to anything a reader
- * can mistake for "rook looked and found nothing", nor for "rook found
- * something". Three outcomes, three distinguishable records.
- *
- * Everything below is recorded by the real script and read back off disk. The
- * records are written with the SAME scope so the only thing that can tell them
- * apart is the verdict the script derived.
- */
-describe("the exhausted re-review state is recorded as itself", () => {
-  /** One scope report, shared by all three recordings. */
-  function scopeFile() {
-    const p = join(DIR, "scope.json");
-    writeFileSync(p, JSON.stringify({ sha: "e".repeat(40), files: ["lib/a.ts", "gates/b.ts"] }));
-    return p;
-  }
+ * A remediation committed after the review leaves the run holding a verdict
+ * for code it no longer ships (#169). #171 re-reviews the new tip, and that
+ * loop is capped. Spending the cap is NEITHER of the other two outcomes: the
+ * run ends holding code nobody reviewed, which is the exact thing the #129
+ * gate exists to stop, so it may not serialise to anything a reader can
+ * mistake for "rook looked and found nothing" or for "rook found something".
+ * ------------------------------------------------------------------------ */
 
-  function freshState(name: string) {
-    const p = join(DIR, name);
-    writeFileSync(p, JSON.stringify(baseState(), null, 2));
-    return p;
-  }
-
-  function rookIn(statePath: string) {
-    return JSON.parse(readFileSync(statePath, "utf-8")).agents.rook;
-  }
-
-  /** Record all three outcomes through the real script. Returns the records. */
-  function recordAllThree() {
-    const scope = scopeFile();
-    const findings = join(DIR, "findings.json");
-    writeFileSync(findings, JSON.stringify({ failures: ["unvalidated path join in lib/github.ts"] }));
-
-    const pass = freshState("pass.json");
-    const fail = freshState("fail.json");
-    const exhausted = freshState("exhausted.json");
-
-    const rp = run(["--state", pass, "--verdict", "PASS", "--spawned", "true", "--scope", scope]);
-    expect(rp.code, rp.err).toBe(0);
-    const rf = run([
-      "--state", fail, "--verdict", "FAIL", "--spawned", "true",
-      "--findings", findings, "--scope", scope,
+describe("#171: an exhausted re-review cycle is its own recorded outcome", () => {
+  test("EXHAUSTED is written with its named refusal and the round count", () => {
+    const r = run([
+      "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2",
     ]);
-    expect(rf.code, rf.err).toBe(0);
-    const re = run([
-      "--state", exhausted, "--verdict", "EXHAUSTED", "--spawned", "true",
-      "--rounds", "3", "--scope", scope,
-    ]);
-    expect(re.code, re.err).toBe(0);
-
-    return {
-      paths: { pass, fail, exhausted },
-      pass: rookIn(pass),
-      fail: rookIn(fail),
-      exhausted: rookIn(exhausted),
-    };
-  }
-
-  test("an exhausted record names the refusal and the round count", () => {
-    const { exhausted } = recordAllThree();
-    expect(exhausted.verdict).toBe("EXHAUSTED");
-    expect(exhausted.refusal).toBe(SECURITY_REREVIEW_EXHAUSTED);
-    expect(exhausted.rounds).toBe(3);
-    expect(exhausted.testedSha).toBe("e".repeat(40));
-    expect(exhausted.testedPaths).toEqual(["lib/a.ts", "gates/b.ts"]);
-  });
-
-  test("an exhausted record carries no findings, so it cannot read as a review that found something", () => {
-    const { exhausted, fail } = recordAllThree();
-    // The FAIL is the control: findings are how "rook found something" is
-    // written down, so an exhausted record carrying them would be that.
-    expect(fail.failures).toEqual(["unvalidated path join in lib/github.ts"]);
-    expect(exhausted.failures).toBeUndefined();
-  });
-
-  test("no two of the three recorded states serialise to the same object", () => {
-    const { pass, fail, exhausted } = recordAllThree();
-    const serialised = [pass, fail, exhausted].map(r => JSON.stringify(r));
-    expect(new Set(serialised).size).toBe(3);
-  });
-
-  test("the schema preserves every field the exhausted record writes", () => {
-    // AC-2. Nested objects in WorkflowStateSchema STRIP undeclared keys, and
-    // writeWorkflowState writes the caller's object rather than the parse
-    // result — so an undeclared field reaches disk and then vanishes the next
-    // time anything parses the file. Field-for-field, not key-count.
-    const { paths } = recordAllThree();
-    const onDisk = JSON.parse(readFileSync(paths.exhausted, "utf-8"));
-    expect(Object.keys(onDisk.agents.rook).sort()).toEqual(
-      ["refusal", "rounds", "spawned", "testedPaths", "testedSha", "verdict"],
-    );
-
-    const parsed = WorkflowStateSchema.parse(onDisk);
-    expect(parsed.agents!.rook).toEqual(onDisk.agents.rook);
-  });
-
-  test("only the clean PASS satisfies the predicate a clean review satisfies", () => {
-    // AC-4, executed rather than string-compared: the three records are read
-    // back off disk and put through the same predicate, which is the reader
-    // side of ship.js's `securityVerdict.verdict !== 'PASS'` block.
-    const { pass, fail, exhausted } = recordAllThree();
-    expect(securityReviewIsClean(pass)).toBe(true);
-    expect(securityReviewIsClean(fail)).toBe(false);
-    expect(securityReviewIsClean(exhausted)).toBe(false);
-  });
-
-  test("the predicate reads an absent or unparsed record as not clean", () => {
-    for (const v of [undefined, null, {}, "PASS", { verdict: "PASS", failures: ["a finding"] }]) {
-      expect(securityReviewIsClean(v), JSON.stringify(v ?? null)).toBe(false);
-    }
-  });
-
-  test("the changelog says the cycle was exhausted and after how many rounds", () => {
-    const r = run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2"]);
     expect(r.code, r.err).toBe(0);
-    const entry = readState().changelog.find((c: { event: string }) => c.event === "security-verdict");
-    expect(entry.detail).toMatch(/EXHAUSTED/);
-    expect(entry.detail).toMatch(/2/);
+    const rook = readState().agents.rook;
+    expect(rook.verdict).toBe("EXHAUSTED");
+    expect(rook.refusal).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(rook.rounds).toBe(2);
   });
-});
 
-describe("the exhausted state cannot be recorded as a pass", () => {
-  test("EXHAUSTED without --rounds is refused rather than written", () => {
+  test("it carries no findings, because running out of attempts is not a finding", () => {
+    // A findings list is how "the review found something" is written down.
+    // Attaching one here would make the record read as a FAIL to every
+    // consumer that looks at `failures` rather than at `verdict`.
+    const findings = join(DIR, "f.json");
+    writeFileSync(findings, JSON.stringify({ failures: ["something rook said last round"] }));
+    const r = run([
+      "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true",
+      "--rounds", "3", "--findings", findings,
+    ]);
+    expect(r.code, r.err).toBe(0);
+    expect(readState().agents.rook.failures).toBeUndefined();
+  });
+
+  test("EXHAUSTED without a round count is refused, not defaulted", () => {
+    // A cap nobody can see the size of is not a bound.
     const r = run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true"]);
     expect(r.code).not.toBe(0);
     expect(readState().agents).toBeUndefined();
   });
 
-  test("a --rounds that is not a positive whole number is refused", () => {
-    for (const bad of ["0", "-1", "two", "1.5", ""]) {
-      const r = run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", bad]);
-      expect(r.code, `--rounds ${JSON.stringify(bad)}`).not.toBe(0);
-    }
-    expect(readState().agents).toBeUndefined();
-  });
-
-  test("buildRookRecord never attaches the refusal to a verdict other than EXHAUSTED", () => {
-    for (const verdict of ["PASS", "FAIL", "SKIP"]) {
-      const r = buildRookRecord(verdict, true, null, null, 3);
-      expect(r.refusal, verdict).toBeUndefined();
+  test("a round count that is not a whole number of at least one is refused", () => {
+    for (const bad of ["0", "-1", "1.5", "two", ""]) {
+      const r = run([
+        "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", bad,
+      ]);
+      expect(r.code, `--rounds ${JSON.stringify(bad)} was accepted`).not.toBe(0);
     }
   });
 
-  test("the schema refuses a PASS wearing the exhausted refusal", () => {
-    // Belt to the recorder's braces: even hand-written state cannot park the
-    // exhausted outcome in a field a reader will treat as clean.
-    const s = baseState() as Record<string, unknown>;
-    s.agents = {
-      rook: { spawned: true, verdict: "PASS", refusal: SECURITY_REREVIEW_EXHAUSTED, rounds: 3 },
-    };
-    expect(WorkflowStateSchema.safeParse(s).success).toBe(false);
+  test("the changelog says how many rounds were spent", () => {
+    run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2"]);
+    const entry = readState().changelog.find((c: { event: string }) => c.event === "security-verdict");
+    expect(entry.detail).toContain("EXHAUSTED");
+    expect(entry.detail).toContain("2");
   });
 
-  test("the schema refuses an EXHAUSTED verdict with findings attached", () => {
-    const s = baseState() as Record<string, unknown>;
-    s.agents = {
-      rook: {
-        spawned: true, verdict: "EXHAUSTED", refusal: SECURITY_REREVIEW_EXHAUSTED,
-        rounds: 3, failures: ["a finding"],
+  test("the record survives the schema, refusal and rounds intact", () => {
+    // Zod strips undeclared keys, so without the declarations in
+    // gates/schema.ts an EXHAUSTED record round-trips as a bare verdict.
+    run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2"]);
+    const parsed = WorkflowStateSchema.safeParse(readState());
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    const rook = (parsed.data as { agents: { rook: Record<string, unknown> } }).agents.rook;
+    expect(rook.refusal).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(rook.rounds).toBe(2);
+  });
+
+  test("the refusal cannot be recorded against a PASS", () => {
+    // The fail-open this pairing closes: record the refusal honestly while
+    // parking the verdict at PASS, and every reader asking
+    // `verdict === "PASS"` walks straight past it.
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: { rook: { spawned: true, verdict: "PASS", refusal: SECURITY_REREVIEW_EXHAUSTED } },
+    });
+    expect(parsed.success, "a PASS carrying the exhaustion refusal was accepted").toBe(false);
+  });
+
+  test("an EXHAUSTED record carrying findings is refused by the schema too", () => {
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: {
+        rook: {
+          spawned: true,
+          verdict: "EXHAUSTED",
+          refusal: SECURITY_REREVIEW_EXHAUSTED,
+          rounds: 2,
+          failures: ["a finding"],
+        },
       },
-    };
-    expect(WorkflowStateSchema.safeParse(s).success).toBe(false);
+    });
+    expect(parsed.success, "an EXHAUSTED record with findings was accepted").toBe(false);
   });
 
-  test("SCHEMA-GUIDE.md says what the exhausted state means and that it is not a pass", () => {
-    const guide = readFileSync(join(REPO_ROOT, "gates", "SCHEMA-GUIDE.md"), "utf-8");
-    expect(guide).toContain(SECURITY_REREVIEW_EXHAUSTED);
-    expect(guide).toMatch(/EXHAUSTED[\s\S]{0,400}not a pass/i);
-    expect(guide).toMatch(/`rounds`/);
+  test("an EXHAUSTED record missing its refusal or its rounds is refused", () => {
+    for (const rook of [
+      { spawned: true, verdict: "EXHAUSTED", rounds: 2 },
+      { spawned: true, verdict: "EXHAUSTED", refusal: SECURITY_REREVIEW_EXHAUSTED },
+    ]) {
+      const parsed = WorkflowStateSchema.safeParse({ ...baseState(), agents: { rook } });
+      expect(parsed.success, `${JSON.stringify(rook)} was accepted`).toBe(false);
+    }
+  });
+
+  test("the positive control: a PASS with no refusal still parses", () => {
+    // Without this, a schema that rejected every rook record would satisfy
+    // every assertion above.
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: { rook: { spawned: true, verdict: "PASS", testedSha: "a".repeat(40) } },
+    });
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+});
+
+describe("#171: securityReviewIsClean is the reader side of the record", () => {
+  test("only a PASS with nothing attached is clean", () => {
+    expect(securityReviewIsClean({ spawned: true, verdict: "PASS" })).toBe(true);
+    expect(securityReviewIsClean({ spawned: true, verdict: "PASS", testedSha: "a".repeat(40) })).toBe(true);
+  });
+
+  test("an exhausted cycle is not a clean review", () => {
+    // The point of #171: the attempts ran out, so nothing concluded the code
+    // was clean. Any reader asking "did security pass" must get false.
+    expect(
+      securityReviewIsClean({
+        spawned: true,
+        verdict: "EXHAUSTED",
+        refusal: SECURITY_REREVIEW_EXHAUSTED,
+        rounds: 2,
+      }),
+      "an exhausted re-review cycle read as a clean review",
+    ).toBe(false);
+  });
+
+  test("absence, malformation and contradiction all read as not clean", () => {
+    for (const bad of [
+      undefined, null, "PASS", [], 0,
+      { verdict: "FAIL", failures: ["x"] },
+      { verdict: "SKIP" },
+      { verdict: null },
+      { spawned: true, verdict: "PASS", failures: ["a leftover finding"] },
+      { spawned: true, verdict: "PASS", refusal: SECURITY_REREVIEW_EXHAUSTED },
+    ]) {
+      expect(securityReviewIsClean(bad), `${JSON.stringify(bad)} read as clean`).toBe(false);
+    }
+  });
+});
+
+describe("#171: buildRookRecord derives the refusal rather than accepting one", () => {
+  test("EXHAUSTED gets the refusal and the rounds", () => {
+    expect(buildRookRecord("EXHAUSTED", true, null, null, 2)).toEqual({
+      spawned: true,
+      verdict: "EXHAUSTED",
+      refusal: SECURITY_REREVIEW_EXHAUSTED,
+      rounds: 2,
+    });
+  });
+
+  test("no other verdict carries the refusal, whatever the rounds say", () => {
+    for (const verdict of ["PASS", "FAIL", "SKIP"]) {
+      const r = buildRookRecord(verdict, true, { failures: ["x"] }, null, 2);
+      expect(r.refusal, `${verdict} was given a refusal`).toBeUndefined();
+      expect(r.rounds, `${verdict} was given a round count`).toBeUndefined();
+    }
+  });
+
+  test("failureList drops findings for an exhausted cycle only", () => {
+    expect(failureList("EXHAUSTED", { failures: ["a", "b"] })).toEqual([]);
+    expect(failureList("FAIL", { failures: ["a", "b"] })).toEqual(["a", "b"]);
   });
 });
