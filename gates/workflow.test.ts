@@ -49,6 +49,32 @@ const isVerifyPlus = () => { const p = sf("phase"); return ["VERIFY", "SHIP", "D
 const isShipPlus = () => { const p = sf("phase"); return ["SHIP", "DONE"].includes(p); };
 const isDone = () => sf("phase") === "DONE";
 
+/**
+ * #224 — the suite-to-verdict binding.
+ *
+ * `environments.local.tests` is the only reading this harness has of whether
+ * the suite passed on the tree being shipped, and this is the single site that
+ * turns that reading into a refusal. Keep it one function with one body: a
+ * second refusal path for the same fact would survive the mutation in
+ * test/suite-binding-mutation.test.ts and make the proof vacuous, which is why
+ * that file asserts this signature appears exactly once and aborts if it moves.
+ *
+ * Absent is a refusal, not a pass. That is the whole of #224: the run that
+ * reported `regressions: 0` over one failing test had measured nothing, and
+ * nothing was read as zero.
+ */
+export function suiteVerdictViolations(val: unknown): string[] {
+  if (val === undefined || val === null || val === "") {
+    return [
+      "local.tests not set — PASS or SKIP required when dev.testCmd is configured. " +
+        "An unmeasured suite is not a passing suite (#224).",
+    ];
+  }
+  if (val === "SKIP") return []; // SKIP is allowed — it says so, rather than implying PASS
+  if (val !== "PASS") return [`tests: ${String(val)} — expected PASS`];
+  return [];
+}
+
 // ═══ SCHEMA VALIDATION ════════════════════════════════════════════════
 describe("schema validation", () => {
   if (STANDALONE || !existsSync(SF)) {
@@ -369,18 +395,21 @@ describe("verify checks", () => {
   });
 
   // 20. tests-pass (GAP → PORTED)
+  //
+  // #224: run wf_7ac5f614-d21 returned `regressions: 0` on a branch running
+  // 3984 pass / 1 fail. The suite reading and the verdict were not connected,
+  // and an unmeasured suite read as a passing one. The conversion from reading
+  // to refusal now lives in `suiteVerdictViolations` above — one function, one
+  // body — so test/suite-binding-mutation.test.ts can remove it from a mutant
+  // copy of this file and watch the mutant ship a fixture whose failing test
+  // was really run. What was broken to prove it: short-circuiting that
+  // function to `return []` turns the gate green on a measured FAIL.
   test("tests-pass: test suite passes", () => {
     if (!isVerifyPlus()) return;
     const harness = loadProjectHarness();
     if (!harness?.dev?.testCmd) return;
-    const val = sf("environments")?.local?.tests;
-    if (!val) {
-      expect("local.tests not set").toBe("PASS or SKIP — required when dev.testCmd is configured");
-    } else if (val === "SKIP") {
-      // SKIP is allowed
-    } else if (val !== "PASS") {
-      expect(`tests: ${val}`).toBe("PASS");
-    }
+    const violations = suiteVerdictViolations(sf("environments")?.local?.tests);
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 21. tsc-pass (GAP → PORTED)

@@ -1152,7 +1152,17 @@ if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
 For evidence-type-ratio: add non-grep evidence methods (BUN_TEST, COMMAND, PLAYWRIGHT) to ACs.
-For tests-pass: run cd ${PROJECT_ROOT} && ${testCommand} (timeout: ${testTimeout}) and write result to environments.local.tests in workflow-state.json.
+For tests-pass: run the suite and record it with the recorder, which writes
+both the result and the commit it was measured against (#224). Two commands,
+in this order, and do NOT edit environments.local.tests by hand — a result
+with no SHA beside it is not evidence, and hand-writing one is how a count
+that predates the final commit got read as a clean suite:
+  cd ${PROJECT_ROOT} && ${testCommand}   # timeout: ${testTimeout}
+  cd ${PROJECT_ROOT} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-suite-measurement.ts`)} \\
+    --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
+    --result PASS|FAIL --project ${shellQuote(PROJECT_ROOT)}
+Pass the result the suite actually printed. The recorder reads the commit from
+the project itself; do NOT pass it a SHA you typed.
 For local-api-validated: read ${PROJECT_ROOT}/.claude/rungate.json for apiUrl. If no apiUrl configured, write environments.local.api = "SKIP". If configured, curl the URL and write PASS/FAIL.
 For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or pages config. If no UI configured, write environments.local.ui = "SKIP" with skipReason. If configured, curl the URL and write PASS/FAIL.
 Edit workflow-state.json ONLY via writeWorkflowState():
@@ -2521,6 +2531,117 @@ function reviewIsCurrent(testedSha, headSha) {
 }
 // ──── REVIEW-CURRENCY-END ────
 
+// ──── SUITE-CURRENCY-START ────
+/**
+ * Is the recorded test-suite result about the commit this run is shipping? (#224)
+ *
+ * Run `wf_7ac5f614-d21` returned `{"status":"SHIPPED","regressions":0}` for
+ * issue #209. Checking out that exact branch and running the suite gave
+ * 3984 pass / 1 fail across 4262 tests, and the failing test was #149's own
+ * guard — it had caught the regression, named it, and pointed at the file.
+ * Detection was never the gap: the number the run reported did not come from
+ * the tree the run was shipping.
+ *
+ * This is the #169 review-currency rule applied to the suite, and it is a
+ * SEPARATE function with a separate vocabulary rather than a reuse of
+ * `reviewIsCurrent`, because the two failures are not the same failure and
+ * must not collapse into one word:
+ *
+ *  - `STALE` — the result WAS measured, against a commit the branch has since
+ *    moved past. A contradiction the run can name, and a hard refusal: a count
+ *    predating the final commit cannot satisfy a gate.
+ *  - `UNRECORDED` — nothing usable was written down. An absence, not a
+ *    contradiction. It must never read as clean, but aborting every run that
+ *    has not yet recorded a SHA would brick the harness, so it resolves to an
+ *    UNMEASURED suite reading and caps the TERMINAL status instead.
+ *
+ * FAILS CLOSED, and never throws. This decides whether a run may ship, so a
+ * throw would be a refusal the caller's error handling could turn back into a
+ * ship — the #129 shape. An abbreviation matches in either direction: the
+ * measured SHA arrives through an agent reading workflow-state.json and the
+ * head SHA from `git rev-parse`, and either may be short.
+ *
+ * INLINED, not imported. lib/suite-measurement.ts is the source of truth; the
+ * sandbox has no module loading, and a top-level require() here killed every
+ * ship run before it spawned an agent (#69). The copy must stay behaviourally
+ * identical — test/suite-measurement-parity.test.ts extracts this block,
+ * executes it, and runs both over one input matrix.
+ */
+
+/** A commit SHA: 7-40 hex, case-insensitive. Normalised to lowercase. */
+function suiteSha(value) {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return /^[0-9a-f]{7,40}$/i.test(trimmed) ? trimmed.toLowerCase() : null
+}
+
+/**
+ * Describe a value that is not a SHA, for a refusal message.
+ *
+ * Its own function rather than `describeShaValue` from the block above: this
+ * block is extracted by marker and executed standalone, so a reference to a
+ * name declared in another marked region is a test that cannot run.
+ */
+function describeSuiteShaValue(v) {
+  if (v === undefined) return 'nothing'
+  if (v === null) return 'null'
+  if (Array.isArray(v)) return `an array of ${v.length}`
+  if (typeof v === 'object') return 'an object'
+  // Symbols and functions stringify to undefined, which would read as a hole
+  // in the message rather than as a description of the value.
+  return JSON.stringify(v) ?? String(v)
+}
+
+function suiteCurrency(measuredSha, headSha) {
+  const measured = suiteSha(measuredSha)
+  const head = suiteSha(headSha)
+
+  if (!measured) {
+    return {
+      state: 'UNRECORDED',
+      reason:
+        `the suite result records ${describeSuiteShaValue(measuredSha)} as the commit it was ` +
+        `measured against, which is not a commit SHA — a count with no SHA is not evidence`,
+    }
+  }
+  if (!head) {
+    return {
+      state: 'UNRECORDED',
+      reason:
+        `the branch tip read at ship time is ${describeSuiteShaValue(headSha)}, not a commit SHA, ` +
+        `so the suite result measured against ${measured} cannot be confirmed against it`,
+    }
+  }
+
+  if (!(measured.startsWith(head) || head.startsWith(measured))) {
+    return {
+      state: 'STALE',
+      reason:
+        `the suite result is stale: it was measured against ${measured} but the branch now ends ` +
+        `at ${head} — the count did not come from the tree this run would ship`,
+    }
+  }
+
+  return { state: 'CURRENT', reason: null }
+}
+
+/**
+ * The suite reading the terminal status is capped by.
+ *
+ * Three words, and the order of the branches is the rule. A recorded FAIL is
+ * the strongest signal in the system and stays FAIL whatever the currency says
+ * — a red suite measured against the wrong commit is still a red suite. Only
+ * then does currency decide, and anything that is not an outright PASS on the
+ * tip is UNMEASURED. SKIP lands there too: "the tests did not run" is an
+ * absence, and an absence is never a pass.
+ */
+function suiteReadingFor(recordedResult, currencyState) {
+  if (recordedResult === 'FAIL') return 'FAIL'
+  if (currencyState !== 'CURRENT') return 'UNMEASURED'
+  return recordedResult === 'PASS' ? 'PASS' : 'UNMEASURED'
+}
+// ──── SUITE-CURRENCY-END ────
+
 /**
  * The command the scope step runs. Throws rather than quoting when the SHA is
  * not a SHA: a value needing quoting here is not a commit SHA, and three
@@ -2922,18 +3043,35 @@ the failure this step exists to catch (#169).
    it appears there, as testedSha. If that field is missing, report an empty
    string. Do NOT fill it in from the HEAD above or from anywhere else — an
    absent review SHA blocks the run on purpose.
+
+3. The test suite result that was written down, and the commit it was measured
+   against. From the same ${WORK_DIR}/workflow-state.json, report
+   environments.local.tests as suiteResult and environments.local.testsSha as
+   suiteMeasuredSha, both exactly as they appear. Report an empty string for
+   either one that is missing (#224).
+
+   Do NOT run the suite here, do NOT infer a result from a green gate, and do
+   NOT copy the HEAD above into suiteMeasuredSha. A run whose suite result was
+   never recorded, or was recorded against an earlier commit, is the case this
+   step exists to surface — filling either value in is how run wf_7ac5f614-d21
+   reported regressions:0 over a branch with a failing test.
 `, { label: 'review-currency', phase: 'Verify', model: 'sonnet', schema: {
   type: 'object',
   properties: {
     headSha: { type: 'string' },
     testedSha: { type: 'string' },
+    suiteResult: { type: 'string' },
+    suiteMeasuredSha: { type: 'string' },
   },
   required: ['headSha', 'testedSha'],
 }})
 
 const headSha = currencyProbe?.headSha
 const testedSha = currencyProbe?.testedSha
+const suiteResult = currencyProbe?.suiteResult
+const suiteMeasuredSha = currencyProbe?.suiteMeasuredSha
 log(`Security review currency: tested=${testedSha || 'none'} head=${headSha || 'none'}`)
+log(`Suite measurement: result=${suiteResult || 'none'} measuredSha=${suiteMeasuredSha || 'none'}`)
 // ──── REVIEW-CURRENCY-PROBE-END ────
 
 // ──── SECURITY-DECISION-START ────
@@ -2998,6 +3136,55 @@ if (!reviewCurrency.current) {
 }
 log(`Security review PASSED, and is current at ${headSha}`)
 // ──── SECURITY-DECISION-END ────
+
+// ──── SUITE-DECISION-START ────
+// #224: the suite result is read HERE, beside the security verdict, because
+// this is the point the rest of the file treats as "may this run proceed".
+//
+// It was read nowhere. Run wf_7ac5f614-d21 reported
+// `{"status":"SHIPPED","regressions":0}` for issue #209 while the branch it
+// shipped ran 3984 pass / 1 fail, and the failing test was #149's own guard
+// doing exactly what it was written to do. The signal existed, the suite
+// generated it, and it did not reach the verdict.
+//
+// Two outcomes, and they are deliberately not the same outcome, for the same
+// reason STALE and UNRECORDED are different words up in SUITE-CURRENCY:
+//
+//  - STALE is a REFUSAL. The suite was run against a commit this branch has
+//    moved past, so the count is a statement about a different tree. There is
+//    no warning branch and no ternary that turns it into a log line while the
+//    run carries on — that is the #129 defect rewritten, and the issue asks
+//    for a refusal in those words: "a count that predates the final commit
+//    cannot satisfy the gate".
+//  - FAIL and UNRECORDED CAP THE TERMINAL STATUS instead, down in
+//    PROVE-STATUS. A FAIL already blocks through the verify gate; what it must
+//    additionally do is stop the final word being the clean one. An
+//    UNRECORDED measurement is an absence rather than a contradiction, and
+//    refusing every run that has not yet recorded a SHA would brick the
+//    harness on its own fix — so it is reported as UNMEASURED and the status
+//    says so.
+const suiteCurrencyVerdict = suiteCurrency(suiteMeasuredSha, headSha)
+if (suiteCurrencyVerdict.state === 'STALE') {
+  const suiteStaleReason = `SUITE_MEASUREMENT_STALE: ${suiteCurrencyVerdict.reason}`
+  log(`SUITE BLOCK: ${suiteStaleReason}`)
+  log('SUITE: the run is blocked and no PR will be opened — the recorded test result describes a different commit')
+  return {
+    status: 'SHIP_FAILED',
+    reason: suiteStaleReason,
+    suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: headSha ?? null, currency: suiteCurrencyVerdict.state },
+    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+  }
+}
+
+// PASS, FAIL or UNMEASURED. Carried to the end of the run rather than consumed
+// here, because the thing it has to change is the word the run reports.
+let suiteReading = suiteReadingFor(suiteResult, suiteCurrencyVerdict.state)
+if (suiteReading === 'PASS') {
+  log(`Suite PASSED, and was measured at ${headSha}`)
+} else {
+  log(`SUITE ${suiteReading}: ${suiteCurrencyVerdict.reason || `environments.local.tests is ${suiteResult || 'unset'}`} — the terminal status is capped`)
+}
+// ──── SUITE-DECISION-END ────
 
 // ── GRADE: Post-run compliance grading (#574 — runs before ship gate) ──
 // Moved from after PROVE to before SHIP so grading happens even when gate fails.
@@ -3402,6 +3589,35 @@ workflow-state.json by hand, and do NOT report true if the command failed.
       }
       log(`Security review is still current after the ship round, at ${reCommit?.commitSha}`)
       // ──── STALE-REFUSAL-END ────
+      // ──── SUITE-STALE-REFUSAL-START ────
+      // #224, the Ship half, and the same argument as the security check one
+      // statement above: the measurement was taken before this round, and this
+      // round just pushed a new commit. A ship-regression round exists
+      // *because* something failed, which makes it exactly where a count from
+      // the previous tree does the most damage.
+      //
+      // Its own block rather than folded into STALE-REFUSAL: that one is
+      // extracted and executed by test/security-verdict-blocks.test.ts with a
+      // scope that knows nothing about the suite, and a reference to a name
+      // outside it is a test that cannot run.
+      const shipRoundSuite = suiteCurrency(suiteMeasuredSha, reCommit?.commitSha)
+      if (shipRoundSuite.state === 'STALE') {
+        const shipRoundSuiteReason = `SUITE_MEASUREMENT_STALE: ${shipRoundSuite.reason}`
+        log(`SUITE BLOCK: ${shipRoundSuiteReason}`)
+        log('SUITE: the ship regression round moved the branch past the measured commit — the run stops here, and the issue is neither labelled proven nor closed')
+        return {
+          status: 'SHIP_FAILED',
+          reason: shipRoundSuiteReason,
+          suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: reCommit?.commitSha ?? null, currency: shipRoundSuite.state },
+          issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+        }
+      }
+      // Reassigned, not re-derived from scratch: the round may have left the
+      // measurement unrecorded against the new tip, and that downgrade has to
+      // reach the terminal status.
+      suiteReading = suiteReadingFor(suiteResult, shipRoundSuite.state)
+      log(`Suite reading after the ship round: ${suiteReading}`)
+      // ──── SUITE-STALE-REFUSAL-END ────
       const retryShip = await runGateWithHeal('ship', 'Ship', 'Fix remaining ship gate failures.', { cwd: commitDir })
       if (retryShip?.result === 'PASS') {
         log('Ship passed after BUILD regression fix')
@@ -3471,7 +3687,8 @@ Report results for each step.
 
 // ──── PROVE-STATUS-START ────
 /**
- * The status a finished run reports, from its prove verdict (#222).
+ * The status a finished run reports, from its prove verdict and its suite
+ * reading (#222, #224).
  *
  * Nothing here merges. #136 removed the auto-merge outright: the work is
  * pushed to its own branch and a PR is opened, and CI gates the merge there.
@@ -3488,10 +3705,16 @@ Report results for each step.
  * how "we proved nothing" became the only unqualified success word in the
  * system.
  *
- * The three statuses are pairwise non-prefix, and so is ALREADY_SHIPPED, the
+ * The statuses are pairwise non-prefix, and so is ALREADY_SHIPPED, the
  * genuinely-complete status returned from the prior-work short circuit.
  * test/ship-status-vocabulary.test.ts executes this block rather than grepping
- * it, and runs two mutants against it.
+ * it, and runs mutants against it.
+ *
+ * #224 added the SECOND input. The prove verdict knows nothing about the test
+ * suite, and on run wf_7ac5f614-d21 that was the whole bug: prove was skipped,
+ * the suite was red, and the word the run reported came from the prove verdict
+ * alone. A VERDICT MAY NOT BE MORE AFFIRMATIVE THAN ITS WEAKEST INPUT — so the
+ * two inputs each produce a status and the weaker one wins.
  */
 const SHIP_STATUS_BY_PROVE_VERDICT = {
   PROVEN: 'SHIPPED_AND_PROVEN',
@@ -3500,21 +3723,76 @@ const SHIP_STATUS_BY_PROVE_VERDICT = {
 }
 /** Unrecognised is unmeasured. Fail towards "nobody proved this". */
 const SHIP_STATUS_UNMEASURED = 'SHIPPED_UNPROVEN'
-function shipStatusFor(proveVerdict) {
+
+/**
+ * The ceiling each suite reading imposes.
+ *
+ * PASS maps to the top of the scale, which is how "no cap" is spelled here: it
+ * is the weaker-of-two rule with nothing to weaken, rather than a branch that
+ * skips the comparison. A branch would be a second code path, and the second
+ * code path is where the warning-instead-of-refusal keeps reappearing.
+ */
+const SHIP_STATUS_BY_SUITE_READING = {
+  PASS: 'SHIPPED_AND_PROVEN',
+  FAIL: 'SHIP_PASSED_SUITE_FAILED',
+  UNMEASURED: 'SHIP_PASSED_SUITE_UNMEASURED',
+}
+/** Unrecognised is unmeasured. "We could not read it" is not "it passed". */
+const SHIP_STATUS_SUITE_UNREADABLE = 'SHIP_PASSED_SUITE_UNMEASURED'
+
+/**
+ * Weakest first. The order IS the claim "a red suite is worse than an
+ * unreadable one, and an unreadable one is worse than a prove step that ran
+ * and failed", so it is written once, here, rather than implied by the order
+ * of a chain of ifs.
+ */
+const SHIP_STATUS_STRENGTH = [
+  'SHIP_PASSED_SUITE_FAILED',
+  'SHIP_PASSED_SUITE_UNMEASURED',
+  'SHIP_PASSED_PROVE_FAILED',
+  'SHIPPED_UNPROVEN',
+  'SHIPPED_AND_PROVEN',
+]
+
+function shipStatusFor(proveVerdict, suiteReading) {
   // hasOwnProperty, not a bare lookup: `SHIP_STATUS_BY_PROVE_VERDICT['constructor']`
   // is truthy and is not a status.
-  const mapped = Object.prototype.hasOwnProperty.call(SHIP_STATUS_BY_PROVE_VERDICT, proveVerdict)
+  const provePick = Object.prototype.hasOwnProperty.call(SHIP_STATUS_BY_PROVE_VERDICT, proveVerdict)
     ? SHIP_STATUS_BY_PROVE_VERDICT[proveVerdict]
     : null
-  return typeof mapped === 'string' && mapped.length > 0 ? mapped : SHIP_STATUS_UNMEASURED
+  const proveStatus = typeof provePick === 'string' && provePick.length > 0
+    ? provePick
+    : SHIP_STATUS_UNMEASURED
+
+  const suitePick = Object.prototype.hasOwnProperty.call(SHIP_STATUS_BY_SUITE_READING, suiteReading)
+    ? SHIP_STATUS_BY_SUITE_READING[suiteReading]
+    : null
+  const suiteStatus = typeof suitePick === 'string' && suitePick.length > 0
+    ? suitePick
+    : SHIP_STATUS_SUITE_UNREADABLE
+
+  // indexOf returns -1 for a status this scale has never heard of, and -1
+  // sorts below every real rank — so an unranked status is automatically the
+  // weakest thing in the comparison and wins. That is the fail-closed
+  // direction and it is load-bearing: the alternative, skipping the unknown
+  // and returning the other side, hands the run the MORE affirmative word
+  // whenever someone adds a status and forgets to rank it.
+  const proveRank = SHIP_STATUS_STRENGTH.indexOf(proveStatus)
+  const suiteRank = SHIP_STATUS_STRENGTH.indexOf(suiteStatus)
+  return proveRank <= suiteRank ? proveStatus : suiteStatus
 }
 // ──── PROVE-STATUS-END ────
 
 return {
-  status: shipStatusFor(proveVerdict),
+  status: shipStatusFor(proveVerdict, suiteReading),
   issue: ISSUE, slug: SLUG,
   sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
   proveVerdict,
+  // Reported, not only consumed. `regressions` is the number #224 showed
+  // cannot be read on its own; the reading beside it says whether it came
+  // from the tree this run shipped.
+  suiteReading,
+  suiteMeasuredSha: suiteMeasuredSha ?? null,
   regressions: regressionCount,
   workDir: WORK_DIR,
   grades: gradeResult?.grades || [],
