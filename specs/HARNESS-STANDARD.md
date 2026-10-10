@@ -1281,8 +1281,8 @@ machine to 2 suites at once, and that is the number the 2026-10-05 reboot was
 about (5,360 MB and 33 processes per suite). Raising the rate lets one worker
 come back sooner; it does not let two more start together.
 
-- [x] SC-647: lib/transcript-checker.ts contains [resolveMaxRuns()] — COMP-2 calls the guard rather than restating the number, because a grader still saying "2" after the guard moved to 4 marks a compliant run as IGNORED, and the run that reads worst is the one that obeyed
-- [x] SC-648: lib/test-suite-lock.ts contains [RUNGATE_MAX_FULL_SUITE_RUNS, export function resolveMaxRuns] — the environment overrides the rate, and no value of it can turn the guard off: every input that is not a clearly valid integer falls back to the default, since NaN would refuse everything and Infinity would disable the cap
+- [x] SC-647: lib/transcript-checker.ts contains [DEFAULT_MAX_RUNS_PER_WORKER] — COMP-2 grades against the POLICY constant rather than restating the number or resolving it through the environment. Two failure directions, both real: a grader still saying "2" after the guard moved to 4 marks a compliant run as IGNORED, so the run that reads worst is the one that obeyed; and a grader resolving through the environment lets a run that spent eight suites be graded against a threshold of eight
+- [x] SC-648: lib/test-suite-lock.ts contains [RUNGATE_MAX_FULL_SUITE_RUNS, Math.min(parsed] — the environment may LOWER the rate and cannot raise it, and no value of it can turn the guard off: every input that is not a clearly valid integer falls back to the default, since NaN would refuse everything and Infinity would disable the cap
 - [x] SC-649: lib/test-suite-lock.ts contains [DEFAULT_MAX_RUNS_PER_WORKER, MAX_TRACKED_RUNS] — the rate is clamped to what the counter file retains; a budget larger than that is a budget that silently resets mid-window
 
 Everything in `test/test-suite-lock.test.ts` that asserts "the third run is
@@ -1293,15 +1293,41 @@ cost of pinning is that nothing then exercises the value production runs at,
 so the default is driven separately through the real gate with no option and
 no environment.
 
+**Security review of d6cc5acf found two real defects in the first version of
+this change, and both were mine.** Recorded because the shape is the same
+shape twice: a limit that the thing being limited can reach.
+
+- **Self-grading bypass.** COMP-2 called `resolveMaxRuns()`, which reads the
+  environment. A run that spent eight full suites could be graded against a
+  threshold of eight. The grader now reads the POLICY constant: a run does not
+  get to move the line it is measured by.
+- **Control bypass.** The environment could set any rate up to
+  `MAX_TRACKED_RUNS`, so the guard that exists to stop a machine-killing suite
+  read its own limit from a place the guarded work can influence. Reaching the
+  hook's environment is not trivial — hooks inherit the Claude Code process's
+  env, so an inline `VAR=8 bun test` sets it for the suite and not for the
+  guard — but "hard to reach from one direction" is not the property a control
+  needs, and a shell profile, a launch script or an exported parent all reach
+  it. The override is now ONE-WAY: it may lower the rate and cannot raise it.
+  Tightening is always safe and never needs permission, so the loosening
+  direction had no reason to exist.
+
+The self-reference trap caught the fix for the first one. The comment
+explaining that COMP-2 must not call the resolver wrote the forbidden call
+form out verbatim, which is itself enough to satisfy a check that greps for
+its absence. The comment names the resolver in prose only.
+
 What was broken to prove it, run and counted rather than asserted, over
-`test/test-suite-lock.test.ts` (135 tests):
+`test/test-suite-lock.test.ts` (138 tests):
 
 | Mutation | Red |
 |---|---|
 | the default set back to 2 | 15 |
 | the default raised to 99, above `MAX_TRACKED_RUNS` | 15 |
+| the environment clamp raised from the policy to `MAX_TRACKED_RUNS` — the control bypass, reintroduced | 1 |
+| COMP-2 pointed back at the environment-aware resolver — the self-grading bypass, reintroduced | 1 |
 
-Neither is left in the tree; both were run and reverted.
+None is left in the tree; all were run and reverted.
 
 ---
 

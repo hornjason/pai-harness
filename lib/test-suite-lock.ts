@@ -70,9 +70,23 @@ const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
  * Must stay <= MAX_TRACKED_RUNS, which bounds what the counter file retains.
  * A budget larger than what is remembered is a budget that silently resets.
  */
-const DEFAULT_MAX_RUNS_PER_WORKER = 4;
+export const DEFAULT_MAX_RUNS_PER_WORKER = 4;
 
-/** Overrides the rate for a session that needs a different one. */
+/**
+ * Lowers the rate for a session that wants to be stricter. It cannot raise it.
+ *
+ * The first version of this let the environment set any value up to
+ * MAX_TRACKED_RUNS, and security review of d6cc5acf called that correctly: a
+ * guard that exists to stop a machine-killing suite must not read its own
+ * limit from a place the guarded work can influence. Reaching the hook's
+ * environment is not trivial — hooks inherit the Claude Code process's env, so
+ * an inline `VAR=8 bun test` sets it for the suite and not for the guard — but
+ * "hard to reach from one direction" is not the property a control needs, and
+ * a shell profile, a launch script or an exported parent all reach it.
+ *
+ * One-way is the whole fix: tightening is always safe and never needs
+ * permission, so there is no reason for the loosening direction to exist.
+ */
 const MAX_RUNS_ENV = "RUNGATE_MAX_FULL_SUITE_RUNS";
 
 /**
@@ -87,13 +101,17 @@ export function resolveMaxRuns(
   option?: number,
   env: string | undefined = process.env[MAX_RUNS_ENV],
 ): number {
+  // An explicit option is a caller in this repo passing a number, not the
+  // graded run talking, so it is trusted to raise as well as lower — bounded
+  // only by what the counter file can remember.
   if (typeof option === "number" && Number.isInteger(option) && option >= 0) {
     return Math.min(option, MAX_TRACKED_RUNS);
   }
   if (typeof env === "string" && /^\d+$/.test(env.trim())) {
     const parsed = parseInt(env.trim(), 10);
     if (Number.isInteger(parsed) && parsed >= 0) {
-      return Math.min(parsed, MAX_TRACKED_RUNS);
+      // Clamped DOWN to the policy, never up to MAX_TRACKED_RUNS.
+      return Math.min(parsed, DEFAULT_MAX_RUNS_PER_WORKER);
     }
   }
   return DEFAULT_MAX_RUNS_PER_WORKER;

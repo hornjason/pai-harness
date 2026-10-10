@@ -22,6 +22,7 @@ import {
   heldSlots,
   isFullSuiteCommand,
   releaseFullSuiteSlot,
+  DEFAULT_MAX_RUNS_PER_WORKER,
   resolveMaxRuns,
   wouldAllowFullSuite,
 } from "../lib/test-suite-lock";
@@ -1312,9 +1313,49 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     expect(resolveMaxRuns(2, "6")).toBe(2);
   });
 
-  test("the environment wins over the default", () => {
-    expect(resolveMaxRuns(undefined, "6")).toBe(6);
-    expect(resolveMaxRuns(undefined, "  3  ")).toBe(3);
+  test("the rate COMP-2 grades against is the policy, not this session's", () => {
+    // The self-grading bypass, the other half of the same review. COMP-2 used
+    // to resolve through the environment, so a run that spent eight suites
+    // could be graded against a threshold of eight. A grader measures against
+    // the policy; a run does not get to move the line it is measured by.
+    expect(DEFAULT_MAX_RUNS_PER_WORKER).toBe(4);
+    const checker = readFileSync(
+      join(import.meta.dir, "..", "lib", "transcript-checker.ts"),
+      "utf-8",
+    );
+    expect(
+      checker,
+      "COMP-2 resolves its threshold through the environment — a graded run can move its own line",
+    ).not.toContain("resolveMaxRuns()");
+    expect(checker).toContain("DEFAULT_MAX_RUNS_PER_WORKER");
+  });
+
+  test("the environment can LOWER the rate", () => {
+    expect(resolveMaxRuns(undefined, "3")).toBe(3);
+    expect(resolveMaxRuns(undefined, "  1  ")).toBe(1);
+  });
+
+  test("the environment CANNOT raise it — the control-bypass finding", () => {
+    // Security review of d6cc5acf. A guard that exists to stop a
+    // machine-killing suite must not read its own limit from a place the
+    // guarded work can influence. Reaching the hook's environment is not
+    // trivial — hooks inherit the Claude Code process's env, so an inline
+    // `VAR=8 bun test` sets it for the suite and not for the guard — but
+    // "hard to reach from one direction" is not the property a control needs.
+    //
+    // One-way is the whole fix: tightening is always safe, so the loosening
+    // direction has no reason to exist.
+    expect(resolveMaxRuns(undefined, "8")).toBe(4);
+    expect(resolveMaxRuns(undefined, "99")).toBe(4);
+    expect(resolveMaxRuns(undefined, "6")).toBe(4);
+  });
+
+  test("an explicit option may still raise it — that is a caller, not the run", () => {
+    // The distinction the one-way clamp turns on. Code in this repo passing a
+    // number is not the graded work talking; it is bounded only by what the
+    // counter file can remember.
+    expect(resolveMaxRuns(6, undefined)).toBe(6);
+    expect(resolveMaxRuns(99, undefined)).toBe(8);
   });
 
   test("zero is a real answer, not a missing one", () => {
