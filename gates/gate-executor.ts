@@ -693,6 +693,17 @@ export async function stampEvidencePrevalidation(state: Record<string, any>): Pr
  * recorded failure, and retrying it here would turn #235's refusal into a
  * retry loop.
  *
+ * The reading does not mean quite the same thing on the two tiers, and that is
+ * worth saying out loud rather than leaving for someone to infer wrongly. At
+ * scope it means "these evidence commands were already broken before any work
+ * started" — #598's point, which is to stop Marcus running against commands
+ * that cannot produce evidence. Here it means "these evidence commands are
+ * broken now". For the gate's actual question — can this run's claims be
+ * evidenced? — the verify-time reading is the more relevant of the two, and a
+ * LIGHT run has no earlier one to prefer. Nothing downstream consumes the
+ * reading's auto-fix suggestions, so taking it late costs nothing but the
+ * earliness #598 wanted, which a LIGHT run was never going to get.
+ *
  * Persisting is the other half, and `runScopePreflightsAndPersist`'s comment
  * already says why: `runGateTests` spawns bun against workflow-state.json as
  * it stands on disk, so a reading written after the tests start is a reading
