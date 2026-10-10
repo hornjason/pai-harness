@@ -1021,18 +1021,55 @@ function runB2EvidenceValidation(state: Record<string, any>): void {
   }
 }
 
+/**
+ * Why the Verify fan-out is not going to run this time, or null if it is (#126).
+ *
+ * One function, one body, so the branches can be driven directly and the call
+ * site can be mutated — `test/verify-fanout-recording.test.ts` does both. The
+ * three conditions were previously inline and repeated on two `if`s with no
+ * `else`, which is how the fan-out came to be skippable without a trace.
+ *
+ * Order is deliberate and is the reporting order, not a precedence accident:
+ * a gate that already has failures is the reason a reader needs first, because
+ * it is the one that explains the run. `RUNGATE_SKIP_AGENTS` is last because a
+ * run with that set has usually also failed something, and reporting the env
+ * var would bury the real cause.
+ *
+ * Returning null means RUN — the only path on which the agents are spawned, so
+ * a new skip condition that forgets to come through here is a silent skip
+ * again, and that is what the call-site mutation checks.
+ */
+export function fanoutSkipReason(
+  fails: number,
+  testExitCode: number,
+  skipAgents: unknown,
+): string | null {
+  if (fails !== 0) return `verify gate had ${fails} failing check(s) before the fan-out`;
+  if (testExitCode !== 0) return `the project test command exited ${testExitCode}`;
+  if (skipAgents !== undefined && skipAgents !== null && skipAgents !== "") {
+    return "RUNGATE_SKIP_AGENTS is set";
+  }
+  return null;
+}
+
 function runB2EvidenceValidatorAgent(state: Record<string, any>, workDir: string, results: GateResult[], harnessRoot: string): { agentResult: any; warns: number } {
   let addedWarns = 0;
   let agentResult: any = null;
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier === "LIGHT") return { agentResult, warns: 0 };
+  // Recorded rather than returned empty (#126): the consumer allows a LIGHT
+  // absence, but an artefact that SAYS why is one a reader does not have to
+  // reconstruct the tier rules to interpret.
+  if (tier === "LIGHT") return { agentResult: { skipped: "LIGHT ceremony tier" }, warns: 0 };
 
   const b2ProjectPrompt = join(__dirname, "prompts", "evidence-validator.md");
   const b2HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "evidence-validator.md");
   const b2PromptPath = existsSync(b2ProjectPrompt) ? b2ProjectPrompt : b2HomePrompt;
   if (!existsSync(b2PromptPath)) {
     console.warn("WARN: evidence-validator.md prompt not found — B2 agent will not run");
-    return { agentResult, warns: 0 };
+    // Recorded, not just warned (#126). A missing prompt disabled evidence
+    // validation entirely, silently, and the gate check read the resulting
+    // absence as clean. The run now carries the reason it did not happen.
+    return { agentResult: { skipped: `evidence-validator.md prompt not found at ${b2PromptPath}` }, warns: 0 };
   }
 
   console.log("B2: Spawning Evidence Validator agent...");
@@ -1090,12 +1127,17 @@ function runB1AdversaryAtVerify(state: Record<string, any>, workDir: string, res
   let addedWarns = 0;
   let agentResult: any = null;
   const tier = state.sizing?.ceremonyTier || "STANDARD";
-  if (tier === "LIGHT") return { agentResult, warns: 0 };
+  if (tier === "LIGHT") return { agentResult: { skipped: "LIGHT ceremony tier" }, warns: 0 };
 
   const b1ProjectPrompt = join(__dirname, "prompts", "ac-adversary.md");
   const b1HomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "ac-adversary.md");
   const b1PromptPath = existsSync(b1ProjectPrompt) ? b1ProjectPrompt : b1HomePrompt;
-  if (!existsSync(b1PromptPath)) return { agentResult, warns: 0 };
+  if (!existsSync(b1PromptPath)) {
+    console.warn("WARN: ac-adversary.md prompt not found — B1 verify agent will not run");
+    // Same as B2 above (#126): a missing prompt turned adversarial
+    // verification off without a trace anyone downstream could read.
+    return { agentResult: { skipped: `ac-adversary.md prompt not found at ${b1PromptPath}` }, warns: 0 };
+  }
 
   console.log("B1: Spawning AC Adversary agent at verify...");
   const b1Input = JSON.stringify({
@@ -1474,16 +1516,33 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     runB2EvidenceValidation(state);
   }
 
-  if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
-    const b2 = runB2EvidenceValidatorAgent(state, workDir, results, harnessRoot);
-    b2AgentResult = b2.agentResult;
-    warns += b2.warns;
-  }
+  // The fan-out runs, or records why it did not (#126).
+  //
+  // The guard below was three conditions repeated on two `if`s with no `else`,
+  // so a verify gate that already had a failure skipped both agents and left
+  // their slots empty — and the gate then printed "B2 agent may not have run",
+  // which is true and reads like the cause when it is the consequence. On run
+  // wf_e105dd33-220 that sent me looking for a crashed agent that had never
+  // started.
+  //
+  // Skipping is still right: the gate is failing anyway and these agents are
+  // expensive. Skipping SILENTLY is what made the absence unreadable.
+  if (gate === "verify") {
+    const fanoutSkip = fanoutSkipReason(fails, testExitCode, process.env.RUNGATE_SKIP_AGENTS);
 
-  if (gate === "verify" && fails === 0 && testExitCode === 0 && !process.env.RUNGATE_SKIP_AGENTS) {
-    const b1 = runB1AdversaryAtVerify(state, workDir, results, harnessRoot);
-    b1VerifyAgentResult = b1.agentResult;
-    warns += b1.warns;
+    if (fanoutSkip) {
+      console.log(`B1/B2: skipped — ${fanoutSkip}`);
+      b2AgentResult = { skipped: fanoutSkip };
+      b1VerifyAgentResult = { skipped: fanoutSkip };
+    } else {
+      const b2 = runB2EvidenceValidatorAgent(state, workDir, results, harnessRoot);
+      b2AgentResult = b2.agentResult;
+      warns += b2.warns;
+
+      const b1 = runB1AdversaryAtVerify(state, workDir, results, harnessRoot);
+      b1VerifyAgentResult = b1.agentResult;
+      warns += b1.warns;
+    }
   }
 
   // Write gate result

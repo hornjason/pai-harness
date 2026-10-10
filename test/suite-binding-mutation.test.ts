@@ -533,3 +533,93 @@ describe("#235 mutant: removing the binding makes the gate ship the broken comma
     expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain("MUTANT: suite-to-verdict binding removed");
   });
 });
+
+// ── #126: the verify fan-out binding ────────────────────────────────────────
+
+/**
+ * The third binding, and the one that had never been load-bearing at all.
+ *
+ * `b1-adversary-verify-structure` and `b2-evidence-validator-structure` read
+ * their slot and, finding nothing, warned and returned — so the failure mode
+ * they existed for, the agent never running, was the one case they could not
+ * catch. `verifyFanoutViolations` is now the single site that turns "no
+ * record" into a refusal, and this proves removing it makes the gate accept a
+ * run whose adversarial verification never happened.
+ *
+ * The real/mutant pair matters more here than in the two cases above, because
+ * this check spent its whole life green: "it passes" is the state it was
+ * already in, and only "the mutant passes where the real one refuses"
+ * distinguishes the fix from the defect.
+ */
+const FANOUT_SIGNATURE =
+  "export function verifyFanoutViolations(label: string, val: unknown, tier: unknown): string[] {";
+
+/** A verify-phase state whose fan-out slots are missing — what #126 leaves behind. */
+function plantFanoutGap(): void {
+  const state = {
+    schemaVersion: 2,
+    issue: 126,
+    slug: "pai-harness-126",
+    // SHIP, not VERIFY: gate-executor runs this suite before it spawns the
+    // fan-out and persists the slots, so the check reads at ship, by which
+    // point the fan-out has run or recorded why it did not.
+    phase: "SHIP",
+    projectRoot: PROJECT,
+    issueGoal: "the verify fan-out leaves a trace or the gate refuses",
+    sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+    acs: [
+      {
+        id: "AC-1",
+        type: "CODE",
+        statement: "an absent adversary record is a refusal",
+        threshold: { op: "==", value: 0, unit: "failures" },
+        evidenceMethod: { type: "BUN_TEST" },
+      },
+    ],
+    gates: { verify: { evidenceValidator: { ts: "2026-10-10T00:00:00Z", verdicts: [] } } },
+  };
+  writeFileSync(join(WORK, "workflow-state.json"), JSON.stringify(state, null, 2));
+}
+
+describe("#126 binding: an unrun adversary is refused, and the mutant proves it", () => {
+  test("the real source refuses the gap, the mutant ships it", () => {
+    plantFanoutGap();
+
+    const real = runCheck(GATE_SUITE, "b1-adversary-verify-structure");
+    expect(real.ran, `the real check never ran:\n${real.output}`).toBe(true);
+    expect(real.red, `a run with no adversary record was accepted:\n${real.output}`).toBe(true);
+    expect(real.output, "the refusal does not name the missing slot").toContain("adversary");
+
+    const mutant = runCheck(writeMutant(FANOUT_SIGNATURE), "b1-adversary-verify-structure");
+    expect(
+      mutant.ran,
+      `the mutant never ran — module resolution or the name filter, not a verdict:\n${mutant.output}`,
+    ).toBe(true);
+    expect(
+      mutant.red,
+      `the mutant still refused, so the refusal does not come from the binding:\n${mutant.output}`,
+    ).toBe(false);
+  }, 240000);
+
+  test("the mutation harness throws when the fan-out binding is renamed", () => {
+    const renamed = readFileSync(GATE_SUITE, "utf-8").replace(
+      FANOUT_SIGNATURE,
+      "export function verifyFanoutViolationsRenamed(label: string, val: unknown, tier: unknown): string[] {",
+    );
+    expect(() => buildMutantSource(renamed, FANOUT_SIGNATURE)).toThrow(/could not build the mutant/);
+  });
+
+  test("the binding is used by BOTH slots, not just the one the mutant drives", () => {
+    // A fix applied to b1 alone would pass the pair above while leaving b2
+    // exactly as it was. Asserted on the suite source because the two call
+    // sites are what make the single binding worth having.
+    const src = readFileSync(GATE_SUITE, "utf-8");
+    const calls = src.match(/verifyFanoutViolations\(/g) || [];
+    expect(
+      calls.length,
+      "the fan-out binding is declared and called fewer than twice — one of the two slots still reads its own absence",
+    ).toBeGreaterThanOrEqual(3);
+    expect(src).toContain('verifyFanoutViolations("adversary"');
+    expect(src).toContain('verifyFanoutViolations("evidenceValidator"');
+  });
+});
