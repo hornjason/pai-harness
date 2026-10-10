@@ -1564,6 +1564,12 @@ describe("#171 AC-3: the cycle is capped, and the cap is its own outcome", () =>
     const decl = shipSource.match(/const MAX_SECURITY_REREVIEWS\s*=\s*(\d+)/);
     expect(decl, "ship.js has no re-review cap").not.toBeNull();
     expect(Number(decl![1]), "the re-review cap is zero, so the path never runs").toBeGreaterThan(0);
+    // Bounded above as well: a cap large enough to be effectively unlimited is
+    // a cycle with no exhaustion outcome, and AC-3's refusal would be dead code.
+    expect(
+      Number(decl![1]),
+      "the re-review cap is high enough that exhaustion is unreachable in practice",
+    ).toBeLessThanOrEqual(3);
     expect(
       (shipSource.match(/const MAX_SECURITY_REREVIEWS\s*=/g) || []).length,
       "the cap is declared more than once",
@@ -1705,6 +1711,44 @@ describe("#171 parity: the inlined re-review decision matches the library", () =
       expect(() => inlined.rookScopeCommand("/p", "/h", SHA, "/w/s.json", bad)).toThrow(
         /not a commit SHA/i,
       );
+    }
+  });
+
+  test("the re-review calls no security helper the library does not export", () => {
+    // Parity's "every". The matrices above compare the four helpers that have
+    // a counterpart; a new inlined `rookSomething` used only by the re-review
+    // would have nothing to be compared against, and every one of them would
+    // go on passing while the uncompared one drifted — which is exactly how
+    // computeACHash's extracted copy came to differ from the inlined one.
+    const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
+    const exported = new Set([...lib.matchAll(/export function ([A-Za-z0-9_]+)/g)].map(m => m[1]));
+    expect(exported.size, "lib/security-verdict.ts exports nothing").toBeGreaterThan(0);
+
+    const reviewing =
+      sliceBlock(SPAWN_START, SPAWN_END) + sliceBlock(DECISION_START, DECISION_END);
+    const called = new Set(
+      [...reviewing.matchAll(/\b((?:rook|review)[A-Za-z0-9_]*)\s*\(/g)].map(m => m[1]),
+    );
+    expect(called.size, "the re-review path calls no security helper at all").toBeGreaterThan(0);
+    for (const name of called) {
+      expect(
+        exported.has(name),
+        `the re-review calls ${name}(), which lib/security-verdict.ts does not export — ` +
+          `nothing compares it against anything`,
+      ).toBe(true);
+    }
+  });
+
+  test("the library still exports each of the four exactly once", () => {
+    // A second `export function rookReviewSha` would make which one the
+    // matrices import an ordering detail, and the inlined copy could agree
+    // with a definition production never calls.
+    const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
+    for (const name of ["rookReviewSha", "rookScopeCommand", "rookGateVerdict", "reviewIsCurrent"]) {
+      expect(
+        (lib.match(new RegExp(`export function ${name}\\b`, "g")) || []).length,
+        `lib/security-verdict.ts does not export ${name} exactly once`,
+      ).toBe(1);
     }
   });
 });
