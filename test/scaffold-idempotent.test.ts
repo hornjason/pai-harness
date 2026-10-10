@@ -126,6 +126,52 @@ governs: Test spec
     expect(afterSecond).toBe(handWritten);
   }, 60_000);
 
+  /**
+   * #216 AC-3. The twice-run test above compares AGENTS.md and CODE-MAP.md and
+   * never looks at .github/workflows/ci.yml — which is the file re-scaffold was
+   * destroying. Measuring "nothing changed" with git rather than with a list of
+   * filenames is the point: a file nobody thought to name cannot hide in it.
+   */
+  test("#216 AC-3: a second scaffold over a consumer leaves an empty git diff", () => {
+    const fixtureRoot = join(tmpRoot, "consumer-fixture");
+    mkdirSync(join(fixtureRoot, "src"), { recursive: true });
+    writeFileSync(join(fixtureRoot, "package.json"), JSON.stringify({
+      name: "consumer-fixture",
+      version: "1.0.0",
+      type: "module",
+      scripts: { test: "bun test" },
+    }, null, 2) + "\n");
+    writeFileSync(join(fixtureRoot, "src", "index.ts"), "export const hello = 'world';\n");
+
+    // A consumer job rungate cannot generate, in a file rungate owns.
+    const consumerJob = [
+      "  deploy:",
+      "    needs: test",
+      "    runs-on: ubuntu-latest",
+      "    steps:",
+      "      - run: ./scripts/publish.sh",
+      "",
+    ].join("\n");
+
+    initFixtureRepo(fixtureRoot);
+    commitFixture(fixtureRoot, "init");
+
+    // Run 1 — onboarding. Then the consumer adds their job and commits it.
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+    const ciPath = join(fixtureRoot, ".github", "workflows", "ci.yml");
+    writeFileSync(ciPath, readFileSync(ciPath, "utf-8") + consumerJob);
+    commitFixture(fixtureRoot, "scaffold + consumer deploy job");
+    expect(execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" }).trim()).toBe("");
+
+    // Run 2 — the update path. Nothing may change.
+    execSync(`bun ${ROOT}/scripts/scaffold-project.ts ${fixtureRoot} --fix`, { cwd: fixtureRoot, stdio: "pipe" });
+
+    const dirty = execSync("git status --porcelain", { cwd: fixtureRoot, encoding: "utf-8" })
+      .split("\n").map(l => l.trim()).filter(Boolean);
+    expect(dirty).toEqual([]);
+    expect(readFileSync(ciPath, "utf-8")).toContain("./scripts/publish.sh");
+  }, 180_000);
+
   test("SC-364: generator determinism — generateAgentsMd produces identical output", () => {
     // Call generator twice with same input
     const scan = mockProjectScan();

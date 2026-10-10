@@ -16,6 +16,7 @@ import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
 import { tryLoadRungateConfig } from "../config-loader";
+import { planManagedWrite } from "./managed-workflow";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
 
@@ -1421,7 +1422,84 @@ export function createClaudeMdBridge(root: string, actions: string[]): void {
   }
 }
 
-export function createCiWorkflows(root: string, actions: string[]): void {
+/**
+ * The placeholder spec a `workflow` project is seeded with. Lived inline in
+ * scripts/scaffold-project.ts; moved here so the orchestrator stays an
+ * orchestrator (SCAFFOLD-DECOMPOSITION-SPEC D-3, SC-363).
+ */
+export function createWorkflowDefinitionSpec(root: string, actions: string[]): void {
+  const workflowDef = `---
+doc-type: spec
+testable: no
+governs: workflow-definition
+---
+
+# Workflow Definition
+
+## Trigger
+
+When should this workflow run?
+
+## Inputs
+
+What inputs does this workflow require?
+
+## Process
+
+What steps does this workflow perform?
+
+## Output
+
+What does this workflow produce?
+`;
+  safeWrite(join(root, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
+}
+
+export interface ManagedWriteOptions {
+  /** Overwrite content the harness cannot prove it authored. Opt-in only. */
+  force?: boolean;
+}
+
+/**
+ * The single site through which every harness-managed workflow file is
+ * written (#216).
+ *
+ * Both halves of this function matter and both are mutated by
+ * test/scaffold-ci-preservation-mutation.test.ts: the decision (what, if
+ * anything, to write) comes from `planManagedWrite`, and the REPORT comes from
+ * the same measurement rather than from whether the path happened to exist.
+ * The old code wrote unconditionally and pushed "CREATED" unconditionally, so
+ * a run that deleted a consumer's deploy job reported having created a file.
+ *
+ * A refusal is pushed as an action rather than thrown: the rest of the
+ * scaffold is still worth running, and `scripts/scaffold-project.ts` exits
+ * non-zero when any action is a refusal, so the run is still loud.
+ */
+export function writeManagedWorkflow(filePath: string, generated: string, label: string, actions: string[], opts: ManagedWriteOptions = {}): void {
+  const before = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  const plan = planManagedWrite(before, generated, { force: opts.force === true });
+
+  if (plan.verb === "REFUSED") {
+    actions.push(`REFUSED: ${label} — ${plan.refusal}`);
+    return;
+  }
+  if (plan.verb === "SKIP") {
+    actions.push(`SKIP: ${label} (unchanged)`);
+    return;
+  }
+
+  mkdirSync(dirname(filePath), { recursive: true });
+  writeFileSync(filePath, plan.content);
+  actions.push(
+    plan.verb === "CREATED"
+      ? `CREATED: ${label} (harness-owned)`
+      : plan.verb === "REPLACED"
+        ? `REPLACED: ${label} (${plan.lineDelta} lines, --force)`
+        : `UPDATED: ${label} (consumer content preserved)`,
+  );
+}
+
+export function createCiWorkflows(root: string, actions: string[], opts: ManagedWriteOptions = {}): void {
   const workflowsDir = join(root, ".github", "workflows");
   if (!existsSync(workflowsDir)) {
     mkdirSync(workflowsDir, { recursive: true });
@@ -1544,11 +1622,8 @@ jobs:
           echo "Secret scan clean"
 `;
 
-  writeFileSync(join(workflowsDir, "ci.yml"), ciYml);
-  actions.push("CREATED: .github/workflows/ci.yml (harness-owned)");
-
-  writeFileSync(join(workflowsDir, "gates.yml"), gatesYml);
-  actions.push("CREATED: .github/workflows/gates.yml (harness-owned)");
+  writeManagedWorkflow(join(workflowsDir, "ci.yml"), ciYml, ".github/workflows/ci.yml", actions, opts);
+  writeManagedWorkflow(join(workflowsDir, "gates.yml"), gatesYml, ".github/workflows/gates.yml", actions, opts);
 }
 
 // ── Consumer hook deployment ─────────────────────────────────
@@ -1814,7 +1889,7 @@ export function addPaiHarnessDevDep(root: string, actions: string[]): void {
   }
 
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-  actions.push("CREATED: rungate devDep in package.json");
+  actions.push("UPDATED: package.json (rungate devDep)");
 }
 
 export function runAuditSpecsFix(root: string, actions: string[]): void {
@@ -1831,14 +1906,47 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
   const result = auditSpecs(root, { fix: true });
   const rewriteCount = result.rewrites?.length ?? 0;
   if (rewriteCount > 0) {
-    actions.push(`CREATED: audit-specs --fix rewrote ${rewriteCount} SCs`);
+    // One action per FILE, naming the file. The old single line said "rewrote
+    // 2 SCs" and named no path, so postScaffoldCommit could not stage the
+    // specs this step had just edited — they were left behind by every commit,
+    // and the dirty-tree guard (#216) then read them as somebody else's work.
+    // `specFile` is a bare filename off readdirSync(specs/); the report is
+    // repo-relative, because that is what `git add` and `git status` speak.
+    for (const file of [...new Set((result.rewrites ?? []).map(r => r.specFile))]) {
+      actions.push(`UPDATED: ${file.includes("/") ? file : `specs/${file}`} (audit-specs --fix)`);
+    }
+    actions.push(`AUDITED: audit-specs --fix rewrote ${rewriteCount} SCs`);
   } else {
     actions.push("SKIP: audit-specs (all SCs already matchable)");
   }
 }
 
-export function postScaffoldCommit(root: string, actions: string[]): void {
+export interface PostScaffoldCommitOptions {
+  /** Commit the generated files. Opt-in: `scaffold-project.ts --commit`. */
+  commit?: boolean;
+}
+
+/**
+ * Commit the scaffold's output — but only when asked, and only into a tree
+ * where nothing else is in flight (#216).
+ *
+ * This used to be unconditional. Running `scaffold-project.ts --fix` on a
+ * consumer repo therefore wrote a commit into someone else's history as a side
+ * effect of what reads like an audit, and a consumer cannot undo a commit they
+ * did not know was coming. Two separate guards, because they fail differently:
+ *
+ *  - no `--commit`: the caller never asked, so nothing is committed at all.
+ *  - dirty tree: the caller asked, but there is unrelated work in the tree.
+ *    Staging only generated paths (the earlier fix) keeps that work OUT of the
+ *    commit, but it still leaves a commit landing underneath someone mid-edit.
+ *    Refuse and say which paths stopped it.
+ */
+export function postScaffoldCommit(root: string, actions: string[], opts: PostScaffoldCommitOptions = {}): void {
   try {
+    if (opts.commit !== true) {
+      actions.push("SKIP: post-scaffold commit (not requested — pass --commit)");
+      return;
+    }
     // Stage ONLY what this scaffold run generated, never `git add -A`.
     //
     // The blanket add swept up whatever else was in the working tree and
@@ -1851,7 +1959,7 @@ export function postScaffoldCommit(root: string, actions: string[]): void {
         // Verbs that mean "scaffold wrote this path". Deliberately excludes
         // SKIP / GAP / WARN / AUDIT (no write happened) — and all of them,
         // because missing one silently leaves generated files uncommitted.
-        .map(a => a.trim().match(/^(?:CREATED|UPDATED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
+        .map(a => a.trim().match(/^(?:CREATED|UPDATED|REPLACED|REGENERATED|REFRESHED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
         .filter((p): p is string => Boolean(p))
         // .git/ contents are not tracked; hooks live there.
         // .git/ contents are never tracked. Directories are kept — scaffold
@@ -1864,6 +1972,27 @@ export function postScaffoldCommit(root: string, actions: string[]): void {
 
     if (generated.length === 0) {
       actions.push("SKIP: post-scaffold commit (nothing generated)");
+      return;
+    }
+
+    // Dirty means "dirty with work this scaffold run did not produce".
+    // The scaffold's own output makes the tree dirty by definition, so the
+    // generated set is subtracted first — otherwise the guard would refuse on
+    // every run and be removed within a week.
+    //
+    // -uall, not the default: porcelain collapses an untracked directory to
+    // `.claude/`, which matches no generated path and would make every run
+    // that created a new directory refuse itself.
+    const unrelated = Bun.spawnSync(["git", "-C", root, "status", "--porcelain", "-uall"])
+      .stdout.toString().split("\n")
+      .map(l => l.slice(3).trim().replace(/^.* -> /, "").replace(/^"|"$/g, ""))
+      .filter(Boolean)
+      .filter(p => !generated.some(g => p === g || p.startsWith(`${g}/`)));
+    if (unrelated.length > 0) {
+      actions.push(
+        `REFUSED: post-scaffold commit (dirty working tree: ${unrelated.slice(0, 5).join(", ")}` +
+        `${unrelated.length > 5 ? `, +${unrelated.length - 5} more` : ""}) — commit or stash first`,
+      );
       return;
     }
 

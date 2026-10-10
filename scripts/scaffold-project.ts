@@ -28,6 +28,7 @@ import {
   generateProjectState,
   createClaudeMdBridge,
   createCiWorkflows,
+  createWorkflowDefinitionSpec,
   createGitHooks,
   deployHooksToConsumers,
   addPaiHarnessDevDep,
@@ -47,9 +48,14 @@ const projectPath = args.find(arg => !arg.startsWith('--'));
 const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
                  (args.indexOf('--type') !== -1 ? args[args.indexOf('--type') + 1] : null);
 const fix = args.includes('--fix');
+// #216: both opt-in. --force overwrites consumer content in harness-managed
+// workflow files; --commit lets the run write to the consumer's git history.
+// Defaulting either to true is how a re-scaffold destroys a consumer's build.
+const force = args.includes('--force');
+const commit = args.includes('--commit');
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix]");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix] [--force] [--commit]");
   process.exit(1);
 }
 
@@ -125,33 +131,7 @@ detectUnconvertedSpecs(join(projectPath, "specs"), actions);
 
 if (fix) {
   // Phase 0.8: Workflow project setup
-  if (projectType === "workflow") {
-    const workflowDef = `---
-doc-type: spec
-testable: no
-governs: workflow-definition
----
-
-# Workflow Definition
-
-## Trigger
-
-When should this workflow run?
-
-## Inputs
-
-What inputs does this workflow require?
-
-## Process
-
-What steps does this workflow perform?
-
-## Output
-
-What does this workflow produce?
-`;
-    safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
-  }
+  if (projectType === "workflow") createWorkflowDefinitionSpec(projectPath, actions);
 
   // Phase 1.5: Harness config + briefs for ALL project types
   generateOrAuditProjectHarness(projectPath, actions);
@@ -164,7 +144,7 @@ What does this workflow produce?
   runAuditSpecsFix(projectPath, actions);
   addPaiHarnessDevDep(projectPath, actions);
   createClaudeMdBridge(projectPath, actions);
-  createCiWorkflows(projectPath, actions);
+  createCiWorkflows(projectPath, actions, { force });
   createGitHooks(projectPath, actions);
   deployHooksToConsumers(projectPath, actions);
 
@@ -174,7 +154,7 @@ What does this workflow produce?
     generateCodeMapStep(projectPath, actions);
   }
 
-  postScaffoldCommit(projectPath, actions);
+  postScaffoldCommit(projectPath, actions, { commit });
 } else {
   // Dry-run: report gaps for items that --fix would generate
   if (projectType === "code" && !existsSync(join(projectPath, "CODE-MAP.md"))) {
@@ -197,4 +177,9 @@ console.log("\n=== Scaffold Report ===");
 for (const action of actions) {
   console.log(`  ${action}`);
 }
-console.log(`\nTotal: ${actions.filter(a => a.startsWith("CREATED")).length} created, ${actions.filter(a => a.startsWith("SKIP")).length} skipped`);
+const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
+console.log(`\nTotal: ${count("CREATED")} created, ${count("SKIP")} skipped, ${count("REPLACED")} replaced, ${count("REFUSED")} refused`);
+// A refusal means a consumer's file was NOT written over. Exiting 0 would make
+// that indistinguishable from a clean run in CI, which is how a preserved file
+// turns into a silently stale one (#216).
+if (count("REFUSED") > 0) process.exit(2);

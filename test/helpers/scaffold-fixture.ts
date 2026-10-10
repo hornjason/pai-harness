@@ -39,8 +39,15 @@ const SCAFFOLD = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.
  */
 export const ROLES_CANARY_MODEL = "canary-model-from-roles-json";
 
-/** Copy the golden project to `dest`, optionally seed it, then scaffold it. */
-export function scaffoldFixture(dest: string, seed?: () => void): void {
+/**
+ * Copy the golden project to `dest`, optionally seed it, then scaffold it.
+ *
+ * `commit` passes `--commit`. Since #216 the post-scaffold commit is opt-in —
+ * writing to a consumer's git history as a side effect of an audit is not the
+ * scaffold's to decide — so a fixture that asserts on the commit has to ask
+ * for it, the same way a consumer would.
+ */
+export function scaffoldFixture(dest: string, seed?: () => void, opts: { commit?: boolean } = {}): void {
   try { execSync(`rm -rf ${dest}`, { stdio: "pipe" }); } catch {}
   mkdirSync(dest, { recursive: true });
   execSync(`cp -r ${FIXTURE}/. ${dest}/`);
@@ -50,7 +57,8 @@ export function scaffoldFixture(dest: string, seed?: () => void): void {
   initFixtureRepo(dest);
   commitFixture(dest, "init fixture");
   try {
-    execSync(`bun run ${SCAFFOLD} ${dest} --fix`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
+    const flags = `--fix${opts.commit ? " --commit" : ""}`;
+    execSync(`bun run ${SCAFFOLD} ${dest} ${flags}`, { timeout: 60000, encoding: "utf-8", stdio: "pipe" });
   } catch {
     // Scaffold may not exist yet or may fail — tests should still run and FAIL
   }
