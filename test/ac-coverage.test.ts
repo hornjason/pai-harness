@@ -68,6 +68,9 @@ interface Ac {
   id: string;
   type?: string;
   statement?: string;
+  /** The ISSUE criteria this AC answers (#258). */
+  coversCriteria?: string[];
+  /** The governing SPEC's section. A different thing; see #258. */
   specElement?: string;
   evidenceMethod?: { type?: string };
 }
@@ -121,8 +124,21 @@ const SCS = [
     "[self-hosted, mac-mini-live] runner label and all four extra gates intact",
 ].map((text, i) => `${sc(i + 1)}: ${text}`);
 
+/**
+  * An AC shaped the way Discovery is now required to emit one (#258):
+  * `coversCriteria` names the issue criterion, `specElement` names the
+  * governing spec's section. They are different fields and this helper keeps
+  * them different, because conflating them is the defect under test.
+  */
 function ac(n: number, extra: Partial<Ac> = {}): Ac {
-  return { id: `AC-${n}`, type: "CODE", specElement: sc(n), statement: `does thing ${n}`, ...extra };
+  return {
+    id: `AC-${n}`,
+    type: "CODE",
+    coversCriteria: [sc(n)],
+    specElement: `a section of the governing spec, answering ${sc(n)}`,
+    statement: `does thing ${n}`,
+    ...extra,
+  };
 }
 
 const SIX = [1, 2, 3, 4, 5, 6].map(n => ac(n));
@@ -170,11 +186,11 @@ describe("#251 criterion 1: every SC maps to an AC or to a recorded reason", () 
   test("an AC covering several SCs counts for all of them", () => {
     // `specElement` is comma-separated in real runs — the decompose filter at
     // ship.js already splits on it, so the coverage check has to agree.
-    const merged = [...SIX.slice(0, 5), ac(6, { specElement: `${sc(6)}, ${sc(7)}` })];
+    const merged = [...SIX.slice(0, 5), ac(6, { coversCriteria: [`${sc(6)}, ${sc(7)}`] })];
     expect(api.coverageViolations(SCS, merged, [])).toEqual([]);
   });
 
-  test("an AC with no specElement covers nothing, rather than covering anything", () => {
+  test("an AC with no attribution covers nothing, rather than covering anything", () => {
     const orphan = [...SIX.slice(0, 6), { id: "AC-7", type: "CODE", statement: "something" }];
     const v = api.coverageViolations(SCS, orphan, []);
     expect(v.join("\n"), "an AC pointing at no SC was credited with the missing one")
@@ -320,6 +336,165 @@ describe("#251: the decision is wired in, not merely defined", () => {
   });
 });
 
+/**
+ * #258: the input shape a REAL run produces, replayed.
+ *
+ * Everything above this point uses a fixture I wrote, and every case in it
+ * passed while `main` could not ship. Run `wf_0dd46ae5-495` on #254 — the
+ * first end-to-end run after #251 merged — refused three success criteria
+ * that five ACs covered, and refused them unconditionally: the criteria carry
+ * no `SC-N` token, so nothing could ever have covered them.
+ *
+ * Two assumptions in my fixture were wrong, and neither was knowable from the
+ * code:
+ *
+ *   - Criteria are usually NOT numbered. #254's three are bare checkbox
+ *     lines, which is the common case.
+ *   - `ac.specElement` names the governing SPEC's section, not the issue's
+ *     criteria. Two of the five ACs in that run share one value, which a
+ *     criterion reference could not meaningfully do.
+ *
+ * So the fixture below is READ FROM DISK, copied verbatim out of the run's
+ * journal. A fixture written from imagination can only re-test what its
+ * author already believed, which is precisely how the first version shipped.
+ */
+describe("#258: the shape a real run produces", () => {
+  const real = JSON.parse(
+    readFileSync(join(REPO_ROOT, "test", "fixtures", "wf_0dd46ae5-495-discovery.json"), "utf-8"),
+  ) as { successCriteria: string[]; acs: Ac[] };
+
+  /** Attribution as Discovery is now required to record it. */
+  const attributed = (ids: number[][]) =>
+    real.acs.map((ac, i) => ({ ...ac, coversCriteria: (ids[i] || []).map(n => `C-${n}`) }));
+
+  test("the fixture is the real thing, not a tidied copy", () => {
+    // Guards against someone 'fixing' the fixture into the shape that was
+    // broken. Each of these three properties is why the run refused.
+    expect(real.successCriteria).toHaveLength(3);
+    expect(real.acs).toHaveLength(5);
+    expect(
+      real.successCriteria.some(c => /\bSC-\d+\b/.test(c)),
+      "the criteria have been given ids they did not have",
+    ).toBe(false);
+    const elements = real.acs.map(a => a.specElement);
+    expect(
+      new Set(elements).size,
+      "the duplicate specElement was tidied away — it is the evidence that field is not a criterion reference",
+    ).toBeLessThan(elements.length);
+  });
+
+  test("the defect, reproduced: unattributed ACs cover nothing", () => {
+    // Exactly what the run passed in. Five ACs, three criteria, no
+    // attribution — and every criterion comes back uncovered. This is the
+    // behaviour, and it is correct NOW: with nothing recording what each AC
+    // answers, the check genuinely cannot tell. What was wrong is that there
+    // was no way to record it.
+    expect(api.coverageViolations(real.successCriteria, real.acs, [])).toHaveLength(3);
+  });
+
+  test("with attribution recorded, the same run does NOT refuse", () => {
+    // The criterion that falsifies the fix. If this passes and the run still
+    // refuses, the fix is in the wrong place.
+    const acs = attributed([[1], [2], [3], [1, 2], [1, 2, 3]]);
+    expect(
+      api.coverageViolations(real.successCriteria, acs, []),
+      "a fully attributed run still refuses — main cannot ship",
+    ).toEqual([]);
+  });
+
+  test("one AC may cover several criteria", () => {
+    const acs = attributed([[1, 2, 3], [], [], [], []]);
+    expect(api.coverageViolations(real.successCriteria, acs, [])).toEqual([]);
+  });
+
+  test("a genuinely uncovered criterion STILL refuses, named by its text", () => {
+    // The fix must not buy its green by making the check unable to fail.
+    // Criterion 3 is attributed by nobody.
+    const acs = attributed([[1], [2], [1], [2], [1, 2]]);
+    const v = api.coverageViolations(real.successCriteria, acs, []);
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain("env recording keeps working unchanged");
+    expect(v[0], "the refusal does not say which criterion id was missed").toContain("C-3");
+  });
+
+  test("a spec section title carrying an SC number covers nothing — the parser differential", () => {
+    // Security review of the first version of this fix, caught before merge.
+    // `acCoversIds` also scanned `specElement` "for issues whose criteria
+    // genuinely are SC-numbered", with a comment claiming it could only add
+    // coverage for an id the criteria already carry. The comment was false.
+    //
+    // Spec section titles in this repo routinely contain SC numbers — one is
+    // in this very fixture. An AC covering NOTHING was credited with SC-633,
+    // and a criterion numbered SC-633 came back fully covered by an AC that
+    // answers it in no way at all. A parser differential straight through the
+    // control this issue had just installed.
+    const title = real.acs[2].specElement!;
+    expect(title, "the fixture no longer carries an SC number in a spec title").toContain("SC-633");
+
+    const criteria = ["SC-633: something entirely unrelated to the draft lifecycle"];
+    const coversNothing = [{ id: "AC-1", type: "CODE", coversCriteria: [], specElement: title }];
+    expect(
+      api.coverageViolations(criteria, coversNothing, []),
+      "an AC that covers nothing was credited via its spec section title",
+    ).toHaveLength(1);
+  });
+
+  test("an id no criterion defines satisfies nothing", () => {
+    // Well-formed attribution naming ids this issue does not have. Stated as
+    // a property rather than guarded by a filter: a filter was written here
+    // and removed, because its mutation turned zero tests red — it could not
+    // change any outcome, since an unknown token in the covered set is never
+    // consulted. This case is what actually holds the property.
+    const acs = real.acs.map(ac => ({ ...ac, coversCriteria: ["C-99", "SC-633"] }));
+    expect(api.coverageViolations(real.successCriteria, acs, [])).toHaveLength(3);
+  });
+
+  test("a spec section title in coversCriteria covers nothing", () => {
+    // The confusion #258 is about, stated as a case: if an agent puts the
+    // specElement value in the attribution field, that must not count.
+    const acs = real.acs.map(ac => ({ ...ac, coversCriteria: [ac.specElement!] }));
+    expect(api.coverageViolations(real.successCriteria, acs, [])).toHaveLength(3);
+  });
+
+  test("an AC carries both fields, with different values", () => {
+    // They are different things and a run proves it by holding both at once.
+    const acs = attributed([[1], [2], [3], [], []]);
+    expect(acs[0].specElement).toBe("A refusal reports the whole run, and leaves no mergeable PR (#252)");
+    expect((acs[0] as any).coversCriteria).toEqual(["C-1"]);
+    expect(api.coverageViolations(real.successCriteria, acs, [])).toEqual([]);
+  });
+
+  test("a deferral still covers an unnumbered criterion, and still needs a reason", () => {
+    const acs = attributed([[1], [2], [], [], []]);
+    expect(
+      api.coverageViolations(real.successCriteria, acs, [
+        { specElement: "C-3", reason: "deferred to a follow-up", subIssue: 259 },
+      ]),
+    ).toEqual([]);
+    expect(
+      api.coverageViolations(real.successCriteria, acs, [{ specElement: "C-3" }]),
+      "a reasonless deferral bought silence on an unnumbered criterion",
+    ).toHaveLength(1);
+  });
+
+  test("Discovery is REQUIRED to produce the attribution, not merely asked", () => {
+    // An optional attribution field is an attribution nobody records, and
+    // then every run refuses — the fail-closed half of this defect.
+    const at = shipSource.indexOf("coversCriteria: { type: 'array'");
+    expect(at, "the discovery schema has no coversCriteria field").toBeGreaterThan(-1);
+    const required = shipSource.slice(at, at + 600);
+    expect(
+      required,
+      "coversCriteria is optional, so the model may omit it and every run refuses",
+    ).toContain("'evidenceMethod', 'coversCriteria'");
+  });
+
+  test("the prompt tells Discovery the run REFUSES, and names the two fields apart", () => {
+    expect(shipSource).toContain("EVERY criterion above must appear in some AC's coversCriteria");
+    expect(shipSource).toContain("specElement is a different field");
+  });
+});
+
 /** Each builder throws if its substitution changed nothing, so a rename aborts. */
 function mutate(find: string, replace: string): Api {
   if (!BLOCK.includes(find)) {
@@ -332,7 +507,7 @@ describe("#251: the coverage check can fail", () => {
   test("a check that credits every criterion is caught", () => {
     // The #216 defect as a code change: coverage answers itself and the
     // six-of-seven run goes through.
-    const m = mutate("if (id && covered.has(id)) continue", "if (true) continue");
+    const m = mutate("if (covered.has(c.id) || covered.has(c.alias)) continue", "if (true) continue");
     expect(m.coverageViolations(SCS, SIX, [])).toEqual([]);
     expect(api.coverageViolations(SCS, SIX, []).length).toBeGreaterThan(0);
   });
@@ -348,7 +523,7 @@ describe("#251: the coverage check can fail", () => {
 
   test("a refusal that reports a count instead of the text is caught", () => {
     // "6 of 7 covered" is the version of this that looks like it works.
-    const m = mutate('"${scLabel(line, id)}"', "one criterion");
+    const m = mutate('"${scLabel(c.text, scIdOf(c.text))}"', "one criterion");
     expect(m.coverageViolations(SCS, SIX, []).join("\n")).not.toContain("mac-mini-live");
     expect(api.coverageViolations(SCS, SIX, []).join("\n")).toContain("mac-mini-live");
   });

@@ -1,0 +1,57 @@
+{
+  "_provenance": {
+    "run": "wf_0dd46ae5-495",
+    "issue": 254,
+    "date": "2026-10-10",
+    "what": "The FIRST end-to-end pipeline run after #251 merged. It refused at Discovery, naming all three success criteria as uncovered, while Discovery had produced five ACs that do cover them. The refusal was wrong and main could not ship.",
+    "why_this_file": "#251's fixture invented a shape production does not produce: it set specElement to 'SC-N', referencing the issue's criteria. Discovery actually puts the governing SPEC's section titles there — note AC-1 and AC-4 share one value, which a criterion reference could not meaningfully do. A fixture I write from imagination can only re-test what I already believed; this one is copied verbatim out of the run's journal.jsonl.",
+    "do_not": "Do not tidy these strings. The duplicate specElement, the missing SC- ids on the criteria, and the prose criterion text are each load-bearing — they are the input shape that broke the check."
+  },
+
+  "successCriteria": [
+    "The PR step runs on every path that reaches the Ship phase, container configured or not",
+    "A test asserts the PR command is not inside the container conditional, and a mutation that moves it back turns that test red",
+    "The container path's env recording keeps working unchanged — it is a separate concern and must not be folded into the PR step"
+  ],
+
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "The Ship phase PR step is executed on the container-configured path as well as the no-container path, proven by running the extracted block twice with containerConfig set and null",
+      "specElement": "A refusal reports the whole run, and leaves no mergeable PR (#252)"
+    },
+    {
+      "id": "AC-2",
+      "type": "CODE",
+      "statement": "A mutant copy of ship.js that moves the pr-upsert step back inside the container conditional is built in the test and observed leaving the PR step unrun on the container path",
+      "specElement": "a mutation that removes the guard must turn the test red"
+    },
+    {
+      "id": "AC-3",
+      "type": "CODE",
+      "statement": "The container path still runs its own record-env step writing environments.prod rebuild, smoke and quinn, as a separate agent call from the PR step",
+      "specElement": "SC-633 PR-READINESS block and the draft lifecycle"
+    },
+    {
+      "id": "AC-4",
+      "type": "CODE",
+      "statement": "After the PR step moves, the existing ship PR, failure-report and status-vocabulary suites still report zero failures",
+      "specElement": "A refusal reports the whole run, and leaves no mergeable PR (#252)"
+    },
+    {
+      "id": "AC-5",
+      "type": "CODE",
+      "statement": "HARNESS-STANDARD.md records new criteria naming the marker and the mutation counts that were actually run",
+      "specElement": "mutation evidence table recorded beside the SCs"
+    }
+  ],
+
+  "whatTheRunSaid": {
+    "status": "SHIP_FAILED",
+    "phase": "Discovery",
+    "uncoveredCount": 3,
+    "acCount": 5,
+    "criteriaCount": 3
+  }
+}
