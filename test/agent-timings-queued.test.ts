@@ -46,7 +46,7 @@ import {
   summarize,
 } from "../scripts/record-agent-timings.ts";
 
-// SPEC-REF: HARNESS-STANDARD.md § Waiting is not working (#239) — SC-621, SC-622, SC-623
+// SPEC-REF: HARNESS-STANDARD.md § Waiting is not working (#239) — SC-628, SC-629, SC-630
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(REPO_ROOT, "scripts", "record-agent-timings.ts");

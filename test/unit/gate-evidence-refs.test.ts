@@ -13,6 +13,7 @@
  */
 
 import { describe, test, expect, beforeEach } from "bun:test";
+import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -33,6 +34,41 @@ function stateWith(command: string) {
       },
     ],
   } as Record<string, any>;
+}
+
+/**
+ * A tracked file this branch has not touched relative to origin/main (#247).
+ *
+ * Derived rather than named, so editing any production file cannot turn the
+ * test that uses it red. If no such file exists — or origin/main is not
+ * reachable to compare against — this THROWS rather than returning a fallback:
+ * the caller is asserting something about a file it believes is unmodified, and
+ * a fallback would let it assert that about a file that is not. The failure
+ * then reads "the fixture moved", which is true, instead of "#118 regressed",
+ * which would not be.
+ */
+function unmodifiedTrackedFile(): string {
+  const git = (args: string[]) =>
+    spawnSync("git", args, { cwd: REPO_ROOT, encoding: "utf-8" });
+
+  const changed = git(["diff", "--name-only", "origin/main"]);
+  if (changed.status !== 0) {
+    throw new Error(
+      "cannot pick an unmodified subject: origin/main is not comparable here " +
+        `(${(changed.stderr || "").trim() || "no stderr"}). This test needs one tracked file ` +
+        "it knows this branch has not touched; it is not a verdict on #118.",
+    );
+  }
+  const dirty = new Set(changed.stdout.split("\n").filter(Boolean));
+  const tracked = git(["ls-files"]).stdout.split("\n").filter(Boolean);
+  const clean = tracked.find(f => !dirty.has(f) && !f.includes(" "));
+  if (!clean) {
+    throw new Error(
+      `cannot pick an unmodified subject: all ${tracked.length} tracked files differ from ` +
+        "origin/main. This test needs one that does not; it is not a verdict on #118.",
+    );
+  }
+  return clean;
 }
 
 function run(state: Record<string, any>) {
@@ -71,9 +107,8 @@ describe("#118: the executing command is the corrected one", () => {
 
   test("and that command no longer produces a false FAIL", () => {
     // The payoff, asserted against the real repository rather than a fixture.
-    // `hooks/TestSuiteGuard.hook.ts` is identical to origin/main; against the
-    // local `main` ref it may not be. This is the AC that produced a confident,
-    // detailed, wrong FAIL and spawned a second Marcus to "fix" a correct file.
+    // This is the AC that produced a confident, detailed, wrong FAIL and
+    // spawned a second Marcus to "fix" a correct file.
     //
     // PASS where origin/main is reachable. Where it is not — CI checks out the
     // PR merge ref and may have no refs/remotes/origin/main — the gate still
@@ -81,8 +116,18 @@ describe("#118: the executing command is the corrected one", () => {
     // verdict on the file. That distinction is the whole of #118: a bare PASS
     // assertion stated an accident of the local clone, and the "PASS or SKIP"
     // version it was replaced with let unmeasured ACs advance (see below).
+    //
+    // The subject is DERIVED, not named (#247). This test used to hardcode
+    // `hooks/TestSuiteGuard.hook.ts` on the assumption that it is identical to
+    // origin/main — true on main, false on any branch that edits it, and
+    // `work-239` edits it. A test that goes red because someone touched an
+    // unrelated hook reports "#118 regressed" for something #118 did not do,
+    // which is this repo's own defect class pointing the other way. Worse, the
+    // quickest way to green is to stop asserting — on the one AC that exists
+    // because a confident wrong FAIL was acted on.
+    const subject = unmodifiedTrackedFile();
     const ac = run(stateWith(
-      "git diff --exit-code main -- hooks/TestSuiteGuard.hook.ts >/dev/null 2>&1; echo $?",
+      `git diff --exit-code main -- ${subject} >/dev/null 2>&1; echo $?`,
     ));
     const context = `evidence ran: ${ac.evidenceMethod.command}`;
     if (ac.verdict !== "PASS") {

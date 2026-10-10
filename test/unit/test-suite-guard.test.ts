@@ -102,7 +102,7 @@ describe('TestSuiteGuard', () => {
  * these cases drive the actual executables over stdin payloads shaped like the
  * ones Claude Code sends: one session id, two sub-agents, two worktrees.
  *
- * SC-621, SC-622.
+ * SC-628, SC-629.
  */
 describe('TestSuiteGuard — sibling sub-agents under one session id (#239)', () => {
   const RELEASE_PATH = join(import.meta.dir, '../../hooks/TestSuiteRelease.hook.ts');
