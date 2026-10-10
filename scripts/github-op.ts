@@ -56,6 +56,7 @@ import {
   createGitHubClient,
   createIssue,
   getIssue,
+  markPRReady,
   updateIssue,
   upsertPR,
 } from "../lib/github";
@@ -70,6 +71,9 @@ export type Flags = Record<string, string>;
  * command line, and the failure this script replaced was a GitHub write that
  * quietly did not happen.
  */
+/** Flags that may appear without a value. See the note in parseFlags. */
+const BOOLEAN_FLAGS = new Set(["draft"]);
+
 export function parseFlags(argv: string[]): Flags {
   const flags: Flags = {};
   for (let i = 0; i < argv.length; i++) {
@@ -82,9 +86,19 @@ export function parseFlags(argv: string[]): Flags {
       flags[arg.slice(2, eq)] = arg.slice(eq + 1);
       continue;
     }
+    const name = arg.slice(2);
+    // Valueless flags are an explicit ALLOWLIST, not a general relaxation.
+    // "every option is --name value" is what stops a flag whose value was
+    // omitted from silently swallowing the next flag as its value — which
+    // would turn `--body --draft` into a PR body of "--draft". Only names
+    // listed here may stand alone.
+    if (BOOLEAN_FLAGS.has(name)) {
+      flags[name] = "true";
+      continue;
+    }
     const value = argv[++i];
     if (value === undefined) throw new Error(`${arg} needs a value`);
-    flags[arg.slice(2)] = value;
+    flags[name] = value;
   }
   return flags;
 }
@@ -153,6 +167,7 @@ function labels(flags: Flags): string[] {
 
 export const COMMANDS = [
   "pr-upsert",
+  "pr-ready",
   "comment",
   "issue-update",
   "issue-label",
@@ -193,12 +208,43 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
       } else {
         title = titleFrom(flags);
       }
-      return await upsertPR(client, repo, {
+      const wantsDraft = flags.draft !== undefined;
+      const result = await upsertPR(client, repo, {
         head: required(flags, "head"),
         base: flags.base || "main",
         title,
         body: readBody(flags, { allowEmpty: true }),
+        // `--draft` with no value parses as the empty string, so presence is
+        // the test rather than truthiness (#252).
+        draft: wantsDraft,
       });
+      // A draft that was asked for and not granted is a FAILURE here, not a
+      // field the caller may notice later. GitHub does not always honour
+      // `draft` — it is unavailable on some plans — and the create succeeds
+      // anyway. The run would then carry on believing it had the protection,
+      // and a missing protection looks exactly like one that was never
+      // requested. Refuse where the cause is still visible, and name the PR,
+      // because by this point one exists and somebody has to go and look at
+      // it.
+      if (wantsDraft && result.draft !== true) {
+        throw new Error(
+          `draft was requested but PR #${result.number} is not a draft — ` +
+            `it is open and mergeable at ${result.html_url}, and this run has no way to gate it`,
+        );
+      }
+      return result;
+    }
+
+    case "pr-ready": {
+      // The other half of `--draft` (#252). A run opens its PR as a draft and
+      // calls this only once everything that can still refuse has not. If this
+      // step never runs — because the run failed, or died — the PR stays a
+      // draft, which is the state the run actually earned.
+      const n = Number(required(flags, "number"));
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`--number must be a positive integer, got "${flags.number}"`);
+      }
+      return await markPRReady(client, repo, n);
     }
 
     case "comment": {

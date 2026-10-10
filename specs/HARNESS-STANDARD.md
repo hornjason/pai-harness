@@ -651,7 +651,7 @@ source-text assertion.
 - [x] SC-585: lib/security-verdict.ts contains [reviewIsCurrent] — the comparison lives beside `rookGateVerdict`, so the inlined copy in ship.js and the library are driven over one input matrix by `test/security-verdict-blocks.test.ts`, as #129 established
 - [x] SC-586: workflows/ship.js contains [recommit, buildCommit] — `buildCommit` names the commit the PR is opened from, because a stale `buildCommit` is the same defect in the field the ship gate already reads
 - [x] SC-603: workflows/ship.js contains [STALE-REFUSAL-START, reviewIsCurrent(testedSha] — the Ship regression round's new tip is compared against the reviewed commit after `recommit-ship`, not only before it, so the loop that exists because something failed is the one that is checked
-- [x] SC-604: workflows/ship.js contains [shipRoundCurrency.current, reason: shipRoundReason] — the Ship-round mismatch returns SHIP_FAILED on the path the Verify-side mismatch already uses, and no branch in the file turns a currency verdict into a log line the run continues past
+- [x] SC-604: workflows/ship.js contains [shipRoundCurrency.current, shipFailed('Ship', shipRoundReason] — the Ship-round mismatch returns SHIP_FAILED on the path the Verify-side mismatch already uses, and no branch in the file turns a currency verdict into a log line the run continues past
 - [x] SC-605: test/security-verdict-blocks.test.ts contains [the ship round moves the branch past the review, a ship round that changes nothing still ships] — the refusal and its positive control are both named cases over the block extracted from ship.js, so a check that refuses every Ship round fails this file
 
 SC-598 — both remediation recommits handing the recorder `quinnLocalVerdict`
@@ -879,7 +879,7 @@ turns 5 red, and pointing the unrecognised-verdict fallback at
 and reverted. Two of them are also built as mutants inside the test file, from
 the real block, on every run.
 
-- [x] SC-611: workflows/ship.js contains [PROVE-STATUS-START, SHIPPED_UNPROVEN, status: shipStatusFor(proveVerdict, suiteReading)] — the verdict-to-status map is one named block the return calls, and a skipped prove reports an unproven status. The second argument arrived with #224: the status is capped by the suite reading as well as the prove verdict, so a passing prove cannot outrank a failing suite. The SC named the one-argument call and caught the signature change the moment it landed, which is the binding working — the code was right and this text was stale
+- [x] SC-611: workflows/ship.js contains [PROVE-STATUS-START, SHIPPED_UNPROVEN, const terminalStatus = shipStatusFor(proveVerdict, suiteReading)] — the verdict-to-status map is one named block the return calls, and a skipped prove reports an unproven status. The second argument arrived with #224: the status is capped by the suite reading as well as the prove verdict, so a passing prove cannot outrank a failing suite. The SC named the one-argument call and caught the signature change the moment it landed, which is the binding working — the code was right and this text was stale. #252 named the BINDING rather than the return site: the status is needed before the return, because the draft-readiness decision reads it, and test/ship-status-vocabulary.test.ts traces the returned value through that one binding instead of requiring it to be the call verbatim
 - [x] SC-612: workflows/ship.js must NOT contain ['SHIPPED'] — the bare unqualified status literal is gone from the file, so no status it returns is a strict prefix of another
 - [x] SC-613: test/ship-status-vocabulary.test.ts contains [vocabularyViolations, loadStatusFor, is a strict prefix of] — the property runs the extracted block over every verdict input rather than grepping ship.js for the words
 - [x] SC-614: test/ship-status-vocabulary.test.ts contains [a mutant map where PROVEN returns the SKIP status is caught, could not build the mutant] — the break lives in the test and is re-checked every run, and a renamed map aborts the file instead of passing it
@@ -996,6 +996,135 @@ imports looks like.
 - [x] SC-618: gates/workflow.test.ts contains [export function prevalidationViolations, An unmeasured pre-validation is not a clean one] — the pre-validation reading is converted to a refusal at one site, and an absent reading refuses instead of passing
 - [x] SC-619: test/suite-binding-mutation.test.ts contains [prevalidateEvidence, broken evidence commands on AC-2] — the fixture's broken evidence command is dry-run by the real pre-validator before the verdict reaches the gate, and the refusal names the AC id rather than only reporting a count
 - [x] SC-620: test/suite-binding-mutation.test.ts contains [the mutation harness throws when the pre-validation binding is renamed, PREVALIDATION_SIGNATURE] — the removal of this binding is performed on a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it
+
+### A refusal reports the whole run, and leaves no mergeable PR (#252)
+
+Run `wf_e105dd33-220` on #216 ended with one sentence — the security review
+had gone stale — and that sentence reads as "the work was fine, a commit
+landed late, re-run it". The same run had already recorded a FAILED verify
+gate with two fan-out slots never written, a FAILED ship gate on three checks,
+and a red typecheck. All of it was in `workflow-state.json`. **The run knew and
+the summary did not say.**
+
+The mechanism was that `reason` was whatever the last phase to refuse passed
+up, which makes the ordering the hazard rather than an incidental detail: the
+later a failure happens the more it hides, and staleness happens nearly last
+and sounds the most innocuous of the list. So refusals are collected into a
+ledger as they happen, ranked by SEVERITY rather than by time, and the reason
+the run stopped is entered into that ledger as one refusal among the rest
+instead of standing in for them. The immediate reason is still reported, on
+`immediateReason` — the difference between the two fields is the fix.
+
+Fourteen hand-built refusal returns became one `shipFailed` helper. Three of
+the fourteen carried no reason at all.
+
+The same run also left **PR #250 open, not draft, and `mergeable: MERGEABLE`**,
+carrying the code that destroyed a consumer's CI. The fix is not a cleanup step
+— a cleanup step is another thing that has to run, on the path where things by
+definition stopped running. The PR is opened as a DRAFT and marked ready only
+at the terminal, so the default, including the default when a run dies or is
+killed, is the state the run actually earned. `SHIPPED_UNPROVEN` is above the
+readiness line on purpose: for a LIGHT-ceremony issue with no UI criteria,
+prove is skipped by design and the verify gate has already run every evidence
+command.
+
+- [x] SC-631: workflows/ship.js contains [FAILURE-LEDGER-START, function shipFailed(, REFUSAL_SEVERITY] — refusals are collected and ranked at one site, and the status literal appears exactly once in the file so no refusal path can report a single reason
+- [x] SC-632: test/ship-failure-report.test.ts contains [the run that shipped this bug names both failed gates, a gate that failed and then healed to PASS is not reported as failed] — the ledger is EXECUTED over the real run's recorded failures, and a healed gate is not reported, because a report with false entries in it is a report nobody reads twice
+- [x] SC-633: workflows/ship.js contains [PR-READINESS-START, SHIP_STATUS_READY_THRESHOLD, github-op.ts pr-ready] — the PR is opened as a draft and undrafted only at the terminal, and the readiness decision is its own named block rather than a condition inside the undraft step
+- [x] SC-634: test/ship-pr-draft.test.ts contains [pr-ready runs before the ship gate, every terminal status the run can report is ranked by this decision, an unrankable threshold] — position is asserted, not just presence, and both fail-open directions are ruled out: an unranked status and an unrankable threshold each leave the draft alone
+- [x] SC-635: lib/github.ts contains [convertPullRequestToDraft, it cannot be converted to a draft] — an upsert that is asked for a draft converts an already-ready PR back, because protecting the first run on a branch and nothing after it is no protection in a workflow that re-enters its own phases
+- [x] SC-636: workflows/ship.js contains [function observedDraft(, is NOT a draft] — the recorded draft state is what the PR step reported, three-valued so "nobody looked" is distinguishable from "it is mergeable", and the dangerous combination is logged at the moment it becomes true
+- [x] SC-637: scripts/github-op.ts contains [draft was requested but PR #, and this run has no way to gate it] — a draft that was asked for and not granted exits non-zero, because GitHub does not always honour the field and an absent protection is indistinguishable from one that was never requested
+
+Two constraints this mechanism does NOT remove, recorded rather than papered
+over:
+
+- **The run learns its PR's state from an agent's transcription, not from the
+  API.** `workflows/ship.js` runs in a sandbox with no module loading (#69), so
+  every field it knows about the PR — `prNumber` as much as `prDraft` — is
+  what a language model reported after reading command output. `github-op.ts`
+  refusing non-zero on an ungranted draft is the mitigation that does not
+  depend on the transcription being faithful: the step fails, and a failed
+  step is the one thing the schema makes hard to misreport.
+- **The PR step is unreachable when a container is configured** (#254, filed
+  from the same review). `pr-upsert` appears once in the file, inside the
+  `else` arm of `if (containerConfig)`, so a consumer with a container gets no
+  PR and therefore no draft lifecycle at all. `prReadiness` reports `NO_PR`,
+  which is accurate, so this criterion holds — but a whole branch of the
+  workflow has no PR at all, and that is its own defect rather than part of
+  this one. DailyBriefDashboard is not affected: its `.claude/rungate.json`
+  carries no `container` key, checked rather than assumed.
+
+**The first version of the draft fix was wrong, and the way it was wrong is
+the point.** `upsertPR` passed `draft` only to the create path, with a comment
+justifying it: "a PR a human already marked ready is theirs." That reasoning
+does not survive contact with how this harness runs. A re-ship pushes new
+commits to the SAME branch, so run A undrafts #N, run B updates it and then
+refuses, and #N is mergeable carrying run B's unproven code — and whatever the
+human approved is not what is on the branch any more. Re-runs are not the
+exception here: #155, #164, #169 and #171 all exist because this workflow
+re-enters its own phases.
+
+The second half is worse and smaller. `shipFailed` recorded
+`pr: { draft: true }` on the reasoning that the undraft step had not run. That
+is **a claim about a state it never looked at**, false exactly when it matters,
+in the artefact a reader consults to find out whether the refusal left anything
+behind. It is now three-valued and observed: `false` is the dangerous reading
+and has to be distinguishable from "the step did not say", which a boolean
+cannot do.
+
+Found by security review of the PR, before merge, not by the tests written for
+it.
+
+| Mutation | Red |
+|---|---|
+| `upsertPR` stops converting an already-ready PR back to draft | 2 |
+| `observedDraft` returns `true` instead of reading the step's report | 2 |
+| the convert fires unconditionally, even on an already-draft PR | 1 |
+| the ungranted-draft refusal removed, so an unhonoured `draft` passes quietly | 1 |
+
+Measured over `test/ship-failure-report.test.ts` + `test/ship-pr-draft.test.ts`
++ `test/github-op.test.ts` + `test/github-client.test.ts` (132 tests); none
+left in the tree.
+
+The third one is recorded for a second reason: **the first attempt at it
+reported green because the `perl` substitution silently matched nothing.** A
+mutation harness that no-ops when its target moves is indistinguishable from a
+mutation the code survived, which is this rule's own subject turned on the
+tooling used to check it. Re-run with a substitution that throws when the
+target is absent, it is 1 red.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-failure-report.test.ts` + `test/ship-pr-draft.test.ts` +
+`test/blocking-grades.test.ts` + `test/security-verdict-blocks.test.ts` +
+`test/github-op.test.ts` (302 tests):
+
+| Mutation | Red |
+|---|---|
+| the summary becomes an echo of the immediate reason — the defect, reintroduced | 3 |
+| `--draft` dropped from the `pr-upsert` command, so a refusal leaves a mergeable PR | 1 |
+| `recordGateRefusal` short-circuited to `return []` — the ledger is never written | 10 |
+| `shipFailed` stops entering the immediate reason into the ledger | 4 |
+
+None is left in the tree; all were run and reverted. Three more mutations run
+inside the test files on every pass, built from the real source: dropping the
+readiness threshold, pointing it at a name the strength scale does not carry,
+and ranking by recency instead of severity. Each builder throws if its
+substitution changed nothing, so a rename aborts the file rather than passing
+it.
+
+Two things the first attempt got wrong, recorded because neither was caught by
+reading:
+
+- The sliced decision blocks in `test/security-verdict-blocks.test.ts` and
+  `test/blocking-grades.test.ts` no longer build their refusal by hand. A stub
+  `shipFailed` in those sandboxes would have made every refusal assertion in
+  both files a test of the stub, so ship.js's real helper is sliced in beside
+  the block under test and the ledger is fresh per execution.
+- The new test file used the bare token `SC-1` in a describe name, which
+  `findTestFilesForSCs` reads as a coverage claim — #149, reintroduced within
+  the hour, and caught by its own guard. The criteria are referred to by
+  number in prose instead.
 
 ---
 

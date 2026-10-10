@@ -123,13 +123,169 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     ]);
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ number: 11, html_url: "https://x/pull/11", action: "created" });
+    expect(JSON.parse(stdout)).toEqual({ number: 11, html_url: "https://x/pull/11", action: "created", draft: false });
     // Owner-qualified head is the documented filter form. Without it the list
     // is unfiltered, the match is done client-side, and it misses as soon as
     // the repo has more than one page of open PRs.
     expect(captured[0].query.head).toBe("owner:fix-137");
     expect(captured[0].query.state).toBe("open");
     expect(captured[1].body).toMatchObject({ head: "fix-137", base: "main", body: "Fixes #137" });
+  });
+
+  test("pr-upsert --draft opens it as a draft (#252)", async () => {
+    // The request GitHub would have received, not the flag being accepted.
+    // A `--draft` the script parses and drops looks identical from the caller
+    // and produces the mergeable PR this is here to prevent.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    // The response carries `draft: true` because that is what GitHub returns
+    // for a granted draft, and the script now refuses when it asked for one
+    // and did not get it. A stub that omitted the field would be asserting
+    // against a response shape the API does not produce.
+    stub("POST", "/repos/owner/name/pulls", { number: 12, html_url: "https://x/pull/12", draft: true });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--base", "main",
+      "--title", "fix(#252): draft until proved", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(captured[1].body).toMatchObject({ head: "fix-252", draft: true });
+  });
+
+  test("pr-upsert without --draft is not a draft", async () => {
+    // Positive control: a default that drafted everything would satisfy the
+    // case above and quietly change what every other caller produces.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 13, html_url: "https://x/pull/13" });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252b", "--base", "main",
+      "--title", "t", "--body", "b",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(captured[1].body).toMatchObject({ draft: false });
+  });
+
+  test("pr-upsert --draft drags an already-ready PR back into draft (#252)", async () => {
+    // The gap the first attempt left, found by security review before merge.
+    // `upsertPR` passed `draft` only to the create path, so the protection
+    // covered the FIRST run on a branch and nothing after it — and a re-run on
+    // the same branch is this harness's common case (#155, #164, #169, #171 all
+    // exist because the workflow re-enters its own phases). Run A undrafts #N,
+    // run B pushes new commits to the same branch and refuses, and #N is
+    // mergeable carrying unproven code.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+    stub("POST", "/graphql", { data: { convertPullRequestToDraft: { clientMutationId: null } } });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ number: 9, action: "updated", draft: true });
+    const graphql = captured.find(c => c.path === "/graphql");
+    expect(graphql, "an already-ready PR was updated and left mergeable").toBeDefined();
+    expect(graphql!.body.query).toContain("convertPullRequestToDraft");
+    expect(graphql!.body.variables).toEqual({ id: "PR_node_9" });
+  });
+
+  test("pr-upsert --draft leaves an already-draft PR alone", async () => {
+    // Positive control: converting unconditionally would satisfy the case
+    // above while issuing a pointless mutation on every single re-run, and a
+    // test that cannot tell those apart is not testing the condition.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: true, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ draft: true });
+    expect(captured.some(c => c.path === "/graphql")).toBe(false);
+  });
+
+  test("pr-upsert without --draft never converts anything", async () => {
+    // The other direction, and the one that would quietly change what every
+    // non-ship caller produces.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", node_id: "PR_node_9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ draft: false });
+    expect(captured.some(c => c.path === "/graphql")).toBe(false);
+  });
+
+  test("a PR the API reports without a node_id fails rather than reporting it drafted", async () => {
+    // The mutation is keyed on the node id. Reporting `draft: true` with
+    // nothing sent is the fail-open this whole area keeps producing.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", [
+      { number: 9, html_url: "https://x/pull/9", draft: false, head: { ref: "fix-252" } },
+    ]);
+    stub("PATCH", "/repos/owner/name/pulls/9", { number: 9, html_url: "https://x/pull/9" });
+
+    const { stdout, stderr, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252",
+      "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("node_id");
+  });
+
+  test("a draft that was asked for and not granted is a failure, not a quiet pass (#252)", async () => {
+    // GitHub does not always honour `draft` — draft PRs are unavailable on
+    // some plans, and the create succeeds anyway with `draft: false`. The run
+    // would then proceed believing it had the protection, and the ABSENCE of
+    // the protection is indistinguishable from never having asked for it,
+    // except in a field nothing checks at that point. Refuse here, where the
+    // cause is still visible.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 14, html_url: "https://x/pull/14", draft: false });
+
+    const { stdout, stderr, exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(1);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("draft was requested");
+    expect(stderr, "the refusal does not say which PR is now sitting there ungated").toContain("14");
+  });
+
+  test("a granted draft reports success", async () => {
+    // Positive control: a check that refused whenever --draft was passed would
+    // satisfy the case above and break the mechanism outright.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 15, html_url: "https://x/pull/15", draft: true });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--title", "t", "--body", "b", "--draft",
+    ]);
+    expect(exitCode).toBe(0);
   });
 
   test("pr-upsert updates the existing PR instead of failing a second time", async () => {
@@ -143,7 +299,7 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     ]);
 
     expect(exitCode).toBe(0);
-    expect(JSON.parse(stdout)).toEqual({ number: 9, html_url: "https://x/pull/9", action: "updated" });
+    expect(JSON.parse(stdout)).toEqual({ number: 9, html_url: "https://x/pull/9", action: "updated", draft: false });
     expect(captured.map(c => `${c.method} ${c.path}`)).toEqual([
       "GET /repos/owner/name/pulls",
       "PATCH /repos/owner/name/pulls/9",
@@ -388,5 +544,24 @@ describe("#137: flag parsing", () => {
 
   test("a trailing flag with no value is refused", () => {
     expect(() => parseFlags(["--repo"])).toThrow(/needs a value/);
+  });
+
+  test("only allowlisted flags may stand alone (#252)", () => {
+    // `--draft` is valueless by design. Nothing else became valueless with
+    // it: the rule that every other option takes a value is what stops an
+    // omitted value from swallowing the following flag.
+    expect(parseFlags(["--draft"])).toEqual({ draft: "true" });
+    expect(parseFlags(["--head", "b", "--draft"])).toEqual({ head: "b", draft: "true" });
+    expect(() => parseFlags(["--title"])).toThrow(/needs a value/);
+    expect(() => parseFlags(["--body"])).toThrow(/needs a value/);
+  });
+
+  test("a value-taking flag still swallows nothing when --draft follows it", () => {
+    // The failure the allowlist exists to prevent, stated as a case: if
+    // `--body` were valueless too, this would produce a PR body of "--draft".
+    expect(parseFlags(["--body", "real body", "--draft"])).toEqual({
+      body: "real body",
+      draft: "true",
+    });
   });
 });

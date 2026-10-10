@@ -32,11 +32,20 @@ export interface GitHubClient {
       update: (params: { owner: string; repo: string; issue_number: number; state?: string; [key: string]: any }) => Promise<{ data: any }>;
     };
     pulls: {
-      create: (params: { owner: string; repo: string; title: string; head: string; base: string; body?: string }) => Promise<{ data: any }>;
+      create: (params: { owner: string; repo: string; title: string; head: string; base: string; body?: string; draft?: boolean }) => Promise<{ data: any }>;
+      get: (params: { owner: string; repo: string; pull_number: number }) => Promise<{ data: any }>;
       update: (params: { owner: string; repo: string; pull_number: number; [key: string]: any }) => Promise<{ data: any }>;
       list: (params: { owner: string; repo: string; [key: string]: any }) => Promise<{ data: any[] }>;
     };
   };
+  /**
+   * The GraphQL endpoint, for the handful of operations REST does not expose.
+   *
+   * `markPullRequestReadyForReview` is the only one today (#252): PATCH
+   * /pulls/{n} silently ignores a `draft` field, so a run that tried to
+   * undraft over REST would report success and leave the PR a draft.
+   */
+  graphql: (query: string, variables?: Record<string, unknown>) => Promise<any>;
 }
 
 export interface CreatePROptions {
@@ -44,6 +53,17 @@ export interface CreatePROptions {
   head: string;
   base: string;
   body?: string;
+  /**
+   * Open the PR as a draft (#252).
+   *
+   * ship.js opens its PR before the ship gate, the blocking-grade check and
+   * two staleness refusals, so all of those can fail with a reviewable PR
+   * already on the branch. Run `wf_e105dd33-220` did exactly that: it returned
+   * SHIP_FAILED and left #250 open and `mergeable: MERGEABLE`, carrying code
+   * that destroyed a consumer's CI. Defaults false, because a human opening a
+   * PR means it.
+   */
+  draft?: boolean;
 }
 
 export interface UpdatePROptions {
@@ -324,8 +344,37 @@ export async function createPR(client: GitHubClient, repoSlug: string, opts: Cre
     head: opts.head,
     base: opts.base,
     body: opts.body,
+    draft: opts.draft === true,
   });
   return response.data;
+}
+
+/**
+ * Take a draft PR out of draft (#252).
+ *
+ * Separate from `updatePR` because the REST PATCH endpoint does not flip
+ * `draft` — it is a GraphQL mutation — and a caller that set `draft: false`
+ * through `updatePR` would get a silent no-op, which is the fail-open shape
+ * this whole area keeps producing. Throwing on an unavailable client is
+ * deliberate: a run that cannot mark its PR ready must say so, not ship a
+ * draft nobody notices is a draft.
+ */
+export async function markPRReady(
+  client: GitHubClient,
+  repoSlug: string,
+  prNumber: number,
+): Promise<{ number: number; isDraft: boolean }> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const pr = await client.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  const nodeId = pr.data.node_id;
+  if (!nodeId) {
+    throw new Error(`markPRReady: PR #${prNumber} has no node_id, so it cannot be marked ready`);
+  }
+  await client.graphql(
+    `mutation($id: ID!) { markPullRequestReadyForReview(input: {pullRequestId: $id}) { clientMutationId } }`,
+    { id: nodeId },
+  );
+  return { number: prNumber, isDraft: false };
 }
 
 /**
@@ -358,7 +407,7 @@ export async function upsertPR(
   client: GitHubClient,
   repoSlug: string,
   opts: CreatePROptions,
-): Promise<{ number: number; html_url: string; action: "created" | "updated" }> {
+): Promise<{ number: number; html_url: string; action: "created" | "updated"; draft: boolean }> {
   const { owner } = parseOwnerRepo(repoSlug);
   const existing = await listPRs(client, repoSlug, {
     state: "open",
@@ -370,10 +419,66 @@ export async function upsertPR(
       title: opts.title,
       ...(opts.body !== undefined ? { body: opts.body } : {}),
     });
-    return { number: pr.number, html_url: updated.html_url ?? pr.html_url, action: "updated" };
+    // An existing PR IS dragged back into draft when the caller asks for one,
+    // and the first version of this got that wrong (#252, found by security
+    // review before merge). The comment it carried — "a PR a human already
+    // marked ready is theirs" — does not survive contact with how this harness
+    // runs: a re-ship pushes new commits to the SAME branch, so run A undrafts
+    // #N, run B updates it and then refuses, and #N is mergeable carrying
+    // run B's unproven code. Whatever the human approved is not what is on the
+    // branch any more, which is exactly why their ready-mark cannot stand.
+    //
+    // Protecting the first run on a branch and nothing after it is no
+    // protection at all here: #155, #164, #169 and #171 all exist because this
+    // workflow re-enters its own phases.
+    const draft = opts.draft === true
+      ? await convertPRToDraft(client, repoSlug, pr.number, pr)
+      : pr.draft === true;
+    return { number: pr.number, html_url: updated.html_url ?? pr.html_url, action: "updated", draft };
   }
   const created = await createPR(client, repoSlug, opts);
-  return { number: created.number, html_url: created.html_url, action: "created" };
+  // Reported from the response rather than echoed from the request: the caller
+  // records this as the state of the artefact, and a field it asked for is not
+  // a field it observed.
+  return {
+    number: created.number,
+    html_url: created.html_url,
+    action: "created",
+    draft: created.draft === true,
+  };
+}
+
+/**
+ * Put a PR back into draft, and report what it is now (#252).
+ *
+ * Already-draft is a no-op rather than a redundant mutation — a re-ship hits
+ * this on every round, and a convert that fired unconditionally would be
+ * indistinguishable in a test from one that fired for the right reason.
+ *
+ * Throws when the PR has no node id, because the mutation is keyed on it and
+ * returning `true` with nothing sent would be the fail-open this whole area
+ * keeps producing: a refusal artefact claiming the PR is unmergeable while it
+ * sits there mergeable.
+ */
+async function convertPRToDraft(
+  client: GitHubClient,
+  repoSlug: string,
+  prNumber: number,
+  pr: { node_id?: string; draft?: boolean },
+): Promise<boolean> {
+  if (pr.draft === true) return true;
+  const nodeId = pr.node_id;
+  if (!nodeId) {
+    throw new Error(
+      `upsertPR: PR #${prNumber} has no node_id, so it cannot be converted to a draft — ` +
+        "refusing rather than reporting a draft that was never made",
+    );
+  }
+  await client.graphql(
+    `mutation($id: ID!) { convertPullRequestToDraft(input: {pullRequestId: $id}) { clientMutationId } }`,
+    { id: nodeId },
+  );
+  return true;
 }
 
 /**

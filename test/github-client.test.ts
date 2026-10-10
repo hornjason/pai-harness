@@ -36,6 +36,10 @@ const mockPullsUpdate = mock(() => Promise.resolve({
 const mockPullsList = mock(() => Promise.resolve({
   data: [{ number: 10, head: { ref: "feature-branch" }, title: "PR title" }]
 }));
+const mockPullsGet = mock(() => Promise.resolve({
+  data: { number: 10, node_id: "PR_node_10", draft: true }
+}));
+const mockGraphql = mock((_q: string, _v?: any) => Promise.resolve({}));
 
 class MockOctokit {
   rest = {
@@ -47,10 +51,12 @@ class MockOctokit {
     },
     pulls: {
       create: mockPullsCreate,
+      get: mockPullsGet,
       update: mockPullsUpdate,
       list: mockPullsList,
     },
   };
+  graphql = mockGraphql;
   constructor(opts?: any) {
     lastOctokitOptions = opts ?? null;
   }
@@ -68,6 +74,7 @@ const {
   addComment,
   addLabels,
   createPR,
+  markPRReady,
   updatePR,
   listPRs,
   closeIssue,
@@ -87,6 +94,8 @@ describe("lib/github.ts", () => {
     mockPullsCreate.mockClear();
     mockPullsUpdate.mockClear();
     mockPullsList.mockClear();
+    mockPullsGet.mockClear();
+    mockGraphql.mockClear();
   });
 
   describe("createGitHubClient", () => {
@@ -371,7 +380,55 @@ describe("lib/github.ts", () => {
         head: "feature-branch",
         base: "main",
         body: "PR description",
+        draft: false,
       });
+    });
+
+    test("creates a DRAFT when asked (#252)", async () => {
+      // Run wf_e105dd33-220 reported SHIP_FAILED and left PR #250 open, not
+      // draft, and `mergeable: MERGEABLE` — carrying code that destroyed a
+      // consumer's CI. ship.js opens the PR BEFORE the ship gate, the grade
+      // check and two staleness refusals, so every one of those can fail after
+      // the PR is already reviewable. Opening it draft and marking it ready at
+      // the end makes the artefact agree with the verdict by construction,
+      // rather than by a cleanup step that itself has to run.
+      const client = createGitHubClient();
+      await createPR(client, "owner/repo", {
+        title: "feat: test PR",
+        head: "feature-branch",
+        base: "main",
+        body: "PR description",
+        draft: true,
+      });
+      expect(mockPullsCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ draft: true }),
+      );
+    });
+  });
+
+  describe("markPRReady (#252)", () => {
+    test("uses the GraphQL mutation, because REST cannot flip draft", async () => {
+      // PATCH /pulls/{n} accepts a `draft` field and ignores it. A caller that
+      // went through updatePR would get a 200, report success, and leave the
+      // PR a draft — the silent fail-open this whole area keeps producing.
+      const client = createGitHubClient();
+      const out = await markPRReady(client, "owner/repo", 10);
+      expect(out).toEqual({ number: 10, isDraft: false });
+      expect(mockGraphql).toHaveBeenCalled();
+      const [query, vars] = (mockGraphql.mock.calls[0] as any[]);
+      expect(query).toContain("markPullRequestReadyForReview");
+      expect(vars).toEqual({ id: "PR_node_10" });
+      expect(mockPullsUpdate, "the REST path was used and would have no effect").not.toHaveBeenCalled();
+    });
+
+    test("a PR with no node_id throws rather than reporting it ready", async () => {
+      // The mutation is keyed on the node id. Without one there is nothing to
+      // send, and returning `isDraft: false` anyway would make a run claim it
+      // had undrafted a PR that is still a draft.
+      mockPullsGet.mockImplementationOnce(() => Promise.resolve({ data: { number: 10 } }) as any);
+      const client = createGitHubClient();
+      await expect(markPRReady(client, "owner/repo", 10)).rejects.toThrow(/node_id/);
+      expect(mockGraphql).not.toHaveBeenCalled();
     });
   });
 
