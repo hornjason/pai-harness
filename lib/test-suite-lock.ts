@@ -52,6 +52,53 @@ const DEFAULT_TTL_SECONDS = 420;
  */
 const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 
+/**
+ * Full suites one worker may spend inside the window.
+ *
+ * Raised from 2 to 4 on 2026-10-10. Two was measured against a session that
+ * ran the suite as a gate and then got on with it; what actually happens in a
+ * long autonomous run is gate, fix, re-measure, fix again — four readings of a
+ * tree that is still moving. At 2 the third refusal landed mid-run and the
+ * work either stalled or proceeded on an unmeasured tree, which is the
+ * failure this budget exists to prevent, arrived at from the other side.
+ *
+ * This is a RATE, not a concurrency limit. `DEFAULT_CAPACITY` still holds the
+ * machine to 2 suites at once, and that is the number the 2026-10-05 reboot
+ * was about — 5,360 MB and 33 processes per suite. Raising the rate lets one
+ * worker come back sooner; it does not let two more start together.
+ *
+ * Must stay <= MAX_TRACKED_RUNS, which bounds what the counter file retains.
+ * A budget larger than what is remembered is a budget that silently resets.
+ */
+const DEFAULT_MAX_RUNS_PER_WORKER = 4;
+
+/** Overrides the rate for a session that needs a different one. */
+const MAX_RUNS_ENV = "RUNGATE_MAX_FULL_SUITE_RUNS";
+
+/**
+ * The rate in force, in precedence order: explicit option, environment, default.
+ *
+ * An unreadable or out-of-range environment value falls back to the default
+ * rather than to "no limit" — this reads a world-writable environment to
+ * decide whether a guard applies, so every path that is not a clearly valid
+ * number has to land somewhere bounded.
+ */
+export function resolveMaxRuns(
+  option?: number,
+  env: string | undefined = process.env[MAX_RUNS_ENV],
+): number {
+  if (typeof option === "number" && Number.isInteger(option) && option >= 0) {
+    return Math.min(option, MAX_TRACKED_RUNS);
+  }
+  if (typeof env === "string" && /^\d+$/.test(env.trim())) {
+    const parsed = parseInt(env.trim(), 10);
+    if (Number.isInteger(parsed) && parsed >= 0) {
+      return Math.min(parsed, MAX_TRACKED_RUNS);
+    }
+  }
+  return DEFAULT_MAX_RUNS_PER_WORKER;
+}
+
 export interface SlotHolder {
   sessionId: string;
   /** The worker that took the slot (#239). Absent on slots written before it. */
@@ -664,6 +711,7 @@ function describeWait(ms: number): string {
 }
 
 export interface GateOptions extends LockOptions {
+  /** Overrides the rate. Omitted, `resolveMaxRuns` decides (env, then default). */
   maxRunsPerSession?: number;
   /** Rolling window the budget is measured over (#73). */
   budgetWindowMs?: number;
@@ -688,7 +736,7 @@ interface BudgetView {
  */
 function budgetView(sessionId: string, options: GateOptions): BudgetView {
   const lockDir = options.lockDir ?? defaultLockDir();
-  const maxRuns = options.maxRunsPerSession ?? 2;
+  const maxRuns = resolveMaxRuns(options.maxRunsPerSession);
   const windowMs = options.budgetWindowMs ?? DEFAULT_BUDGET_WINDOW_MS;
   const now = options.now ?? Date.now();
 

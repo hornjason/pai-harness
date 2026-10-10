@@ -95,7 +95,7 @@ Both agnix and RepoRails support batch mode — pass multiple files in one call.
 | Test | Instruction | Check Method | Pass Condition |
 |------|-------------|--------------|----------------|
 | COMP-1 | AGENTS.md context available | Read in first 5 calls OR content injected in prompt | Agent has project context |
-| COMP-2 | Test run discipline | Full suite ≤ 2 runs, targeted unlimited | Agent doesn't over-run tests |
+| COMP-2 | Test run discipline | Full suite ≤ the rate `lib/test-suite-lock.ts` enforces (4 per worker per 30 min as of 2026-10-10), targeted unlimited | Agent doesn't over-run tests |
 | COMP-3 | Use golden fixture pattern for test files | Test file written to test/ with .test. suffix | Agent follows test architecture |
 | COMP-4 | Update spec-drift hash after modifying spec | Bash with `shasum` after spec edit | Agent updates hash |
 | COMP-5 | Governing spec context available | Read spec before edit OR content injected in prompt | Agent has spec context |

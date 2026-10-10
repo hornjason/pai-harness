@@ -108,7 +108,7 @@
       "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
       "enabled": true,
       "matcher": "Bash",
-      "description": "Blocks full test suite (bun test) after 2 runs — enforces DIR-L29 mechanically (Tier 3)"
+      "description": "Blocks a full test suite (bun test) once the worker has spent its rate — enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
     },
     {
       "name": "AgentBriefGuard",

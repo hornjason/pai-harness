@@ -115,9 +115,15 @@ const lockDir = process.argv[2];
 const t0 = 1_700_000_000_000;
 // Liveness pinned ON: these are budget verdicts, and a reclaimed slot would
 // let the scenario answer a concurrency question instead.
+// The rate is pinned rather than inherited. The scenario's whole shape is
+// "w1 spends its budget and is refused the next one", and at the production
+// default that sentence would need a different number of runs — which would
+// make this case quietly stop being about the counter KEY, the one thing it
+// exists to detect.
 const o = (worker, ms) => ({
   lockDir,
   workerId: worker,
+  maxRunsPerSession: 2,
   now: t0 + ms,
   suitesRunning: () => true,
 });

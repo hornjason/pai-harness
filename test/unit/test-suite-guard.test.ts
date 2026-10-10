@@ -32,7 +32,15 @@ async function runHook(
     stdin: 'pipe',
     stdout: 'pipe',
     stderr: 'pipe',
-    env: { ...process.env, RUNGATE_LOCK_DIR: lockDir },
+    // The rate is pinned rather than inherited, for the same reason
+    // test/test-suite-lock.test.ts pins it: every case below says "the third
+    // run is refused", and that sentence stops being true when the production
+    // default moves. These test the hook's plumbing, not the number.
+    env: {
+      ...process.env,
+      RUNGATE_LOCK_DIR: lockDir,
+      RUNGATE_MAX_FULL_SUITE_RUNS: '2',
+    },
   });
   proc.stdin.write(input);
   proc.stdin.end();
