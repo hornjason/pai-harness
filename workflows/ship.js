@@ -44,9 +44,22 @@ const DISCOVERY_SCHEMA = {
           threshold: { type: 'object', properties: { op: { type: 'string', enum: ['==', '>=', '<=', '>', '<', '!=', 'contains', 'exists'] }, value: {}, unit: { type: 'string' } }, required: ['op', 'value'] },
           evidenceMethod: { type: 'object', properties: { type: { type: 'string', enum: ['GREP_CHECK', 'FILE_EXISTS', 'CURL_CHECK', 'BUN_TEST', 'SCREENSHOT', 'PLAYWRIGHT', 'COMMAND', 'MANUAL', 'grep', 'command', 'api', 'screenshot', 'manual'] }, command: { type: 'string' } }, required: ['type'] },
           specElement: { type: 'string' },
+          // The ISSUE's success criteria this AC answers, by id (C-1, C-2, …).
+          //
+          // Deliberately NOT specElement, which names the governing SPEC's
+          // section and is a different thing. #258: the coverage check read
+          // specElement as a criterion reference, and on a real run it held
+          // spec section titles — two ACs even shared one value, which a
+          // criterion reference cannot meaningfully do. The run refused three
+          // criteria that five ACs covered.
+          //
+          // REQUIRED, so the structured-output layer makes the model produce
+          // it rather than leaving it off. An optional attribution field is
+          // an attribution nobody records.
+          coversCriteria: { type: 'array', items: { type: 'string' } },
           contextFiles: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, lines: { type: 'string' }, reason: { type: 'string' } }, required: ['path', 'reason'] } },
         },
-        required: ['id', 'type', 'statement', 'threshold', 'evidenceMethod'],
+        required: ['id', 'type', 'statement', 'threshold', 'evidenceMethod', 'coversCriteria'],
       },
     },
     priorWork: {
@@ -653,10 +666,55 @@ async function briefedAgent(prompt, opts = {}) {
  * test/ac-coverage.test.ts extracts and executes the block (#69).
  */
 
-/** The id a criterion line is matched on, or null when it carries none. */
+/** The id a criterion line already carries, or null when it carries none. */
 function scIdOf(line) {
   const m = typeof line === 'string' ? line.match(/\bSC-\d+\b/) : null
   return m ? m[0] : null
+}
+
+/**
+ * Give every success criterion an id an AC can point at.
+ *
+ * #258: most issues write their criteria as bare checkbox lines with no
+ * `SC-N` anywhere — #254's three are typical. The first version of this check
+ * keyed on `scIdOf` alone, so an unidentifiable criterion could not be
+ * covered by anything, and the run refused three criteria that five ACs
+ * covered. An id nobody can cite is the same as no id at all.
+ *
+ * Positional `C-N` ids, assigned here and handed to Discovery, so an issue
+ * that numbers its own criteria and one that does not are the same problem.
+ */
+function criterionIds(successCriteria) {
+  if (!Array.isArray(successCriteria)) return []
+  return successCriteria.map((line, i) => ({
+    id: scIdOf(line) || `C-${i + 1}`,
+    /** Also accepted, so a run is not broken by which form Discovery cites. */
+    alias: `C-${i + 1}`,
+    text: String(line == null ? '' : line),
+  }))
+}
+
+/** Every id this AC claims to answer, from either field, normalised. */
+function acCoversIds(ac) {
+  if (!ac || typeof ac !== 'object') return []
+  const out = []
+  const push = raw => {
+    if (typeof raw !== 'string') return
+    // Comma-separated in real runs — one AC can answer several criteria.
+    for (const part of raw.split(',')) {
+      const token = part.trim().match(/\b(?:SC|C)-\d+\b/)
+      if (token) out.push(token[0])
+    }
+  }
+  // The attribution field, which is what an AC is supposed to use (#258).
+  if (Array.isArray(ac.coversCriteria)) for (const c of ac.coversCriteria) push(c)
+  // specElement names the governing SPEC's section, not the issue's criteria,
+  // and reading it as an attribution is the whole of #258. It is still
+  // consulted because an issue whose criteria genuinely are SC-numbered may
+  // have an AC citing the same token in both places — but it can only ever
+  // ADD coverage for an id the criteria actually carry, never invent one.
+  push(ac.specElement)
+  return out
 }
 
 /** Readable in a refusal: enough of the criterion to recognise which one it is. */
@@ -688,36 +746,34 @@ function coverageViolations(successCriteria, acs, deferrals) {
   const acList = Array.isArray(acs) ? acs : []
   const deferralList = Array.isArray(deferrals) ? deferrals : []
 
+  const criteria = criterionIds(successCriteria)
+
   const covered = new Set()
-  for (const ac of acList) {
-    const element = ac && typeof ac.specElement === 'string' ? ac.specElement : ''
-    // Comma-separated in real runs — one AC can answer several criteria, and
-    // the decompose filter already splits on it, so this has to agree.
-    for (const part of element.split(',')) {
-      const id = scIdOf(part)
-      if (id) covered.add(id)
-    }
-  }
+  for (const ac of acList) for (const id of acCoversIds(ac)) covered.add(id)
 
   const deferred = new Set()
   for (const d of deferralList) {
     if (!d || typeof d !== 'object') continue
-    const id = scIdOf(d.specElement)
-    if (!id) continue
-    // A deferral with no reason is the escape hatch turning into a loophole:
-    // it is the cheapest way to make an uncovered run green again, and it
-    // leaves a reader exactly as uninformed as silence did.
-    if (typeof d.reason === 'string' && d.reason.trim().length > 0) deferred.add(id)
+    for (const id of acCoversIds({ coversCriteria: [d.specElement] })) {
+      // A deferral with no reason is the escape hatch turning into a loophole:
+      // it is the cheapest way to make an uncovered run green again, and it
+      // leaves a reader exactly as uninformed as silence did.
+      if (typeof d.reason === 'string' && d.reason.trim().length > 0) deferred.add(id)
+    }
   }
 
   const violations = []
-  for (const line of successCriteria) {
-    const id = scIdOf(line)
-    if (id && covered.has(id)) continue
-    if (id && deferred.has(id)) continue
+  for (const c of criteria) {
+    // Either form satisfies it. `id` is what the criterion line says when it
+    // numbers itself; `alias` is the positional id this run handed Discovery.
+    // Insisting on one would make the refusal depend on which form the agent
+    // happened to echo, which is not a property of the work.
+    if (covered.has(c.id) || covered.has(c.alias)) continue
+    if (deferred.has(c.id) || deferred.has(c.alias)) continue
     violations.push(
       `no acceptance criterion covers, and nothing records a reason for deferring, ` +
-      `"${scLabel(line, id)}" — a criterion nobody measures is not a criterion that passed (#251)`,
+      `"${scLabel(c.text, scIdOf(c.text))}" [${c.alias}] — a criterion nobody measures is ` +
+      `not a criterion that passed (#251)`,
     )
   }
   return violations
@@ -759,7 +815,10 @@ function coverageRecord(successCriteria, acs, deferrals) {
   return {
     criteriaCount: criteria.length,
     acCount: acList.length,
-    covered: acList.map(ac => (ac && ac.specElement) || null).filter(Boolean),
+    // Criterion ids, not spec section titles. The first version listed
+    // specElement here, which is why a reader of run wf_0dd46ae5-495's
+    // record saw five plausible-looking strings that answered nothing (#258).
+    covered: [...new Set(acList.flatMap(acCoversIds))],
     deferrals: Array.isArray(deferrals) ? deferrals : [],
     uncovered: coverageViolations(successCriteria, acs, deferrals),
   }
@@ -1161,7 +1220,9 @@ You are performing DISCOVERY for ship issue #${ISSUE}.${context ? '\n\nREGRESSIO
 ## Issue
 Title: ${goalData.issueTitle}
 Goal: ${goalData.issueGoal}
-Success criteria: ${goalData.successCriteria.map((sc, i) => `${i + 1}. ${sc}`).join('\n')}
+Success criteria (cite these ids in coversCriteria — they are assigned by this
+run, so use them even when the criterion text carries an SC- number of its own):
+${criterionIds(goalData.successCriteria).map(c => `${c.alias}. ${c.text}`).join('\n')}
 
 ## Instructions
 1. Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md FIRST.
@@ -1170,6 +1231,15 @@ Success criteria: ${goalData.successCriteria.map((sc, i) => `${i + 1}. ${sc}`).j
 
 ## AC ANCHORING (CRITICAL — do not skip)
 ACs should map to the issue's Success Criteria listed above. Rules:
+- **EVERY criterion above must appear in some AC's coversCriteria.** The run
+  REFUSES at the end of this phase if one does not, and it names the criterion
+  in the refusal. This is not advisory and there is no way past it.
+- coversCriteria holds the C-N ids from the list above and NOTHING else.
+  specElement is a different field naming the governing SPEC's section; an AC
+  normally carries both, with different values. Putting a spec section title in
+  coversCriteria is the defect this field exists to prevent (#258).
+- One AC may cover several criteria, and several ACs may cover one. What is not
+  allowed is a criterion that appears in none of them.
 - Start from the issue SCs: AC-1 corresponds to SC-1, AC-2 to SC-2, etc.
 - You MAY add additional ACs beyond the issue SCs when the work requires it — especially for test updates, import rewiring, or behavioral preservation that the issue doesn't explicitly mention but Marcus must do.
 - For refactoring/decomposition issues: add ACs for each extracted module AND for updating imports/tests that reference the changed files.
@@ -1187,7 +1257,8 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 
 4. Read relevant source files. Identify filesToModify, scopeOut.
 5. Size: XS→LIGHT | S/M→STANDARD | L→THOROUGH.
-6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, contextFiles.
+6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, coversCriteria, contextFiles.
+   coversCriteria is REQUIRED and holds C-N ids from the Success criteria list above. specElement names the governing spec's section. They are different fields and normally carry different values (#258).
    CONTEXT FILES RULE (CRITICAL): Every AC MUST have a contextFiles array listing the specific files Marcus will need to read to implement that AC. Include path and reason. Example: [{"path": "hooks/WorkflowStateGuard.hook.ts", "reason": "existing hook pattern to follow"}, {"path": "lib/conformity.ts", "reason": "matchPattern function to reuse"}]. Do NOT leave contextFiles empty — Marcus wastes 80% of context loading files he doesn't need when you don't specify what he actually needs.
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
    BUN TEST GREP RULE: In bun test --grep patterns, use | (pipe) for alternation, NOT \\| (backslash-pipe). Bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and will match 0 tests. Example: --grep 'foo|bar' is correct, --grep 'foo\\|bar' is WRONG.
@@ -1345,7 +1416,7 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
       acDeferrals = originalAcs
         .filter(ac => !discovery.acs.some(kept => kept.id === ac.id))
         .map(ac => ({
-          specElement: ac.specElement || ac.id,
+          specElement: acCoversIds(ac).join(', ') || ac.specElement || ac.id,
           reason: `deferred by decomposition — ${discovery.acs.length} of ${originalAcs.length} ACs fit the ${MAX_ACS_PER_ISSUE}-AC limit for one run`,
           subIssue: (decomposeResult.subIssues || [])
             .find(s => (s.acIds || []).includes(ac.id) || (s.acIds || []).includes(ac.specElement))?.number,
@@ -1391,6 +1462,7 @@ initWorkflow(sf, {
 writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
   id: ac.id, type: ac.type, statement: ac.statement,
   threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
+  coversCriteria: ac.coversCriteria || [],
   contextFiles: ac.contextFiles || [],
 })))});
 const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
@@ -1425,6 +1497,7 @@ import {writeACs} from '${HARNESS_ROOT}/gates/orchestrator.ts';
 writeACs('${WORK_DIR}/workflow-state.json', ${JSON.stringify(discovery.acs.map(ac => ({
   id: ac.id, type: ac.type, statement: ac.statement,
   threshold: ac.threshold, evidenceMethod: ac.evidenceMethod, specElement: ac.specElement,
+  coversCriteria: ac.coversCriteria || [],
   contextFiles: ac.contextFiles || [],
 })))});
 const s=JSON.parse(require('fs').readFileSync('${WORK_DIR}/workflow-state.json','utf-8'));
@@ -1448,7 +1521,7 @@ if (!await runDiscovery(null)) {
 // Heal agents may modify ACs in workflow-state.json; this snapshot is the authority
 const FROZEN_AC_DEFS = discovery.acs.map(ac => ({
   id: ac.id, type: ac.type, statement: ac.statement,
-  specElement: ac.specElement, threshold: ac.threshold,
+  specElement: ac.specElement, coversCriteria: ac.coversCriteria || [], threshold: ac.threshold,
   evidenceMethod: ac.evidenceMethod,
 }))
 const FROZEN_AC_HASH = JSON.stringify(FROZEN_AC_DEFS)

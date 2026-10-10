@@ -1267,6 +1267,85 @@ negative-control run — a planted uncovered issue driven through `Skill("ship")
 
 ---
 
+### The coverage check could not read what Discovery writes (#258)
+
+The negative control earned its cost on its first run.
+
+`wf_0dd46ae5-495`, the first end-to-end pipeline run after #251 merged,
+**refused at Discovery** on #254 — naming all three success criteria as
+uncovered while Discovery had produced five acceptance criteria that cover
+them. The machinery worked. The answer was wrong, and in the fail-CLOSED
+direction: `main` could not ship any issue whose criteria were not
+`SC-N`-numbered, which is most of them.
+
+Two defects, and the second is the one worth keeping:
+
+1. **An unidentifiable criterion could never be covered.** Both guards read
+   `if (id && covered.has(id))`, so a criterion line carrying no `SC-N` fell
+   straight through to the violation with no way for any AC to answer it.
+   #254's three criteria are bare checkbox lines, as most issues' are.
+2. **`ac.specElement` names the governing SPEC's section, not the issue's
+   criteria.** On that run two of the five ACs carried the identical
+   `specElement` — "A refusal reports the whole run, and leaves no mergeable
+   PR (#252)" — which a criterion reference cannot meaningfully do. Reading it
+   as an attribution was the error, and it was mine: **the fixture was written
+   before reading what Discovery emits.**
+
+`test/ac-coverage.test.ts` passed throughout, because its fixture set
+`specElement: 'SC-1'` — a shape production does not produce. It even had a
+case named "an SC line with no id is still matched by its text", which passed
+**zero ACs** and so only ever asserted the uncovered direction. The fail
+direction was tested and the pass direction was not, which is this rule's own
+subject reached from the side that refuses good work rather than passing bad.
+
+**#251's own PR said the wiring was asserted by reading source rather than
+executed, and named that as the gap. This is the defect the gap was hiding.**
+
+The fix separates the two meanings. `coversCriteria` is a new, REQUIRED field
+naming the issue criteria an AC answers; `specElement` keeps naming the
+governing spec's section; an AC normally carries both with different values.
+Criteria get positional `C-N` ids at Discovery time, so an issue that numbers
+its own and one that does not are the same problem.
+
+- [x] SC-650: workflows/ship.js contains [function criterionIds(successCriteria)] — every success criterion gets an id an AC can cite, assigned positionally when the issue does not number its own, because an id nobody can cite is the same as no id
+- [x] SC-651: workflows/ship.js contains [function acCoversIds(ac)] — attribution is read from coversCriteria, and specElement can only ever add coverage for an id the criteria actually carry, never invent one
+- [x] SC-652: workflows/ship.js contains [coversCriteria: { type: 'array'] — the Discovery schema REQUIRES it, so the structured-output layer makes the model produce it; an optional attribution field is an attribution nobody records, and then every run refuses
+- [x] SC-653: workflows/ship.js contains [EVERY criterion above must appear] — the prompt states that the run refuses, names the two fields apart, and says there is no way past it
+- [x] SC-654: test/ac-coverage.test.ts contains [wf_0dd46ae5-495] — the regression fixture is READ FROM DISK, copied verbatim out of the failing run's journal. A fixture written from imagination can only re-test what its author already believed, which is exactly how the first version shipped
+
+The fixture file carries a `_provenance` block saying what must not be tidied:
+the duplicate `specElement`, the missing ids on the criteria, and the prose
+criterion text are each load-bearing, and a test asserts all three are still
+there — someone "fixing" the fixture into the shape that was broken would
+otherwise restore the blindness.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ac-coverage.test.ts` (43 tests):
+
+| Mutation | Red |
+|---|---|
+| every criterion treated as covered — the fail-open | 16 |
+| `coversCriteria` ignored, falling back to `specElement` — #258 reintroduced | 7 |
+| the positional `alias` removed — the unconditional refusal reintroduced | 1 |
+| `coversCriteria` made optional in the Discovery schema | 1 |
+| the prompt softened from "the run REFUSES" to "should generally cover" | 1 |
+
+None is left in the tree; all were run and reverted.
+
+**A mutation that measured nothing, recorded because it looked like one.**
+Removing the positional id from `criterionIds`'s `id` field turned **0** red —
+`alias` carries that load, so the substitution changed no behaviour. A
+mutation with a zero count is either a gap in the tests or a target that was
+never load-bearing, and the two are indistinguishable without looking. This
+one was the second, and the real target is in the table above.
+
+The backtick trap also recurred: backticks around `coversCriteria` inside the
+Discovery prompt closed ship.js's template literal. `test/security-verdict-blocks.test.ts`
+caught it by failing to parse the file — the reachability checks are the only
+thing in the suite that reads ship.js as JavaScript rather than as text.
+
+---
+
 ### The full-suite rate is 4, and it is stated once (2026-10-10)
 
 DIR-L29's budget moved from 2 full suites per worker per 30 minutes to 4.
