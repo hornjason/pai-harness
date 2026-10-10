@@ -3245,7 +3245,25 @@ if (verifyResult?.result === 'FAIL') {
 // `!== 'PASS'`, not `=== 'FAIL'`: the initialiser above is FAIL and anything
 // unrecognised must refuse too. A security decision is the last place to let
 // an unexpected value mean "carry on".
-if (securityVerdict.verdict !== 'PASS') {
+//
+// SC-7: the refusal is conditioned on the verdict being CURRENT.
+//
+// It was not, and run wf_edc73e78-275 is what that cost. Rook returned FAIL on
+// 82c4c6a1; the verify gate's self-heal loop then committed f2487030, which
+// resolved both findings; and the run refused anyway, here, 49 lines above the
+// currency check — on findings about code that was no longer on the branch.
+//
+// A stale FAIL is NOT a pass and is never treated as one. It is UNKNOWN, and
+// the only thing that resolves an unknown is reading the tip, so it falls
+// through to the same re-review loop a stale PASS uses and spends a round like
+// any other. Every exit from that loop still refuses while holding a non-PASS
+// verdict — the loop's own check at the end of each round, the stale/exhausted
+// block below, and the belt-and-braces guard after it.
+//
+// The ordering matters in one direction only: a CURRENT non-PASS verdict
+// refuses here, immediately, exactly as #129 requires. That case is untouched.
+const reviewCurrency0 = reviewIsCurrent(testedSha, headSha)
+if (securityVerdict.verdict !== 'PASS' && reviewCurrency0.current) {
   for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
   log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
   return {
@@ -3254,6 +3272,9 @@ if (securityVerdict.verdict !== 'PASS') {
     security: securityVerdict,
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
   }
+}
+if (securityVerdict.verdict !== 'PASS') {
+  log(`SECURITY: the ${securityVerdict.verdict} verdict is about ${testedSha || 'no commit'}, which is not the tip — re-reviewing before deciding (#171 SC-7)`)
 }
 
 // #169: a PASS is a statement about a commit, and this run has to still be at
@@ -3291,7 +3312,7 @@ if (securityVerdict.verdict !== 'PASS') {
 // still refuses as SECURITY_REVIEW_STALE, which is what keeps the detection
 // half intact rather than relaxed by this path.
 // ──── REREVIEW-LOOP-START ────
-let reviewCurrency = reviewIsCurrent(testedSha, headSha)
+let reviewCurrency = reviewCurrency0
 let reReviewRounds = 0
 
 while (!reviewCurrency.current) {
@@ -3337,9 +3358,16 @@ while (!reviewCurrency.current) {
 if (!reviewCurrency.current) {
   const spent = reReviewRounds > 0
   if (spent) await recordExhaustedSecurityReview(reReviewRounds)
+  // SC-7: "we ran out of rounds and the last thing we knew was clean" and "we
+  // ran out of rounds and the last thing we knew was a finding" are different
+  // facts, and the second is worse. Collapsing them into one sentence is how a
+  // refusal stops carrying the reason anyone would act on.
+  const held = securityVerdict.verdict !== 'PASS'
+    ? ` — and the verdict in hand is ${securityVerdict.verdict}, not a pass: ${securityVerdict.failures.join('; ')}`
+    : ''
   const reason = spent
-    ? `${SECURITY_REREVIEW_EXHAUSTED}: ${reviewCurrency.reason} — ${reReviewRounds} re-review round(s) were spent and the branch still ends past the reviewed commit`
-    : `SECURITY_REVIEW_STALE: ${reviewCurrency.reason}`
+    ? `${SECURITY_REREVIEW_EXHAUSTED}: ${reviewCurrency.reason} — ${reReviewRounds} re-review round(s) were spent and the branch still ends past the reviewed commit${held}`
+    : `SECURITY_REVIEW_STALE: ${reviewCurrency.reason}${held}`
   log(`SECURITY BLOCK: ${reason}`)
   log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
   return {
@@ -3350,6 +3378,24 @@ if (!reviewCurrency.current) {
   }
 }
 // ──── STALE-OR-EXHAUSTED-END ────
+
+// SC-7, belt and braces. Reaching here with a non-PASS verdict should be
+// impossible: a current non-PASS refused above, a re-review that did not pass
+// returned inside the loop, and a loop that could not make the review current
+// refused immediately above. "Should be impossible" is the state every
+// fail-open in .claude/rules/checks-must-be-able-to-fail.md was in, and this
+// is the last statement before the PR step, so it is checked rather than
+// assumed.
+if (securityVerdict.verdict !== 'PASS') {
+  const reason = `SECURITY_VERDICT_NOT_PASS: the review decision reached the PR step holding ${securityVerdict.verdict} after ${reReviewRounds} re-review round(s) — refusing rather than shipping code whose last verdict was not a pass`
+  log(`SECURITY BLOCK: ${reason}`)
+  return {
+    status: 'SHIP_FAILED',
+    reason,
+    security: securityVerdict,
+    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+  }
+}
 log(`Security review PASSED, and is current at ${headSha}`)
 // ──── SECURITY-DECISION-END ────
 
