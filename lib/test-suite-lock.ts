@@ -52,6 +52,71 @@ const DEFAULT_TTL_SECONDS = 420;
  */
 const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 
+/**
+ * Full suites one worker may spend inside the window.
+ *
+ * Raised from 2 to 4 on 2026-10-10. Two was measured against a session that
+ * ran the suite as a gate and then got on with it; what actually happens in a
+ * long autonomous run is gate, fix, re-measure, fix again — four readings of a
+ * tree that is still moving. At 2 the third refusal landed mid-run and the
+ * work either stalled or proceeded on an unmeasured tree, which is the
+ * failure this budget exists to prevent, arrived at from the other side.
+ *
+ * This is a RATE, not a concurrency limit. `DEFAULT_CAPACITY` still holds the
+ * machine to 2 suites at once, and that is the number the 2026-10-05 reboot
+ * was about — 5,360 MB and 33 processes per suite. Raising the rate lets one
+ * worker come back sooner; it does not let two more start together.
+ *
+ * Must stay <= MAX_TRACKED_RUNS, which bounds what the counter file retains.
+ * A budget larger than what is remembered is a budget that silently resets.
+ */
+export const DEFAULT_MAX_RUNS_PER_WORKER = 4;
+
+/**
+ * Lowers the rate for a session that wants to be stricter. It cannot raise it.
+ *
+ * The first version of this let the environment set any value up to
+ * MAX_TRACKED_RUNS, and security review of d6cc5acf called that correctly: a
+ * guard that exists to stop a machine-killing suite must not read its own
+ * limit from a place the guarded work can influence. Reaching the hook's
+ * environment is not trivial — hooks inherit the Claude Code process's env, so
+ * an inline `VAR=8 bun test` sets it for the suite and not for the guard — but
+ * "hard to reach from one direction" is not the property a control needs, and
+ * a shell profile, a launch script or an exported parent all reach it.
+ *
+ * One-way is the whole fix: tightening is always safe and never needs
+ * permission, so there is no reason for the loosening direction to exist.
+ */
+const MAX_RUNS_ENV = "RUNGATE_MAX_FULL_SUITE_RUNS";
+
+/**
+ * The rate in force, in precedence order: explicit option, environment, default.
+ *
+ * An unreadable or out-of-range environment value falls back to the default
+ * rather than to "no limit" — this reads a world-writable environment to
+ * decide whether a guard applies, so every path that is not a clearly valid
+ * number has to land somewhere bounded.
+ */
+export function resolveMaxRuns(
+  option?: number,
+  env: string | undefined = process.env[MAX_RUNS_ENV],
+): number {
+  // An explicit option is a caller in this repo passing a number, not the
+  // graded run talking, so it is trusted to raise as well as lower — bounded
+  // only by what the counter file can remember.
+  if (typeof option === "number" && Number.isInteger(option) && option >= 0) {
+    return Math.min(option, MAX_TRACKED_RUNS);
+  }
+  if (typeof env === "string" && /^\d+$/.test(env.trim())) {
+    const parsed = parseInt(env.trim(), 10);
+    if (Number.isInteger(parsed) && parsed >= 0) {
+      // Clamped DOWN to the policy, never up to MAX_TRACKED_RUNS.
+      return Math.min(parsed, DEFAULT_MAX_RUNS_PER_WORKER);
+    }
+  }
+  return DEFAULT_MAX_RUNS_PER_WORKER;
+}
+
 export interface SlotHolder {
   sessionId: string;
   /** The worker that took the slot (#239). Absent on slots written before it. */
@@ -664,6 +729,7 @@ function describeWait(ms: number): string {
 }
 
 export interface GateOptions extends LockOptions {
+  /** Overrides the rate. Omitted, `resolveMaxRuns` decides (env, then default). */
   maxRunsPerSession?: number;
   /** Rolling window the budget is measured over (#73). */
   budgetWindowMs?: number;
@@ -688,7 +754,7 @@ interface BudgetView {
  */
 function budgetView(sessionId: string, options: GateOptions): BudgetView {
   const lockDir = options.lockDir ?? defaultLockDir();
-  const maxRuns = options.maxRunsPerSession ?? 2;
+  const maxRuns = resolveMaxRuns(options.maxRunsPerSession);
   const windowMs = options.budgetWindowMs ?? DEFAULT_BUDGET_WINDOW_MS;
   const now = options.now ?? Date.now();
 

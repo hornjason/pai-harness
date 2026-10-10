@@ -628,6 +628,144 @@ async function briefedAgent(prompt, opts = {}) {
 }
 // ──── BRIEFED-AGENT-END ────
 
+// ──── AC-COVERAGE-START ────
+/**
+ * Which success criteria this run is actually going to measure (#251).
+ *
+ * Run wf_e105dd33-220 on #216 was handed seven success criteria and shipped
+ * against six. The seventh was the only one that ran against a real consumer;
+ * the other six passed honestly, against fixtures. Nothing refused, nothing
+ * warned, and the green result was about the half of the problem the fixtures
+ * covered.
+ *
+ * Two separate things have to hold, and they are separate functions because
+ * they fail separately:
+ *
+ *   coverageViolations — nothing is dropped in silence. Every criterion maps
+ *   to an acceptance criterion or to a deferral with a reason somebody wrote.
+ *
+ *   prioritiseAcs — when the cap forces a split, the criterion that could
+ *   FALSIFY the work is the one kept. Positional splitting defers it by
+ *   construction: an acceptance criterion is written last, because it is the
+ *   one that says "and then the whole thing works".
+ *
+ * Self-contained: no name from outside these markers, because
+ * test/ac-coverage.test.ts extracts and executes the block (#69).
+ */
+
+/** The id a criterion line is matched on, or null when it carries none. */
+function scIdOf(line) {
+  const m = typeof line === 'string' ? line.match(/\bSC-\d+\b/) : null
+  return m ? m[0] : null
+}
+
+/** Readable in a refusal: enough of the criterion to recognise which one it is. */
+function scLabel(line, id) {
+  const text = String(line == null ? '' : line).replace(/\s+/g, ' ').trim()
+  const trimmed = text.length > 160 ? `${text.slice(0, 157)}...` : text
+  return id && trimmed.startsWith(id) ? trimmed : (id ? `${id}: ${trimmed}` : trimmed)
+}
+
+/**
+ * Success criteria this run will not measure and has not explained.
+ *
+ * Returns the refusal text, one entry per uncovered criterion, each QUOTING
+ * the criterion. "6 of 7 covered" sends a reader to count rows; the text
+ * sends them to the thing that was not measured.
+ */
+function coverageViolations(successCriteria, acs, deferrals) {
+  if (successCriteria == null) return []
+  if (!Array.isArray(successCriteria)) {
+    return ['the success criteria are not a list, so coverage could not be checked — ' +
+      'an unreadable list is not an empty one (#251)']
+  }
+  if (successCriteria.length === 0) return []
+
+  // A malformed AC list is the fail-open this whole function exists to close:
+  // treated as "no ACs" it would simply report everything uncovered, which is
+  // correct, but treated as absent-therefore-fine it would wave the run
+  // through. Normalise to empty and let every criterion come back uncovered.
+  const acList = Array.isArray(acs) ? acs : []
+  const deferralList = Array.isArray(deferrals) ? deferrals : []
+
+  const covered = new Set()
+  for (const ac of acList) {
+    const element = ac && typeof ac.specElement === 'string' ? ac.specElement : ''
+    // Comma-separated in real runs — one AC can answer several criteria, and
+    // the decompose filter already splits on it, so this has to agree.
+    for (const part of element.split(',')) {
+      const id = scIdOf(part)
+      if (id) covered.add(id)
+    }
+  }
+
+  const deferred = new Set()
+  for (const d of deferralList) {
+    if (!d || typeof d !== 'object') continue
+    const id = scIdOf(d.specElement)
+    if (!id) continue
+    // A deferral with no reason is the escape hatch turning into a loophole:
+    // it is the cheapest way to make an uncovered run green again, and it
+    // leaves a reader exactly as uninformed as silence did.
+    if (typeof d.reason === 'string' && d.reason.trim().length > 0) deferred.add(id)
+  }
+
+  const violations = []
+  for (const line of successCriteria) {
+    const id = scIdOf(line)
+    if (id && covered.has(id)) continue
+    if (id && deferred.has(id)) continue
+    violations.push(
+      `no acceptance criterion covers, and nothing records a reason for deferring, ` +
+      `"${scLabel(line, id)}" — a criterion nobody measures is not a criterion that passed (#251)`,
+    )
+  }
+  return violations
+}
+
+/**
+ * The ACs to keep when the cap forces a split, worst-to-lose first.
+ *
+ * A STABLE partition, not a sort: discovery's order carries dependencies
+ * between criteria, so this promotes a class and otherwise leaves the list
+ * alone. With no acceptance criterion present the result is the input,
+ * which is what keeps this from quietly reshuffling runs that were fine.
+ */
+function prioritiseAcs(acs, max) {
+  if (!Array.isArray(acs)) return []
+  const limit = Number.isInteger(max) && max >= 0 ? max : acs.length
+
+  // What makes a criterion falsifying: it is measured against the real thing
+  // rather than against a fixture the same change produced. Deliberately a
+  // short list — promote everything and the rule means nothing.
+  const ACCEPTANCE_TYPES = new Set(['OUTCOME', 'ACCEPTANCE'])
+  const ACCEPTANCE_EVIDENCE = new Set(['PLAYWRIGHT', 'CURL', 'SSH', 'SCREENSHOT'])
+  const accepting = ac => {
+    if (!ac || typeof ac !== 'object') return false
+    if (typeof ac.type === 'string' && ACCEPTANCE_TYPES.has(ac.type.toUpperCase())) return true
+    const ev = ac.evidenceMethod && ac.evidenceMethod.type
+    return typeof ev === 'string' && ACCEPTANCE_EVIDENCE.has(ev.toUpperCase())
+  }
+
+  const first = acs.filter(accepting)
+  const rest = acs.filter(ac => !accepting(ac))
+  return first.concat(rest).slice(0, limit)
+}
+
+/** What a reader of a finished run needs to tell a short list from a dropped one. */
+function coverageRecord(successCriteria, acs, deferrals) {
+  const criteria = Array.isArray(successCriteria) ? successCriteria : []
+  const acList = Array.isArray(acs) ? acs : []
+  return {
+    criteriaCount: criteria.length,
+    acCount: acList.length,
+    covered: acList.map(ac => (ac && ac.specElement) || null).filter(Boolean),
+    deferrals: Array.isArray(deferrals) ? deferrals : [],
+    uncovered: coverageViolations(successCriteria, acs, deferrals),
+  }
+}
+// ──── AC-COVERAGE-END ────
+
 // ──── FAILURE-LEDGER-START ────
 /**
  * Every refusal this run made, so the terminal result can report all of them
@@ -993,10 +1131,28 @@ let setupResult = null
 let regressionCount = 0
 let CACHED_CEREMONY = null
 
+/**
+ * The coverage decision, carried out of discovery (#251).
+ *
+ * Module-scoped because three different readers need them and none of them is
+ * inside runDiscovery: the caller turns `discoveryRefusal` into the run's
+ * terminal result, the setup agent writes `acCoverage` into
+ * workflow-state.json, and a regression re-run has to start from a clean
+ * slate rather than inheriting the previous attempt's deferrals.
+ */
+let acDeferrals = []
+let acCoverage = null
+let discoveryRefusal = null
+
 async function runDiscovery(context) {
   phase('Discovery')
   // Clear cached ceremony so stale context is not reused on regression re-runs
   CACHED_CEREMONY = null
+  // Reset per attempt: a regression re-run that inherited the last attempt's
+  // deferrals would read its own earlier excuse as this attempt's coverage.
+  acDeferrals = []
+  acCoverage = null
+  discoveryRefusal = null
   log(`DISCOVERY${context ? ' (regression: ' + context + ')' : ''}`)
 
   discovery = await briefedAgent(`
@@ -1126,7 +1282,15 @@ Project root: ${PROJECT_ROOT}
 You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX_ACS_PER_ISSUE} AC limit per ship run. Decompose into sub-issues.
 
 1. Read the governing spec at ${PROJECT_ROOT}/${specPath} — find phase headers (### Phase N or similar groupings)
-2. Group the ACs by phase (max ${MAX_ACS_PER_ISSUE} per group). If no phases exist, split sequentially.
+2. Group the ACs by phase (max ${MAX_ACS_PER_ISSUE} per group).
+
+   If no phases exist, group by WHAT EACH AC PROVES, not by where it appears
+   in the list. Phase 1 must keep every AC that could falsify the work — the
+   ones measured against the real consumer, a running service, a browser, a
+   deployed container. The ACs that check fixtures the same change produced
+   go to a later phase. Position is not a grouping: an acceptance criterion is
+   written LAST, so splitting in order defers the only thing that could prove
+   the work wrong, every single time (#251).
 3. For each group AFTER the first, write its body to a file and create a sub-issue.
    Write the body with a heredoc so newlines and backticks survive, then run:
 
@@ -1146,7 +1310,8 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
    it must say "Rescoped to Phase 1 only" and list the sub-issue numbers — then run:
 
    cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
-5. Return the Phase 1 AC IDs (the first ${MAX_ACS_PER_ISSUE} or fewer)
+5. Return the Phase 1 AC IDs — at most ${MAX_ACS_PER_ISSUE}, chosen by what they
+   prove, NOT the first ${MAX_ACS_PER_ISSUE} in the list.
 
 Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}] }
 `, { label: 'decompose', phase: 'Discovery', schema: {
@@ -1164,13 +1329,46 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
       // Match on ac.id (AC-N) OR ac.specElement (SC-N) — decompose agent may return either format
       const filtered = originalAcs.filter(ac => keepIds.has(ac.id) || keepIds.has(ac.specElement) || (ac.specElement && ac.specElement.split(',').some(s => keepIds.has(s.trim()))))
       if (filtered.length === 0) {
-        log(`WARN: decompose filter matched 0 ACs (keepIds=${[...keepIds].join(',')} vs acIds=${originalAcs.map(a=>a.id+'/'+a.specElement).join(',')}). Falling back to first ${MAX_ACS_PER_ISSUE}.`)
-        discovery.acs = originalAcs.slice(0, MAX_ACS_PER_ISSUE)
+        // The fallback used to be originalAcs.slice(0, MAX) — positional, and
+        // therefore guaranteed to drop the acceptance criterion, since that is
+        // the one written last (#251). An unmatchable decompose result is a
+        // failure of the agent, and the response to it must not be to
+        // deterministically defer the only AC that could falsify the work.
+        log(`WARN: decompose filter matched 0 ACs (keepIds=${[...keepIds].join(',')} vs acIds=${originalAcs.map(a=>a.id+'/'+a.specElement).join(',')}). Keeping the ${MAX_ACS_PER_ISSUE} that prove the most.`)
+        discovery.acs = prioritiseAcs(originalAcs, MAX_ACS_PER_ISSUE)
       } else {
-        discovery.acs = filtered
+        // Even a matched filter is capped, and the cap is applied by what the
+        // ACs prove: a decompose agent that returns more than the limit would
+        // otherwise be trimmed by whatever order it happened to list them in.
+        discovery.acs = prioritiseAcs(filtered, MAX_ACS_PER_ISSUE)
       }
-      log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created.`)
+      acDeferrals = originalAcs
+        .filter(ac => !discovery.acs.some(kept => kept.id === ac.id))
+        .map(ac => ({
+          specElement: ac.specElement || ac.id,
+          reason: `deferred by decomposition — ${discovery.acs.length} of ${originalAcs.length} ACs fit the ${MAX_ACS_PER_ISSUE}-AC limit for one run`,
+          subIssue: (decomposeResult.subIssues || [])
+            .find(s => (s.acIds || []).includes(ac.id) || (s.acIds || []).includes(ac.specElement))?.number,
+        }))
+      log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created. ${acDeferrals.length} AC(s) deferred.`)
     }
+  }
+
+  // Nothing is dropped in silence (#251). Every success criterion the issue
+  // states is either measured by an AC this run will run, or carries a
+  // written reason for being deferred. The check sits HERE — before setup,
+  // before the scope gate, before Marcus — because the whole point is to
+  // refuse before the run spends an hour measuring the wrong half.
+  const coverageGaps = coverageViolations(goalData.successCriteria, discovery.acs, acDeferrals)
+  acCoverage = coverageRecord(goalData.successCriteria, discovery.acs, acDeferrals)
+  if (coverageGaps.length > 0) {
+    discoveryRefusal = shipFailed(
+      'Discovery',
+      `${coverageGaps.length} success criterion/criteria would not be measured by this run:\n  - ` +
+        coverageGaps.join('\n  - '),
+      { acCoverage },
+    )
+    return false
   }
 
   setupResult = await timedAgent(`
@@ -1188,6 +1386,7 @@ initWorkflow(sf, {
   sourceSpecs: ${JSON.stringify(discovery.sourceSpecs || [])},
   bootstrappedFrom: 'ship-workflow',
   priorWork: ${JSON.stringify(discovery.priorWork || null)},
+  acCoverage: ${JSON.stringify(acCoverage)},
 });
 writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
   id: ac.id, type: ac.type, statement: ac.statement,
@@ -1238,7 +1437,12 @@ console.log('ACs written: ' + s.acs.length);
   return true
 }
 
-if (!await runDiscovery(null)) return { status: 'DISCOVERY_FAILED' }
+if (!await runDiscovery(null)) {
+  // A coverage refusal already went through shipFailed, so it carries every
+  // reason this run refused and the PR state (#252). Returning the bare
+  // DISCOVERY_FAILED over the top of it would throw that away.
+  return discoveryRefusal || { status: 'DISCOVERY_FAILED' }
+}
 
 // ADR-009: Freeze AC definitions at discovery time for cross-gate integrity
 // Heal agents may modify ACs in workflow-state.json; this snapshot is the authority
@@ -2554,7 +2758,8 @@ if (verifyResult?.result === 'FAIL') {
     regressionCount++
     log(`Verify DISCOVERY regression #${regressionCount}`)
     if (!await runDiscovery('Verify gate found ACs were wrong: ' + (verifyResult.failures || []).join(', '))) {
-      return { status: 'VERIFY_FAILED', reason: 'DISCOVERY regression failed', workDir: WORK_DIR }
+      return discoveryRefusal ||
+        { status: 'VERIFY_FAILED', reason: 'DISCOVERY regression failed', workDir: WORK_DIR }
     }
   }
   if (verifyResult.regressionTarget === 'BUILD' && regressionCount < MAX_REGRESSIONS) {

@@ -1200,6 +1200,137 @@ reading:
 
 ---
 
+### Scope cannot defer the criterion that proves the work (#251)
+
+Run `wf_e105dd33-220` on #216 was handed **seven** success criteria and went on
+to implement, verify, commit, security-review and open a PR against **six**.
+Nothing refused and nothing warned. The seventh was the only one measured
+against a real consumer:
+
+> A throwaway worktree of DailyBriefDashboard re-scaffolds with its
+> `[self-hosted, mac-mini-live]` runner label and all four extra gates intact
+
+The other six passed honestly, against fixtures the same change produced.
+Running the seventh by hand afterwards showed the delivered code destroying
+`concurrency`, `cancel-in-progress`, `paths-ignore`, the top-level
+`workflow_dispatch` trigger and the consumer's header comments — while
+reporting a *preserving* `REPLACED (+0 lines, preserved …)` with `0 refused`.
+So the cost is not one missing row in a report: the run's entire green result
+was about the half of the problem the fixtures covered, and no gate could tell
+the difference.
+
+**It was not a silent drop, and filing it as one was wrong.**
+`MAX_ACS_PER_ISSUE = 6` triggered a decomposition and AC-7/8/9 went to
+sub-issue #249, which #216 references four times. The mechanism worked. What
+it got wrong is **which** criteria it kept. The decompose prompt said "If no
+phases exist, split sequentially" and the fallback on an unmatchable result was
+`originalAcs.slice(0, MAX_ACS_PER_ISSUE)`. Both positional — and an acceptance
+criterion is written LAST, because it is the one that says "and then the whole
+thing works". Position-based splitting therefore defers the falsifying
+criterion **by construction, every time**, and leaves the shipping phase
+measuring only the parts it already believed.
+
+Note the asymmetry this closes. A stale security review stops a run cold, an
+unmeasured suite is not a passing suite, an absent pre-validation reading
+refuses. An absent acceptance criterion was silent.
+
+- [x] SC-642: workflows/ship.js contains [AC-COVERAGE-START, not a criterion that passed] — one binding turns (success criteria, ACs, deferrals) into a list of refusal strings; every criterion maps to an AC this run will measure, or to a deferral carrying a reason somebody wrote
+- [x] SC-643: workflows/ship.js contains [would not be measured by this run, discoveryRefusal = shipFailed] — an uncovered run refuses before the implement phase, and the refusal QUOTES each uncovered criterion rather than counting them
+- [x] SC-644: workflows/ship.js contains [function prioritiseAcs(acs, first.concat(rest)] — a STABLE partition that keeps what could falsify the work, not what came first; with no acceptance criterion present the input order is returned unchanged, so runs that were already fine are not quietly reshuffled
+- [x] SC-645: gates/schema.ts contains [acCoverage: z.object({] — the coverage decision reaches workflow-state.json through the schema, so a reader of a finished run can tell "six ACs because the issue had six criteria" from "six ACs because one was dropped"
+- [x] SC-646: test/ac-coverage.test.ts contains [could not build the mutant] — the AC-COVERAGE block is extracted by marker and EXECUTED, and a rename aborts the file rather than passing it
+
+A deferral with no reason does **not** cover a criterion. That is the cheapest
+way to make an uncovered run green again, and it leaves a reader exactly as
+uninformed as silence did.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ac-coverage.test.ts` (33 tests):
+
+| Mutation | Red |
+|---|---|
+| `prioritiseAcs` reverted to the positional `acs.slice(0, limit)` — the defect, reintroduced | 5 |
+| `coverageViolations` short-circuited to `return []` | 12 |
+| `coverageViolations` renamed | aborts — 0 pass, 1 error, every case gone |
+
+None is left in the tree; all were run and reverted. Three more are built from
+the real source inside the file on every pass: coverage crediting every
+criterion, a reasonless deferral accepted, and a refusal that reports a count
+instead of the text.
+
+**What this does NOT prove, stated rather than left to be discovered.** The
+binding is executed; the WIRING is asserted by reading ship.js's source. A
+mutation that changes `if (coverageGaps.length > 0)` to `if (false)` leaves
+every source-text assertion satisfied and is not caught. Closing that needs the
+negative-control run — a planted uncovered issue driven through `Skill("ship")`
+— which is the next item and not this one.
+
+---
+
+### The full-suite rate is 4, and it is stated once (2026-10-10)
+
+DIR-L29's budget moved from 2 full suites per worker per 30 minutes to 4.
+Two was measured against a session that ran the suite as a gate and then got
+on with it; what a long autonomous run actually does is gate, fix, re-measure,
+fix again. At 2 the third refusal landed mid-run and the work either stalled
+or proceeded on an unmeasured tree — which is the failure the budget exists to
+prevent, arrived at from the other side.
+
+This is a RATE, not a concurrency limit. `DEFAULT_CAPACITY` still holds the
+machine to 2 suites at once, and that is the number the 2026-10-05 reboot was
+about (5,360 MB and 33 processes per suite). Raising the rate lets one worker
+come back sooner; it does not let two more start together.
+
+- [x] SC-647: lib/transcript-checker.ts contains [DEFAULT_MAX_RUNS_PER_WORKER] — COMP-2 grades against the POLICY constant rather than restating the number or resolving it through the environment. Two failure directions, both real: a grader still saying "2" after the guard moved to 4 marks a compliant run as IGNORED, so the run that reads worst is the one that obeyed; and a grader resolving through the environment lets a run that spent eight suites be graded against a threshold of eight
+- [x] SC-648: lib/test-suite-lock.ts contains [RUNGATE_MAX_FULL_SUITE_RUNS, Math.min(parsed] — the environment may LOWER the rate and cannot raise it, and no value of it can turn the guard off: every input that is not a clearly valid integer falls back to the default, since NaN would refuse everything and Infinity would disable the cap
+- [x] SC-649: lib/test-suite-lock.ts contains [DEFAULT_MAX_RUNS_PER_WORKER, MAX_TRACKED_RUNS] — the rate is clamped to what the counter file retains; a budget larger than that is a budget that silently resets mid-window
+
+Everything in `test/test-suite-lock.test.ts` that asserts "the third run is
+refused" now PINS `maxRunsPerSession: 2` instead of inheriting the default.
+That sentence is only true at 2, and an inherited default would have turned
+every one of those cases green-by-accident the moment the number moved. The
+cost of pinning is that nothing then exercises the value production runs at,
+so the default is driven separately through the real gate with no option and
+no environment.
+
+**Security review of d6cc5acf found two real defects in the first version of
+this change, and both were mine.** Recorded because the shape is the same
+shape twice: a limit that the thing being limited can reach.
+
+- **Self-grading bypass.** COMP-2 called `resolveMaxRuns()`, which reads the
+  environment. A run that spent eight full suites could be graded against a
+  threshold of eight. The grader now reads the POLICY constant: a run does not
+  get to move the line it is measured by.
+- **Control bypass.** The environment could set any rate up to
+  `MAX_TRACKED_RUNS`, so the guard that exists to stop a machine-killing suite
+  read its own limit from a place the guarded work can influence. Reaching the
+  hook's environment is not trivial — hooks inherit the Claude Code process's
+  env, so an inline `VAR=8 bun test` sets it for the suite and not for the
+  guard — but "hard to reach from one direction" is not the property a control
+  needs, and a shell profile, a launch script or an exported parent all reach
+  it. The override is now ONE-WAY: it may lower the rate and cannot raise it.
+  Tightening is always safe and never needs permission, so the loosening
+  direction had no reason to exist.
+
+The self-reference trap caught the fix for the first one. The comment
+explaining that COMP-2 must not call the resolver wrote the forbidden call
+form out verbatim, which is itself enough to satisfy a check that greps for
+its absence. The comment names the resolver in prose only.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/test-suite-lock.test.ts` (138 tests):
+
+| Mutation | Red |
+|---|---|
+| the default set back to 2 | 15 |
+| the default raised to 99, above `MAX_TRACKED_RUNS` | 15 |
+| the environment clamp raised from the policy to `MAX_TRACKED_RUNS` — the control bypass, reintroduced | 1 |
+| COMP-2 pointed back at the environment-aware resolver — the self-grading bypass, reintroduced | 1 |
+
+None is left in the tree; all were run and reverted.
+
+---
+
 ## 6. ITERATION — Convergence + stuck detection
 
 **Purpose:** Decide what to do when verification fails. Replan, don't just retry.
