@@ -277,7 +277,11 @@ function getReinforcementMap(): Record<string, string> {
     "COMP-13": "Write the test file BEFORE the implementation file. Tool-call order is mechanically checked.",
     "COMP-6": "Read each file exactly ONCE. Use offset/limit to get what you need in one pass.",
     "COMP-9": "Total tool calls must stay under 40. Batch related reads, use targeted tests.",
-    "COMP-2": "Run full suite (bun test) at most TWICE. Use targeted tests for iteration.",
+    // No number here. The guard owns it, the reinforcement points at the
+    // guard, and a copy of "TWICE" in an agent's brief outlives any change to
+    // the rate — which is how an agent ends up obeying a limit that no longer
+    // exists while the grader measures a different one.
+    "COMP-2": "Run the full suite (bun test) sparingly. A per-worker rate limit enforces this mechanically and will refuse the run; do not plan around a specific number. Use targeted tests for iteration.",
   };
 }
 
