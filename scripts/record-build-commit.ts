@@ -50,7 +50,14 @@
  * Usage:
  *   bun scripts/record-build-commit.ts --state <workflow-state.json> \
  *     --sha <commit sha> --branch <branch> --quinn PASS|FAIL|SKIP \
+ *     [--worktree-path <absolute dir>] \
  *     [--api PASS|FAIL|SKIP] [--ui PASS|FAIL|SKIP] [--ui-skip-reason <text>]
+ *
+ * --worktree-path is the directory the commit was made in (#174). The ship
+ * gate's code-pushed and code-committed checks run git there; without it they
+ * fall back to projectRoot, which under worktree isolation is a main checkout
+ * sitting clean and level with its upstream — a PASS about a branch the run
+ * never touched.
  *
  * --api and --ui are for a caller that MEASURED the environment. Omit them
  * otherwise; they have no default (#176).
@@ -69,10 +76,20 @@ import { writeWorkflowState } from "../gates/orchestrator";
  */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["state", "sha", "branch", "quinn", "api", "ui", "ui-skip-reason"]);
+const OPTIONS = new Set(["state", "sha", "branch", "quinn", "api", "ui", "ui-skip-reason", "worktree-path"]);
 const SHA = /^[0-9a-f]{7,40}$/;
 /** git's own rules, narrowed: no spaces, no shell metacharacters, no leading dash. */
 const BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+/**
+ * An absolute path with nothing in it a shell could reinterpret (#174).
+ *
+ * The value is a directory the gate uses as a `cwd`, but it is also echoed
+ * into agent prompts that run `cd` on it, so it is refused rather than quoted
+ * when it is not the shape it must be — the same rule the three arguments
+ * above follow. Relative is refused too: "." means "wherever the reader
+ * happens to be", which is precisely the ambiguity #174 is about.
+ */
+const WORKTREE_PATH = /^\/[^\0\n\r"'`$;&|<>*?()\[\]{}\\]*$/;
 const VERDICTS = new Set(["PASS", "FAIL", "SKIP"]);
 
 /**
@@ -134,12 +151,24 @@ export function buildMarcusRecord(
   sha: string,
   branch: string,
   quinnVerdict: string,
+  worktreePath?: string,
 ): Record<string, unknown> {
   const base = existing && typeof existing === "object" && !Array.isArray(existing) ? existing : {};
   const quinn = record(base, "quinn");
   return {
     ...base,
-    marcus: { ...record(base, "marcus"), branch, commitSha: sha, spawned: true, verdict: "PASS" },
+    marcus: {
+      ...record(base, "marcus"),
+      branch,
+      commitSha: sha,
+      spawned: true,
+      verdict: "PASS",
+      // #174: the directory the commit was made in. Spread after the existing
+      // record so an omitted argument leaves an earlier value where it is, and
+      // absent rather than empty when nobody ever supplied one — the gate reads
+      // this to decide which repository to measure, and "" is a path.
+      ...(worktreePath === undefined ? {} : { worktreePath }),
+    },
     quinn: PRESERVED_VERDICTS.has(String(quinn.verdict))
       ? quinn
       : { ...quinn, spawned: quinnVerdict !== "SKIP", verdict: quinnVerdict },
@@ -216,10 +245,21 @@ if (import.meta.main) {
     // skipped" and must not be written as one.
     const api = args.api === undefined ? undefined : verdict("api", args.api);
     const ui = args.ui === undefined ? undefined : verdict("ui", args.ui);
+    // #174: where the commit was made. Optional, because a caller that cannot
+    // say must not invent an answer — but refused when it is given and is not
+    // an absolute path, so the gate never resolves a relative one against its
+    // own cwd.
+    const worktreePath = args["worktree-path"];
+    if (worktreePath !== undefined && !WORKTREE_PATH.test(worktreePath)) {
+      throw new Refused(
+        `--worktree-path "${String(worktreePath).slice(0, 120)}" is not an absolute path ` +
+          `free of shell metacharacters`,
+      );
+    }
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
     state.buildCommit = args.sha;
-    state.agents = buildMarcusRecord(state.agents, args.sha, args.branch, quinnVerdict);
+    state.agents = buildMarcusRecord(state.agents, args.sha, args.branch, quinnVerdict, worktreePath);
     state.environments = {
       ...(state.environments || {}),
       local: {
@@ -247,7 +287,7 @@ if (import.meta.main) {
     });
 
     writeWorkflowState(args.state, state);
-    console.log(JSON.stringify({ ok: true, buildCommit: args.sha, branch: args.branch }));
+    console.log(JSON.stringify({ ok: true, buildCommit: args.sha, branch: args.branch, worktreePath }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`record-build-commit: ${msg}`);

@@ -45,6 +45,23 @@ function loadProjectHarness(): any {
   return JSON.parse(readFileSync(p, "utf-8"));
 }
 
+/**
+ * The directory this run's commits were made in, and the branch they are on (#174).
+ *
+ * Marcus runs with `isolation: worktree`, so the run's work is on
+ * `agents.marcus.branch` inside `agents.marcus.worktreePath` while projectRoot
+ * stays on main — clean, and level with its upstream. Any git check that reads
+ * projectRoot is measuring an unrelated repository state that happens to look
+ * healthy on every run. projectRoot remains the fallback for a run that
+ * committed in place; it is never the first choice.
+ */
+function marcusWorkdir(): string | undefined {
+  return sf("agents")?.marcus?.worktreePath || sf("projectRoot");
+}
+
+/** git's own rules, narrowed: no spaces, no shell metacharacters, no leading dash. */
+const GIT_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+
 const isVerifyPlus = () => { const p = sf("phase"); return ["VERIFY", "SHIP", "DONE"].includes(p); };
 const isShipPlus = () => { const p = sf("phase"); return ["SHIP", "DONE"].includes(p); };
 const isDone = () => sf("phase") === "DONE";
@@ -536,29 +553,62 @@ describe("verify checks", () => {
   });
 
   // 22. code-committed (GAP → PORTED)
+  //
+  // #174: `git status --porcelain` ran in projectRoot while Marcus's edits sat
+  // in his worktree, so an entire round of uncommitted work read as clean. The
+  // directory now comes from the run artefact (see marcusWorkdir), and a git
+  // invocation that fails is reported rather than counted as zero dirty files.
   test("code-committed: no uncommitted changes in project", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
-    if (!root) return;
+    const dir = marcusWorkdir();
+    if (!dir) return;
     const harness = loadProjectHarness();
     const paths = harness?.codeCommittedPaths || [];
     if (paths.length === 0) return;
-    const result = exec(`git status --porcelain -- ${paths.join(" ")}`, root);
+    const result = exec(`git status --porcelain -- ${paths.join(" ")}`, dir);
+    if (!result.ok) {
+      expect(`git status failed in ${dir}`).toBe("0 uncommitted files");
+      return;
+    }
     const dirty = result.output.split("\n").filter(Boolean).length;
     if (dirty > 0) {
-      expect(`${dirty} uncommitted files`).toBe("0 uncommitted files");
+      expect(`${dirty} uncommitted files in ${dir}`).toBe("0 uncommitted files");
     }
   });
 
   // 23. code-pushed (GAP → PORTED)
+  //
+  // #174: two false PASSes in nine lines. `git rev-list --count
+  // @{upstream}..HEAD` ran in projectRoot, which under worktree isolation is a
+  // main checkout sitting clean and level with origin — so the check answered
+  // about a branch the run never touched. And an early return on a failed git
+  // invocation turned "this branch has no upstream, nobody ever pushed it"
+  // into the same verdict as "everything is pushed". Both halves now resolve
+  // from the artefact and refuse when the push state cannot be measured.
   test("code-pushed: no unpushed commits", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
-    if (!root) return;
-    const result = exec("git rev-list --count @{upstream}..HEAD", root);
-    if (!result.ok) return; // no upstream
+    const marcus = sf("agents")?.marcus;
+    const dir = marcus?.worktreePath || sf("projectRoot");
+    const branch = marcus?.branch;
+    if (!dir) {
+      expect("no agents.marcus.worktreePath and no projectRoot").toBe("a directory to measure push state in");
+      return;
+    }
+    if (branch !== undefined && !GIT_BRANCH.test(String(branch))) {
+      // Refused rather than sanitised: this value reaches a shell command line,
+      // and a string that is not a branch name has nothing to measure anyway.
+      expect(`agents.marcus.branch ${JSON.stringify(branch)} is not a branch name`).toBe("a usable branch name");
+      return;
+    }
+    // The branch the run committed on, not whatever `dir` has checked out.
+    const ref = branch || "HEAD";
+    const result = exec(`git rev-list --count ${ref}@{upstream}..${ref}`, dir);
+    if (!result.ok) {
+      expect(`cannot resolve ${ref}@{upstream} in ${dir}`).toBe("0 commits ahead");
+      return;
+    }
     if (result.output !== "0") {
-      expect(`${result.output} commits ahead`).toBe("0 commits ahead");
+      expect(`${result.output} commits ahead on ${ref} in ${dir}`).toBe("0 commits ahead");
     }
   });
 

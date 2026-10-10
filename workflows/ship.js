@@ -2236,7 +2236,13 @@ Do ALL of these steps in order. Do NOT run tests — the test suite was already 
    bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
      --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
      --sha "$sha" --branch "$branch" \\
+     --worktree-path ${shellQuote(commitDir)} \\
      --quinn ${shellQuote(quinnLocalVerdict)}
+
+   --worktree-path is the directory you just committed in, and it is how the
+   ship gate knows which repository to measure. Without it the code-pushed and
+   code-committed checks fall back to the project root, which is a main
+   checkout sitting clean and level with its upstream on every run (#174).
 
    That is the whole command. It carries no environment verdicts: this step
    commits, it does not curl the API and it does not open the UI. Those two
@@ -2397,7 +2403,11 @@ Then record the new commit in workflow-state.json. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --sha "$sha" --branch ${shellQuote(shipBranch)} \\
+    --worktree-path ${shellQuote(commitDir)} \\
     --quinn ${shellQuote(quinnLocalVerdict)}
+
+--worktree-path is the directory this round committed in; the ship gate runs
+its git checks there rather than in the project root (#174).
 
 That is the whole command — no environment verdicts. This step measured
 neither the API nor the UI, and config presence is not a measurement (#176).
@@ -3524,6 +3534,7 @@ Then record the new commit in workflow-state.json. Run exactly this:
   bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-build-commit.ts`)} \\
     --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
     --sha "$sha" --branch ${shellQuote(shipBranch)} \\
+    --worktree-path ${shellQuote(commitDir)} \\
     --quinn ${shellQuote(quinnShipVerdictValue)}
 
 That is the whole command — no environment verdicts. This step measured
