@@ -533,3 +533,246 @@ describe("#235 mutant: removing the binding makes the gate ship the broken comma
     expect(readFileSync(GATE_SUITE, "utf-8")).not.toContain("MUTANT: suite-to-verdict binding removed");
   });
 });
+
+// ── #171: the second security review, and what happens without it ──────────
+
+/**
+ * The same exercise one layer out: the thing mutated here is not a gate check
+ * but `workflows/ship.js` itself.
+ *
+ * #171 makes a remediation commit spawn a SECOND rook pinned to it and
+ * continue to the PR step on its PASS, where #169 returned SHIP_FAILED. The
+ * risk that buys is the one this repo keeps finding: a re-review that is
+ * written down, logged, graded — and never actually spawned, so a remediation
+ * commit sails through on the first review's PASS while every test about it
+ * goes on passing.
+ *
+ * `securityRereviewFailures` is the one site that spawns the second review and
+ * turns it into blocking failures. Short-circuiting it to `return []` on a
+ * COPY of ship.js removes the review without removing the loop's progress, and
+ * the two halves are run over one planted input:
+ *
+ *   real source  → the run is REFUSED (`REREVIEW-OUTCOME: SHIP_FAILED`)
+ *   mutant       → the same input SHIPS  (`REREVIEW-OUTCOME: PROCEEDED`)
+ *
+ * Red and green are read off those printed outcomes rather than inferred,
+ * because the inner case asserts the refusal: in bun's terms it is green on
+ * the real source and red on the mutant, which is the same observation stated
+ * from the other side. Both are asserted, and both halves are checked to have
+ * RUN first — a `-t` filter that matches nothing, or a mutant that failed to
+ * parse, leaves bun reporting a count indistinguishable from either verdict.
+ */
+const SHIP_SOURCE_PATH = join(REPO_ROOT, "workflows", "ship.js");
+const REREVIEW_CASE_FILE = join(REPO_ROOT, "test", "security-rereview-block.test.ts");
+
+/**
+ * The one line the ship mutation removes. A literal, not a regex: renaming the
+ * function must abort this file rather than quietly mutate nothing.
+ */
+const REREVIEW_SIGNATURE =
+  "async function securityRereviewFailures(base, sha, round, scopePath, findingsPath) {";
+
+export function buildShipMutantSource(src: string, signature = REREVIEW_SIGNATURE): string {
+  const occurrences = src.split(signature).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `could not build the mutant: the re-review spawn signature appears ${occurrences} times, ` +
+        `expected exactly 1. Either it was renamed, or a second spawn path exists and removing ` +
+        `one would leave the other reviewing.`,
+    );
+  }
+  const shortCircuited = src.replace(
+    signature,
+    `${signature}\n  return []; // MUTANT: the second security review is not spawned`,
+  );
+
+  // ship.js is read as text and the inner case compiles its marked regions
+  // with `new Function`, so a module statement inside one of them would throw
+  // on compilation — and a mutant that failed to compile is red, which reads
+  // as the mutation having been rejected on the merits. The sandbox has no
+  // module loading at all (#69), so there should be none to find.
+  //
+  // Swept over the compiled regions rather than the whole file: ship.js is
+  // mostly agent prompts, and several of them quote an `import` line at column
+  // zero inside a template literal. A guard that cannot tell a prompt from
+  // code is the detector-narrower-than-what-it-detects shape, inverted.
+  for (const region of MUTANT_COMPILED_REGIONS) {
+    const text = markedRegion(shortCircuited, region);
+    const leftover = text.match(/^\s*(?:import|export)\s/gm) || [];
+    if (leftover.length > 0) {
+      throw new Error(
+        `could not build the mutant: ${leftover.length} module statement(s) inside ${region}; ` +
+          `the region would fail to compile and that failure reads as a refusal`,
+      );
+    }
+  }
+  return shortCircuited;
+}
+
+/** The marked regions the inner case compiles out of ship.js. */
+const MUTANT_COMPILED_REGIONS = [
+  "SECURITY-REREVIEW",
+  "SECURITY-DECISION",
+  "ROOK-SECURITY",
+  "REVIEW-CURRENCY",
+];
+
+/**
+ * One marked region, refusing anything but exactly one pair — the same
+ * requirement the inner case puts on itself. A duplicated pair would let the
+ * sweep read a dead copy while the live one went unchecked (#200).
+ */
+function markedRegion(src: string, name: string): string {
+  const startMarker = `// ──── ${name}-START ────`;
+  const endMarker = `// ──── ${name}-END ────`;
+  const starts = src.split(startMarker).length - 1;
+  const ends = src.split(endMarker).length - 1;
+  if (starts !== 1 || ends !== 1) {
+    throw new Error(
+      `could not build the mutant: ${name} has ${starts} start marker(s) and ${ends} end ` +
+        `marker(s), expected exactly 1 of each`,
+    );
+  }
+  return src.slice(src.indexOf(startMarker) + startMarker.length, src.indexOf(endMarker));
+}
+
+function writeShipMutant(signature = REREVIEW_SIGNATURE): string {
+  const path = join(
+    MUTANTS,
+    `ship-mutant-${createHash("sha1").update(signature).digest("hex").slice(0, 8)}.js`,
+  );
+  writeFileSync(path, buildShipMutantSource(readFileSync(SHIP_SOURCE_PATH, "utf-8"), signature));
+  return path;
+}
+
+/**
+ * Run ONE named case of test/security-rereview-block.test.ts against a given
+ * ship.js, and read the outcome the case printed.
+ *
+ * `ran` is not a formality, for the reason the gate harness above gives: a
+ * filter that matches nothing and a source that failed to load both leave a
+ * count that could be mistaken for a verdict.
+ */
+function runRereviewCase(shipPath: string, filter: string) {
+  const r = spawnSync("bun", ["test", REREVIEW_CASE_FILE, "-t", filter], {
+    cwd: REPO_ROOT,
+    encoding: "utf-8",
+    timeout: 120000,
+    env: { ...process.env, SHIP_SOURCE: shipPath },
+  });
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const count = (label: string) => {
+    const m = new RegExp(`^\\s*(\\d+)\\s+${label}\\b`, "m").exec(output);
+    return m ? Number(m[1]) : 0;
+  };
+  const passed = count("pass");
+  const failed = count("fail");
+  const outcome = /REREVIEW-OUTCOME: (\w+)/.exec(output)?.[1] ?? "NOTHING PRINTED";
+  const spawned = Number(/REREVIEW-SPAWNED: (\d+)/.exec(output)?.[1] ?? "-1");
+  return { ran: passed + failed === 1, red: failed === 1, outcome, spawned, output };
+}
+
+const FINDING_CASE = "remediate-then-ship: a second review that finds something refuses the run";
+const SHIP_CASE = "remediate-then-ship: a passing second review reaches the PR step";
+
+describe("#171 mutant: without the second review the remediation commit ships unreviewed", () => {
+  test("the mutant ships the finding the real source refuses", () => {
+    const real = runRereviewCase(SHIP_SOURCE_PATH, FINDING_CASE);
+    expect(real.ran, `the case never ran against the real ship.js:\n${real.output}`).toBe(true);
+    expect(
+      real.outcome,
+      `the real source let a remediation commit with a finding through:\n${real.output}`,
+    ).toBe("SHIP_FAILED");
+    expect(real.red, `the case asserts the refusal, so the real source must be green:\n${real.output}`).toBe(
+      false,
+    );
+
+    const mutant = runRereviewCase(writeShipMutant(), FINDING_CASE);
+    expect(
+      mutant.ran,
+      `the mutant never ran — a parse error or the name filter, not a verdict:\n${mutant.output}`,
+    ).toBe(true);
+    expect(
+      mutant.outcome,
+      `the mutant still refused, so the refusal does not come from the second review:\n${mutant.output}`,
+    ).toBe("PROCEEDED");
+    expect(mutant.red, `the mutant agreed with the real source:\n${mutant.output}`).toBe(true);
+  }, 240000);
+
+  test("the real source spawns the second rook the mutant never spawns", () => {
+    // The other direction, and the one the ACs are actually about: a block
+    // that refuses every remediation commit would satisfy the case above while
+    // never re-reviewing anything.
+    const real = runRereviewCase(SHIP_SOURCE_PATH, SHIP_CASE);
+    expect(real.ran, `the case never ran against the real ship.js:\n${real.output}`).toBe(true);
+    expect(real.spawned, `the real source spawned no second rook:\n${real.output}`).toBe(1);
+    expect(
+      real.outcome,
+      `a remediation commit that passed its second review was still refused:\n${real.output}`,
+    ).toBe("PROCEEDED");
+    expect(real.red, `${real.output}`).toBe(false);
+
+    const mutant = runRereviewCase(writeShipMutant(), SHIP_CASE);
+    expect(
+      mutant.ran,
+      `the mutant never ran — a parse error or the name filter, not a verdict:\n${mutant.output}`,
+    ).toBe(true);
+    expect(
+      mutant.spawned,
+      `the mutant spawned a reviewer, so the spawn does not come from the mutated site:\n${mutant.output}`,
+    ).toBe(0);
+    expect(mutant.red, `the mutant shipped the same commit for the same reason:\n${mutant.output}`).toBe(
+      true,
+    );
+  }, 240000);
+
+  test("the mutation harness throws when the re-review spawn is renamed", () => {
+    const renamed = readFileSync(SHIP_SOURCE_PATH, "utf-8").replace(
+      REREVIEW_SIGNATURE,
+      "async function securityRereviewRefusal(base, sha, round, scopePath, findingsPath) {",
+    );
+    expect(() => buildShipMutantSource(renamed)).toThrow(
+      /could not build the mutant: the re-review spawn signature appears 0 times/,
+    );
+  });
+
+  test("the mutation harness throws when a second spawn path exists", () => {
+    const src = readFileSync(SHIP_SOURCE_PATH, "utf-8");
+    expect(() => buildShipMutantSource(`${src}\n${REREVIEW_SIGNATURE}\n  return []\n}\n`)).toThrow(
+      /appears 2 times/,
+    );
+  });
+
+  test("the mutation harness throws when a compiled region grows a module statement", () => {
+    // ship.js runs in a sandbox with no module loading (#69), and the regions
+    // this mutation exercises are compiled with `new Function`. An `import`
+    // inside one would make the inner case throw for a reason that is not the
+    // mutation — and a mutant that cannot compile is red, which is how a
+    // broken harness comes to look like a working one.
+    const withImport = readFileSync(SHIP_SOURCE_PATH, "utf-8").replace(
+      "// ──── SECURITY-REREVIEW-START ────",
+      '// ──── SECURITY-REREVIEW-START ────\nimport { x } from "./lib/x";',
+    );
+    expect(() => buildShipMutantSource(withImport)).toThrow(/module statement/);
+  });
+
+  test("the mutation harness throws when a compiled region's markers are duplicated", () => {
+    const duplicated = `${readFileSync(SHIP_SOURCE_PATH, "utf-8")}\n// ──── SECURITY-REREVIEW-END ────\n`;
+    expect(() => buildShipMutantSource(duplicated)).toThrow(/expected exactly 1 of each/);
+  });
+
+  test("nothing the re-review mutation wrote is left anywhere in the tree", () => {
+    const path = writeShipMutant();
+    expect(existsSync(path)).toBe(true);
+    expect(path.startsWith(tmpdir()), `the mutant was written inside the repo: ${path}`).toBe(true);
+    expect(readFileSync(SHIP_SOURCE_PATH, "utf-8")).not.toContain(
+      "MUTANT: the second security review is not spawned",
+    );
+    for (const dir of [join(REPO_ROOT, "workflows"), join(REPO_ROOT, "test")]) {
+      expect(
+        readdirSync(dir).filter(f => /mutant/i.test(f) && f !== "suite-binding-mutation.test.ts"),
+        `a mutant file was left in ${dir}`,
+      ).toEqual([]);
+    }
+  });
+});

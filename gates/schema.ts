@@ -106,7 +106,7 @@ export const SourceSpecSchema = z.object({
   specElements: z.array(z.string()).optional(),
 });
 
-export const AgentSchema = z.object({
+const AgentShape = {
   spawned: z.boolean().optional(),
   verdict: z.enum(["PASS", "FAIL", "SKIP"]).nullable().optional(),
   branch: z.string().optional(),
@@ -122,6 +122,76 @@ export const AgentSchema = z.object({
   testedSha: z.string().optional(),
   testedPaths: z.array(z.string()).optional(),
   port: z.number().optional(),
+};
+
+export const AgentSchema = z.object(AgentShape).optional();
+
+// ── The security review's re-review cap (#171) ────────────────────────────
+//
+// A remediation committed after the security review leaves the run holding a
+// verdict for code it no longer ships (#169). The answer is to re-review the
+// new tip, and that loop — remediate, re-review, remediate — is capped.
+//
+// Spending the cap is its OWN outcome. The run ends with code nobody reviewed,
+// which is the exact thing the #129 gate exists to stop, so it may not
+// serialise to anything a reader can mistake for either of the other two: not
+// "rook looked and found nothing" (a PASS), and not "rook found something" (a
+// FAIL carrying findings). It gets its own verdict member and its own named
+// refusal, and the superRefine below makes the three mutually exclusive at
+// write time rather than by convention.
+export const SECURITY_REREVIEW_EXHAUSTED = "SECURITY_REREVIEW_EXHAUSTED";
+
+/** Rook's verdict vocabulary. EXHAUSTED is rook's alone — see above. */
+export const ROOK_VERDICTS = ["PASS", "FAIL", "SKIP", "EXHAUSTED"] as const;
+
+export const RookAgentSchema = z.object({
+  ...AgentShape,
+  verdict: z.enum(ROOK_VERDICTS).nullable().optional(),
+  /** The named refusal. Present only on an EXHAUSTED record. */
+  refusal: z.literal(SECURITY_REREVIEW_EXHAUSTED).optional(),
+  /** How many remediate/re-review rounds were spent before the cap ran out. */
+  rounds: z.number().int().positive().optional(),
+}).superRefine((r, ctx) => {
+  if (r.verdict === "EXHAUSTED") {
+    if (r.refusal !== SECURITY_REREVIEW_EXHAUSTED) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `agents.rook: an EXHAUSTED verdict must name its refusal — ` +
+          `expected refusal "${SECURITY_REREVIEW_EXHAUSTED}"`,
+        path: ["refusal"],
+      });
+    }
+    if (r.rounds === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "agents.rook: an EXHAUSTED verdict must say how many rounds were spent — " +
+          "a cap nobody can see the size of is not a bound",
+        path: ["rounds"],
+      });
+    }
+    if (Array.isArray(r.failures) && r.failures.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          "agents.rook: an EXHAUSTED verdict must not carry failures — findings are how " +
+          "'the review found something' is written down, and running out of attempts is not that",
+        path: ["failures"],
+      });
+    }
+  } else if (r.refusal !== undefined) {
+    // Without this, the exhausted outcome could be parked under a PASS while
+    // still recording the refusal honestly — the fail-open that every reader
+    // checking `verdict === "PASS"` would walk straight past.
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        `agents.rook: refusal "${SECURITY_REREVIEW_EXHAUSTED}" was recorded against ` +
+        `verdict ${JSON.stringify(r.verdict ?? null)} — only an EXHAUSTED verdict may carry it`,
+      path: ["verdict"],
+    });
+  }
 }).optional();
 
 export const EnvironmentLocalSchema = z.object({
@@ -345,7 +415,7 @@ export const WorkflowStateSchema = z.object({
   agents: z.object({
     marcus: AgentSchema,
     quinn: AgentSchema,
-    rook: AgentSchema,
+    rook: RookAgentSchema,
   }).optional(),
 
   environments: z.object({

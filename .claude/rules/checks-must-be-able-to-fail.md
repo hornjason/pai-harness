@@ -225,3 +225,64 @@ What was broken to prove it, run and counted rather than asserted, over
 None is left in the tree; all were run and reverted. The three mutations
 recorded above for SC-618..620 were also re-run against this tree and reproduce
 their counts exactly — 3, 4 and 3 red of 29.
+
+## When the thing being checked is a document
+
+### The re-review record and the check that guards it (#171)
+
+A spec section is the easiest place in a repository to write a check that
+cannot fail. Grepping a document for a phrase the same commit just added is a
+test of the author's spelling. The #171 record — the decision to re-review the
+tip after a remediation round instead of refusing the run — is guarded by
+`test/harness-standard-security.test.ts`, and three properties are what make it
+a check rather than a restatement. Each is asserted, not left as a convention:
+
+- **The criteria are read out of the spec, not listed in the test.** A
+  hand-maintained list of four ids is satisfied by a section that lists five,
+  which is the vacuous shape from the top of this file wearing a registry's
+  clothes. `rereviewCriteria` parses the section and the ids are compared with
+  `EXPECTED_REREVIEW_SCS` in both directions, so an SC added to the spec with
+  nothing behind it fails, and an assertion that outlived its SC fails too.
+- **The count is asserted before anything iterates.** The per-criterion
+  assertions are generated in a loop over the parse. A parser that returns
+  nothing generates no tests at all, and a file that runs zero of its cases
+  reports the same green as a file that passes all of them.
+- **A criterion naming the spec cannot be its own evidence.** Two of these four
+  say `specs/HARNESS-STANDARD.md contains [...]`, and the SC line itself
+  contains those tokens. The search removes the SC line before looking, so the
+  tokens have to be earned by the prose — the same self-reference trap an
+  exemption list falls into when naming a file counts as referencing it.
+- **The phrasing being retired lives in the test.** The acceptance condition is
+  that #169's open-gap sentences are *gone* from the spec, so the test holds
+  them as banned literals. Holding them in the spec, even as a quotation of
+  what was removed, would be reintroducing them — prose about a banned literal
+  is the literal.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/harness-standard-security.test.ts` (17 tests):
+
+| Mutation | Red |
+|---|---|
+| `rereviewCriteria` short-circuited to `return []` | 7 of 17 — the count, the id registry, the SC-621 numbering, and all four per-criterion cases, each reporting "not listed" |
+| `SC-625` planted in the section with no registry entry | 2 of 17 — the count and the both-directions comparison; the per-criterion loop still passes, which is why the registry exists |
+| the #169 open-gap sentence restored to the spec | 1 of 17 — the reintroduction case, which is the whole acceptance condition |
+| the token `ran out of attempts` deleted from the spec prose | 2 of 17 — the SC-622 binding and the three-reasons case |
+
+The last row caught a real defect in this check twice rather than confirming
+it, and both times the defect was the same self-reference wearing a different
+coat.
+
+Run first, it turned **1** test red, not 2: the three-reasons case searched the
+whole section, and the phrase it looked for survived inside the SC line that
+demands it. The slice now stops at the first bullet.
+
+Re-run after that fix, it turned 1 red again — a different one. The mutation
+table in the spec quotes the phrase it reports deleting, so the SC-622 binding
+found it in the table and passed over a spec whose prose no longer said it. The
+inverse of "prose about a banned literal is the literal", and the same trap an
+exemption list falls into by naming the files it exempts. The row now describes
+the phrase instead of quoting it, and the mutation turns 2 red. That is the
+only reason these counts are worth anything: they were measured, they
+disagreed, and the check changed both times.
+
+None of the four mutations is left in the tree; all were run and reverted.

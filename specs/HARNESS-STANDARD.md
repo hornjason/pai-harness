@@ -654,11 +654,10 @@ source-text assertion.
 - [x] SC-604: workflows/ship.js contains [shipRoundCurrency.current, reason: shipRoundReason] — the Ship-round mismatch returns SHIP_FAILED on the path the Verify-side mismatch already uses, and no branch in the file turns a currency verdict into a log line the run continues past
 - [x] SC-605: test/security-verdict-blocks.test.ts contains [the ship round moves the branch past the review, a ship round that changes nothing still ships] — the refusal and its positive control are both named cases over the block extracted from ship.js, so a check that refuses every Ship round fails this file
 
-**One gap remains open and is tracked on #169, not claimed here.** The refusal
-stops the run; it does not re-review the new tip. Re-running rook against the
-post-remediation commit is the better long-run answer, and until it exists a
-Ship-round remediation costs the run rather than silently shipping unreviewed
-code. Refusing is what keeps that visible.
+**The half #169 left as a decision is decided, below.** Refusing was always the
+stopgap half of a pair; the other half — what the run does once it knows the
+tree moved — is recorded in *Re-review after a remediation round (#171)*, at the
+end of this section, together with why that answer was chosen over the stopgap.
 
 SC-598 — both remediation recommits handing the recorder `quinnLocalVerdict`
 while the Ship round runs after `quinn-container` — was closed by `bd0b91b9`,
@@ -675,6 +674,92 @@ A spec that ticks a criterion the source does not meet is worse than one that
 admits the gap. The run that produced this change did exactly that — `35f12943`
 marked three SCs `[x]` whose literals were absent — and the security gate
 refused it. See `.claude/rules/checks-must-be-able-to-fail.md` and #178.
+
+### Re-review after a remediation round (#171)
+
+#169 recorded one half of this as still undecided: having detected that the
+branch moved past the reviewed commit, the run had no way forward except to
+die. The decision is taken here, and it is the one #169 recommended — the run
+re-reviews the new tip, and refusing is the terminal case rather than the first
+answer.
+
+**Why re-reviewing beats refusing.** The refusal is right about the fact it
+reports: a verdict pinned to `c5ebc2a4` says nothing about `00f21e21`. It is
+the wrong thing to do with that fact, because remediation is not a rare path —
+the self-heal loop fires whenever the first verify attempt leaves anything to
+fix, so a run has to be lucky to reach a PR at all. Measured rather than
+predicted: `wf_6fbfa028-14e` on #239 spent 87.7 minutes and 1,287,510 subagent
+tokens across 22 agents and merged nothing, while the reviewer itself returned
+PASS with no findings. A remediation round is also where the riskiest code in a
+run is written — fast, under a failing gate, by an agent that has just been
+told it got something wrong — so the answer to "the tree moved" is to look at
+what it moved to. A check that kills the common path is a check someone
+eventually switches off; the point of this one is that it stays on.
+
+**The second pass reads what moved, not the branch again.** Its scope is the
+reviewed commit as base and the remediation commit as head, and the reviewer is
+told which commit it is being asked about. Re-reading the whole branch is slower
+and says nothing about what changed since the last look, which is the only
+question a second pass exists to answer.
+
+**Why the cycle is capped.** Remediate → re-review → remediate is a loop, and
+every element of it can fail again: a finding can be answered by a commit that
+introduces the next one. Uncapped, that spends an entire run's budget — #239's
+1,287,510 tokens is what one unproductive loop already costs — and finishes
+exactly where it started. The cap is a fixed number of rounds, in the shape
+`MAX_REGRESSIONS` already uses for the remediation loops around it.
+
+**Why exhaustion is recorded apart from a FAIL.** Three outcomes have to stay
+apart in `workflow-state.json`: the reviewer found nothing, the reviewer found
+something, and the run ran out of attempts. Collapsing the third into the first
+is the #129 defect exactly — "found no problems in nothing" serialising like
+"found no problems". Collapsing it into the second is cheaper but still wrong:
+a reader triaging the run needs to know whether there is a finding to fix or a
+budget to raise, and a reviewer blamed for a cap it never reached is a false
+accusation the next reader has to disprove. Exhaustion therefore returns its
+own refusal, `SECURITY_REREVIEW_EXHAUSTED`, beside `SECURITY_REVIEW_STALE`
+rather than inside it.
+
+**#169's refusal is not relaxed by any of this.** `SECURITY_REVIEW_STALE` stays
+the answer whenever the PR step is reached with a verdict pinned to something
+other than the tip and no completed second pass behind it. The new path adds a
+way forward from a mismatch; it removes no way of stopping. A second pass that
+is itself out of date is out of date, and refuses the same way the first one
+does.
+
+**What the criteria below claim, and what they do not.** They bind this record
+— the decision, its reasoning, and the mutation evidence behind the check that
+guards it — to the three files that carry it. The behaviour itself is built
+under #171 and earns its own criteria there, against `workflows/ship.js`,
+`scripts/record-security-verdict.ts` and `test/security-verdict-blocks.test.ts`.
+Ticking those here, before the source exists, is the `35f12943` defect one
+paragraph above.
+
+- [x] SC-621: specs/HARNESS-STANDARD.md contains [re-reviews the new tip, refusing is the terminal case] — the decision #169 left open is written down as a decision with the field evidence behind it, and the paragraph that described it as open is gone from the file rather than re-worded
+- [x] SC-622: specs/HARNESS-STANDARD.md contains [SECURITY_REREVIEW_EXHAUSTED, ran out of attempts] — the cap and the name of the refusal that reports its exhaustion are recorded, as a third outcome beside a review that found nothing and a review that found something
+- [x] SC-623: test/harness-standard-security.test.ts contains [EXPECTED_REREVIEW_SCS, rereviewCriteria, an SC listed in the spec with no assertion behind it] — the criteria in this section are parsed out of the spec and checked against the files they name rather than read by a human, and an SC added here without an entry in the registry fails the file instead of passing unnoticed
+- [x] SC-624: .claude/rules/checks-must-be-able-to-fail.md contains [The re-review record and the check that guards it (#171), None of the four mutations is left in the tree] — the worked example names what was broken to make this check go red and the counts that were actually run, so the check is evidence rather than decoration
+
+What was broken to prove these fail — run over
+`test/harness-standard-security.test.ts` (17 pass, 0 fail unmutated),
+counted, reverted:
+
+| mutation | result |
+|---|---|
+| `rereviewCriteria` short-circuited to `return []` | 7 fail |
+| `SC-625` planted in this section with no registry entry | 2 fail |
+| the #169 open-gap sentence restored to this file | 1 fail |
+| the exhaustion phrase SC-622 requires, deleted from the prose above | 2 fail |
+
+The second row is what SC-623 is about: a registry a reader maintains by hand
+drifts, so the ids are parsed out of this section and compared with the
+registry in both directions. The first row is the guard on the guard — a parser
+that returns nothing generates no per-criterion tests at all, which is
+indistinguishable from every criterion passing unless the count is asserted
+first. The fourth row cost a revision: it was 1 fail while the prose check
+searched the whole section, because the deleted phrase survived inside the SC
+line demanding it. The check now reads the prose only, and the full worked
+example is in `.claude/rules/checks-must-be-able-to-fail.md`.
 
 ---
 

