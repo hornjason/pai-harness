@@ -3469,8 +3469,49 @@ ${proveVerdict === 'PROVEN' ? `   Then label and close it — two commands, in t
 Report results for each step.
 `, { label: 'finalize', phase: 'Prove' })
 
+// ──── PROVE-STATUS-START ────
+/**
+ * The status a finished run reports, from its prove verdict (#222).
+ *
+ * Nothing here merges. #136 removed the auto-merge outright: the work is
+ * pushed to its own branch and a PR is opened, and CI gates the merge there.
+ * So the strongest thing any status below can mean is "the gates passed, the
+ * branch is pushed, a PR is open" — never "this is on main". The word SHIPPED
+ * on its own claimed more than that, and it was returned for the SKIP verdict,
+ * which is the case where prove did not run at all.
+ *
+ * It was also a strict PREFIX of SHIPPED_AND_PROVEN, and every reader of a
+ * ship status in this repo is a substring match — `["DONE","SHIPPED","PROVEN"]
+ * .includes(...)` in lib/promote-outputs.ts, `toContain("SHIPPED")` plus
+ * `not.toContain("SHIPPED_WITH")` in test/ship-and-heal.test.ts. A status that
+ * is a prefix of another is a status that gets read as the other one, which is
+ * how "we proved nothing" became the only unqualified success word in the
+ * system.
+ *
+ * The three statuses are pairwise non-prefix, and so is ALREADY_SHIPPED, the
+ * genuinely-complete status returned from the prior-work short circuit.
+ * test/ship-status-vocabulary.test.ts executes this block rather than grepping
+ * it, and runs two mutants against it.
+ */
+const SHIP_STATUS_BY_PROVE_VERDICT = {
+  PROVEN: 'SHIPPED_AND_PROVEN',
+  UNPROVEN: 'SHIP_PASSED_PROVE_FAILED',
+  SKIP: 'SHIPPED_UNPROVEN',
+}
+/** Unrecognised is unmeasured. Fail towards "nobody proved this". */
+const SHIP_STATUS_UNMEASURED = 'SHIPPED_UNPROVEN'
+function shipStatusFor(proveVerdict) {
+  // hasOwnProperty, not a bare lookup: `SHIP_STATUS_BY_PROVE_VERDICT['constructor']`
+  // is truthy and is not a status.
+  const mapped = Object.prototype.hasOwnProperty.call(SHIP_STATUS_BY_PROVE_VERDICT, proveVerdict)
+    ? SHIP_STATUS_BY_PROVE_VERDICT[proveVerdict]
+    : null
+  return typeof mapped === 'string' && mapped.length > 0 ? mapped : SHIP_STATUS_UNMEASURED
+}
+// ──── PROVE-STATUS-END ────
+
 return {
-  status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN' : proveVerdict === 'SKIP' ? 'SHIPPED' : 'SHIP_PASSED_PROVE_FAILED',
+  status: shipStatusFor(proveVerdict),
   issue: ISSUE, slug: SLUG,
   sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
   proveVerdict,

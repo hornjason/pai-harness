@@ -725,6 +725,66 @@ quieter. `unterminated` defaults to true and is cleared only by an observed end.
 - [x] SC-609: scripts/record-agent-timings.ts contains [unterminated: true, TIMING_USAGE_EXIT] — the reader fails closed on an unclosed bracket and routes every usage refusal through one exit-code constant
 - [x] SC-610: test/agent-timings.test.ts contains [the only raw agent() call is the one inside the timing wrapper] — AC-1 is enforced by parsing ship.js rather than grepping it, so converting one call site of thirty-nine does not pass
 
+### A run's final status says what was proved, and no more (#222)
+
+**Nothing in this harness merges.** #136 removed the auto-merge outright, and
+the ship gate's `branch-merged` check reads "at ship gate: check code is pushed,
+not merged". A finished ship run has pushed its work to its own branch and
+opened a PR; CI gates the merge there, and a human merges it. The strongest
+claim any status `workflows/ship.js` returns can make is therefore *the gates
+passed, the branch is pushed, a PR is open* — never *this is on main*.
+
+`workflows/ship.js` ended with
+
+```js
+status: proveVerdict === 'PROVEN' ? 'SHIPPED_AND_PROVEN'
+      : proveVerdict === 'SKIP'   ? 'SHIPPED'
+      : 'SHIP_PASSED_PROVE_FAILED'
+```
+
+Two defects in one line. `SKIP` means prove did not run — nothing was proved —
+and it produced the only unqualified success word in the system. And that word
+was a strict PREFIX of `SHIPPED_AND_PROVEN`, which matters because every reader
+of a ship status in this repo is a substring match:
+`["DONE","SHIPPED","PROVEN"].includes(...)` in `lib/promote-outputs.ts`,
+`toContain("SHIPPED")` beside `not.toContain("SHIPPED_WITH")` in
+`test/ship-and-heal.test.ts`. A status that is a prefix of another is a status
+that gets read as the other one. The same collision sat between `SHIPPED` and
+`ALREADY_SHIPPED`, the prior-work short circuit's genuinely-complete status:
+two words differing by a prefix, one meaning done and one meaning not-done-yet.
+
+**The vocabulary.** Every status `ship.js` returns is pairwise non-prefix, and
+the bare `SHIPPED` is gone.
+
+| Prove verdict | Status | Means |
+|---|---|---|
+| `PROVEN` | `SHIPPED_AND_PROVEN` | gates passed, PR open, and prove demonstrated the fix |
+| `SKIP` | `SHIPPED_UNPROVEN` | gates passed, PR open, prove did not run — nothing proved it |
+| `UNPROVEN` | `SHIP_PASSED_PROVE_FAILED` | gates passed, PR open, prove ran and did not pass |
+| anything else | `SHIPPED_UNPROVEN` | unrecognised is unmeasured, which is not clean |
+| (prior-work short circuit) | `ALREADY_SHIPPED` | every AC was already MET; this run built nothing |
+
+"Measured and did not pass" and "never measured" are different claims and keep
+different words. `SKIP` is the common case on this repo — LIGHT ceremony with no
+UI ACs skips prove entirely — so it is the one that most needed to stop reading
+as an unqualified success.
+
+**The check executes the map.** `test/ship-status-vocabulary.test.ts` extracts
+the `PROVE-STATUS` block by marker and runs it, because every mutation that has
+survived a first pass in this repo has been a source-text assertion —
+"ship.js contains `SHIPPED_UNPROVEN`" stays true after the map is reduced to a
+single constant. What was broken to prove it fails, run and counted: pointing
+`SKIP` at `'SHIPPED'` turns 7 tests red, pointing `PROVEN` at the SKIP status
+turns 5 red, and pointing the unrecognised-verdict fallback at
+`'SHIPPED_AND_PROVEN'` turns 3 red. None is left in the tree; all three were run
+and reverted. Two of them are also built as mutants inside the test file, from
+the real block, on every run.
+
+- [x] SC-611: workflows/ship.js contains [PROVE-STATUS-START, SHIPPED_UNPROVEN, status: shipStatusFor(proveVerdict)] — the verdict-to-status map is one named block the return calls, and a skipped prove reports an unproven status
+- [x] SC-612: workflows/ship.js must NOT contain ['SHIPPED'] — the bare unqualified status literal is gone from the file, so no status it returns is a strict prefix of another
+- [x] SC-613: test/ship-status-vocabulary.test.ts contains [vocabularyViolations, loadStatusFor, is a strict prefix of] — the property runs the extracted block over every verdict input rather than grepping ship.js for the words
+- [x] SC-614: test/ship-status-vocabulary.test.ts contains [a mutant map where PROVEN returns the SKIP status is caught, could not build the mutant] — the break lives in the test and is re-checked every run, and a renamed map aborts the file instead of passing it
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection
