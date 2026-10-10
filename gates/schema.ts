@@ -169,6 +169,56 @@ export const ChangelogEntry = z.object({
   actor: z.enum(["da", "marcus", "quinn", "rook", "gate-runner", "ship-workflow"]).optional(),
 });
 
+// ── Suite measurement (#224) ──────────────────────────────────────────────
+//
+// A suite result that does not say which commit it ran against is a number
+// whose provenance was discarded: run wf_7ac5f614-d21 published
+// `regressions: 0` over a branch with a failing test, and nothing could tell,
+// because there was nothing to compare the count to. So `measuredSha` is
+// required, and it must be a SHA rather than a ref — "HEAD" means "whatever
+// the checkout happened to be", which is the same absence of provenance in
+// different words.
+//
+// The verdict enum has no UNMEASURED member on purpose. UNMEASURED is what
+// lib/suite-measurement.ts returns for the ABSENCE of a record; writing it
+// would be a measurement asserting there was no measurement, and would give a
+// caller a way to park an unmeasured run in the field that is supposed to
+// prove the suite ran.
+const MEASURED_SHA = /^[0-9a-f]{7,40}$/i;
+
+const SuiteMeasurementShape = {
+  verdict: z.enum(["PASS", "FAIL"]),
+  measuredSha: z.string().regex(MEASURED_SHA, "measuredSha must be a commit SHA (7-40 hex), not a ref name"),
+  failures: z.number().int().nonnegative(),
+  measuredAt: z.string().optional(),
+};
+
+/**
+ * The field names the measurement carries, exported so gates/schema-parity.test.ts
+ * can check gates/SCHEMA-GUIDE.md against the schema in both directions — a
+ * field added here and left undocumented turns that test red.
+ */
+export const SUITE_MEASUREMENT_FIELDS = Object.keys(SuiteMeasurementShape);
+
+export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefine((m, ctx) => {
+  // A verdict its own count contradicts is not a result in either direction,
+  // and the write path is where that is cheapest to stop.
+  if (m.verdict === "PASS" && m.failures > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `suiteMeasurement: PASS with ${m.failures} failing test(s) — a PASS must carry zero failures`,
+      path: ["failures"],
+    });
+  }
+  if (m.verdict === "FAIL" && m.failures === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "suiteMeasurement: FAIL with no failing tests — a FAIL must name at least one",
+      path: ["failures"],
+    });
+  }
+});
+
 export const WorkflowStateSchema = z.object({
   schemaVersion: z.literal(2),
   issue: z.number(),
@@ -276,6 +326,10 @@ export const WorkflowStateSchema = z.object({
     commitSha: z.string(),
     verified: z.boolean(),
   }).optional(),
+
+  // Absent means UNMEASURED (#224). Write it with
+  // scripts/record-suite-measurement.ts, never by hand.
+  suiteMeasurement: SuiteMeasurementSchema.optional(),
 });
 
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;

@@ -1,7 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { THRESHOLD_OPS, EVIDENCE_METHOD_TYPES } from "./schema";
+import { THRESHOLD_OPS, EVIDENCE_METHOD_TYPES, SUITE_MEASUREMENT_FIELDS } from "./schema";
 import { parseTestResults } from "./run-gate";
 
 const GATES_DIR = __dirname;
@@ -143,6 +143,48 @@ describe("schema parity: v2 JSON Schema vs v3 Zod", () => {
     expect(v3Source).toContain("enteredTs");
     expect(v3Source).toContain("exitedTs");
     expect(v3Source).toContain("iteration");
+  });
+});
+
+const v3SourceForSuite = readFileSync(V3_SCHEMA_PATH, "utf-8");
+
+describe("#224: suiteMeasurement — schema and SCHEMA-GUIDE.md describe the same shape", () => {
+  const guide = readFileSync(join(GATES_DIR, "SCHEMA-GUIDE.md"), "utf-8");
+
+  /** The field names in the guide's `## suiteMeasurement` table. */
+  const documented = (() => {
+    const start = guide.indexOf("## suiteMeasurement");
+    const body = start === -1 ? "" : guide.slice(start, guide.indexOf("\n## ", start + 1));
+    return body
+      .split("\n")
+      .filter(line => /^\|\s*`/.test(line))
+      .map(line => line.match(/^\|\s*`([^`]+)`/)![1]);
+  })();
+
+  test("the guide has a suiteMeasurement section with a field table", () => {
+    expect(guide).toContain("## suiteMeasurement");
+    expect(documented.length, "no `field` rows found under ## suiteMeasurement").toBeGreaterThan(0);
+  });
+
+  // Both directions. A field added to the Zod schema and left undocumented
+  // turns the first list red; a field documented but never implemented turns
+  // the second red. One direction alone is a check that passes because of
+  // what it never looked at.
+  test("every schema field is documented", () => {
+    expect([...SUITE_MEASUREMENT_FIELDS].sort()).toEqual([...documented].sort());
+  });
+
+  test("the guide states the rule the schema enforces: absent means UNMEASURED", () => {
+    expect(guide).toContain("UNMEASURED");
+    expect(guide).toMatch(/measuredSha/);
+  });
+
+  test("the v3 Zod schema carries the measurement on the workflow state", () => {
+    expect(v3SourceForSuite).toContain("suiteMeasurement: SuiteMeasurementSchema");
+    // UNMEASURED is the reader's answer to an absent record, not a writable
+    // verdict — a schema that accepted it would give a caller a way to park an
+    // unmeasured run in the field that proves the suite ran.
+    expect(v3SourceForSuite).toContain('verdict: z.enum(["PASS", "FAIL"])');
   });
 });
 

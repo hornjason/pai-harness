@@ -785,6 +785,54 @@ the real block, on every run.
 - [x] SC-613: test/ship-status-vocabulary.test.ts contains [vocabularyViolations, loadStatusFor, is a strict prefix of] — the property runs the extracted block over every verdict input rather than grepping ship.js for the words
 - [x] SC-614: test/ship-status-vocabulary.test.ts contains [a mutant map where PROVEN returns the SKIP status is caught, could not build the mutant] — the break lives in the test and is re-checked every run, and a renamed map aborts the file instead of passing it
 
+### The suite reading reaches the verdict, and the connection is proven able to break (#224)
+
+Run `wf_7ac5f614-d21` returned `regressions: 0` on a branch whose suite ran
+`3984 pass / 1 fail`. The failing test was #149's guard catching a real
+regression, by name, with the file. Detection was never the gap — the signal
+existed and did not reach the verdict.
+
+`gates/workflow.test.ts`'s `tests-pass` check held the reading-to-refusal
+conversion inline, spread over an `if/else if` chain, and treated an absent
+`environments.local.tests` the same way the rest of the run did: as nothing to
+say rather than as nothing measured. That conversion is now one exported
+function, `suiteVerdictViolations`, with one body. One site is the requirement,
+not a tidiness preference: a second refusal path for the same fact would
+survive the mutation below and make the proof vacuous, so
+`test/suite-binding-mutation.test.ts` asserts the signature appears exactly
+once and aborts the file when it does not.
+
+The fixture is run, not described. `test/suite-binding-mutation.test.ts` plants
+a project containing one deliberately failing test, executes it, counts the
+failure with `extractTestFailureCount` — the parser the harness itself uses —
+and feeds the resulting verdict to the real check via
+`bun test gates/workflow.test.ts -t tests-pass`. The verdict the gate sees is
+therefore a measurement of a run, not a string the test chose. The same fixture
+with the failing test repaired is the positive control, without which a check
+that refuses everything would satisfy the red case.
+
+**What was broken to prove it, run and counted rather than asserted.** Both
+mutations were performed on the real source, measured over
+`test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts`
+(20 tests), and reverted; neither is left in the tree.
+
+| Mutation on `gates/workflow.test.ts` | Red | What goes red |
+|---|---|---|
+| `suiteVerdictViolations` short-circuited to `return []` | 3 of 20 | both fixture refusals (measured `FAIL`, and nothing measured at all) plus the mutant case, whose real-source half stops refusing |
+| `suiteVerdictViolations` renamed to `suiteVerdictRefusal` | 4 of 20 | every case that builds a mutant, each throwing `could not build the mutant: the binding signature appears 0 times` — the harness aborts instead of mutating nothing |
+
+The second row is the one that matters most. A mutation harness that silently
+no-ops when its target moves is the decorative check
+`.claude/rules/checks-must-be-able-to-fail.md` exists to rule out, and renaming
+the function is the cheapest way for that to happen by accident. The mutant
+also runs from a temp directory with its relative imports rewritten to absolute
+ones, because a mutant that dies on module resolution exits non-zero and reads
+as a refusal it never made.
+
+- [x] SC-615: gates/workflow.test.ts contains [export function suiteVerdictViolations, An unmeasured suite is not a passing suite] — the suite reading is converted to a refusal at one site, and an absent reading refuses instead of passing
+- [x] SC-616: test/suite-binding-mutation.test.ts contains [the deliberately failing test, extractTestFailureCount, tests-pass] — the fixture's failure is executed and counted by the harness's own parser before it reaches the check, rather than being a verdict string the test picked
+- [x] SC-617: test/suite-binding-mutation.test.ts contains [could not build the mutant, the mutant ships the exact fixture the real source refuses] — the removal of the binding is performed on a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

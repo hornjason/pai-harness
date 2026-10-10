@@ -102,6 +102,45 @@ A `PASS` or `SKIP` verdict may omit `failures` entirely.
 Write it with `scripts/record-security-verdict.ts`, not by hand — `workflows/ship.js`
 calls it in the Verify fan-out (#129).
 
+## suiteMeasurement
+
+The suite result, bound to the commit it ran against (#224). Top-level, optional,
+and **absent means UNMEASURED** — not "clean".
+
+| Field | Type | Meaning |
+|---|---|---|
+| `verdict` | `PASS` \| `FAIL` | Derived from the count, never supplied by a caller |
+| `measuredSha` | string | The commit the suite actually ran against — 7-40 hex, never a ref name |
+| `failures` | number | Failing tests: `0` for a PASS, at least `1` for a FAIL |
+| `measuredAt` | string | ISO timestamp of the run (optional) |
+
+**A measurement with no `measuredSha` is rejected at write time.** A count with no
+commit attached cannot be checked against the tree being shipped, so it is not
+evidence: run `wf_7ac5f614-d21` published `regressions: 0` over a branch whose
+suite had one failing test, and nothing could tell. `"HEAD"` is rejected for the
+same reason — it names whatever the checkout happened to be.
+
+**The verdict and the count may not contradict each other.** A `PASS` with failing
+tests, and a `FAIL` with none, are both refused by Zod.
+
+```json
+{ "suiteMeasurement": {
+  "verdict": "FAIL", "measuredSha": "dd242a62aea9371d788abb58f3d26922d5dd6cbc",
+  "failures": 1, "measuredAt": "2026-10-09T18:04:11Z"
+} }
+```
+
+`UNMEASURED` is **not** a writable verdict. It is what `lib/suite-measurement.ts`
+returns for the absence of a usable record — no record, no SHA, a malformed SHA,
+no count, or a self-contradicting one — and it reads with `failures: null` rather
+than `0`, so a consumer cannot add an unmeasured run into a clean total.
+
+Write it with `scripts/record-suite-measurement.ts`, not by hand:
+
+```
+bun scripts/record-suite-measurement.ts --state <workflow-state.json> --sha <commit sha> --failures <n>
+```
+
 ## Changelog Actor Values
 
 Valid `actor` enum (lowercase only): `da`, `marcus`, `quinn`, `rook`, `gate-runner`

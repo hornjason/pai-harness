@@ -99,3 +99,43 @@ in the real source leaves the harness nothing to mutate, so it throws
 quietly. That second outcome is the point — a mutation harness that silently
 no-ops when its target moves is the decorative check this rule is about.
 Neither mutation is left in the tree; both were run and reverted.
+
+## For a gate check, where the guard is itself a test
+
+A gate check has no exit code of its own to route through a constant, so the
+single site is **one exported function that turns the reading into a list of
+violations**, and the mutant is a copy of the whole suite file with that
+function short-circuited to `return []`. The copy is spawned —
+`bun test <mutant> -t <check name>` — and the real suite is spawned the same
+way against the same planted state. Real red, mutant green, one input.
+
+`gates/workflow.test.ts`'s `suiteVerdictViolations` and
+`test/suite-binding-mutation.test.ts` are the worked example (#224). Four
+things make it work, all asserted by the test rather than left as conventions:
+
+- **The fixture is executed, not described.** A project carrying one
+  deliberately failing test is run, and its failure counted with
+  `extractTestFailureCount` — the parser the harness itself uses — before the
+  resulting verdict is handed to the check. A hand-written `"FAIL"` proves the
+  check can read a string; a measured one proves a failing suite reaches it.
+- **The check is observed running.** A `-t` filter that matches nothing leaves
+  bun reporting zero failures, which is indistinguishable from the check
+  passing, and is also what a mutant that failed to resolve its imports looks
+  like. Every assertion goes through `ran === 1` first, and the red case also
+  asserts the refusal text, because a suite that failed to load is red too.
+- **The signature appears exactly once.** A second refusal path for the same
+  fact would survive the mutation and the mutant would go red for a reason
+  that has nothing to do with the mutation working. Two copies abort the file.
+- **The mutant has no relative imports left.** The copy runs from a temp
+  directory with `./schema` and friends rewritten to absolute paths, and any
+  specifier the rewriter could not see aborts the build rather than letting the
+  mutant die on module resolution and read as a refusal.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts`
+(20 tests): short-circuiting `suiteVerdictViolations` to `return []` turns 3
+red — both fixture refusals and the real-source half of the mutant case — and
+renaming it to `suiteVerdictRefusal` turns 4 red, every one of them throwing
+`could not build the mutant: the binding signature appears 0 times`. Neither
+mutation is left in the tree; both were run and reverted, and the counts are
+recorded in specs/HARNESS-STANDARD.md beside SC-615..617.
