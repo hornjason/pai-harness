@@ -324,3 +324,145 @@ describe("#176 local-ui-validated: an unmeasured ui is a red state", () => {
     expect(written.environments.local.ui, "a measured ui FAIL was overwritten by the commit step").toBe("FAIL");
   });
 });
+
+// ═══ the verify fan-out ═══════════════════════════════════════════════
+
+/**
+ * #126 — the two checks that read the Verify fan-out could not fail.
+ *
+ * `gates/workflow.test.ts` carried these, under names promising they validate
+ * the fan-out's results:
+ *
+ *     const ev = sf("gates.verify.evidenceValidator");
+ *     if (!ev) {
+ *       console.warn("WARN: gates.verify.evidenceValidator not populated — B2 agent may not have run");
+ *       return;                                   // <- PASSES
+ *     }
+ *
+ * A test that returns early passes. The only input either one could fail on
+ * was a slot that had been written and written WRONG — so the failure mode
+ * #126 is about, the agent never running, was the single case they were
+ * structurally incapable of catching. The names said so: "when populated".
+ *
+ * The producer had four ways to arrive at not-populated, three of them silent:
+ * `fails === 0` (a verify gate with any failure skips the agents, then reports
+ * their absence), `RUNGATE_SKIP_AGENTS`, a LIGHT tier, and a missing prompt
+ * file. So the fan-out could be absent in its entirety and the gate said PASS,
+ * which means every compliance number recorded for Verify was a number for a
+ * stage that may not have run.
+ *
+ * Absence is now a refusal and a DELIBERATE skip is a recorded one. Both
+ * halves matter: a fix that only refused would brick every LIGHT run, and a
+ * fix that brings its own outage is how the next fail-open gets argued for.
+ *
+ * Every case below is paired — defect planted, check red; defect removed, same
+ * check green — because a red case alone is satisfied by a check that fails on
+ * everything.
+ */
+describe("#126 verify fan-out: an absent agent is a refusal, not a warning", () => {
+  /** A populated record of the shape each agent really writes. */
+  const B1_RAN = { ts: "2026-10-10T00:00:00Z", gameable: 0, approved: true };
+  const B2_RAN = { ts: "2026-10-10T00:00:00Z", verdicts: [] };
+
+  /**
+   * Phase SHIP, not VERIFY. gate-executor runs the gate suite BEFORE it spawns
+   * the fan-out and persists the slots, so at verify the slot cannot yet
+   * exist and a check that refused its absence would refuse every first
+   * attempt — the original circularity with the sign flipped. The check reads
+   * at ship, by which point the fan-out has run or recorded why it did not.
+   */
+  function plantFanout(
+    verify: Record<string, unknown> | undefined,
+    tier = "STANDARD",
+  ): void {
+    plantState({
+      phase: "SHIP",
+      sizing: { predicted: "S", ceremonyTier: tier },
+      ...(verify === undefined ? {} : { gates: { verify } }),
+    });
+  }
+
+  const B1 = "b1-adversary-verify-structure";
+  const B2 = "b2-evidence-validator-structure";
+
+  test("B1: a missing adversary record is red — the case that used to warn and pass", () => {
+    plantFanout({ evidenceValidator: B2_RAN });
+    const r = runCheck(B1);
+    expect(r.ran, `the ${B1} check did not run:\n${r.output}`).toBe(true);
+    expect(r.red, "an absent adversary record was waved through").toBe(true);
+    expect(r.output, "the refusal does not say what is missing").toContain("adversary");
+  });
+
+  test("B1: the same run with the record present is green", () => {
+    plantFanout({ adversary: B1_RAN, evidenceValidator: B2_RAN });
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, `a complete fan-out was refused:\n${r.output}`).toBe(false);
+  });
+
+  test("B2: a missing evidence-validator record is red", () => {
+    plantFanout({ adversary: B1_RAN });
+    const r = runCheck(B2);
+    expect(r.ran, `the ${B2} check did not run:\n${r.output}`).toBe(true);
+    expect(r.red, "an absent evidence-validator record was waved through").toBe(true);
+    expect(r.output).toContain("evidenceValidator");
+  });
+
+  test("B2: the same run with the record present is green", () => {
+    plantFanout({ adversary: B1_RAN, evidenceValidator: B2_RAN });
+    const r = runCheck(B2);
+    expect(r.ran).toBe(true);
+    expect(r.red, `a complete fan-out was refused:\n${r.output}`).toBe(false);
+  });
+
+  test("no gates.verify key at all is red, not merely a missing field", () => {
+    // The shape a run that never reached the fan-out actually leaves behind.
+    plantFanout(undefined);
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, "a state with no gates.verify at all was read as clean").toBe(true);
+  });
+
+  test("a LIGHT tier is green — the skip the producer makes on purpose", () => {
+    // B1 is tier-gated in gates/gate-executor.ts:1093. Refusing here would
+    // brick every LIGHT run, and a fix that brings its own outage is how the
+    // next fail-open gets argued for.
+    plantFanout({}, "LIGHT");
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, `a LIGHT run was refused for a tier-gated agent:\n${r.output}`).toBe(false);
+  });
+
+  test("a recorded skip with a reason is green", () => {
+    plantFanout({ adversary: { skipped: "ac-adversary.md prompt not found" } });
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, `an explicitly recorded skip was refused:\n${r.output}`).toBe(false);
+  });
+
+  test("a recorded skip with NO reason is red", () => {
+    // The loophole the escape hatch would otherwise open: `{skipped: ""}` is
+    // an absence with extra steps, and it would be the cheapest way to make
+    // every case above green again.
+    plantFanout({ adversary: { skipped: "" } });
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, "a reasonless skip bought silence").toBe(true);
+  });
+
+  test("a populated but malformed record is still red — the old check's one input", () => {
+    // What the original check could catch. It has to keep working: the fix
+    // adds a failure mode, it does not trade one for another.
+    plantFanout({ adversary: { gameable: 0, approved: true } });
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red, "a record with no timestamp was accepted").toBe(true);
+  });
+
+  test("a non-object in the slot is red rather than crashing the check", () => {
+    plantFanout({ adversary: "ran" });
+    const r = runCheck(B1);
+    expect(r.ran).toBe(true);
+    expect(r.red).toBe(true);
+  });
+});

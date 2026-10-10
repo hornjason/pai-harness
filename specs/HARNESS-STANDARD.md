@@ -997,6 +997,78 @@ imports looks like.
 - [x] SC-619: test/suite-binding-mutation.test.ts contains [prevalidateEvidence, broken evidence commands on AC-2] — the fixture's broken evidence command is dry-run by the real pre-validator before the verdict reaches the gate, and the refusal names the AC id rather than only reporting a count
 - [x] SC-620: test/suite-binding-mutation.test.ts contains [the mutation harness throws when the pre-validation binding is renamed, PREVALIDATION_SIGNATURE] — the removal of this binding is performed on a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it
 
+### The Verify fan-out leaves a trace, or the gate refuses (#126)
+
+Two checks in `gates/workflow.test.ts` were supposed to notice when the
+adversarial verification and the evidence validator had not run:
+
+```js
+const ev = sf("gates.verify.evidenceValidator");
+if (!ev) {
+  console.warn("WARN: gates.verify.evidenceValidator not populated — B2 agent may not have run");
+  return;                                   // <- PASSES
+}
+```
+
+**A test that returns early passes.** The only input either one could fail on
+was a slot that had been written and written wrong, so the failure mode they
+existed for — the agent never running — was the single case they were
+structurally incapable of catching. Both names said so out loud: "when
+populated".
+
+The producer reached not-populated four ways, three of them silent: the
+`fails === 0` guard (a verify gate with any failure skipped both agents and
+then reported their absence, which reads as the cause when it is the
+consequence), `RUNGATE_SKIP_AGENTS`, a LIGHT tier, and a missing prompt file.
+So the fan-out could be absent in full and the gate said PASS — which makes
+every compliance number ever recorded for Verify a number for a stage that may
+not have run.
+
+**The check reads at the SHIP gate, not at verify, and the contract fixtures
+are what found that.** `gate-executor` runs the gate suite (`runGateTests`)
+and only THEN spawns the fan-out and persists its slots — so at the verify
+gate the slot cannot yet exist, and a check refusing its absence refuses every
+first attempt. That is the original circularity with the sign flipped: the
+gate failing on the fan-out's absence is what skips the fan-out. Verify cannot
+verify its own not-yet-produced output. Ship can, and refusing there still
+blocks the PR, which is the only thing the refusal needed to do.
+
+Absence is now a refusal and a deliberate skip is a recorded one. Both halves
+are load-bearing: refusing on every absence would brick LIGHT runs, and a fix
+that brings its own outage is how the next fail-open gets argued for. A skip
+with no readable reason refuses too, because that would be the cheapest way to
+make the whole check green again.
+
+- [x] SC-638: gates/workflow.test.ts contains [export function verifyFanoutViolations, the agent left no trace] — one binding turns "no record" into a refusal for both slots, and a LIGHT tier and a reasoned skip are the only absences that pass. The token is `the agent left no trace` rather than the sentence's ending, because the refusal text is split across a string concatenation and `an absence is not an approval` appears nowhere in the file — the same trap SC-523 records
+- [x] SC-639: gates/gate-executor.ts contains [export function fanoutSkipReason, skipped: fanoutSkip] — every path that does not run the fan-out records why, including the two that previously returned in silence
+- [x] SC-640: test/verify-fanout-recording.test.ts contains [a verify run finished with an unexplained empty fan-out, the gate refused a skip it had just written] — the producing side is measured by running the real gate executor and reading what it wrote, not by asserting on source
+- [x] SC-641: test/gate-vacuous-checks.test.ts contains [the case that used to warn and pass, a recorded skip with NO reason is red] — every case is paired red/green, and the escape hatch has its own loophole closed
+
+What was broken to prove it, run and counted rather than asserted:
+
+| Mutation | Red |
+|---|---|
+| `verifyFanoutViolations` short-circuited to `return []` | 5 of 42 |
+| the producer stops recording its skip (`{skipped: reason}` deleted) | 3 of 30 |
+| `verifyFanoutViolations` renamed | every mutant-building case throws `could not build the mutant` |
+| the check moved back to `isVerifyPlus` | 3 of 14 in test/contract.test.ts — the circularity, reintroduced |
+
+**One mutation was deliberately not run, and that is itself the finding.**
+Making `fanoutSkipReason` return `null` unconditionally means the fan-out is
+never skipped — so the mutant SPAWNS REAL AGENTS. The first attempt at it
+killed the shell. A mutation whose failure mode is "an unattended test run
+starts billing agents" is one to describe rather than execute, and the
+property it would have checked is covered from the other side: `null` is the
+only value that reaches the spawn, and every non-null branch is driven
+directly in `test/verify-fanout-recording.test.ts`.
+
+**The producer mutation is recorded because it SURVIVED the first pass.** With
+only the consumer tested — the gate check refusing an absent slot — deleting
+both `{ skipped: reason }` assignments left 42 of 42 green. That is #235's
+lesson arriving a second time: *mutate both ends of the binding, not just the
+reader.* A refusal nothing can satisfy is as broken as one nothing can
+trigger, and a reader-only proof sees neither.
+
 ### A refusal reports the whole run, and leaves no mergeable PR (#252)
 
 Run `wf_e105dd33-220` on #216 ended with one sentence — the security review

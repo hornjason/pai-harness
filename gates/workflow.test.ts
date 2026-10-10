@@ -76,6 +76,65 @@ export function suiteVerdictViolations(val: unknown): string[] {
 }
 
 /**
+ * #126 — the Verify fan-out leaves a trace, or the gate refuses.
+ *
+ * The two checks below used to read their slot and, finding nothing, warn and
+ * return:
+ *
+ *     if (!ev) { console.warn("...not populated — B2 agent may not have run"); return; }
+ *
+ * A test that returns early passes. The only input either could fail on was a
+ * slot written WRONG, so the failure mode this exists for — the agent never
+ * ran — was the single case they could not catch. "When populated" was in
+ * both names.
+ *
+ * The producer reached not-populated four ways, three of them silent: the
+ * `fails === 0` guard in gates/gate-executor.ts (a verify gate with any
+ * failure skips the agents and then reports their absence, which reads as the
+ * cause when it is the consequence), `RUNGATE_SKIP_AGENTS`, a LIGHT tier, and
+ * a missing prompt file. So the fan-out could be absent in full and the gate
+ * said PASS, which makes every compliance number recorded for Verify a number
+ * for a stage that may not have run.
+ *
+ * One function, one body, for the same reason `suiteVerdictViolations` above
+ * is: a second refusal path for the same fact would survive the mutation in
+ * test/suite-binding-mutation.test.ts and make the proof vacuous.
+ *
+ * A DELIBERATE skip passes, and must be written down as one. Refusing on
+ * every absence would brick LIGHT runs, and a fix that brings its own outage
+ * is how the next fail-open gets argued for. But a skip with no reason is an
+ * absence with extra steps, and it would be the cheapest way to make this
+ * whole check green again — so it refuses.
+ */
+export function verifyFanoutViolations(label: string, val: unknown, tier: unknown): string[] {
+  // The producer tier-gates B1 at gates/gate-executor.ts:1093, so a LIGHT run
+  // legitimately has no record. This is the one absence that is expected.
+  if (tier === "LIGHT") return [];
+
+  if (val === undefined || val === null || val === "") {
+    return [
+      `gates.verify.${label} not recorded — the agent left no trace, and an absence is ` +
+        `not an approval (#126). A deliberate skip must be recorded as ` +
+        `{"skipped": "<reason>"} so the artefact can tell "it approved" from "it never ran".`,
+    ];
+  }
+  if (typeof val !== "object") {
+    return [`gates.verify.${label} is ${typeof val}, expected a record (#126)`];
+  }
+
+  const skipped = (val as { skipped?: unknown }).skipped;
+  if (skipped !== undefined) {
+    return typeof skipped === "string" && skipped.trim().length > 0
+      ? []
+      : [
+          `gates.verify.${label} records a skip with no reason — a skip nobody can read ` +
+            `is an absence with extra steps (#126)`,
+        ];
+  }
+  return [];
+}
+
+/**
  * #235 — the evidence pre-validation reading reaches the verdict.
  *
  * `lib/evidence-prevalidator.ts` dry-runs every AC evidence command at SCOPE
@@ -848,26 +907,40 @@ describe("B1/B2 agent results", () => {
     ).toBe(true);
   });
 
-  // B2: Evidence Validator results structure (when present)
+  // B2: the evidence validator ran, and left something readable (#126)
+  //
+  // isShipPlus, NOT isVerifyPlus, and the contract fixtures are what found it.
+  // gate-executor runs this suite (`runGateTests`) and only THEN spawns the
+  // fan-out and persists its slots — so at the verify gate the slot cannot yet
+  // exist, and a check that refuses its absence refuses every first attempt.
+  // That is the original circularity with the sign flipped: the gate failing
+  // on the fan-out's absence is what skips the fan-out.
+  //
+  // Verify cannot verify its own not-yet-produced output. Ship can: by then
+  // the fan-out has either run or recorded why it did not, and refusing here
+  // still blocks the PR, which is the only thing the refusal needed to do.
   test("b2-evidence-validator-structure: results valid when populated", () => {
-    if (!isVerifyPlus()) return;
+    if (!isShipPlus()) return;
+    const tier = sf("sizing")?.ceremonyTier;
     const ev = sf("gates.verify.evidenceValidator");
-    if (!ev) {
-      console.warn("WARN: gates.verify.evidenceValidator not populated — B2 agent may not have run");
-      return;
-    }
+    const violations = verifyFanoutViolations("evidenceValidator", ev, tier);
+    expect(violations, violations.join("\n")).toEqual([]);
+    // Nothing further to validate when the absence was legitimate: a LIGHT run
+    // or a recorded skip has no verdicts, by construction.
+    if (!ev || (ev as { skipped?: unknown }).skipped !== undefined) return;
     expect(ev.ts, "evidenceValidator.ts must be an ISO timestamp").toBeTruthy();
     expect(Array.isArray(ev.verdicts), "evidenceValidator.verdicts must be an array").toBe(true);
   });
 
-  // B1: AC Adversary results structure (when present)
+  // B1: the AC adversary ran, and left something readable (#126)
+  // isShipPlus for the reason spelled out above B2.
   test("b1-adversary-verify-structure: results valid when populated", () => {
-    if (!isVerifyPlus()) return;
+    if (!isShipPlus()) return;
+    const tier = sf("sizing")?.ceremonyTier;
     const adv = sf("gates.verify.adversary");
-    if (!adv) {
-      console.warn("WARN: gates.verify.adversary not populated — B1 verify agent may not have run");
-      return;
-    }
+    const violations = verifyFanoutViolations("adversary", adv, tier);
+    expect(violations, violations.join("\n")).toEqual([]);
+    if (!adv || (adv as { skipped?: unknown }).skipped !== undefined) return;
     expect(adv.ts, "adversary.ts must be an ISO timestamp").toBeTruthy();
     expect(typeof adv.gameable, "adversary.gameable must be a number").toBe("number");
     expect(typeof adv.approved, "adversary.approved must be a boolean").toBe("boolean");
