@@ -1330,14 +1330,38 @@ What was broken to prove it, run and counted rather than asserted, over
 | `coversCriteria` made optional in the Discovery schema | 1 |
 | the prompt softened from "the run REFUSES" to "should generally cover" | 1 |
 
+| the `specElement` fallback restored — the parser differential, below | 1 |
+
 None is left in the tree; all were run and reverted.
 
-**A mutation that measured nothing, recorded because it looked like one.**
-Removing the positional id from `criterionIds`'s `id` field turned **0** red —
-`alias` carries that load, so the substitution changed no behaviour. A
-mutation with a zero count is either a gap in the tests or a target that was
-never load-bearing, and the two are indistinguishable without looking. This
-one was the second, and the real target is in the table above.
+**Security review caught the fix reopening the hole it had just closed.**
+`acCoversIds` also scanned `specElement` "for issues whose criteria genuinely
+are SC-numbered", with a comment claiming it could only add coverage for an id
+the criteria already carry and never invent one. The comment was false.
+
+Spec section titles in this repo routinely contain SC numbers — one is in
+#258's own fixture: `SC-633 PR-READINESS block and the draft lifecycle`.
+Measured rather than argued: an AC with `coversCriteria: []`, covering
+nothing, was credited with `SC-633`, and a criterion numbered SC-633 came back
+fully covered by an AC that answers it in no way at all. A parser differential
+straight through the control this issue had just installed — and a claim about
+a state it never looked at, written into a comment while fixing that exact
+defect class. `coversCriteria` and nothing else now.
+
+**Two mutations that measured nothing, recorded because they looked like
+mutations.**
+
+- Removing the positional id from `criterionIds`'s `id` field turned **0**
+  red. `alias` carries that load, so the substitution changed no behaviour.
+- A "only ids this issue defines can be credited" filter was added after the
+  security review and then **removed**: its mutation also turned 0 red,
+  because an unknown token in the covered set is never consulted. It read
+  well and could not change an outcome. A guard that cannot change an outcome
+  is not defence in depth, it is a line that makes a reader believe a check
+  exists, so the property is held by a test case and a comment instead.
+
+A mutation with a zero count is either a gap in the tests or a target that was
+never load-bearing, and the two are indistinguishable without looking.
 
 The backtick trap also recurred: backticks around `coversCriteria` inside the
 Discovery prompt closed ship.js's template literal. `test/security-verdict-blocks.test.ts`

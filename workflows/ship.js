@@ -694,26 +694,39 @@ function criterionIds(successCriteria) {
   }))
 }
 
-/** Every id this AC claims to answer, from either field, normalised. */
+/**
+ * Every criterion id this AC claims to answer.
+ *
+ * `coversCriteria` and NOTHING else. The first version of this also scanned
+ * `specElement` "for issues whose criteria genuinely are SC-numbered", with a
+ * comment claiming it could only add coverage for an id the criteria already
+ * carry and never invent one. **That comment was false**, and security review
+ * of the fix caught it before merge.
+ *
+ * Spec section titles in this repo routinely contain SC numbers. One is in
+ * #258's own fixture: `SC-633 PR-READINESS block and the draft lifecycle`.
+ * Measured rather than argued — an AC with `coversCriteria: []`, covering
+ * nothing, was credited with `SC-633` and a criterion numbered SC-633 came
+ * back fully covered by an AC that answers it in no way at all.
+ *
+ * So the fallback was a parser differential straight through the control #258
+ * had just installed, and the comment asserting otherwise was a claim about a
+ * state it never looked at — this repo's own defect class, written while
+ * fixing that defect class. Nothing legitimately depends on the fallback:
+ * `coversCriteria` is required by the Discovery schema.
+ */
 function acCoversIds(ac) {
   if (!ac || typeof ac !== 'object') return []
+  if (!Array.isArray(ac.coversCriteria)) return []
   const out = []
-  const push = raw => {
-    if (typeof raw !== 'string') return
+  for (const raw of ac.coversCriteria) {
+    if (typeof raw !== 'string') continue
     // Comma-separated in real runs — one AC can answer several criteria.
     for (const part of raw.split(',')) {
       const token = part.trim().match(/\b(?:SC|C)-\d+\b/)
       if (token) out.push(token[0])
     }
   }
-  // The attribution field, which is what an AC is supposed to use (#258).
-  if (Array.isArray(ac.coversCriteria)) for (const c of ac.coversCriteria) push(c)
-  // specElement names the governing SPEC's section, not the issue's criteria,
-  // and reading it as an attribution is the whole of #258. It is still
-  // consulted because an issue whose criteria genuinely are SC-numbered may
-  // have an AC citing the same token in both places — but it can only ever
-  // ADD coverage for an id the criteria actually carry, never invent one.
-  push(ac.specElement)
   return out
 }
 
@@ -748,6 +761,15 @@ function coverageViolations(successCriteria, acs, deferrals) {
 
   const criteria = criterionIds(successCriteria)
 
+  // An id no criterion defines simply satisfies nothing: the loop below asks
+  // `covered.has(c.id)`, so an unknown token in the set is never consulted.
+  //
+  // A filter here was written and then removed. It read well — "only ids this
+  // issue defines can be credited" — and its mutation turned ZERO tests red,
+  // because it could not change any outcome. A guard that cannot change an
+  // outcome is not defence in depth; it is a line that makes a reader believe
+  // a check exists. That is the subject of
+  // .claude/rules/checks-must-be-able-to-fail.md, so it is a comment instead.
   const covered = new Set()
   for (const ac of acList) for (const id of acCoversIds(ac)) covered.add(id)
 
