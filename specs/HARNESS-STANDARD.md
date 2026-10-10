@@ -781,6 +781,49 @@ quieter. `unterminated` defaults to true and is cleared only by an observed end.
 - [x] SC-609: scripts/record-agent-timings.ts contains [unterminated: true, TIMING_USAGE_EXIT] — the reader fails closed on an unclosed bracket and routes every usage refusal through one exit-code constant
 - [x] SC-610: test/agent-timings.test.ts contains [the only raw agent() call is the one inside the timing wrapper] — AC-1 is enforced by parsing ship.js rather than grepping it, so converting one call site of thirty-nine does not pass
 
+#### Waiting is not working (#239)
+
+The bracket above measures wall clock, and wall clock cannot tell a slow agent
+from a blocked one. On run `wf_18abb197-f03` sub-agent 235002 spent ~22 of its
+~30 minutes in `sleep 580` loops waiting out a full-suite rate budget its two
+siblings had already spent; the artifact reported one number for that call and
+it read as Marcus taking half an hour to think.
+
+So a third event kind, `queued`, carries an interval the call spent waiting on
+a shared limit. It is one record with its own duration rather than a second
+bracket, because an agent only learns how long it waited once the wait is over
+— a `queued-start` would be the one event it could never write on time. The
+summarizer folds those into the open bracket for the same label and reports
+`queuedSeconds` beside `workSeconds`, with the wall clock left alone.
+
+Two fail-opens are closed by name. A `queued` record whose duration is missing
+or unreadable is MALFORMED, never a zero wait: reading it as zero would make
+the one record that exists to say "this call waited" report that it did not.
+And `workSeconds` is not clamped — a wait longer than its own bracket means
+the agent mis-measured, and a clamp to zero would dress that contradiction up
+as an ordinary fast call.
+
+- [x] SC-628: scripts/record-agent-timings.ts contains [queuedSeconds, workSeconds, "start" | "end" | "queued"] — a wait is a third event kind, and the part of a call that was work is reported apart from the wall clock it sits inside
+- [x] SC-629: workflows/ship.js contains [--waited-ms, queuedSeconds] — the agent is told how to record a wait, and the grade schema declares the field, so the measurement is not stripped at the tool boundary one step before anybody reads it
+- [x] SC-630: test/agent-timings-queued.test.ts contains [a queued record with no duration is malformed, not a zero wait, a wait longer than its own bracket is reported, not clamped away] — both fail-opens are asserted, not just the happy path
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/agent-timings-queued.test.ts` + `test/agent-timings.test.ts`
+(44 tests):
+
+| Mutation | Red |
+|---|---|
+| `parseRecord` stops validating `waitedMs` | 1 |
+| a wait attaches to the newest entry rather than its own label's | 1 |
+| `workSeconds` set to the wall clock | 5 |
+
+None is left in the tree; all were run and reverted. The middle one is worth
+recording because it SURVIVED the first attempt: the pairing fixture wrote
+the wait immediately after its own bracket's start, where "the newest entry"
+and "the newest entry for this label" are the same entry, so the assertion
+held vacuously. The fixture now writes A's wait after B's start. The
+mutation found that, and nothing else would have.
+
 ### A run's final status says what was proved, and no more (#222)
 
 **Nothing in this harness merges.** #136 removed the auto-merge outright, and

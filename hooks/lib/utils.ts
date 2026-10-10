@@ -9,6 +9,14 @@ export interface HookInput {
   tool_input?: { command?: string; name?: string; subagent_type?: string; prompt?: string; [k: string]: unknown };
   tool_response?: { output?: string; content?: string; [k: string]: unknown } | string;
   session_id?: string;
+  /**
+   * The working directory the tool call was made from.
+   *
+   * Typed because #239 depends on it: sub-agent Bash calls reach the hooks
+   * carrying the PARENT session's id, so `session_id` cannot tell two sibling
+   * agents apart. Each runs in its own worktree, so the cwd can.
+   */
+  cwd?: string;
   [k: string]: unknown;
 }
 

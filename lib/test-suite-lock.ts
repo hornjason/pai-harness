@@ -33,6 +33,7 @@ import {
   writeSync,
 } from "fs";
 import { execFileSync } from "child_process";
+import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -53,6 +54,8 @@ const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 
 export interface SlotHolder {
   sessionId: string;
+  /** The worker that took the slot (#239). Absent on slots written before it. */
+  workerId?: string;
   startedAt: number;
   ageSeconds: number;
 }
@@ -75,10 +78,22 @@ export interface LockOptions {
    * not depend on the real process table. Defaults to `anySuiteRunning`.
    */
   suitesRunning?: () => boolean;
+  /**
+   * The unit of work asking for the suite (#239). Sibling sub-agents carry
+   * their PARENT's session id, so the session cannot distinguish them; the
+   * worker can. Defaults to the session id, which is exactly the pre-#239
+   * behaviour for every caller that does not know about workers.
+   *
+   * Derive it with `deriveWorkerId` — this is reduced to one filename-safe
+   * segment before it is used, because the budget counter is a file.
+   */
+  workerId?: string;
 }
 
 interface SlotEntry {
   sessionId: string;
+  /** Optional: slots written before #239 carry only a session id. */
+  workerId?: string;
   startedAt: number;
 }
 
@@ -99,6 +114,92 @@ function slotPath(lockDir: string, index: number): string {
   return join(lockDir, `full-suite.slot-${index}.lock`);
 }
 
+// ── worker identity (#239) ───────────────────────────────────
+//
+// A SLOT has meant one running suite since #67-B, because sub-agent Bash calls
+// reach PreToolUse carrying the PARENT session's id. The RATE budget never got
+// the same treatment: it stayed keyed on the session, so a ship run that fans
+// out to three implementers handed three agents two runs per 30 minutes
+// between them. Run wf_18abb197-f03 spent both on sub-agents 235001 and
+// 235003, and 235002 slept ~22 minutes waiting for a window to age out while
+// its siblings had been finished for twenty.
+//
+// The budget itself is not the problem — concurrent full suites jetsam-killed
+// this machine on 2026-10-05, and raising maxRuns would re-open that. The key
+// is the problem.
+
+/**
+ * How long a derived key may be. Comfortably inside every filesystem's
+ * component limit once the `rungate-test-suite-count-` prefix is added.
+ */
+const WORKER_KEY_MAX = 72;
+
+/** Exactly what may appear in a key: one path component, no dots, no escape. */
+const SAFE_SEGMENT = new RegExp(`^[A-Za-z0-9_-]{1,${WORKER_KEY_MAX}}$`);
+
+/**
+ * Reduce anything to ONE filename-safe segment.
+ *
+ * The identity is derived from a working directory and then concatenated into
+ * `join(lockDir, ...)`. A key carrying `/` or `..` would steer the counter
+ * file out of the lock directory — writing wherever the traversal points and,
+ * worse, letting two workers pick the same escaped path and share a budget
+ * again. Sanitising alone is not enough either: collapsing separators makes
+ * `/a/b` and `-a-b` the same key, so the digest is what keeps distinct
+ * directories distinct after the collapse.
+ *
+ * Already-safe input is returned unchanged, which makes this idempotent — the
+ * hook derives a key and the lock derives it again, and both must agree.
+ */
+export function filenameSegment(raw: string): string {
+  if (SAFE_SEGMENT.test(raw)) return raw;
+  const digest = createHash("sha256").update(raw).digest("hex").slice(0, 12);
+  const readable = raw
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(-(WORKER_KEY_MAX - digest.length - 1));
+  return readable ? `${readable}-${digest}` : digest;
+}
+
+/**
+ * The identity of one unit of work asking for the full suite.
+ *
+ * `workDir` is the distinguishing fact: sibling sub-agents share a session id
+ * but each runs in its own worktree. When it is absent — a plain session, or a
+ * hook input without a cwd — this degrades to the session id, which is exactly
+ * the pre-#239 key, so existing counter files keep counting.
+ */
+export function deriveWorkerId(sessionId: string, workDir?: string): string {
+  return filenameSegment(workDir ? `${sessionId}@${workDir}` : sessionId);
+}
+
+/**
+ * THE key the rate budget is filed under — the single site #239 changes.
+ *
+ * Reverting this to `return sessionId` restores the defect exactly, which is
+ * what test/test-suite-lock-key-mutation.test.ts mutates to prove the sibling
+ * case can fail. Keep it one line, one site: a second place that computes the
+ * budget key would survive the mutation and the proof would be decorative.
+ */
+export function counterKey(sessionId: string, options: LockOptions = {}): string {
+  return filenameSegment(options.workerId ?? sessionId);
+}
+
+/**
+ * Who owns a slot, for the purposes of releasing it.
+ *
+ * Acquire and release must agree or a slot leaks for a full TTL. Defaulting to
+ * the session id keeps every pre-#239 caller — and every slot file already on
+ * disk, which has no workerId — behaving as it did.
+ */
+function slotOwner(sessionId: string, options: LockOptions): string {
+  return options.workerId ?? sessionId;
+}
+
+function ownerOf(entry: SlotEntry): string {
+  return entry.workerId ?? entry.sessionId;
+}
+
 function readSlot(path: string): SlotEntry | null {
   try {
     const parsed = JSON.parse(readFileSync(path, "utf-8"));
@@ -107,7 +208,14 @@ function readSlot(path: string): SlotEntry | null {
       typeof parsed.sessionId === "string" &&
       typeof parsed.startedAt === "number"
     ) {
-      return parsed as SlotEntry;
+      // Rebuilt field by field rather than cast: a slot file is world-writable
+      // and `workerId` decides who may release the slot, so a non-string one
+      // must read as absent rather than as an object that compares oddly.
+      return {
+        sessionId: parsed.sessionId,
+        startedAt: parsed.startedAt,
+        ...(typeof parsed.workerId === "string" ? { workerId: parsed.workerId } : {}),
+      };
     }
     return null;
   } catch {
@@ -394,7 +502,10 @@ export function acquireFullSuiteSlot(
       const ageSeconds = entry ? Math.floor((now - entry.startedAt) / 1000) : Infinity;
       const stale = !entry || slotIsStale(ageSeconds, ttlSeconds, noSuiteRunning);
 
-      const claim = JSON.stringify({ sessionId, startedAt: now });
+      // The worker is recorded alongside the session so the release can free
+      // the suite that actually finished rather than a sibling's (#239).
+      const owner = slotOwner(sessionId, options);
+      const claim = JSON.stringify({ sessionId, workerId: owner, startedAt: now });
 
       // A corrupt file reads as `entry === null` but still occupies the name, so
       // O_EXCL would fail. Decide on the file's existence, not on parseability.
@@ -407,7 +518,11 @@ export function acquireFullSuiteSlot(
         try {
           writeFileSync(tmp, claim);
           renameSync(tmp, path);
-          if (readSlot(path)?.sessionId === sessionId) return { ok: true };
+          // Compared on the OWNER, not the session: two sibling workers
+          // racing for the same stale slot share a session id, so a session
+          // comparison would tell both of them they had won it (#239).
+          const after = readSlot(path);
+          if (after && ownerOf(after) === owner) return { ok: true };
           continue;
         } catch {
           try {
@@ -448,8 +563,13 @@ export interface GateDecision {
   warning?: string;
 }
 
-function counterPath(lockDir: string, sessionId: string): string {
-  return join(lockDir, `rungate-test-suite-count-${sessionId}`);
+/**
+ * `key` is always a `counterKey` result — one filename-safe segment (#239).
+ * Taking the key rather than the session id is what keeps the sanitising on
+ * one path: a caller that passed a raw cwd here would escape the lock dir.
+ */
+function counterPath(lockDir: string, key: string): string {
+  return join(lockDir, `rungate-test-suite-count-${key}`);
 }
 
 /**
@@ -574,9 +694,10 @@ function budgetView(sessionId: string, options: GateOptions): BudgetView {
 
   // Runs older than the window are forgotten, which is the whole of #73: the
   // budget is a rate limit again rather than a lifetime total.
-  const recent = readRuns(counterPath(lockDir, sessionId), maxRuns).filter(
-    (t) => t > now - windowMs,
-  );
+  const recent = readRuns(
+    counterPath(lockDir, counterKey(sessionId, options)),
+    maxRuns,
+  ).filter((t) => t > now - windowMs);
   if (recent.length < maxRuns) return { recent };
 
   const oldest = earliest(recent);
@@ -705,7 +826,10 @@ export function evaluateFullSuiteRequest(
     const runs = [...budgetView(sessionId, options).recent, now].slice(
       -MAX_TRACKED_RUNS,
     );
-    writeFileSync(counterPath(lockDir, sessionId), JSON.stringify({ runs }));
+    writeFileSync(
+      counterPath(lockDir, counterKey(sessionId, options)),
+      JSON.stringify({ runs }),
+    );
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }
@@ -741,13 +865,19 @@ export function releaseFullSuiteSlot(
   const lockDir = options.lockDir ?? defaultLockDir();
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
 
+  // Ownership is the WORKER's when one is given (#239): two sibling agents
+  // share a session id, so a session match would let the first to finish free
+  // the slot its sibling's suite is still using. Falls back to the session id
+  // for callers and slot files that predate workers.
+  const owner = slotOwner(sessionId, options);
+
   let newestPath: string | null = null;
   let newestStartedAt = -Infinity;
 
   for (let i = 0; i < capacity; i++) {
     const path = slotPath(lockDir, i);
     const entry = readSlot(path);
-    if (!entry || entry.sessionId !== sessionId) continue;
+    if (!entry || ownerOf(entry) !== owner) continue;
     if (entry.startedAt > newestStartedAt) {
       newestStartedAt = entry.startedAt;
       newestPath = path;
