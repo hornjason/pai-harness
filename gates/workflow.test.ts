@@ -75,6 +75,69 @@ export function suiteVerdictViolations(val: unknown): string[] {
   return [];
 }
 
+/**
+ * #235 — the evidence pre-validation reading reaches the verdict.
+ *
+ * `lib/evidence-prevalidator.ts` dry-runs every AC evidence command at SCOPE
+ * and classifies each one `ok` / `broken` / `empty` / `skipped`. Until this
+ * function existed the entire result went to `console.error` and nowhere else:
+ * a run could be told, in its own log, that three of its ACs could not be
+ * measured, and still ship — the detection was never the gap.
+ *
+ * This is the single site that turns that reading into a refusal, for the same
+ * reason `suiteVerdictViolations` above is: a second refusal path for the same
+ * fact would survive the mutation in test/suite-binding-mutation.test.ts and
+ * make the proof vacuous. That file asserts this signature appears exactly once
+ * and aborts when it moves.
+ *
+ * Absent is a refusal, not a pass. An unmeasured pre-validation says nothing
+ * about the evidence commands, and "nothing" has already been read as "clean"
+ * once in this harness (#224).
+ */
+export function prevalidationViolations(val: unknown): string[] {
+  const unmeasured = [
+    "evidencePrevalidation not recorded — a PASS reading is required once any AC " +
+      "carries an evidence command. An unmeasured pre-validation is not a clean one (#235).",
+  ];
+
+  if (val === undefined || val === null || val === "") return unmeasured;
+  if (typeof val !== "object") {
+    return [`evidencePrevalidation is ${typeof val}, expected a record with a verdict (#235)`];
+  }
+
+  const reading = val as { verdict?: unknown; broken?: unknown };
+  const verdict = reading.verdict;
+  if (verdict === undefined || verdict === null || verdict === "" || verdict === "UNMEASURED") {
+    return unmeasured;
+  }
+
+  const broken = (Array.isArray(reading.broken) ? reading.broken : [])
+    .map((b: unknown) => (typeof b === "string" ? b : String((b as { id?: unknown })?.id ?? b)))
+    .filter((id: string) => id.length > 0);
+
+  if (verdict === "FAIL") {
+    return broken.length > 0
+      ? [`evidence pre-validation: FAIL — broken evidence commands on ${broken.join(", ")}`]
+      : [
+          "evidence pre-validation: FAIL — but no broken AC ids were recorded, so the " +
+            "refusal cannot name what to fix (#235)",
+        ];
+  }
+
+  if (verdict !== "PASS") {
+    return [`evidence pre-validation: ${String(verdict)} — expected PASS`];
+  }
+
+  // A PASS carrying broken ids is a contradiction, not a pass. Without this the
+  // writer could record the broken list faithfully and still be waved through.
+  if (broken.length > 0) {
+    return [
+      `evidence pre-validation: PASS recorded alongside broken evidence commands on ${broken.join(", ")}`,
+    ];
+  }
+  return [];
+}
+
 // ═══ SCHEMA VALIDATION ════════════════════════════════════════════════
 describe("schema validation", () => {
   if (STANDALONE || !existsSync(SF)) {
@@ -409,6 +472,29 @@ describe("verify checks", () => {
     const harness = loadProjectHarness();
     if (!harness?.dev?.testCmd) return;
     const violations = suiteVerdictViolations(sf("environments")?.local?.tests);
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
+
+  // 20b. evidence-prevalidation (#235)
+  //
+  // The pre-validator already dry-runs every AC evidence command and prints
+  // which ones are broken. Nothing read that print. The conversion from
+  // reading to refusal lives in `prevalidationViolations` above — one
+  // function, one body — so test/suite-binding-mutation.test.ts can remove it
+  // from a mutant copy of this file and watch the mutant ship a fixture whose
+  // broken evidence command was really dry-run. What was broken to prove it:
+  // short-circuiting `prevalidateEvidence` to `return []` makes the fixture
+  // measure PASS, and short-circuiting this function makes the gate green on a
+  // measured FAIL.
+  test("evidence-prevalidation: AC evidence commands pre-validated before ship", () => {
+    if (!isVerifyPlus()) return;
+    // An AC with no evidence command has no command that can be broken, so a
+    // run with none of them has nothing to pre-validate. That is a real early
+    // return, like tsc-pass's missing tsconfig — not a fail-open, because the
+    // pre-validator classifies exactly those ACs `skipped` itself.
+    const acs = sf("acs") || [];
+    if (!acs.some((ac: any) => ac?.evidenceMethod?.command)) return;
+    const violations = prevalidationViolations(sf("evidencePrevalidation"));
     expect(violations, violations.join("\n")).toEqual([]);
   });
 

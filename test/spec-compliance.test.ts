@@ -1,9 +1,10 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
-import { join } from "path";
+import { join, relative } from "path";
 import { harnessRoot } from "../lib/paths";
+import { measureEvidencePrevalidation, prevalidateEvidence } from "../lib/evidence-prevalidator";
 
 const HR = harnessRoot();
 const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
@@ -373,16 +374,6 @@ describe("spec-sync: HARNESS-SKILL-CHAIN.md contains required claims", () => {
 describe("harness-fixes: ship.js and ship-and-heal.js structural checks", () => {
   const HEAL_JS = readFileSync(join(HR, "workflows/ship-and-heal.js"), "utf-8");
 
-  test("#573: ship.js has AC evidence pre-validation step after scope", () => {
-    expect(SHIP_JS).toContain("ac-prevalidation");
-    expect(SHIP_JS).toContain("evidence/threshold");
-  });
-
-  test("#573: pre-validation checks numeric vs string threshold types", () => {
-    expect(SHIP_JS).toContain("parseFloat");
-    expect(SHIP_JS).toContain("op:\"contains\"");
-  });
-
   test("#574: GRADE phase runs before SHIP phase, not after PROVE", () => {
     const gradeIdx = SHIP_JS.indexOf("label: 'grade'");
     const shipPhaseIdx = SHIP_JS.indexOf("phase('Ship')");
@@ -468,5 +459,213 @@ describe("#589: ship-and-heal grading and violation handling", () => {
     expect(HEAL_JS).toContain("status: 'SHIPPED'");
     expect(HEAL_JS).toContain("healed: false");
     expect(HEAL_JS).toContain("gradeResult");
+  });
+});
+
+// ── One AC-evidence pre-validation implementation (#235) ────────
+//
+// These replace the two #573 tests that pinned a prompt-based pre-validation
+// INTO workflows/ship.js:
+//
+//   #573: ship.js has AC evidence pre-validation step after scope
+//   #573: pre-validation checks numeric vs string threshold types
+//
+// The claim they guarded — the pipeline dry-runs AC evidence commands before
+// Marcus runs, and notices output a threshold cannot evaluate — is still
+// covered. What changed is WHERE it is asserted: against the one
+// implementation that actually executes, lib/evidence-prevalidator.ts, instead
+// of against prompt text that only runs if a model chooses to follow it. Two
+// implementations of the same check is worse than one, because the prompt
+// copy could silently disagree with the code copy and nothing would notice.
+
+describe("prevalidation-singleton: exactly one AC-evidence pre-validation (#235)", () => {
+  const PREVALIDATION_OWNER = "lib/evidence-prevalidator.ts";
+  const SOURCE_DIRS = ["lib", "gates", "workflows", "scripts", "hooks"];
+
+  // An implementation of this check takes one of exactly two shapes, so the
+  // detector is the union of two precise probes rather than one loose one:
+  //
+  //   CODE    — a function that dry-runs AC evidence commands. There is one,
+  //             and its name is the capability: prevalidateEvidence.
+  //   PROMPT  — agent instructions that tell a model to do it by hand. This is
+  //             the shape that was deleted, and the shape most likely to come
+  //             back, because a prompt is cheap to paste into a workflow.
+  //
+  // Neither probe is file-level "mentions evidence AND mentions dry-run": that
+  // version flagged workflows/ship.js forever, because ship.js legitimately
+  // normalises `ac.evidenceMethod.command` at Discovery and legitimately runs
+  // evidence commands at Verify. A detector that cannot tell those from a
+  // pre-check would have to be silenced to go green, and a silenced detector
+  // is the decorative check .claude/rules/checks-must-be-able-to-fail.md is
+  // about. The PROMPT probe looks at a 4-line window and additionally requires
+  // an imperative "run them" instruction, which is what separates a prompt
+  // that performs the check from a comment that points at where it lives.
+  const DEFINES_CAPABILITY = /export\s+(?:async\s+)?function\s+prevalidateEvidence\b/;
+  const EVIDENCE_REF = /evidenceMethod\s*\??\.\s*command|evidence commands?|AC evidence/i;
+  const PRECHECK_INTENT = /pre-?validat|dry-?run|before Marcus/i;
+  // IMPERATIVE ONLY. `dry-?run(?:ning|s)?` used to be admitted here, and the
+  // inflected forms are the ones prose uses to DESCRIBE the check rather than
+  // to perform it: gates/schema.ts:223 says "The scope gate dry-runs every AC's
+  // evidence command before Marcus runs", and that sentence alone was enough to
+  // report the schema module as a second pre-validation implementation. That is
+  // precisely the "comment that points at where it lives" this detector claims
+  // two paragraphs above to be able to tell from a prompt that performs the
+  // check — it could not, so the claim is narrowed to the bare imperative,
+  // which is the only form an agent instruction takes. The boundary is asserted
+  // below rather than left to this comment.
+  const RUN_INSTRUCTION =
+    /Run the command|Run each|Run every|Execute the command|Execute each|dry-?run\s+(?:the|every|each|all)/i;
+  const PROMPT_WINDOW_LINES = 4;
+
+  interface SourceFile {
+    path: string;
+    src: string;
+  }
+
+  function collectSources(root: string): SourceFile[] {
+    const out: SourceFile[] = [];
+    const walk = (dir: string) => {
+      let entries: string[];
+      try {
+        entries = readdirSync(dir);
+      } catch {
+        return; // an optional directory (hooks/) may not exist
+      }
+      for (const entry of entries) {
+        if (entry === "node_modules") continue;
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (/\.(ts|js)$/.test(entry) && !/\.test\.(ts|js)$/.test(entry)) {
+          out.push({ path: relative(root, full), src: readFileSync(full, "utf-8") });
+        }
+      }
+    };
+    for (const dir of SOURCE_DIRS) walk(join(root, dir));
+    return out;
+  }
+
+  /** Line numbers where instructions to dry-run AC evidence commands appear. */
+  function prevalidationPromptLines(src: string): number[] {
+    const lines = src.split("\n");
+    const hits: number[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const window = lines.slice(i, i + PROMPT_WINDOW_LINES).join("\n");
+      if (EVIDENCE_REF.test(window) && PRECHECK_INTENT.test(window) && RUN_INSTRUCTION.test(window)) {
+        hits.push(i + 1);
+      }
+    }
+    return hits;
+  }
+
+  function prevalidationImplementations(files: SourceFile[]): string[] {
+    return files
+      .filter((f) => DEFINES_CAPABILITY.test(f.src) || prevalidationPromptLines(f.src).length > 0)
+      .map((f) => f.path)
+      .sort();
+  }
+
+  // Verbatim from the `ac-prevalidation` timedAgent prompt deleted from
+  // workflows/ship.js in #235. The mutation test below feeds this back in as a
+  // synthetic second implementation; if the detector stopped recognising it,
+  // the singleton assertion above would be passing because it looks at
+  // nothing, which is the failure mode this file exists to rule out.
+  const REINTRODUCED_SECOND_IMPLEMENTATION = `
+const preflightResult = await timedAgent(\`
+AC pre-validation (evidence/threshold type checking):
+Read \${WORK_DIR}/workflow-state.json. For each AC with evidenceMethod.command:
+  Run the command (timeout 10s, allow non-zero exit). Check if threshold can evaluate output:
+  - Numeric ops (>=, <=, ==, !=): output must be numeric (parseFloat succeeds)
+  - String ops (op:"contains"): output must be non-empty string
+Report: totalACs, validated, fixed, fixes array.
+\`, { label: 'ac-prevalidation', phase: 'Scope' })
+`;
+
+  test("#235: exactly one pre-validation implementation exists, and it is lib/evidence-prevalidator.ts", () => {
+    const found = prevalidationImplementations(collectSources(HR));
+    expect(found).toEqual([PREVALIDATION_OWNER]);
+  });
+
+  test("#235: the singleton check goes red when a second implementation is reintroduced", () => {
+    const real = collectSources(HR);
+    const mutated = prevalidationImplementations([
+      ...real,
+      { path: "lib/second-prevalidator.ts", src: REINTRODUCED_SECOND_IMPLEMENTATION },
+    ]);
+    // The mutation is performed and observed here rather than asserted in
+    // prose: the detector sees two, so the singleton test above is reporting
+    // one because there IS one, not because it cannot see.
+    expect(mutated).toEqual([PREVALIDATION_OWNER, "lib/second-prevalidator.ts"].sort());
+  });
+
+  test("#235: the prompt probe reads an imperative as an implementation and prose as prose", () => {
+    // The narrowing above is the kind of change that makes a detector quieter,
+    // so the line it was narrowed to is pinned here in both directions. Drop
+    // the first assertion and the detector may be blind; drop the second and
+    // every docblock in the repo becomes a second implementation again.
+    const DESCRIPTIVE = "// The scope gate dry-runs every AC's evidence command before Marcus runs.";
+    const IMPERATIVE = "Dry-run every AC evidence command before Marcus runs, as a pre-validation.";
+
+    expect(prevalidationPromptLines(IMPERATIVE), "the probe stopped recognising an agent instruction").toEqual([1]);
+    expect(prevalidationPromptLines(DESCRIPTIVE), "a sentence describing the check counts as performing it").toEqual([]);
+
+    // And the verbatim prompt #235 deleted is still caught — the narrowing is
+    // not allowed to buy its precision by losing the case it exists for.
+    expect(prevalidationPromptLines(REINTRODUCED_SECOND_IMPLEMENTATION).length).toBeGreaterThan(0);
+  });
+
+  test("#235 (replaces #573 'ship.js has AC evidence pre-validation'): no agent prompt in ship.js dry-runs AC evidence commands", () => {
+    expect(SHIP_JS).not.toContain("ac-prevalidation");
+    expect(SHIP_JS).not.toContain("evidence/threshold");
+    expect(prevalidationPromptLines(SHIP_JS)).toEqual([]);
+  });
+
+  test("#235 (replaces #573 'ship.js has AC evidence pre-validation'): the pipeline calls the one implementation at Scope", async () => {
+    // The gate does not call `prevalidateEvidence` directly — it calls
+    // `measureEvidencePrevalidation`, the three-verdict wrapper that turns a
+    // throw into a recorded UNMEASURED instead of an unhandled rejection. So
+    // the chain has two links, and asserting only the first would pass while
+    // the wrapper quietly stopped delegating to anything.
+    const executor = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
+    expect(executor).toMatch(
+      /import\s*\{[^}]*measureEvidencePrevalidation[^}]*\}\s*from\s*["'][^"']*evidence-prevalidator["']/,
+    );
+    // Awaited, not fired and forgotten — the orphaned `.then()` is the whole of
+    // #235, and a call site that loses the `await` reintroduces it verbatim.
+    expect(executor).toContain("await measureEvidencePrevalidation(state.acs");
+
+    // The second link, executed rather than grepped: the wrapper is driven over
+    // one command that cannot succeed and one that can, and the reading has to
+    // carry what `prevalidateEvidence` classified. A wrapper that returned a
+    // hardcoded PASS, or stopped calling the owner at all, fails here.
+    const reading = await measureEvidencePrevalidation(
+      [
+        { id: "AC-broken", evidenceMethod: { command: "nonexistent-binary-xyzzy-235-singleton" }, threshold: { op: "==", value: 0 } },
+        { id: "AC-ok", evidenceMethod: { command: "printf 'hello'" }, threshold: { op: "contains", value: "hello" } },
+      ],
+      HR,
+    );
+    expect(reading.verdict).toBe("FAIL");
+    expect(reading.acs.find((a) => a.id === "AC-broken")?.status).toBe("broken");
+    expect(reading.acs.find((a) => a.id === "AC-ok")?.status).toBe("ok");
+  });
+
+  test("#235 (replaces #573 'pre-validation checks numeric vs string threshold types'): pre-validation flags output no numeric threshold can evaluate", async () => {
+    const results = await prevalidateEvidence(
+      [
+        { id: "AC-numeric", evidenceMethod: { command: "printf ''" }, threshold: { op: ">=", value: 1 } },
+        { id: "AC-string", evidenceMethod: { command: "printf 'hello'" }, threshold: { op: "contains", value: "hello" } },
+      ],
+      HR,
+    );
+    // A `>=` threshold over empty output is the exact mismatch the deleted
+    // prompt described in words; here it is produced and caught.
+    expect(results.find((r) => r.id === "AC-numeric")?.status).toBe("empty");
+    expect(results.find((r) => r.id === "AC-string")?.status).toBe("ok");
+  });
+
+  test("#235 (replaces #573 'pre-validation checks numeric vs string threshold types'): the threshold evaluator still handles numeric and string ops", () => {
+    const executor = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
+    expect(executor).toContain("parseFloat");
+    expect(executor).toMatch(/case "contains":/);
   });
 });

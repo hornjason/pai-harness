@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   prevalidateEvidence,
+  measureEvidencePrevalidation,
   type PrevalidationResult,
   type ACInput,
 } from "../lib/evidence-prevalidator";
@@ -237,5 +238,98 @@ describe("#118: bare main refs are qualified before the command is persisted", (
     const [r] = await prevalidateEvidence(acs, PROJECT_ROOT);
     expect(r.status).toBe("broken");
     expect(r.fixedCommand).toContain("origin/main");
+  });
+});
+
+describe("#235: an auto-fix carries the command it replaced", () => {
+  /**
+   * `fixedCommand` on its own says what to run next and nothing about what was
+   * wrong. Once the reading is persisted, the original is the only way to tell
+   * a repair from a command that was always written that way — so every
+   * auto-fixed result carries both forms, and nothing else carries either.
+   */
+
+  test("the ref-rewrite ok path reports both commands", async () => {
+    // `; echo done` keeps the command on the `ok` path whether or not the
+    // range has commits — an empty range lands on `empty`, which is a
+    // different branch than the one this test is about.
+    const original = "git log main..HEAD --oneline; echo done";
+    const [r] = await prevalidateEvidence(
+      [{ id: "AC-1", evidenceMethod: { type: "command", command: original }, threshold: { op: "exists", value: "true" } }],
+      PROJECT_ROOT,
+    );
+    expect(r.status).toBe("ok");
+    expect(r.autoFixed).toBe(true);
+    expect(r.originalCommand).toBe(original);
+    expect(r.fixedCommand).toContain("origin/main..HEAD");
+    expect(r.fixedCommand).not.toBe(r.originalCommand);
+  });
+
+  test("the grep exit-code fix reports both commands", async () => {
+    const original = "grep 'NEVER_MATCH_THIS_xyzzy_235' /dev/null";
+    const [r] = await prevalidateEvidence(
+      [{ id: "AC-2", evidenceMethod: { type: "grep", command: original }, threshold: { op: ">=", value: "0" } }],
+      PROJECT_ROOT,
+    );
+    expect(r.autoFixed).toBe(true);
+    expect(r.originalCommand).toBe(original);
+    expect(r.fixedCommand).toBe(`${original} || true`);
+  });
+
+  test("the bun-test pipe rewrite reports both commands", async () => {
+    const original = "bun test test/canary.test.ts | grep -c pass";
+    const [r] = await prevalidateEvidence(
+      [{ id: "AC-3", evidenceMethod: { type: "command", command: original }, threshold: { op: ">=", value: "1" } }],
+      PROJECT_ROOT,
+    );
+    expect(r.autoFixed).toBe(true);
+    expect(r.originalCommand).toBe(original);
+    expect(r.fixedCommand).toBe("bun test test/canary.test.ts");
+  });
+
+  test("a command that was not fixed reports neither", async () => {
+    const [r] = await prevalidateEvidence(
+      [{ id: "AC-4", evidenceMethod: { type: "command", command: "echo hello" }, threshold: { op: "contains", value: "hello" } }],
+      PROJECT_ROOT,
+    );
+    expect(r.autoFixed).toBeFalsy();
+    expect(r.originalCommand).toBeUndefined();
+    expect(r.fixedCommand).toBeUndefined();
+  });
+});
+
+describe("#235: measureEvidencePrevalidation turns results into one reading", () => {
+  test("all-ok is a PASS with no reason", async () => {
+    const reading = await measureEvidencePrevalidation(
+      [{ id: "AC-1", evidenceMethod: { type: "command", command: "echo ok" }, threshold: { op: "contains", value: "ok" } }],
+      PROJECT_ROOT,
+    );
+    expect(reading.verdict).toBe("PASS");
+    expect(reading.reason).toBeNull();
+    expect(reading.acs).toHaveLength(1);
+    expect(reading.checkedAt).toBeTruthy();
+  });
+
+  test("one broken command is a FAIL", async () => {
+    const reading = await measureEvidencePrevalidation(
+      [
+        { id: "AC-1", evidenceMethod: { type: "command", command: "echo ok" }, threshold: { op: "contains", value: "ok" } },
+        { id: "AC-2", evidenceMethod: { type: "command", command: "nonexistent-binary-xyzzy-235" }, threshold: { op: "==", value: "0" } },
+      ],
+      PROJECT_ROOT,
+    );
+    expect(reading.verdict).toBe("FAIL");
+    expect(reading.acs.filter((a) => a.status === "broken").map((a) => a.id)).toEqual(["AC-2"]);
+  });
+
+  test("an empty-output command is a PASS that still names the AC", async () => {
+    // `empty` is a warning at the gate, not a refusal — but it has to survive
+    // into the reading, or the warning is the only record of it.
+    const reading = await measureEvidencePrevalidation(
+      [{ id: "AC-1", evidenceMethod: { type: "command", command: "printf ''" }, threshold: { op: "==", value: "0" } }],
+      PROJECT_ROOT,
+    );
+    expect(reading.verdict).toBe("PASS");
+    expect(reading.acs[0].status).toBe("empty");
   });
 });

@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll } from "bun:test";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -66,17 +66,76 @@ describe("contract: LIGHT tier", () => {
   }, { timeout: 30_000 });
 });
 
+/**
+ * A project root the fixture's evidence commands can actually run in (#235).
+ *
+ * This used to be `/tmp/test`, with `grep fix src/test.ts` and `bun test` as
+ * the two evidence commands. Neither has ever been runnable there: the
+ * directory holds no checkout and `src/` does not exist in this repo at all.
+ * The gate passed because nothing executed them — the exact shape
+ * .claude/rules/checks-must-be-able-to-fail.md is about, sitting inside the
+ * contract test that is supposed to be the gate's own proof.
+ *
+ * #235 wired evidence pre-validation into the gate, which ran the commands and
+ * refused. That refusal was correct and this fixture was wrong, so the fixture
+ * now builds a real directory and cites commands that genuinely succeed in it.
+ */
+const STANDARD_PROJECT = join(TEST_BASE, "standard-project");
+const STANDARD_BRIEF = "# Marcus Brief\n\n## Context\nProject root: /tmp/test\n\n## Task\nFix the module\n\n## AC-1\nFix applied to target module correctly\n\n## AC-2\nAll unit tests pass without regression\n\n## Verify\nbun test\n\n## Report back\nReport results\n";
+
+/**
+ * The STANDARD state as a fresh literal, so the broken-evidence case below can
+ * differ from the passing one by exactly one command.
+ *
+ * It is rebuilt rather than read back from the passing fixture's file on disk:
+ * running a gate writes `gates.scope.acHash` into that file, and a copy that
+ * carried the hash of the *unmutated* ACs would fail on `acHash-consistency`
+ * instead of on the evidence command — red for a reason that has nothing to do
+ * with what the test claims to be checking.
+ */
+function standardState(slug: string, overrides: (s: any) => void = () => {}) {
+  const state: any = {
+    schemaVersion: 2, issue: 9998, repo: "test/repo", issueRepo: "test/repo",
+    projectRoot: STANDARD_PROJECT, slug, phase: "DONE",
+    issueGoal: "Test canary standard", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+    acs: [
+      { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "COMMAND", command: "grep fix target.ts" }, specElement: "target module fix", evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
+      { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test target.test.ts" }, specElement: "test regression", evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
+    ],
+    sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
+    gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
+    environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" }, prod: { rebuild: "SKIP", smoke: "SKIP", quinn: "SKIP" } },
+    agents: { marcus: { spawned: true, verdict: "PASS" }, quinn: { spawned: true, verdict: "PASS" } },
+    buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow",
+  };
+  overrides(state);
+  return state;
+}
+
+/** Write a STANDARD-shaped run directory and return its path. */
+function writeStandardFixture(slug: string, overrides?: (s: any) => void): string {
+  const dir = join(TEST_BASE, slug);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "workflow-state.json"), JSON.stringify(standardState(slug, overrides), null, 2));
+  writeFileSync(join(dir, "marcus-brief.md"), STANDARD_BRIEF);
+  return dir;
+}
+
 describe("contract: STANDARD tier", () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "standard");
     mkdirSync(dir, { recursive: true });
+    mkdirSync(STANDARD_PROJECT, { recursive: true });
+    writeFileSync(join(STANDARD_PROJECT, "target.ts"), "export const fix = true;\n");
+    writeFileSync(join(STANDARD_PROJECT, "target.test.ts"),
+      'import { test, expect } from "bun:test";\ntest("canary", () => { expect(1).toBe(1); });\n');
     writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
       schemaVersion: 2, issue: 9998, repo: "test/repo", issueRepo: "test/repo",
-      projectRoot: "/tmp/test", slug: "standard", phase: "DONE",
+      projectRoot: STANDARD_PROJECT, slug: "standard", phase: "DONE",
       issueGoal: "Test canary standard", sizing: { predicted: "S", ceremonyTier: "STANDARD" },
       acs: [
-        { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "COMMAND", command: "grep fix src/test.ts" }, specElement: "target module fix", evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
-        { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test" }, specElement: "test regression", evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
+        { id: "AC-1", type: "CODE", statement: "Fix applied to target module correctly", threshold: { op: "contains", value: "fix" }, evidenceMethod: { type: "COMMAND", command: "grep fix target.ts" }, specElement: "target module fix", evidence: { type: "command-output", content: "fix" }, verdict: "PASS" },
+        { id: "AC-2", type: "CODE", statement: "All unit tests pass without regression", threshold: { op: ">=", value: 10 }, evidenceMethod: { type: "BUN_TEST", command: "bun test target.test.ts" }, specElement: "test regression", evidence: { type: "command-output", content: "24 pass" }, verdict: "PASS" },
       ],
       sourceSpecs: [{ path: GOVERNING_SPEC, citedInDiscovery: true }],
       gates: { scope: { result: "PASS", attempt: 1, failures: [] }, verify: { result: "PASS", attempt: 1, failures: [] } },
@@ -101,6 +160,53 @@ describe("contract: STANDARD tier", () => {
     const r = runGate("ship", "standard");
     expect(r.fail).toBe(0);
   }, { timeout: 30_000 });
+
+  /**
+   * Repairing the fixture above is only half the job. Commands that run are
+   * now the precondition for green, so without this the repair would have
+   * restored a gate that passes because nothing looks — which is what the
+   * fixture was doing before #235 and is the thing being fixed.
+   */
+  /**
+   * Scope records the pre-validation; verify refuses on what scope recorded.
+   *
+   * Both halves have to be driven, in that order. Scope alone is green on a
+   * broken command — it writes the verdict and advances — and verify alone, on
+   * a slug that never ran scope, is red because the record is *absent*, which
+   * is a different defect wearing the same refusal text. Running one gate
+   * would have passed either way for the wrong reason.
+   */
+  test("an unrunnable evidence command is recorded at scope and refused at verify", () => {
+    // One field of difference from the control below: the file the evidence
+    // greps does not exist. Everything else is identical, so the refusal is
+    // attributable to the command and nothing else.
+    writeStandardFixture("standard-broken-evidence", (s) => {
+      s.acs[0].evidenceMethod.command = "grep fix no-such-file.ts";
+    });
+
+    runGate("scope", "standard-broken-evidence");
+    const recorded = JSON.parse(readFileSync(
+      join(TEST_BASE, "standard-broken-evidence", "workflow-state.json"), "utf-8"));
+    expect(recorded.evidencePrevalidation?.verdict).toBe("FAIL");
+    expect(recorded.evidencePrevalidation.acs.find((a: any) => a.id === "AC-1").status).toBe("broken");
+
+    const r = runGate("verify", "standard-broken-evidence");
+    expect(r.fail).toBeGreaterThan(0);
+    expect(r.output).toContain("evidence-prevalidation");
+  }, { timeout: 60_000 });
+
+  test("the same fixture without that change passes — the control", () => {
+    // Without this, the test above could be red because `writeStandardFixture`
+    // builds a state the gate rejects for some unrelated reason, and the
+    // refusal-text assertion would be the only thing standing between that and
+    // a false confirmation. It has already earned its place once: the first
+    // version of both tests drove verify without scope and this went red,
+    // which is how the record-then-read split above was found.
+    writeStandardFixture("standard-control");
+    runGate("scope", "standard-control");
+    const r = runGate("verify", "standard-control");
+    expect(r.fail).toBe(0);
+  }, { timeout: 60_000 });
 });
 
 describe("contract: negative cases", () => {

@@ -1235,29 +1235,12 @@ reported null — do not substitute 0, that would claim the branch is merged).
   log(`Prior branch (pre-computed): ${priorBranchResult.branch} (${priorBranchResult.refName})`)
 }
 
-// AC evidence/threshold pre-validation
-const preflightResult = await timedAgent(`
-AC pre-validation (evidence/threshold type checking):
-Read ${WORK_DIR}/workflow-state.json. For each AC with evidenceMethod.command:
-  Run the command (timeout 10s, allow non-zero exit). Check if threshold can evaluate output:
-  - Numeric ops (>=, <=, ==, !=): output must be numeric (parseFloat succeeds)
-  - String ops (op:"contains"): output must be non-empty string
-  If mismatch (numeric threshold vs string output): fix via writeWorkflowState():
-  bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* fix */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
-Report: totalACs, validated, fixed, fixes array.
-`, { label: 'ac-prevalidation', phase: 'Scope', schema: {
-  type: 'object',
-  properties: {
-    totalACs: { type: 'number' },
-    validated: { type: 'number' },
-    fixed: { type: 'number' },
-    fixes: { type: 'array', items: { type: 'string' } },
-  },
-  required: ['totalACs', 'validated', 'fixed']
-}})
-if (preflightResult?.fixed > 0) {
-  log(`AC pre-validation: fixed ${preflightResult.fixed}/${preflightResult.totalACs}`)
-}
+// The scope gate owns AC evidence checking end to end (#235) — see
+// lib/evidence-prevalidator.ts, invoked from gates/gate-executor.ts.
+// A second copy of it used to sit here as an agent prompt: it only ran when a
+// model chose to follow it, and it wrote workflow-state.json out from under
+// the gate that had just written it. Do not add another one here; change the
+// module instead. test/spec-compliance.test.ts enforces that there is one.
 
 // ════════════════════════════════════════════════════════════
 // PHASE 4: IMPLEMENT (Marcus writes code — NO commit)
