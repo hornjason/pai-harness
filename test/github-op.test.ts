@@ -132,6 +132,39 @@ describe("#137: scripts/github-op.ts performs the GitHub write the prompt used t
     expect(captured[1].body).toMatchObject({ head: "fix-137", base: "main", body: "Fixes #137" });
   });
 
+  test("pr-upsert --draft opens it as a draft (#252)", async () => {
+    // The request GitHub would have received, not the flag being accepted.
+    // A `--draft` the script parses and drops looks identical from the caller
+    // and produces the mergeable PR this is here to prevent.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 12, html_url: "https://x/pull/12" });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252", "--base", "main",
+      "--title", "fix(#252): draft until proved", "--body", "b", "--draft",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(captured[1].body).toMatchObject({ head: "fix-252", draft: true });
+  });
+
+  test("pr-upsert without --draft is not a draft", async () => {
+    // Positive control: a default that drafted everything would satisfy the
+    // case above and quietly change what every other caller produces.
+    reset();
+    stub("GET", "/repos/owner/name/pulls", []);
+    stub("POST", "/repos/owner/name/pulls", { number: 13, html_url: "https://x/pull/13" });
+
+    const { exitCode } = await runOp([
+      "pr-upsert", "--repo", "owner/name", "--head", "fix-252b", "--base", "main",
+      "--title", "t", "--body", "b",
+    ]);
+
+    expect(exitCode).toBe(0);
+    expect(captured[1].body).toMatchObject({ draft: false });
+  });
+
   test("pr-upsert updates the existing PR instead of failing a second time", async () => {
     reset();
     stub("GET", "/repos/owner/name/pulls", [{ number: 9, html_url: "https://x/pull/9", head: { ref: "fix-137" } }]);
@@ -388,5 +421,24 @@ describe("#137: flag parsing", () => {
 
   test("a trailing flag with no value is refused", () => {
     expect(() => parseFlags(["--repo"])).toThrow(/needs a value/);
+  });
+
+  test("only allowlisted flags may stand alone (#252)", () => {
+    // `--draft` is valueless by design. Nothing else became valueless with
+    // it: the rule that every other option takes a value is what stops an
+    // omitted value from swallowing the following flag.
+    expect(parseFlags(["--draft"])).toEqual({ draft: "true" });
+    expect(parseFlags(["--head", "b", "--draft"])).toEqual({ head: "b", draft: "true" });
+    expect(() => parseFlags(["--title"])).toThrow(/needs a value/);
+    expect(() => parseFlags(["--body"])).toThrow(/needs a value/);
+  });
+
+  test("a value-taking flag still swallows nothing when --draft follows it", () => {
+    // The failure the allowlist exists to prevent, stated as a case: if
+    // `--body` were valueless too, this would produce a PR body of "--draft".
+    expect(parseFlags(["--body", "real body", "--draft"])).toEqual({
+      body: "real body",
+      draft: "true",
+    });
   });
 });

@@ -628,12 +628,173 @@ async function briefedAgent(prompt, opts = {}) {
 }
 // ──── BRIEFED-AGENT-END ────
 
+// ──── FAILURE-LEDGER-START ────
+/**
+ * Every refusal this run made, so the terminal result can report all of them
+ * (#252).
+ *
+ * Run `wf_e105dd33-220` returned one sentence — the security review had gone
+ * stale — for a run whose verify gate had FAILED with two fan-out slots never
+ * written, whose ship gate had FAILED on three checks, and whose typecheck was
+ * red. All of that was in `workflow-state.json`. The run knew; the summary did
+ * not say, because the summary was whatever the last phase to refuse happened
+ * to pass up.
+ *
+ * That ordering is the hazard rather than an incidental detail: the later a
+ * failure happens the more it hides, and staleness happens nearly last and
+ * sounds the most innocuous of the lot. "Re-run it" is the obvious response to
+ * it, and re-running would have reproduced the same unreviewed defect.
+ *
+ * So entries are ranked by SEVERITY, and the reason the run stopped is entered
+ * into the ledger as one refusal among the rest rather than standing in for
+ * them. Worst first — a gate that measured something and found it wrong
+ * outranks a slot nobody wrote, which outranks a run-level refusal.
+ */
+const REFUSAL_SEVERITY = ['GATE_FAIL', 'UNPOPULATED_SLOT', 'REFUSAL']
+
+const refusals = []
+
+/** A gate failure line that says a fan-out slot was never written. */
+const UNPOPULATED_SLOT_LINE = /not populated/i
+
+function recordRefusal(kind, phaseName, detail) {
+  const entry = {
+    // An unranked kind is kept, not coerced to a ranked one — it sorts last
+    // in failureSummary rather than being quietly promoted past a gate.
+    kind: typeof kind === 'string' && kind ? kind : 'REFUSAL',
+    phase: typeof phaseName === 'string' && phaseName ? phaseName : 'unknown',
+    detail: typeof detail === 'string' && detail ? detail : 'no detail recorded',
+  }
+  refusals.push(entry)
+  return entry
+}
+
+/**
+ * Record a gate's outcome, and forget its earlier failures when it passes.
+ *
+ * The forgetting matters: `runGateWithHeal` retries up to three times, so a
+ * gate that failed once and healed is a gate that passed. A ledger carrying
+ * the first attempt would put "verify gate FAILED" in the terminal report of a
+ * run whose verify gate did not fail, and a report with false entries in it is
+ * a report nobody reads twice.
+ */
+function recordGateRefusal(phaseName, gateName, result) {
+  const tag = `${gateName} gate`
+  if (result && result.result === 'PASS') {
+    for (let i = refusals.length - 1; i >= 0; i--) {
+      if (refusals[i].detail.startsWith(tag)) refusals.splice(i, 1)
+    }
+    return []
+  }
+  // Undefined is what runGateWithHeal returns when the agent produced no
+  // result at all. Reading that as clean is the fail-open this repo keeps
+  // rediscovering, so it is a refusal with its own wording.
+  if (!result) {
+    return [recordRefusal('GATE_FAIL', phaseName, `${tag} produced no result — the step reported nothing`)]
+  }
+  const lines = Array.isArray(result.failures)
+    ? result.failures.filter(f => typeof f === 'string' && f)
+    : []
+  if (lines.length === 0) {
+    return [recordRefusal('GATE_FAIL', phaseName, `${tag} ${result.result || 'did not report a result'} with no failures listed`)]
+  }
+  return lines.map(line => recordRefusal(
+    UNPOPULATED_SLOT_LINE.test(line) ? 'UNPOPULATED_SLOT' : 'GATE_FAIL',
+    phaseName,
+    `${tag}: ${line}`,
+  ))
+}
+
+/**
+ * The whole run's refusals, worst first, as a sentence and as a list.
+ *
+ * Ties keep the order they happened in, so within one severity the summary
+ * still reads chronologically. An unranked kind sorts LAST — fail-closed in
+ * the reporting direction, since a kind nobody classified must not displace a
+ * measured gate failure at the top of the summary.
+ */
+function failureSummary(entries, immediateReason) {
+  const all = Array.isArray(entries) ? entries : []
+  const rankOf = kind => {
+    const i = REFUSAL_SEVERITY.indexOf(kind)
+    return i === -1 ? REFUSAL_SEVERITY.length : i
+  }
+  const ranked = all
+    .map((e, i) => ({ e, i }))
+    .sort((a, b) => {
+      const ra = rankOf(a.e.kind)
+      const rb = rankOf(b.e.kind)
+      return ra !== rb ? ra - rb : a.i - b.i
+    })
+    .map(x => x.e)
+  const reason = ranked.length === 0
+    ? (typeof immediateReason === 'string' && immediateReason
+        ? immediateReason
+        : 'the run refused without recording a reason')
+    : `${ranked.length} refusal(s), worst first: ` +
+      ranked.map(e => `[${e.phase}] ${e.detail}`).join('; ')
+  return { reason, failures: ranked }
+}
+
+/**
+ * The one way this workflow reports a refusal to ship (#252).
+ *
+ * Fourteen hand-built refusal returns existed before this, three of which
+ * carried no reason at all. Each one reported the phase it happened to be in
+ * and nothing the run had already learned. The status literal appears exactly
+ * once in this file, here — a second one would be a refusal path with no
+ * ledger attached, and a comment quoting it would make that count unreadable,
+ * which is why this sentence describes it rather than spelling it.
+ *
+ * `phaseName` is a parameter rather than read from `phase()` because the two
+ * are not the same thing: the refusal belongs to the phase whose check
+ * refused, and several of these sites refuse on behalf of an earlier one.
+ */
+function shipFailed(phaseName, immediateReason, extra = {}) {
+  if (immediateReason) recordRefusal('REFUSAL', phaseName, immediateReason)
+  const summary = failureSummary(refusals, immediateReason)
+  const number = openedPr && openedPr.ok === true ? openedPr.prNumber : undefined
+  const hasPr = typeof number === 'number' && Number.isInteger(number) && number > 0
+  return {
+    status: 'SHIP_FAILED',
+    reason: summary.reason,
+    // Kept beside the summary, not replaced by it. The caller that only wants
+    // "why did it stop here" still has it, and the difference between the two
+    // fields is itself the thing #252 is about.
+    immediateReason: immediateReason || null,
+    failures: summary.failures,
+    // The PR was opened as a draft and this path never reaches the undraft
+    // step, so it stays one. Recorded because "left a draft" and "never
+    // opened" are indistinguishable from outside (SC-3).
+    pr: hasPr
+      ? { number, readiness: 'LEAVE_DRAFT', reason: `the run refused in the ${phaseName} phase`, draft: true }
+      : { number: null, readiness: 'NO_PR', reason: 'no PR was opened or updated by this run', draft: true },
+    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+    ...extra,
+  }
+}
+
+/** Set by the PR step. Declared here so every refusal site can read it. */
+let openedPr = null
+// ──── FAILURE-LEDGER-END ────
+
 // ── Helper: run gate with self-heal + error classification ──
 
 async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) {
   const gateCwd = gateOpts.cwd || PROJECT_ROOT
   const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
   const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
+  /**
+   * Every exit from this function goes through here, so the ledger sees each
+   * gate's FINAL outcome and nothing else (#252). Recording at the point of
+   * failure instead would bank an attempt the next one heals; recording at the
+   * call sites would miss the four early returns below, which are exactly the
+   * ones that end a run.
+   */
+  const gateExit = result => {
+    recordGateRefusal(phaseName, gateName, result)
+    return result
+  }
   for (let attempt = 1; attempt <= 3; attempt++) {
     const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
@@ -650,10 +811,10 @@ Run the ${gateName} gate and classify any failures:
 4. Report: result (PASS/FAIL), failures list, category, regressionTarget
     `, { label: `${gateName}-${attempt}`, phase: phaseName, schema: GATE_RESULT_SCHEMA })
 
-    if (!result || result.result === 'PASS') return result
-    if (result.category === 'NON_RETRYABLE') return result
-    if (attempt >= 3) return result
-    if (result.regressionTarget) return result
+    if (!result || result.result === 'PASS') return gateExit(result)
+    if (result.category === 'NON_RETRYABLE') return gateExit(result)
+    if (attempt >= 3) return gateExit(result)
+    if (result.regressionTarget) return gateExit(result)
 
     log(`${gateName} attempt ${attempt}/3 FAILED (${result.category || 'unknown'}) — healing`)
     await timedAgent(`
@@ -2191,12 +2352,7 @@ if (distinctWorktrees.length > 1) {
   // one at all (#155).
   const collected = await collectAgentWork(agentResults, PROJECT_ROOT, 'Commit', 'collect-worktrees')
   if (!collected.ok) {
-    return {
-      status: 'SHIP_FAILED',
-      issue: ISSUE,
-      reason: `Could not collect parallel worktree output (#81): ${collected.detail}`,
-      workDir: WORK_DIR,
-    }
+    return shipFailed('Commit', `Could not collect parallel worktree output (#81): ${collected.detail}`)
   }
   // Everything now lives in the project root and is already staged there.
   commitDir = PROJECT_ROOT
@@ -3257,12 +3413,8 @@ if (verifyResult?.result === 'FAIL') {
 if (securityVerdict.verdict !== 'PASS') {
   for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
   log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
-  return {
-    status: 'SHIP_FAILED',
-    reason: `security review did not pass: ${securityVerdict.failures.join('; ')}`,
-    security: securityVerdict,
-    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-  }
+  return shipFailed('Security', `security review did not pass: ${securityVerdict.failures.join('; ')}`,
+    { security: securityVerdict })
 }
 
 // #169: a PASS is a statement about a commit, and this run has to still be at
@@ -3328,12 +3480,8 @@ while (!reviewCurrency.current) {
   if (securityVerdict.verdict !== 'PASS') {
     for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
     log(`SECURITY: the re-review did not pass — the run is blocked and no PR will be opened (round ${reReviewRounds})`)
-    return {
-      status: 'SHIP_FAILED',
-      reason: `security review did not pass: ${securityVerdict.failures.join('; ')}`,
-      security: securityVerdict,
-      issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-    }
+    return shipFailed('Security', `security review did not pass: ${securityVerdict.failures.join('; ')}`,
+      { security: securityVerdict })
   }
   // The verdict in hand is now about the commit that round reviewed, and the
   // Ship-round check further down reads this same variable (#171).
@@ -3351,12 +3499,7 @@ if (!reviewCurrency.current) {
     : `SECURITY_REVIEW_STALE: ${reviewCurrency.reason}`
   log(`SECURITY BLOCK: ${reason}`)
   log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
-  return {
-    status: 'SHIP_FAILED',
-    reason,
-    security: securityVerdict,
-    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-  }
+  return shipFailed('Security', reason, { security: securityVerdict })
 }
 // ──── STALE-OR-EXHAUSTED-END ────
 log(`Security review PASSED, and is current at ${headSha}`)
@@ -3393,12 +3536,8 @@ if (suiteCurrencyVerdict.state === 'STALE') {
   const suiteStaleReason = `SUITE_MEASUREMENT_STALE: ${suiteCurrencyVerdict.reason}`
   log(`SUITE BLOCK: ${suiteStaleReason}`)
   log('SUITE: the run is blocked and no PR will be opened — the recorded test result describes a different commit')
-  return {
-    status: 'SHIP_FAILED',
-    reason: suiteStaleReason,
-    suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: headSha ?? null, currency: suiteCurrencyVerdict.state },
-    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-  }
+  return shipFailed('Suite', suiteStaleReason,
+    { suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: headSha ?? null, currency: suiteCurrencyVerdict.state } })
 }
 
 // PASS, FAIL or UNMEASURED. Carried to the end of the run rather than consumed
@@ -3632,23 +3771,14 @@ if (SKIP_GRADE) {
   // it" is not "it passed" — the #129 fail-open, one level out.
   const reason = 'BLOCKING_GRADE_MISSING: grading was not skipped but returned no grades array — the run cannot show its compliance evidence'
   log(`GRADE BLOCK: ${reason}`)
-  return {
-    status: 'SHIP_FAILED',
-    reason,
-    grades: [],
-    issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-  }
+  return shipFailed('Grade', reason, { grades: [] })
 } else {
   const blocked = blockingGradeViolations(gradeResult.grades)
   if (blocked.length > 0) {
     for (const b of blocked) log(`GRADE BLOCK: ${b}`)
     log('GRADE BLOCK: the run is blocked and no PR will be opened')
-    return {
-      status: 'SHIP_FAILED',
-      reason: `blocking compliance violation(s): ${blocked.join('; ')}`,
-      grades: gradeResult.grades,
-      issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-    }
+    return shipFailed('Grade', `blocking compliance violation(s): ${blocked.join('; ')}`,
+      { grades: gradeResult.grades })
   }
 }
 // ──── BLOCKING-GRADES-END ────
@@ -3707,7 +3837,14 @@ RUNGATE_PR_BODY_EOF
 cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-upsert --repo ${REPO} \\
   --head ${shipBranch} --base main \\
   --title-from-issue ${ISSUE} --issue-repo ${ISSUE_REPO} \\
-  --body-file ${WORK_DIR}/pr-body.md
+  --body-file ${WORK_DIR}/pr-body.md --draft
+
+--draft is not optional and is not yours to drop (#252). This step runs BEFORE
+the ship gate, the blocking-grade check and two staleness refusals, so every
+one of those can still refuse after the PR exists. Run wf_e105dd33-220 returned
+SHIP_FAILED and left PR #250 open and mergeable, carrying code that destroyed a
+consumer's CI. The run marks it ready itself once nothing is left that can
+refuse; if that never happens, a draft is the state this run actually earned.
 
 The title is composed by the script from the issue itself. Do NOT pass --title,
 and do NOT paste the issue title into the command — it is text someone else
@@ -3729,6 +3866,9 @@ retry with gh, and do NOT report success.
   } })
 }
 
+// Every refusal from here on has to be able to say what happened to the PR,
+// and the refusal sites are scattered across three phases (#252).
+openedPr = prStep
 if (prStep) {
   log(prStep.ok
     ? `PR ${prStep.prNumber ? `#${prStep.prNumber}` : ''} ${prStep.prUrl || ''}`.trim()
@@ -3756,7 +3896,7 @@ if (shipResult?.result !== 'PASS') {
         reimpl.buildResult?.agentResults, commitDir, 'Ship', 'collect-ship-regression')
       if (!gathered.ok) {
         log(`Ship regression work could not be collected (#155): ${gathered.detail}`)
-        return { status: 'SHIP_FAILED', reason: `BUILD regression work could not be collected: ${gathered.detail}`, issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+        return shipFailed('Ship', `BUILD regression work could not be collected: ${gathered.detail}`)
       }
       const reimplShipGitAdd = gathered.staged ? 'git diff --cached --quiet; true' : gitDerivedStaging(commitDir)
       // The most recent Quinn measurement this run has, which by the Ship
@@ -3799,7 +3939,7 @@ workflow-state.json by hand, and do NOT report true if the command failed.
       const reShipStateRefusal = commitStateRefusal(reCommit)
       if (reShipStateRefusal) {
         log(`${reShipStateRefusal} — buildCommit still names the pre-regression commit (#169)`)
-        return { status: 'SHIP_FAILED', reason: reShipStateRefusal, issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+        return shipFailed('Ship', reShipStateRefusal)
       }
       // ──── STALE-REFUSAL-START ────
       // #169, the Ship half. The currency check inside SECURITY-DECISION runs
@@ -3826,12 +3966,7 @@ workflow-state.json by hand, and do NOT report true if the command failed.
         const shipRoundReason = `SECURITY_REVIEW_STALE: ${shipRoundCurrency.reason}`
         log(`SECURITY BLOCK: ${shipRoundReason}`)
         log('SECURITY: the ship regression round moved the branch past the reviewed commit — the run stops here, and the issue is neither labelled proven nor closed')
-        return {
-          status: 'SHIP_FAILED',
-          reason: shipRoundReason,
-          security: securityVerdict,
-          issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-        }
+        return shipFailed('Ship', shipRoundReason, { security: securityVerdict })
       }
       log(`Security review is still current after the ship round, at ${reCommit?.commitSha}`)
       // ──── STALE-REFUSAL-END ────
@@ -3851,12 +3986,8 @@ workflow-state.json by hand, and do NOT report true if the command failed.
         const shipRoundSuiteReason = `SUITE_MEASUREMENT_STALE: ${shipRoundSuite.reason}`
         log(`SUITE BLOCK: ${shipRoundSuiteReason}`)
         log('SUITE: the ship regression round moved the branch past the measured commit — the run stops here, and the issue is neither labelled proven nor closed')
-        return {
-          status: 'SHIP_FAILED',
-          reason: shipRoundSuiteReason,
-          suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: reCommit?.commitSha ?? null, currency: shipRoundSuite.state },
-          issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
-        }
+        return shipFailed('Ship', shipRoundSuiteReason,
+          { suite: { result: suiteResult ?? null, measuredSha: suiteMeasuredSha ?? null, headSha: reCommit?.commitSha ?? null, currency: shipRoundSuite.state } })
       }
       // Reassigned, not re-derived from scratch: the round may have left the
       // measurement unrecorded against the new tip, and that downgrade has to
@@ -3868,13 +3999,13 @@ workflow-state.json by hand, and do NOT report true if the command failed.
       if (retryShip?.result === 'PASS') {
         log('Ship passed after BUILD regression fix')
       } else {
-        return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+        return shipFailed('Ship', 'the ship gate still failed after a BUILD regression fix')
       }
     } else {
-      return { status: 'SHIP_FAILED', reason: 'BUILD regression failed', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+      return shipFailed('Ship', 'BUILD regression failed')
     }
   } else {
-    return { status: 'SHIP_FAILED', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+    return shipFailed('Ship', 'the ship gate did not pass and no BUILD regression path was available')
   }
 }
 
@@ -4029,8 +4160,99 @@ function shipStatusFor(proveVerdict, suiteReading) {
 }
 // ──── PROVE-STATUS-END ────
 
+// ──── PR-READINESS-START ────
+/**
+ * The line between "the harness stands behind this" and "it got this far"
+ * (#252).
+ *
+ * A status at or above this rank earns a reviewable PR; everything below it
+ * leaves the draft alone. SHIPPED_UNPROVEN is above the line on purpose: for a
+ * LIGHT-ceremony issue with no UI criteria, prove is skipped BY DESIGN and the
+ * verify gate has already run every evidence command. The three below it each
+ * name something that was measured and came back short.
+ */
+const SHIP_STATUS_READY_THRESHOLD = 'SHIPPED_UNPROVEN'
+
+/**
+ * Whether this run has earned taking its PR out of draft.
+ *
+ * Separate from the undrafting itself so it can be executed by a test rather
+ * than grepped — `test/ship-pr-draft.test.ts` slices this block out and runs
+ * it, because "ship.js mentions pr-ready" stays true after the condition is
+ * reduced to `true`.
+ *
+ * Fail-closed in both directions. An unranked STATUS leaves the draft, because
+ * a word this scale has never heard of is not a word that earned anything; and
+ * an unrankable THRESHOLD leaves every draft alone rather than lifting them
+ * all, which is what a bare `rank >= indexOf(...)` would do the moment someone
+ * renamed a status — `indexOf` answers -1, and every rank is >= -1.
+ */
+function prReadiness(status, pr) {
+  const number = pr && pr.ok === true ? pr.prNumber : undefined
+  if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
+    return {
+      action: 'NO_PR',
+      number: null,
+      reason: pr && pr.ok === true
+        ? 'the PR step reported success without a usable PR number'
+        : 'no PR was opened or updated by this run',
+    }
+  }
+  const threshold = SHIP_STATUS_STRENGTH.indexOf(SHIP_STATUS_READY_THRESHOLD)
+  if (threshold === -1) {
+    return {
+      action: 'LEAVE_DRAFT',
+      number,
+      reason: `the readiness threshold ${SHIP_STATUS_READY_THRESHOLD} is not on the strength scale, so nothing can be ranked against it`,
+    }
+  }
+  const rank = SHIP_STATUS_STRENGTH.indexOf(status)
+  if (rank < threshold) {
+    return {
+      action: 'LEAVE_DRAFT',
+      number,
+      reason: rank === -1
+        ? `terminal status ${String(status)} is not on the strength scale`
+        : `terminal status ${String(status)} ranks below ${SHIP_STATUS_READY_THRESHOLD}`,
+    }
+  }
+  return { action: 'MARK_READY', number, reason: null }
+}
+// ──── PR-READINESS-END ────
+
+const terminalStatus = shipStatusFor(proveVerdict, suiteReading)
+const prState = prReadiness(terminalStatus, prStep)
+log(`PR readiness: ${prState.action}${prState.reason ? ` — ${prState.reason}` : ''}`)
+
+let prMarkedReady = false
+if (prState.action === 'MARK_READY') {
+  const ready = await timedAgent(`
+Take the PR out of draft. Run exactly this one command:
+
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+
+It prints one JSON object: {"number":N,"isDraft":false}. Set ok to true ONLY if
+it exited zero; on any non-zero exit set ok to false and put stderr in detail.
+
+This is the last step of a run that passed everything (#252). The PR was opened
+as a draft so that a refusal anywhere upstream would leave it unmergeable by
+default; this converts it because nothing refused. Do NOT run it if the command
+fails — report the failure. A PR left as a draft is a recoverable annoyance; a
+mergeable PR from a run that did not earn one is what this whole mechanism
+exists to prevent.
+  `, { label: 'pr-ready', phase: 'Prove', schema: {
+    type: 'object',
+    properties: { ok: { type: 'boolean' }, detail: { type: 'string' } },
+    required: ['ok'],
+  } })
+  prMarkedReady = ready?.ok === true
+  if (!prMarkedReady) {
+    log(`WARN: PR #${prState.number} is still a draft — ${ready?.detail || 'the pr-ready step reported failure with no detail'}`)
+  }
+}
+
 return {
-  status: shipStatusFor(proveVerdict, suiteReading),
+  status: terminalStatus,
   issue: ISSUE, slug: SLUG,
   sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
   proveVerdict,
@@ -4039,6 +4261,15 @@ return {
   // from the tree this run shipped.
   suiteReading,
   suiteMeasuredSha: suiteMeasuredSha ?? null,
+  // SC-3 asks for which of "converted to draft" and "not opened" happened to
+  // be RECORDED, not merely for the invariant to hold. A run whose PR stayed a
+  // draft and a run that never opened one look identical from the outside.
+  pr: {
+    number: prState.number,
+    readiness: prState.action,
+    reason: prState.reason,
+    draft: !prMarkedReady,
+  },
   regressions: regressionCount,
   workDir: WORK_DIR,
   grades: gradeResult?.grades || [],

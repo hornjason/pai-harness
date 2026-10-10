@@ -53,6 +53,26 @@ const BLOCK = (() => {
   return shipSource.slice(start + BLOCK_START.length, end);
 })();
 
+/**
+ * ship.js's real refusal helper. Module scope on purpose: if the markers go
+ * missing this throws while the file loads, rather than letting every refusal
+ * case run against an undefined call and throw, which reads as a refusal.
+ */
+const REFUSAL_HELPER: string = (() => {
+  const START = "// ──── FAILURE-LEDGER-START ────";
+  const END = "// ──── FAILURE-LEDGER-END ────";
+  const a = shipSource.indexOf(START);
+  const b = shipSource.indexOf(END);
+  if (a === -1 || b === -1 || b < a) {
+    throw new Error("ship.js is missing the FAILURE-LEDGER markers");
+  }
+  const block = shipSource.slice(a, b);
+  if (!block.includes("function shipFailed(")) {
+    throw new Error("the FAILURE-LEDGER block no longer defines shipFailed");
+  }
+  return block;
+})();
+
 interface Outcome {
   result: Record<string, any> | undefined;
   logs: string[];
@@ -68,8 +88,15 @@ interface Outcome {
  *
  * The tail `return` is how a run that is ALLOWED to ship is observed, and it
  * doubles as the read-out of the declared blocking set — the block's own
- * value, not a copy this file keeps in step by hand. A refusal returns
- * `{ status: 'SHIP_FAILED', ... }` before ever reaching it.
+ * value, not a copy this file keeps in step by hand. A refusal returns from
+ * `shipFailed` before ever reaching it.
+ *
+ * `shipFailed` is ship.js's own, sliced in from the FAILURE-LEDGER block and
+ * compiled into the same sandbox (#252). A stub would make every refusal
+ * assertion below a test of the stub. Since the real one summarises the whole
+ * run's ledger, the reason a single refusal names is on `immediateReason`, and
+ * the assertions here read that — `reason` is now the summary, and a summary
+ * that happened to contain the right substring would pass either way.
  */
 async function runBlock(block: string, scope: Record<string, unknown> = {}): Promise<Outcome> {
   const logs: string[] = [];
@@ -94,6 +121,7 @@ async function runBlock(block: string, scope: Record<string, unknown> = {}): Pro
   const factory = new Function(
     "__scope__",
     `return (async function () { with (__scope__) {
+${REFUSAL_HELPER}
 ${block}
 return { __shipped: true, blockingSet: typeof BLOCKING_GRADE_VIOLATIONS === 'undefined' ? null : BLOCKING_GRADE_VIOLATIONS }
 } })()`,
@@ -164,8 +192,8 @@ describe("AC-1: a run whose test evidence predates its final source change is re
 
   test("the refusal names the violation and the role", async () => {
     const outcome = await runBlock(BLOCK, { gradeResult: violatingGrades() });
-    expect(String(outcome.result?.reason)).toContain("TDD_SEQUENCE_VIOLATED");
-    expect(String(outcome.result?.reason)).toContain("marcus");
+    expect(String(outcome.result?.immediateReason)).toContain("TDD_SEQUENCE_VIOLATED");
+    expect(String(outcome.result?.immediateReason)).toContain("marcus");
     expect(outcome.logs.join("\n")).toContain("TDD_SEQUENCE_VIOLATED");
   });
 
@@ -251,7 +279,7 @@ describe("#240: a blocking violation is attributable to a call site", () => {
     // re-running checkTDD over every transcript by hand.
     const outcome = await runBlock(BLOCK, { gradeResult: decomposedRun() });
     expect(refused(outcome)).toBe(true);
-    expect(outcome.result?.reason).toContain("marcus-sub-235002");
+    expect(outcome.result?.immediateReason).toContain("marcus-sub-235002");
   });
 
   test("it does not name the three call sites that complied", async () => {
@@ -259,7 +287,7 @@ describe("#240: a blocking violation is attributable to a call site", () => {
     // every agent in the run — which names nobody.
     const outcome = await runBlock(BLOCK, { gradeResult: decomposedRun() });
     for (const innocent of ["marcus-sub-235001", "marcus-sub-235003"]) {
-      expect(outcome.result?.reason).not.toContain(innocent);
+      expect(outcome.result?.immediateReason).not.toContain(innocent);
     }
   });
 
@@ -270,7 +298,7 @@ describe("#240: a blocking violation is attributable to a call site", () => {
       gradeResult: { grades: [{ role: "marcus", total: 1, followed: 0, flagged: [TDD_FLAG] }] },
     });
     expect(refused(outcome)).toBe(true);
-    expect(outcome.result?.reason).toContain("marcus:");
+    expect(outcome.result?.immediateReason).toContain("marcus:");
   });
 });
 

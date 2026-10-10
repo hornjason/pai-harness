@@ -444,8 +444,23 @@ describe("#222: the final return goes through the block under test", () => {
   test("the status is computed by shipStatusFor, not by an inline ternary", () => {
     // Without this the block above could be correct, unused, and the shipped
     // behaviour unchanged — a test of a function production does not call.
+    //
+    // The returned value is traced through one binding rather than required to
+    // BE the call verbatim. #252 needs the status before the return — the
+    // draft-readiness decision reads it — and an assertion that forbids naming
+    // it is an assertion about formatting, not about where the value came
+    // from. What is still forbidden is the value coming from anywhere else.
     const tail = shipSource.slice(shipSource.indexOf("PHASE 9: PROVE"));
-    expect(tail).toContain("status: shipStatusFor(proveVerdict, suiteReading),");
+    const CALL = "shipStatusFor(proveVerdict, suiteReading)";
+    const returned = tail.match(/\n {2}status: ([A-Za-z0-9_]+|shipStatusFor\([^)]*\)),/);
+    expect(returned, "the final return has no `status:` this sweep can read").not.toBeNull();
+    const expression = returned![1];
+    if (expression !== CALL) {
+      expect(
+        tail,
+        `the final return reports \`${expression}\`, which is not assigned from ${CALL}`,
+      ).toContain(`const ${expression} = ${CALL}`);
+    }
     expect(
       tail.match(VERDICT_TO_STATUS_TERNARY) || [],
       "the verdict-to-status ternary is back at the return site",

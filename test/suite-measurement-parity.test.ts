@@ -310,7 +310,10 @@ describe("#224: the suite result reaches state through the recorder", () => {
     );
     expect(decision, "ship.js has no suite decision block").not.toBe("");
     expect(decision).toContain("SUITE_MEASUREMENT_STALE");
-    expect(decision).toContain("status: 'SHIP_FAILED'");
+    // `shipFailed` is the only producer of a SHIP_FAILED status in ship.js
+    // (#252) — the count is asserted in test/ship-failure-report.test.ts — so
+    // a `return shipFailed(` here is a refusal and nothing else is.
+    expect(decision).toContain("return shipFailed(");
   });
 
   test("the refusal happens before the PR step", () => {

@@ -72,7 +72,7 @@ function runMarkedBlock(block: string, scope: Record<string, unknown>) {
   });
   const factory = new Function(
     "__scope__",
-    `return (async function () { with (__scope__) {\n${block}\nreturn undefined\n} })()`,
+    `return (async function () { with (__scope__) {\n${REFUSAL_HELPER}\n${block}\nreturn undefined\n} })()`,
   );
   return factory(sandbox) as Promise<Record<string, unknown> | undefined>;
 }
@@ -162,6 +162,26 @@ const STALE_REFUSAL_END = "// ──── STALE-REFUSAL-END ────";
  * .claude/rules/checks-must-be-able-to-fail.md is about.
  */
 const STALE_REFUSAL_BLOCK = sliceBlock(STALE_REFUSAL_START, STALE_REFUSAL_END);
+
+/**
+ * ship.js's own refusal helper, compiled into the sandbox alongside the block
+ * under test (#252).
+ *
+ * The decision blocks stopped building `{ status: 'SHIP_FAILED' }` by hand —
+ * they call `shipFailed`, which attaches the whole run's refusal ledger. A
+ * stub here would make every refusal assertion in this file a test of the
+ * stub, so the real source is sliced in instead, and the ledger is fresh per
+ * execution because it is re-declared with the block.
+ */
+const LEDGER_START = "// ──── FAILURE-LEDGER-START ────";
+const LEDGER_END = "// ──── FAILURE-LEDGER-END ────";
+const REFUSAL_HELPER = sliceBlock(LEDGER_START, LEDGER_END);
+if (!REFUSAL_HELPER.includes("function shipFailed(")) {
+  throw new Error(
+    "the FAILURE-LEDGER block no longer defines shipFailed — every refusal case below " +
+      "would run against an undefined call and throw, which reads as a refusal",
+  );
+}
 
 /** The inlined copies ship.js actually runs. */
 const inlined = new Function(
@@ -775,7 +795,7 @@ describe("#169 refusal path: a stale review stops the run", () => {
       decisionScope(logs, { tested: "3fe336f1", head: OTHER_SHA }),
     );
     expect(out?.status, "a stale security review let the run reach the PR step").toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     expect(String(out?.reason)).toContain("3fe336f1");
     expect(out?.issue).toBe(169);
     expect(out?.slug).toBe("pai-harness-169");
@@ -786,7 +806,7 @@ describe("#169 refusal path: a stale review stops the run", () => {
     for (const tested of [undefined, null, "", "HEAD", {}]) {
       const out = await runDecisionBlock(decisionScope([], { tested }));
       expect(out?.status, `testedSha=${JSON.stringify(tested)} was waved through`).toBe("SHIP_FAILED");
-      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     }
   });
 
@@ -912,7 +932,7 @@ describe("#169 ship round: the review is checked again after recommit-ship", () 
     expect(out?.status, "a ship-round remediation reached Prove on a stale review").toBe(
       "SHIP_FAILED",
     );
-    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     expect(String(out?.reason)).toContain("3fe336f1");
     expect(String(out?.reason)).toContain(OTHER_SHA);
     expect(out?.issue).toBe(169);
@@ -948,7 +968,7 @@ describe("#169 ship round: the review is checked again after recommit-ship", () 
         out?.status,
         `recommit-ship reported commitSha=${JSON.stringify(commitSha)} and the run carried on`,
       ).toBe("SHIP_FAILED");
-      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     }
   });
 
@@ -991,7 +1011,10 @@ describe("#169 ship round: the review is checked again after recommit-ship", () 
     expect(refusal, "the second currency check runs after Prove has already labelled the issue")
       .toBeLessThan(prove);
     expect(STALE_REFUSAL_BLOCK).toContain("SECURITY_REVIEW_STALE");
-    expect(STALE_REFUSAL_BLOCK).toContain("status: 'SHIP_FAILED'");
+    // The literal moved into shipFailed (#252). What this block must still do
+    // is REFUSE, and `shipFailed` is the only thing in ship.js that produces a
+    // SHIP_FAILED status — the count is asserted in test/ship-failure-report.test.ts.
+    expect(STALE_REFUSAL_BLOCK).toContain("return shipFailed(");
   });
 
   test("no branch logs a currency mismatch and lets the run continue", () => {
@@ -1513,7 +1536,7 @@ describe("#171 AC-3: the cycle is capped, and the cap is its own outcome", () =>
     }) });
     const out = await run.result;
     expect(out?.status).toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toStartWith(SECURITY_REREVIEW_EXHAUSTED);
+    expect(String(out?.immediateReason)).toStartWith(SECURITY_REREVIEW_EXHAUSTED);
     expect(run.calls.length, "the cap did not bound the loop").toBe(2);
   });
 
@@ -1537,8 +1560,8 @@ describe("#171 AC-3: the cycle is capped, and the cap is its own outcome", () =>
       testedSha: SHA,
     }) }).result;
     const stale = await runDecisionBlock(decisionScope([], { tested: SHA, head: OTHER_SHA }));
-    expect(String(exhausted?.reason)).not.toStartWith("SECURITY_REVIEW_STALE");
-    expect(String(stale?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(exhausted?.immediateReason)).not.toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(stale?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     expect(String(stale?.reason)).not.toContain(SECURITY_REREVIEW_EXHAUSTED);
   });
 
@@ -1584,7 +1607,7 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
     const run = reReviewRun({ budget: 0 });
     const out = await run.result;
     expect(out?.status).toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
     expect(run.calls, "a run with no budget spawned a review anyway").toEqual([]);
     expect(
       run.exhaustionRecorded,
@@ -1599,7 +1622,7 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
       expect(out?.status, `a budget of ${JSON.stringify(budget)} was waved through`).toBe(
         "SHIP_FAILED",
       );
-      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
       expect(run.calls).toEqual([]);
     }
   });
@@ -1617,7 +1640,7 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
         out?.status,
         `tested=${JSON.stringify(tested)} head=${JSON.stringify(head)} was waved through`,
       ).toBe("SHIP_FAILED");
-      expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+      expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
       expect(run.calls, "a re-review was aimed at something that is not a commit").toEqual([]);
     }
   });
@@ -1648,7 +1671,7 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
       shipRoundScope([], { tested: "3fe336f1", commitSha: OTHER_SHA }),
     );
     expect(out?.status).toBe("SHIP_FAILED");
-    expect(String(out?.reason)).toStartWith("SECURITY_REVIEW_STALE");
+    expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
   });
 
   test("a rook FAIL is still read before any of this", async () => {
