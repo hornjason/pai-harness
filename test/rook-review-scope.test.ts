@@ -80,9 +80,14 @@ function expectRefused(args: string[], reason: RegExp) {
 let FIX = "";
 let repoWithChange = "";
 let repoEmptyChange = "";
+let repoThreeCommits = "";
 let baseSha = "";
 let changeSha = "";
 let emptySha = "";
+/** #171 fixture: origin/main, the reviewed commit, the remediation commit. */
+let originSha = "";
+let reviewedSha = "";
+let remediationSha = "";
 
 function git(cwd: string, args: string[]) {
   return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf-8" }).trim();
@@ -121,6 +126,29 @@ beforeAll(() => {
   git(repoEmptyChange, ["commit", "-qm", "base"]);
   git(repoEmptyChange, ["checkout", "-qb", "work"]);
   emptySha = git(repoEmptyChange, ["rev-parse", "HEAD"]);
+
+  // #171: three commits on one branch, with a real origin/main ref behind all
+  // of them. The remediation round only touched c.ts; the origin/main fallback
+  // sees a.ts and b.ts as well, so the two answers are measurably different and
+  // "--base narrowed the scope" cannot pass vacuously.
+  repoThreeCommits = join(FIX, "three-commits");
+  initRepo(repoThreeCommits);
+  writeFileSync(join(repoThreeCommits, "a.ts"), "export const a = 1\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c1: the commit origin/main points at"]);
+  originSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
+  git(repoThreeCommits, ["update-ref", "refs/remotes/origin/main", originSha]);
+
+  writeFileSync(join(repoThreeCommits, "a.ts"), "export const a = 2\n");
+  writeFileSync(join(repoThreeCommits, "b.ts"), "export const b = 2\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c2: the commit the security review read"]);
+  reviewedSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
+
+  writeFileSync(join(repoThreeCommits, "c.ts"), "export const c = 3\n");
+  git(repoThreeCommits, ["add", "-A"]);
+  git(repoThreeCommits, ["commit", "-qm", "c3: the remediation round"]);
+  remediationSha = git(repoThreeCommits, ["rev-parse", "HEAD"]);
 });
 
 afterAll(() => {
@@ -292,6 +320,50 @@ describe("a real scope is reported", () => {
     ]);
     expect(r.code, r.err).toBe(0);
     expect(JSON.parse(readFileSync(out, "utf-8"))).toEqual(JSON.parse(r.out));
+  });
+
+  // ── #171: the re-review reads the remediation diff ────────────────────
+
+  test("--base narrows the scope to the commits since the review", () => {
+    // AC-2. The second review's subject is the commit the self-heal loop just
+    // wrote, not the whole branch: on run wf_6fbfa028-14e that commit was
+    // 00f21e21 — 7 files, 992 insertions, workflows/ship.js among them.
+    const scoped = run(SCRIPT, [
+      "--project", repoThreeCommits, "--sha", remediationSha, "--base", reviewedSha,
+    ]);
+    expect(scoped.code, scoped.err).toBe(0);
+    expect(JSON.parse(scoped.out).files).toEqual(["c.ts"]);
+    expect(JSON.parse(scoped.out).base).toBe(reviewedSha);
+    expect(JSON.parse(scoped.out).sha).toBe(remediationSha);
+  });
+
+  test("the narrowing is real: the default base sees more", () => {
+    // Without this the assertion above would pass over a repository where
+    // every base gives the same answer, which is the vacuous shape
+    // .claude/rules/checks-must-be-able-to-fail.md is about.
+    const wide = run(SCRIPT, ["--project", repoThreeCommits, "--sha", remediationSha]);
+    expect(wide.code, wide.err).toBe(0);
+    expect(JSON.parse(wide.out).files).toEqual(["a.ts", "b.ts", "c.ts"]);
+    expect(JSON.parse(wide.out).base).toBe(originSha);
+  });
+
+  test("a re-review of a round that changed nothing is refused, not passed", () => {
+    // A remediation round that committed nothing leaves base == sha, and a
+    // review over zero files is an absent review, not a clean one (#129).
+    expectRefused(
+      ["--project", repoThreeCommits, "--sha", remediationSha, "--base", remediationSha],
+      /empty/i,
+    );
+  });
+
+  test("a full commit SHA is accepted as --base, not only a branch name", () => {
+    // The workflow passes `agents.rook.testedSha`, which is a SHA. A REF
+    // pattern that only admitted names would refuse every re-review.
+    const r = run(SCRIPT, [
+      "--project", repoThreeCommits, "--sha", remediationSha, "--base", reviewedSha.slice(0, 12),
+    ]);
+    expect(r.code, r.err).toBe(0);
+    expect(JSON.parse(r.out).base).toBe(reviewedSha);
   });
 
   test("the mutant is not simply a script that always exits 0", () => {

@@ -4,7 +4,13 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { buildRookRecord, failureList } from "../scripts/record-security-verdict";
+import { WorkflowStateSchema } from "../gates/schema";
+import {
+  SECURITY_REREVIEW_EXHAUSTED,
+  buildRookRecord,
+  failureList,
+  securityReviewIsClean,
+} from "../scripts/record-security-verdict";
 
 /**
  * scripts/record-security-verdict.ts — the run artefact must answer "did
@@ -204,5 +210,182 @@ describe("failureList / buildRookRecord", () => {
     const r = buildRookRecord("PASS", true, null, { sha: 42, files: "lib/a.ts" });
     expect(r.testedSha).toBeUndefined();
     expect(r.testedPaths).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------------ *
+ * #171 — the third outcome: the cycle ran out of attempts
+ *
+ * A remediation committed after the review leaves the run holding a verdict
+ * for code it no longer ships (#169). #171 re-reviews the new tip, and that
+ * loop is capped. Spending the cap is NEITHER of the other two outcomes: the
+ * run ends holding code nobody reviewed, which is the exact thing the #129
+ * gate exists to stop, so it may not serialise to anything a reader can
+ * mistake for "rook looked and found nothing" or for "rook found something".
+ * ------------------------------------------------------------------------ */
+
+describe("#171: an exhausted re-review cycle is its own recorded outcome", () => {
+  test("EXHAUSTED is written with its named refusal and the round count", () => {
+    const r = run([
+      "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2",
+    ]);
+    expect(r.code, r.err).toBe(0);
+    const rook = readState().agents.rook;
+    expect(rook.verdict).toBe("EXHAUSTED");
+    expect(rook.refusal).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(rook.rounds).toBe(2);
+  });
+
+  test("it carries no findings, because running out of attempts is not a finding", () => {
+    // A findings list is how "the review found something" is written down.
+    // Attaching one here would make the record read as a FAIL to every
+    // consumer that looks at `failures` rather than at `verdict`.
+    const findings = join(DIR, "f.json");
+    writeFileSync(findings, JSON.stringify({ failures: ["something rook said last round"] }));
+    const r = run([
+      "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true",
+      "--rounds", "3", "--findings", findings,
+    ]);
+    expect(r.code, r.err).toBe(0);
+    expect(readState().agents.rook.failures).toBeUndefined();
+  });
+
+  test("EXHAUSTED without a round count is refused, not defaulted", () => {
+    // A cap nobody can see the size of is not a bound.
+    const r = run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true"]);
+    expect(r.code).not.toBe(0);
+    expect(readState().agents).toBeUndefined();
+  });
+
+  test("a round count that is not a whole number of at least one is refused", () => {
+    for (const bad of ["0", "-1", "1.5", "two", ""]) {
+      const r = run([
+        "--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", bad,
+      ]);
+      expect(r.code, `--rounds ${JSON.stringify(bad)} was accepted`).not.toBe(0);
+    }
+  });
+
+  test("the changelog says how many rounds were spent", () => {
+    run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2"]);
+    const entry = readState().changelog.find((c: { event: string }) => c.event === "security-verdict");
+    expect(entry.detail).toContain("EXHAUSTED");
+    expect(entry.detail).toContain("2");
+  });
+
+  test("the record survives the schema, refusal and rounds intact", () => {
+    // Zod strips undeclared keys, so without the declarations in
+    // gates/schema.ts an EXHAUSTED record round-trips as a bare verdict.
+    run(["--state", STATE, "--verdict", "EXHAUSTED", "--spawned", "true", "--rounds", "2"]);
+    const parsed = WorkflowStateSchema.safeParse(readState());
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+    const rook = (parsed.data as { agents: { rook: Record<string, unknown> } }).agents.rook;
+    expect(rook.refusal).toBe(SECURITY_REREVIEW_EXHAUSTED);
+    expect(rook.rounds).toBe(2);
+  });
+
+  test("the refusal cannot be recorded against a PASS", () => {
+    // The fail-open this pairing closes: record the refusal honestly while
+    // parking the verdict at PASS, and every reader asking
+    // `verdict === "PASS"` walks straight past it.
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: { rook: { spawned: true, verdict: "PASS", refusal: SECURITY_REREVIEW_EXHAUSTED } },
+    });
+    expect(parsed.success, "a PASS carrying the exhaustion refusal was accepted").toBe(false);
+  });
+
+  test("an EXHAUSTED record carrying findings is refused by the schema too", () => {
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: {
+        rook: {
+          spawned: true,
+          verdict: "EXHAUSTED",
+          refusal: SECURITY_REREVIEW_EXHAUSTED,
+          rounds: 2,
+          failures: ["a finding"],
+        },
+      },
+    });
+    expect(parsed.success, "an EXHAUSTED record with findings was accepted").toBe(false);
+  });
+
+  test("an EXHAUSTED record missing its refusal or its rounds is refused", () => {
+    for (const rook of [
+      { spawned: true, verdict: "EXHAUSTED", rounds: 2 },
+      { spawned: true, verdict: "EXHAUSTED", refusal: SECURITY_REREVIEW_EXHAUSTED },
+    ]) {
+      const parsed = WorkflowStateSchema.safeParse({ ...baseState(), agents: { rook } });
+      expect(parsed.success, `${JSON.stringify(rook)} was accepted`).toBe(false);
+    }
+  });
+
+  test("the positive control: a PASS with no refusal still parses", () => {
+    // Without this, a schema that rejected every rook record would satisfy
+    // every assertion above.
+    const parsed = WorkflowStateSchema.safeParse({
+      ...baseState(),
+      agents: { rook: { spawned: true, verdict: "PASS", testedSha: "a".repeat(40) } },
+    });
+    expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
+  });
+});
+
+describe("#171: securityReviewIsClean is the reader side of the record", () => {
+  test("only a PASS with nothing attached is clean", () => {
+    expect(securityReviewIsClean({ spawned: true, verdict: "PASS" })).toBe(true);
+    expect(securityReviewIsClean({ spawned: true, verdict: "PASS", testedSha: "a".repeat(40) })).toBe(true);
+  });
+
+  test("an exhausted cycle is not a clean review", () => {
+    // The point of #171: the attempts ran out, so nothing concluded the code
+    // was clean. Any reader asking "did security pass" must get false.
+    expect(
+      securityReviewIsClean({
+        spawned: true,
+        verdict: "EXHAUSTED",
+        refusal: SECURITY_REREVIEW_EXHAUSTED,
+        rounds: 2,
+      }),
+      "an exhausted re-review cycle read as a clean review",
+    ).toBe(false);
+  });
+
+  test("absence, malformation and contradiction all read as not clean", () => {
+    for (const bad of [
+      undefined, null, "PASS", [], 0,
+      { verdict: "FAIL", failures: ["x"] },
+      { verdict: "SKIP" },
+      { verdict: null },
+      { spawned: true, verdict: "PASS", failures: ["a leftover finding"] },
+      { spawned: true, verdict: "PASS", refusal: SECURITY_REREVIEW_EXHAUSTED },
+    ]) {
+      expect(securityReviewIsClean(bad), `${JSON.stringify(bad)} read as clean`).toBe(false);
+    }
+  });
+});
+
+describe("#171: buildRookRecord derives the refusal rather than accepting one", () => {
+  test("EXHAUSTED gets the refusal and the rounds", () => {
+    expect(buildRookRecord("EXHAUSTED", true, null, null, 2)).toEqual({
+      spawned: true,
+      verdict: "EXHAUSTED",
+      refusal: SECURITY_REREVIEW_EXHAUSTED,
+      rounds: 2,
+    });
+  });
+
+  test("no other verdict carries the refusal, whatever the rounds say", () => {
+    for (const verdict of ["PASS", "FAIL", "SKIP"]) {
+      const r = buildRookRecord(verdict, true, { failures: ["x"] }, null, 2);
+      expect(r.refusal, `${verdict} was given a refusal`).toBeUndefined();
+      expect(r.rounds, `${verdict} was given a round count`).toBeUndefined();
+    }
+  });
+
+  test("failureList drops findings for an exhausted cycle only", () => {
+    expect(failureList("EXHAUSTED", { failures: ["a", "b"] })).toEqual([]);
+    expect(failureList("FAIL", { failures: ["a", "b"] })).toEqual(["a", "b"]);
   });
 });

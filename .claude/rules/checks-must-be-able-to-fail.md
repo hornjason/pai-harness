@@ -225,3 +225,41 @@ What was broken to prove it, run and counted rather than asserted, over
 None is left in the tree; all were run and reverted. The three mutations
 recorded above for SC-618..620 were also re-run against this tree and reproduce
 their counts exactly — 3, 4 and 3 red of 29.
+
+### When the guard is a spawn, not a comparison (#171)
+
+#169's refusal was correct and incomplete: it stopped a run whose branch had
+moved past the reviewed commit, and nothing looked at the new tip. #171 makes
+the run re-review instead, which means the thing that must be able to fail is
+no longer a comparison but a SPAWN — and a spawn is the easiest thing in a
+workflow to prove present and never prove load-bearing. "The decision block
+called a function" is satisfied by a function that does nothing.
+
+So the binding is the one call that re-reviews, declared as a literal in
+`test/security-verdict-blocks.test.ts` (`REREVIEW_SPAWN`) and removed from a
+copy of `workflows/ship.js`'s decision block. The assertion is not merely "the
+mutant goes red" but something narrower: **the mutant must REFUSE.** A mutation
+that made the run ship anyway would mean the fall-through never depended on the
+review at all, which is this whole file's subject.
+
+What was broken to prove it, run and counted rather than asserted:
+
+| Mutation | Red |
+|---|---|
+| the re-review spawn short-circuited to `undefined` in the real source | 11 of 201 in `test/security-verdict-blocks.test.ts` — including the remediate-then-ship case, which then refuses rather than shipping |
+| the spawn renamed | 13 of 200 — every mutant-building case throws `could not build the mutant: the re-review spawn appears 0 times` |
+| `--base` dropped from ship.js's inlined `rookScopeCommand` | 2 of 200 — the re-review reads the whole branch again, and the parity matrix catches the divergence from the library |
+| `--base` dropped from `lib/security-verdict.ts` instead | 2 of 200 — the same pair from the other side, which is what a parity matrix is for |
+| exhaustion collapsed into the staleness refusal (`const spent = false`) | 4 of 200 — the two refusals stop being distinguishable and the artefact stops recording the round count |
+| the loop stops writing the re-reviewed commit back to `testedSha` | 5 of 201 — the Ship-round check would then measure against a review two commits old, and the loop would re-spend its whole budget reviewing the same tip |
+| the rook slot pointed back at the unrefined `AgentSchema` | 5 of 33 in `test/record-security-verdict.test.ts` — `refusal` and `rounds` are stripped, and a `PASS` carrying the refusal is accepted |
+| `failureList`'s `EXHAUSTED` early return removed | 2 of 33 — an exhausted record starts carrying findings, so it reads as a review that found something |
+| `rereviewCriteria` short-circuited to `return []` | 7 of 19 in `test/harness-standard-security.test.ts` — the count, both id comparisons, the numbering, and all four per-criterion cases |
+| `SC-625` planted in the section with no registry entry | 2 of 19 — the count and the both-directions comparison; the per-criterion loop still passes, which is why the registry exists |
+| the phrase naming spent attempts deleted from the spec prose | 2 of 19 — and only because the search removes SC lines first: the phrase survives inside the SC line that demands it, so a whole-section search would have gone green over a spec that no longer explained itself |
+
+That last row is the self-reference trap, met from the other direction and
+caught by the guard it describes: an SC line that names its own tokens is not
+evidence for them. None of the eleven mutations is left in the tree; all were
+run and reverted, and the two counted over 201 tests were re-measured after the
+write-back case was added.

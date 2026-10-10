@@ -123,6 +123,130 @@ export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCur
   return { current: true, reason: null };
 }
 
+/** The review still describes the commit the branch ends at. Nothing re-runs. */
+export const REVIEW_CURRENT = "CURRENT";
+/** The review is stale and a re-review round remains. Rook runs again. */
+export const RE_REVIEW = "RE_REVIEW";
+/**
+ * The review is stale, or unreadable, and there is no round left to fix it.
+ *
+ * DECLARED ONCE, as an exported constant, and asserted to be spelled once in
+ * this file by test/security-verdict-blocks.test.ts. A second spelling is a
+ * second refusal path, reachable by code the first one's tests never visit —
+ * which is how a refusal comes to exist that nothing has ever proved can fire.
+ */
+export const SECURITY_REREVIEW_EXHAUSTED = "SECURITY_REREVIEW_EXHAUSTED";
+
+export type ReReviewDecision =
+  | typeof REVIEW_CURRENT
+  | typeof RE_REVIEW
+  | typeof SECURITY_REREVIEW_EXHAUSTED;
+
+export interface ReReviewOutcome {
+  /** Exactly one of the three verdicts above. */
+  decision: ReReviewDecision;
+  /** Why the review is not current. Null — and only null — when it is. */
+  reason: string | null;
+}
+
+/**
+ * Is a value a ReviewCurrency, read strictly enough to act on?
+ *
+ * Returns null for anything that is not one, including the two self-
+ * contradictory shapes: current with a reason attached, and stale without one.
+ * Neither is a currency a decision can be built from — "current, and here is
+ * why it is not" is the same contradiction as a PASS carrying broken ids, and
+ * reading it as either answer picks one of the two things it says at random.
+ *
+ * Wrapped in try/catch because the value reaches here through the workflow from
+ * an agent's report, and a property access on a hostile or half-parsed object
+ * can throw. A throw on this path is a refusal the caller's error handling can
+ * turn back into a ship.
+ */
+function readCurrency(v: unknown): ReviewCurrency | null {
+  try {
+    if (!isRecord(v)) return null;
+    const current = v.current;
+    const reason = v.reason;
+    if (typeof current !== "boolean") return null;
+    if (current) return reason === null ? { current: true, reason: null } : null;
+    if (typeof reason !== "string" || reason.trim() === "") return null;
+    return { current: false, reason };
+  } catch {
+    return null;
+  }
+}
+
+/** A usable count of rounds: a non-negative integer, and nothing else. */
+function readCount(v: unknown): number | null {
+  if (typeof v !== "number") return null;
+  if (!Number.isInteger(v)) return null; // NaN, Infinity and 1.5 all land here
+  if (v < 0) return null;
+  return v;
+}
+
+/**
+ * Should the stale review be re-run, or is the run out of rope? (#171)
+ *
+ * #169 made a stale review stop the run. Stopping is correct and it is also
+ * not the whole story: every #164-shaped run ends at SHIP_FAILED with a branch
+ * that is one review away from shippable. Run `wf_6fbfa028-14e` on #239 spent
+ * 87.7 minutes and 1,287,510 subagent tokens across 22 agents and merged
+ * nothing — rook passed, and the verify gate's self-heal loop then committed
+ * 992 insertions over the reviewed commit. That loop fires whenever the first
+ * verify attempt leaves anything to fix, so a refusal there makes the common
+ * path the failing one.
+ *
+ * This is the function that decides whether one more review is worth spending,
+ * and it returns exactly one of the three verdict constants above:
+ * REVIEW_CURRENT, RE_REVIEW, or the exhaustion one. (Spelled without quotes or
+ * backticks on purpose — a test asserts the exhaustion name appears in a string
+ * literal exactly once in this file, and prose that quotes it is a second
+ * spelling the assertion cannot distinguish from a second declaration.)
+ *
+ * FAILS CLOSED. Anything it cannot read positively as "stale, with a round
+ * still available" is the exhaustion verdict: an unreadable currency, an
+ * unreadable count, a cap of zero, a spend at or past the cap. A budget nobody
+ * can read is not a budget with room left in it.
+ */
+export function reReviewDecision(
+  currency: unknown,
+  roundsSpent: unknown,
+  maxRounds: unknown,
+): ReReviewOutcome {
+  const read = readCurrency(currency);
+  if (!read) {
+    return {
+      decision: SECURITY_REREVIEW_EXHAUSTED,
+      reason:
+        `the review-currency reading is ${describe(currency)}, not an answer about a commit — ` +
+        `there is nothing a re-review could be aimed at, so the cycle ran out of attempts ` +
+        `before spending one`,
+    };
+  }
+  if (read.current) return { decision: REVIEW_CURRENT, reason: null };
+
+  const spent = readCount(roundsSpent);
+  const cap = readCount(maxRounds);
+  if (spent === null || cap === null) {
+    return {
+      decision: SECURITY_REREVIEW_EXHAUSTED,
+      reason:
+        `${read.reason} — and the re-review budget is unreadable ` +
+        `(${describe(roundsSpent)} spent of ${describe(maxRounds)}), so the cycle ran out ` +
+        `of attempts rather than guessing at one`,
+    };
+  }
+  if (spent < cap) return { decision: RE_REVIEW, reason: read.reason };
+
+  return {
+    decision: SECURITY_REREVIEW_EXHAUSTED,
+    reason:
+      `${read.reason} — and the re-review cycle ran out of attempts after ${spent} of ` +
+      `${cap} round(s), so this run ends holding code nobody reviewed`,
+  };
+}
+
 /**
  * The command the workflow hands the scope step.
  *
@@ -132,6 +256,13 @@ export function reviewIsCurrent(testedSha: unknown, headSha: unknown): ReviewCur
  * safety instead of refusing (shape allowlist → absolute paths → traversal →
  * `.env`). Refusal has no fourth hole.
  *
+ * `base` is #171's: a re-review reads the diff between the commit the previous
+ * review read and the tip the remediation round just pushed, so the second
+ * review's subject is the code that was written after the first one. It is
+ * refused on the same terms as `sha` — the workflow passes a recorded
+ * `testedSha`, and a ref name there would reintroduce the #129 empty diff one
+ * argument over. Omitted, the script's own `origin/main` default stands.
+ *
  * `projectRoot`, `harnessRoot` and `outPath` are workflow-supplied constants,
  * not agent output, and are interpolated as-is.
  */
@@ -140,6 +271,7 @@ export function rookScopeCommand(
   harnessRoot: string,
   sha: string,
   outPath: string,
+  base?: string | null,
 ): string {
   const pinned = rookReviewSha(sha);
   if (!pinned) {
@@ -147,6 +279,16 @@ export function rookScopeCommand(
       `rookScopeCommand: "${String(sha).slice(0, 80)}" is not a commit SHA — ` +
         `refusing to build a scope command the review cannot be pinned to`,
     );
+  }
+  let pinnedBase: string | null = null;
+  if (base !== undefined && base !== null && base !== "") {
+    pinnedBase = rookReviewSha(base);
+    if (!pinnedBase) {
+      throw new Error(
+        `rookScopeCommand: "${String(base).slice(0, 80)}" is not a commit SHA — ` +
+          `refusing to build a re-review scope command against a base it cannot pin`,
+      );
+    }
   }
   // Quoted even though every path here is a workflow argument rather than
   // agent-reported text. ship.js:377 records an unquoted path that was
@@ -157,7 +299,9 @@ export function rookScopeCommand(
   const q = (w: string) => `'${String(w).replace(/'/g, "'\\''")}'`;
   return (
     `cd ${q(projectRoot)} && bun ${q(`${harnessRoot}/scripts/rook-review-scope.ts`)} ` +
-    `--project ${q(projectRoot)} --sha ${pinned} --out ${q(outPath)}`
+    `--project ${q(projectRoot)} --sha ${pinned}` +
+    (pinnedBase ? ` --base ${pinnedBase}` : "") +
+    ` --out ${q(outPath)}`
   );
 }
 

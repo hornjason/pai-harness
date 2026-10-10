@@ -654,12 +654,6 @@ source-text assertion.
 - [x] SC-604: workflows/ship.js contains [shipRoundCurrency.current, reason: shipRoundReason] — the Ship-round mismatch returns SHIP_FAILED on the path the Verify-side mismatch already uses, and no branch in the file turns a currency verdict into a log line the run continues past
 - [x] SC-605: test/security-verdict-blocks.test.ts contains [the ship round moves the branch past the review, a ship round that changes nothing still ships] — the refusal and its positive control are both named cases over the block extracted from ship.js, so a check that refuses every Ship round fails this file
 
-**One gap remains open and is tracked on #169, not claimed here.** The refusal
-stops the run; it does not re-review the new tip. Re-running rook against the
-post-remediation commit is the better long-run answer, and until it exists a
-Ship-round remediation costs the run rather than silently shipping unreviewed
-code. Refusing is what keeps that visible.
-
 SC-598 — both remediation recommits handing the recorder `quinnLocalVerdict`
 while the Ship round runs after `quinn-container` — was closed by `bd0b91b9`,
 which gave the Ship recommit `quinnShipVerdict(quinnContainerRan, …)`; the
@@ -675,6 +669,68 @@ A spec that ticks a criterion the source does not meet is worse than one that
 admits the gap. The run that produced this change did exactly that — `35f12943`
 marked three SCs `[x]` whose literals were absent — and the security gate
 refused it. See `.claude/rules/checks-must-be-able-to-fail.md` and #178.
+
+---
+
+### Re-review after a remediation round (#171)
+
+#169 shipped the detection half and left the decision open: having found that
+the branch moved past the reviewed commit, the run stopped. **The decision is
+re-review**, and it is recorded here because the prediction #169 made has since
+been measured.
+
+Field evidence from run `wf_6fbfa028-14e` on #239: 87.7 minutes, 1,287,510
+subagent tokens across 22 agents, and nothing merged. Rook returned PASS with
+no findings, and the run died because the verify gate's self-heal loop
+committed `00f21e21` — 7 files, 992 insertions, `workflows/ship.js` among them
+— after the review had been pinned to `c5ebc2a4`. The self-heal loop is not a
+rare path: it fires whenever the first verify attempt leaves anything to fix.
+A refusal there makes the common path the failing one, and a run has to be
+lucky to reach a pull request at all.
+
+So the loop is: detect the move, review the new tip, and carry on if it passes.
+`REREVIEW-LOOP-START/END` in `ship.js` holds it, immediately after the verdict
+refusal and before the pull request step, and `reReviewDecision` in
+`lib/security-verdict.ts` is the one function that decides what happens next.
+It answers with exactly one of three words, and they are three words rather
+than two because the three outcomes are three different states of the world:
+
+- `CURRENT` — the review describes the commit the branch ends at. Nothing runs.
+- `RE_REVIEW` — the tip moved and a round remains. Rook reads the diff between
+  the commit the last review read and the new tip, with the reviewed commit
+  passed as `--base` and the remediation commit as `--sha`. Narrowing it is
+  deliberate: the finding that matters is in the code the remediation round
+  wrote, and that round exists because something had already failed.
+- `SECURITY_REREVIEW_EXHAUSTED` — the rounds ran out of attempts. The run ends
+  holding code nobody reviewed, which is the exact thing the #129 gate exists
+  to stop, so it refuses under its own name and is written into
+  `workflow-state.json` as its own verdict with the round count beside it.
+
+**Exhaustion is not a pass and it is not a finding.** `agents.rook` records it
+as `verdict: "EXHAUSTED"` carrying `refusal` and `rounds` and deliberately no
+`failures` list, because a findings list is how "the review found something" is
+written down. Zod rejects an exhausted record that carries findings, an
+exhausted record missing either field, and the refusal recorded against any
+other verdict — that last one being the fail-open the pairing closes, since a
+run could otherwise record the refusal honestly while parking the verdict where
+every reader checking for a pass walks straight past it.
+
+**The #169 detection half is preserved, not relaxed.** A run that never spends
+a round — an unreadable budget, or a pair of values that are not both commits —
+refuses as `SECURITY_REVIEW_STALE` exactly as before, and the second comparison
+after `recommit-ship` is untouched. Re-review is what the run does when it CAN;
+refusing is still what it does when it cannot. The cap is `MAX_SECURITY_REREVIEWS`,
+set to the same number as `MAX_REGRESSIONS`, because that is how many
+remediation rounds can produce new code in the first place.
+
+- [x] SC-621: workflows/ship.js contains [REREVIEW-LOOP-START, reReviewDecision, MAX_SECURITY_REREVIEWS] — the loop is one marked, reachable region that spawns a fresh review of the new tip and is bounded by a cap declared once, rather than a second refusal under a new name
+- [x] SC-622: specs/HARNESS-STANDARD.md contains [ran out of attempts, remediation round] — the decision and the measurement behind it are written down here, so the next reader finds the reasoning rather than re-deriving it from a loop
+- [x] SC-623: gates/schema.ts contains [SECURITY_REREVIEW_EXHAUSTED, RookAgentSchema] — the third outcome is a schema member with its own refusal and round count, so an exhausted cycle cannot round-trip through the artefact as either of its neighbours
+- [x] SC-624: test/security-verdict-blocks.test.ts contains [could not build the mutant, with the re-review removed the run still reached the PR step] — the spawn is removed from a copy of the source every run, the run is watched refusing rather than shipping, and a renamed spawn aborts the file instead of passing it
+
+What was broken to prove it, run and counted rather than asserted, is recorded
+beside SC-621..SC-624 in the mutation table in
+`.claude/rules/checks-must-be-able-to-fail.md`.
 
 ---
 

@@ -28,7 +28,8 @@ import { join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SPEC_PATH = join(REPO_ROOT, "specs", "HARNESS-STANDARD.md");
-const specLines = readFileSync(SPEC_PATH, "utf-8").split("\n");
+const specText = readFileSync(SPEC_PATH, "utf-8");
+const specLines = specText.split("\n");
 
 /** A line that talks about rook or about the security review/scan step. */
 const MENTIONS_SECURITY_REVIEW = /\brook\b|security\s+(review|scan)/i;
@@ -146,4 +147,176 @@ describe("HARNESS-STANDARD.md security review is unconditional", () => {
     // A denial in one clause must not launder a real condition in the next.
     expect(carriesSizeCondition("Not conditional on having a UI; spawn Rook if M+")).toBe(true);
   });
+});
+
+/* ------------------------------------------------------------------------ *
+ * The re-review decision is recorded, not left open (#171)
+ *
+ * SC-621..SC-624 (HARNESS-STANDARD.md)
+ *
+ * #169 shipped the detection half — a verdict pinned to a commit the branch no
+ * longer ends at becomes SECURITY_REVIEW_STALE — and closed its section with a
+ * paragraph saying the other half was still open: the refusal stopped the run
+ * and nothing looked at the new tip. #171 decides it. This block asserts the
+ * decision is in the file and that every criterion the section lists is bound
+ * to the file and tokens it names.
+ *
+ * The parse is deliberately mechanical. A registry a reader maintains by hand
+ * drifts away from the spec silently, and a hand-written list of four ids is
+ * satisfied by a section that lists five
+ * (.claude/rules/checks-must-be-able-to-fail.md). So the ids are read out of
+ * the section and compared against the registry in BOTH directions, and the
+ * count is asserted before anything iterates — a parser that returns nothing
+ * generates no per-criterion tests, which looks exactly like every criterion
+ * passing.
+ * ------------------------------------------------------------------------ */
+
+/** The heading the re-review record lives under. */
+const REREVIEW_HEADING = "### Re-review after a remediation round (#171)";
+
+/**
+ * The exact sentences the #169 open-gap paragraph was made of. The acceptance
+ * condition for this change is that they are gone from the spec, so they are
+ * held here — in the test, where reintroducing them turns something red —
+ * rather than in the spec, where holding them would be reintroducing them.
+ */
+const CLOSED_GAP_PHRASINGS = [
+  "One gap remains open",
+  "it does not re-review the new tip",
+  "does not re-review",
+];
+
+/** One `- [x] SC-NNN: path contains [a, b]` line from the re-review section. */
+interface RereviewCriterion {
+  id: string;
+  file: string;
+  tokens: string[];
+  line: string;
+}
+
+/**
+ * The criteria listed in the re-review section, parsed from the spec.
+ *
+ * Exported-by-name as the single binding: short-circuiting this to `return []`
+ * must turn the assertions below red rather than leaving them with nothing to
+ * iterate over, which is what the count assertion is for.
+ */
+export function rereviewCriteria(): RereviewCriterion[] {
+  const start = specText.indexOf(REREVIEW_HEADING);
+  if (start === -1) return [];
+  const rest = specText.slice(start + REREVIEW_HEADING.length);
+  const next = rest.indexOf("\n### ");
+  const section = next === -1 ? rest : rest.slice(0, next);
+  const out: RereviewCriterion[] = [];
+  for (const line of section.split("\n")) {
+    const m = /^- \[x\] (SC-\d+): (\S+) contains \[([^\]]*)\]/.exec(line.trim());
+    if (!m) continue;
+    out.push({
+      id: m[1],
+      file: m[2],
+      tokens: m[3].split(",").map(t => t.trim()).filter(Boolean),
+      line,
+    });
+  }
+  return out;
+}
+
+/** The section's prose — everything above the first criterion bullet. */
+function rereviewProse(): string {
+  const start = specText.indexOf(REREVIEW_HEADING);
+  if (start === -1) return "";
+  const rest = specText.slice(start + REREVIEW_HEADING.length);
+  const next = rest.indexOf("\n### ");
+  const section = next === -1 ? rest : rest.slice(0, next);
+  const firstBullet = section.indexOf("\n- [x] SC-");
+  return firstBullet === -1 ? section : section.slice(0, firstBullet);
+}
+
+const EXPECTED_REREVIEW_SCS = ["SC-621", "SC-622", "SC-623", "SC-624"];
+
+describe("#171: the re-review decision is recorded in HARNESS-STANDARD.md", () => {
+  test("the section exists", () => {
+    expect(specText, `${SPEC_PATH} has no re-review section`).toContain(REREVIEW_HEADING);
+  });
+
+  test("the #169 open-gap paragraph is gone, not merely contradicted", () => {
+    for (const phrase of CLOSED_GAP_PHRASINGS) {
+      expect(
+        specText.includes(phrase),
+        `${SPEC_PATH} still says "${phrase}" — the gap it describes is closed`,
+      ).toBe(false);
+    }
+  });
+
+  test("the section names all three outcomes and says the attempts can run out", () => {
+    const prose = rereviewProse();
+    expect(prose.length, "the re-review section has no prose above its criteria").toBeGreaterThan(
+      200,
+    );
+    expect(prose).toContain("RE_REVIEW");
+    expect(prose).toContain("SECURITY_REREVIEW_EXHAUSTED");
+    expect(prose).toContain("SECURITY_REVIEW_STALE");
+    expect(prose, "the section does not say what spending the cap means").toMatch(
+      /ran out of attempts/i,
+    );
+  });
+
+  test("the section records the measurement, not only the decision", () => {
+    // A decision with no evidence behind it is a preference. #169 predicted
+    // that refusing would make the common path the failing one; the run below
+    // is that prediction measured.
+    const prose = rereviewProse();
+    expect(prose).toContain("wf_6fbfa028-14e");
+    expect(prose).toContain("00f21e21");
+  });
+
+  test("the criteria parse, and there are exactly as many as the registry knows", () => {
+    // Asserted BEFORE anything iterates: a parser returning nothing generates
+    // no per-criterion cases, and a file that runs zero of its cases reports
+    // the same green as one that passes all of them.
+    expect(rereviewCriteria().length, "the re-review section lists no criteria").toBe(
+      EXPECTED_REREVIEW_SCS.length,
+    );
+  });
+
+  test("the ids in the spec and the ids in this test are the same set", () => {
+    const found = rereviewCriteria().map(c => c.id).sort();
+    expect(found, "an SC was added to or removed from the section").toEqual(
+      [...EXPECTED_REREVIEW_SCS].sort(),
+    );
+  });
+
+  test("the numbering starts at SC-621, where AC-5 says it does", () => {
+    const ids = rereviewCriteria().map(c => c.id);
+    expect(ids[0]).toBe("SC-621");
+    // And nothing earlier in the file already claimed these numbers.
+    for (const id of EXPECTED_REREVIEW_SCS) {
+      expect(
+        (specText.match(new RegExp(`- \\[[x ]\\] ${id}:`, "g")) || []).length,
+        `${id} is listed more than once in ${SPEC_PATH}`,
+      ).toBe(1);
+    }
+  });
+
+  for (const id of EXPECTED_REREVIEW_SCS) {
+    test(`${id} is bound to the file and tokens it names`, () => {
+      const criterion = rereviewCriteria().find(c => c.id === id);
+      expect(criterion, `${id} is not listed in the re-review section`).toBeDefined();
+      const path = join(REPO_ROOT, criterion!.file);
+      const haystack = readFileSync(path, "utf-8")
+        .split("\n")
+        // A criterion naming the spec cannot be its own evidence: the SC line
+        // contains the tokens it demands, so every SC line is removed before
+        // the search. The tokens have to be earned by the code or the prose.
+        .filter(line => !/^- \[[x ]\] SC-\d+:/.test(line.trim()))
+        .join("\n");
+      expect(criterion!.tokens.length, `${id} names no tokens`).toBeGreaterThan(0);
+      for (const token of criterion!.tokens) {
+        expect(
+          haystack.includes(token),
+          `${id}: ${criterion!.file} does not contain "${token}"`,
+        ).toBe(true);
+      }
+    });
+  }
 });

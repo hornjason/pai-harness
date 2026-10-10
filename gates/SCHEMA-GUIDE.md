@@ -74,19 +74,50 @@ Path must be absolute (starts with `/`) or relative to projectRoot. `~` is NOT e
 
 ## agents.rook
 
-The security reviewer's result lives at `agents.rook`. Four fields carry it:
+The security reviewer's result lives at `agents.rook`. Six fields carry it:
 
 | Field | Type | Meaning |
 |---|---|---|
 | `spawned` | boolean | Whether rook actually ran on this ship run |
-| `verdict` | `PASS` \| `FAIL` \| `SKIP` \| `null` | The review outcome |
+| `verdict` | `PASS` \| `FAIL` \| `SKIP` \| `EXHAUSTED` \| `null` | The review outcome |
 | `failures` | string[] | One entry per blocking problem found |
 | `testedPaths` | string[] | The files git said changed — what was actually reviewed |
+| `refusal` | `"SECURITY_REREVIEW_EXHAUSTED"` | The named refusal. Only on an `EXHAUSTED` record |
+| `rounds` | integer ≥ 1 | Remediate/re-review rounds spent. Required on `EXHAUSTED` |
 
 **A `FAIL` verdict must carry a non-empty `failures` list.** A FAIL with an empty
 or absent list is a verdict nobody can act on — it blocks the run without naming
 what to fix. `failures` must be an array of strings; a bare string is rejected at
 write time, so put one finding per entry rather than joining them into prose.
+
+**`EXHAUSTED` means the remediate/re-review cycle ran out of attempts, and it is
+not a pass.** A remediation committed after the review leaves the run holding a
+verdict for code it no longer ships (#169), so the new tip is re-reviewed — and
+that loop is capped (#171). Spending the cap ends the run with code nobody
+reviewed, which is the exact thing this gate exists to stop. It is its own
+outcome, distinguishable from both neighbours and readable as neither:
+
+- It is **not a `PASS`**. Nothing concluded the code was clean; the attempts ran
+  out. Any reader asking `verdict === "PASS"` must get `false`, and
+  `securityReviewIsClean` in `scripts/record-security-verdict.ts` is that reader.
+- It is **not a `FAIL`**. Rook named no blocking problem, so an `EXHAUSTED`
+  record carries **no `failures`** — a findings list is how "the review found
+  something" is written down. Zod rejects an `EXHAUSTED` record that has one.
+
+Zod also rejects `refusal` on any verdict other than `EXHAUSTED`, and an
+`EXHAUSTED` verdict missing `refusal` or `rounds`. Recording the refusal
+honestly while parking the verdict at `PASS` is the fail-open the pairing
+closes.
+
+```json
+{ "agents": { "rook": {
+  "spawned": true,
+  "verdict": "EXHAUSTED",
+  "refusal": "SECURITY_REREVIEW_EXHAUSTED",
+  "rounds": 2,
+  "testedSha": "3192a75...", "testedPaths": ["gates/run-gate.ts"]
+} } }
+```
 
 ```json
 { "agents": { "rook": {
@@ -100,7 +131,9 @@ write time, so put one finding per entry rather than joining them into prose.
 A `PASS` or `SKIP` verdict may omit `failures` entirely.
 
 Write it with `scripts/record-security-verdict.ts`, not by hand — `workflows/ship.js`
-calls it in the Verify fan-out (#129).
+calls it in the Verify fan-out (#129). The exhausted state is
+`--verdict EXHAUSTED --rounds <n>`; the recorder derives `refusal` from the
+verdict rather than accepting it as an argument.
 
 ## suiteMeasurement
 
