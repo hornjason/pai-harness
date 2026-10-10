@@ -781,34 +781,48 @@ quieter. `unterminated` defaults to true and is cleared only by an observed end.
 - [x] SC-609: scripts/record-agent-timings.ts contains [unterminated: true, TIMING_USAGE_EXIT] — the reader fails closed on an unclosed bracket and routes every usage refusal through one exit-code constant
 - [x] SC-610: test/agent-timings.test.ts contains [the only raw agent() call is the one inside the timing wrapper] — AC-1 is enforced by parsing ship.js rather than grepping it, so converting one call site of thirty-nine does not pass
 
-**Waiting is measured separately from working (#239).** A bracket that records
-only work cannot tell a slow agent from a blocked one. Run wf_18abb197-f03 fanned
-out to three implementers; two took the session's two full-suite runs and the
-third spent roughly 22 minutes in `sleep 580` loops waiting out the DIR-L29
-window, twenty of them after its siblings had finished. In the artifact that was
-one long call. The number that would have named the defect was the one number
-the artifact did not have.
+#### Waiting is not working (#239)
 
-So the event set is two pairs rather than one: `start`/`end` for work, and
-`queued-start`/`queued-end` for time spent waiting on a harness limit. The
-summarizer pairs per LABEL AND PER KIND — a queued interval nests inside the
-work bracket it delays, so pairing on the label alone would close the work
-bracket with the queued end and report a call that lasted exactly as long as
-its own wait. Queued seconds are reported BESIDE work seconds for the same
-label and never summed into them, because a single total is precisely what hid
-this. `kind` is declared in the grade step's schema for the same reason the
-label is read at runtime: an undeclared field is dropped at the tool boundary,
-and the queued row would arrive indistinguishable from work.
+The bracket above measures wall clock, and wall clock cannot tell a slow agent
+from a blocked one. On run `wf_18abb197-f03` sub-agent 235002 spent ~22 of its
+~30 minutes in `sleep 580` loops waiting out a full-suite rate budget its two
+siblings had already spent; the artifact reported one number for that call and
+it read as Marcus taking half an hour to think.
 
-- [x] SC-624: scripts/record-agent-timings.ts contains [queued-start, queued-end, queuedSeconds] — time an agent spends waiting on the full-suite budget is appended to the run's timing artifact as its own interval, and the summarizer reports queued seconds separately from work seconds for the same label (#239)
-- [x] SC-626: workflows/ship.js contains [queued-start, QUEUED, kind: { type: 'string' }] — every spawned agent is told how to bracket a wait, and `kind` is declared in the grade step's schema so the queued row is not dropped at the tool boundary and is logged as a wait rather than as work (#239)
+So a third event kind, `queued`, carries an interval the call spent waiting on
+a shared limit. It is one record with its own duration rather than a second
+bracket, because an agent only learns how long it waited once the wait is over
+— a `queued-start` would be the one event it could never write on time. The
+summarizer folds those into the open bracket for the same label and reports
+`queuedSeconds` beside `workSeconds`, with the wall clock left alone.
 
-What was broken to prove SC-624 can fail, run and counted rather than asserted,
-over `test/agent-timings-queued.test.ts` + `test/agent-timings.test.ts` (41
-tests): decoding `queued-start` / `queued-end` as `work` — the fold that hid the
-defect in the first place — turns 7 of 41 red, including the CLI round-trip and
-the human-readable `QUEUED` line. It is not left in the tree; it was run and
-reverted.
+Two fail-opens are closed by name. A `queued` record whose duration is missing
+or unreadable is MALFORMED, never a zero wait: reading it as zero would make
+the one record that exists to say "this call waited" report that it did not.
+And `workSeconds` is not clamped — a wait longer than its own bracket means
+the agent mis-measured, and a clamp to zero would dress that contradiction up
+as an ordinary fast call.
+
+- [x] SC-621: scripts/record-agent-timings.ts contains [queuedSeconds, workSeconds, "start" | "end" | "queued"] — a wait is a third event kind, and the part of a call that was work is reported apart from the wall clock it sits inside
+- [x] SC-622: workflows/ship.js contains [--waited-ms, queuedSeconds] — the agent is told how to record a wait, and the grade schema declares the field, so the measurement is not stripped at the tool boundary one step before anybody reads it
+- [x] SC-623: test/agent-timings-queued.test.ts contains [a queued record with no duration is malformed, not a zero wait, a wait longer than its own bracket is reported, not clamped away] — both fail-opens are asserted, not just the happy path
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/agent-timings-queued.test.ts` + `test/agent-timings.test.ts`
+(44 tests):
+
+| Mutation | Red |
+|---|---|
+| `parseRecord` stops validating `waitedMs` | 1 |
+| a wait attaches to the newest entry rather than its own label's | 1 |
+| `workSeconds` set to the wall clock | 5 |
+
+None is left in the tree; all were run and reverted. The middle one is worth
+recording because it SURVIVED the first attempt: the pairing fixture wrote
+the wait immediately after its own bracket's start, where "the newest entry"
+and "the newest entry for this label" are the same entry, so the assertion
+held vacuously. The fixture now writes A's wait after B's start. The
+mutation found that, and nothing else would have.
 
 ### A run's final status says what was proved, and no more (#222)
 

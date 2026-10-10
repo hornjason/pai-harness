@@ -46,36 +46,44 @@ import { dirname } from "path";
 export const TIMING_USAGE_EXIT = 2;
 
 /**
- * The four bracket events, in two pairs (#239).
+ * `queued` is the third kind (#239): an interval the call spent WAITING on a
+ * machine-wide resource rather than working.
  *
- * `queued-start` / `queued-end` bracket time the agent spent WAITING rather
- * than working — specifically, waiting on the DIR-L29 full-suite budget, which
- * on run wf_18abb197-f03 cost one sub-agent ~22 minutes of `sleep 580` while
- * its siblings had already finished. Charged to the work bracket, that time is
- * indistinguishable from slow work, and the one number that would have named
- * the defect is the one number the artifact did not have.
+ * It carries its own duration instead of being a second bracket. The agent
+ * only knows how long it waited after the wait is over — it is told the number
+ * by the thing that made it wait, or it measures its own sleep — so a
+ * `queued-start` it was supposed to have written beforehand would be the one
+ * event it could never get right.
  */
-export type TimingEvent = "start" | "end" | "queued-start" | "queued-end";
-
-/** Which clock an entry is on: doing the task, or waiting for permission to. */
-export type TimingKind = "work" | "queued";
+export type TimingEvent = "start" | "end" | "queued";
 
 export interface TimingRecord {
   label: string;
   event: TimingEvent;
   at: number;
+  /** Milliseconds waited. Required for `queued`, absent otherwise. */
+  waitedMs?: number;
 }
 
 export interface TimingEntry {
   /** The call site's label, as ship.js passed it to the agent. */
   agent: string;
-  /**
-   * Work, or waiting. Reported separately for the same label rather than
-   * summed, because the two have different causes and different fixes.
-   */
-  kind: TimingKind;
   /** Wall-clock seconds, or null when the bracket is incomplete. */
   seconds: number | null;
+  /**
+   * Seconds of the above spent waiting on a shared resource (#239). Zero when
+   * the call never waited — which is known, not unknown. Null only when there
+   * is no bracket at all to attribute the wait to.
+   */
+  queuedSeconds: number | null;
+  /**
+   * `seconds` minus `queuedSeconds` — the part of the call that was work.
+   *
+   * Not clamped. It can only go negative when the agent reports a wait longer
+   * than its own bracket, and that contradiction is worth seeing: clamped to
+   * zero it would read as an ordinary very fast call.
+   */
+  workSeconds: number | null;
   startedAt: number | null;
   endedAt: number | null;
   /** A start that was never closed. Default true; only an end clears it. */
@@ -92,29 +100,20 @@ export interface TimingRead {
   missing: boolean;
 }
 
-/**
- * The one place an event name is decoded, so the reader, the writer and the
- * CLI cannot disagree about what counts as an event.
- */
-const EVENTS: Record<TimingEvent, { kind: TimingKind; opens: boolean }> = {
-  start: { kind: "work", opens: true },
-  end: { kind: "work", opens: false },
-  "queued-start": { kind: "queued", opens: true },
-  "queued-end": { kind: "queued", opens: false },
-};
-
-export function isTimingEvent(value: unknown): value is TimingEvent {
-  return typeof value === "string" && Object.hasOwn(EVENTS, value);
-}
-
 /** Append one bracket event. Creates the artifact's directory if needed. */
 export function recordEvent(
   artifact: string,
   label: string,
   event: TimingEvent,
   at: number = Date.now(),
+  waitedMs?: number,
 ): TimingRecord {
-  const record: TimingRecord = { label, event, at };
+  const record: TimingRecord = {
+    label,
+    event,
+    at,
+    ...(waitedMs === undefined ? {} : { waitedMs }),
+  };
   mkdirSync(dirname(artifact), { recursive: true });
   // One short line per append: a single write(2) under the pipe-buffer size,
   // which is what keeps concurrent agents from interleaving mid-line.
@@ -130,10 +129,19 @@ function parseRecord(line: string): TimingRecord | null {
     return null;
   }
   if (typeof value !== "object" || value === null) return null;
-  const { label, event, at } = value as Record<string, unknown>;
+  const { label, event, at, waitedMs } = value as Record<string, unknown>;
   if (typeof label !== "string" || label.length === 0) return null;
-  if (!isTimingEvent(event)) return null;
+  if (event !== "start" && event !== "end" && event !== "queued") return null;
   if (typeof at !== "number" || !Number.isFinite(at)) return null;
+  if (event === "queued") {
+    // A queued record with no readable duration is MALFORMED, never a zero
+    // wait: reading it as zero would make the one record whose entire job is
+    // to say "this call waited" report that it did not (#239).
+    if (typeof waitedMs !== "number" || !Number.isFinite(waitedMs) || waitedMs < 0) {
+      return null;
+    }
+    return { label, event, at, waitedMs };
+  }
   return { label, event, at };
 }
 
@@ -152,7 +160,7 @@ export function readTimings(artifact: string): TimingRead {
 }
 
 /**
- * Pair starts with ends, in file order, per label AND per kind.
+ * Pair starts with ends, in file order, per label.
  *
  * Per label rather than globally because parallel agents append to one
  * artifact, so the nearest `end` in the file usually belongs to someone else.
@@ -160,47 +168,68 @@ export function readTimings(artifact: string): TimingRead {
  * round reuses `collect-worktrees` — and collapsing the repeats would report
  * one round and hide the other.
  *
- * Per KIND as well, because a queued interval nests inside the work bracket it
- * delays (#239): the agent writes `start`, is refused the full suite, brackets
- * its wait, then finishes and writes `end`. Pairing on the label alone would
- * close the work bracket with the queued end and report a call that took as
- * long as its own wait.
+ * A `queued` record is folded into the OPEN entry for its label rather than
+ * opening one of its own: the wait happened inside the bracket, which is why
+ * it has to be subtracted from it. Same per-label rule, and for the same
+ * reason — with parallel agents writing one artifact, the nearest open
+ * bracket in file order usually belongs to somebody else (#239).
  */
 export function summarize(records: TimingRecord[]): TimingEntry[] {
   const entries: TimingEntry[] = [];
   const open = new Map<string, number[]>();
-  const pairKey = (label: string, kind: TimingKind) => `${kind}\u0000${label}`;
+
+  const blank = (label: string): TimingEntry => ({
+    agent: label,
+    seconds: null,
+    queuedSeconds: null,
+    workSeconds: null,
+    startedAt: null,
+    endedAt: null,
+    unterminated: false,
+    orphanEnd: false,
+  });
 
   for (const record of records) {
-    const { kind, opens } = EVENTS[record.event];
-    const key = pairKey(record.label, kind);
-
-    if (opens) {
+    if (record.event === "start") {
       const index = entries.length;
       entries.push({
-        agent: record.label,
-        kind,
-        seconds: null,
+        ...blank(record.label),
         startedAt: record.at,
-        endedAt: null,
+        // A bracket that opened has, so far, waited for nothing. Zero rather
+        // than null: "it did not wait" is a measurement, "unknown" is not.
+        queuedSeconds: 0,
         unterminated: true, // fail-closed: only an observed end clears this
-        orphanEnd: false,
       });
-      const queue = open.get(key);
+      const queue = open.get(record.label);
       if (queue) queue.push(index);
-      else open.set(key, [index]);
+      else open.set(record.label, [index]);
       continue;
     }
 
-    const index = open.get(key)?.shift();
+    if (record.event === "queued") {
+      // Peeked, not shifted: the bracket is still open, and consuming it here
+      // would leave the real `end` looking like an orphan.
+      const openIndex = open.get(record.label)?.[0];
+      const waited = Math.round((record.waitedMs ?? 0) / 1000 * 1000) / 1000;
+      if (openIndex === undefined) {
+        // No bracket to attribute it to. Surfaced anyway — a dropped record is
+        // indistinguishable from a wait that never happened, which is the
+        // defect #227 exists to rule out.
+        entries.push({ ...blank(record.label), queuedSeconds: waited });
+        continue;
+      }
+      const target = entries[openIndex]!;
+      // Several refusals mean several waits; keeping only the last would
+      // report less waiting than happened.
+      target.queuedSeconds = (target.queuedSeconds ?? 0) + waited;
+      continue;
+    }
+
+    const index = open.get(record.label)?.shift();
     if (index === undefined) {
       entries.push({
-        agent: record.label,
-        kind,
-        seconds: null,
-        startedAt: null,
+        ...blank(record.label),
         endedAt: record.at,
-        unterminated: false,
         orphanEnd: true,
       });
       continue;
@@ -209,6 +238,8 @@ export function summarize(records: TimingRecord[]): TimingEntry[] {
     entry.endedAt = record.at;
     entry.unterminated = false;
     entry.seconds = Math.round(((record.at - (entry.startedAt ?? record.at)) / 1000) * 1000) / 1000;
+    entry.workSeconds =
+      Math.round((entry.seconds - (entry.queuedSeconds ?? 0)) * 1000) / 1000;
   }
 
   return entries;
@@ -218,34 +249,15 @@ export interface TimingReport extends TimingRead {
   timing: TimingEntry[];
   /** Labels that opened and never closed — named, so they can be chased. */
   unterminated: string[];
-  /**
-   * Seconds each label spent waiting rather than working (#239), summed over
-   * its closed queued intervals. Reported next to the work entries, never
-   * folded into them: a call that waited 22 minutes for a budget window and a
-   * call that took 22 minutes to do its job need different fixes, and the
-   * artifact's whole purpose is to tell them apart.
-   */
-  queuedSeconds: Record<string, number>;
 }
 
 export function report(artifact: string): TimingReport {
   const read = readTimings(artifact);
   const timing = summarize(read.records);
-  const queuedSeconds: Record<string, number> = {};
-  for (const entry of timing) {
-    if (entry.kind !== "queued" || typeof entry.seconds !== "number") continue;
-    queuedSeconds[entry.agent] = (queuedSeconds[entry.agent] ?? 0) + entry.seconds;
-  }
   return {
     ...read,
     timing,
-    unterminated: timing
-      .filter((e) => e.unterminated)
-      // A wait the agent opened and never closed is still a wait, and saying
-      // which kind it was is the difference between "the agent died" and "the
-      // agent is still queued".
-      .map((e) => (e.kind === "queued" ? `${e.agent} (queued)` : e.agent)),
-    queuedSeconds,
+    unterminated: timing.filter((e) => e.unterminated).map((e) => e.agent),
   };
 }
 
@@ -261,7 +273,7 @@ function refuse(message: string): never {
   process.stderr.write(`record-agent-timings: ${message}\n`);
   process.stderr.write(
     "usage: record-agent-timings.ts <start|end> --label <label> --artifact <path>\n" +
-      "       record-agent-timings.ts <queued-start|queued-end> --label <label> --artifact <path>\n" +
+      "       record-agent-timings.ts queued --label <label> --waited-ms <ms> --artifact <path>\n" +
       "       record-agent-timings.ts report --artifact <path> [--json]\n",
   );
   process.exit(TIMING_USAGE_EXIT);
@@ -272,10 +284,29 @@ export function main(argv: string[]): void {
   const artifact = flag(argv, "artifact");
   if (!artifact) refuse("--artifact <path> is required");
 
-  if (isTimingEvent(command)) {
+  if (command === "start" || command === "end") {
     const label = flag(argv, "label");
     if (!label) refuse("--label <label> is required — an unnamed bracket cannot be matched");
     const written = recordEvent(artifact, label, command);
+    process.stdout.write(`${JSON.stringify(written)}\n`);
+    return;
+  }
+
+  if (command === "queued") {
+    const label = flag(argv, "label");
+    if (!label) refuse("--label <label> is required — an unnamed wait cannot be attributed");
+    const raw = flag(argv, "waited-ms");
+    if (raw === undefined) {
+      refuse("--waited-ms <ms> is required — a wait with no duration is not a measurement");
+    }
+    // Refused rather than defaulted. Writing an unreadable duration as zero
+    // would record "this call waited for nothing", which is worse than no
+    // record at all: it looks like evidence that the wait did not happen.
+    const waitedMs = Number(raw);
+    if (!Number.isFinite(waitedMs) || waitedMs < 0) {
+      refuse(`--waited-ms must be a non-negative number of milliseconds, got "${raw}"`);
+    }
+    const written = recordEvent(artifact, label, "queued", Date.now(), waitedMs);
     process.stdout.write(`${JSON.stringify(written)}\n`);
     return;
   }
@@ -291,13 +322,18 @@ export function main(argv: string[]): void {
       return;
     }
     for (const entry of result.timing) {
-      // QUEUED is printed on its own line rather than added to the work line:
-      // the two numbers have different causes, and a single total hides the
-      // one that names a harness defect (#239).
-      const what = entry.kind === "queued" ? `${entry.agent}: QUEUED` : `${entry.agent}:`;
-      if (entry.orphanEnd) process.stdout.write(`${what} END WITH NO START\n`);
-      else if (entry.unterminated) process.stdout.write(`${what} UNTERMINATED\n`);
-      else process.stdout.write(`${what} ${entry.seconds}s\n`);
+      // The wait is printed beside the total rather than folded into it: a
+      // call that spent 22 of its 30 minutes asleep on a rate budget reads as
+      // a slow agent if the only number shown is the wall clock (#239).
+      const waited = entry.queuedSeconds
+        ? ` (queued ${entry.queuedSeconds}s, work ${entry.workSeconds ?? "?"}s)`
+        : "";
+      if (entry.orphanEnd) process.stdout.write(`${entry.agent}: END WITH NO START\n`);
+      else if (entry.unterminated) {
+        process.stdout.write(`${entry.agent}: UNTERMINATED${waited}\n`);
+      } else if (entry.seconds === null) {
+        process.stdout.write(`${entry.agent}: QUEUED ONLY${waited}\n`);
+      } else process.stdout.write(`${entry.agent}: ${entry.seconds}s${waited}\n`);
     }
     for (const line of result.malformed) {
       process.stderr.write(`malformed timing line ignored: ${line}\n`);
