@@ -3350,7 +3350,14 @@ function blockingGradeViolations(grades) {
     for (const entry of flagged) {
       const id = String(entry).split(':')[0].trim()
       if (BLOCKING_GRADE_VIOLATIONS.includes(id)) {
-        found.push(`${g?.role || 'unknown'}: ${entry}`)
+        // Name the CALL SITE, not just the role (#240). A decomposed run
+        // produces several `marcus` grades, and "marcus: TDD_SEQUENCE_VIOLATED"
+        // over four of them says which rule broke but not which agent broke
+        // it — the reader has to re-grade every transcript by hand to find
+        // out, which is what happened on wf_18abb197-f03.
+        const label = typeof g?.label === 'string' && g.label.trim() ? g.label.trim() : ''
+        const who = label && label !== g?.role ? `${g.role} (${label})` : (g?.role || 'unknown')
+        found.push(`${who}: ${entry}`)
       }
     }
   }

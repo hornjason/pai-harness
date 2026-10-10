@@ -232,6 +232,48 @@ describe("AC-2: the declared blocking set", () => {
   });
 });
 
+// ── #240: the refusal names which agent it refuses ─────────────────────
+
+describe("#240: a blocking violation is attributable to a call site", () => {
+  /** Four marcus grades, one violating — the shape a decomposed run produces. */
+  const decomposedRun = () => ({
+    grades: [
+      { role: "marcus", label: "marcus-sub-235001", total: 15, followed: 7, flagged: [] },
+      { role: "marcus", label: "marcus-sub-235002", total: 15, followed: 7, flagged: [TDD_FLAG] },
+      { role: "marcus", label: "marcus-sub-235003", total: 14, followed: 7, flagged: [] },
+      { role: "marcus", label: "marcus", total: 14, followed: 10, flagged: [] },
+    ],
+  });
+
+  test("the reason names the violating call site, not just the role", async () => {
+    // Run wf_18abb197-f03 returned "marcus: TDD_SEQUENCE_VIOLATED: …" over a
+    // run with four marcus grades. Finding out which agent was accused meant
+    // re-running checkTDD over every transcript by hand.
+    const outcome = await runBlock(BLOCK, { gradeResult: decomposedRun() });
+    expect(refused(outcome)).toBe(true);
+    expect(outcome.result?.reason).toContain("marcus-sub-235002");
+  });
+
+  test("it does not name the three call sites that complied", async () => {
+    // Without this, "contains the label" would pass on a reason that listed
+    // every agent in the run — which names nobody.
+    const outcome = await runBlock(BLOCK, { gradeResult: decomposedRun() });
+    for (const innocent of ["marcus-sub-235001", "marcus-sub-235003"]) {
+      expect(outcome.result?.reason).not.toContain(innocent);
+    }
+  });
+
+  test("a grade with no label still refuses, naming the role alone", async () => {
+    // Older artifacts carry no label. Losing the refusal because the identity
+    // is missing would trade a vague block for no block at all.
+    const outcome = await runBlock(BLOCK, {
+      gradeResult: { grades: [{ role: "marcus", total: 1, followed: 0, flagged: [TDD_FLAG] }] },
+    });
+    expect(refused(outcome)).toBe(true);
+    expect(outcome.result?.reason).toContain("marcus:");
+  });
+});
+
 // ── AC-7 (process rule 4): an absent grade is handled deliberately ──────
 
 describe("an absent grade", () => {
