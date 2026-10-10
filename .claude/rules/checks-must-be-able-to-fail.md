@@ -183,3 +183,45 @@ example never had to rule out:
   branch a writer could record the broken list faithfully and still be waved
   through, which is the fail-open that survives every test written only
   against the happy path.
+
+### A detector that cannot tell prose from a prompt (#235, follow-up)
+
+The singleton check in `test/spec-compliance.test.ts` — "exactly one
+pre-validation implementation exists" — shipped red, and the reason is the
+third shape this rule names: **a detector narrower than what it detects**,
+inverted. Its PROMPT probe admitted `dry-?run(?:ning|s)?`, and the inflected
+forms are the ones prose uses to *describe* a check rather than to perform one.
+`gates/schema.ts:223` says "The scope gate dry-runs every AC's evidence command
+before Marcus runs" — one sentence of documentation, in the schema module, was
+enough to report a second pre-validation implementation and turn two tests red.
+The probe's own comment claimed it could tell "a prompt that performs the check
+from a comment that points at where it lives". It could not.
+
+The fix is to narrow `RUN_INSTRUCTION` to the bare imperative, which is the only
+form an agent instruction takes. Narrowing a detector is the change most likely
+to buy green with blindness, so the boundary is now a test rather than a comment:
+the imperative must be read as an implementation, the descriptive sentence must
+not, and the verbatim prompt #235 deleted must still be caught.
+
+A second test shipped red for an unrelated reason worth naming: it asserted
+`prevalidateEvidence(state.acs` appeared in `gates/gate-executor.ts`, but the
+gate calls `measureEvidencePrevalidation`, the wrapper that turns a throw into a
+recorded UNMEASURED. The assertion had been written against an earlier design
+and never followed it. A source-text assertion cannot notice that it has stopped
+describing the code, so the chain is now asserted in two links — the call site
+is grepped for `await measureEvidencePrevalidation(state.acs`, and the wrapper's
+delegation to the owner is **executed**, over one command that cannot succeed and
+one that can.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/spec-compliance.test.ts` (55 tests):
+
+| Mutation | Red |
+|---|---|
+| `RUN_INSTRUCTION` restored to `dry-?run(?:ning\|s)?` | 3 of 55 — the singleton, its reintroduction case, and the prose/imperative boundary |
+| `measureEvidencePrevalidation` stops delegating (returns `ok` for every AC) | 1 of 55 — the grep half still passes, which is why the executed half exists |
+| the `await` dropped from the gate's call site | 1 of 55 — the orphaned promise that is the whole of #235, reintroduced verbatim |
+
+None is left in the tree; all were run and reverted. The three mutations
+recorded above for SC-618..620 were also re-run against this tree and reproduce
+their counts exactly — 3, 4 and 3 red of 29.

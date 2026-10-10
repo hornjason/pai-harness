@@ -4,7 +4,7 @@ import { tmpdir } from "os";
 import { spawnSync } from "child_process";
 import { join, relative } from "path";
 import { harnessRoot } from "../lib/paths";
-import { prevalidateEvidence } from "../lib/evidence-prevalidator";
+import { measureEvidencePrevalidation, prevalidateEvidence } from "../lib/evidence-prevalidator";
 
 const HR = harnessRoot();
 const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
@@ -503,8 +503,18 @@ describe("prevalidation-singleton: exactly one AC-evidence pre-validation (#235)
   const DEFINES_CAPABILITY = /export\s+(?:async\s+)?function\s+prevalidateEvidence\b/;
   const EVIDENCE_REF = /evidenceMethod\s*\??\.\s*command|evidence commands?|AC evidence/i;
   const PRECHECK_INTENT = /pre-?validat|dry-?run|before Marcus/i;
+  // IMPERATIVE ONLY. `dry-?run(?:ning|s)?` used to be admitted here, and the
+  // inflected forms are the ones prose uses to DESCRIBE the check rather than
+  // to perform it: gates/schema.ts:223 says "The scope gate dry-runs every AC's
+  // evidence command before Marcus runs", and that sentence alone was enough to
+  // report the schema module as a second pre-validation implementation. That is
+  // precisely the "comment that points at where it lives" this detector claims
+  // two paragraphs above to be able to tell from a prompt that performs the
+  // check — it could not, so the claim is narrowed to the bare imperative,
+  // which is the only form an agent instruction takes. The boundary is asserted
+  // below rather than left to this comment.
   const RUN_INSTRUCTION =
-    /Run the command|Run each|Run every|Execute the command|Execute each|dry-?run(?:ning|s)?\s+(?:the|every|each|all)/i;
+    /Run the command|Run each|Run every|Execute the command|Execute each|dry-?run\s+(?:the|every|each|all)/i;
   const PROMPT_WINDOW_LINES = 4;
 
   interface SourceFile {
@@ -587,16 +597,56 @@ Report: totalACs, validated, fixed, fixes array.
     expect(mutated).toEqual([PREVALIDATION_OWNER, "lib/second-prevalidator.ts"].sort());
   });
 
+  test("#235: the prompt probe reads an imperative as an implementation and prose as prose", () => {
+    // The narrowing above is the kind of change that makes a detector quieter,
+    // so the line it was narrowed to is pinned here in both directions. Drop
+    // the first assertion and the detector may be blind; drop the second and
+    // every docblock in the repo becomes a second implementation again.
+    const DESCRIPTIVE = "// The scope gate dry-runs every AC's evidence command before Marcus runs.";
+    const IMPERATIVE = "Dry-run every AC evidence command before Marcus runs, as a pre-validation.";
+
+    expect(prevalidationPromptLines(IMPERATIVE), "the probe stopped recognising an agent instruction").toEqual([1]);
+    expect(prevalidationPromptLines(DESCRIPTIVE), "a sentence describing the check counts as performing it").toEqual([]);
+
+    // And the verbatim prompt #235 deleted is still caught — the narrowing is
+    // not allowed to buy its precision by losing the case it exists for.
+    expect(prevalidationPromptLines(REINTRODUCED_SECOND_IMPLEMENTATION).length).toBeGreaterThan(0);
+  });
+
   test("#235 (replaces #573 'ship.js has AC evidence pre-validation'): no agent prompt in ship.js dry-runs AC evidence commands", () => {
     expect(SHIP_JS).not.toContain("ac-prevalidation");
     expect(SHIP_JS).not.toContain("evidence/threshold");
     expect(prevalidationPromptLines(SHIP_JS)).toEqual([]);
   });
 
-  test("#235 (replaces #573 'ship.js has AC evidence pre-validation'): the pipeline calls the one implementation at Scope", () => {
+  test("#235 (replaces #573 'ship.js has AC evidence pre-validation'): the pipeline calls the one implementation at Scope", async () => {
+    // The gate does not call `prevalidateEvidence` directly — it calls
+    // `measureEvidencePrevalidation`, the three-verdict wrapper that turns a
+    // throw into a recorded UNMEASURED instead of an unhandled rejection. So
+    // the chain has two links, and asserting only the first would pass while
+    // the wrapper quietly stopped delegating to anything.
     const executor = readFileSync(join(HR, "gates/gate-executor.ts"), "utf-8");
-    expect(executor).toMatch(/import\s*\{[^}]*prevalidateEvidence[^}]*\}\s*from\s*["'][^"']*evidence-prevalidator["']/);
-    expect(executor).toContain("prevalidateEvidence(state.acs");
+    expect(executor).toMatch(
+      /import\s*\{[^}]*measureEvidencePrevalidation[^}]*\}\s*from\s*["'][^"']*evidence-prevalidator["']/,
+    );
+    // Awaited, not fired and forgotten — the orphaned `.then()` is the whole of
+    // #235, and a call site that loses the `await` reintroduces it verbatim.
+    expect(executor).toContain("await measureEvidencePrevalidation(state.acs");
+
+    // The second link, executed rather than grepped: the wrapper is driven over
+    // one command that cannot succeed and one that can, and the reading has to
+    // carry what `prevalidateEvidence` classified. A wrapper that returned a
+    // hardcoded PASS, or stopped calling the owner at all, fails here.
+    const reading = await measureEvidencePrevalidation(
+      [
+        { id: "AC-broken", evidenceMethod: { command: "nonexistent-binary-xyzzy-235-singleton" }, threshold: { op: "==", value: 0 } },
+        { id: "AC-ok", evidenceMethod: { command: "printf 'hello'" }, threshold: { op: "contains", value: "hello" } },
+      ],
+      HR,
+    );
+    expect(reading.verdict).toBe("FAIL");
+    expect(reading.acs.find((a) => a.id === "AC-broken")?.status).toBe("broken");
+    expect(reading.acs.find((a) => a.id === "AC-ok")?.status).toBe("ok");
   });
 
   test("#235 (replaces #573 'pre-validation checks numeric vs string threshold types'): pre-validation flags output no numeric threshold can evaluate", async () => {
