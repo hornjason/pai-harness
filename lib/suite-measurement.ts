@@ -81,7 +81,9 @@ function describe(v: unknown): string {
   if (v === null) return "null";
   if (Array.isArray(v)) return `an array of ${v.length}`;
   if (typeof v === "object") return "an object";
-  return JSON.stringify(v);
+  // Symbols and functions stringify to undefined, which would read as a hole
+  // in the message rather than as a description of the value.
+  return JSON.stringify(v) ?? String(v);
 }
 
 function unmeasured(reason: string): SuiteReading {
@@ -155,4 +157,72 @@ export function readSuiteMeasurement(state: unknown): SuiteReading {
   }
 
   return { verdict, failures, measuredSha, reason: null };
+}
+
+/**
+ * Whether a suite reading is about the commit a run is shipping.
+ *
+ * Two failures, two words, deliberately not collapsed into one:
+ *
+ *  - `STALE` — the suite WAS measured, against a commit the branch has since
+ *    moved past. A contradiction the run can name, and a hard refusal: a count
+ *    predating the final commit cannot satisfy a gate.
+ *  - `UNRECORDED` — nothing usable was written down. An absence, not a
+ *    contradiction. It must never read as clean, but aborting every run that
+ *    has not recorded a SHA yet would brick the harness, so it resolves to an
+ *    UNMEASURED reading and caps the terminal status instead.
+ *
+ * An abbreviation matches in either direction: `measuredSha` arrives through
+ * an agent reading workflow-state.json and `headSha` from `git rev-parse`, so
+ * either may be short.
+ */
+export type SuiteCurrencyState = "CURRENT" | "STALE" | "UNRECORDED";
+
+export interface SuiteCurrency {
+  state: SuiteCurrencyState;
+  /** Why the reading is not CURRENT. Null — and only null — when it is. */
+  reason: string | null;
+}
+
+/**
+ * FAILS CLOSED, and never throws, for the same reason as the rest of this
+ * module: it decides whether a run may ship, and a throw is a refusal the
+ * caller's error handling could turn back into a ship.
+ *
+ * `workflows/ship.js` carries an INLINED COPY of this function inside
+ * `SUITE-CURRENCY` markers — the Workflow sandbox has no module loading and a
+ * top-level require() there killed every ship run before it spawned an agent
+ * (#69). This is the source of truth; the copy is held to it by
+ * test/suite-measurement-parity.test.ts, which extracts the block, executes
+ * it, and drives both over one input matrix. Change one, change the other.
+ */
+export function suiteCurrency(measuredSha: unknown, headSha: unknown): SuiteCurrency {
+  const measured = suiteMeasurementSha(measuredSha);
+  const head = suiteMeasurementSha(headSha);
+
+  if (!measured) {
+    return {
+      state: "UNRECORDED",
+      reason:
+        `the suite result records ${describe(measuredSha)} as the commit it was ` +
+        `measured against, which is not a commit SHA — a count with no SHA is not evidence`,
+    };
+  }
+  if (!head) {
+    return {
+      state: "UNRECORDED",
+      reason:
+        `the branch tip read at ship time is ${describe(headSha)}, not a commit SHA, ` +
+        `so the suite result measured against ${measured} cannot be confirmed against it`,
+    };
+  }
+  if (!(measured.startsWith(head) || head.startsWith(measured))) {
+    return {
+      state: "STALE",
+      reason:
+        `the suite result is stale: it was measured against ${measured} but the branch now ends ` +
+        `at ${head} — the count did not come from the tree this run would ship`,
+    };
+  }
+  return { state: "CURRENT", reason: null };
 }
