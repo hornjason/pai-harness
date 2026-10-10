@@ -29,9 +29,35 @@ export interface PrevalidationResult {
   id: string;
   status: "ok" | "broken" | "empty" | "skipped";
   autoFixed?: boolean;
+  /**
+   * The command as the AC was written, present only when `autoFixed` is.
+   *
+   * `fixedCommand` alone says what to run next and nothing about what was
+   * wrong with what was there. Once the reading is persisted (#235), the
+   * original is the only way a reader can tell a repaired command from one
+   * that was always written that way.
+   */
+  originalCommand?: string;
   fixedCommand?: string;
   needsRewrite?: boolean;
   diagnostic?: string;
+}
+
+/** The verdicts a pre-validation reading can carry. UNMEASURED is one of them. */
+export type PrevalidationVerdict = "PASS" | "FAIL" | "UNMEASURED";
+
+/**
+ * One pre-validation of one AC set, in the shape persisted at
+ * `evidencePrevalidation` in workflow-state.json.
+ */
+export interface EvidencePrevalidationReading {
+  verdict: PrevalidationVerdict;
+  /** ISO timestamp of the measurement. */
+  checkedAt: string;
+  /** Per-AC results. Empty — and only empty — when the verdict is UNMEASURED. */
+  acs: PrevalidationResult[];
+  /** Why the reading is UNMEASURED. Null — and only null — when it is not. */
+  reason: string | null;
 }
 
 // ── Auto-fix patterns ───────────────────────────────────────────────────
@@ -141,10 +167,20 @@ export async function prevalidateEvidence(
         ? { ...r, autoFixed: true, fixedCommand: command }
         : r;
 
+    /**
+     * Every exit path for this AC goes through here, so an auto-fix cannot be
+     * reported without the command it replaced (#235). Stamping it at the
+     * single push site rather than at each branch is what keeps a later
+     * auto-fix pattern from quietly landing with only half the pair.
+     */
+    const record = (r: PrevalidationResult): void => {
+      results.push(r.autoFixed ? { ...r, originalCommand: rawCommand } : r);
+    };
+
     // Check for bun test pipe pattern BEFORE running — always auto-fix
     const pipeFix = tryFixBunTestPipe(command);
     if (pipeFix) {
-      results.push({
+      record({
         id: ac.id,
         status: "ok",
         autoFixed: true,
@@ -162,7 +198,7 @@ export async function prevalidateEvidence(
       }).trim();
 
       if (output.length === 0) {
-        results.push(withRefFix({
+        record(withRefFix({
           id: ac.id,
           status: "empty",
           diagnostic: `Command succeeded but produced no output: ${command}`,
@@ -173,7 +209,7 @@ export async function prevalidateEvidence(
         // whose local ref has drifted. Without withRefFix the caller would
         // persist the original and the rewrite would be a no-op in exactly the
         // case it exists for.
-        results.push(withRefFix({
+        record(withRefFix({
           id: ac.id,
           status: "ok",
         }));
@@ -189,7 +225,7 @@ export async function prevalidateEvidence(
       if (fix) {
         // fix.fixedCommand is derived from `command`, which is already
         // ref-normalized, so the rewrite is carried without needing withRefFix.
-        results.push({
+        record({
           id: ac.id,
           status: "ok",
           autoFixed: true,
@@ -202,7 +238,7 @@ export async function prevalidateEvidence(
         if (stderr) diagParts.push(stderr.slice(0, 200));
         if (!stdout && !stderr) diagParts.push(`No output from: ${command}`);
 
-        results.push(withRefFix({
+        record(withRefFix({
           id: ac.id,
           status: "broken",
           needsRewrite: true,
@@ -213,4 +249,73 @@ export async function prevalidateEvidence(
   }
 
   return results;
+}
+
+// ── The persisted reading (#235) ─────────────────────────────────────────
+
+/**
+ * Pre-validate an AC set and reduce it to one reading for workflow-state.json.
+ *
+ * NEVER THROWS, for the reason the rest of this path fails closed: it runs
+ * inside the scope gate, and a throw there is a refusal the caller's error
+ * handling turns back into "nothing to report". Before #235 the gate called
+ * `prevalidateEvidence(...).then(...)` and swallowed rejections into a
+ * `console.warn`, so a pre-validation that blew up and a pre-validation that
+ * found nothing wrong left the state file in exactly the same condition:
+ * empty. UNMEASURED is the third verdict that makes those two distinguishable.
+ *
+ * The runner is injectable so the UNMEASURED path can be driven in a test. The
+ * default is the production one; nothing but a test should pass the third
+ * argument.
+ */
+export async function measureEvidencePrevalidation(
+  acs: ACInput[],
+  projectRoot: string,
+  run: (acs: ACInput[], projectRoot: string) => Promise<PrevalidationResult[]> = prevalidateEvidence,
+): Promise<EvidencePrevalidationReading> {
+  const checkedAt = new Date().toISOString();
+
+  const unmeasured = (reason: string): EvidencePrevalidationReading => ({
+    verdict: "UNMEASURED",
+    checkedAt,
+    acs: [],
+    reason,
+  });
+
+  if (!Array.isArray(acs) || acs.length === 0) {
+    return unmeasured(
+      "the evidence commands were not pre-validated: this run has no ACs to measure, " +
+        "so there is no verdict to read",
+    );
+  }
+
+  let results: PrevalidationResult[];
+  try {
+    results = await run(acs, projectRoot);
+  } catch (e: any) {
+    return unmeasured(
+      `the evidence commands were not pre-validated: the pre-validator threw — ${
+        e?.message ? String(e.message).slice(0, 300) : String(e)
+      }`,
+    );
+  }
+
+  if (!Array.isArray(results)) {
+    return unmeasured(
+      `the evidence commands were not pre-validated: the pre-validator returned ${typeof results}, not a list of results`,
+    );
+  }
+
+  // `empty` is a warning rather than a refusal — the command runs, it just
+  // prints nothing — so only `broken` moves the verdict. Both still reach the
+  // file, which is the point: a warning that lives in stdout is a warning no
+  // later check can see.
+  const broken = results.filter((r) => r.status === "broken");
+
+  return {
+    verdict: broken.length > 0 ? "FAIL" : "PASS",
+    checkedAt,
+    acs: results,
+    reason: null,
+  };
 }

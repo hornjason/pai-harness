@@ -833,6 +833,71 @@ as a refusal it never made.
 - [x] SC-616: test/suite-binding-mutation.test.ts contains [the deliberately failing test, extractTestFailureCount, tests-pass] — the fixture's failure is executed and counted by the harness's own parser before it reaches the check, rather than being a verdict string the test picked
 - [x] SC-617: test/suite-binding-mutation.test.ts contains [could not build the mutant, the mutant ships the exact fixture the real source refuses] — the removal of the binding is performed on a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it
 
+### The evidence pre-validation reading reaches the verdict too (#235)
+
+`lib/evidence-prevalidator.ts` dry-runs every AC evidence command at SCOPE and
+classifies each one `ok` / `broken` / `empty` / `skipped`. It was already
+correct and it was already finding things. The entire result went to
+`console.error` inside a fire-and-forget `.then()` in `gates/gate-executor.ts`
+and nowhere else — not to the state file, not to any gate. A run could be told
+in its own log that an AC's evidence command exits non-zero and ship anyway.
+The same shape as #224: detection was never the gap.
+
+The conversion from reading to refusal is now one exported function,
+`prevalidationViolations` in `gates/workflow.test.ts`, read by the
+`evidence-prevalidation` check. One site is the requirement, not a tidiness
+preference, for the same reason it is for `suiteVerdictViolations`: a second
+refusal path for the same fact would survive the mutation below and make the
+proof vacuous, so `test/suite-binding-mutation.test.ts` asserts this signature
+appears exactly once and aborts when it does not.
+
+Three readings refuse, and the difference between them is the point:
+
+| Reading | Outcome |
+|---|---|
+| `{ verdict: "FAIL", broken: ["AC-2"] }` | refuses, naming `AC-2` — the refusal says what to fix |
+| absent, or `{ verdict: "UNMEASURED" }` | refuses — an unmeasured pre-validation is not a clean one |
+| `{ verdict: "PASS", broken: ["AC-2"] }` | refuses — a PASS carrying broken ids is a contradiction, not a pass |
+
+The only early return is a run where no AC carries an evidence command, which
+is the case the pre-validator itself classifies `skipped`: there is no command
+that can be broken. That is a real early return, like `tsc-pass`'s missing
+`tsconfig.json`, not a fail-open.
+
+The fixture is dry-run, not described. `test/suite-binding-mutation.test.ts`
+plants one AC whose command cannot succeed and one whose command can, runs both
+through the real `prevalidateEvidence`, and derives the verdict and the broken
+id list from what it classified — so the reading the gate sees is a measurement
+of commands that were executed. Neither command is one the pre-validator
+auto-fixes, so the broken one earns its classification rather than being
+repaired first. The repaired fixture is the positive control.
+
+**What was broken to prove it, run and counted rather than asserted.** All
+three mutations were performed on the real source, measured over
+`test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts`
+(29 tests), and reverted; none is left in the tree.
+
+| Mutation | Red | What goes red |
+|---|---|---|
+| `prevalidateEvidence` short-circuited to `return []` in lib/evidence-prevalidator.ts | 3 of 29 | every case that dry-runs the fixture — the broken command stops being measured, so the fixture reports `PASS` and the refusal cases have nothing to refuse |
+| `prevalidationViolations` short-circuited to `return []` | 4 of 29 | the measured `FAIL`, the absent reading, the explicit `UNMEASURED` reading, and the real-source half of the mutant case |
+| `prevalidationViolations` renamed to `prevalidationRefusal` | 3 of 29 | every case that builds a mutant, each throwing `could not build the mutant: the binding signature appears 0 times` — the harness aborts instead of mutating nothing |
+
+The first row is the one the sub-issue asked for and the one that is easiest to
+get wrong: a refusal test fed a hand-written `"FAIL"` string stays green when
+the pre-validator stops validating, which would make the whole check a test of
+JSON parsing. It goes red here because the fixture's verdict is derived from a
+command that really ran.
+
+Every assertion goes through an observed `ran === 1` first. A `-t` filter that
+matches nothing leaves bun reporting zero failures, which is indistinguishable
+from the check passing and is also what a mutant that failed to resolve its
+imports looks like.
+
+- [x] SC-618: gates/workflow.test.ts contains [export function prevalidationViolations, An unmeasured pre-validation is not a clean one] — the pre-validation reading is converted to a refusal at one site, and an absent reading refuses instead of passing
+- [x] SC-619: test/suite-binding-mutation.test.ts contains [prevalidateEvidence, broken evidence commands on AC-2] — the fixture's broken evidence command is dry-run by the real pre-validator before the verdict reaches the gate, and the refusal names the AC id rather than only reporting a count
+- [x] SC-620: test/suite-binding-mutation.test.ts contains [the mutation harness throws when the pre-validation binding is renamed, PREVALIDATION_SIGNATURE] — the removal of this binding is performed on a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

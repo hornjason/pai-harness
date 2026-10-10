@@ -139,3 +139,47 @@ renaming it to `suiteVerdictRefusal` turns 4 red, every one of them throwing
 `could not build the mutant: the binding signature appears 0 times`. Neither
 mutation is left in the tree; both were run and reverted, and the counts are
 recorded in specs/HARNESS-STANDARD.md beside SC-615..617.
+
+### The fixture has to be measured on the producing side too (#235)
+
+`prevalidationViolations` in the same file is the second worked example, and it
+adds one property the first did not need to state.
+
+The pre-validator `lib/evidence-prevalidator.ts` was already finding broken AC
+evidence commands and printing them to `console.error` from a fire-and-forget
+`.then()`. Nothing read the print. Wiring the reading into a refusal is the
+easy half; the trap is that a refusal test fed a hand-written
+`{ verdict: "FAIL", broken: ["AC-2"] }` stays green when the pre-validator
+itself stops validating. It would be a test of JSON parsing wearing a gate's
+clothes. So the fixture plants one AC whose command cannot succeed and one
+whose command can, runs both through the real `prevalidateEvidence`, and
+derives the verdict from what it classified.
+
+**Mutate both ends of the binding, not just the reader.** The producing
+function is a third mutation, and it is the one the sub-issue asked for by
+name, because it is the one a reader-only proof cannot catch.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/suite-binding-mutation.test.ts` + `test/gate-vacuous-checks.test.ts`
+(29 tests):
+
+| Mutation | Red |
+|---|---|
+| `prevalidateEvidence` short-circuited to `return []` | 3 of 29 — the fixture measures `PASS`, so the refusal cases have nothing to refuse |
+| `prevalidationViolations` short-circuited to `return []` | 4 of 29 — measured `FAIL`, absent reading, explicit `UNMEASURED`, and the mutant case's real-source half |
+| `prevalidationViolations` renamed to `prevalidationRefusal` | 3 of 29 — every mutant-building case throws `could not build the mutant: the binding signature appears 0 times` |
+
+None of the three is left in the tree; all were run and reverted, and the
+counts are recorded in specs/HARNESS-STANDARD.md beside SC-618..620.
+
+Two more things this example pins down, both of which are fail-opens the first
+example never had to rule out:
+
+- **Unmeasured is not clean.** An absent reading and an explicit `UNMEASURED`
+  verdict refuse with the same text a `FAIL` does, and both are asserted
+  separately — "the writer never ran" and "the writer ran and measured
+  nothing" fail the same way for the same reason.
+- **A `PASS` carrying broken ids is a contradiction, not a pass.** Without that
+  branch a writer could record the broken list faithfully and still be waved
+  through, which is the fail-open that survives every test written only
+  against the happy path.

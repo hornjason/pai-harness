@@ -219,6 +219,103 @@ export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefin
   }
 });
 
+// ── Evidence pre-validation (#235) ────────────────────────────────────────
+//
+// The scope gate dry-runs every AC's evidence command before Marcus runs. That
+// result used to exist only as stdout from a promise nobody awaited: the gate
+// wrote workflow-state.json, started the gate tests, and the verdict arrived
+// afterwards into a log. A reading no later check can read is not a check.
+//
+// Unlike suiteMeasurement, UNMEASURED IS writable here, and the difference is
+// deliberate. There, a recorded UNMEASURED would be a way to park an unmeasured
+// run in the field that proves the suite ran. Here the failure mode runs the
+// other way: a pre-validation that threw and a pre-validation that found
+// nothing wrong both used to leave the field empty, and a reader cannot tell
+// an absent field from a clean one. So a throw is recorded, with its reason,
+// and absence keeps its own meaning — nobody got as far as measuring.
+export const PREVALIDATION_VERDICTS = ["PASS", "FAIL", "UNMEASURED"] as const;
+export const PREVALIDATION_AC_STATUSES = ["ok", "broken", "empty", "skipped"] as const;
+
+export const PrevalidatedACSchema = z.object({
+  id: z.string(),
+  status: z.enum(PREVALIDATION_AC_STATUSES),
+  autoFixed: z.boolean().optional(),
+  originalCommand: z.string().optional(),
+  fixedCommand: z.string().optional(),
+  needsRewrite: z.boolean().optional(),
+  diagnostic: z.string().optional(),
+}).superRefine((ac, ctx) => {
+  // An auto-fix that reports only its replacement cannot be reviewed: there is
+  // nothing to compare it to, and a repaired command is indistinguishable from
+  // one that was always written that way.
+  if (ac.autoFixed) {
+    for (const field of ["originalCommand", "fixedCommand"] as const) {
+      if (!ac[field]) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${ac.id}: autoFixed without ${field} — an auto-fix must carry both the original and the fixed command`,
+          path: [field],
+        });
+      }
+    }
+  }
+});
+
+const EvidencePrevalidationShape = {
+  verdict: z.enum(PREVALIDATION_VERDICTS),
+  checkedAt: z.string(),
+  acs: z.array(PrevalidatedACSchema),
+  reason: z.string().nullable(),
+};
+
+/**
+ * The field names the reading carries, exported so the parity test in
+ * test/unit/evidence-prevalidation-gate.test.ts can check gates/SCHEMA-GUIDE.md
+ * against the schema in both directions.
+ */
+export const EVIDENCE_PREVALIDATION_FIELDS = Object.keys(EvidencePrevalidationShape);
+
+export const EvidencePrevalidationSchema = z.object(EvidencePrevalidationShape).superRefine((r, ctx) => {
+  const broken = r.acs.filter((ac) => ac.status === "broken");
+
+  if (r.verdict === "FAIL" && broken.length === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "evidencePrevalidation: FAIL with no broken evidence command — a FAIL must name at least one",
+      path: ["acs"],
+    });
+  }
+  if (r.verdict === "PASS" && broken.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `evidencePrevalidation: PASS with ${broken.length} broken evidence command(s) — a PASS must carry none`,
+      path: ["acs"],
+    });
+  }
+  if (r.verdict === "UNMEASURED") {
+    if (!r.reason) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "evidencePrevalidation: UNMEASURED with no reason — an absence nobody can explain is not actionable",
+        path: ["reason"],
+      });
+    }
+    if (r.acs.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `evidencePrevalidation: UNMEASURED with ${r.acs.length} AC result(s) — results mean it was measured`,
+        path: ["acs"],
+      });
+    }
+  } else if (r.reason !== null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "evidencePrevalidation: reason is only for UNMEASURED — a measured verdict explains itself through its ACs",
+      path: ["reason"],
+    });
+  }
+});
+
 export const WorkflowStateSchema = z.object({
   schemaVersion: z.literal(2),
   issue: z.number(),
@@ -330,6 +427,10 @@ export const WorkflowStateSchema = z.object({
   // Absent means UNMEASURED (#224). Write it with
   // scripts/record-suite-measurement.ts, never by hand.
   suiteMeasurement: SuiteMeasurementSchema.optional(),
+
+  // The scope gate's evidence dry-run (#235). Absent means UNMEASURED — the
+  // gate never got as far as measuring. Written by the scope gate, not by hand.
+  evidencePrevalidation: EvidencePrevalidationSchema.optional(),
 });
 
 export type WorkflowState = z.infer<typeof WorkflowStateSchema>;
