@@ -455,6 +455,27 @@ export const WorkflowStateSchema = z.object({
     quinnReverified: z.boolean().default(false),
   })).optional(),
 
+  /**
+   * What this run decided to measure, and what it decided not to (#251).
+   *
+   * A finished run showing six ACs is ambiguous: six because the issue had
+   * six criteria, or six because one was dropped? Run wf_e105dd33-220 was the
+   * second, and nothing anywhere recorded it. `deferrals` is the answer, and
+   * `uncovered` must be empty on any run that got past discovery — a
+   * non-empty one is a run that shipped against criteria it never measured.
+   */
+  acCoverage: z.object({
+    criteriaCount: z.number(),
+    acCount: z.number(),
+    covered: z.array(z.string()),
+    deferrals: z.array(z.object({
+      specElement: z.string(),
+      reason: z.string(),
+      subIssue: z.number().optional(),
+    })),
+    uncovered: z.array(z.string()),
+  }).nullable().optional(),
+
   bootstrappedFrom: z.string().optional(),
   beforeState: z.object({
     type: z.enum(["text", "screenshot", "api", "data", "none"]),

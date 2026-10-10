@@ -59,6 +59,14 @@ export interface InitWorkflowInput {
   sizing?: { predicted?: string; ceremonyTier?: string };
   sourceSpecs?: Array<{ path: string; citedInDiscovery: boolean; specElements?: string[] }>;
   bootstrappedFrom?: string;
+  /** The coverage decision discovery made (#251). Null when it made none. */
+  acCoverage?: {
+    criteriaCount: number;
+    acCount: number;
+    covered: string[];
+    deferrals: Array<{ specElement: string; reason: string; subIssue?: number }>;
+    uncovered: string[];
+  } | null;
 }
 
 interface WorkflowState {
@@ -551,6 +559,10 @@ export function initWorkflow(sf: string, opts: InitWorkflowInput): void {
   if (opts.sizing) state.sizing = opts.sizing;
   if (opts.sourceSpecs) state.sourceSpecs = opts.sourceSpecs;
   if (opts.bootstrappedFrom) state.bootstrappedFrom = opts.bootstrappedFrom;
+  // Written even when the run covered everything: "six ACs for six criteria,
+  // nothing deferred" is the reading that makes a short AC list legible, and
+  // an absent record would leave it looking exactly like a silent drop (#251).
+  if (opts.acCoverage) state.acCoverage = opts.acCoverage;
 
   WorkflowStateSchema.passthrough().parse(state);
   mkdirSync(dirname(sf), { recursive: true });
