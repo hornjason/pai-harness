@@ -26,7 +26,11 @@ import {
   shouldRunCIVerification,
   requiresResearchEscalation,
 } from "./ship-orchestrator";
-import { prevalidateEvidence } from "../lib/evidence-prevalidator";
+import {
+  measureEvidencePrevalidation,
+  type EvidencePrevalidationReading,
+} from "../lib/evidence-prevalidator";
+import { EvidencePrevalidationSchema } from "./schema";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
 import { createGitHubClient, getIssue, addLabels } from "../lib/github";
@@ -511,7 +515,43 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
 
 // ── Scope pre-flight checks ─────────────────────────────────────────────
 
-function runScopePreflights(state: Record<string, any>, harnessRoot: string): void {
+/**
+ * Reduce a pre-validation reading to the lines the gate prints.
+ *
+ * Printing is all this does. The verdict reaches later checks through
+ * workflow-state.json, not through stdout — see runScopePreflightsAndPersist.
+ */
+function reportPrevalidation(reading: EvidencePrevalidationReading): void {
+  if (reading.verdict === "UNMEASURED") {
+    console.error(`EVIDENCE PRE-VALIDATION: UNMEASURED — ${reading.reason}`);
+    return;
+  }
+
+  const broken = reading.acs.filter((r) => r.status === "broken");
+  const empty = reading.acs.filter((r) => r.status === "empty");
+  const autoFixed = reading.acs.filter((r) => r.autoFixed);
+
+  if (broken.length > 0) {
+    console.error(`EVIDENCE PRE-VALIDATION: ${broken.length} AC(s) have broken evidence commands:`);
+    for (const r of broken) {
+      console.error(`  - ${r.id}: ${r.diagnostic}`);
+    }
+  }
+  if (empty.length > 0) {
+    console.warn(`EVIDENCE PRE-VALIDATION: ${empty.length} AC(s) have evidence commands that return empty output:`);
+    for (const r of empty) {
+      console.warn(`  - ${r.id}: command runs but produces no output`);
+    }
+  }
+  if (autoFixed.length > 0) {
+    console.log(`EVIDENCE PRE-VALIDATION: ${autoFixed.length} AC(s) auto-fixed: ${autoFixed.map((r) => r.id).join(", ")}`);
+  }
+  if (broken.length === 0 && empty.length === 0) {
+    console.log(`EVIDENCE PRE-VALIDATION: all ${reading.acs.filter((r) => r.status === "ok").length} evidence commands validated OK`);
+  }
+}
+
+export async function runScopePreflights(state: Record<string, any>, harnessRoot: string): Promise<void> {
   // Duplicate slug check (SC-44)
   const existingSlug = slugExists(state.issue);
   if (existingSlug && existingSlug !== state.slug) {
@@ -584,36 +624,57 @@ function runScopePreflights(state: Record<string, any>, harnessRoot: string): vo
   }
 
   // Evidence command pre-validation (#598) — dry-run AC evidence commands
-  // to catch broken commands BEFORE Marcus runs
+  // to catch broken commands BEFORE Marcus runs.
+  //
+  // AWAITED (#235). This used to be `prevalidateEvidence(...).then(...)` with
+  // no await: the function returned immediately, the gate wrote
+  // workflow-state.json and launched the gate tests, and the verdict landed in
+  // stdout some time afterwards — too late for anything to read, and with
+  // rejections swallowed into a warning that looked the same as a clean run.
   if (state.acs?.length > 0) {
     const projectRoot = state.projectRoot || process.cwd();
-    prevalidateEvidence(state.acs, projectRoot).then((prevalidationResults) => {
-      const broken = prevalidationResults.filter((r) => r.status === "broken");
-      const empty = prevalidationResults.filter((r) => r.status === "empty");
-      const autoFixed = prevalidationResults.filter((r) => r.autoFixed);
+    const reading = await measureEvidencePrevalidation(state.acs, projectRoot);
 
-      if (broken.length > 0) {
-        console.error(`EVIDENCE PRE-VALIDATION: ${broken.length} AC(s) have broken evidence commands:`);
-        for (const r of broken) {
-          console.error(`  - ${r.id}: ${r.diagnostic}`);
-        }
-      }
-      if (empty.length > 0) {
-        console.warn(`EVIDENCE PRE-VALIDATION: ${empty.length} AC(s) have evidence commands that return empty output:`);
-        for (const r of empty) {
-          console.warn(`  - ${r.id}: command runs but produces no output`);
-        }
-      }
-      if (autoFixed.length > 0) {
-        console.log(`EVIDENCE PRE-VALIDATION: ${autoFixed.length} AC(s) auto-fixed: ${autoFixed.map((r) => r.id).join(", ")}`);
-      }
-      if (broken.length === 0 && empty.length === 0) {
-        console.log(`EVIDENCE PRE-VALIDATION: all ${prevalidationResults.filter((r) => r.status === "ok").length} evidence commands validated OK`);
-      }
-    }).catch((e) => {
-      console.warn(`WARN: Evidence pre-validation failed: ${e.message?.slice(0, 100) || "unknown"}`);
-    });
+    // Validated before it is stamped, not after: an unparseable reading must
+    // not reach the file at all, and the refusal has to leave the state saying
+    // "unmeasured" rather than silently saying nothing.
+    const parsed = EvidencePrevalidationSchema.safeParse(reading);
+    state.evidencePrevalidation = parsed.success
+      ? reading
+      : {
+          verdict: "UNMEASURED",
+          checkedAt: reading.checkedAt,
+          acs: [],
+          reason:
+            "the evidence pre-validation reading did not validate against EvidencePrevalidationSchema: " +
+            parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400),
+        };
+
+    reportPrevalidation(state.evidencePrevalidation as EvidencePrevalidationReading);
   }
+}
+
+/**
+ * The scope gate's pre-flight step: measure, then persist — in that order.
+ *
+ * The ordering is the whole point. `runGateTests` spawns bun against
+ * workflow-state.json as it stands on disk, so a reading written after the
+ * tests start is a reading they never see, and a gate check on a field that is
+ * always absent is a check that cannot fail. The write is here, one statement
+ * after the await, so the two cannot drift apart.
+ *
+ * writeFileSync rather than writeWorkflowState on purpose: the scope gate's
+ * job is to REPORT an invalid state as a FAIL, and writeWorkflowState throws
+ * on one, which would turn that report into a crash. The reading itself is
+ * schema-validated in runScopePreflights before it is stamped on.
+ */
+export async function runScopePreflightsAndPersist(
+  state: Record<string, any>,
+  sf: string,
+  harnessRoot: string,
+): Promise<void> {
+  await runScopePreflights(state, harnessRoot);
+  writeFileSync(sf, JSON.stringify(state, null, 2));
 }
 
 // ── Verify pre-flight checks ────────────────────────────────────────────
@@ -1336,9 +1397,10 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     await runProveReproducer(state, issue, issueRepo, workDir, harnessRoot);
   }
 
-  // Scope pre-flight checks
+  // Scope pre-flight checks — awaited, and persisted before the gate tests
+  // read the file (#235)
   if (gate === "scope") {
-    runScopePreflights(state, harnessRoot);
+    await runScopePreflightsAndPersist(state, sf, harnessRoot);
   }
 
   // Type check (scope or verify)

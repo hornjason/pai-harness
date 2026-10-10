@@ -141,6 +141,69 @@ Write it with `scripts/record-suite-measurement.ts`, not by hand:
 bun scripts/record-suite-measurement.ts --state <workflow-state.json> --sha <commit sha> --failures <n>
 ```
 
+## evidencePrevalidation
+
+The scope gate's dry-run of every AC evidence command, written before the gate
+tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
+— the gate never got as far as measuring.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `verdict` | `PASS` \| `FAIL` \| `UNMEASURED` | Derived from the per-AC results, never supplied by a caller |
+| `checkedAt` | string | ISO timestamp of the dry-run |
+| `acs` | array | One entry per AC: `id`, `status`, and the auto-fix fields below. Empty — and only empty — when UNMEASURED |
+| `reason` | string \| null | Why the reading is UNMEASURED. Null, and only null, when it is not |
+
+**The three verdicts:**
+
+| Verdict | Means |
+|---|---|
+| `PASS` | Every evidence command was dry-run and none is broken. `empty` output is a warning, not a refusal, and still appears in `acs` |
+| `FAIL` | At least one AC's command is broken and could not be auto-fixed. A FAIL must name one — a FAIL with no `broken` entry is refused by Zod |
+| `UNMEASURED` | The pre-validation did not produce a result: it threw, or there were no ACs. Carries a `reason` and no `acs` |
+
+Unlike `suiteMeasurement`, `UNMEASURED` **is** writable here. There, recording it
+would give a caller a way to park an unmeasured run in the field that proves the
+suite ran. Here the failure runs the other way: a pre-validation that threw and
+one that found nothing wrong both used to leave the field empty, and absence
+reads downstream exactly like "clean". Recording the throw, with its reason, is
+what makes the two distinguishable — and absence still means nobody measured.
+
+Each entry in `acs` carries:
+
+| AC field | Type | Meaning |
+|---|---|---|
+| `id` | string | The AC the command belongs to |
+| `status` | `ok` \| `broken` \| `empty` \| `skipped` | Dry-run outcome. `skipped` means the AC has no command |
+| `autoFixed` | boolean | The command was repaired. Requires **both** command fields below |
+| `originalCommand` | string | The command as the AC was written |
+| `fixedCommand` | string | The command to run instead |
+| `needsRewrite` | boolean | Broken and not auto-fixable — a human or Marcus must rewrite it |
+| `diagnostic` | string | Why it is broken |
+
+**An `autoFixed` entry must carry both `originalCommand` and `fixedCommand`.** A
+repair that reports only its replacement cannot be reviewed — there is nothing
+to compare it to, and it is indistinguishable from a command that was always
+written that way. This includes the ref-rewrite path (`main` → `origin/main`),
+which returns `status: "ok"`: the command dry-runs clean and only diverges at
+Verify, so the rewrite is the only record that anything happened.
+
+```json
+{ "evidencePrevalidation": {
+  "verdict": "FAIL", "checkedAt": "2026-10-09T18:04:11.000Z", "reason": null,
+  "acs": [
+    { "id": "AC-1", "status": "ok", "autoFixed": true,
+      "originalCommand": "git log main..HEAD --oneline",
+      "fixedCommand": "git log origin/main..HEAD --oneline" },
+    { "id": "AC-2", "status": "broken", "needsRewrite": true,
+      "diagnostic": "Command failed with exit code 127" }
+  ]
+} }
+```
+
+The scope gate writes it — `gates/gate-executor.ts`, `runScopePreflightsAndPersist` —
+after the dry-run resolves and before the gate tests run. Not by hand.
+
 ## Changelog Actor Values
 
 Valid `actor` enum (lowercase only): `da`, `marcus`, `quinn`, `rook`, `gate-runner`
