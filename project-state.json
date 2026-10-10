@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-09",
+  "updated": "2026-10-10",
   "priorities": [
     "P0: #178 — decomposed collection silently keeps one of three parallel edits to one file. Blocks everything, because it is how the harness loses correct work and ships incoherent commits. Recommendation on the issue: a file whose marked blocks are executed by tests is single-owner, and the decomposer assigns it whole",
     "P1: #169 remainder — no currency check after recommit-ship, and SC-598. Round 7 patch already implements both; the work is reconciling it with the test files, which is #178",
