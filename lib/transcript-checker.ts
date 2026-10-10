@@ -233,6 +233,29 @@ export interface TDDResult {
   evidence: string;
 }
 
+/**
+ * Directories whose contents count as implementation for the TDD check (#240).
+ *
+ * `gates/`, `workflows/` and `hooks/` were missing. In a repo whose pipeline
+ * IS `workflows/ship.js` and whose gates are all of `gates/`, that meant an
+ * agent could edit the two most consequential files in the project and record
+ * zero WRITE_SOURCE events — short-circuiting to NO_SOURCE, "No source files
+ * written". The harness could not grade TDD on the harness.
+ *
+ * `src/` is kept although this repo has none: rungate scaffolds projects that
+ * do, and this module grades their transcripts too. The test derives the list
+ * of directories a repo actually keeps source in and asserts each is covered,
+ * so the next directory to appear cannot go silently ungraded the way these
+ * three did.
+ */
+export const SOURCE_DIRS = ["lib", "scripts", "src", "gates", "workflows", "hooks"] as const;
+
+/** Whether a written path is implementation rather than test or docs. */
+export function isSourcePath(path: string): boolean {
+  if (path.includes("test/") || path.includes(".test.")) return false;
+  return SOURCE_DIRS.some((d) => path.includes(`${d}/`));
+}
+
 export function checkTDD(transcriptContent: string): TDDResult {
   const calls = parseToolCalls(transcriptContent);
   const sequence: SequenceEvent[] = [];
@@ -242,9 +265,8 @@ export function checkTDD(transcriptContent: string): TDDResult {
       const path = call.input?.file_path || call.input?.path || "";
       const file = basename(path);
       const isTest = path.includes("test/") || path.includes(".test.");
-      const isSource = path.includes("lib/") || path.includes("scripts/") || path.includes("src/");
       if (isTest) sequence.push({ type: "WRITE_TEST", file });
-      else if (isSource) sequence.push({ type: "WRITE_SOURCE", file });
+      else if (isSourcePath(path)) sequence.push({ type: "WRITE_SOURCE", file });
     }
     if (call.name === "Bash") {
       const cmd = call.input?.command || "";
@@ -262,14 +284,38 @@ export function checkTDD(transcriptContent: string): TDDResult {
 
   const testFirst = firstTest < firstSource;
 
+  /**
+   * Red and green are existence questions, not a single-pass automaton (#240).
+   *
+   * The previous implementation carried one `state` through the sequence and
+   * reset it to "wrote_test" on EVERY test write, unconditionally. A pending
+   * source write waiting for its green run was therefore erased by the next
+   * test file the agent added, and nothing could restore it: re-entering
+   * "wrote_source" required another source write. An agent that wrote source,
+   * added one more test, and then ran the suite nine times was graded as
+   * having run it zero times — and that verdict blocks a ship.
+   *
+   * Stated as what each phase means, the resets have nowhere to happen:
+   *
+   *  - RED: a run that happened after a test was written and BEFORE any
+   *    source existed to make it pass. Scanning forward from each test write
+   *    and stopping at the first source write is what "before" means here; a
+   *    run found after that point is a green run being counted twice.
+   *  - GREEN: a run after the LAST source write. Not "after any source
+   *    write" — an agent that runs the suite and then edits source and stops
+   *    has not shown the code it is shipping passing anything, which is the
+   *    case this check exists to catch.
+   */
+  const lastSource = sequence.map((s) => s.type).lastIndexOf("WRITE_SOURCE");
+  const greenPhase = sequence.slice(lastSource + 1).some((s) => s.type === "TEST_RUN");
+
   let redPhase = false;
-  let greenPhase = false;
-  let state: "init" | "wrote_test" | "ran_after_test" | "wrote_source" | "ran_after_source" = "init";
-  for (const s of sequence) {
-    if (s.type === "WRITE_TEST") state = "wrote_test";
-    if (s.type === "TEST_RUN" && state === "wrote_test") { redPhase = true; state = "ran_after_test"; }
-    if (s.type === "WRITE_SOURCE" && (state === "ran_after_test" || state === "wrote_test")) state = "wrote_source";
-    if (s.type === "TEST_RUN" && state === "wrote_source") { greenPhase = true; state = "ran_after_source"; }
+  for (let i = 0; i < sequence.length && !redPhase; i++) {
+    if (sequence[i].type !== "WRITE_TEST") continue;
+    for (let j = i + 1; j < sequence.length; j++) {
+      if (sequence[j].type === "WRITE_SOURCE") break;
+      if (sequence[j].type === "TEST_RUN") { redPhase = true; break; }
+    }
   }
 
   const verdict = testFirst && redPhase && greenPhase ? "TDD" : "TEST_AFTER";

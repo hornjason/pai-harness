@@ -65,6 +65,15 @@ interface RunTimingCall {
 export interface GradeOutput {
   grades: {
     role: string;
+    /**
+     * The call site this grade is about (#240).
+     *
+     * `role` alone is not an identity. Run wf_18abb197-f03 produced four
+     * `marcus` grades and one of them carried a BLOCKING violation; finding
+     * out which agent was accused meant re-running `checkTDD` over each
+     * transcript by hand. A refusal has to name what it refuses.
+     */
+    label: string;
     total: number;
     followed: number;
     rules: RuleResult[];
@@ -280,6 +289,7 @@ export function gradeTranscript(transcriptPath: string, validRoles: Set<string>,
 
   return {
     role,
+    label: callSiteLabel(metaPath, transcriptPath),
     total,
     followed,
     rules,
