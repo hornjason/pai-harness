@@ -1,0 +1,41 @@
+{
+  "project": "consumer-ui-project",
+  "repo": "example/consumer-ui-project",
+  "issueRepo": "example/consumer-ui-project",
+  "contextDocs": {
+    "agents": "AGENTS.md"
+  },
+  "consumers": [],
+  "pages": {
+    "/": "home",
+    "/reports": "reports",
+    "/reports/:id": "report-detail",
+    "/settings": "settings"
+  },
+  "dev": {
+    "start": "echo 'fixture: dev server is never started'",
+    "apiBase": "http://localhost:7778",
+    "uiBase": "http://localhost:5173",
+    "testCmd": "bun test",
+    "typeCheck": "bunx tsc --noEmit"
+  },
+  "prod": {
+    "rebuild": "echo 'fixture: inert — no production rebuild is ever performed'",
+    "apiBase": "http://localhost:7777"
+  },
+  "container": {
+    "rebuildCommand": "echo 'fixture: inert — this container rebuild command is never executed'",
+    "hosts": ["localhost"],
+    "port": 7777,
+    "healthPath": "/api/health"
+  },
+  "remoteHosts": {
+    "runner": {
+      "host": "fixture-runner.invalid",
+      "access": "ssh",
+      "purpose": "GitHub Actions self-hosted runner (fixture — never contacted)",
+      "preFlightCmd": "true",
+      "workDir": "~/actions-runner/_work/consumer-ui-project/consumer-ui-project"
+    }
+  }
+}

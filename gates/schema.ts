@@ -398,6 +398,21 @@ const EvidencePrevalidationShape = {
   verdict: z.enum(PREVALIDATION_VERDICTS),
   checkedAt: z.string(),
   acs: z.array(PrevalidatedACSchema),
+  // The ids a FAIL refuses for (#274).
+  //
+  // `prevalidationViolations` in gates/workflow.test.ts — the single site that
+  // turns this reading into a refusal — names the ACs to fix out of this key,
+  // and no writer produced it until #274. So every genuine FAIL refused with
+  // "no broken AC ids were recorded", which is true of the key and false of
+  // the reading: the per-AC results were under `acs` all along. Fail-closed,
+  // so nothing shipped that should not have, but a refusal that cannot name
+  // what to fix costs the heal loop a round and teaches it nothing.
+  //
+  // Optional, so a reading written before this field existed still validates —
+  // the same compatibility `takenAt` has. It is NOT optional on a FAIL: the
+  // superRefine below requires it there, because that is the only verdict
+  // whose whole job is to name something.
+  broken: z.array(z.string()).optional(),
   reason: z.string().nullable(),
   // Which gate measured this (#264).
   //
@@ -425,6 +440,35 @@ export const EVIDENCE_PREVALIDATION_FIELDS = Object.keys(EvidencePrevalidationSh
 
 export const EvidencePrevalidationSchema = z.object(EvidencePrevalidationShape).superRefine((r, ctx) => {
   const broken = r.acs.filter((ac) => ac.status === "broken");
+
+  // `broken` is DERIVED, so it is checked against what it claims to summarise
+  // rather than taken on its word (#274). A list a writer could set
+  // independently of `acs` is a second source of truth for the same fact, and
+  // the reader — the gate's refusal — would name whichever one was wrong.
+  const named = r.broken;
+  if (named !== undefined) {
+    const measured = broken.map((ac) => ac.id);
+    const differs =
+      named.length !== measured.length || named.some((id, i) => id !== measured[i]);
+    if (differs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          `evidencePrevalidation: broken names [${named.join(", ")}] but the results classify ` +
+          `[${measured.join(", ")}] broken — a derived list that disagrees with its own results ` +
+          `is a second source of truth, and the refusal would name the wrong AC`,
+        path: ["broken"],
+      });
+    }
+  } else if (r.verdict === "FAIL") {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "evidencePrevalidation: FAIL with no `broken` list — the gate's refusal names the ACs to " +
+        "fix out of this field, and a FAIL that names none costs a heal round and teaches it nothing",
+      path: ["broken"],
+    });
+  }
 
   if (r.verdict === "FAIL" && broken.length === 0) {
     ctx.addIssue({
