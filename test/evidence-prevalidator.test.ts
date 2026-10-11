@@ -55,26 +55,49 @@ describe("evidence-prevalidator: prevalidateEvidence", () => {
     expect(results[0].status).toBe("empty");
   });
 
-  // AC-3: auto-fix grep commands that exit 1 on zero matches
-  test("auto-fixes grep exit code 1 by wrapping with || true", async () => {
-    // grep for something that won't exist — exits 1
+  // A grep that selects no lines is measured, not rewritten (#271).
+  //
+  // This test used to assert the opposite: that the command was repaired into
+  // `... || true`. That wrapper made the command exit 0 for ANY failure,
+  // including grep's exit 2 — a missing file or a bad pattern — so a genuinely
+  // broken evidence command was reported clean. The classification now comes
+  // from grep's documented contract instead, which leaves exit 2 broken.
+  test("a zero-match grep is classified from grep's exit-1 convention, not repaired", async () => {
     const acs: ACInput[] = [
       {
         id: "AC-4",
         evidenceMethod: {
+          // -c so there is a value to measure. Plain grep prints nothing and
+          // is `empty`, asserted separately above.
           type: "grep",
-          command: "grep 'NEVER_MATCH_THIS_xyzzy_12345' /dev/null",
+          command: "grep -c 'NEVER_MATCH_THIS_xyzzy_12345' /dev/null",
         },
-        threshold: { op: ">=", value: "0" },
+        threshold: { op: "==", value: "0" },
       },
     ];
     const results = await prevalidateEvidence(acs, PROJECT_ROOT);
     expect(results).toHaveLength(1);
     expect(results[0].status).toBe("ok");
-    expect(results[0].autoFixed).toBe(true);
-    expect(results[0].fixedCommand).toBeTruthy();
-    // The fixed command should handle zero-match gracefully
-    expect(results[0].fixedCommand).toContain("|| true");
+    expect(
+      results[0].fixedCommand ?? "",
+      "the || true rewrite came back — it launders exit 2 into a clean verdict",
+    ).not.toContain("|| true");
+  });
+
+  test("a grep error — exit 2, not exit 1 — is still broken", async () => {
+    // The boundary that makes the rule above safe rather than an amnesty.
+    const acs: ACInput[] = [
+      {
+        id: "AC-4b",
+        evidenceMethod: {
+          type: "grep",
+          command: "grep -c alpha /nonexistent/surely-not-here-7c2b.txt",
+        },
+        threshold: { op: "==", value: "0" },
+      },
+    ];
+    const results = await prevalidateEvidence(acs, PROJECT_ROOT);
+    expect(results[0].status).toBe("broken");
   });
 
   // AC-3: auto-fix bun test piped through grep — flagged and rewritten
@@ -265,15 +288,18 @@ describe("#235: an auto-fix carries the command it replaced", () => {
     expect(r.fixedCommand).not.toBe(r.originalCommand);
   });
 
-  test("the grep exit-code fix reports both commands", async () => {
-    const original = "grep 'NEVER_MATCH_THIS_xyzzy_235' /dev/null";
+  test("there is no grep exit-code fix left to report — it is a classification now (#271)", async () => {
+    // Inverted rather than deleted. This asserted `fixedCommand` was
+    // `${original} || true`; the pairing invariant it was testing is covered
+    // by the bun-test case below, against an auto-fix that still exists.
+    // Keeping the case means the rewrite cannot come back unnoticed.
+    const original = "grep -c 'NEVER_MATCH_THIS_xyzzy_235' /dev/null";
     const [r] = await prevalidateEvidence(
-      [{ id: "AC-2", evidenceMethod: { type: "grep", command: original }, threshold: { op: ">=", value: "0" } }],
+      [{ id: "AC-2", evidenceMethod: { type: "grep", command: original }, threshold: { op: "==", value: "0" } }],
       PROJECT_ROOT,
     );
-    expect(r.autoFixed).toBe(true);
-    expect(r.originalCommand).toBe(original);
-    expect(r.fixedCommand).toBe(`${original} || true`);
+    expect(r.status).toBe("ok");
+    expect(r.fixedCommand ?? "").not.toContain("|| true");
   });
 
   test("the bun-test pipe rewrite reports both commands", async () => {

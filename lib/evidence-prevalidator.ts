@@ -63,16 +63,28 @@ export interface EvidencePrevalidationReading {
 // ── Auto-fix patterns ───────────────────────────────────────────────────
 
 /**
- * Detect if a command is a grep that exits 1 on zero matches.
- * Returns a wrapped version that exits 0 even on zero matches.
+ * Does this command's non-zero exit mean "grep selected no lines" (#271)?
+ *
+ * `grep` documents three outcomes: 0 if a line was selected, 1 if none was,
+ * and greater than 1 if an error occurred. Exit 1 is a RESULT — and for a
+ * zero-count acceptance criterion it is the result that satisfies the
+ * threshold. Run wf_ea3e428f-64f was refused because its AC printed `0`, the
+ * exact value its `== 0` threshold required, and exited 1.
+ *
+ * This replaces an auto-fix that appended `|| true`. That wrapper swallowed
+ * exit 2 as well, turning a missing file or a bad pattern into a clean
+ * verdict, so reading grep's own convention is strictly narrower than what it
+ * replaces rather than a wider amnesty.
+ *
+ * Only the LAST pipeline stage is consulted, because that is the one whose
+ * status the shell reports. A grep earlier in the chain must not excuse a
+ * later command's failure, or any command could buy amnesty by mentioning
+ * grep.
  */
-function tryFixGrepExitCode(command: string): string | null {
-  // Only fix bare grep commands (not piped chains)
-  if (/\bgrep\b/.test(command) && !command.includes("|")) {
-    // Wrap with || true to handle zero-match exit code 1
-    return `${command} || true`;
-  }
-  return null;
+export function grepNoMatchIsResult(command: string, exitCode: number): boolean {
+  if (exitCode !== 1) return false;
+  const lastStage = command.split("|").pop()?.trim() ?? "";
+  return /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:[a-z]*grep)\b/.test(lastStage);
 }
 
 /**
@@ -97,11 +109,11 @@ function attemptAutoFix(
   exitCode: number,
   stdout: string,
 ): { fixedCommand: string } | null {
-  // Pattern 1: grep exit code 1 (zero matches) — wrap with || true
-  if (exitCode === 1 && /\bgrep\b/.test(command)) {
-    const fixed = tryFixGrepExitCode(command);
-    if (fixed) return { fixedCommand: fixed };
-  }
+  // The grep exit-1 pattern used to live here, rewriting the command to
+  // `... || true`. It is gone (#271): a zero-match grep is now CLASSIFIED as a
+  // result rather than repaired into one that cannot fail. Rewriting it hid
+  // exit 2 — a missing file or a bad pattern — behind the same clean verdict.
+  // See grepNoMatchIsResult.
 
   // Pattern 2: bun test piped through grep — rewrite to direct bun test
   const pipeFix = tryFixBunTestPipe(command);
@@ -218,6 +230,26 @@ export async function prevalidateEvidence(
       const exitCode: number = e.status ?? 1;
       const stdout = (e.stdout?.toString?.() || "").trim();
       const stderr = (e.stderr?.toString?.() || "").trim();
+
+      // A grep that selected nothing has not failed — it has measured zero
+      // (#271). Classified here, before any repair is attempted, so the
+      // verdict comes from grep's documented contract rather than from a
+      // rewrite. `grep -c` prints "0", a real value; plain `grep` prints
+      // nothing, which is `empty` — the status that already exists for a
+      // command that ran and produced no value. Collapsing that into "ok"
+      // would hand the gate an AC with no evidence, which is #277.
+      if (grepNoMatchIsResult(command, exitCode)) {
+        record(withRefFix({
+          id: ac.id,
+          ...(stdout.length === 0
+            ? {
+                status: "empty" as const,
+                diagnostic: `Command selected no lines and printed nothing: ${command}`,
+              }
+            : { status: "ok" as const }),
+        }));
+        continue;
+      }
 
       // Try auto-fix first
       const fix = attemptAutoFix(command, ac.evidenceMethod?.type, exitCode, stdout);
