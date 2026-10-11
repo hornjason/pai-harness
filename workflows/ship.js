@@ -1633,8 +1633,13 @@ const s=JSON.parse(require('fs').readFileSync(sf,'utf-8'));
 console.log(JSON.stringify({initialized:true,acCount:s.acs.length}));
 " 2>&1
 
-2. Load config:
-cat ${PROJECT_ROOT}/.claude/rungate.json 2>/dev/null || echo "{}"
+2. Load config (ADR-002 D1 — the loader is the only thing that reads
+   .claude/rungate*, and it normalises dev.* into the resolved shape, so the
+   directory layout and the monolith layout produce a byte-identical result.
+   There is deliberately no "|| echo {}" fallback: an unresolvable config must
+   fail setup, not arrive as an empty object that reads as "configured with
+   nothing" and silently drops the project to the LIGHT tier floor):
+bun ${HARNESS_ROOT}/scripts/resolve-config.ts --project ${PROJECT_ROOT} --out ${WORK_DIR}/resolved-config.json
 
 3. Prior branch detect:
 bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectPriorBranch({issueNumber:${ISSUE},projectRoot:'${PROJECT_ROOT}',runTests:false}); console.log(JSON.stringify(r))" 2>/dev/null || echo '{"branch":"","refName":"","commitCount":null}'
@@ -1692,12 +1697,14 @@ const FROZEN_AC_DEFS = discovery.acs.map(ac => ({
 }))
 const FROZEN_AC_HASH = JSON.stringify(FROZEN_AC_DEFS)
 
+// ADR-002 D3: the dev.* → apiUrl/uiUrl/test.command flattening that used to
+// live here as an in-memory shim now happens once, in lib/config-loader's
+// normalise(), before resolve-config.ts materialises the file. Keeping a copy
+// here would be a second normalisation rule — and it was already a divergent
+// one, since the agent prompts read the raw cat while only this variable saw
+// the shim.
 const projectConfigResult = setupResult?.config || {}
 const projectConfig = projectConfigResult || {}
-// Flatten nested dev config for consumer projects (dev.apiBase → apiUrl, dev.uiBase → uiUrl)
-if (!projectConfig.apiUrl && projectConfig.dev?.apiBase) projectConfig.apiUrl = projectConfig.dev.apiBase
-if (!projectConfig.uiUrl && projectConfig.dev?.uiBase) projectConfig.uiUrl = projectConfig.dev.uiBase
-if (!projectConfig.test && projectConfig.dev?.testCmd) projectConfig.test = { command: projectConfig.dev.testCmd }
 const pagesConfig = projectConfig.pages || parsedArgs.pages || {}
 const hasUI = Object.keys(pagesConfig).length > 0
 const hasContainer = !!(projectConfig.container)

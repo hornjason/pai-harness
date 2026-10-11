@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
-import { loadRungateConfig } from "./config-loader";
+import { resolveConfig } from "./config-loader";
 import type {
   ProjectScan,
   ProjectType,
@@ -421,14 +421,20 @@ function scanMakeTargets(root: string): string {
 /**
  * Resolves the harness config via lib/config-loader — `.claude/rungate/`
  * directory form first, `.claude/rungate.json` monolith as fallback (#70).
- * Returns null when neither exists or the config is unreadable.
+ *
+ * `null` means ABSENT and nothing else. The `try/catch` this replaces caught
+ * two throws, not one — the deliberate malformed/orphan throw ADR-001 D2
+ * exists to raise, and the ordinary "no config found" — and answered `null`
+ * to both, so a project whose config could not be read scanned identically to
+ * a project that had none. That is the fail-open archetype in
+ * `.claude/rules/checks-must-be-able-to-fail.md`: a catch that reports
+ * "nothing here". A broken config now propagates (ADR-002 Step 3).
  */
 function loadHarnessConfig(root: string): Record<string, any> | null {
-  try {
-    return loadRungateConfig(root) as unknown as Record<string, any>;
-  } catch {
-    return null;
-  }
+  const resolution = resolveConfig(root);
+  return resolution.status === "resolved"
+    ? (resolution.config as unknown as Record<string, any>)
+    : null;
 }
 
 // ── Code structure scanning (dirs, modules, routes) ────────────
