@@ -121,12 +121,18 @@ function plant(
  */
 const MIN_GATE_CHECKS = 100;
 
-function runVerify(slug: string): Record<string, any> {
+function runVerify(slug: string, env: Record<string, string> = {}): Record<string, any> {
   let output = "";
+  const prefix = Object.entries({
+    RUNGATE_WORK_DIR: BASE_DIR,
+    RUNGATE_SKIP_AGENTS: "1",
+    ...env,
+  })
+    .map(([k, v]) => `${k}=${v}`)
+    .join(" ");
   try {
     output = execSync(
-      `RUNGATE_WORK_DIR=${BASE_DIR} RUNGATE_SKIP_AGENTS=1 bun run ${GATE_RUNNER} ` +
-        `--gate verify --slug ${slug} --issue 261 2>&1`,
+      `${prefix} bun run ${GATE_RUNNER} --gate verify --slug ${slug} --issue 261 2>&1`,
       { encoding: "utf-8", timeout: 300000 },
     );
   } catch (e: any) {
@@ -137,7 +143,12 @@ function runVerify(slug: string): Record<string, any> {
 
   const out = JSON.parse(readFileSync(join(BASE_DIR, slug, "workflow-state.json"), "utf-8"));
 
-  const entry = (out.changelog || []).find((c: any) => c?.event === "gate-verify");
+  // The LAST entry, not the first. The changelog accumulates across attempts,
+  // and the heal case below runs this twice against one work dir — reading
+  // attempt 1's record while asserting on attempt 2's state is the kind of
+  // off-by-one that makes a test agree with whatever it is given.
+  const entries = (out.changelog || []).filter((c: any) => c?.event === "gate-verify");
+  const entry = entries[entries.length - 1];
   expect(entry, `the verify gate never recorded a result. Gate output:\n${output}`).toBeTruthy();
   const passes = parseInt(String(entry.detail).match(/(\d+)\s+pass/)?.[1] || "0", 10);
   expect(
@@ -255,6 +266,129 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
       .toBe("2020-01-01T00:00:00.000Z");
     expect(out.evidencePrevalidation.verdict).toBe("PASS");
     expect(prevalidationFailures(out)).toEqual([]);
+  });
+});
+
+/**
+ * #264 — the two defects #261 shipped, found by the first real run after it.
+ *
+ * Run `wf_c71f950f-c88` on #254: four verify attempts over thirteen minutes,
+ * all six ACs PASS, and the gate refused every time on one reading taken at
+ * 00:29 in the wrong directory. SHIP_FAILED. The fix for "a check that cannot
+ * pass" had reintroduced the same shape in a narrower form.
+ *
+ * **D1, the directory.** The pre-validator dry-ran the AC commands with
+ * `state.projectRoot` while the evidence COLLECTOR runs them with
+ * `EVIDENCE_CWD` — which `workflows/ship.js` sets exactly when the gate's cwd
+ * differs from the project root, i.e. under the worktree isolation `marcus`
+ * always uses. One set of commands, two directories, opposite answers: the
+ * command the pre-validator called broken reported 18 pass in the worktree.
+ *
+ * **D2, the freeze.** The measure-once guard — correct for "the scope gate
+ * already measured this" — also froze a reading taken at VERIFY, so attempts
+ * 2, 3 and 4 were judged against attempt 1's measurement and no heal round
+ * could clear it.
+ *
+ * Neither is fatal alone. D1 costs one attempt and heals; D2 is invisible if
+ * the first reading is right. The composition is a refusal the branch cannot
+ * satisfy, which is #261 again.
+ *
+ * Both cases below set the two directories to DIFFERENT paths and put the file
+ * the AC command needs in only one of them. A fixture where they are the same
+ * directory passes whichever one the code picks, which is how this shipped.
+ */
+describe("#264: the reading is taken where the evidence is, and re-taken when it heals", () => {
+  /** Exists only under the "worktree", so the chosen cwd decides the verdict. */
+  const MARKER_COMMAND = "test -f ./ac-marker.txt && echo found-the-marker";
+
+  test("the dry run follows EVIDENCE_CWD, like the evidence collector does", () => {
+    // projectRoot is the planted dir and has no marker. The "worktree" is a
+    // sibling that does. With the pre-validator reading projectRoot the
+    // command is broken; with it reading EVIDENCE_CWD the command is fine.
+    // Exactly the #254 shape: a file that exists only on the branch.
+    const worktree = join(BASE_DIR, "pretend-worktree");
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(worktree, "ac-marker.txt"), "the branch created this\n");
+
+    plant("cwd-follows-evidence", { command: MARKER_COMMAND });
+    const out = runVerify("cwd-follows-evidence", { EVIDENCE_CWD: worktree });
+
+    const reading = out.evidencePrevalidation;
+    expect(
+      reading?.verdict,
+      `the dry run looked in the wrong directory: ${JSON.stringify(reading?.acs)}`,
+    ).toBe("PASS");
+    expect(reading.acs.find((r: any) => r.id === "AC-1")?.status).toBe("ok");
+  });
+
+  test("a verify-taken reading is re-taken on the next attempt, so a heal can clear it", () => {
+    // The heal round, simulated without an agent: attempt 1 runs with the file
+    // absent and records FAIL; the file then appears, the way a heal round
+    // makes a broken evidence command work; attempt 2 must MEASURE AGAIN.
+    //
+    // Nothing about the state is edited between the runs. The only thing that
+    // changes is the world the command looks at, which is the only thing a
+    // heal round changes.
+    const worktree = join(BASE_DIR, "healing-worktree");
+    mkdirSync(worktree, { recursive: true });
+
+    plant("heal-reading", { command: MARKER_COMMAND });
+    const first = runVerify("heal-reading", { EVIDENCE_CWD: worktree });
+    expect(first.evidencePrevalidation?.verdict, "attempt 1 should have failed").toBe("FAIL");
+    const firstCheckedAt = first.evidencePrevalidation.checkedAt;
+
+    writeFileSync(join(worktree, "ac-marker.txt"), "the heal round created this\n");
+    const second = runVerify("heal-reading", { EVIDENCE_CWD: worktree });
+
+    expect(
+      second.evidencePrevalidation?.verdict,
+      "attempt 2 was judged against attempt 1's reading, so the heal could not clear it",
+    ).toBe("PASS");
+    expect(
+      second.evidencePrevalidation.checkedAt,
+      "the reading was never re-taken — same timestamp on both attempts",
+    ).not.toBe(firstCheckedAt);
+    expect(prevalidationFailures(second), "the gate refused on a stale reading").toEqual([]);
+  });
+
+  test("the state records WHICH gate took the reading", () => {
+    // The distinction the fix needs. "A reading exists" cannot separate "the
+    // scope gate measured this run's starting conditions" from "a previous
+    // verify attempt measured this", and those two want opposite treatment on
+    // the next attempt. Without it the fix has to guess, and guessing is how
+    // D2 got written.
+    plant("records-its-source");
+    const out = runVerify("records-its-source");
+    expect(out.evidencePrevalidation?.takenAt, "the reading does not say where it came from")
+      .toBe("verify");
+  });
+
+  test("a scope-taken reading still survives verify, unchanged", () => {
+    // The guard D2's fix must not break, stated against the new field rather
+    // than inherited from the older case above. A STANDARD run measured its
+    // starting conditions at scope; re-measuring them after Marcus has run
+    // answers a different question.
+    const out = runVerify((
+      plant("scope-reading-survives", {
+        tier: "STANDARD",
+        command: BROKEN_COMMAND,
+        extra: {
+          gates: { scope: { result: "PASS", attempt: 1, failures: [] } },
+          evidencePrevalidation: {
+            verdict: "PASS",
+            checkedAt: "2020-01-01T00:00:00.000Z",
+            acs: [{ id: "AC-1", status: "ok" }],
+            reason: null,
+            takenAt: "scope",
+          },
+        },
+      }),
+      "scope-reading-survives"
+    ));
+
+    expect(out.evidencePrevalidation.checkedAt, "a scope reading was re-taken at verify")
+      .toBe("2020-01-01T00:00:00.000Z");
+    expect(out.evidencePrevalidation.verdict).toBe("PASS");
   });
 });
 

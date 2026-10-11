@@ -331,11 +331,29 @@ export const PrevalidatedACSchema = z.object({
   }
 });
 
+/** Which gate took the reading. Optional: a reading written before #264 has no answer. */
+export const PREVALIDATION_SOURCES = ["scope", "verify"] as const;
+
 const EvidencePrevalidationShape = {
   verdict: z.enum(PREVALIDATION_VERDICTS),
   checkedAt: z.string(),
   acs: z.array(PrevalidatedACSchema),
   reason: z.string().nullable(),
+  // Which gate measured this (#264).
+  //
+  // "A reading exists" cannot separate two cases that want opposite treatment
+  // on the next verify attempt: the scope gate measured this run's STARTING
+  // conditions, which re-measuring after Marcus has run would answer a
+  // different question; or a previous verify attempt measured it, in which
+  // case freezing that reading means no heal round can ever clear a refusal.
+  // #261 could not tell them apart and froze both, so run wf_c71f950f-c88
+  // spent four verify attempts judged against one reading taken in the wrong
+  // directory, with all six of its ACs passing.
+  //
+  // Optional, so a reading written before this field existed still validates
+  // and still behaves exactly as it did — absent is treated as "not verify",
+  // which preserves it.
+  takenAt: z.enum(PREVALIDATION_SOURCES).optional(),
 };
 
 /**

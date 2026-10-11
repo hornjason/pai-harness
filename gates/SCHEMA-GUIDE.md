@@ -186,6 +186,7 @@ tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
 | `checkedAt` | string | ISO timestamp of the dry-run |
 | `acs` | array | One entry per AC: `id`, `status`, and the auto-fix fields below. Empty — and only empty — when UNMEASURED |
 | `reason` | string \| null | Why the reading is UNMEASURED. Null, and only null, when it is not |
+| `takenAt` | `scope` \| `verify`, optional | Which gate measured it (#264). Absent means a run older than the field |
 
 **The three verdicts:**
 
@@ -234,8 +235,23 @@ Verify, so the rewrite is the only record that anything happened.
 } }
 ```
 
-The scope gate writes it — `gates/gate-executor.ts`, `runScopePreflightsAndPersist` —
-after the dry-run resolves and before the gate tests run. Not by hand.
+Either gate writes it — `gates/gate-executor.ts`, `runScopePreflightsAndPersist`
+at scope and `ensurePrevalidationPersisted` at verify — after the dry-run
+resolves and before the gate tests run. Not by hand.
+
+**`takenAt` decides what happens on the next verify attempt, and the two cases
+want opposite treatment (#264).** A `scope` reading measured the run's starting
+conditions and is preserved: re-measuring it after Marcus has run answers a
+different question than the one the scope gate refuses on. A `verify` reading
+is RE-TAKEN on every subsequent verify attempt, because the whole premise of an
+attempt is that the branch moved — freezing it means no heal round can clear a
+refusal. Run `wf_c71f950f-c88` made four verify attempts with all six ACs PASS,
+every one judged against a single frozen reading, and reported SHIP_FAILED.
+
+**The dry-run uses `EVIDENCE_CWD` when it is set**, which is the directory the
+evidence collector uses, and which `workflows/ship.js` sets under worktree
+isolation. A pre-validator looking somewhere other than where the evidence will
+be collected calls the branch's own new files missing.
 
 ## Changelog Actor Values
 

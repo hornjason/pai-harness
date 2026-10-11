@@ -1483,6 +1483,57 @@ What was broken to prove it, run and counted rather than asserted, over
 
 None is left in the tree; all were run and reverted.
 
+#### The fix for it shipped two more of the same (2026-10-10, #264)
+
+The first real run after #261 merged — `wf_c71f950f-c88` on #254 — refused at
+verify on a reading my fix had taken. Recorded in full because the lesson is
+not the bug, it is that a fix for "a check the branch cannot satisfy" produced
+two more instances of exactly that, and only a live run found them.
+
+From the run's own state file: four verify attempts over thirteen minutes, all
+six ACs carrying `verdict: PASS`, every attempt judged against one reading
+stamped `checkedAt: 2026-10-11T00:29:03.380Z`. Status `SHIP_FAILED`.
+
+**D1, the directory.** `stampEvidencePrevalidation` dry-ran the AC commands
+with `state.projectRoot`. The evidence COLLECTOR, forty lines earlier in the
+same file, uses `process.env.EVIDENCE_CWD || state.projectRoot ||
+process.cwd()` — and `workflows/ship.js` sets `EVIDENCE_CWD` exactly when the
+gate's cwd differs from the project root, which is the worktree isolation
+`marcus` always runs with. So the pre-validator declared three commands broken
+because the branch's new test file does not exist in the main repo, while the
+same commands report 18 pass in the worktree. The line predates #261 — I moved
+it unchanged — but #261 is what made it reachable, because a LIGHT run never
+took the reading at verify before.
+
+**D2, the freeze.** The measure-once guard read "if a reading exists, keep it".
+Right for a scope reading, wrong for a verify one: attempts 2, 3 and 4 were
+judged against attempt 1's measurement, so no heal round could clear it. That
+is #261's own shape — a refusal the branch has no way to satisfy — reintroduced
+by #261's fix.
+
+Neither is fatal alone. D1 costs one attempt and heals; D2 is invisible when
+the first reading is right. **A fixture where projectRoot and the evidence cwd
+are the same directory passes whichever one the code reads**, which is why the
+original tests were green over D1, and it is the generalisable lesson: when two
+code paths read the same fact from different places, a fixture that collapses
+them cannot see the divergence.
+
+- [x] SC-660: gates/gate-executor.ts contains [process.env.EVIDENCE_CWD || state.projectRoot] — the dry run looks where the evidence will be collected; a pre-validator reading a different directory than the collector calls the branch's own new files missing, and reports it as the branch's defect
+- [x] SC-661: gates/schema.ts contains [PREVALIDATION_SOURCES, takenAt] — the reading records WHICH gate took it, because "a reading exists" cannot separate the two cases that want opposite treatment on the next attempt; optional, so a reading written before the field still validates and keeps the behaviour it had
+- [x] SC-662: gates/gate-executor.ts contains [existing.takenAt !== "verify"] — a scope reading is preserved and a verify reading is re-taken, because the premise of a second attempt is that the branch moved
+- [x] SC-663: test/evidence-prevalidation-at-verify.test.ts contains [pretend-worktree, healing-worktree] — the two directories are DIFFERENT in the fixture and the file the command needs is in only one of them; the heal case runs the real gate twice and changes nothing but the world the command looks at
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/evidence-prevalidation-at-verify.test.ts` (9 tests):
+
+| Mutation | Red |
+|---|---|
+| the `EVIDENCE_CWD` read dropped — D1, reintroduced verbatim | 2 of 9 |
+| the unconditional early return restored — D2, reintroduced verbatim | 1 of 9 |
+| the measure-once guard removed entirely | 3 of 9 — a scope reading is re-taken, and both #261 preservation cases go with it, which is the fail direction the fix must not buy its way into |
+
+None is left in the tree; all were run and reverted.
+
 Filed rather than fixed here, because it is a different defect in a different
 function: `prevalidationViolations` names the broken ACs out of
 `reading.broken`, and no writer produces that key —

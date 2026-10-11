@@ -623,7 +623,7 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
     trackPreExistingFailures(state.slug, state.preExistingFailures);
   }
 
-  await stampEvidencePrevalidation(state);
+  await stampEvidencePrevalidation(state, "scope");
 }
 
 /**
@@ -638,12 +638,27 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
  * One function rather than an inline block because there are now two gates
  * that need it (#261) and a second copy of this is a second source of truth
  * for a field whose whole purpose is to be the single reading.
+ *
+ * The cwd is `EVIDENCE_CWD` first (#264), which is what the evidence COLLECTOR
+ * at `evidenceCwdForRefs` and `evidenceCwd` already uses. `workflows/ship.js`
+ * sets it exactly when the gate's working directory differs from the project
+ * root — that is, under the worktree isolation `marcus` always runs with. This
+ * line read `state.projectRoot` and so dry-ran the branch's commands in the
+ * MAIN repo, where the branch's new files do not exist, while the collector
+ * ran the same commands in the worktree, where they do. One set of commands,
+ * two directories, opposite answers; on run wf_c71f950f-c88 the three commands
+ * this called broken reported 18 pass in the worktree. A pre-validator that
+ * does not look where the evidence will be collected is not pre-validating
+ * anything.
  */
-export async function stampEvidencePrevalidation(state: Record<string, any>): Promise<void> {
+export async function stampEvidencePrevalidation(
+  state: Record<string, any>,
+  takenAt: "scope" | "verify",
+): Promise<void> {
   if (!(state.acs?.length > 0)) return;
 
-  const projectRoot = state.projectRoot || process.cwd();
-  const reading = await measureEvidencePrevalidation(state.acs, projectRoot);
+  const evidenceCwd = process.env.EVIDENCE_CWD || state.projectRoot || process.cwd();
+  const reading = { ...(await measureEvidencePrevalidation(state.acs, evidenceCwd)), takenAt };
 
   // Validated before it is stamped, not after: an unparseable reading must
   // not reach the file at all, and the refusal has to leave the state saying
@@ -654,6 +669,7 @@ export async function stampEvidencePrevalidation(state: Record<string, any>): Pr
     : {
         verdict: "UNMEASURED",
         checkedAt: reading.checkedAt,
+        takenAt,
         acs: [],
         reason:
           "the evidence pre-validation reading did not validate against EvidencePrevalidationSchema: " +
@@ -685,13 +701,22 @@ export async function stampEvidencePrevalidation(state: Record<string, any>): Pr
  * here a check that could not pass, both because a check's phase did not imply
  * its producer's phase.
  *
- * ONLY when absent. A STANDARD run measured at scope, and re-measuring here
- * would be a second reading of the same commands — wasteful, and worse, it
- * would overwrite a scope-time verdict with a post-Marcus one, which is not
- * the thing the scope gate's refusal was about. An UNMEASURED reading is
- * PRESENT, so it is not re-taken either: a recorded failure to measure is a
- * recorded failure, and retrying it here would turn #235's refusal into a
- * retry loop.
+ * A SCOPE reading is preserved. It measured this run's starting conditions,
+ * and re-measuring them after Marcus has run answers a different question than
+ * the one the scope gate's refusal was about.
+ *
+ * A VERIFY reading is RE-TAKEN (#264). The first version of this said "only
+ * when absent", which froze both kinds alike, and that is the half of #261 the
+ * fix for #261 reintroduced. Run wf_c71f950f-c88 made four verify attempts
+ * over thirteen minutes with all six of its ACs PASS, every one of them judged
+ * against one reading taken at 00:29 — so the heal rounds had nothing they
+ * could change. A verify attempt is a new measurement opportunity by
+ * definition: the whole point of the attempt is that the branch moved.
+ *
+ * "A reading exists" cannot tell those two apart, which is why the reading now
+ * records which gate took it rather than being inferred from the tier. Absent
+ * means a run older than this field, and absent is preserved — the behaviour
+ * it already had.
  *
  * The reading does not mean quite the same thing on the two tiers, and that is
  * worth saying out loud rather than leaving for someone to infer wrongly. At
@@ -714,8 +739,9 @@ export async function ensurePrevalidationPersisted(
   state: Record<string, any>,
   sf: string,
 ): Promise<boolean> {
-  if (state.evidencePrevalidation) return false;
-  await stampEvidencePrevalidation(state);
+  const existing = state.evidencePrevalidation;
+  if (existing && existing.takenAt !== "verify") return false;
+  await stampEvidencePrevalidation(state, "verify");
   writeFileSync(sf, JSON.stringify(state, null, 2));
   return true;
 }
