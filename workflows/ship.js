@@ -1795,7 +1795,42 @@ Return sub-issues in dependency order (foundations first).
 phase('Scope')
 const skipScope = discovery.ceremonyTier === 'LIGHT'
 
-let scopeResult = { result: 'PASS' }
+// ──── SCOPE-VERDICT-START ────
+/**
+ * What this run can honestly say the scope gate's verdict was (#276).
+ *
+ * What was here: the result variable was declared holding a PASS verdict and
+ * reported as `scopeResult?.result || 'SKIPPED'`. The initialiser IS the did-not-run
+ * value, so over the four reachable states the two words came out swapped —
+ * never executed → PASS, ran and passed → PASS, ran and failed → FAIL, ran
+ * and reported nothing → SKIPPED. `skipScope` is true on every LIGHT run, and
+ * every LIGHT run in this repo's history printed `Scope: PASS` without a scope
+ * gate ever running. The one state that deserved suspicion, a gate that
+ * answered with nothing, was the only one reported as skipped.
+ *
+ * This is #173's shape, 430 lines above where #173 put it: a separate OBSERVED
+ * `ran` boolean rather than a value inferred from the tier or from whatever is
+ * sitting in the result slot, and a reply that is not one of the two verdicts
+ * read as FAIL. "The gate did not tell us it passed" and "the gate told us it
+ * passed" are different facts and only one of them is a pass; SKIPPED is
+ * reserved for the gate never having run, which only `ran` can say.
+ *
+ * In a marked block rather than an inline ternary so
+ * test/ship-scope-verdict.test.ts can EXECUTE it — every source-text assertion
+ * in this repo has survived its first mutation.
+ */
+function scopeVerdictFor(ran, result) {
+  if (!ran) return 'SKIPPED'
+  const v = result && typeof result === 'object' ? result.result : undefined
+  return v === 'PASS' || v === 'FAIL' ? v : 'FAIL'
+}
+// ──── SCOPE-VERDICT-END ────
+
+// Whether the scope gate actually ran this run, and what it said. The result
+// starts as `null` and not as a verdict: a value nobody measured must not be
+// reportable (#276).
+let scopeRan = false
+let scopeResult = null
 if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
@@ -1816,9 +1851,11 @@ For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or p
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 This validates via Zod at write time — you get immediate error feedback.`)
-  if (scopeResult?.result === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult.failures, workDir: WORK_DIR }
+  scopeRan = true
 }
-log(`Scope: ${scopeResult?.result || 'SKIPPED'}`)
+const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)
+if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult?.failures || [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`], workDir: WORK_DIR }
+log(`Scope: ${scopeVerdict}`)
 
 if (DRY_RUN) {
   log('DRY RUN — stopping after scope. No agents will be spawned.')
@@ -1828,7 +1865,7 @@ if (DRY_RUN) {
     sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
     acs: discovery.acs.map(ac => ({ id: ac.id, type: ac.type, statement: ac.statement })),
     priorWork: discovery.priorWork,
-    scopeResult: scopeResult?.result || 'SKIPPED',
+    scopeResult: scopeVerdict,
     workDir: WORK_DIR,
   }
 }
