@@ -1434,6 +1434,67 @@ None is left in the tree; all were run and reverted.
 
 ---
 
+### A check that could not PASS (2026-10-10)
+
+`.claude/rules/checks-must-be-able-to-fail.md` is about a check that passes
+because of what it never looked at. #261 is the same root with the sign
+flipped, and it cost two heal rounds on a run whose ACs were all green.
+
+The evidence pre-validation reading had exactly one writer, the SCOPE gate.
+`workflows/ship.js` skips the scope gate outright when Discovery sizes a run
+LIGHT (`skipScope = discovery.ceremonyTier === 'LIGHT'`). Its reader,
+`evidence-prevalidation` in `gates/workflow.test.ts`, is guarded by
+`isVerifyPlus()` and runs regardless. An absent reading is a refusal — which
+#235 got right, for the right reason: "the writer never ran" and "the writer
+ran and measured nothing" are the same failure. Composed, every LIGHT-tier run
+failed verify unconditionally, and no change to the code being shipped could
+have healed it. Run `wf_ed24496e-e49` reached VERIFY with six of six ACs PASS
+and spent its heal budget on the gate's own plumbing.
+
+Neither half is wrong on its own. Both halves were tested. Nothing tested the
+composition, because no test ever ran a verify gate on a run that had not had a
+scope gate — the fixture everyone reaches for carries `gates.scope` without
+thinking about it, and a fixture that always has the producer's output cannot
+notice that the producer is unreachable.
+
+**The producer now runs wherever the consumer checks, and only when the reading
+is absent.** A STANDARD run still measures exactly once; re-measuring at verify
+would overwrite a scope-time verdict with a post-Marcus one, which is not what
+the scope refusal was about. An UNMEASURED reading is PRESENT and is not
+re-taken: a recorded failure to measure is a recorded failure, and retrying it
+would turn #235's refusal into a retry loop.
+
+- [x] SC-655: gates/gate-executor.ts contains [export async function ensurePrevalidationPersisted] — the reading exists wherever the gate checks for it, taken only when absent, and the write is one statement after the await for the reason `runScopePreflightsAndPersist` already gives: `runGateTests` spawns bun against workflow-state.json as it stands on disk
+- [x] SC-656: gates/gate-executor.ts contains [export async function stampEvidencePrevalidation] — one function measures-validates-stamps for both gates, because the second copy of that block would be a second source of truth for a field whose entire purpose is to be the single reading
+- [x] SC-657: test/evidence-prevalidation-at-verify.test.ts contains [the reading is on disk BEFORE the gate suite is spawned] — ordering is asserted end-to-end and without reading the source: the reading present in the final file proves the producer ran, and the ABSENCE of its refusal from the failures the spawned suite reported proves it ran first
+- [x] SC-658: test/evidence-prevalidation-at-verify.test.ts contains [MIN_GATE_CHECKS] — every case first proves the gate suite executed, because a runner that dies before `runGateTests` leaves exactly the state the unfixed code leaves, and that case turns green on the fix for no reason connected to it
+- [x] SC-659: test/evidence-prevalidation-at-verify.test.ts contains [a broken evidence command on a LIGHT run still refuses, not a retry] — measuring at verify buys nothing if the measurement cannot come back FAIL, and nothing if a recorded UNMEASURED is quietly re-rolled into a PASS
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/evidence-prevalidation-at-verify.test.ts` (5 tests):
+
+| Mutation | Red |
+|---|---|
+| the verify-gate producer removed — the bug, reintroduced verbatim | 3 of 5 |
+| the producer moved to AFTER `runGateTests` | 1 of 5 — and the "reading exists" case stays GREEN, which is the whole reason the ordering assertion is separate from the presence one |
+| the measure-once guard removed | 2 of 5 — a STANDARD run re-measures and an UNMEASURED reading is silently re-rolled |
+| the measurement replaced with a hard-coded PASS | 1 of 5 — the rubber-stamp, which is this defect with the sign flipped back again |
+| the gate runner pointed at a path that does not exist | 5 of 5, every one of them through the `MIN_GATE_CHECKS` guard with its own message rather than the subject's |
+
+None is left in the tree; all were run and reverted.
+
+Filed rather than fixed here, because it is a different defect in a different
+function: `prevalidationViolations` names the broken ACs out of
+`reading.broken`, and no writer produces that key —
+`measureEvidencePrevalidation` returns per-AC results under `acs`, and
+`EvidencePrevalidationSchema` requires a FAIL to carry at least one
+`acs[].status === "broken"`. The refusal is still a refusal, so it fails
+closed; but it always says "no broken AC ids were recorded", which is true of
+the key and false of the reading, and a refusal the heal loop cannot act on is
+part of how #261 cost two rounds.
+
+---
+
 ## 6. ITERATION — Convergence + stuck detection
 
 **Purpose:** Decide what to do when verification fails. Replan, don't just retry.

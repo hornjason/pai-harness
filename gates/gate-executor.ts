@@ -623,35 +623,101 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
     trackPreExistingFailures(state.slug, state.preExistingFailures);
   }
 
-  // Evidence command pre-validation (#598) — dry-run AC evidence commands
-  // to catch broken commands BEFORE Marcus runs.
-  //
-  // AWAITED (#235). This used to be `prevalidateEvidence(...).then(...)` with
-  // no await: the function returned immediately, the gate wrote
-  // workflow-state.json and launched the gate tests, and the verdict landed in
-  // stdout some time afterwards — too late for anything to read, and with
-  // rejections swallowed into a warning that looked the same as a clean run.
-  if (state.acs?.length > 0) {
-    const projectRoot = state.projectRoot || process.cwd();
-    const reading = await measureEvidencePrevalidation(state.acs, projectRoot);
+  await stampEvidencePrevalidation(state);
+}
 
-    // Validated before it is stamped, not after: an unparseable reading must
-    // not reach the file at all, and the refusal has to leave the state saying
-    // "unmeasured" rather than silently saying nothing.
-    const parsed = EvidencePrevalidationSchema.safeParse(reading);
-    state.evidencePrevalidation = parsed.success
-      ? reading
-      : {
-          verdict: "UNMEASURED",
-          checkedAt: reading.checkedAt,
-          acs: [],
-          reason:
-            "the evidence pre-validation reading did not validate against EvidencePrevalidationSchema: " +
-            parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400),
-        };
+/**
+ * Take the evidence pre-validation reading and stamp it on the state (#598).
+ *
+ * AWAITED (#235). This used to be `prevalidateEvidence(...).then(...)` with no
+ * await: the function returned immediately, the gate wrote workflow-state.json
+ * and launched the gate tests, and the verdict landed in stdout some time
+ * afterwards — too late for anything to read, and with rejections swallowed
+ * into a warning that looked the same as a clean run.
+ *
+ * One function rather than an inline block because there are now two gates
+ * that need it (#261) and a second copy of this is a second source of truth
+ * for a field whose whole purpose is to be the single reading.
+ */
+export async function stampEvidencePrevalidation(state: Record<string, any>): Promise<void> {
+  if (!(state.acs?.length > 0)) return;
 
-    reportPrevalidation(state.evidencePrevalidation as EvidencePrevalidationReading);
-  }
+  const projectRoot = state.projectRoot || process.cwd();
+  const reading = await measureEvidencePrevalidation(state.acs, projectRoot);
+
+  // Validated before it is stamped, not after: an unparseable reading must
+  // not reach the file at all, and the refusal has to leave the state saying
+  // "unmeasured" rather than silently saying nothing.
+  const parsed = EvidencePrevalidationSchema.safeParse(reading);
+  state.evidencePrevalidation = parsed.success
+    ? reading
+    : {
+        verdict: "UNMEASURED",
+        checkedAt: reading.checkedAt,
+        acs: [],
+        reason:
+          "the evidence pre-validation reading did not validate against EvidencePrevalidationSchema: " +
+          parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 400),
+      };
+
+  reportPrevalidation(state.evidencePrevalidation as EvidencePrevalidationReading);
+}
+
+/**
+ * Make sure the reading exists before the verify gate's suite reads for it
+ * (#261).
+ *
+ * The scope gate was the only writer, and `workflows/ship.js` skips the scope
+ * gate outright when Discovery sizes a run LIGHT:
+ *
+ *     const skipScope = discovery.ceremonyTier === 'LIGHT'
+ *
+ * The consumer — `evidence-prevalidation` in gates/workflow.test.ts — is
+ * guarded by `isVerifyPlus()`, so it ran anyway, and an absent reading is a
+ * refusal (#235, correctly: "the writer never ran" and "the writer ran and
+ * measured nothing" are the same failure). Composed, EVERY LIGHT-tier run
+ * failed its verify gate on every attempt, regardless of the code it was
+ * shipping, and no change to that code could have healed it. Run
+ * wf_ed24496e-e49 reached VERIFY with all six ACs PASS and spent two heal
+ * rounds against the gate's own plumbing.
+ *
+ * Same root as #126 with the sign flipped: there a check that could not fail,
+ * here a check that could not pass, both because a check's phase did not imply
+ * its producer's phase.
+ *
+ * ONLY when absent. A STANDARD run measured at scope, and re-measuring here
+ * would be a second reading of the same commands — wasteful, and worse, it
+ * would overwrite a scope-time verdict with a post-Marcus one, which is not
+ * the thing the scope gate's refusal was about. An UNMEASURED reading is
+ * PRESENT, so it is not re-taken either: a recorded failure to measure is a
+ * recorded failure, and retrying it here would turn #235's refusal into a
+ * retry loop.
+ *
+ * The reading does not mean quite the same thing on the two tiers, and that is
+ * worth saying out loud rather than leaving for someone to infer wrongly. At
+ * scope it means "these evidence commands were already broken before any work
+ * started" — #598's point, which is to stop Marcus running against commands
+ * that cannot produce evidence. Here it means "these evidence commands are
+ * broken now". For the gate's actual question — can this run's claims be
+ * evidenced? — the verify-time reading is the more relevant of the two, and a
+ * LIGHT run has no earlier one to prefer. Nothing downstream consumes the
+ * reading's auto-fix suggestions, so taking it late costs nothing but the
+ * earliness #598 wanted, which a LIGHT run was never going to get.
+ *
+ * Persisting is the other half, and `runScopePreflightsAndPersist`'s comment
+ * already says why: `runGateTests` spawns bun against workflow-state.json as
+ * it stands on disk, so a reading written after the tests start is a reading
+ * they never see. The write is one statement after the await for the same
+ * reason it is there.
+ */
+export async function ensurePrevalidationPersisted(
+  state: Record<string, any>,
+  sf: string,
+): Promise<boolean> {
+  if (state.evidencePrevalidation) return false;
+  await stampEvidencePrevalidation(state);
+  writeFileSync(sf, JSON.stringify(state, null, 2));
+  return true;
 }
 
 /**
@@ -1443,6 +1509,13 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   // read the file (#235)
   if (gate === "scope") {
     await runScopePreflightsAndPersist(state, sf, harnessRoot);
+  }
+
+  // The reading the verify gate is about to check for, if nothing took it
+  // (#261). Before the gate suite is spawned, which is the whole ordering
+  // constraint — see ensurePrevalidationPersisted.
+  if (gate === "verify") {
+    await ensurePrevalidationPersisted(state, sf);
   }
 
   // Type check (scope or verify)
