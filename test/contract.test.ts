@@ -17,9 +17,19 @@ const GOVERNING_SPEC = join(import.meta.dir, "..", "specs", "BOOTSTRAP-DATA-FLOW
 const TEST_BASE = "/tmp/harness-contract-tests";
 const GATES_DIR = join(import.meta.dir, "..", "gates");
 
-function runGate(gate: string, slug: string): { pass: number; fail: number; output: string } {
+/**
+ * Run one gate against a fixture, through the same CLI ship.js uses.
+ *
+ * `--tree-under-test` is passed rather than written into the fixture by hand
+ * (#314). ship.js supplies it on the command line and `run-gate.ts` persists
+ * it into the state file before any check reads it, so planting the field
+ * directly would leave that plumbing — the half of #314 that lives in the
+ * runner rather than in the checks — unexercised by the contract test that is
+ * supposed to be the gate's own proof.
+ */
+function runGate(gate: string, slug: string, treeUnderTest: string): { pass: number; fail: number; output: string } {
   const gateRunner = join(GATES_DIR, "run-gate.ts");
-  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --force 2>&1`;
+  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --tree-under-test ${treeUnderTest} --force 2>&1`;
   try {
     const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
     const passMatch = output.match(/(\d+) pass/);
@@ -55,13 +65,13 @@ describe("contract: LIGHT tier", () => {
   });
 
   test("scope passes", () => {
-    const r = runGate("scope", "light");
+    const r = runGate("scope", "light", "/tmp/test");
     expect(r.fail).toBe(0);
     expect(r.pass).toBeGreaterThan(0);
   }, { timeout: 30_000 });
 
   test("ship passes", () => {
-    const r = runGate("ship", "light");
+    const r = runGate("ship", "light", "/tmp/test");
     expect(r.pass).toBeGreaterThan(0);
   }, { timeout: 30_000 });
 });
@@ -147,18 +157,46 @@ describe("contract: STANDARD tier", () => {
   });
 
   test("scope passes", () => {
-    const r = runGate("scope", "standard");
+    const r = runGate("scope", "standard", STANDARD_PROJECT);
     expect(r.fail).toBe(0);
   }, { timeout: 30_000 });
 
   test("verify passes", () => {
-    const r = runGate("verify", "standard");
+    const r = runGate("verify", "standard", STANDARD_PROJECT);
     expect(r.fail).toBe(0);
   }, { timeout: 30_000 });
 
   test("ship passes", () => {
-    const r = runGate("ship", "standard");
+    const r = runGate("ship", "standard", STANDARD_PROJECT);
     expect(r.fail).toBe(0);
+  }, { timeout: 30_000 });
+
+  /**
+   * The flag has to be load-bearing (#314). Every case above passes it, so on
+   * their own they are equally satisfied by a runner that ignores it and by
+   * one that threads it through — and "ignores it" is precisely the state the
+   * gate was in before #314, when it measured projectRoot and passed anyway.
+   *
+   * Same fixture, same gate, one argument removed. A green run here would mean
+   * the checks fell back to the config root, which is the defect.
+   */
+  test("the same gate refuses as UNMEASURED when --tree-under-test is omitted", () => {
+    const gateRunner = join(GATES_DIR, "run-gate.ts");
+    const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate verify --slug standard --issue 9999 --force 2>&1`;
+    let output = "";
+    try {
+      output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
+    } catch (e: any) {
+      output = (e.stdout || "") + (e.stderr || "");
+    }
+    expect(parseInt(output.match(/(\d+) fail/)?.[1] ?? "0")).toBeGreaterThan(0);
+    // Named, not merely counted. The gate's batch diagnosis prints check names
+    // rather than their detail, and "some number of checks failed" would be
+    // satisfied by a fixture that had gone stale for an unrelated reason.
+    // These are the verify-phase members of the migrated set.
+    for (const check of ["tsc-pass", "governing-spec-exists", "harness-port-validation"]) {
+      expect(output, `${check} did not refuse without a tree under test`).toContain(check);
+    }
   }, { timeout: 30_000 });
 
   /**
@@ -184,13 +222,13 @@ describe("contract: STANDARD tier", () => {
       s.acs[0].evidenceMethod.command = "grep fix no-such-file.ts";
     });
 
-    runGate("scope", "standard-broken-evidence");
+    runGate("scope", "standard-broken-evidence", STANDARD_PROJECT);
     const recorded = JSON.parse(readFileSync(
       join(TEST_BASE, "standard-broken-evidence", "workflow-state.json"), "utf-8"));
     expect(recorded.evidencePrevalidation?.verdict).toBe("FAIL");
     expect(recorded.evidencePrevalidation.acs.find((a: any) => a.id === "AC-1").status).toBe("broken");
 
-    const r = runGate("verify", "standard-broken-evidence");
+    const r = runGate("verify", "standard-broken-evidence", STANDARD_PROJECT);
     expect(r.fail).toBeGreaterThan(0);
     expect(r.output).toContain("evidence-prevalidation");
   }, { timeout: 60_000 });
@@ -203,8 +241,8 @@ describe("contract: STANDARD tier", () => {
     // version of both tests drove verify without scope and this went red,
     // which is how the record-then-read split above was found.
     writeStandardFixture("standard-control");
-    runGate("scope", "standard-control");
-    const r = runGate("verify", "standard-control");
+    runGate("scope", "standard-control", STANDARD_PROJECT);
+    const r = runGate("verify", "standard-control", STANDARD_PROJECT);
     expect(r.fail).toBe(0);
   }, { timeout: 60_000 });
 });
@@ -225,7 +263,7 @@ describe("contract: negative cases", () => {
       buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
     }, null, 2));
     writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1\n\n## AC-1\nFix applied\n");
-    const r = runGate("ship", "broken-env");
+    const r = runGate("ship", "broken-env", "/tmp/test");
     expect(r.fail).toBeGreaterThan(0);
   });
 
@@ -249,7 +287,7 @@ describe("contract: negative cases", () => {
       buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
     }, null, 2));
     writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2, AC-3, AC-4\n\n## AC-1\nFirst check\n\n## AC-2\nSecond check\n\n## AC-3\nThird check\n\n## AC-4\nFourth check\n");
-    const r = runGate("ship", "broken-grep");
+    const r = runGate("ship", "broken-grep", "/tmp/test");
     expect(r.output).toContain("evidence-type-ratio");
   });
 
@@ -271,7 +309,7 @@ describe("contract: negative cases", () => {
       buildCommit: "abc1234", changelog: [], bootstrappedFrom: "ship-workflow"
     }, null, 2));
     writeFileSync(join(dir, "marcus-brief.md"), "# Marcus Brief\n\nCovers: AC-1, AC-2\n\n## AC-1\nHas evidence\n\n## AC-2\nMissing evidence\n");
-    const r = runGate("ship", "broken-evidence");
+    const r = runGate("ship", "broken-evidence", "/tmp/test");
     expect(r.output).toContain("all-acs-have-evidence");
   });
 });

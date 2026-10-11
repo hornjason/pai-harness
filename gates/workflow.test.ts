@@ -45,6 +45,37 @@ function loadProjectHarness(): any {
   return JSON.parse(readFileSync(p, "utf-8"));
 }
 
+/**
+ * #314 — the tree a check MEASURES, as opposed to where config is READ.
+ *
+ * `projectRoot` is the main checkout. On a worktree-isolated run the change
+ * under test is not in it, so a command executed there measures code that is
+ * already merged and green. Measured on run `wf_5cdce852-1e2`: `tsc-pass` ran
+ * the compiler in `projectRoot`, reported PASS, and CI then caught two real
+ * type errors on the branch.
+ *
+ * Returns `null` when the state does not name the tree. Every caller must
+ * refuse on `null` rather than substitute `projectRoot` — that substitution is
+ * the defect, and it is invisible because it always produces a pass.
+ */
+export function treeUnderTestViolations(tree: unknown, checkName: string): string[] {
+  if (typeof tree !== "string" || tree.trim() === "") {
+    return [
+      `${checkName}: workflow state does not name treeUnderTest, so there is ` +
+        `nothing to measure. This is UNMEASURED, not PASS — measuring ` +
+        `projectRoot instead would check the main checkout, which is green by ` +
+        `construction and is not the change being shipped (#314).`,
+    ];
+  }
+  return [];
+}
+
+/** The tree to run commands in, or null when the state does not name one. */
+function treeRoot(): string | null {
+  const t = sf("treeUnderTest");
+  return typeof t === "string" && t.trim() !== "" ? t : null;
+}
+
 const isVerifyPlus = () => { const p = sf("phase"); return ["VERIFY", "SHIP", "DONE"].includes(p); };
 const isShipPlus = () => { const p = sf("phase"); return ["SHIP", "DONE"].includes(p); };
 const isDone = () => sf("phase") === "DONE";
@@ -332,14 +363,27 @@ describe("scope checks", () => {
     const specs = sf("sourceSpecs") || [];
     if (specs.length === 0) return; // caught by sourceSpecs-required
     const specPath = specs[0].path;
-    const projectRoot = sf("projectRoot") || ".";
-    const resolved = specPath.startsWith("/") ? specPath : join(projectRoot, specPath);
+    // #314 — the spec is resolved against the TREE UNDER TEST. A spec added on
+    // the branch does not exist in the main checkout, so resolving against
+    // projectRoot failed a run for writing its own governing spec; a spec
+    // deleted on the branch still exists in main, so the same read passed a
+    // run that had removed the thing it claimed to be governed by.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "governing-spec-exists");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
+    const resolved = specPath.startsWith("/") ? specPath : join(root!, specPath);
     expect(existsSync(resolved), `Governing spec not found: ${resolved}`).toBe(true);
   });
 
   // 14. harness-port-validation: rungate.json ports match Makefile
   test("harness-port-validation: dev/test/prod ports match Makefile", () => {
-    const projectRoot = sf("projectRoot");
+    // #314 — this check's SUBJECT is whether two files in the tree agree, so
+    // it reads both from the tree under test. It is not a config read: a
+    // branch that edits a port in either file would otherwise be graded
+    // against the main checkout's copies, where the two already agree.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "harness-port-validation");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const projectRoot = treeRoot();
     if (!projectRoot) return;
     const harnessPath = join(projectRoot, ".claude", "rungate.json");
     const makefilePath = join(projectRoot, "Makefile");
@@ -397,7 +441,10 @@ describe("verify checks", () => {
     const harness = loadProjectHarness();
     if (!harness?.prod?.rebuild) return;
     const prodRebuild = sf("environments")?.prod?.rebuild;
-    const root = sf("projectRoot");
+    // #314: the container SHA is compared against the tree under test's HEAD, not main's.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "container-has-fix");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const containerName = harness.prod.containerName || harness.prod.imageName;
     if (!containerName) return;
@@ -571,7 +618,12 @@ describe("verify checks", () => {
   // this go red, then removes it and watches it go green.
   test("tsc-pass: no new TypeScript errors above baseline", () => {
     if (!isVerifyPlus()) return;
-    const root = sf("projectRoot");
+    // #314: the compiler runs on the TREE UNDER TEST. Running it in
+    // projectRoot typechecked the main checkout, which passes by construction,
+    // and let two real type errors through to CI on run wf_5cdce852-1e2.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "tsc-pass");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     // No tsconfig means there is nothing for tsc to check; that is a real
     // early return, not a skipped measurement.
     if (!root || !existsSync(join(root, "tsconfig.json"))) return;
@@ -597,7 +649,13 @@ describe("verify checks", () => {
   // 22. code-committed (GAP → PORTED)
   test("code-committed: no uncommitted changes in project", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
+    // #314: `git status` must run in the tree holding the work. In projectRoot
+    // it inspected the main checkout, which is clean during a worktree run, so
+    // this check — whose whole job is confirming the work is committed —
+    // passed unconditionally on every run this repo has made.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "code-committed");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const harness = loadProjectHarness();
     const paths = harness?.codeCommittedPaths || [];
@@ -612,7 +670,12 @@ describe("verify checks", () => {
   // 23. code-pushed (GAP → PORTED)
   test("code-pushed: no unpushed commits", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
+    // #314: in projectRoot this asked whether `main` was ahead of its own
+    // upstream, which it is not, so the answer was always 0. #174 filed the
+    // same defect against this check independently.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "code-pushed");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const result = exec("git rev-list --count @{upstream}..HEAD", root);
     if (!result.ok) return; // no upstream
@@ -670,8 +733,16 @@ describe("verify checks", () => {
       }
     }
     // Strip absolute project paths to avoid false positives (e.g. /DailyBriefDashboard/ matching "dashboard")
-    const projectRoot = sf("projectRoot") || "";
-    const joined = allPaths.join(" ").replaceAll(projectRoot, "");
+    //
+    // #314 — BOTH roots, not just projectRoot. The AC paths this reads are
+    // written while the run is in a worktree, so they carry the tree-under-test
+    // path; stripping only projectRoot left that path in the string and handed
+    // the UI_SVC regex the directory name it exists to not match. This is the
+    // one site that legitimately wants projectRoot alongside the tree, because
+    // it is sanitising text rather than measuring a tree.
+    const joined = [sf("projectRoot"), sf("treeUnderTest")]
+      .filter((r): r is string => typeof r === "string" && r !== "")
+      .reduce((text, root) => text.replaceAll(root, ""), allPaths.join(" "));
     if (!UI_EXT.test(joined) && !UI_SVC.test(joined)) return;
     const quinn = sf("agents")?.quinn;
     if (!quinn?.spawned) {
@@ -761,7 +832,10 @@ describe("verify checks", () => {
   // prove-evidence-type: UI changes require screenshot/api-response evidence (ADR-009 A4)
   test("prove-evidence-type: UI changes require live evidence", () => {
     if (!isVerifyPlus()) return;
-    const root = sf("projectRoot");
+    // #314: the changed-file list comes from the branch's history, not main's.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "prove-evidence-type");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;
@@ -838,7 +912,10 @@ describe("verify checks", () => {
   // contextual-skip-validation (#91 → ADR-009 A1: SKIP → FAIL for file-matched gates)
   test("contextual-skip-validation: SKIP blocked when changed files require gate", () => {
     if (!isVerifyPlus()) return;
-    const root = sf("projectRoot");
+    // #314: the changed-file list comes from the branch's history, not main's.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "contextual-skip-validation");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;
@@ -1010,7 +1087,10 @@ describe("ship checks", () => {
   // Prove gate: merged to main = PASS
   test("branch-merged: fix is on main", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
+    // #314: `git branch --contains HEAD` must ask about the branch's HEAD.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "branch-merged");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const gate = process.env.GATE || "";
     if (gate === "ship") {
@@ -1081,7 +1161,10 @@ describe("ship checks", () => {
   // quinn-tested-changed-files (#441)
   test("quinn-tested-changed-files: Quinn tested paths cover UI diffs", () => {
     if (!isShipPlus()) return;
-    const root = sf("projectRoot");
+    // #314: the changed-file list comes from the branch's history, not main's.
+    const treeViolations = treeUnderTestViolations(sf("treeUnderTest"), "quinn-tested-changed-files");
+    expect(treeViolations, treeViolations.join("\n")).toEqual([]);
+    const root = treeRoot();
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;

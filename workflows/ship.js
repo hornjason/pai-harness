@@ -1164,7 +1164,7 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
     const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} 2>&1
+1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -4670,7 +4670,13 @@ const shipResult = await runGateWithHeal('ship', 'Ship',
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 - branch-merged: set code-pushed="PASS" if branch is pushed. ${prStep?.ok ? `PR #${prStep.prNumber} is open for Jason to review` : 'NO PR was opened for this run'} — branch-merged may WARN, that's OK.
 - Any missing environments fields: add with SKIP + skipReason.
-- code-committed: should already be PASS from commit phase.`)
+- code-committed: should already be PASS from commit phase.`,
+  // #314 — the only runGateWithHeal call that passed no cwd, so its gate ran in
+  // PROJECT_ROOT: `tsc-pass` typechecked main, `code-committed` ran git status
+  // on a checkout the work was never in, and `code-pushed` asked whether main
+  // was ahead of its upstream. All three pass by construction there. The verify
+  // gate and both retry paths already named a tree; this one did not.
+  { cwd: commitDir })
 
 log(`Ship: ${shipResult?.result || 'UNKNOWN'}`)
 

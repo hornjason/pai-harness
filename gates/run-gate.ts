@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { readFileSync, existsSync } from "fs";
+import { readFileSync, existsSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 import { type GateResult } from "./orchestrator";
 import { executeGate, parseTestResults, type GateExecutorInput, type GateExecutorResult } from "./gate-executor";
@@ -63,11 +63,18 @@ const args = process.argv.slice(2);
 let gate = "";
 let slug = "";
 let issue = 0;
+let treeUnderTest = "";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--gate" && args[i + 1]) gate = args[++i];
   if (args[i] === "--slug" && args[i + 1]) slug = args[++i];
   if (args[i] === "--issue" && args[i + 1]) issue = parseInt(args[++i]);
+  // #314 — the tree a check MEASURES, as opposed to projectRoot, which is
+  // where config is READ. ship.js owns this value (its `commitDir`) and the
+  // Workflow sandbox cannot write the state file itself, so it is threaded in
+  // here rather than inferred. Inferring it would be guessing at exactly the
+  // fact the gates were previously wrong about.
+  if (args[i] === "--tree-under-test" && args[i + 1]) treeUnderTest = args[++i];
 }
 
 if (!gate || !["scope", "verify", "ship", "merge", "prove", "gaps"].includes(gate)) {
@@ -86,6 +93,22 @@ if (!existsSync(SF)) {
 const state = JSON.parse(readFileSync(SF, "utf-8"));
 if (!issue) issue = state.issue || 0;
 if (!slug) slug = state.slug || "";
+
+// #314 — persist the tree under test before any check reads it, and CLEAR it
+// when the caller named none.
+//
+// Writing only on supply is not enough. ship.js runs four gates against one
+// state file, so a value left behind by an earlier gate would be inherited
+// silently by a later one that named no tree — and the path it inherits is the
+// worktree of whatever phase last wrote it, which by the Ship phase may have
+// been collected away. Absent has to mean absent, or the UNMEASURED refusal
+// the checks perform has a hole in it exactly where a caller forgot the flag.
+if (treeUnderTest) {
+  state.treeUnderTest = treeUnderTest;
+} else {
+  delete state.treeUnderTest;
+}
+writeFileSync(SF, JSON.stringify(state, null, 2));
 
 // Gate idempotency guard
 if (!process.argv.includes("--force") && state.gates?.[gate]?.result === "PASS") {

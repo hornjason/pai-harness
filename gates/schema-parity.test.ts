@@ -189,12 +189,19 @@ describe("#224: suiteMeasurement — schema and SCHEMA-GUIDE.md describe the sam
 });
 
 describe("GI-1: gate failure detail includes Zod error paths", () => {
-  test("parseTestResults captures lines after (fail) as detail", () => {
+  // Fixture corrected 2026-10-11 (#314). It previously placed the Zod errors
+  // AFTER the `(fail)` line, which is not how bun prints: the source excerpt,
+  // error and stack all precede their own marker. Probed against bun 1.3.14.
+  // The test's intent is unchanged and still the point — the detail must carry
+  // the Zod path, not the literal string "failed". Only the ordering was wrong,
+  // and it was wrong in the same direction as the parser it was testing, so the
+  // two agreed with each other and not with bun.
+  test("parseTestResults captures a failure's own Zod error paths as its detail", () => {
     const bunOutput = [
       "(pass) schema validation > acs-exist: at least one AC",
-      "(fail) schema validation > workflow-state.json validates (includes threshold + behavioral superRefine)",
       "  acs.0.threshold.op: Invalid enum value. Expected '==' | '>=' | '<=' | '>' | '<' | '!=' | 'contains' | 'exists', received 'equals'",
       "  acs.1.statement: AC-2: statement too short (3 words, min 5)",
+      "(fail) schema validation > workflow-state.json validates (includes threshold + behavioral superRefine)",
       "(pass) scope checks > sizing-declared",
     ].join("\n");
     const results = parseTestResults(bunOutput);

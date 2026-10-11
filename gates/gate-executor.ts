@@ -47,11 +47,17 @@ export function parseTestResults(output: string): GateResult[] {
     }
     const fm = lines[i].match(/\(fail\)\s+(.+?)(?:\s+\[|$)/);
     if (fm) {
+      // Bun prints a failure's source excerpt, error and stack BEFORE its
+      // `(fail)` line, so the detail is scanned BACKWARD to the previous
+      // marker (#314). Scanning forward gave every entry the NEXT failure's
+      // detail and left the last one holding the run summary, which is what
+      // the heal prompt was being fed on run wf_5cdce852-1e2.
       const detailLines: string[] = [];
-      for (let j = i + 1; j < lines.length; j++) {
+      for (let j = i - 1; j >= 0; j--) {
         if (/\(pass\)\s+/.test(lines[j]) || /\(fail\)\s+/.test(lines[j])) break;
+        if (/^bun test v/.test(lines[j])) break;
         const trimmed = lines[j].trim();
-        if (trimmed) detailLines.push(trimmed);
+        if (trimmed) detailLines.unshift(trimmed);
       }
       results.push({ check: fm[1].trim(), result: "FAIL", detail: detailLines.length > 0 ? detailLines.join("\n") : "failed" });
     }
