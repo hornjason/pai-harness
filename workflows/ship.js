@@ -641,6 +641,83 @@ async function briefedAgent(prompt, opts = {}) {
 }
 // ──── BRIEFED-AGENT-END ────
 
+// ──── AC-VALIDATION-START ────
+/**
+ * The AC rules `gates/schema.ts` applies, checked while they are still cheap
+ * to fix (#269).
+ *
+ * These rules already existed and already refused. What they did not do is
+ * refuse in time. `writeWorkflowState` validates, and on a LIGHT run — which
+ * skips the scope gate, where `workflow-state.json validates` lives — the
+ * first validating write is the COMMIT RECORDER. Run wf_3335abda-d71 wrote
+ * six ACs, one carrying `>= 1`, then skipped scope, briefed Marcus,
+ * implemented the whole change, ran the suite, committed cf33b6e5, pushed,
+ * and only there discovered that one of its six criteria could not be
+ * measured. Every phase in between was spent on a criterion nobody could
+ * fail.
+ *
+ * So this is not a new rule. It is the same rule, moved to the phase that can
+ * act on it, which is the only thing that was wrong with it.
+ *
+ * THIS IS A COPY, AND A COPY IS A THING THAT DRIFTS. ship.js runs in a
+ * sandbox with no module loading (#69), so `ACSchema` cannot be imported and
+ * there is no honest way to share the implementation. What makes the copy
+ * admissible is `test/discovery-ac-validation.test.ts`, which runs a table of
+ * ACs through BOTH this function and the real `ACSchema` and fails on a
+ * disagreement in either direction — the #224 pattern. Change a rule here
+ * without changing it there, or there without here, and the matrix goes red.
+ * Do not add a rule to this function without adding its case to that table.
+ */
+function acDiscoveryViolations(acs) {
+  if (!Array.isArray(acs)) return []
+  const GARBAGE = [
+    /^file exists?$/i,
+    /^it works?$/i,
+    /^code is (?:correct|good|done|working)$/i,
+    /^(?:the )?(?:feature|function|code|system) (?:works?|exists?|is (?:done|complete))$/i,
+    /^no errors?$/i,
+    /^tests? pass(?:es)?$/i,
+    /^changes? (?:are )?(?:made|applied|done)$/i,
+  ]
+  const BEHAVIOURAL = /\b(DA should|remember to|make sure to|don't forget)\b/i
+  const out = []
+  for (const [i, ac] of acs.entries()) {
+    const id = (ac && typeof ac === 'object' && ac.id) || `AC-${i + 1}`
+    if (!ac || typeof ac !== 'object' || Array.isArray(ac)) {
+      out.push(`${id}: not an acceptance criterion — the discovery output is the wrong shape here`)
+      continue
+    }
+    const statement = typeof ac.statement === 'string' ? ac.statement : ''
+    if (!statement) {
+      out.push(`${id}: no statement — an unstated criterion cannot be measured`)
+    }
+    if (!ac.threshold) {
+      out.push(`${id}: missing threshold — a criterion with no threshold has no pass condition`)
+    } else {
+      const numVal = Number(ac.threshold.value)
+      if (ac.threshold.op === '>=' && !isNaN(numVal) && numVal <= 1) {
+        out.push(
+          `${id}: threshold too weak (${ac.threshold.op} ${ac.threshold.value}) — effectively always passes`,
+        )
+      }
+    }
+    if (statement) {
+      if (BEHAVIOURAL.test(statement)) {
+        out.push(`${id}: behavioral language "${statement.match(BEHAVIOURAL)[0]}" — say what is measured, not who should do it`)
+      }
+      const words = statement.split(/\s+/).filter(Boolean)
+      if (words.length < 5) {
+        out.push(`${id}: statement too short (${words.length} words, min 5)`)
+      }
+      if (GARBAGE.some(p => p.test(statement.trim()))) {
+        out.push(`${id}: tautological/garbage statement "${statement}"`)
+      }
+    }
+  }
+  return out
+}
+// ──── AC-VALIDATION-END ────
+
 // ──── AC-COVERAGE-START ────
 /**
  * Which success criteria this run is actually going to measure (#251).
@@ -1282,6 +1359,7 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 6. Write ACs: id, type, statement (min 5 words), threshold (op + value as string|number NEVER boolean), evidenceMethod, specElement, coversCriteria, contextFiles.
    coversCriteria is REQUIRED and holds C-N ids from the Success criteria list above. specElement names the governing spec's section. They are different fields and normally carry different values (#258).
    CONTEXT FILES RULE (CRITICAL): Every AC MUST have a contextFiles array listing the specific files Marcus will need to read to implement that AC. Include path and reason. Example: [{"path": "hooks/WorkflowStateGuard.hook.ts", "reason": "existing hook pattern to follow"}, {"path": "lib/conformity.ts", "reason": "matchPattern function to reuse"}]. Do NOT leave contextFiles empty — Marcus wastes 80% of context loading files he doesn't need when you don't specify what he actually needs.
+   THRESHOLD RULE: a threshold of >= 1 or >= 0 is REFUSED at the end of this phase. Both always passes, so a criterion carrying one measures nothing. State the number the work actually has to reach: >= 5 tests, == 0 failures, >= 2 red under mutation. If the real condition is "at least one", write == 1 or >= 2 and say which you mean. The run REFUSES and names the AC; there is no way past it, and it also refuses a statement under five words, a tautology such as "it works" or "tests pass", and language about who should do something rather than what is measured (#269).
    EVIDENCE TYPE RULE: At least 50% of ACs must use non-grep evidence (BUN_TEST, COMMAND, PLAYWRIGHT). If you have 4 ACs, at least 2 must use bun test or curl commands, not grep. A regression test AC should use evidenceMethod type "BUN_TEST" with command "bun test test/unit/relevant.test.ts".
    BUN TEST GREP RULE: In bun test --grep patterns, use | (pipe) for alternation, NOT \\| (backslash-pipe). Bun uses JS regex, not BRE — backslash-pipe matches a literal pipe character and will match 0 tests. Example: --grep 'foo|bar' is correct, --grep 'foo\\|bar' is WRONG.
    BUN TEST OUTPUT RULE: Bun test outputs results to STDERR, not stdout. NEVER pipe bun test through grep (e.g., 'bun test ... | grep -c ✓' will always return 0). Instead use direct bun test commands — exit code 0 means PASS. For test counts, just use: bun test test/file.test.ts --grep 'pattern'
@@ -1445,6 +1523,20 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
         }))
       log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created. ${acDeferrals.length} AC(s) deferred.`)
     }
+  }
+
+  // The ACs are checked against the rules the state schema will apply to them
+  // anyway (#269). Same place and same reason as the coverage check below:
+  // every one of these refusals used to arrive at the COMMIT RECORDER, four
+  // phases and one full implementation after the cheapest moment to fix it.
+  const acViolations = acDiscoveryViolations(discovery.acs)
+  if (acViolations.length > 0) {
+    discoveryRefusal = shipFailed(
+      'Discovery',
+      `${acViolations.length} acceptance criterion/criteria would be rejected by the state ` +
+        `schema, so this run could not record its own commit:\n  - ` + acViolations.join('\n  - '),
+    )
+    return false
   }
 
   // Nothing is dropped in silence (#251). Every success criterion the issue
