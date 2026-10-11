@@ -5,9 +5,26 @@ import { spawnSync } from "child_process";
 import { join, relative } from "path";
 import { harnessRoot } from "../lib/paths";
 import { measureEvidencePrevalidation, prevalidateEvidence } from "../lib/evidence-prevalidator";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 const HR = harnessRoot();
 const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
+/**
+ * `SHIP_JS` with every comment blanked out, offsets preserved (#273).
+ *
+ * The phase-ordering block below searches THIS and nothing else. The six
+ * assertions used to search `SHIP_JS`, where five of their eight anchors —
+ * the `PHASE n:` banners and the bare `create-pr` token — occur only inside
+ * comments, so three of the six compared one comment to another. Gutting the
+ * PR step out of `workflows/ship.js` while leaving its comment in place left
+ * all six green against a harness with zero `pr-upsert` call sites.
+ *
+ * `stripJsComments` replaces comment characters with spaces rather than
+ * deleting them, so an index into `SHIP_CODE` is the same index into
+ * `SHIP_JS` — the ordering comparisons mean exactly what they did, minus the
+ * prose.
+ */
+const SHIP_CODE = stripJsComments(SHIP_JS);
 const SPEC_MD = readFileSync(join(HR, "specs/HARNESS-SKILL-CHAIN.md"), "utf-8");
 const SKILL_MD = readFileSync(join(HR, "reference/prompts/ship-skill.md"), "utf-8");
 
@@ -63,49 +80,59 @@ describe("ceremony-tier: Quinn gating matches spec", () => {
 // ── Phase Ordering ─────────────────────────────────────────────
 // Spec Layer 1→2→3: local dev → container → PR + ship gate
 
+// Every anchor below is an EXECUTABLE token and every search runs over
+// SHIP_CODE, the comment-blanked copy (#273). A banner comment is not a step:
+// run wf_61a6af0d-053 went red on two of these and was right to, and a
+// mutant with the PR step deleted and its comment left in place passed all
+// six. test/ship-phase-ordering-mutation.test.ts spawns that mutant and
+// watches it refuse now, plus six MOVE- cases that relocate the code each
+// ordering describes.
 describe("phase-ordering: spec-mandated sequence preserved", () => {
 
   test("PO-1: Validate (Quinn local) runs BEFORE Commit", () => {
     // Spec: "GATE: Quinn local PASS before container build"
     // Commit must not happen until Quinn local passes
-    const validateIdx = SHIP_JS.indexOf("PHASE 5: VALIDATE");
-    const commitIdx = SHIP_JS.indexOf("PHASE 6: COMMIT");
+    const validateIdx = SHIP_CODE.indexOf("phase('Validate')");
+    const commitIdx = SHIP_CODE.indexOf("phase('Commit')");
     expect(validateIdx).toBeGreaterThan(0);
     expect(commitIdx).toBeGreaterThan(validateIdx);
   });
 
   test("PO-2: Commit runs BEFORE Verify (container)", () => {
-    const commitIdx = SHIP_JS.indexOf("PHASE 6: COMMIT");
-    const verifyIdx = SHIP_JS.indexOf("PHASE 7: VERIFY");
+    const commitIdx = SHIP_CODE.indexOf("phase('Commit')");
+    const verifyIdx = SHIP_CODE.indexOf("phase('Verify')");
     expect(commitIdx).toBeGreaterThan(0);
     expect(verifyIdx).toBeGreaterThan(commitIdx);
   });
 
   test("PO-3: Container Quinn runs BEFORE PR creation", () => {
     // Spec: "GATE: Quinn container PASS before PR is opened"
-    const containerQuinnIdx = SHIP_JS.indexOf("quinn-container");
-    const createPrIdx = SHIP_JS.indexOf("create-pr");
+    // `label: 'quinn-container'` is the agent call, and `pr-upsert` is the
+    // command the PR step actually runs — not the `create-pr` comment that
+    // used to stand in for it.
+    const containerQuinnIdx = SHIP_CODE.indexOf("label: 'quinn-container'");
+    const createPrIdx = SHIP_CODE.indexOf("pr-upsert");
     expect(containerQuinnIdx).toBeGreaterThan(0);
     expect(createPrIdx).toBeGreaterThan(containerQuinnIdx);
   });
 
   test("PO-4: PR creation runs BEFORE ship gate", () => {
-    const createPrIdx = SHIP_JS.indexOf("create-pr");
-    const shipGateIdx = SHIP_JS.indexOf("Running ship gate");
+    const createPrIdx = SHIP_CODE.indexOf("pr-upsert");
+    const shipGateIdx = SHIP_CODE.indexOf("log('Running ship gate')");
     expect(createPrIdx).toBeGreaterThan(0);
     expect(shipGateIdx).toBeGreaterThan(createPrIdx);
   });
 
   test("PO-5: Ship gate runs BEFORE Prove", () => {
-    const shipGateIdx = SHIP_JS.indexOf("Running ship gate");
-    const proveIdx = SHIP_JS.indexOf("PHASE 9: PROVE");
+    const shipGateIdx = SHIP_CODE.indexOf("log('Running ship gate')");
+    const proveIdx = SHIP_CODE.indexOf("phase('Prove')");
     expect(shipGateIdx).toBeGreaterThan(0);
     expect(proveIdx).toBeGreaterThan(shipGateIdx);
   });
 
   test("PO-6: Implement runs BEFORE Validate", () => {
-    const implIdx = SHIP_JS.indexOf("PHASE 4: IMPLEMENT");
-    const validateIdx = SHIP_JS.indexOf("PHASE 5: VALIDATE");
+    const implIdx = SHIP_CODE.indexOf("phase('Implement')");
+    const validateIdx = SHIP_CODE.indexOf("phase('Validate')");
     expect(implIdx).toBeGreaterThan(0);
     expect(validateIdx).toBeGreaterThan(implIdx);
   });
