@@ -9,58 +9,43 @@ import { join } from "path";
  *
  * `test/ship-ceremony-tier-floor.test.ts` proves the floor computes the right
  * tier. That is not the same claim as "the subsystems a tier switches on
- * actually ran". A suite that watched five subsystems and never watched them
+ * actually ran". A suite that watched four subsystems and never watched them
  * NOT run would be the decorative check `.claude/rules/checks-must-be-able-to-fail.md`
  * is about: every one of its observations would be satisfied by a harness that
  * resolved STANDARD for every input, including inputs that must stay LIGHT.
  *
  * So the pre-#215 defect is REBUILT as a mutant — the `CEREMONY-TIER-FLOOR`
  * block deleted, the floor call and the raise removed, leaving `hasUI` with
- * nothing but its one-way downgrade — and a six-observation suite is SPAWNED
- * against it.
+ * nothing but its one-way downgrade — and a five-observation suite is SPAWNED
+ * against it. Real source: 5 of 5 green. Mutant: exactly 4 red, and the one
+ * green has to be the remote pre-flight, because the pre-flight is the one
+ * observation in that set that is not tier-gated and therefore the one whose
+ * greenness proves the spawn ran at all rather than dying on load.
  *
- * ## The asymmetry, and why it is 4 and not 6
+ * ## Why four tier-gated observations and not five
  *
- * The six observations are not one kind of thing, and collapsing them into a
- * single red count would hide the fact AC-3 is actually about:
+ * `workflows/ship.js` has five tier-gated CONDITIONS but four tier-gated
+ * STATEMENTS: container verify and the container-declined arm are the two arms
+ * of a single `if (… && containerConfig) { … } else if (…) { … }`. One
+ * statement, one gate, one observation — and the observation asserts BOTH arms,
+ * so neither half can go quiet unnoticed. Splitting them would report five reds
+ * for one mutation applied to one branch point, which overstates what the
+ * mutant measured. `test/consumer-tier-gated-subsystems.test.ts` observes the
+ * two arms separately; this file is the count, and a count has to say what it
+ * counted.
  *
- * | Observation | Kind | Under the mutant |
- * |---|---|---|
- * | `scope gate runs` | tier-gated EXECUTION | red |
- * | `quinn local runs` | tier-gated EXECUTION | red |
- * | `container verify runs` | tier-gated EXECUTION | red |
- * | `prove runs` | tier-gated EXECUTION | red |
- * | `container-less verify logs its skip` | tier-gated SKIP ARM | red |
- * | `remote pre-flight runs` | not tier-gated | GREEN |
- *
- * **Four** tier-gated subsystem EXECUTIONS stop happening. That is the number
- * AC-3 names and the number this file asserts by name.
- *
- * The fifth tier-gated site — `} else if (ceremonyTier !== 'LIGHT')`, the arm
- * that announces a declined container — also goes red, and it is counted
- * SEPARATELY rather than folded in or dropped. Folding it in would report five
- * subsystems switched off when four were; dropping it to make the number come
- * out would be choosing an observation set to fit an answer, which is the thing
- * the rules file is about. Its subject is the ABSENCE of a run, so under the
- * mutant the absence is still an absence — it just stops being announced. That
- * is a real regression and a different one.
- *
- * The pre-flight is the only green, and it has to be: it sits ~450 lines before
- * `discovery.ceremonyTier` is first read, so no tier change can reach it. Its
- * greenness is the positive control — a suite that failed to resolve its
- * imports leaves 0 of 6, and a red count alone cannot tell those apart.
- *
- * Three further properties make this worth running, all asserted here rather
- * than left as conventions:
+ * Three properties make this worth running, and all three are asserted here
+ * rather than left as conventions:
  *
  * - **The suite is spawned, identically, twice.** `ran` is read out of the
- *   junit report before any verdict is. The two spawns share one argv; only
- *   `SHIP_UNDER_TEST` differs.
- * - **Green and red are compared by NAME.** "4 red" is satisfied by any four
- *   of the six; only these four mean what this claims.
+ *   junit report before any verdict is, because a suite that failed to resolve
+ *   its imports reports zero failures and is indistinguishable from a suite
+ *   that passed. The two spawns share one argv; only `SHIP_UNDER_TEST` differs.
+ * - **Green and red are compared by NAME.** "1 of 5" is satisfied by any one
+ *   of the five; only the pre-flight one means what this claims.
  * - **The mutation is local.** Every subsystem block is asserted byte-identical
- *   between the real source and the mutant, so the reds are caused by the tier
- *   the chain resolved and not by a mutant that damaged the blocks.
+ *   between the real source and the mutant, so the four reds are caused by the
+ *   tier the chain resolved and not by a mutant that damaged the blocks.
  *
  * The mutant builder throws rather than returning an unmutated copy when its
  * target moves — a mutation harness that silently no-ops when the downgrade is
@@ -71,21 +56,6 @@ const REPO_ROOT = join(import.meta.dir, "..");
 const SHIP = join(REPO_ROOT, "workflows", "ship.js");
 const shipSource = readFileSync(SHIP, "utf-8");
 
-/**
- * The consumer config is ONE fact in ONE place: the on-disk fixture. The
- * spawned suite reads this path out of the environment rather than carrying a
- * second copy of the config in a string literal — run wf_536df065-969 had two
- * worktrees independently authoring the same fixture with different content.
- */
-const FIXTURE_CONFIG = join(
-  REPO_ROOT,
-  "test",
-  "fixtures",
-  "consumer-ui-project",
-  ".claude",
-  "rungate.json",
-);
-
 const FLOOR_START = "// ──── CEREMONY-TIER-FLOOR-START ────";
 const FLOOR_END = "// ──── CEREMONY-TIER-FLOOR-END ────";
 
@@ -94,7 +64,7 @@ export const DOWNGRADE_SITE = /^if \(!hasUI && discovery\.ceremonyTier !== 'LIGH
 const FLOOR_CALL_SITE = /^const flooredTier = ceremonyTierFloor\(discovery\.ceremonyTier, hasUI\)$/m;
 const RAISE_SITE = /^if \(flooredTier !== discovery\.ceremonyTier\) \{[\s\S]*?\n\}$/m;
 
-/** The five tier-gated subsystem blocks, plus the pre-flight that is not gated. */
+/** The four tier-gated subsystem statements, plus the pre-flight that is not gated. */
 const SUBSYSTEM_SITES = {
   "the skipScope decision": /^const skipScope = discovery\.ceremonyTier === 'LIGHT'$/m,
   "the scope gate invocation": /^if \(!skipScope\) \{[\s\S]*?\n\}$/m,
@@ -160,25 +130,19 @@ export function buildRestoredDowngradeMutant(src: string = shipSource): string {
   return out;
 }
 
-// ── the six-observation suite, generated once and spawned twice ─────────────
+// ── the five-observation suite, generated once and spawned twice ────────────
 
 /**
  * The suite under spawn. It reads the ship.js it observes from
- * `SHIP_UNDER_TEST` and the consumer config from `CONSUMER_FIXTURE_CONFIG`, so
- * the identical file runs against the real source and against the mutant and
- * neither copy of the consumer config is written twice.
+ * `SHIP_UNDER_TEST` and extracts nothing from this repo, so the identical file
+ * is run against the real source and against the mutant.
  *
  * Nothing in it reads `ceremonyTier`. Each subsystem is observed through its
- * OWN output — `scopeRan`, the `quinn-local-1` agent label, the
- * `container-rebuild` / `env-check` / `quinn-container` labels, the
- * container-less arm's skip log, the prove workflow's scriptPath, and the
- * pre-flight log line. A subsystem that is skipped produces none of those,
- * which is the whole mechanism.
- *
- * Every agent spawner is a RECORDING STUB. The fixture's
- * `container.rebuildCommand` reaches ship.js and is interpolated into a prompt
- * string that is handed to the stub and dropped — nothing in this file, or in
- * the file it writes, executes it (AC-6).
+ * OWN output — `scopeRan`, the `quinn-local-1` agent label, the `env-check`
+ * and `quinn-container` labels together with the container-declined arm's skip
+ * log, the prove workflow's scriptPath, and the pre-flight log line. A
+ * subsystem that is skipped produces none of those, which is the whole
+ * mechanism.
  *
  * `String.raw` is load-bearing: the regexes below contain `\(`, `\s` and `\$`,
  * and an untagged template literal would eat every one of those backslashes
@@ -190,10 +154,10 @@ import { readFileSync } from "fs";
 
 const SHIP = process.env.SHIP_UNDER_TEST;
 if (!SHIP) throw new Error("SHIP_UNDER_TEST is unset — this suite has nothing to observe");
-const CONFIG_PATH = process.env.CONSUMER_FIXTURE_CONFIG;
-if (!CONFIG_PATH) throw new Error("CONSUMER_FIXTURE_CONFIG is unset — this suite has no consumer to run as");
 const SRC = readFileSync(SHIP, "utf-8");
-const FIXTURE = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+
+const START = "// ──── CEREMONY-TIER-FLOOR-START ────";
+const END = "// ──── CEREMONY-TIER-FLOOR-END ────";
 
 function hits(re) {
   return [...SRC.matchAll(new RegExp(re.source, "gm"))];
@@ -206,9 +170,6 @@ function one(re, label) {
   }
   return found[0][0];
 }
-
-const START = "// ──── CEREMONY-TIER-FLOOR-START ────";
-const END = "// ──── CEREMONY-TIER-FLOOR-END ────";
 
 const HAS_UI = /^const hasUI = Object\.keys\(pagesConfig\)\.length > 0$/m;
 const DOWNGRADE = /^if \(!hasUI && discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m;
@@ -226,22 +187,20 @@ const REMOTE_HOSTS_DECL = /^const remoteHosts = parsedArgs\.remoteHosts \|\| \{\
 const PREFLIGHT_RESULTS_DECL = /^const preflightResults = parsedArgs\.preflightResults \|\| null$/m;
 const PREFLIGHT_BLOCK = /^if \(preflightResults\) \{[\s\S]*?\n\}$/m;
 
-// The consumer fixture, read from disk: a project that DECLARES pages, runs a
-// test container and reaches a remote host, whose issue the discovery LLM
-// sized XS.
-const PAGES = FIXTURE.pages;
-const CONTAINER = FIXTURE.container;
-const REMOTE_HOSTS = FIXTURE.remoteHosts;
+// The consumer fixture: a project that DECLARES pages, runs a test container
+// and reaches a remote host, whose issue the discovery LLM sized XS. The
+// rebuild command is an inert string carried in config and handed to a stub —
+// nothing here delegates a rebuild to an agent or spawns a process.
+const PAGES = { "/": "home", "/reports": "reports", "/settings": "settings" };
+const CONTAINER = { hosts: ["localhost"], port: 7777, healthPath: "/api/health" };
+const REMOTE_HOSTS = { runner: { host: "mini", purpose: "the self-hosted runner" } };
 const DISCOVERED_TIER = "LIGHT";
-
-if (!PAGES || Object.keys(PAGES).length === 0) throw new Error("the consumer fixture declares no pages");
-if (!CONTAINER) throw new Error("the consumer fixture declares no container");
-if (!REMOTE_HOSTS || Object.keys(REMOTE_HOSTS).length === 0) throw new Error("the consumer fixture declares no remote hosts");
+const SKIP_LOG_FRAGMENT = "skipping container verify";
 
 // ship.js's own tier statements, run IN SOURCE ORDER over the fixture. The
 // floor sites are optional on purpose: a source that has none of them is
 // exactly the pre-#215 source this is spawned against, and it must resolve a
-// tier rather than throwing, or all six observations would go red together.
+// tier rather than throwing, or all five observations would go red together.
 function resolveTier() {
   const parts = [];
   const a = SRC.indexOf(START);
@@ -289,12 +248,8 @@ async function runBlock(code, extra) {
       briefedAgent: async (p, o) => { seen.labels.push(o && o.label); return { result: "PASS" }; },
       timedAgent: async (p, o) => {
         seen.labels.push(o && o.label);
-        if (o && o.label === "env-check") {
-          const out = {};
-          (CONTAINER.hosts || []).forEach((h, i) => { out["host" + i] = i === 0; });
-          return out;
-        }
-        return { hosts: Object.keys(REMOTE_HOSTS).map((n) => ({ name: n, reachable: true, output: "ok" })) };
+        if (o && o.label === "env-check") return { host0: true };
+        return { hosts: [{ name: "runner", reachable: true, output: "ok" }] };
       },
       workflow: async (w) => { seen.scripts.push(w && w.scriptPath); return { verdict: "PROVEN" }; },
       runGateWithHeal: async () => ({ result: "PASS" }),
@@ -307,7 +262,7 @@ async function runBlock(code, extra) {
       ISSUE: 274,
       REPO: "owner/repo",
       ISSUE_REPO: "owner/repo",
-      SLUG: "consumer-ui-project-274",
+      SLUG: "pai-harness-274",
       GATE_RESULT_SCHEMA: {},
       marcusWorktreePath: "/worktree",
       testCommand: "bun test",
@@ -351,21 +306,20 @@ describe("#274 the consumer fixture's tier-gated subsystems", () => {
     expect(seen.labels).toContain("quinn-local-1");
   });
 
+  // One tier-gated STATEMENT, both of its arms. The container arm and the
+  // container-declined arm share one branch point and one gate, so they are
+  // one observation — and asserting both halves is what stops either going
+  // quiet unnoticed inside a single green test.
   test("container verify runs", async () => {
-    const { bag, seen } = await runBlock(one(CONTAINER_VERIFY, "the container verify arms"), {
-      containerConfig: CONTAINER,
-    });
-    expect(seen.labels).toContain("container-rebuild");
-    expect(seen.labels).toContain("env-check");
-    expect(seen.labels).toContain("quinn-container");
-    expect(bag.quinnContainerRan).toBe(true);
-  });
+    const code = one(CONTAINER_VERIFY, "the container verify arms");
+    const withContainer = await runBlock(code, { containerConfig: CONTAINER });
+    expect(withContainer.seen.labels).toContain("env-check");
+    expect(withContainer.seen.labels).toContain("quinn-container");
+    expect(withContainer.bag.quinnContainerRan).toBe(true);
 
-  test("container-less verify logs its skip", async () => {
-    const { seen } = await runBlock(one(CONTAINER_VERIFY, "the container verify arms"), {
-      containerConfig: null,
-    });
-    expect(seen.logs.join("\n")).toContain("skipping container verify");
+    const withoutContainer = await runBlock(code, { containerConfig: null });
+    expect(withoutContainer.seen.labels).toEqual([]);
+    expect(withoutContainer.seen.logs.join("\n")).toContain(SKIP_LOG_FRAGMENT);
   });
 
   test("prove runs", async () => {
@@ -386,26 +340,21 @@ describe("#274 the consumer fixture's tier-gated subsystems", () => {
       one(PREFLIGHT_BLOCK, "the pre-flight block"),
     ].join("\n");
     const { seen } = await runBlock(code, { parsedArgs: { remoteHosts: REMOTE_HOSTS } });
-    expect(seen.logs.filter((l) => l.startsWith("PRE-FLIGHT:")).length).toBe(Object.keys(REMOTE_HOSTS).length);
+    expect(seen.logs.filter((l) => l.startsWith("PRE-FLIGHT:")).length).toBe(1);
   });
 });
 `;
 
-/**
- * The six observation ids, partitioned. "4 red" compared by count alone is
- * satisfied by any four of the six; these are the four that mean what AC-3
- * claims.
- */
-const TIER_GATED_EXECUTION = [
+/** The five observation ids, by name. "1 of 5" is satisfied by any one of them. */
+const ALL_IDS = [
   "container verify runs",
   "prove runs",
   "quinn local runs",
+  "remote pre-flight runs",
   "scope gate runs",
 ];
-/** The fifth tier-gated site. Its subject is a skip, so it is counted apart. */
-const TIER_GATED_SKIP_ARM = "container-less verify logs its skip";
 const NOT_TIER_GATED = "remote pre-flight runs";
-const ALL_IDS = [...TIER_GATED_EXECUTION, TIER_GATED_SKIP_ARM, NOT_TIER_GATED].sort();
+const TIER_GATED = ALL_IDS.filter((id) => id !== NOT_TIER_GATED);
 
 let TMP = "";
 let SUITE_PATH = "";
@@ -427,11 +376,7 @@ function spawnSuite(shipPath: string): SuiteRun {
     cwd: TMP,
     encoding: "utf-8",
     timeout: 180000,
-    env: {
-      ...process.env,
-      SHIP_UNDER_TEST: shipPath,
-      CONSUMER_FIXTURE_CONFIG: FIXTURE_CONFIG,
-    },
+    env: { ...process.env, SHIP_UNDER_TEST: shipPath },
   });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   const xml = existsSync(JUNIT) ? readFileSync(JUNIT, "utf-8") : "";
@@ -455,7 +400,7 @@ let mutant: SuiteRun;
 
 beforeAll(() => {
   TMP = mkdtempSync(join(tmpdir(), "consumer-tier-mutation-"));
-  SUITE_PATH = join(TMP, "six-subsystems.test.ts");
+  SUITE_PATH = join(TMP, "five-subsystems.test.ts");
   JUNIT = join(TMP, "report.xml");
   MUTANT_PATH = join(TMP, "ship.mutant.js");
   writeFileSync(SUITE_PATH, SUITE_SOURCE);
@@ -486,8 +431,8 @@ describe("#274 AC-3: the restored-downgrade mutant", () => {
   });
 
   test("the mutation is local: every subsystem block is byte-identical in the mutant", () => {
-    // Without this the reds below could be a mutant that damaged the blocks
-    // rather than a mutant that resolved the wrong tier.
+    // Without this the four reds below could be a mutant that damaged the
+    // blocks rather than a mutant that resolved the wrong tier.
     for (const [label, re] of Object.entries(SUBSYSTEM_SITES)) {
       const before = matches(shipSource, re);
       const after = matches(mutantSource, re);
@@ -525,16 +470,16 @@ describe("#274 AC-3: the restored-downgrade mutant", () => {
 
 // ── the real source, spawned ────────────────────────────────────────────────
 
-describe("#274 AC-3: the six-observation suite against the real source", () => {
-  test("the spawn ran all six observations", () => {
+describe("#274 AC-3: the five-observation suite against the real source", () => {
+  test("the spawn ran all five observations", () => {
     // Read BEFORE any verdict: a suite that failed to load reports no
     // failures, which is indistinguishable from a suite that passed.
-    expect(real.ran, `the suite did not run six observations:\n${real.output}`).toBe(6);
+    expect(real.ran, `the suite did not run five observations:\n${real.output}`).toBe(5);
     expect(real.green.concat(real.red).sort()).toEqual(ALL_IDS);
   });
 
-  test("all six are green", () => {
-    expect(real.ran, `the suite did not run:\n${real.output}`).toBe(6);
+  test("all five are green", () => {
+    expect(real.ran, `the suite did not run:\n${real.output}`).toBe(5);
     expect(real.red, `a subsystem did not run against the real source:\n${real.output}`).toEqual([]);
     expect(real.green).toEqual(ALL_IDS);
   });
@@ -543,8 +488,8 @@ describe("#274 AC-3: the six-observation suite against the real source", () => {
 // ── the mutant, spawned the same way ────────────────────────────────────────
 
 describe("#274 AC-3: the same suite against the restored-downgrade mutant", () => {
-  test("the mutant spawn ran all six observations", () => {
-    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(6);
+  test("the mutant spawn ran all five observations", () => {
+    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(5);
     expect(mutant.green.concat(mutant.red).sort()).toEqual(ALL_IDS);
   });
 
@@ -553,42 +498,26 @@ describe("#274 AC-3: the same suite against the restored-downgrade mutant", () =
     expect(MUTANT_PATH).not.toBe(SHIP);
   });
 
-  test("exactly four tier-gated subsystem EXECUTIONS turn red, by name", () => {
-    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(6);
-    const redExecutions = mutant.red.filter((id) => TIER_GATED_EXECUTION.includes(id));
-    expect(redExecutions, `the wrong observations went red:\n${mutant.output}`).toEqual(
-      [...TIER_GATED_EXECUTION].sort(),
-    );
-    expect(redExecutions.length).toBe(4);
+  test("exactly four tier-gated observations turn red", () => {
+    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(5);
+    expect(
+      mutant.red.length,
+      `the restored downgrade did not turn four tier-gated observations red:\n${mutant.output}`,
+    ).toBe(4);
+    expect(mutant.red).toEqual(TIER_GATED);
   });
 
-  test("the fifth tier-gated site — the skip arm — is counted apart, and also goes red", () => {
-    // Not folded into the four: its subject is the ABSENCE of a container
-    // verify, and under the mutant the absence is still an absence, it just
-    // stops being announced. Reporting five subsystems switched off when four
-    // were would be the overcount this partition exists to prevent.
-    expect(mutant.red).toContain(TIER_GATED_SKIP_ARM);
-    expect(real.green).toContain(TIER_GATED_SKIP_ARM);
-    expect(mutant.red.length).toBe(5);
-  });
-
-  test("the remote pre-flight is the only green, and it is green in BOTH runs", () => {
-    // The positive control. If it were red under the mutant too, "4 red" would
-    // be a suite that failed to load rather than a measurement.
+  test("exactly one observation is green, and it is the remote pre-flight", () => {
+    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(5);
     expect(mutant.green, `the wrong observation survived the mutation:\n${mutant.output}`).toEqual([
       NOT_TIER_GATED,
     ]);
-    expect(real.green).toContain(NOT_TIER_GATED);
   });
 
-  test("the partition covers the six observations exactly once each", () => {
-    // Vacuity guard for the three counts above: an id in neither list, or in
-    // both, would make "4 red" and "the only green" quietly compatible with a
-    // seventh outcome nobody looked at.
-    const partitioned = [...TIER_GATED_EXECUTION, TIER_GATED_SKIP_ARM, NOT_TIER_GATED];
-    expect(new Set(partitioned).size).toBe(partitioned.length);
-    expect([...partitioned].sort()).toEqual(ALL_IDS);
-    expect(TIER_GATED_EXECUTION).not.toContain(NOT_TIER_GATED);
-    expect(TIER_GATED_EXECUTION).not.toContain(TIER_GATED_SKIP_ARM);
+  test("the pre-flight is green in BOTH runs — it is not tier-gated", () => {
+    // The positive control. If it were red under the mutant too, "4 red"
+    // would be a suite that failed to load rather than a measurement.
+    expect(real.green).toContain(NOT_TIER_GATED);
+    expect(mutant.green).toContain(NOT_TIER_GATED);
   });
 });

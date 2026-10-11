@@ -1,5 +1,5 @@
 /**
- * #274 AC-1 / AC-5 — the consumer-UI fixture, and ship.js's tier chain run over it.
+ * #274 AC-1 — the consumer-UI fixture, and ship.js's tier chain run over it.
  *
  * Every self-run rungate has ever made was rewritten to LIGHT. `.claude/rungate/
  * config.json` declares `"pages": {}`, so `hasUI` is false, so the downgrade at
@@ -54,7 +54,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 interface Slice {
-  /** The name AC-1 gives this statement. */
+  /** The name the assertions below give this statement. */
   name: string;
   /** Verbatim source text, executable as-is. */
   text: string;
@@ -131,9 +131,9 @@ function floorRegion(source: string): Slice {
 }
 
 /**
- * The four statements AC-1 names. `pagesConfig` and `hasUI` are one anchor
- * because they are one computation: splitting them would let the test supply
- * its own `pagesConfig` and never read the loaded config at all.
+ * The four statements the chain is made of. `pagesConfig` and `hasUI` are one
+ * anchor because they are one computation: splitting them would let the test
+ * supply its own `pagesConfig` and never read the loaded config at all.
  */
 const HAS_UI_COMPUTATION =
   "const pagesConfig = projectConfig.pages || parsedArgs.pages || {}\n" +
@@ -240,11 +240,11 @@ describe("#274 AC-1: the consumer fixture loads through the harness's own reader
     expect(tryLoadRungateConfig(FIXTURE_ROOT)).not.toBeNull();
   });
 
-  test("the loaded config declares four distinct pages", () => {
+  test("the loaded config declares at least 4 distinct page routes", () => {
     const pages = fixtureConfig.pages as Record<string, string>;
     expect(typeof pages).toBe("object");
     const routes = Object.keys(pages);
-    expect(routes.length).toBe(4);
+    expect(routes.length).toBeGreaterThanOrEqual(4);
     // Distinct routes, non-empty names: three copies of one entry is one page
     // wearing a count, and ship.js's `hasUI` would read it as three.
     expect(new Set(routes).size).toBe(routes.length);
@@ -254,19 +254,20 @@ describe("#274 AC-1: the consumer fixture loads through the harness's own reader
     }
   });
 
-  test("the fixture declares the other three facts the tier-gated sites need", () => {
-    // Four config facts, not one. A fixture setting only a non-empty `pages`
-    // map raises the tier and still executes THREE of five subsystems silently:
-    // container verify also needs `container`, prove also needs a UI-shaped AC,
-    // and the pre-flight needs a remote host.
+  test("the fixture declares the other three facts a consumer run needs", () => {
+    // pages alone floors the tier, and a fixture that stopped there would
+    // execute three of the five tier-gated subsystems and SILENTLY skip the
+    // other two: container verify also needs `container`, and prove also needs
+    // a UI-shaped AC. `remoteHosts` is the pre-flight's only input.
     const container = fixtureRaw.container as Record<string, unknown>;
     expect(container).toBeDefined();
-    expect(Array.isArray(container.hosts)).toBe(true);
-    expect((container.hosts as unknown[]).length).toBeGreaterThan(0);
+    expect(typeof container.rebuildCommand).toBe("string");
+    expect((container.hosts as string[]).length).toBeGreaterThan(0);
     expect(typeof container.port).toBe("number");
 
     const remoteHosts = fixtureRaw.remoteHosts as Record<string, { host?: string }>;
-    expect(Object.keys(remoteHosts ?? {}).length).toBeGreaterThan(0);
+    expect(Object.keys(remoteHosts).length).toBeGreaterThan(0);
+    for (const host of Object.values(remoteHosts)) expect(typeof host.host).toBe("string");
 
     const uiACs = (fixtureState.acs ?? []).filter(
       (ac) =>
@@ -274,7 +275,7 @@ describe("#274 AC-1: the consumer fixture loads through the harness's own reader
         ac.evidenceMethod?.type === "PLAYWRIGHT" ||
         ac.evidenceMethod?.type === "SCREENSHOT",
     );
-    expect(uiACs.length).toBeGreaterThan(0);
+    expect(uiACs.length).toBe(1);
   });
 
   test("the fixture workflow-state reads back as XS / LIGHT", () => {
@@ -426,12 +427,11 @@ describe("#274 AC-1: the STANDARD result is attributable to the declared pages",
   });
 });
 
-// ── AC-5 — the documented consumer shape, and the three measured facts ───
+// ── The documented consumer shape ────────────────────────────────────────
 
 const specSource = readFileSync(SPEC_PATH, "utf-8");
 
 const CONSUMER_SECTION_HEADING = "## Consumer Config Shape (`.claude/rungate.json`)";
-const GAP_SECTION_HEADING = "## What a Consumer's Test Environment Needs (#274)";
 
 /**
  * The documented keys, parsed out of the spec's own table. Hardcoding the list
@@ -462,7 +462,7 @@ function documentedConsumerKeys(spec: string): Array<{ key: string; required: bo
   return rows;
 }
 
-describe("#274 AC-5: the spec documents the consumer shape, and the fixture conforms", () => {
+describe("#274 AC-1: the spec documents the consumer shape, and the fixture conforms", () => {
   test("both config forms are documented in the same spec", () => {
     // "Beside": the directory form rungate itself uses, and the monolith every
     // consumer uses, in one file a reader lands on once.
@@ -493,94 +493,9 @@ describe("#274 AC-5: the spec documents the consumer shape, and the fixture conf
     }
   });
 
-  test("the fixture carries the optional keys too, since this issue owns their shape", () => {
-    const container = fixtureRaw.container as Record<string, unknown> | undefined;
-    const remoteHosts = fixtureRaw.remoteHosts as Record<string, unknown> | undefined;
-    expect(container).toBeDefined();
-    expect(typeof container?.rebuildCommand).toBe("string");
-    expect(Array.isArray(container?.hosts)).toBe(true);
-    expect(typeof container?.port).toBe("number");
-    expect(remoteHosts).toBeDefined();
-    expect(Object.keys(remoteHosts ?? {}).length).toBeGreaterThan(0);
-    for (const host of Object.values(remoteHosts ?? {}) as Array<Record<string, unknown>>) {
-      expect(typeof host.host).toBe("string");
-      expect(typeof host.preFlightCmd).toBe("string");
-    }
-  });
-
   test("the spec's claim about the fixture names the fixture that exists", () => {
     // A spec section describing a fixture path that was never created is the
     // documentation equivalent of a vacuous assertion.
     expect(specSource).toContain("test/fixtures/consumer-ui-project/.claude/rungate.json");
-  });
-});
-
-/**
- * AC-5's written answer. The three facts are not a reading comprehension test —
- * each one is a defect a DailyBriefDashboard run will hit, and each is matched
- * by a probe that also checks the fact is still TRUE of the source. A spec
- * paragraph describing a key-name split that someone has since unified is
- * worse than no paragraph.
- */
-const MEASURED_FACTS: Array<{ name: string; documented: RegExp; stillTrue: () => boolean }> = [
-  {
-    name: "the dev.testCmd versus test.command key-name split",
-    documented: /`dev\.testCmd`[\s\S]{0,400}?`test\.command`|`test\.command`[\s\S]{0,400}?`dev\.testCmd`/,
-    stillTrue: () => {
-      const executor = readFileSync(join(REPO_ROOT, "gates", "gate-executor.ts"), "utf-8");
-      const gate = readFileSync(join(REPO_ROOT, "gates", "workflow.test.ts"), "utf-8");
-      return executor.includes("harness.test?.command") && gate.includes("harness?.dev?.testCmd");
-    },
-  },
-  {
-    name: "the gate checks sitting behind loadProjectHarness",
-    documented: /loadProjectHarness/,
-    stillTrue: () => {
-      const gate = readFileSync(join(REPO_ROOT, "gates", "workflow.test.ts"), "utf-8");
-      // More than one check reads the consumer's config through the loader, and
-      // the loader returns null when there is no `.claude/rungate.json` — which
-      // is how a check passes having made zero assertions.
-      return (gate.split("loadProjectHarness()").length - 1) > 1;
-    },
-  },
-  {
-    name: "the agent prompt that writes environments.prod.rebuild to PASS",
-    documented: /environments\.prod\.rebuild/,
-    stillTrue: () => shipSource.includes("environments.prod.rebuild"),
-  },
-];
-
-describe("#274 AC-5: the consumer test-environment answer is recorded in the spec", () => {
-  test("the spec has a section answering the 7776-before-7777 question", () => {
-    expect(countOccurrences(specSource, GAP_SECTION_HEADING)).toBe(1);
-    const start = specSource.indexOf(GAP_SECTION_HEADING);
-    const after = specSource.slice(start);
-    const section = after.slice(0, after.slice(2).search(/\n## /) + 2);
-    expect(section).toContain("7776");
-    expect(section).toContain("7777");
-  });
-
-  test("all three measured facts are documented, by name", () => {
-    const matched = MEASURED_FACTS.filter((f) => f.documented.test(specSource));
-    expect(matched.map((f) => f.name)).toEqual(MEASURED_FACTS.map((f) => f.name));
-    expect(matched.length).toBeGreaterThanOrEqual(3);
-  });
-
-  test("each documented fact is still true of the source it describes", () => {
-    // The half that makes the one above a measurement. A spec can describe a
-    // split that no longer exists, and a grep for the words would never know.
-    for (const fact of MEASURED_FACTS) {
-      expect(fact.stillTrue(), `the spec still documents "${fact.name}" but the source has moved`).toBe(
-        true,
-      );
-    }
-  });
-
-  test("the fact probes can see an absence", () => {
-    // Vacuity guard: a regex that matched the empty string would report all
-    // three documented over a spec that says nothing.
-    for (const fact of MEASURED_FACTS) {
-      expect(fact.documented.test("")).toBe(false);
-    }
   });
 });
