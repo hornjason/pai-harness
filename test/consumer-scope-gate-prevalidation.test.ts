@@ -1,434 +1,355 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "child_process";
+/**
+ * #274 AC-4 — the scope gate's evidence pre-validator, run over a CONSUMER
+ * fixture's AC set.
+ *
+ * Every rungate self-run is rewritten to LIGHT (`pages: {}` → `hasUI` false →
+ * the downgrade fires), and `skipScope` is `tier === 'LIGHT'`. So the scope
+ * gate — and the pre-validation it stamps — has never executed on a self-run.
+ * A consumer with a non-empty `pages` map is the first project to enter it.
+ * This file runs that path's pre-validator over an AC set shaped like a
+ * consumer's, before a consumer run finds out the hard way.
+ *
+ * #271 IS CLOSED. The `|| true` auto-widen is gone, replaced by grep's own
+ * exit contract — 0 selected, 1 none selected, >1 error. So the claim here is
+ * NOT "the fail-open is still there"; a test written against the old fail-open
+ * would pass vacuously. The claim is that the FIXED refusal EXECUTES on a
+ * consumer's AC set: a zero-match grep is CLASSIFIED rather than repaired into
+ * a command that cannot fail, and an unrunnable command is still broken.
+ *
+ * What makes this different from `test/prevalidator-zero-count.test.ts`, which
+ * already covers #271 at the unit level: nothing there goes past
+ * `prevalidateEvidence`. The gate does not read per-AC statuses — it reads the
+ * REDUCED reading at `evidencePrevalidation`, through
+ * `measureEvidencePrevalidation`, and turns it into a refusal in exactly one
+ * place, `prevalidationViolations` in gates/workflow.test.ts. This file runs
+ * that whole chain on one AC set and asserts the links agree.
+ *
+ * Nothing here is hand-written. Every verdict, status and refusal string below
+ * is produced by executing the real functions over commands that really run in
+ * a throwaway tree — the trap `.claude/rules/checks-must-be-able-to-fail.md`
+ * names for this exact code: a refusal test fed a literal
+ * `{ verdict: "FAIL", broken: ["AC-2"] }` stays green when the pre-validator
+ * stops validating.
+ *
+ * The throwaway tree is DERIVED from the on-disk consumer fixture's `pages`
+ * map, so the consumer's shape is one fact in one place rather than a second
+ * copy typed into this file.
+ */
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { EvidencePrevalidationSchema } from "../gates/schema";
-import { measureEvidencePrevalidation, prevalidateEvidence } from "../lib/evidence-prevalidator";
 
-/**
- * #274 Phase 2 — the scope gate's pre-validation, measured over a CONSUMER's
- * real AC set rather than over a hand-written reading.
- *
- * test/suite-binding-mutation.test.ts already proves the binding can fail. It
- * does it with a planted `{ verdict, broken }` object — a shape **no writer has
- * ever produced**. `measureEvidencePrevalidation` returns per-AC results under
- * `acs`, so on every real run `prevalidationViolations` read `reading.broken`,
- * found nothing, and refused with "no broken AC ids were recorded": true of the
- * key, false of the reading. The refusal was fail-closed and therefore invisible
- * — a heal round that cannot be told which AC to fix costs a round and teaches
- * nothing, which is part of how #261 cost two. It was filed at the foot of
- * test/evidence-prevalidation-at-verify.test.ts and is what this file closes.
- *
- * What was broken to prove it, run and counted rather than asserted, over this
- * file's 14 tests:
- *
- * | Mutation | Red |
- * |---|---|
- * | nothing — the tree before the fix | 11 of 14, and the gate's own output read "FAIL — but no broken AC ids were recorded, so the refusal cannot name what to fix" over a reading that had classified AC-2 broken |
- * | `broken: broken.map(r => r.id)` short-circuited to `broken: []` in `measureEvidencePrevalidation` | 2 of 14 — the measured FAIL names nothing and the gate goes back to refusing anonymously |
- * | the schema's `broken`-vs-`acs` comparison short-circuited (`differs = false`) | 2 of 14 — a FAIL may then name an AC it never classified broken, which is the second-source-of-truth this field could become |
- * | the schema stops reading `broken` at all (`const named = undefined`) | 3 of 14 — every real FAIL, and the guide's own worked example, stop validating |
- *
- * None is left in the tree; all were run and reverted.
- *
- * Nothing here is written inside the repo: the consumer fixture is a temp
- * directory, and the gate is reached by SPAWNING it, because
- * `prevalidationViolations` lives in a `.test.ts` file and importing it would
- * run the whole gate suite inside this one.
- */
+import {
+  measureEvidencePrevalidation,
+  prevalidateEvidence,
+  type ACInput,
+  type PrevalidationResult,
+} from "../lib/evidence-prevalidator";
+import { EvidencePrevalidationSchema, WorkflowStateSchema } from "../gates/schema";
+import { prevalidationViolations } from "../gates/workflow.test";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const GATE_SUITE = join(REPO_ROOT, "gates", "workflow.test.ts");
-const SPEC = join(REPO_ROOT, "specs", "CONFIG-DIRECTORY-STRUCTURE-SPEC.md");
-const GUIDE = join(REPO_ROOT, "gates", "SCHEMA-GUIDE.md");
+const FIXTURE_ROOT = join(REPO_ROOT, "test", "fixtures", "consumer-ui-project");
 
-let SCRATCH = "";
-let WORK = "";
+/** The consumer's declared pages — the fact that makes this a consumer run. */
+const FIXTURE_PAGES = JSON.parse(
+  readFileSync(join(FIXTURE_ROOT, ".claude", "rungate.json"), "utf-8"),
+).pages as Record<string, string>;
+
+/** The consumer's own AC set, as the scope gate would find it in state.acs. */
+const FIXTURE_STATE = WorkflowStateSchema.passthrough().parse(
+  JSON.parse(readFileSync(join(FIXTURE_ROOT, "workflow-state.json"), "utf-8")),
+);
+
+/**
+ * A throwaway project tree with one source file per page the fixture declares.
+ *
+ * The pre-validator does not read config — it reads commands and a cwd — so
+ * what has to be real is the TREE the commands run against: a `grep` against a
+ * missing file exits 2, which is broken, and would make the zero-match case
+ * below pass for the wrong reason.
+ */
 let PROJECT = "";
+const PAGE_SLUGS = Object.values(FIXTURE_PAGES).map((name) => String(name));
 
-// ── the consumer fixture ────────────────────────────────────────────────────
-
-/**
- * A consumer project in the shape #274 is about: a container on :7776 the test
- * environment runs on, a production deploy on :7777, a `make`-driven rebuild,
- * and a `test.command` with no `dev.testCmd` beside it — the config split
- * `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md` now records.
- */
-function plantConsumer(): void {
-  mkdirSync(join(PROJECT, ".claude"), { recursive: true });
-  mkdirSync(join(PROJECT, "src"), { recursive: true });
-  writeFileSync(
-    join(PROJECT, ".claude", "rungate.json"),
-    JSON.stringify(
-      {
-        project: "DailyBriefDashboard",
-        container: { port: 7776, hosts: ["localhost"], rebuildCommand: "make rebuild" },
-        prod: { port: 7777 },
-        test: { command: "make test", timeout: 300000 },
-      },
-      null,
-      2,
-    ),
-  );
-  writeFileSync(
-    join(PROJECT, "src", "app.ts"),
-    "export const TEST_PORT = 7776;\nexport const PROD_PORT = 7777;\n",
-  );
-  writeFileSync(join(PROJECT, "Makefile"), "rebuild:\n\t@echo rebuilt\n");
-}
-
-/**
- * The fixture's AC set, written the way a consumer's ACs are written — one
- * evidence command each, none of them chosen to flatter the pre-validator.
- *
- * AC-1 and AC-4 are the two faces of a zero-match grep, which is the case #271
- * exists for: `grep -c` prints `0` — the exact value a zero-count threshold
- * requires — and exits 1, while plain `grep` prints nothing and exits 1. Both
- * must be classified from grep's documented contract, and NEITHER may be
- * repaired into a command that cannot fail.
- *
- * AC-2 is the unexecutable one. It is not a bare `grep` and not a `bun test`
- * pipe, so nothing in `attemptAutoFix` can reach it and it is classified broken
- * on its own merits.
- */
-const AC_ZERO_MATCH_COUNTED = {
-  id: "AC-1",
-  type: "CODE",
-  statement: "no hardcoded production port survives in the dashboard source",
-  threshold: { op: "==", value: 0, unit: "occurrences" },
-  evidenceMethod: { type: "COMMAND", command: 'grep -c "localhost:7777" src/app.ts' },
-};
-
-const AC_UNEXECUTABLE = {
-  id: "AC-2",
-  type: "CODE",
-  statement: "the test environment answers before the production one is rebuilt",
-  threshold: { op: "==", value: 0, unit: "failures" },
-  evidenceMethod: { type: "COMMAND", command: "./scripts/check-test-env.sh --test 7776 --prod 7777" },
-};
-
-const AC_WORKING = {
-  id: "AC-3",
-  type: "CODE",
-  statement: "the container port is configured",
-  threshold: { op: ">=", value: 1, unit: "matches" },
-  evidenceMethod: { type: "COMMAND", command: 'grep -c "7776" .claude/rungate.json' },
-};
-
-const AC_ZERO_MATCH_SILENT = {
-  id: "AC-4",
-  type: "CODE",
-  statement: "no TODO markers remain in the dashboard source",
-  threshold: { op: "==", value: 0, unit: "occurrences" },
-  evidenceMethod: { type: "COMMAND", command: 'grep "TODO-BEFORE-SHIP" src/app.ts' },
-};
-
-/** The consumer's real AC set — one of its commands cannot run. */
-const CONSUMER_ACS = [AC_ZERO_MATCH_COUNTED, AC_UNEXECUTABLE, AC_WORKING, AC_ZERO_MATCH_SILENT];
-
-/** The same set with the unexecutable command removed. The positive control. */
-const CLEAN_ACS = [AC_ZERO_MATCH_COUNTED, AC_WORKING, AC_ZERO_MATCH_SILENT];
-
-beforeEach(() => {
-  SCRATCH = mkdtempSync(join(tmpdir(), "consumer-prevalidation-"));
-  WORK = join(SCRATCH, "work");
-  PROJECT = join(SCRATCH, "consumer");
-  mkdirSync(WORK, { recursive: true });
-  plantConsumer();
+beforeAll(() => {
+  PROJECT = mkdtempSync(join(tmpdir(), "consumer-scope-274-"));
+  mkdirSync(join(PROJECT, "src", "pages"), { recursive: true });
+  for (const slug of PAGE_SLUGS) {
+    writeFileSync(
+      join(PROJECT, "src", "pages", `${slug}.tsx`),
+      `export function ${slug.replace(/[^a-zA-Z0-9]/g, "_")}Page() {\n  return null;\n}\n`,
+    );
+  }
 });
 
-afterEach(() => {
-  rmSync(SCRATCH, { recursive: true, force: true });
+afterAll(() => {
+  if (PROJECT) rmSync(PROJECT, { recursive: true, force: true });
 });
 
-function plantState(reading: unknown, acs: Array<Record<string, unknown>>): void {
-  const state: Record<string, unknown> = {
-    schemaVersion: 2,
-    issue: 274,
-    slug: "pai-harness-274",
-    phase: "VERIFY",
-    projectRoot: PROJECT,
-    issueGoal: "a consumer's broken evidence command refuses the gate BY NAME",
-    sizing: { predicted: "S", ceremonyTier: "STANDARD" },
-    acs,
-  };
-  if (reading !== undefined) state.evidencePrevalidation = reading;
-  writeFileSync(join(WORK, "workflow-state.json"), JSON.stringify(state, null, 2));
-}
+const FIRST_PAGE = () => `src/pages/${PAGE_SLUGS[0]}.tsx`;
 
 /**
- * `ran` is not a formality: a `-t` filter that matches nothing leaves bun
- * reporting zero failures, which is indistinguishable from the check passing.
- * Every assertion below goes through it first.
+ * The consumer's AC set, in the shape `workflows/ship.js` persists at
+ * `state.acs`.
+ *
+ * Three commands, chosen so each lands on a different arm of the classifier on
+ * its own merits rather than by being repaired first:
+ *
+ *   AC-1  a plain `grep` that selects nothing. Exit 1, no stdout — grep's
+ *         documented "no lines selected" (#271). A zero-match grep must be
+ *         classified `empty` and must NOT be auto-widened into something that
+ *         cannot fail.
+ *   AC-2  a script that does not exist. Exit 127, nothing `attemptAutoFix`
+ *         touches (not a bare grep, not a `bun test` pipe), so it reaches
+ *         `broken` on its own.
+ *   AC-3  a `grep -c` that matches. Exit 0 with a value — the control, without
+ *         which a classifier that refused everything would satisfy the two
+ *         cases above.
+ *
+ * No command mentions a bare `main`/`master` ref, so `normalizeGitRefs` leaves
+ * all three alone and `autoFixed` cannot be set by the ref rewrite — which
+ * matters, because AC-1 asserts the absence of exactly that field.
  */
-function runGateCheck(): { ran: boolean; red: boolean; output: string } {
-  const r = spawnSync("bun", ["test", GATE_SUITE, "-t", "evidence-prevalidation"], {
-    cwd: REPO_ROOT,
-    encoding: "utf-8",
-    timeout: 120000,
-    env: { ...process.env, TEST_WORK_DIR: WORK },
+const fixtureACs = (): ACInput[] => [
+  {
+    id: "AC-1",
+    evidenceMethod: {
+      type: "GREP_CHECK",
+      command: 'grep -rn "legacy-dashboard-widget" src',
+    },
+    threshold: { op: "==", value: 0, unit: "legacy widget references" },
+  },
+  {
+    id: "AC-2",
+    evidenceMethod: {
+      type: "COMMAND",
+      command: "./scripts/count-dashboard-widgets.sh --json",
+    },
+    threshold: { op: "==", value: 4, unit: "nav links rendered" },
+  },
+  {
+    id: "AC-3",
+    evidenceMethod: {
+      type: "GREP_CHECK",
+      command: `grep -c "Page" ${FIRST_PAGE()}`,
+    },
+    threshold: { op: "==", value: 1, unit: "page definitions" },
+  },
+];
+
+/**
+ * The same AC set with the broken command repaired. AC-1's plain `grep`
+ * becomes `grep -c`, which prints `0` — a value a `== 0` threshold can be
+ * compared against — so every AC classifies `ok` and the reading is a PASS.
+ *
+ * This is the control for the refusal cases. Without it, a
+ * `prevalidationViolations` that refused every input would satisfy them.
+ */
+const repairedACs = (): ACInput[] => [
+  {
+    id: "AC-1",
+    evidenceMethod: {
+      type: "GREP_CHECK",
+      command: `grep -rc "legacy-dashboard-widget" ${FIRST_PAGE()}`,
+    },
+    threshold: { op: "==", value: 0, unit: "legacy widget references" },
+  },
+  {
+    id: "AC-2",
+    evidenceMethod: { type: "COMMAND", command: "printf 'links=4'" },
+    threshold: { op: "==", value: 4, unit: "nav links rendered" },
+  },
+  {
+    id: "AC-3",
+    evidenceMethod: {
+      type: "GREP_CHECK",
+      command: `grep -c "Page" ${FIRST_PAGE()}`,
+    },
+    threshold: { op: "==", value: 1, unit: "page definitions" },
+  },
+];
+
+const byId = (results: PrevalidationResult[], id: string): PrevalidationResult => {
+  const hit = results.find((r) => r.id === id);
+  if (!hit) throw new Error(`${id} is missing from the pre-validation results`);
+  return hit;
+};
+
+const statuses = (results: PrevalidationResult[]): Record<string, string> =>
+  Object.fromEntries(results.map((r) => [r.id, r.status]));
+
+// ── the fixture is a consumer's, not this file's invention ──────────────
+
+describe("#274 AC-4: the AC set under test is the consumer fixture's shape", () => {
+  test("the throwaway tree carries one source file per declared page", () => {
+    expect(PAGE_SLUGS.length).toBe(Object.keys(FIXTURE_PAGES).length);
+    expect(PAGE_SLUGS.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(PAGE_SLUGS).size).toBe(PAGE_SLUGS.length);
   });
-  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-  const count = (label: string) => {
-    const m = new RegExp(`^\\s*(\\d+)\\s+${label}\\b`, "m").exec(output);
-    return m ? Number(m[1]) : 0;
-  };
-  return { ran: count("pass") + count("fail") === 1, red: count("fail") === 1, output };
-}
 
-// ── AC-1: the pre-validator, over the consumer's real AC set ────────────────
-
-describe("#274 AC-1: the consumer's AC set is dry-run by the real pre-validator", () => {
-  test("a zero-match grep is CLASSIFIED, not auto-widened", async () => {
-    // What was broken to prove this can fail: restoring the `|| true` auto-fix
-    // #271 deleted makes both of these report `autoFixed` with a widened
-    // command, and the exit-2 cases it used to swallow come back with it.
-    const results = await prevalidateEvidence(CONSUMER_ACS as any, PROJECT);
-    const by = (id: string) => results.find(r => r.id === id)!;
-
-    // `grep -c` printed "0" — the value the `== 0` threshold wants — and exited
-    // 1. That is a measurement, so it is `ok`.
-    expect(by("AC-1").status, "a counted zero-match grep was not classified ok").toBe("ok");
-    // Plain `grep` printed nothing. That is `empty`: the command ran and
-    // produced no value. Collapsing it into `ok` would hand the gate an AC with
-    // no evidence, which is #277.
-    expect(by("AC-4").status, "a silent zero-match grep was not classified empty").toBe("empty");
-
-    for (const id of ["AC-1", "AC-4"]) {
-      expect(by(id).autoFixed, `${id} was auto-widened instead of classified`).toBeUndefined();
-      expect(by(id).fixedCommand, `${id} was rewritten`).toBeUndefined();
+  test("the fixture's own ACs carry the evidence shape the pre-validator reads", () => {
+    const acs = FIXTURE_STATE.acs ?? [];
+    expect(acs.length).toBeGreaterThan(1);
+    for (const ac of acs) {
+      expect(typeof ac.evidenceMethod?.type).toBe("string");
+      expect(typeof ac.evidenceMethod?.command).toBe("string");
     }
-    // The widening this replaced, named so it cannot come back silently.
-    expect(JSON.stringify(results)).not.toContain("|| true");
-  }, 60000);
-
-  test("an unexecutable command is classified broken, and nothing repairs it", async () => {
-    const results = await prevalidateEvidence(CONSUMER_ACS as any, PROJECT);
-    const broken = results.filter(r => r.status === "broken");
-    expect(broken.map(r => r.id), "the unexecutable command was not the only broken one").toEqual([
-      "AC-2",
-    ]);
-    expect(broken[0].needsRewrite).toBe(true);
-    expect(broken[0].autoFixed, "the unexecutable command was auto-fixed").toBeUndefined();
-    expect(broken[0].diagnostic, "the diagnostic does not say what happened").toContain("exit code");
-
-    // The positive control: with that AC removed, nothing is broken. Without
-    // it, a classifier that calls everything broken satisfies the case above.
-    const clean = await prevalidateEvidence(CLEAN_ACS as any, PROJECT);
-    expect(clean.filter(r => r.status === "broken")).toEqual([]);
-  }, 60000);
+  });
 });
 
-// ── AC-2: the derived reading is a schema-valid FAIL that names the AC ──────
+// ── the classifier, over the fixture's real commands ────────────────────
 
-describe("#274 AC-2: the reading is a schema-valid FAIL naming the offending AC", () => {
-  test("the measured FAIL validates under gates/schema.ts and names AC-2", async () => {
-    const reading = await measureEvidencePrevalidation(CONSUMER_ACS as any, PROJECT);
-    expect(reading.verdict).toBe("FAIL");
+describe("#274 AC-4: the pre-validator over the consumer fixture's AC set", () => {
+  test("a zero-match grep is classified empty, and is not auto-widened", async () => {
+    const results = await prevalidateEvidence(fixtureACs(), PROJECT);
+    const ac1 = byId(results, "AC-1");
+
+    expect(
+      ac1.status,
+      `a grep that selected nothing was classified '${ac1.status}'. Exit 1 is grep's ` +
+        `"no lines selected", and for a zero-count AC it is the result that SATISFIES ` +
+        `the threshold (#271)`,
+    ).toBe("empty");
+
+    // The other half of #271: the predecessor repaired this command into
+    // `... || true`, which also swallowed exit 2 — a missing file or a bad
+    // pattern — behind the same clean verdict. A classification is not a
+    // repair, so neither field may be set.
+    expect(ac1.fixedCommand, "the zero-match grep was rewritten").toBeUndefined();
+    expect(ac1.autoFixed, "the zero-match grep was reported as auto-fixed").toBeUndefined();
+    expect(ac1.needsRewrite, "a measured zero match was marked as needing a rewrite").toBeFalsy();
+  });
+
+  test("a command that cannot execute is broken, and the two verdicts are distinct", async () => {
+    const results = await prevalidateEvidence(fixtureACs(), PROJECT);
+    const ac1 = byId(results, "AC-1");
+    const ac2 = byId(results, "AC-2");
+    const ac3 = byId(results, "AC-3");
+
+    expect(ac2.status, "a script that does not exist was not classified broken").toBe("broken");
+    expect(ac2.needsRewrite, "a broken evidence command was not flagged for rewrite").toBe(true);
+    expect(ac2.fixedCommand, "a command with no repair was reported as repaired").toBeUndefined();
+
+    // "Both are non-ok" is the assertion this case exists to avoid. A
+    // classifier that collapsed empty into broken would hand a satisfied
+    // zero-count AC to the gate as a refusal, and one that collapsed broken
+    // into empty would ship a command that cannot run. So the two are compared
+    // to each other, not just to `ok`.
+    expect(
+      [ac1.status, ac2.status],
+      "the zero-match grep and the unrunnable command were given the same verdict",
+    ).toEqual(["empty", "broken"]);
+    expect(ac1.status).not.toBe(ac2.status);
+    expect(ac1.needsRewrite).not.toBe(ac2.needsRewrite);
+
+    // The control. Without a passing AC in the same run, every assertion above
+    // is satisfied by a classifier that refuses everything it is given.
+    expect(ac3.status, "a grep that matched was not classified ok").toBe("ok");
+    expect(statuses(results)).toEqual({ "AC-1": "empty", "AC-2": "broken", "AC-3": "ok" });
+  });
+});
+
+// ── the reduced reading, and the gate's single refusal site ─────────────
+
+describe("#274 AC-4: the recorded reading and the gate check that reads it", () => {
+  test("the derived reading is a schema-valid FAIL that names the broken AC", async () => {
+    // Derived, not written: the verdict comes from classifying commands that
+    // were executed a line earlier. `takenAt` is what gate-executor.ts stamps
+    // on, so this is the object that reaches workflow-state.json.
+    const reading = {
+      ...(await measureEvidencePrevalidation(fixtureACs(), PROJECT)),
+      takenAt: "scope" as const,
+    };
 
     const parsed = EvidencePrevalidationSchema.safeParse(reading);
     expect(
       parsed.success,
-      parsed.success ? "" : parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; "),
+      `the reading the scope gate would stamp does not validate: ${
+        parsed.success
+          ? ""
+          : parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")
+      }`,
     ).toBe(true);
 
-    // The whole point of the sub-issue: the reading says WHICH AC, in the key
-    // the gate's refusal site reads. Before this, `broken` existed only in
-    // `prevalidationViolations`' expectations and in no writer.
-    expect(reading.broken, "the FAIL does not name the AC it refuses for").toEqual(["AC-2"]);
-    expect(reading.acs.find(a => a.id === "AC-2")?.status).toBe("broken");
-  }, 60000);
+    expect(reading.verdict, "a broken evidence command did not move the verdict").toBe("FAIL");
+    expect(reading.reason, "a measured verdict carried an UNMEASURED reason").toBeNull();
 
-  test("the clean AC set measures a schema-valid PASS that names nothing", async () => {
-    const reading = await measureEvidencePrevalidation(CLEAN_ACS as any, PROJECT);
-    expect(reading.verdict).toBe("PASS");
-    expect(reading.broken).toEqual([]);
-    expect(EvidencePrevalidationSchema.safeParse(reading).success).toBe(true);
-  }, 60000);
-
-  test("the schema refuses a FAIL whose named ACs do not match what it measured", async () => {
-    // Three mutations of the measured reading, so the validation above is not
-    // satisfied by a schema that accepts everything.
-    const reading = await measureEvidencePrevalidation(CONSUMER_ACS as any, PROJECT);
-
-    const dropped: Record<string, unknown> = { ...reading };
-    delete dropped.broken;
+    // The broken AC is named in the reading itself. This is the only place the
+    // id survives the reduction — the reading carries `acs`, and the schema has
+    // no `broken` field for a consumer of it to read.
+    expect(reading.acs.filter((a) => a.status === "broken").map((a) => a.id)).toEqual(["AC-2"]);
     expect(
-      EvidencePrevalidationSchema.safeParse(dropped).success,
-      "a FAIL with no named AC was accepted",
-    ).toBe(false);
+      (reading as Record<string, unknown>).broken,
+      "the reading grew a `broken` field",
+    ).toBeUndefined();
 
-    expect(
-      EvidencePrevalidationSchema.safeParse({ ...reading, broken: [] }).success,
-      "a FAIL naming nothing was accepted",
-    ).toBe(false);
-
-    expect(
-      EvidencePrevalidationSchema.safeParse({ ...reading, broken: ["AC-9"] }).success,
-      "a FAIL naming an AC it never classified broken was accepted",
-    ).toBe(false);
-
-    expect(
-      EvidencePrevalidationSchema.safeParse({ ...reading, broken: ["AC-1", "AC-2"] }).success,
-      "a FAIL naming an AC that measured ok was accepted",
-    ).toBe(false);
-  }, 60000);
-
-  test("an UNMEASURED reading names nothing, and a reading that names nothing stays valid", async () => {
-    const reading = await measureEvidencePrevalidation([], PROJECT);
-    expect(reading.verdict).toBe("UNMEASURED");
-    expect(reading.broken).toEqual([]);
-    expect(EvidencePrevalidationSchema.safeParse(reading).success).toBe(true);
-    expect(
-      EvidencePrevalidationSchema.safeParse({ ...reading, broken: ["AC-2"] }).success,
-      "an UNMEASURED reading named a broken AC it has no results for",
-    ).toBe(false);
-  }, 60000);
-});
-
-// ── AC-3: the gate's single refusal site, observed from its own output ──────
-
-describe("#274 AC-3: the scope gate refuses the measured reading and passes the clean one", () => {
-  test("the gate refuses, and the refusal names AC-2", async () => {
-    const reading = await measureEvidencePrevalidation(CONSUMER_ACS as any, PROJECT);
-    expect(reading.verdict).toBe("FAIL");
-    plantState(reading, CONSUMER_ACS);
-
-    const r = runGateCheck();
-    expect(r.ran, `evidence-prevalidation never ran — the filter matched nothing:\n${r.output}`).toBe(
-      true,
-    );
-    expect(r.red, `a measured pre-validation FAIL did not fail the gate:\n${r.output}`).toBe(true);
-    // Red for the stated reason. A gate suite that failed to load is red too,
-    // and the count alone cannot tell them apart.
-    expect(r.output, "the refusal does not name the AC to fix").toContain(
-      "broken evidence commands on AC-2",
-    );
-    // The defect itself, asserted as its own absence: every genuine FAIL used
-    // to land here, because no writer produced the key the refusal reads.
-    expect(r.output, "the refusal still cannot name what to fix").not.toContain(
-      "no broken AC ids were recorded",
-    );
-  }, 180000);
-
-  test("the same gate passes the clean AC set", async () => {
-    // Without this control, a gate that refuses everything satisfies the case
-    // above.
-    const reading = await measureEvidencePrevalidation(CLEAN_ACS as any, PROJECT);
-    expect(reading.verdict).toBe("PASS");
-    plantState(reading, CLEAN_ACS);
-
-    const r = runGateCheck();
-    expect(r.ran, `evidence-prevalidation never ran — the filter matched nothing:\n${r.output}`).toBe(
-      true,
-    );
-    expect(r.red, `a measured pre-validation PASS failed the gate:\n${r.output}`).toBe(false);
-  }, 180000);
-});
-
-// ── AC-4: the guide documents the FAIL shape the pre-validator emits ────────
-
-describe("#274 AC-4: gates/SCHEMA-GUIDE.md documents the FAIL shape", () => {
-  const section = () => {
-    const guide = readFileSync(GUIDE, "utf-8");
-    const start = guide.indexOf("## evidencePrevalidation");
-    expect(start, "the guide has no evidencePrevalidation section").toBeGreaterThan(-1);
-    const rest = guide.slice(start + 1);
-    const end = rest.indexOf("\n## ");
-    return end === -1 ? rest : rest.slice(0, end);
-  };
-
-  test("the field table documents `broken`", () => {
-    // Read out of the FIRST table under the heading — the same extraction
-    // test/unit/evidence-prevalidation-gate.test.ts uses for its both-ways
-    // parity check, so a row added to the prose instead of the table does not
-    // satisfy this.
-    const fields: string[] = [];
-    let inTable = false;
-    for (const line of section().split("\n").slice(1)) {
-      if (line.startsWith("|")) {
-        inTable = true;
-        const m = line.match(/^\|\s*`([^`]+)`/);
-        if (m) fields.push(m[1]);
-      } else if (inTable) break;
-    }
-    expect(fields, "`broken` is not in the evidencePrevalidation field table").toContain("broken");
+    // The whole classification survives the reduction, not just the failures:
+    // `empty` is a warning rather than a refusal, and a warning that does not
+    // reach the file is a warning no later check can see.
+    expect(statuses(reading.acs)).toEqual({ "AC-1": "empty", "AC-2": "broken", "AC-3": "ok" });
   });
 
-  test("the documented FAIL example carries the ids of its broken ACs", () => {
-    const text = section();
-    const block = text.slice(text.indexOf('{ "evidencePrevalidation"'));
-    const json = JSON.parse(block.slice(0, block.indexOf("```"))).evidencePrevalidation;
-    expect(json.verdict, "the worked example is not a FAIL").toBe("FAIL");
+  test("the gate's single refusal site refuses the measured FAIL, and passes a clean set", async () => {
+    const failing = await measureEvidencePrevalidation(fixtureACs(), PROJECT);
+    expect(failing.verdict, "the fixture stopped producing a FAIL to refuse").toBe("FAIL");
+
+    const violations = prevalidationViolations(failing);
     expect(
-      json.broken,
-      "the documented FAIL does not name the ACs its own acs[] classified broken",
-    ).toEqual(json.acs.filter((a: any) => a.status === "broken").map((a: any) => a.id));
-    expect(json.broken.length, "the documented FAIL names nothing").toBeGreaterThan(0);
-    // And the example is the real contract, not prose: it validates.
-    expect(EvidencePrevalidationSchema.safeParse(json).success).toBe(true);
+      violations.length,
+      `a measured FAIL produced no refusal: ${JSON.stringify(violations)}`,
+    ).toBe(1);
+    expect(violations[0]).toContain("evidence pre-validation: FAIL");
+
+    // The control, also derived. A refusal site that refused everything would
+    // satisfy the case above, and this is the half that catches it.
+    const clean = await measureEvidencePrevalidation(repairedACs(), PROJECT);
+    expect(
+      statuses(clean.acs),
+      "the repaired AC set is not all-ok, so it cannot show the refusal site going quiet",
+    ).toEqual({ "AC-1": "ok", "AC-2": "ok", "AC-3": "ok" });
+    expect(clean.verdict).toBe("PASS");
+    expect(
+      prevalidationViolations(clean),
+      "an all-ok pre-validation was refused — the check refuses whatever it is given",
+    ).toEqual([]);
   });
 
-  test("the guide says which reader the field exists for", () => {
-    expect(section()).toContain("prevalidationViolations");
+  test("an unmeasured reading is refused the same way a FAIL is", async () => {
+    // "Nothing was measured" has been read as "nothing was wrong" once in this
+    // harness already (#224). Both the absence and the explicit UNMEASURED are
+    // asserted, because "the writer never ran" and "the writer ran and measured
+    // nothing" fail for the same reason.
+    const unmeasured = await measureEvidencePrevalidation([], PROJECT);
+    expect(unmeasured.verdict).toBe("UNMEASURED");
+    expect(prevalidationViolations(unmeasured).length).toBe(1);
+    expect(prevalidationViolations(undefined).length).toBe(1);
   });
 });
 
-// ── AC-5: the config-expressibility answer is on the record ─────────────────
+// ── the call site and the owner are the same chain ──────────────────────
 
-describe("#274 AC-5: the 7776-before-7777 question is answered in writing", () => {
-  const spec = () => readFileSync(SPEC, "utf-8");
+describe("#274 AC-4: the gate's entry point delegates to the pre-validator", () => {
+  test("measureEvidencePrevalidation returns what prevalidateEvidence classified", async () => {
+    // `gates/gate-executor.ts` calls `measureEvidencePrevalidation`, never
+    // `prevalidateEvidence` directly. Asserting the owner's behaviour alone
+    // would stay green while the wrapper quietly stopped delegating — it
+    // returns a hardcoded verdict, or an UNMEASURED it swallowed an exception
+    // into — so the entry point is EXECUTED here over the same AC set and the
+    // two classifications are compared.
+    const owner = await prevalidateEvidence(fixtureACs(), PROJECT);
+    const entry = await measureEvidencePrevalidation(fixtureACs(), PROJECT);
 
-  test("the answer carries an explicit verdict token and both ports", () => {
-    const text = spec();
-    expect(text, "no explicit expressible-or-not verdict").toMatch(/NOT-EXPRESSIBLE|EXPRESSIBLE/);
-    expect(text, "the consumer's test port is not named").toContain("7776");
-    expect(text, "the consumer's production port is not named").toContain("7777");
-  });
+    // Vacuity guard. Two empty lists compare equal, and that is what both a
+    // short-circuited owner and a wrapper that stopped calling it look like.
+    expect(entry.acs.length, "the entry point measured nothing").toBe(3);
+    expect(new Set(Object.values(statuses(entry.acs))).size, "every AC got the same verdict").toBe(3);
 
-  test("the answer names the three mechanisms the gap is made of", () => {
-    const text = spec();
-    // The config-key split (#294): same fact, two key names.
-    expect(text, "the dev.testCmd / test.command split is not named").toContain("dev.testCmd");
-    expect(text, "the dev.testCmd / test.command split is not named").toContain("test.command");
-    // The gate checks that read config at all.
-    expect(text, "loadProjectHarness is not named").toContain("loadProjectHarness");
-    // The ship.js record-env site a DDB run surfaces the gap at.
-    expect(text, "the ship.js record-env site is not named").toContain("workflows/ship.js");
-    expect(text, "the field an agent writes to PASS is not named").toContain(
-      "environments.prod.rebuild",
+    expect(statuses(entry.acs)).toEqual(statuses(owner));
+    expect(entry.verdict, "the entry point reported a verdict its own results contradict").toBe(
+      owner.some((r) => r.status === "broken") ? "FAIL" : "PASS",
     );
-  });
-
-  test("the claims the answer makes about the code are true of the code", () => {
-    // A written answer nobody re-checks is a comment. Each claim is re-derived
-    // from source here, so the record goes red when the code moves under it.
-    const gateSuite = readFileSync(GATE_SUITE, "utf-8");
-    const executor = readFileSync(join(REPO_ROOT, "gates", "gate-executor.ts"), "utf-8");
-    const shipJs = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
-    const text = spec();
-
-    // 1. The two key names for one fact.
-    expect(gateSuite, "tests-pass no longer reads dev.testCmd").toContain("harness?.dev?.testCmd");
-    expect(executor, "the test baseline no longer reads test.command").toContain("harness.test?.command");
-
-    // 2. The count of gate checks behind loadProjectHarness, stated in the
-    //    answer and counted here rather than trusted.
-    const callSites = (gateSuite.match(/loadProjectHarness\(\)/g) || []).length - 1; // minus the declaration
-    const stated = Number(/(\d+) gate checks sit behind `loadProjectHarness/.exec(text)?.[1] ?? "-1");
-    expect(stated, `the answer's count of loadProjectHarness-gated checks is not ${callSites}`).toBe(
-      callSites,
-    );
-
-    // 3. The record-env prompt writes the rebuild verdict from a curl status.
-    expect(shipJs, "ship.js no longer writes prod.rebuild = 'PASS' from a prompt").toContain(
-      "s.environments.prod.rebuild = 'PASS'",
-    );
-    expect(shipJs).toContain("label: 'record-env'");
-
-    // 4. The port 7776 the harness does know about is hardcoded in a check that
-    //    only warns — the reason the answer's verdict is what it is.
-    expect(gateSuite, "quinn-container-port no longer hardcodes 7776").toContain("port !== 7776");
+    expect(byId(entry.acs, "AC-2").needsRewrite).toBe(byId(owner, "AC-2").needsRewrite as boolean);
   });
 });

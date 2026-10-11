@@ -1,578 +1,594 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { createHash } from "crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
 /**
- * #274 — restoring the unconditional `hasUI` downgrade turns exactly FOUR
- * tier-gated observations red, and leaves the remote pre-flight green.
+ * #274 AC-3 — the subsystem observations can FAIL.
  *
- * `workflows/ship.js` rewrites the ceremony tier from the consumer's declared
- * `pages`. rungate's own config declares `pages: {}`, so `hasUI` is false on
- * every self-run and the downgrade at that site fires every time: the scope
- * gate, Quinn local, container verify and prove have never once executed in
- * this repo's history. A consumer that declares pages keeps STANDARD and
- * enters all of them.
+ * `test/ship-ceremony-tier-floor.test.ts` proves the floor computes the right
+ * tier. That is not the same claim as "the subsystems a tier switches on
+ * actually ran". A suite that watched five subsystems and never watched them
+ * NOT run would be the decorative check `.claude/rules/checks-must-be-able-to-fail.md`
+ * is about: every one of its observations would be satisfied by a harness that
+ * resolved STANDARD for every input, including inputs that must stay LIGHT.
  *
- * This file is the PROOF that the observations of those subsystems are
- * load-bearing rather than decorative. It runs in two modes, selected by one
- * environment variable:
+ * So the pre-#215 defect is REBUILT as a mutant — the `CEREMONY-TIER-FLOOR`
+ * block deleted, the floor call and the raise removed, leaving `hasUI` with
+ * nothing but its one-way downgrade — and a six-observation suite is SPAWNED
+ * against it.
  *
- * - `CONSUMER_TIER_SHIP_SOURCE` set → OBSERVATION mode. Six observations are
- *   made against the ship.js at that path, each one evaluating a guard
- *   expression lifted VERBATIM out of that source over a declared-pages
- *   consumer fixture. Nothing here reads the tier string: an observation that
- *   asserted `tier === 'STANDARD'` would go red under the mutant for a reason
- *   that says nothing about whether the subsystem runs.
- * - unset → DRIVER mode. It builds the mutant into a temp path, spawns the
- *   observation suite twice over the same argv, and counts.
+ * ## The asymmetry, and why it is 4 and not 6
  *
- * Why the one differing element travels in the environment rather than in
- * argv: `bun test` rewrites `process.argv` to `[bun, <test file>]` and drops
- * everything else, so a path appended to the command line cannot be read by
- * the child. That is not asserted by comment — a probe spawn below proves it,
- * and the two spawn descriptors are compared leaf by leaf so "differing only
- * in the path to the source under test" is a measured property.
+ * The six observations are not one kind of thing, and collapsing them into a
+ * single red count would hide the fact AC-3 is actually about:
+ *
+ * | Observation | Kind | Under the mutant |
+ * |---|---|---|
+ * | `scope gate runs` | tier-gated EXECUTION | red |
+ * | `quinn local runs` | tier-gated EXECUTION | red |
+ * | `container verify runs` | tier-gated EXECUTION | red |
+ * | `prove runs` | tier-gated EXECUTION | red |
+ * | `container-less verify logs its skip` | tier-gated SKIP ARM | red |
+ * | `remote pre-flight runs` | not tier-gated | GREEN |
+ *
+ * **Four** tier-gated subsystem EXECUTIONS stop happening. That is the number
+ * AC-3 names and the number this file asserts by name.
+ *
+ * The fifth tier-gated site — `} else if (ceremonyTier !== 'LIGHT')`, the arm
+ * that announces a declined container — also goes red, and it is counted
+ * SEPARATELY rather than folded in or dropped. Folding it in would report five
+ * subsystems switched off when four were; dropping it to make the number come
+ * out would be choosing an observation set to fit an answer, which is the thing
+ * the rules file is about. Its subject is the ABSENCE of a run, so under the
+ * mutant the absence is still an absence — it just stops being announced. That
+ * is a real regression and a different one.
+ *
+ * The pre-flight is the only green, and it has to be: it sits ~450 lines before
+ * `discovery.ceremonyTier` is first read, so no tier change can reach it. Its
+ * greenness is the positive control — a suite that failed to resolve its
+ * imports leaves 0 of 6, and a red count alone cannot tell those apart.
+ *
+ * Three further properties make this worth running, all asserted here rather
+ * than left as conventions:
+ *
+ * - **The suite is spawned, identically, twice.** `ran` is read out of the
+ *   junit report before any verdict is. The two spawns share one argv; only
+ *   `SHIP_UNDER_TEST` differs.
+ * - **Green and red are compared by NAME.** "4 red" is satisfied by any four
+ *   of the six; only these four mean what this claims.
+ * - **The mutation is local.** Every subsystem block is asserted byte-identical
+ *   between the real source and the mutant, so the reds are caused by the tier
+ *   the chain resolved and not by a mutant that damaged the blocks.
+ *
+ * The mutant builder throws rather than returning an unmutated copy when its
+ * target moves — a mutation harness that silently no-ops when the downgrade is
+ * renamed reports green over a mutation that never happened.
  */
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SHIP = join(REPO_ROOT, "workflows", "ship.js");
-const SELF = import.meta.path;
-const SOURCE_ENV = "CONSUMER_TIER_SHIP_SOURCE";
-const SOURCE_UNDER_TEST = process.env[SOURCE_ENV];
-
-// ── the observations, named once and shared by both modes ───────────────────
-
-const OBS = {
-  scope: "OBS-1 the scope gate runs",
-  quinnLocal: "OBS-2 Quinn local runs",
-  containerCheck: "OBS-3 container verify reaches its config check",
-  prove: "OBS-4 prove runs",
-  containerQuinn: "OBS-5 container Quinn stays skipped — the fixture declares no container",
-  preflight: "OBS-6 the remote pre-flight runs — it is not tier-gated",
-} as const;
+const shipSource = readFileSync(SHIP, "utf-8");
 
 /**
- * The four that MUST turn red when the downgrade is restored.
- *
- * ship.js has five tier-gated sites, not four. Two of them —
- * `if (tier !== 'LIGHT' && containerConfig)` and its `else if (tier !== 'LIGHT')`
- * — are exclusive branches of ONE decision, so no single fixture can enter
- * both. The fixture here declares no container (DailyBriefDashboard declares
- * none either), so the branch it enters is the config check, and the count is
- * four. The driver asserts the other branch is tier-gated too, on a fixture
- * variant that declares a container, so "four" is a property of the decision
- * tree rather than a site this file forgot.
+ * The consumer config is ONE fact in ONE place: the on-disk fixture. The
+ * spawned suite reads this path out of the environment rather than carrying a
+ * second copy of the config in a string literal — run wf_536df065-969 had two
+ * worktrees independently authoring the same fixture with different content.
  */
-const EXPECTED_RED = [OBS.scope, OBS.quinnLocal, OBS.containerCheck, OBS.prove];
-const EXPECTED_GREEN = [OBS.containerQuinn, OBS.preflight];
-const ALL_OBSERVATIONS = [...EXPECTED_RED, ...EXPECTED_GREEN];
-
-// ── the fixture: a consumer that declares pages ─────────────────────────────
-
-type Fixture = {
-  tier: string;
-  config: Record<string, unknown>;
-  args: Record<string, unknown>;
-  acs: Array<Record<string, unknown>>;
-};
-
-/** 18 pages, the number DailyBriefDashboard declares. */
-const DECLARED_PAGES = Object.fromEntries(
-  Array.from({ length: 18 }, (_, i) => [`page-${i + 1}`, `/page-${i + 1}`]),
+const FIXTURE_CONFIG = join(
+  REPO_ROOT,
+  "test",
+  "fixtures",
+  "consumer-ui-project",
+  ".claude",
+  "rungate.json",
 );
-
-const CONSUMER: Fixture = {
-  // What the discovery LLM sized the issue at. The point of the fixture is
-  // that this SURVIVES on a declared-pages consumer and does not on rungate.
-  tier: "STANDARD",
-  config: {
-    pages: DECLARED_PAGES,
-    dev: { uiBase: "http://localhost:7777", testCmd: "bun test" },
-  },
-  args: {
-    remoteHosts: { mini: { host: "mini.local", purpose: "container host" } },
-  },
-  acs: [
-    { id: "AC-1", type: "OUTCOME", evidenceMethod: { type: "PLAYWRIGHT" } },
-    { id: "AC-2", type: "CODE", evidenceMethod: { type: "BUN_TEST" } },
-  ],
-};
-
-/** The same consumer, declaring a container. Used only to show site five. */
-const CONSUMER_WITH_CONTAINER: Fixture = {
-  ...CONSUMER,
-  config: {
-    ...CONSUMER.config,
-    container: { rebuildCommand: "make rebuild", hosts: ["mini"], port: 7777, healthPath: "/health" },
-  },
-};
-
-// ── extraction ──────────────────────────────────────────────────────────────
-
-/**
- * The one occurrence of `re` in `source`, or a thrown error naming the site.
- *
- * Exactly-once is the point rather than a convenience: a second copy of any of
- * these sites would survive the mutation and leave the mutant red for a reason
- * unconnected to the mutation working.
- */
-function one(source: string, re: RegExp, label: string): RegExpMatchArray {
-  const all = [...source.matchAll(new RegExp(re.source, `${re.flags.replace(/g/g, "")}g`))];
-  if (all.length !== 1) {
-    throw new Error(
-      `could not locate ${label} in the source under test: ${re} matched ${all.length} times, ` +
-        `so this test proves nothing`,
-    );
-  }
-  return all[0];
-}
-
-/**
- * Statements lifted whole. Each is a line (or a brace-closed block starting at
- * column zero) of `workflows/ship.js`, executed below exactly as written.
- */
-const STATEMENTS: Record<string, RegExp> = {
-  remoteHosts: /^const remoteHosts = parsedArgs\.remoteHosts \|\| \{\}$/m,
-  preflightResults: /^const preflightResults = parsedArgs\.preflightResults \|\| null$/m,
-  pagesConfig: /^const pagesConfig = projectConfig\.pages \|\| parsedArgs\.pages \|\| \{\}$/m,
-  // Loose on the right-hand side on purpose: the mutant pins this to `false`,
-  // and the runner has to be able to execute the mutant too.
-  hasUI: /^const hasUI = .+$/m,
-  downgrade: /^if \(!hasUI && discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m,
-  floorCall: /^const flooredTier = ceremonyTierFloor\(discovery\.ceremonyTier, hasUI\)$/m,
-  raise: /^if \(flooredTier !== discovery\.ceremonyTier\) \{[\s\S]*?\n\}$/m,
-  skipScope: /^const skipScope = discovery\.ceremonyTier === 'LIGHT'$/m,
-  containerConfig: /^const containerConfig = projectConfig\.container \|\| null$/m,
-  hasUIACs: /^const hasUIACs = \(discovery\?\.acs \|\| \[\]\)\.some\(.+\)$/m,
-  shouldProve: /^const shouldProve = discovery\.ceremonyTier !== 'LIGHT' && hasUIACs$/m,
-};
-
-/**
- * The guards, each captured out of the `if` that ship.js actually writes.
- *
- * Group 1 is the condition text, and it is the only thing this file evaluates.
- * None of these conditions is restated here — a restated guard is a model of
- * ship.js, and a model cannot go red when ship.js changes.
- */
-const GUARDS: Record<string, RegExp> = {
-  preflightPrecomputed: /^if \((preflightResults)\) \{$/m,
-  preflight: /^\} else if \((Object\.keys\(remoteHosts\)\.length > 0)\) \{$/m,
-  scope: /^if \((!skipScope)\) \{$/m,
-  quinnLocal: /^if \((discovery\.ceremonyTier !== 'LIGHT')\) \{\n  for \(let validateAttempt = 1;/m,
-  containerQuinn: /^if \((discovery\.ceremonyTier !== 'LIGHT' && containerConfig)\) \{$/m,
-  containerCheck: /^\} else if \((discovery\.ceremonyTier !== 'LIGHT')\) \{\n  log\('No container config/m,
-  prove: /^if \((shouldProve)\) \{$/m,
-};
 
 const FLOOR_START = "// ──── CEREMONY-TIER-FLOOR-START ────";
 const FLOOR_END = "// ──── CEREMONY-TIER-FLOOR-END ────";
 
-function floorBlock(source: string): { index: number; code: string } {
-  const a = source.indexOf(FLOOR_START);
-  const b = source.indexOf(FLOOR_END);
-  if (a < 0 || b <= a) {
-    throw new Error("the source under test is missing the CEREMONY-TIER-FLOOR markers");
-  }
-  return { index: a, code: source.slice(a, b) };
-}
+/** The one-way downgrade #215 found alone, and the two statements that partnered it. */
+export const DOWNGRADE_SITE = /^if \(!hasUI && discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m;
+const FLOOR_CALL_SITE = /^const flooredTier = ceremonyTierFloor\(discovery\.ceremonyTier, hasUI\)$/m;
+const RAISE_SITE = /^if \(flooredTier !== discovery\.ceremonyTier\) \{[\s\S]*?\n\}$/m;
 
-type Decision = {
-  tier: string;
-  logs: string[];
-  scopeGateRuns: boolean;
-  quinnLocalRuns: boolean;
-  containerQuinnRuns: boolean;
-  containerCheckReached: boolean;
-  proveRuns: boolean;
-  preflightRuns: boolean;
-};
+/** The five tier-gated subsystem blocks, plus the pre-flight that is not gated. */
+const SUBSYSTEM_SITES = {
+  "the skipScope decision": /^const skipScope = discovery\.ceremonyTier === 'LIGHT'$/m,
+  "the scope gate invocation": /^if \(!skipScope\) \{[\s\S]*?\n\}$/m,
+  "the Quinn local loop": /^if \(discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m,
+  "the container verify arms":
+    /^if \(discovery\.ceremonyTier !== 'LIGHT' && containerConfig\) \{[\s\S]*?\n\} else if \(discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m,
+  "the UI-AC detection": /^const hasUIACs = .*$/m,
+  "the prove decision": /^const shouldProve = discovery\.ceremonyTier !== 'LIGHT' && hasUIACs$/m,
+  "the prove invocation": /^if \(shouldProve\) \{[\s\S]*?\n\}$/m,
+  "the remoteHosts read": /^const remoteHosts = parsedArgs\.remoteHosts \|\| \{\}$/m,
+  "the preflightResults read": /^const preflightResults = parsedArgs\.preflightResults \|\| null$/m,
+  "the pre-flight block": /^if \(preflightResults\) \{[\s\S]*?\n\}$/m,
+} as const;
 
-/**
- * ship.js's own tier statements and its own guard conditions, RUN over the
- * fixture, in SOURCE ORDER.
- *
- * Source order is not an implementation detail (SC-677): a fixed assembly
- * order would apply the floor before the downgrade wherever ship.js put them,
- * and the downgrade overwriting the floor is exactly the regression this has
- * to be able to see.
- *
- * `preflightRuns` and `containerCheckReached` compose two captured conditions
- * because the sites are `else if` branches — that composition is JavaScript's
- * semantics for the chain, not a second statement of either condition. Each
- * result is wrapped in `Boolean(...)` for the same reason: ship.js writes
- * `tier !== 'LIGHT' && containerConfig`, whose value is the config object, and
- * truthiness is exactly what the `if` it was lifted from does with it.
- */
-function decide(source: string, fixture: Fixture): Decision {
-  const parts = [floorBlock(source)];
-  for (const [label, re] of Object.entries(STATEMENTS)) {
-    const m = one(source, re, label);
-    parts.push({ index: m.index!, code: m[0] });
-  }
-  parts.sort((a, b) => a.index - b.index);
-
-  const g = (label: string): string => one(source, GUARDS[label], label)[1];
-
-  const body = [
-    "const logs = []",
-    "const log = (m) => { logs.push(String(m)) }",
-    "const discovery = { ceremonyTier: fixture.tier, acs: fixture.acs }",
-    "const projectConfig = fixture.config",
-    "const parsedArgs = fixture.args",
-    ...parts.map((p) => p.code),
-    "return {",
-    "  tier: discovery.ceremonyTier,",
-    "  logs,",
-    `  scopeGateRuns: Boolean(${g("scope")}),`,
-    `  quinnLocalRuns: Boolean(${g("quinnLocal")}),`,
-    `  containerQuinnRuns: Boolean(${g("containerQuinn")}),`,
-    `  containerCheckReached: Boolean(!(${g("containerQuinn")}) && (${g("containerCheck")})),`,
-    `  proveRuns: Boolean(${g("prove")}),`,
-    `  preflightRuns: Boolean(!(${g("preflightPrecomputed")}) && (${g("preflight")})),`,
-    "}",
-  ].join("\n");
-
-  return new Function("fixture", body)(fixture) as Decision;
+function matches(src: string, re: RegExp): RegExpMatchArray[] {
+  return [...src.matchAll(new RegExp(re.source, "gm"))];
 }
 
 // ── the mutation ────────────────────────────────────────────────────────────
 
 /**
- * Restore the unconditional `hasUI` downgrade.
+ * Rebuild the pre-#215 source: the floor block gone, the floor call and the
+ * raise gone, the one-way `hasUI` downgrade left exactly as it is.
  *
- * One edit, at one site: `hasUI` stops consulting the consumer's declared
- * pages. That is the whole of the pre-#274 world — the downgrade's `!hasUI`
- * guard is then true on every run, so every run is rewritten to LIGHT, and the
- * #215 floor cannot raise it back because the floor reads the same `hasUI`.
- * Every other byte of ship.js, including all five tier-gated guards, is left
- * exactly as it is, which is what makes the four reds attributable.
- *
- * Throws rather than returning an unmutated copy when the site moves. A
- * mutation harness that silently no-ops when its target is renamed is the
- * decorative check this whole exercise exists to rule out.
+ * Every site is located exactly once first. A second copy of any of them would
+ * survive the removal and leave the mutant behaving like the real source for a
+ * reason that has nothing to do with the mutation having worked.
  */
-const HAS_UI_SITE = "const hasUI = Object.keys(pagesConfig).length > 0";
-const UNCONDITIONAL_DOWNGRADE = "const hasUI = false";
+export function buildRestoredDowngradeMutant(src: string = shipSource): string {
+  for (const [label, re] of [
+    ["the hasUI downgrade site", DOWNGRADE_SITE],
+    ["the floor call", FLOOR_CALL_SITE],
+    ["the tier raise", RAISE_SITE],
+  ] as const) {
+    const hits = matches(src, re).length;
+    if (hits !== 1) {
+      throw new Error(
+        `could not build the mutant: ${label} appears ${hits} times in workflows/ship.js, expected exactly 1. ` +
+          `Either it was renamed, or a second copy exists and removing one would leave the other in place.`,
+      );
+    }
+  }
 
-export function buildMutantSource(src: string): string {
-  const occurrences = src.split(HAS_UI_SITE).length - 1;
-  if (occurrences !== 1) {
+  const a = src.indexOf(FLOOR_START);
+  const b = src.indexOf(FLOOR_END);
+  if (a < 0 || b <= a) {
     throw new Error(
-      `could not build the mutant: the hasUI computation appears ${occurrences} times, expected exactly 1. ` +
-        `Either it was changed, or a second copy exists and pinning one would leave the other reading pages.`,
+      "could not build the mutant: workflows/ship.js has no CEREMONY-TIER-FLOOR marker pair to remove",
     );
   }
-  const mutated = src.replace(HAS_UI_SITE, UNCONDITIONAL_DOWNGRADE);
-  if (mutated === src) throw new Error("could not build the mutant: the replacement changed nothing");
-  return mutated;
-}
 
-// ════════════════════════════════════════════════════════════════════════════
-// OBSERVATION MODE — one source under test, six observations
-// ════════════════════════════════════════════════════════════════════════════
+  let out = src.slice(0, a) + src.slice(b + FLOOR_END.length);
+  out = out.replace(new RegExp(FLOOR_CALL_SITE.source, "m"), "");
+  out = out.replace(new RegExp(RAISE_SITE.source, "m"), "");
 
-if (SOURCE_UNDER_TEST) {
-  describe("#274 tier-gated subsystems on a declared-pages consumer fixture", () => {
-    let cached: Decision | null = null;
-    const observed = (): Decision => {
-      if (!cached) cached = decide(readFileSync(SOURCE_UNDER_TEST, "utf-8"), CONSUMER);
-      return cached;
-    };
-
-    test(OBS.scope, () => {
-      expect(observed().scopeGateRuns).toBe(true);
-    });
-
-    test(OBS.quinnLocal, () => {
-      expect(observed().quinnLocalRuns).toBe(true);
-    });
-
-    test(OBS.containerCheck, () => {
-      expect(observed().containerCheckReached).toBe(true);
-    });
-
-    test(OBS.prove, () => {
-      expect(observed().proveRuns).toBe(true);
-    });
-
-    test(OBS.containerQuinn, () => {
-      // Doubly gated: tier AND a declared container. Green in both runs, which
-      // is what stops "the mutant broke everything" from reading as a proof.
-      expect(observed().containerQuinnRuns).toBe(false);
-    });
-
-    test(OBS.preflight, () => {
-      // ~450 lines before the tier is first read. Green in both runs.
-      expect(observed().preflightRuns).toBe(true);
-    });
-  });
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// DRIVER MODE — build the mutant, spawn both suites, count the reds
-// ════════════════════════════════════════════════════════════════════════════
-
-type TestCase = { name: string; failed: boolean };
-type RunResult = { cases: TestCase[]; output: string; status: number | null };
-type Descriptor = { cmd: string[]; cwd: string; env: Record<string, string | undefined> };
-
-function sha(text: string): string {
-  return createHash("sha256").update(text).digest("hex");
-}
-
-function decodeXml(raw: string): string {
-  return raw
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
-}
-
-/** Per-test verdicts, read off bun's own JUnit reporter rather than guessed. */
-function parseJUnit(xml: string): TestCase[] {
-  const cases: TestCase[] = [];
-  const re = /<testcase\b([^>]*?)(\/>|>([\s\S]*?)<\/testcase>)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml)) !== null) {
-    const name = /\bname="([^"]*)"/.exec(m[1]);
-    if (!name) continue;
-    cases.push({ name: decodeXml(name[1]), failed: /<(failure|error)\b/.test(m[3] ?? "") });
+  if (out === src) throw new Error("could not build the mutant: the removal changed nothing");
+  if (out.includes("ceremonyTierFloor")) {
+    throw new Error("could not build the mutant: the floor survived the removal");
   }
-  return cases;
+  if (matches(out, DOWNGRADE_SITE).length !== 1) {
+    throw new Error("could not build the mutant: the removal took the downgrade with it");
+  }
+  return out;
 }
 
-if (!SOURCE_UNDER_TEST) {
-  const SHIP_BEFORE = readFileSync(SHIP, "utf-8");
-  const SHIP_HASH_BEFORE = sha(SHIP_BEFORE);
+// ── the six-observation suite, generated once and spawned twice ─────────────
 
-  let SCRATCH = "";
-  let MUTANT = "";
-  let JUNIT = "";
-  let clean: RunResult;
-  let mutant: RunResult;
+/**
+ * The suite under spawn. It reads the ship.js it observes from
+ * `SHIP_UNDER_TEST` and the consumer config from `CONSUMER_FIXTURE_CONFIG`, so
+ * the identical file runs against the real source and against the mutant and
+ * neither copy of the consumer config is written twice.
+ *
+ * Nothing in it reads `ceremonyTier`. Each subsystem is observed through its
+ * OWN output — `scopeRan`, the `quinn-local-1` agent label, the
+ * `container-rebuild` / `env-check` / `quinn-container` labels, the
+ * container-less arm's skip log, the prove workflow's scriptPath, and the
+ * pre-flight log line. A subsystem that is skipped produces none of those,
+ * which is the whole mechanism.
+ *
+ * Every agent spawner is a RECORDING STUB. The fixture's
+ * `container.rebuildCommand` reaches ship.js and is interpolated into a prompt
+ * string that is handed to the stub and dropped — nothing in this file, or in
+ * the file it writes, executes it (AC-6).
+ *
+ * `String.raw` is load-bearing: the regexes below contain `\(`, `\s` and `\$`,
+ * and an untagged template literal would eat every one of those backslashes
+ * and leave detectors that match nothing.
+ */
+const SUITE_SOURCE = String.raw`
+import { describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
 
-  /**
-   * The ONE spawn descriptor. Both runs go through it, and the only argument
-   * it takes is the path to the source under test.
-   */
-  const descriptor = (shipSource: string): Descriptor => ({
-    cmd: ["bun", "test", SELF, "--reporter=junit", `--reporter-outfile=${JUNIT}`],
-    cwd: REPO_ROOT,
-    env: { ...process.env, [SOURCE_ENV]: shipSource },
-  });
+const SHIP = process.env.SHIP_UNDER_TEST;
+if (!SHIP) throw new Error("SHIP_UNDER_TEST is unset — this suite has nothing to observe");
+const CONFIG_PATH = process.env.CONSUMER_FIXTURE_CONFIG;
+if (!CONFIG_PATH) throw new Error("CONSUMER_FIXTURE_CONFIG is unset — this suite has no consumer to run as");
+const SRC = readFileSync(SHIP, "utf-8");
+const FIXTURE = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
 
-  /** Every leaf on which two descriptors disagree. */
-  const descriptorDiff = (a: Descriptor, b: Descriptor): string[] => {
-    const diffs: string[] = [];
-    if (a.cwd !== b.cwd) diffs.push("cwd");
-    for (let i = 0; i < Math.max(a.cmd.length, b.cmd.length); i++) {
-      if (a.cmd[i] !== b.cmd[i]) diffs.push(`cmd[${i}]`);
-    }
-    for (const key of new Set([...Object.keys(a.env), ...Object.keys(b.env)])) {
-      if (a.env[key] !== b.env[key]) diffs.push(`env.${key}`);
-    }
-    return diffs.sort();
-  };
-
-  const runObservations = (shipSource: string): RunResult => {
-    if (existsSync(JUNIT)) rmSync(JUNIT, { force: true });
-    const d = descriptor(shipSource);
-    const r = spawnSync(d.cmd[0], d.cmd.slice(1), {
-      cwd: d.cwd,
-      env: d.env as NodeJS.ProcessEnv,
-      encoding: "utf-8",
-      timeout: 180000,
-    });
-    const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-    const cases = existsSync(JUNIT) ? parseJUnit(readFileSync(JUNIT, "utf-8")) : [];
-    if (existsSync(JUNIT)) rmSync(JUNIT, { force: true });
-    return { cases, output, status: r.status };
-  };
-
-  const verdict = (run: RunResult, name: string): TestCase | undefined =>
-    run.cases.find((c) => c.name === name);
-
-  beforeAll(() => {
-    SCRATCH = mkdtempSync(join(tmpdir(), "consumer-tier-downgrade-"));
-    MUTANT = join(SCRATCH, "ship.mutant.js");
-    JUNIT = join(SCRATCH, "observations.junit.xml");
-    writeFileSync(MUTANT, buildMutantSource(SHIP_BEFORE));
-    clean = runObservations(SHIP);
-    mutant = runObservations(MUTANT);
-  }, 600000);
-
-  afterAll(() => {
-    const mutantPath = MUTANT;
-    if (SCRATCH) rmSync(SCRATCH, { recursive: true, force: true });
-    // AC-1: the mutant is gone and the real file never moved.
-    expect(existsSync(mutantPath)).toBe(false);
-    expect(readFileSync(SHIP, "utf-8")).toBe(SHIP_BEFORE);
-  });
-
-  // ── AC-1: the mutant is a temp file, and ship.js is untouched ─────────────
-
-  describe("#274 AC-1: the mutant lives in a temp path, never in the tree", () => {
-    test("it is written outside the repository and differs from ship.js", () => {
-      expect(existsSync(MUTANT)).toBe(true);
-      expect(MUTANT.startsWith(REPO_ROOT)).toBe(false);
-      expect(MUTANT.startsWith(tmpdir())).toBe(true);
-      expect(readFileSync(MUTANT, "utf-8")).not.toBe(SHIP_BEFORE);
-    });
-
-    test("it differs from ship.js at exactly the hasUI site and nowhere else", () => {
-      const m = readFileSync(MUTANT, "utf-8");
-      expect(m).toContain(UNCONDITIONAL_DOWNGRADE);
-      expect(m).not.toContain(HAS_UI_SITE);
-      expect(m.replace(UNCONDITIONAL_DOWNGRADE, HAS_UI_SITE)).toBe(SHIP_BEFORE);
-    });
-
-    test("the real workflows/ship.js is byte-identical after both runs", () => {
-      expect(sha(readFileSync(SHIP, "utf-8"))).toBe(SHIP_HASH_BEFORE);
-    });
-
-    test("the builder refuses when its target has moved", () => {
-      expect(() => buildMutantSource(SHIP_BEFORE.replace(HAS_UI_SITE, UNCONDITIONAL_DOWNGRADE))).toThrow(
-        /could not build the mutant: the hasUI computation appears 0 times/,
-      );
-      expect(() => buildMutantSource(`${SHIP_BEFORE}\n${HAS_UI_SITE}\n`)).toThrow(
-        /could not build the mutant: the hasUI computation appears 2 times/,
-      );
-    });
-  });
-
-  // ── AC-2: one argv, one difference ────────────────────────────────────────
-
-  describe("#274 AC-2: both suites are spawned over a single argv", () => {
-    test("the two spawn descriptors differ in exactly one leaf", () => {
-      const diffs = descriptorDiff(descriptor(SHIP), descriptor(MUTANT));
-      expect(diffs).toEqual([`env.${SOURCE_ENV}`]);
-    });
-
-    test("that one leaf is the path to the source under test", () => {
-      expect(descriptor(SHIP).env[SOURCE_ENV]).toBe(SHIP);
-      expect(descriptor(MUTANT).env[SOURCE_ENV]).toBe(MUTANT);
-      expect(descriptor(SHIP).cmd).toEqual(descriptor(MUTANT).cmd);
-      expect(descriptor(SHIP).cmd).toContain(SELF);
-    });
-
-    test("bun drops trailing argv under `bun test`, which is why the leaf is an env entry", () => {
-      // Measured rather than asserted in a comment: the child below is spawned
-      // with the sentinel path on its command line and cannot see it.
-      const probe = join(SCRATCH, "argv-probe.test.ts");
-      writeFileSync(
-        probe,
-        'import { test, expect } from "bun:test";\n' +
-          'test("argv", () => { console.log("ARGV:" + JSON.stringify(process.argv)); expect(1).toBe(1); });\n',
-      );
-      const r = spawnSync("bun", ["test", probe, "--ship-source", "/sentinel/ship.js"], {
-        cwd: SCRATCH,
-        encoding: "utf-8",
-        timeout: 120000,
-      });
-      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-      const argv = /ARGV:(\[.*\])/.exec(out);
-      expect(argv).not.toBeNull();
-      expect(argv![1]).toContain("argv-probe.test.ts");
-      expect(argv![1]).not.toContain("/sentinel/ship.js");
-    });
-  });
-
-  // ── AC-3: exactly four reds, named ────────────────────────────────────────
-
-  describe("#274 AC-3: restoring the downgrade turns exactly four observations red", () => {
-    test("both runs observed the same six observations", () => {
-      // Vacuity guard. A child that failed to load reports no test cases at
-      // all, which is indistinguishable from six green ones in a count of reds.
-      expect(clean.cases.map((c) => c.name).sort()).toEqual([...ALL_OBSERVATIONS].sort());
-      expect(mutant.cases.map((c) => c.name).sort()).toEqual([...ALL_OBSERVATIONS].sort());
-      expect(clean.cases).toHaveLength(6);
-      expect(mutant.cases).toHaveLength(6);
-    });
-
-    test("the clean run is green: nothing is red before the mutation", () => {
-      expect(clean.cases.filter((c) => c.failed).map((c) => c.name)).toEqual([]);
-      expect(clean.status).toBe(0);
-    });
-
-    test("the mutant run is red in exactly four, and these four", () => {
-      const red = mutant.cases.filter((c) => c.failed).map((c) => c.name).sort();
-      expect(red).toEqual([...EXPECTED_RED].sort());
-      expect(red).toHaveLength(4);
-      expect(mutant.status).not.toBe(0);
-    });
-
-    test("the mutation is what moved them: the fixture's tier is STANDARD clean and LIGHT mutated", () => {
-      // Asserted HERE and not in the spawned suite on purpose. An observation
-      // that read the tier would go red under the mutant without saying
-      // anything about whether a subsystem ran, which is what AC-3 forbids.
-      expect(decide(SHIP_BEFORE, CONSUMER).tier).toBe("STANDARD");
-      expect(decide(readFileSync(MUTANT, "utf-8"), CONSUMER).tier).toBe("LIGHT");
-    });
-
-    test("four and not five: the fifth tier-gated site is the other branch of the same decision", () => {
-      const mutantSource = readFileSync(MUTANT, "utf-8");
-      // With a container declared, the container-Quinn branch is the one
-      // entered, it is tier-gated, and it flips the same way...
-      expect(decide(SHIP_BEFORE, CONSUMER_WITH_CONTAINER).containerQuinnRuns).toBe(true);
-      expect(decide(mutantSource, CONSUMER_WITH_CONTAINER).containerQuinnRuns).toBe(false);
-      // ...and then the config-check branch is the one no fixture can reach,
-      // so the count is four whichever container shape the consumer declares.
-      expect(decide(SHIP_BEFORE, CONSUMER_WITH_CONTAINER).containerCheckReached).toBe(false);
-      expect(decide(SHIP_BEFORE, CONSUMER).containerQuinnRuns).toBe(false);
-      expect(decide(SHIP_BEFORE, CONSUMER).containerCheckReached).toBe(true);
-    });
-  });
-
-  // ── AC-4: the remote pre-flight is green in both ──────────────────────────
-
-  describe("#274 AC-4: the remote pre-flight is not tier-gated", () => {
-    test("it is green in the clean run and in the mutant run", () => {
-      const a = verdict(clean, OBS.preflight);
-      const b = verdict(mutant, OBS.preflight);
-      expect(a).toBeDefined();
-      expect(b).toBeDefined();
-      expect(a!.failed).toBe(false);
-      expect(b!.failed).toBe(false);
-    });
-
-    test("so is the doubly-gated container Quinn observation", () => {
-      // The second green. Both of them together are what rule out "the mutant
-      // broke the suite" as an explanation for the four reds.
-      expect(verdict(clean, OBS.containerQuinn)!.failed).toBe(false);
-      expect(verdict(mutant, OBS.containerQuinn)!.failed).toBe(false);
-      expect(EXPECTED_GREEN).toHaveLength(2);
-    });
-
-    test("the pre-flight guard is read from a site that never mentions the tier", () => {
-      const site = one(SHIP_BEFORE, GUARDS.preflight, "the remote pre-flight guard")[1];
-      expect(site).not.toContain("ceremonyTier");
-      expect(SHIP_BEFORE.indexOf(site)).toBeLessThan(
-        SHIP_BEFORE.indexOf("const skipScope = discovery.ceremonyTier === 'LIGHT'"),
-      );
-    });
-  });
-
-  // ── AC-5: the method and the count are written down ───────────────────────
-
-  describe("#274 AC-5: specs/HARNESS-STANDARD.md records the method and the count", () => {
-    const spec = readFileSync(join(REPO_ROOT, "specs", "HARNESS-STANDARD.md"), "utf-8");
-
-    test("it names this file, the mutation, and the red count", () => {
-      expect(spec).toContain("test/consumer-tier-downgrade-mutation.test.ts");
-      expect(spec).toContain(UNCONDITIONAL_DOWNGRADE);
-      expect(spec).toContain("4 of 6");
-    });
-
-    test("it names the four observations that go red", () => {
-      for (const name of EXPECTED_RED) expect(spec).toContain(name);
-    });
-
-    test("it records why the count is four and not five", () => {
-      expect(spec).toContain("exclusive branches of one decision");
-    });
-  });
+function hits(re) {
+  return [...SRC.matchAll(new RegExp(re.source, "gm"))];
 }
+
+function one(re, label) {
+  const found = hits(re);
+  if (found.length !== 1) {
+    throw new Error("could not locate " + label + " in the ship.js under test: " + found.length + " matches");
+  }
+  return found[0][0];
+}
+
+const START = "// ──── CEREMONY-TIER-FLOOR-START ────";
+const END = "// ──── CEREMONY-TIER-FLOOR-END ────";
+
+const HAS_UI = /^const hasUI = Object\.keys\(pagesConfig\)\.length > 0$/m;
+const DOWNGRADE = /^if \(!hasUI && discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m;
+const FLOOR_CALL = /^const flooredTier = ceremonyTierFloor\(discovery\.ceremonyTier, hasUI\)$/m;
+const RAISE = /^if \(flooredTier !== discovery\.ceremonyTier\) \{[\s\S]*?\n\}$/m;
+
+const SKIP_SCOPE = /^const skipScope = discovery\.ceremonyTier === 'LIGHT'$/m;
+const SCOPE_INVOKE = /^if \(!skipScope\) \{[\s\S]*?\n\}$/m;
+const QUINN_LOCAL = /^if \(discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m;
+const CONTAINER_VERIFY = /^if \(discovery\.ceremonyTier !== 'LIGHT' && containerConfig\) \{[\s\S]*?\n\} else if \(discovery\.ceremonyTier !== 'LIGHT'\) \{[\s\S]*?\n\}$/m;
+const HAS_UI_ACS = /^const hasUIACs = .*$/m;
+const SHOULD_PROVE = /^const shouldProve = discovery\.ceremonyTier !== 'LIGHT' && hasUIACs$/m;
+const PROVE_BLOCK = /^if \(shouldProve\) \{[\s\S]*?\n\}$/m;
+const REMOTE_HOSTS_DECL = /^const remoteHosts = parsedArgs\.remoteHosts \|\| \{\}$/m;
+const PREFLIGHT_RESULTS_DECL = /^const preflightResults = parsedArgs\.preflightResults \|\| null$/m;
+const PREFLIGHT_BLOCK = /^if \(preflightResults\) \{[\s\S]*?\n\}$/m;
+
+// The consumer fixture, read from disk: a project that DECLARES pages, runs a
+// test container and reaches a remote host, whose issue the discovery LLM
+// sized XS.
+const PAGES = FIXTURE.pages;
+const CONTAINER = FIXTURE.container;
+const REMOTE_HOSTS = FIXTURE.remoteHosts;
+const DISCOVERED_TIER = "LIGHT";
+
+if (!PAGES || Object.keys(PAGES).length === 0) throw new Error("the consumer fixture declares no pages");
+if (!CONTAINER) throw new Error("the consumer fixture declares no container");
+if (!REMOTE_HOSTS || Object.keys(REMOTE_HOSTS).length === 0) throw new Error("the consumer fixture declares no remote hosts");
+
+// ship.js's own tier statements, run IN SOURCE ORDER over the fixture. The
+// floor sites are optional on purpose: a source that has none of them is
+// exactly the pre-#215 source this is spawned against, and it must resolve a
+// tier rather than throwing, or all six observations would go red together.
+function resolveTier() {
+  const parts = [];
+  const a = SRC.indexOf(START);
+  const b = SRC.indexOf(END);
+  if (a >= 0 && b > a) parts.push({ index: a, code: SRC.slice(a, b) });
+  const sites = [
+    [HAS_UI, "the hasUI computation", true],
+    [DOWNGRADE, "the CLI downgrade", true],
+    [FLOOR_CALL, "the floor call", false],
+    [RAISE, "the tier raise", false],
+  ];
+  for (const [re, label, required] of sites) {
+    const found = hits(re);
+    if (found.length > 1) {
+      throw new Error("could not locate " + label + ": " + found.length + " matches");
+    }
+    if (found.length === 0) {
+      if (required) throw new Error("could not locate " + label + ": 0 matches");
+      continue;
+    }
+    parts.push({ index: found[0].index, code: found[0][0] });
+  }
+  parts.sort((x, y) => x.index - y.index);
+  const body = [
+    "const discovery = { ceremonyTier: tier }",
+    "const pagesConfig = pages",
+    "const log = () => {}",
+    ...parts.map((p) => p.code),
+    "return discovery.ceremonyTier",
+  ].join("\n");
+  return new Function("tier", "pages", body)(DISCOVERED_TIER, Object.assign({}, PAGES));
+}
+
+const RESOLVED = resolveTier();
+
+// Run a block lifted verbatim out of ship.js. Free identifiers resolve through
+// a Proxy scope: the names the bag holds come from the bag, everything else
+// (Object, JSON, String) falls through to the real globals, and assignments to
+// the observables land back in the bag where the assertions can read them.
+async function runBlock(code, extra) {
+  const seen = { logs: [], labels: [], scripts: [] };
+  const bag = Object.assign(
+    {
+      log: (m) => { seen.logs.push(String(m)); },
+      briefedAgent: async (p, o) => { seen.labels.push(o && o.label); return { result: "PASS" }; },
+      timedAgent: async (p, o) => {
+        seen.labels.push(o && o.label);
+        if (o && o.label === "env-check") {
+          const out = {};
+          (CONTAINER.hosts || []).forEach((h, i) => { out["host" + i] = i === 0; });
+          return out;
+        }
+        return { hosts: Object.keys(REMOTE_HOSTS).map((n) => ({ name: n, reachable: true, output: "ok" })) };
+      },
+      workflow: async (w) => { seen.scripts.push(w && w.scriptPath); return { verdict: "PROVEN" }; },
+      runGateWithHeal: async () => ({ result: "PASS" }),
+      shellQuote: (s) => "'" + s + "'",
+      safeSSHCommand: (h, c) => "ssh " + h + " " + c,
+      HARNESS_ROOT: "/harness",
+      PROJECT_ROOT: "/project",
+      WORK_DIR: "/work",
+      HOME: "/home",
+      ISSUE: 274,
+      REPO: "owner/repo",
+      ISSUE_REPO: "owner/repo",
+      SLUG: "consumer-ui-project-274",
+      GATE_RESULT_SCHEMA: {},
+      marcusWorktreePath: "/worktree",
+      testCommand: "bun test",
+      testTimeout: 1000,
+      containerConfig: null,
+      parsedArgs: {},
+      discovery: {
+        ceremonyTier: RESOLVED,
+        acs: [{ id: "AC-1", type: "OUTCOME", statement: "the dashboard renders" }],
+      },
+      scopeRan: false,
+      scopeResult: null,
+      quinnLocalResult: null,
+      quinnLocalRan: false,
+      quinnContainerResult: null,
+      quinnContainerRan: false,
+      proveVerdict: "UNPROVEN",
+    },
+    extra,
+  );
+  const scope = new Proxy(bag, {
+    has: (t, k) => k in t,
+    get: (t, k) => (k === Symbol.unscopables ? undefined : t[k]),
+    set: (t, k, v) => { t[k] = v; return true; },
+  });
+  const run = new Function("__scope", "return (async () => { with (__scope) {\n" + code + "\n} })()");
+  await run(scope);
+  return { bag, seen };
+}
+
+describe("#274 the consumer fixture's tier-gated subsystems", () => {
+  test("scope gate runs", async () => {
+    const code = one(SKIP_SCOPE, "the skipScope decision") + "\n" + one(SCOPE_INVOKE, "the scope gate invocation");
+    const { bag } = await runBlock(code, {});
+    expect(bag.scopeRan).toBe(true);
+  });
+
+  test("quinn local runs", async () => {
+    const { bag, seen } = await runBlock(one(QUINN_LOCAL, "the Quinn local loop"), {});
+    expect(bag.quinnLocalRan).toBe(true);
+    expect(seen.labels).toContain("quinn-local-1");
+  });
+
+  test("container verify runs", async () => {
+    const { bag, seen } = await runBlock(one(CONTAINER_VERIFY, "the container verify arms"), {
+      containerConfig: CONTAINER,
+    });
+    expect(seen.labels).toContain("container-rebuild");
+    expect(seen.labels).toContain("env-check");
+    expect(seen.labels).toContain("quinn-container");
+    expect(bag.quinnContainerRan).toBe(true);
+  });
+
+  test("container-less verify logs its skip", async () => {
+    const { seen } = await runBlock(one(CONTAINER_VERIFY, "the container verify arms"), {
+      containerConfig: null,
+    });
+    expect(seen.logs.join("\n")).toContain("skipping container verify");
+  });
+
+  test("prove runs", async () => {
+    const code = [
+      one(HAS_UI_ACS, "the UI-AC detection"),
+      one(SHOULD_PROVE, "the prove decision"),
+      one(PROVE_BLOCK, "the prove invocation"),
+    ].join("\n");
+    const { bag, seen } = await runBlock(code, {});
+    expect(seen.scripts.join("\n")).toContain("workflows/prove.js");
+    expect(bag.proveVerdict).toBe("PROVEN");
+  });
+
+  test("remote pre-flight runs", async () => {
+    const code = [
+      one(REMOTE_HOSTS_DECL, "the remoteHosts read"),
+      one(PREFLIGHT_RESULTS_DECL, "the preflightResults read"),
+      one(PREFLIGHT_BLOCK, "the pre-flight block"),
+    ].join("\n");
+    const { seen } = await runBlock(code, { parsedArgs: { remoteHosts: REMOTE_HOSTS } });
+    expect(seen.logs.filter((l) => l.startsWith("PRE-FLIGHT:")).length).toBe(Object.keys(REMOTE_HOSTS).length);
+  });
+});
+`;
+
+/**
+ * The six observation ids, partitioned. "4 red" compared by count alone is
+ * satisfied by any four of the six; these are the four that mean what AC-3
+ * claims.
+ */
+const TIER_GATED_EXECUTION = [
+  "container verify runs",
+  "prove runs",
+  "quinn local runs",
+  "scope gate runs",
+];
+/** The fifth tier-gated site. Its subject is a skip, so it is counted apart. */
+const TIER_GATED_SKIP_ARM = "container-less verify logs its skip";
+const NOT_TIER_GATED = "remote pre-flight runs";
+const ALL_IDS = [...TIER_GATED_EXECUTION, TIER_GATED_SKIP_ARM, NOT_TIER_GATED].sort();
+
+let TMP = "";
+let SUITE_PATH = "";
+let JUNIT = "";
+let MUTANT_PATH = "";
+let mutantSource = "";
+
+type SuiteRun = { ran: number; green: string[]; red: string[]; argv: string[]; output: string };
+
+/**
+ * Spawn the suite against one ship.js. The argv is returned so the two spawns
+ * can be compared: "the same suite, spawned the same way" is the premise of
+ * reading one against the other, and it is asserted rather than described.
+ */
+function spawnSuite(shipPath: string): SuiteRun {
+  const argv = ["test", SUITE_PATH, "--reporter=junit", `--reporter-outfile=${JUNIT}`];
+  if (existsSync(JUNIT)) rmSync(JUNIT);
+  const r = spawnSync("bun", argv, {
+    cwd: TMP,
+    encoding: "utf-8",
+    timeout: 180000,
+    env: {
+      ...process.env,
+      SHIP_UNDER_TEST: shipPath,
+      CONSUMER_FIXTURE_CONFIG: FIXTURE_CONFIG,
+    },
+  });
+  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  const xml = existsSync(JUNIT) ? readFileSync(JUNIT, "utf-8") : "";
+  const green: string[] = [];
+  const red: string[] = [];
+  for (const m of xml.matchAll(/<testcase name="([^"]*)"[^>]*?(\/>|>([\s\S]*?)<\/testcase>)/g)) {
+    const body = m[3] ?? "";
+    (body.includes("<failure") || body.includes("<error") ? red : green).push(m[1]);
+  }
+  return {
+    ran: green.length + red.length,
+    green: green.sort(),
+    red: red.sort(),
+    argv,
+    output: `${output}\n${xml}`,
+  };
+}
+
+let real: SuiteRun;
+let mutant: SuiteRun;
+
+beforeAll(() => {
+  TMP = mkdtempSync(join(tmpdir(), "consumer-tier-mutation-"));
+  SUITE_PATH = join(TMP, "six-subsystems.test.ts");
+  JUNIT = join(TMP, "report.xml");
+  MUTANT_PATH = join(TMP, "ship.mutant.js");
+  writeFileSync(SUITE_PATH, SUITE_SOURCE);
+  mutantSource = buildRestoredDowngradeMutant();
+  writeFileSync(MUTANT_PATH, mutantSource);
+  real = spawnSuite(SHIP);
+  mutant = spawnSuite(MUTANT_PATH);
+});
+
+afterAll(() => {
+  if (TMP) rmSync(TMP, { recursive: true, force: true });
+});
+
+// ── the mutant is built, and the builder refuses when its target moves ──────
+
+describe("#274 AC-3: the restored-downgrade mutant", () => {
+  test("the downgrade site is located exactly once in ship.js", () => {
+    expect(matches(shipSource, DOWNGRADE_SITE).length).toBe(1);
+    expect(matches(shipSource, FLOOR_CALL_SITE).length).toBe(1);
+    expect(matches(shipSource, RAISE_SITE).length).toBe(1);
+  });
+
+  test("the mutant drops the floor and keeps the downgrade", () => {
+    expect(mutantSource).not.toBe(shipSource);
+    expect(mutantSource).not.toContain("CEREMONY-TIER-FLOOR");
+    expect(mutantSource).not.toContain("ceremonyTierFloor");
+    expect(matches(mutantSource, DOWNGRADE_SITE).length).toBe(1);
+  });
+
+  test("the mutation is local: every subsystem block is byte-identical in the mutant", () => {
+    // Without this the reds below could be a mutant that damaged the blocks
+    // rather than a mutant that resolved the wrong tier.
+    for (const [label, re] of Object.entries(SUBSYSTEM_SITES)) {
+      const before = matches(shipSource, re);
+      const after = matches(mutantSource, re);
+      expect(before.length, `${label} is not unique in ship.js`).toBe(1);
+      expect(after.length, `${label} did not survive the mutation`).toBe(1);
+      expect(after[0][0], `${label} was altered by the mutation`).toBe(before[0][0]);
+    }
+  });
+
+  test("the build ABORTS when the downgrade site is renamed", () => {
+    const renamed = shipSource.replace(
+      "if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {",
+      "if (!hasUIProject && discovery.ceremonyTier !== 'LIGHT') {",
+    );
+    expect(renamed).not.toBe(shipSource);
+    expect(() => buildRestoredDowngradeMutant(renamed)).toThrow(/could not build the mutant/);
+    expect(() => buildRestoredDowngradeMutant(renamed)).toThrow(
+      /the hasUI downgrade site appears 0 times/,
+    );
+  });
+
+  test("the build ABORTS when a second copy of the downgrade exists", () => {
+    const site = matches(shipSource, DOWNGRADE_SITE)[0][0];
+    const doubled = shipSource.replace(site, `${site}\n${site}`);
+    expect(() => buildRestoredDowngradeMutant(doubled)).toThrow(/could not build the mutant/);
+  });
+
+  test("the build ABORTS when the markers are gone", () => {
+    const unmarked = shipSource.replace(FLOOR_START, "// nothing here");
+    expect(() => buildRestoredDowngradeMutant(unmarked)).toThrow(
+      /could not build the mutant: workflows\/ship\.js has no CEREMONY-TIER-FLOOR marker pair/,
+    );
+  });
+});
+
+// ── the real source, spawned ────────────────────────────────────────────────
+
+describe("#274 AC-3: the six-observation suite against the real source", () => {
+  test("the spawn ran all six observations", () => {
+    // Read BEFORE any verdict: a suite that failed to load reports no
+    // failures, which is indistinguishable from a suite that passed.
+    expect(real.ran, `the suite did not run six observations:\n${real.output}`).toBe(6);
+    expect(real.green.concat(real.red).sort()).toEqual(ALL_IDS);
+  });
+
+  test("all six are green", () => {
+    expect(real.ran, `the suite did not run:\n${real.output}`).toBe(6);
+    expect(real.red, `a subsystem did not run against the real source:\n${real.output}`).toEqual([]);
+    expect(real.green).toEqual(ALL_IDS);
+  });
+});
+
+// ── the mutant, spawned the same way ────────────────────────────────────────
+
+describe("#274 AC-3: the same suite against the restored-downgrade mutant", () => {
+  test("the mutant spawn ran all six observations", () => {
+    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(6);
+    expect(mutant.green.concat(mutant.red).sort()).toEqual(ALL_IDS);
+  });
+
+  test("both spawns used one argv and differed only in the source under test", () => {
+    expect(mutant.argv).toEqual(real.argv);
+    expect(MUTANT_PATH).not.toBe(SHIP);
+  });
+
+  test("exactly four tier-gated subsystem EXECUTIONS turn red, by name", () => {
+    expect(mutant.ran, `the suite did not run against the mutant:\n${mutant.output}`).toBe(6);
+    const redExecutions = mutant.red.filter((id) => TIER_GATED_EXECUTION.includes(id));
+    expect(redExecutions, `the wrong observations went red:\n${mutant.output}`).toEqual(
+      [...TIER_GATED_EXECUTION].sort(),
+    );
+    expect(redExecutions.length).toBe(4);
+  });
+
+  test("the fifth tier-gated site — the skip arm — is counted apart, and also goes red", () => {
+    // Not folded into the four: its subject is the ABSENCE of a container
+    // verify, and under the mutant the absence is still an absence, it just
+    // stops being announced. Reporting five subsystems switched off when four
+    // were would be the overcount this partition exists to prevent.
+    expect(mutant.red).toContain(TIER_GATED_SKIP_ARM);
+    expect(real.green).toContain(TIER_GATED_SKIP_ARM);
+    expect(mutant.red.length).toBe(5);
+  });
+
+  test("the remote pre-flight is the only green, and it is green in BOTH runs", () => {
+    // The positive control. If it were red under the mutant too, "4 red" would
+    // be a suite that failed to load rather than a measurement.
+    expect(mutant.green, `the wrong observation survived the mutation:\n${mutant.output}`).toEqual([
+      NOT_TIER_GATED,
+    ]);
+    expect(real.green).toContain(NOT_TIER_GATED);
+  });
+
+  test("the partition covers the six observations exactly once each", () => {
+    // Vacuity guard for the three counts above: an id in neither list, or in
+    // both, would make "4 red" and "the only green" quietly compatible with a
+    // seventh outcome nobody looked at.
+    const partitioned = [...TIER_GATED_EXECUTION, TIER_GATED_SKIP_ARM, NOT_TIER_GATED];
+    expect(new Set(partitioned).size).toBe(partitioned.length);
+    expect([...partitioned].sort()).toEqual(ALL_IDS);
+    expect(TIER_GATED_EXECUTION).not.toContain(NOT_TIER_GATED);
+    expect(TIER_GATED_EXECUTION).not.toContain(TIER_GATED_SKIP_ARM);
+  });
+});

@@ -13,28 +13,28 @@
     "/settings": "settings"
   },
   "dev": {
-    "start": "echo 'fixture: dev server is never started'",
+    "start": "make dev-all",
     "apiBase": "http://localhost:7778",
     "uiBase": "http://localhost:5173",
     "testCmd": "bun test",
     "typeCheck": "bunx tsc --noEmit"
   },
   "prod": {
-    "rebuild": "echo 'fixture: inert — no production rebuild is ever performed'",
+    "rebuild": "make rebuild",
     "apiBase": "http://localhost:7777"
   },
   "container": {
-    "rebuildCommand": "echo 'fixture: inert — this container rebuild command is never executed'",
+    "rebuildCommand": "make rebuild",
     "hosts": ["localhost"],
-    "port": 7777,
+    "port": 7776,
     "healthPath": "/api/health"
   },
   "remoteHosts": {
     "runner": {
-      "host": "fixture-runner.invalid",
+      "host": "mini",
       "access": "ssh",
-      "purpose": "GitHub Actions self-hosted runner (fixture — never contacted)",
-      "preFlightCmd": "true",
+      "purpose": "GitHub Actions self-hosted runner",
+      "preFlightCmd": "~/actions-runner/svc.sh status 2>/dev/null | grep -q Started",
       "workDir": "~/actions-runner/_work/consumer-ui-project/consumer-ui-project"
     }
   }
