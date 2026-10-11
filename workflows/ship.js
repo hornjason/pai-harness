@@ -2573,6 +2573,47 @@ function collectTarget(worktrees, marcusPath, projectRoot = PROJECT_ROOT, harnes
 const SINGLE_WORKTREE_EXEMPT = true
 
 /**
+ * Paths that belong to the RUN rather than to any sub-issue (#296).
+ *
+ * A claim is written from the decomposition plan before the work exists, so it
+ * can only name files the planner foresaw. It can never name a shared registry
+ * that the repo's own tooling makes EVERY contributor touch:
+ * `.claude/conformity-allowlists.json` is a ratchet the pre-push hook requires
+ * writing, and on run wf_536df065-969 one agent wrote it, no sub-issue had
+ * claimed it, and 2,290 lines of validated work were refused over it.
+ *
+ * Enumerating such files as prohibitions in the agent prompt is a treadmill —
+ * that run already carried a prohibition naming project-state.json, and died
+ * on the two filenames nobody had thought to list. So the fix is an ownership
+ * CLASS here, consulted by the audit, rather than more prose upstream.
+ *
+ * One writer per run is collectable. Two is still refused: collection copies
+ * whole files, so taking either copy drops the other worktree's entries with
+ * no diff anyone would notice — the #178 failure mode this guard exists for.
+ * Matched on the whole normalised key, never a suffix or a directory, or every
+ * unclaimed file in `.claude/` would ride in on the registry's exemption.
+ */
+const CO_OWNED_FILES = new Set(['.claude/conformity-allowlists.json'])
+
+/**
+ * Paths no worktree may write at all — the DA owns them (#296).
+ *
+ * These are a single shared state document. Four parallel worktrees each
+ * updating their own copy produce four conflicting versions, and on run
+ * wf_0b15a933-b2b that cost four worktrees and 2,565 lines of correct,
+ * validated work, because an agent read CLAUDE.md's "update PROJECT-STATE.md
+ * at milestones" line and did what it said.
+ *
+ * This is a PROHIBITION, not an exemption from the claim, so it is checked
+ * before the single-worktree exemption and before the claim itself: a plan
+ * that claims one of these cannot authorise it, because the plan is written by
+ * a model too. The refusal names DA ownership and the issue, because a refusal
+ * that reads like scope creep teaches the next agent nothing and it does the
+ * same thing tomorrow.
+ */
+const DA_OWNED_FILES = new Set(['project-state.json', 'PROJECT-STATE.md', 'SUCCESS.md'])
+
+/**
  * A worktree's reported path, as the collector will see it (#178).
  *
  * `groupFilesByWorktree` accepts both an absolute path inside the worktree and
@@ -2640,6 +2681,30 @@ function escapesWorktree(key) {
   return key.startsWith('/') || key.split('/').includes('..')
 }
 
+/**
+ * Whether this worktree's report of `key` is permitted by the claim it issued.
+ *
+ * ONE declaration, on one line, because it is the site the #296 mutation
+ * targets — `test/collect-claim-ownership.test.ts` rebuilds this block with
+ * the old `claimant === null ||` fallthrough restored and watches it keep
+ * every file the real block refuses. A second permission path would survive
+ * that mutation and the proof would be decorative.
+ *
+ * The fallthrough was the fail-open. When NO result carries `claimedFiles` the
+ * ownership map is empty, so `claimant` is null for every path and
+ * "nobody claimed it" read as permission — a decomposition that emitted no
+ * claims silently disabled SC-413 for the entire run. An absent claim in a
+ * contested run now permits nothing; the lone-worktree case is handled by
+ * SINGLE_WORKTREE_EXEMPT above, where it belongs, and is the only place an
+ * unclaimed file is collectable.
+ *
+ * `claimant === wt` is still reachable and still right: a worktree that
+ * reports in two parts (#228) can claim in one row and report in the other.
+ */
+function claimPermits(claims, key, claimant, wt) {
+  return Array.isArray(claims) ? claims.includes(key) : claimant === wt
+}
+
 function auditWorktreeClaims(results) {
   const violations = []
   const candidates = []
@@ -2666,6 +2731,21 @@ function auditWorktreeClaims(results) {
     }
   }
 
+  // Who actually WROTE each co-owned registry, counted the same way
+  // participants are: by worktree, so a worktree reporting in two rows is one
+  // writer. A claim cannot settle this, so the reports are what decide it.
+  const coOwnedWriters = {}
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt) continue
+    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
+      const key = claimKey(wt, raw)
+      if (!key || !CO_OWNED_FILES.has(key)) continue
+      if (!coOwnedWriters[key]) coOwnedWriters[key] = []
+      if (!coOwnedWriters[key].includes(wt)) coOwnedWriters[key].push(wt)
+    }
+  }
+
   for (const r of results) {
     const wt = String(r && r.worktreePath || '').trim()
     if (!wt) continue
@@ -2688,6 +2768,30 @@ function auditWorktreeClaims(results) {
         })
         continue
       }
+      // Ownership classes come before the claim and before the exemption,
+      // for the same reason the boundary above does: they are facts about the
+      // FILE, and no claim and no run shape can change them (#296).
+      if (DA_OWNED_FILES.has(key)) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, which is DA-owned — ${[...DA_OWNED_FILES].join(', ')} are a single shared state document written by the DA, never from a worktree (CLAUDE.md, #296). Say what needs changing in your findings as prose and the DA will write it.`,
+        })
+        continue
+      }
+      if (CO_OWNED_FILES.has(key)) {
+        const writers = coOwnedWriters[key] || [wt]
+        if (writers.length === 1) {
+          // A shared registry no plan could have claimed, written by exactly
+          // one worktree. Nothing is contested, so it collects (#296).
+          kept.push(key)
+          continue
+        }
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, a co-owned registry that ${writers.length} worktrees wrote in this run (${writers.join(', ')}) — collection copies whole files, so taking one copy would drop the other edits. Merge them in one place (#296).`,
+        })
+        continue
+      }
       // One worktree in the run means nothing is contested and the claim has
       // no one to protect anything from (#228).
       if (unconstrained) {
@@ -2707,7 +2811,7 @@ function auditWorktreeClaims(results) {
         })
         continue
       }
-      if (claims ? claims.includes(key) : (claimant === null || claimant === wt)) {
+      if (claimPermits(claims, key, claimant, wt)) {
         kept.push(key)
         continue
       }
