@@ -22,6 +22,7 @@
  */
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname } from "path";
+import { z } from "zod";
 import { resolveConfig, ResolvedConfigSchema } from "../lib/config-loader";
 
 /**
@@ -64,7 +65,7 @@ export function main(): void {
   const validated = ResolvedConfigSchema.safeParse(resolution.config);
   if (!validated.success) {
     const where = validated.error.issues
-      .map((issue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
+      .map((issue: z.ZodIssue) => `${issue.path.join(".") || "<root>"}: ${issue.message}`)
       .join("; ");
     refuse(`config at ${projectRoot} did not validate — ${where}`);
   }

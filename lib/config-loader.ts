@@ -63,7 +63,7 @@ const LooseUrl = z.string().nullish();
  * heard of (DDB's `remoteHosts`), and a loader that silently drops them is the
  * same defect as a validator that strips `container`.
  */
-const ResolvedConfigSchema = ProjectHarnessSchema.partial()
+export const ResolvedConfigSchema = ProjectHarnessSchema.partial()
   .extend({
     // `null` is what a greenfield scaffold writes for a base URL it could not
     // detect. It is an authored absence, not a broken config.
