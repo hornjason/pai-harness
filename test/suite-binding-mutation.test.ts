@@ -368,10 +368,16 @@ const WORKING_AC = {
  */
 async function measurePrevalidation(
   acs: Array<Record<string, unknown>>,
-): Promise<{ broken: string[]; verdict: "PASS" | "FAIL" }> {
+): Promise<{ broken: string[]; acs: unknown[]; verdict: "PASS" | "FAIL" }> {
   const results = await prevalidateEvidence(acs as any, PROJECT);
   const broken = results.filter(r => r.status === "broken").map(r => r.id);
-  return { broken, verdict: broken.length > 0 ? "FAIL" : "PASS" };
+  // `acs` is carried through as the producer returns it (#295). The planted
+  // reading used to be `{verdict, broken}`, a shape no writer has ever
+  // produced: `lib/evidence-prevalidator.ts` returns `acs`, and the reader was
+  // reaching for `broken` to match. The fixture and the reader agreed with
+  // each other and not with the producer between them, which is why neither
+  // noticed that every real refusal was unable to name an AC.
+  return { broken, acs: results, verdict: broken.length > 0 ? "FAIL" : "PASS" };
 }
 
 function plantPrevalidationState(opts: {
@@ -413,7 +419,7 @@ describe("#235 fixture: a measured pre-validation failure reaches the gate", () 
     expect(measured.verdict).toBe("FAIL");
     plantPrevalidationState({
       acs: [WORKING_AC, BROKEN_AC],
-      reading: { verdict: measured.verdict, broken: measured.broken },
+      reading: { verdict: measured.verdict, acs: measured.acs },
     });
 
     const r = runCheck(GATE_SUITE, "evidence-prevalidation");
@@ -435,7 +441,7 @@ describe("#235 fixture: a measured pre-validation failure reaches the gate", () 
     expect(measured.verdict).toBe("PASS");
     plantPrevalidationState({
       acs: [WORKING_AC],
-      reading: { verdict: measured.verdict, broken: measured.broken },
+      reading: { verdict: measured.verdict, acs: measured.acs },
     });
 
     const r = runCheck(GATE_SUITE, "evidence-prevalidation");
@@ -461,7 +467,7 @@ describe("#235 fixture: a measured pre-validation failure reaches the gate", () 
     plantProject({ failing: false });
     plantPrevalidationState({
       acs: [WORKING_AC, BROKEN_AC],
-      reading: { verdict: "UNMEASURED", broken: [] },
+      reading: { verdict: "UNMEASURED", acs: [] },
     });
 
     const r = runCheck(GATE_SUITE, "evidence-prevalidation");
@@ -480,7 +486,7 @@ describe("#235 mutant: removing the binding makes the gate ship the broken comma
     expect(measured.verdict).toBe("FAIL");
     plantPrevalidationState({
       acs: [WORKING_AC, BROKEN_AC],
-      reading: { verdict: measured.verdict, broken: measured.broken },
+      reading: { verdict: measured.verdict, acs: measured.acs },
     });
 
     // Both halves run against one planted state. The real one refusing is not
@@ -525,7 +531,7 @@ describe("#235 mutant: removing the binding makes the gate ship the broken comma
     plantProject({ failing: false });
     plantPrevalidationState({
       acs: [WORKING_AC, BROKEN_AC],
-      reading: { verdict: "FAIL", broken: ["AC-2"] },
+      reading: { verdict: "FAIL", acs: [{ id: "AC-2", status: "broken" }] },
     });
     const path = writeMutant(PREVALIDATION_SIGNATURE);
     expect(existsSync(path)).toBe(true);
