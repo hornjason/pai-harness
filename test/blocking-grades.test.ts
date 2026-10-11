@@ -184,7 +184,7 @@ describe("AC-1: a run whose test evidence predates its final source change is re
     expect(TDD_FLAG).toContain("no test run after writing source (missing green phase)");
   });
 
-  test("the block returns SHIP_FAILED before record-env-and-pr can run", async () => {
+  test("the block returns SHIP_FAILED before the open-pr step can run", async () => {
     const outcome = await runBlock(BLOCK, { gradeResult: violatingGrades() });
     expect(refused(outcome)).toBe(true);
     expect(shipped(outcome)).toBe(false);
@@ -387,9 +387,9 @@ describe("AC-5: the mutant ships where the real block refuses", () => {
 // ── Ordering: the refusal is upstream of PR creation ────────────────────
 
 describe("the block sits where it can stop a PR", () => {
-  test("the marked block precedes the record-env-and-pr step and the ship gate", () => {
+  test("the marked block precedes the open-pr step and the ship gate", () => {
     const block = shipSource.indexOf(BLOCK_START);
-    const pr = shipSource.indexOf("record-env-and-pr");
+    const pr = shipSource.indexOf("label: 'open-pr'");
     const shipPhase = shipSource.indexOf("phase('Ship')");
     expect(block).toBeGreaterThan(-1);
     expect(pr).toBeGreaterThan(block);

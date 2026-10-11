@@ -4433,14 +4433,33 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 } else {
-  // No container — batch record-env + create-pr into one agent
-  prStep = await timedAgent(`
-Do BOTH tasks:
+  await timedAgent(`
+No container is configured for this project, so record env as SKIP:
 
-1. Record env as SKIP:
-   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-2. Open or update the PR. Run exactly these three commands:
+Run the command and report the output.
+`, { label: 'record-env', phase: 'Ship' })
+}
+
+// Open or update the PR, on EVERY path that reaches Ship (#254).
+//
+// This used to be the second half of the arm above — one batched step doing
+// record-env and create-pr together — which meant a project WITH a container
+// took the other arm and no PR was ever opened: prStep stayed null, #252's
+// whole draft lifecycle (--draft, pr-ready, prReadiness) was unreachable, and
+// the run still reported a shipped status over a branch nobody could review.
+// DailyBriefDashboard's 7776-before-7777 rule requires container config, so
+// that was the path the next consumer was going to take.
+//
+// The environments write stays in BOTH arms and does not ride along here: the
+// ship gate refuses on missing environments fields (gates/SCHEMA-GUIDE.md), and
+// the two arms record different things. One call site, below the conditional,
+// is what makes "a PR is opened" a property of the phase rather than of the
+// branch taken through it — test/ship-pr-on-every-path.test.ts brace-matches
+// the conditional to hold it there.
+prStep = await timedAgent(`
+Open or update the PR. Run exactly these two commands:
 
 cat > ${WORK_DIR}/pr-body.md <<'RUNGATE_PR_BODY_EOF'
 Fixes #${ISSUE}
@@ -4479,18 +4498,17 @@ Report prDraft from what the command PRINTED. Do not assume it is true because
 field it asked for is not a field it observed. Omit prDraft entirely if the
 output did not carry it — "unknown" is a reading this workflow can act on and
 a guessed true is not.
-  `, { label: 'record-env-and-pr', phase: 'Ship', schema: {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' },
-      prNumber: { type: 'number' },
-      prUrl: { type: 'string' },
-      prDraft: { type: 'boolean' },
-      detail: { type: 'string' },
-    },
-    required: ['ok'],
-  } })
-}
+`, { label: 'open-pr', phase: 'Ship', schema: {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    prNumber: { type: 'number' },
+    prUrl: { type: 'string' },
+    prDraft: { type: 'boolean' },
+    detail: { type: 'string' },
+  },
+  required: ['ok'],
+} })
 
 // Every refusal from here on has to be able to say what happened to the PR,
 // and the refusal sites are scattered across three phases (#252).

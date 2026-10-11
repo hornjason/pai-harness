@@ -5,7 +5,7 @@
  * draft, `mergeable: MERGEABLE`, carrying the `resolveManagedWrite` defect that
  * destroyed a consumer's CI. Nothing had gone wrong with the refusal — the
  * refusal was correct. The problem is WHERE the PR is opened: `ship.js` opens
- * it in the `record-env-and-pr` step, and the ship gate, the blocking-grade
+ * it in the `open-pr` step, and the ship gate, the blocking-grade
  * check, the security staleness refusal and the suite staleness refusal all
  * run AFTER it. Every one of those can refuse with a reviewable PR already
  * sitting on the branch, and a human reading the PR list cannot tell it from
@@ -96,7 +96,7 @@ function loadReadiness(block: string): ReadinessFor {
 
 const readiness = loadReadiness(BLOCK);
 
-/** What the `record-env-and-pr` step reports when it opened a PR. */
+/** What the `open-pr` step reports when it opened a PR. */
 const OPENED = { ok: true, prNumber: 250, prUrl: "https://x/pull/250" };
 
 /** The statuses the run can reach its terminal with, weakest first. */
