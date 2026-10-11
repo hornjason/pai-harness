@@ -98,6 +98,23 @@ function realIsInside(parent: string, child: string): boolean {
  * hostile. Either way, copying it would write somewhere nobody authorised, so
  * it is dropped here rather than being handed to the copy step.
  */
+/**
+ * Remove a trailing parenthesised annotation from a reported path (#279).
+ *
+ * Agents describe what they did to a file as they list it:
+ *
+ *     "lib/strip-js-comments.ts (NEW, 178 lines)"
+ *     "test/spec-compliance.test.ts (MOD: +SHIP_CODE at L8-28)"
+ *
+ * Only a trailing ` (...)` is an annotation. Splitting on the first space
+ * instead would mangle `docs/my notes.md` into a miss, which trades a silent
+ * drop for a silent rejection — the same bug facing the other way.
+ */
+export function stripPathAnnotation(entry: string): string {
+  const m = entry.match(/^(.*?)\s+\([^()]*\)$/);
+  return m ? m[1] : entry;
+}
+
 export function groupFilesByWorktree(results: AgentBuildResult[]): WorktreeGroup[] {
   const groups: WorktreeGroup[] = [];
 
@@ -169,7 +186,21 @@ export function collectWorktreeFiles(
       throw new Error(`refusing a worktree the caller did not authorise: ${group.worktreePath}`);
     }
 
-    for (const rel of group.files) {
+    for (const rawRel of group.files) {
+      // #279: an agent may annotate the path it reports — run wf_ea3e428f-64f
+      // wrote "lib/strip-js-comments.ts (NEW, 178 lines)" for all five of its
+      // files, and joining that whole string onto the worktree missed every
+      // one of them. 926 lines were dropped and the script exited zero.
+      //
+      // The literal entry is tried FIRST so a real path that happens to end in
+      // parentheses keeps working, and a genuinely missing file stays missing
+      // after stripping rather than becoming a second silent drop.
+      const stripped = stripPathAnnotation(rawRel);
+      const rel =
+        stripped !== rawRel && !existsSync(resolve(group.worktreePath, rawRel))
+          ? stripped
+          : rawRel;
+
       const dest = resolve(projectRoot, rel);
       if (!isInside(projectRoot, dest)) {
         throw new Error(`refusing to write outside the project root: ${rel}`);
