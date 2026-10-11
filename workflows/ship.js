@@ -3979,7 +3979,7 @@ change, in ${PROJECT_ROOT}:
 
   git diff <base from the file>..${reviewTarget} -- <each path from the file>
 
-Read ${PROJECT_ROOT}/ARCHITECTURE.md. Check: injection, credentials, path traversal, XSS.
+Read ${PROJECT_ROOT}/ARCHITECTURE.md (if it exists; many projects have no such file — do not treat its absence as a blocker). Check: injection, credentials, path traversal, XSS.
 
 Write your findings to ${findingsPath} before you return, as JSON:
   {"failures": ["one finding per entry", "..."]}

@@ -191,7 +191,7 @@ Report PASS or FAIL per AC with evidence (screenshots, Playwright output).
   () => needsRook
     ? agent(`
 ## Security Review
-Read ${PROJECT_ROOT}/ARCHITECTURE.md first.
+Read ${PROJECT_ROOT}/ARCHITECTURE.md first (if it exists; many projects have no such file — do not treat its absence as a blocker).
 
 Files changed:
 ${CHANGED_FILES.map(f => `- ${f}`).join('\n')}

@@ -138,7 +138,11 @@ function buildContextSection(projectRoot: string): string {
   const lines = [
     "## Context (read first, in order)",
     `1. ${projectRoot}/CLAUDE.md (if exists)`,
-    `2. ${projectRoot}/MODEL.md (PRIMARY — system flow, three rules, troubleshooting map)`,
+    // "(if exists)" like entry 1, and for the same reason (#272). This said
+    // PRIMARY with no qualifier while entries 3 and 4 were both conditional on
+    // its absence — so in a project without MODEL.md, which includes this one,
+    // the list opened by naming a missing file as the primary source.
+    `2. ${projectRoot}/MODEL.md (if exists; PRIMARY when present — system flow, three rules, troubleshooting map)`,
     `3. ${projectRoot}/PRINCIPLES.md (ONLY if MODEL.md doesn't exist)`,
     `4. ${projectRoot}/ARCHITECTURE.md (ONLY if MODEL.md doesn't exist)`,
   ];
