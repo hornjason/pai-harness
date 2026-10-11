@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
-import { loadRungateConfig } from "./config-loader";
+import { resolveConfig, type ConfigResolution } from "./config-loader";
 import type {
   ProjectScan,
   ProjectType,
@@ -159,9 +159,13 @@ function scanSpecs(root: string): SpecEntry[] {
 function detectConsumers(root: string): string[] {
   // First check the harness config (.claude/rungate/ directory, or the
   // .claude/rungate.json monolith as fallback) — #70
-  const harness = loadHarnessConfig(root);
-  if (harness?.consumers && Array.isArray(harness.consumers) && harness.consumers.length > 0) {
-    return harness.consumers;
+  // Branch on the status rather than optional-chaining the resolution: an
+  // absent resolution is truthy and has no `.consumers`, so `harness?.consumers`
+  // would not compile. That is the point of the union (ADR-002 D2(a)).
+  const resolution = resolveHarnessConfig(root);
+  if (resolution.status === "resolved") {
+    const consumers = resolution.config.consumers;
+    if (Array.isArray(consumers) && consumers.length > 0) return consumers;
   }
 
   // Scan src/ for consumer modules
@@ -421,14 +425,19 @@ function scanMakeTargets(root: string): string {
 /**
  * Resolves the harness config via lib/config-loader — `.claude/rungate/`
  * directory form first, `.claude/rungate.json` monolith as fallback (#70).
- * Returns null when neither exists or the config is unreadable.
+ *
+ * This file was counted as migrated to the central loader and was not: the
+ * `try/catch` that used to live here swallowed TWO different throws — the
+ * loader's deliberate malformed/orphan refusal AND the ordinary "no config
+ * found" — and returned `null` for both. "Not configured" and "configured
+ * wrong" arrived at the caller as the same value, which is the fail-open
+ * shape `.claude/rules/checks-must-be-able-to-fail.md` opens with.
+ *
+ * `resolveConfig` splits them: absence is a reported status, brokenness still
+ * throws. ADR-002 Step 3.
  */
-function loadHarnessConfig(root: string): Record<string, any> | null {
-  try {
-    return loadRungateConfig(root) as unknown as Record<string, any>;
-  } catch {
-    return null;
-  }
+export function resolveHarnessConfig(root: string): ConfigResolution {
+  return resolveConfig(root);
 }
 
 // ── Code structure scanning (dirs, modules, routes) ────────────
@@ -652,7 +661,15 @@ export function scanProject(root: string): ProjectScan {
     } catch {}
   }
 
-  const harness = loadHarnessConfig(root);
+  // A broken config now reaches the caller as a throw. It used to arrive as
+  // `null`, indistinguishable from an unconfigured project, and the scan went
+  // on to report a project with no roles, no consumers and no prompt
+  // keywords — a plausible-looking result built from a config nobody read.
+  const harnessResolution = resolveHarnessConfig(root);
+  const harness =
+    harnessResolution.status === "resolved"
+      ? (harnessResolution.config as unknown as Record<string, any>)
+      : null;
   const categories = buildCategories();
   const { deps, devDeps } = countDeps(root);
 
