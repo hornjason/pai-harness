@@ -1585,6 +1585,112 @@ What was broken to prove it, run and counted rather than asserted, over
 None is left in the tree; all were run and reverted, and `workflows/ship.js`
 was diffed byte-for-byte against a copy taken before the first mutation.
 
+#### A rule that was right and four phases late (2026-10-10, #269)
+
+Fourth instance in one day, and the one that is not a refusal the branch
+cannot satisfy — it is a refusal that arrives after everything it could have
+saved.
+
+Run `wf_3335abda-d71` wrote six ACs, one carrying `threshold: >= 1`. It then
+skipped the scope gate (LIGHT), briefed Marcus, implemented the whole change,
+ran the suite, committed `cf33b6e5`, pushed — and only then:
+
+    record-build-commit: Workflow state validation failed:
+    acs.5.threshold: AC-6: threshold too weak (>= 1) — effectively always passes
+
+`gates/schema.ts:96` is right. A `>= 1` threshold passes on any non-zero
+result, which is this file's whole subject wearing an acceptance criterion.
+What was wrong is that `writeWorkflowState` is the only thing that validates,
+and on a LIGHT run the first validating write is the COMMIT RECORDER. Every
+phase in between was spent on a criterion nobody could fail.
+
+The rule is now also applied at the end of Discovery, beside #251's coverage
+refusal, for the same reason that one is there.
+
+**This is a duplicated rule, which is normally the wrong answer.** ship.js
+runs in a sandbox with no module loading (#69), so `ACSchema` cannot be
+imported and there is no honest way to share the implementation. What makes
+the copy admissible is the #224 pattern: a table of ACs is run through BOTH
+the inlined function and the real `ACSchema`, and a disagreement in **either**
+direction fails. A copy that refuses too little and a copy that refuses too
+much are equally caught — the second is the one a one-directional parity test
+would miss, and it is the one that would start refusing valid runs.
+
+- [x] SC-668: workflows/ship.js contains [AC-VALIDATION-START, function acDiscoveryViolations(acs)] — the rules the state schema applies are checked at the phase that can still act on them, in a marked block that is extracted and EXECUTED rather than matched
+- [x] SC-669: workflows/ship.js contains [acDiscoveryViolations(discovery.acs)] — called before setup, before the scope gate and before any brief, because a rule enforced after the implementation is a rule that costs the implementation
+- [x] SC-670: test/discovery-ac-validation.test.ts contains [ACSchema.safeParse(ac).success] — every case runs through the real schema as well as the copy, and the assertion compares the two verdicts, so neither may drift in either direction
+- [x] SC-671: test/discovery-ac-validation.test.ts contains [no case in the matrix exercises the schema rule] — the matrix is itself checked for coverage of every rule the schema can raise, because a parity table that quietly misses a rule proves parity on the rules it has and silence on the rest
+- [x] SC-672: workflows/ship.js contains [THRESHOLD RULE] — the prompt states the rule rather than only enforcing it; refusing a model for something it was never told is a round spent teaching it what the prompt could have said for free
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/discovery-ac-validation.test.ts` (21 tests):
+
+| Mutation | Red |
+|---|---|
+| the violations list replaced with `[]` at the call site — computed and never looked at | 1 of 21 |
+| the weak-threshold branch short-circuited to `if (false)` — the copy drifts LOOSER | 4 of 21 |
+| the copy's minimum word count lowered from the schema's 5 to 3 | 1 of 21 |
+| the copy's threshold rule widened to `<= 2` — the copy drifts STRICTER, and starts refusing runs the schema accepts | 1 of 21 |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was diffed byte-for-byte against a copy taken before the first mutation. The
+last row is why the parity assertion compares verdicts in both directions
+rather than asserting "the copy refuses what the schema refuses".
+
+**Security review of 41edf8e5 found three defects in the first version, all
+three real, and all three the same classes this file is about.** Recorded
+because the first version had already passed CI, the full suite and a
+mutation table.
+
+- **Fail-open default.** `acDiscoveryViolations` opened with
+  `if (!Array.isArray(acs)) return []`. `acs` is REQUIRED by
+  `DISCOVERY_SCHEMA`, so a non-list is a defect and not a run with nothing to
+  check — and returning no violations for the one input the function cannot
+  interpret is the exact shape of the bug it exists to catch. #251 had learned
+  this about the success criteria eight hours earlier, in a function thirty
+  lines further down the same file, and I wrote it again anyway.
+- **Validator differential.** The copy implemented the five interesting
+  heuristics and none of the dull base-shape rules, so an AC with an operator
+  outside the enum passed Discovery and was still refused by the state schema
+  at the commit recorder. That is #269 surviving its own fix for a narrower
+  set of inputs. The copy now checks the operator enum, the evidence-method
+  enum, the type enum, the id type and a threshold with no value, and the
+  matrix carries a case for each.
+- **Control misfire.** The refusal text said "so this run could not record its
+  own commit". `runDiscovery` is also called from the verify-regression path,
+  where the commit already exists, so the sentence is true on the first pass
+  and false on the second. A refusal that misstates the run's state sends the
+  next reader after the wrong thing, which is most of what #261 and #267 cost
+  in wall-clock.
+
+Widening the copy then made the matrix fail twice more, in the useful
+direction: the copy refused an empty `id` and a missing `evidence` where
+`ACSchema` accepts both. Both were corrected toward the schema, because a
+copy STRICTER than the thing it stands in for refuses runs that are fine and
+nothing downstream ever contradicts it. The second of those also killed a
+"deliberate divergence" section written on a wrong premise —
+`EvidenceSchema` is `.nullable().optional()`, so there was no divergence to
+document — and that block is now a test that fires if the premise ever
+becomes true.
+
+#### The pattern across all four
+
+Four defects in one day, all the same shape at a different level: **a check
+whose phase has nothing to do with the phase that can act on it.**
+
+| # | The check | Where it ran | Where it could be acted on |
+|---|---|---|---|
+| #261 | evidence pre-validation | written at scope, read at verify — and LIGHT skips scope | the verify gate |
+| #264 | the same reading | taken in the main repo, frozen after one attempt | the worktree, every attempt |
+| #267 | the commit branch guard | the project root, which the collector chose | a run branch |
+| #269 | the AC schema rules | the commit recorder | Discovery |
+
+Three of the four were found by running the pipeline, not by reading it, and
+none by a unit test. Two of them were introduced by the fix for the one above.
+That is the argument for the negative control being a standing line item: this
+class is invisible to every test that does not execute the phase ordering,
+because each half is correct and only the composition is not.
+
 Filed rather than fixed here, because it is a different defect in a different
 function: `prevalidationViolations` names the broken ACs out of
 `reading.broken`, and no writer produces that key —
