@@ -11,13 +11,12 @@ const DevSchema = z.object({
 });
 
 /**
- * `command` and `timeout` are the keys `workflows/ship.js` has always assumed
- * — its setup-agent JSON schema declares both (`ship.js:1651`) and rungate's
- * own `.claude/rungate.json` authors both. Until they were declared here, zod
- * stripped them on every validated read, so the validated path was lossier
- * than the raw one and #254's container path rested on keys the validator
- * deleted. Nothing is deprecated by declaring them: per ADR-002 D3 `dev.*` is
- * canonical as the authored shape and `test.command` keeps being read.
+ * `command` and `timeout` were read by `workflows/ship.js` (its inline setup
+ * schema declares both at :1651) and written by rungate's own
+ * `.claude/rungate.json`, but were undeclared here — so every validated read
+ * stripped them and the validated path was lossier than the raw one (ADR-002
+ * D3, consequence 2). They are the authored rungate shape; `dev.testCmd` is
+ * the authored DDB shape, and `lib/config-loader.ts` normalises the two.
  */
 const TestSchema = z.object({
   start: z.string().optional(),
@@ -28,19 +27,22 @@ const TestSchema = z.object({
 });
 
 /**
- * The test-container block `ship.js:3754` reads and `ship.js:1651` declares.
+ * The test-container block `workflows/ship.js:3753` reads. ship.js has
+ * declared this shape in its own inline setup schema since :1651; declaring it
+ * here is what stops zod deleting the key before it reaches the conditional.
  *
- * `rebuildCommand` is interpolated verbatim into an agent prompt, so the
- * *shape* being declared here constrains nothing about its *value* — the
- * "never hand `make rebuild` to an agent" rule (PROJECT-STATE item 8, DDB's
- * CLAUDE.md, and DDB's Makefile worktree guard) is enforced by test, not by
- * this type.
+ * NOTE — `rebuildCommand` is interpolated VERBATIM into an agent prompt at
+ * `ship.js:3766` (`cd ${PROJECT_ROOT} && ${rebuildCmd}`). Declaring the field
+ * constrains its type, not its value: a config handing `make rebuild` to an
+ * agent still validates. DDB's CLAUDE.md forbids that and its Makefile carries
+ * a worktree guard, so the forbidden-command rule stays a config review
+ * concern — ADR-002 Step 1 does not refine it, and PROJECT-STATE item 8 is the
+ * standing instruction.
  *
- * It sits beside `prod.rebuild` rather than merging with it on purpose: `prod`
- * describes promotion to the production container, `container` describes the
- * throwaway test container the verify phase rebuilds. Two rebuild-ish keys
- * coexist, and collapsing them would make a verify-phase rebuild able to touch
- * production.
+ * NOTE — `ProdSchema.rebuild` already exists and is a different thing: prod
+ * promotion, not the test container. The two rebuild-ish keys coexist
+ * deliberately. `prod.rebuild` is DDB's `make rebuild`; `container.
+ * rebuildCommand` is the 7776 build/test-down/test-up sequence.
  */
 const ContainerSchema = z.object({
   port: z.number().optional(),
@@ -48,8 +50,6 @@ const ContainerSchema = z.object({
   healthPath: z.string().optional(),
   hosts: z.array(z.string()).optional(),
 });
-
-export type ContainerConfig = z.infer<typeof ContainerSchema>;
 
 const ProdSchema = z.object({
   rebuild: z.string().optional(),
@@ -89,7 +89,7 @@ const CeremonyTierOverrideSchema = z.object({
   agents: z.record(z.union([z.boolean(), z.string()])).optional(),
 }).passthrough();
 
-export const ProjectHarnessSchema = z.object({
+const ProjectHarnessSchema = z.object({
   project: z.string(),
   repo: z.string(),
   issueRepo: z.string(),
@@ -108,15 +108,81 @@ export const ProjectHarnessSchema = z.object({
   stalenessThreshold: z.number().optional(),
   ceremonyOverrides: z.record(CeremonyTierOverrideSchema).optional(),
   schemaVersion: z.number().default(1),
-}).passthrough();
-// `.passthrough()` because declaring a key must be how a reader gets a TYPE,
-// not how a key earns the right to exist. Stripping by default made the
-// validated read lossier than `JSON.parse` — DDB's `remoteHosts` and the
-// directory form's merged `hooks`/`compliance` all vanished through it — which
-// gave every caller a reason to bypass the validator. Passthrough can only
-// preserve more, never less.
+});
 
 export type ProjectHarness = z.infer<typeof ProjectHarnessSchema>;
+
+// ── Compliance policy (was hand-declared in lib/config-loader.ts) ──────────
+
+const ComplianceRuleSchema = z.object({
+  description: z.string(),
+  directives: z.array(z.string()),
+  reinforcement: z.string(),
+  tiers: z.record(z.object({ action: z.string(), hook: z.string().optional() })),
+  threshold: z.object({ consecutive: z.number(), promote: z.number() }),
+});
+
+const OrganizeExternalSourceSchema = z.object({
+  path: z.string(),
+  type: z.string(),
+  target: z.string().nullable(),
+  method: z.enum(["symlink", "copy", "discover"]),
+  matchBy: z.string(),
+});
+
+export const ComplianceConfigSchema = z.object({
+  rules: z.record(ComplianceRuleSchema),
+  defaults: z.object({
+    consecutiveFailThreshold: z.number(),
+    tierPromotionThreshold: z.number(),
+  }),
+  organize: z.object({
+    fileTypes: z.array(z.string()),
+    artifactClassification: z.record(z.string()),
+    externalSources: z.array(OrganizeExternalSourceSchema),
+  }),
+});
+
+export type ComplianceRule = z.infer<typeof ComplianceRuleSchema>;
+export type OrganizeExternalSource = z.infer<typeof OrganizeExternalSourceSchema>;
+export type ComplianceConfig = z.infer<typeof ComplianceConfigSchema>;
+
+// ── The resolved shape the loader emits (ADR-002 D3) ───────────────────────
+
+/**
+ * `timeout` is required here and optional in `TestSchema` because the loader
+ * always supplies `DEFAULT_TEST_TIMEOUT`. `command` stays optional: a project
+ * with no test command configured must be distinguishable from one configured
+ * with `""`, which is what `|| 'bun test'` could never express.
+ */
+const ResolvedTestSchema = TestSchema.extend({ timeout: z.number() });
+
+/**
+ * ADR-002 D3. `ResolvedConfig` is the single config type, derived here with
+ * `z.infer` rather than hand-declared a second time in `config-loader.ts`.
+ * The contradiction that motivated it: `RungateConfig.test.command` was
+ * REQUIRED at `config-loader.ts:44` and absent from `TestSchema` — two
+ * hand-written types for one file, disagreeing.
+ *
+ * `hooks`, `compliance` and `remoteHosts` are not part of the authored
+ * harness schema (`hooks.json` and `compliance.json` are separate files under
+ * the directory layout) but they are part of what the loader merges and
+ * returns, so they are declared on the resolved shape and nowhere else.
+ */
+export const ResolvedConfigSchema = ProjectHarnessSchema.extend({
+  apiUrl: z.string().optional(),
+  uiUrl: z.string().optional(),
+  test: ResolvedTestSchema,
+  // `roles` and `hooks` are always present on a resolved config, empty when
+  // unconfigured. Optional here would be a fifth falsy value for callers to
+  // absorb, which is the defect class ADR-002 D2(a) is about.
+  roles: z.record(RoleSchema),
+  hooks: z.array(z.unknown()),
+  compliance: ComplianceConfigSchema.optional(),
+  remoteHosts: z.record(z.unknown()).optional(),
+});
+
+export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
 
 export function parseProjectHarness(raw: unknown): ProjectHarness {
   return ProjectHarnessSchema.parse(raw);

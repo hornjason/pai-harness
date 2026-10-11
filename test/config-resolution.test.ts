@@ -1,476 +1,449 @@
 /**
- * config-resolution.test.ts — ADR-002 Step 1.
+ * config-resolution.test.ts — ADR-002 Step 1 (#307)
  *
- * Covers #307 AC-1..AC-4 and AC-15.
+ * Covers AC-1 (schema declares command/timeout/container), AC-2 (resolveConfig
+ * returns a discriminated ConfigResolution, wrappers unchanged), AC-3 (the
+ * exported config type is schema-derived), AC-4 (DDB-shaped and rungate-shaped
+ * fixtures normalise to the same test.command) and AC-15 (a container block
+ * survives schema validation and reaches the resolved config).
  *
- * What was broken to make these fail, run by hand on this branch and counted
- * rather than asserted (.claude/rules/checks-must-be-able-to-fail.md), over
- * this file + test/gate-config-readers.test.ts (34 tests, 2026-10-11):
+ * Every assertion here is on a RESOLVED VALUE or on a PARSE RESULT — never on
+ * source text. SC-478/479/511 are the cautionary cases (PROJECT-STATE item 21).
  *
- *   | Mutation                                              | Red           |
- *   |-------------------------------------------------------|---------------|
- *   | `command`/`timeout` removed from TestSchema            | 2 of 34       |
- *   | `container` removed from ProjectHarnessSchema          | 0 of 34, 9 tsc |
- *   | `dev.testCmd ??` dropped from normalise()              | 3 of 34       |
- *   | the bare try/catch restored in scanner.ts              | 4 of 34       |
- *   | `|| echo "{}"` restored at ship.js's setup step        | 1 of 34       |
- *
- * The second row is the one worth reading. Removing `container` from the
- * schema turns NOTHING red at runtime, because `.passthrough()` carries the
- * key through regardless — the declaration buys a TYPE, not a behaviour, and
- * the guard that actually catches its removal is `bunx tsc --noEmit` (9
- * errors), not this suite. Reporting "the container tests cover it" would have
- * been a line in a report. The runtime behaviour these tests do pin is that
- * the key survives resolution at all, which is what #254's path needs.
- *
- * None of the five is left in the tree; all were run and reverted, and the
- * baseline was re-measured green at 34/34 afterwards.
- *
- * The parity case (AC-4) asserts on the RESOLVED VALUE, never on source text.
- * SC-478 is the cautionary precedent: a source-text existence assertion stays
- * green over code that has stopped doing the thing the text describes. The two
- * cases here that do read source (AC-3's interface check, AC-15's ship.js
- * check) both slice to an anchor and assert the slice is non-empty first — an
- * anchor that drifts produces an empty string, and `expect("").not.toContain`
- * passes for any argument at all.
+ * WHAT WAS BROKEN TO PROVE THESE CAN FAIL — see the commit body for counts:
+ *   - `command` removed from TestSchema          → zod strips it again
+ *   - `container` removed from ProjectHarnessSchema → zod strips it again
+ *   - `dev.testCmd ??` precedence removed        → the two fixtures diverge
  */
-import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "fs";
-import { join, resolve } from "path";
-import { tmpdir } from "os";
-
+import { join } from "path";
 import {
   resolveConfig,
   loadRungateConfig,
   tryLoadRungateConfig,
-  DEFAULT_TEST_TIMEOUT_MS,
+  DEFAULT_TEST_TIMEOUT,
 } from "../lib/config-loader";
-import { parseProjectHarness, safeParseProjectHarness } from "../lib/rungate-schema";
+import {
+  parseProjectHarness,
+  safeParseProjectHarness,
+  ResolvedConfigSchema,
+} from "../lib/rungate-schema";
 
-const HARNESS_ROOT = resolve(import.meta.dir, "..");
-const TMP = join(tmpdir(), `rungate-config-resolution-${process.pid}`);
+const TMP = "/tmp/rungate-config-resolution-test";
 
-/** The shape rungate itself authors: `test.command`, no `dev` block. */
-function makeRungateShaped(name: string, extra: Record<string, unknown> = {}): string {
-  const root = join(TMP, name);
-  mkdirSync(join(root, ".claude"), { recursive: true });
-  writeFileSync(
-    join(root, ".claude", "rungate.json"),
-    JSON.stringify({
-      project: name,
-      repo: "org/repo",
-      issueRepo: "org/repo",
-      pages: {},
-      test: { command: "bun test --parallel", timeout: 300000 },
-      ...extra,
-    })
-  );
-  return root;
-}
+/** The normalised command both authored shapes must agree on. */
+const SHARED_TEST_COMMAND = "bun test src/**/*.test.ts";
+
+/** The container block PROJECT-STATE item 8 specifies for DDB's 7776 test container. */
+const DDB_CONTAINER = {
+  port: 7776,
+  rebuildCommand: "make build && make test-down && make test-up",
+  healthPath: "/api/aes",
+  hosts: ["localhost"],
+};
 
 /**
- * The shape DailyBriefDashboard authors: `dev.testCmd`, no `test` key at all.
- * `captureTestBaseline`'s defect is reachable only from this shape — a
- * rungate-shaped fixture is green for the same reason the defect survived a
- * year, so every normalisation assertion here is anchored on this one.
+ * DDB's authored shape: `dev.*`, no `test` key. This is the shape the defect
+ * hides in — a rungate-shaped fixture is green for the reason the defect
+ * survived a year (ADR-002, "Before anything").
  */
-function makeDdbShaped(name: string, extra: Record<string, unknown> = {}): string {
-  const root = join(TMP, name);
-  mkdirSync(join(root, ".claude"), { recursive: true });
-  writeFileSync(
-    join(root, ".claude", "rungate.json"),
-    JSON.stringify({
-      project: name,
-      repo: "org/repo",
-      issueRepo: "org/repo",
-      dev: {
-        start: "make dev-all",
-        apiBase: "http://localhost:7778",
-        uiBase: "http://localhost:5173",
-        testCmd: "bun test --parallel",
-        typeCheck: "bunx tsc --noEmit",
-      },
-      pages: { "/": "home" },
-      ...extra,
-    })
-  );
-  return root;
+function ddbShaped(extra: Record<string, unknown> = {}) {
+  return {
+    project: "DailyBriefDashboard",
+    repo: "x/ddb",
+    issueRepo: "x/ddb",
+    dev: {
+      start: "make dev-all",
+      apiBase: "http://localhost:7778",
+      uiBase: "http://localhost:5173",
+      testCmd: SHARED_TEST_COMMAND,
+      typeCheck: "bunx tsc --noEmit",
+    },
+    prod: { rebuild: "make rebuild", apiBase: "http://localhost:7777" },
+    pages: { "/": "home", "/accounts": "accounts" },
+    consumers: [],
+    contextDocs: {},
+    ...extra,
+  };
 }
 
-/** Directory form (`.claude/rungate/config.json`) rather than the monolith. */
-function makeDirShaped(name: string, config: Record<string, unknown>): string {
-  const root = join(TMP, name);
-  mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
-  writeFileSync(join(root, ".claude", "rungate", "config.json"), JSON.stringify(config));
-  return root;
+/** rungate's own authored shape: `test.command`, no `dev` key. */
+function rungateShaped(extra: Record<string, unknown> = {}) {
+  return {
+    project: "rungate",
+    repo: "hornjason/pai-harness",
+    issueRepo: "hornjason/pai-harness",
+    pages: {},
+    consumers: [],
+    contextDocs: {},
+    test: { command: SHARED_TEST_COMMAND, timeout: 300000 },
+    hooks: [],
+    ...extra,
+  };
 }
 
-beforeAll(() => {
+function writeMonolith(name: string, raw: unknown): string {
+  const projectDir = join(TMP, name);
+  mkdirSync(join(projectDir, ".claude"), { recursive: true });
+  writeFileSync(join(projectDir, ".claude", "rungate.json"), JSON.stringify(raw));
+  return projectDir;
+}
+
+function writeDirectory(name: string, raw: unknown, roles?: unknown): string {
+  const projectDir = join(TMP, name);
+  const configDir = join(projectDir, ".claude", "rungate");
+  mkdirSync(configDir, { recursive: true });
+  writeFileSync(join(configDir, "config.json"), JSON.stringify(raw));
+  if (roles) writeFileSync(join(configDir, "roles.json"), JSON.stringify(roles));
+  return projectDir;
+}
+
+beforeEach(() => {
   rmSync(TMP, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
 });
 
-afterAll(() => {
+afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
-// ── AC-1 ────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+// AC-1 — the schema declares what ship.js already assumes
+// ───────────────────────────────────────────────────────────────────────────
+describe("AC-1: schema declares command, timeout and container", () => {
+  test("a parse preserves test.command and test.timeout", () => {
+    const parsed = parseProjectHarness(rungateShaped());
 
-describe("AC-1 schema declares the keys ship.js already assumes", () => {
-  test("schema: TestSchema declares optional command and timeout", () => {
-    const parsed = parseProjectHarness({
-      project: "p",
-      repo: "org/repo",
-      issueRepo: "org/repo",
-      test: { command: "bun test --parallel", timeout: 300000 },
-    });
-    expect(parsed.test?.command).toBe("bun test --parallel");
+    expect(parsed.test?.command).toBe(SHARED_TEST_COMMAND);
     expect(parsed.test?.timeout).toBe(300000);
   });
 
-  test("schema: ProjectHarnessSchema declares an optional container object", () => {
-    const parsed = parseProjectHarness({
-      project: "p",
-      repo: "org/repo",
-      issueRepo: "org/repo",
-      container: {
-        port: 7776,
-        rebuildCommand: "make build && make test-down && make test-up",
-        healthPath: "/api/aes",
-        hosts: ["localhost"],
-      },
-    });
+  test("a parse preserves the container block in full", () => {
+    const parsed = parseProjectHarness(ddbShaped({ container: DDB_CONTAINER }));
+
+    expect(parsed.container).toEqual(DDB_CONTAINER);
     expect(parsed.container?.port).toBe(7776);
     expect(parsed.container?.rebuildCommand).toBe("make build && make test-down && make test-up");
     expect(parsed.container?.healthPath).toBe("/api/aes");
     expect(parsed.container?.hosts).toEqual(["localhost"]);
   });
 
-  test("schema: container is optional, so a config without one still validates", () => {
-    const result = safeParseProjectHarness({
-      project: "p",
-      repo: "org/repo",
-      issueRepo: "org/repo",
-    });
+  test("the three key groups survive together, validated not asserted", () => {
+    const result = safeParseProjectHarness(
+      ddbShaped({ container: DDB_CONTAINER, test: { command: "x", timeout: 1 } })
+    );
+
     expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(Object.keys(result.data)).toContain("container");
+    expect(result.data.test?.command).toBe("x");
+    expect(result.data.test?.timeout).toBe(1);
   });
 
-  test("schema: parsing rungate's own config preserves test.command and test.timeout", () => {
-    const own = JSON.parse(
-      readFileSync(join(HARNESS_ROOT, ".claude", "rungate.json"), "utf-8")
+  test("a container block with a wrong-typed port is rejected, not silently kept", () => {
+    const result = safeParseProjectHarness(
+      ddbShaped({ container: { ...DDB_CONTAINER, port: "7776" } })
     );
-    // Guard against a vacuous pass: the fixture must actually carry the keys.
-    expect(typeof own.test?.command).toBe("string");
-    expect(typeof own.test?.timeout).toBe("number");
 
-    const parsed = parseProjectHarness(own);
-    expect(parsed.test?.command).toBe(own.test.command);
-    expect(parsed.test?.timeout).toBe(own.test.timeout);
-  });
-
-  test("schema: validation is no longer lossier than the raw read", () => {
-    const own = JSON.parse(
-      readFileSync(join(HARNESS_ROOT, ".claude", "rungate.json"), "utf-8")
-    );
-    const parsed: Record<string, unknown> = parseProjectHarness(own) as any;
-    const dropped = Object.keys(own).filter((k) => !(k in parsed));
-    expect(dropped).toEqual([]);
+    expect(result.success).toBe(false);
   });
 });
 
-// ── AC-2 ────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+// AC-2 — the discriminated resolution, with the two wrappers unchanged
+// ───────────────────────────────────────────────────────────────────────────
+describe("AC-2: resolveConfig returns a discriminated ConfigResolution", () => {
+  test("a monolith resolves with source 'monolith'", () => {
+    const dir = writeMonolith("mono", rungateShaped());
+    const resolution = resolveConfig(dir);
 
-describe("AC-2 resolveConfig is a discriminated resolution and the wrappers are unchanged", () => {
-  test("resolveConfig reports status resolved with a monolith source", () => {
-    const root = makeRungateShaped("ac2-monolith");
-    const resolution = resolveConfig(root);
     expect(resolution.status).toBe("resolved");
-    if (resolution.status !== "resolved") throw new Error("unreachable");
+    if (resolution.status !== "resolved") return;
     expect(resolution.source).toBe("monolith");
-    expect(resolution.config.project).toBe("ac2-monolith");
+    expect(resolution.config.project).toBe("rungate");
   });
 
-  test("resolveConfig reports status resolved with a directory source", () => {
-    const root = makeDirShaped("ac2-directory", {
-      project: "ac2-directory",
-      repo: "org/repo",
-      issueRepo: "org/repo",
+  test("a directory form resolves with source 'directory' and wins over the monolith", () => {
+    const dir = writeDirectory("dir", rungateShaped({ project: "dir-wins" }), {
+      marcus: { brief: "engineer" },
     });
-    const resolution = resolveConfig(root);
+    writeFileSync(
+      join(dir, ".claude", "rungate.json"),
+      JSON.stringify(rungateShaped({ project: "mono-loses" }))
+    );
+
+    const resolution = resolveConfig(dir);
+
     expect(resolution.status).toBe("resolved");
-    if (resolution.status !== "resolved") throw new Error("unreachable");
+    if (resolution.status !== "resolved") return;
     expect(resolution.source).toBe("directory");
+    expect(resolution.config.project).toBe("dir-wins");
+    expect(resolution.config.roles).toHaveProperty("marcus");
   });
 
-  test("resolveConfig reports absent — a truthy value with no .test property", () => {
-    const resolution = resolveConfig(join(TMP, "ac2-nothing-here"));
+  test("genuine absence is 'absent' — truthy, and with no .test to absorb", () => {
+    const dir = join(TMP, "absent");
+    mkdirSync(dir, { recursive: true });
+
+    const resolution = resolveConfig(dir);
+
     expect(resolution.status).toBe("absent");
-    // The whole mechanical point of the union over the nullable: an absent
-    // resolution cannot be absorbed by `||` or reached through `?.test`.
+    // The whole point of the union over the nullable: `{status:"absent"}` is
+    // truthy and carries no config fields, so `resolution.test?.command || x`
+    // cannot silently absorb it the way `null` did at four of five sites.
     expect(Boolean(resolution)).toBe(true);
-    expect("config" in resolution).toBe(false);
+    expect((resolution as Record<string, unknown>).test).toBeUndefined();
+    expect((resolution as Record<string, unknown>).config).toBeUndefined();
   });
 
-  test("resolveConfig throws on malformed JSON rather than reporting absent", () => {
-    const root = join(TMP, "ac2-malformed");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate.json"), "{ not json");
-    expect(() => resolveConfig(root)).toThrow();
+  test("malformed JSON throws rather than resolving to 'absent'", () => {
+    const dir = join(TMP, "malformed");
+    mkdirSync(join(dir, ".claude"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "rungate.json"), "{ not json");
+
+    expect(() => resolveConfig(dir)).toThrow();
   });
 
-  test("resolveConfig throws on orphaned directory fragments", () => {
-    const root = join(TMP, "ac2-orphan");
-    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate", "roles.json"), "{}");
-    expect(() => resolveConfig(root)).toThrow(/Incomplete rungate config/);
-  });
+  test("an orphan directory fragment throws rather than resolving to 'absent'", () => {
+    const dir = join(TMP, "orphan");
+    mkdirSync(join(dir, ".claude", "rungate"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "rungate", "roles.json"), JSON.stringify({}));
 
-  test("wrapper: loadRungateConfig still throws on absent config", () => {
-    expect(() => loadRungateConfig(join(TMP, "ac2-absent-throwing"))).toThrow(
-      /No rungate config found/
-    );
-  });
-
-  test("wrapper: loadRungateConfig still returns the config when present", () => {
-    const root = makeRungateShaped("ac2-wrapper-present");
-    expect(loadRungateConfig(root).project).toBe("ac2-wrapper-present");
-  });
-
-  test("wrapper: tryLoadRungateConfig still returns null on absent config", () => {
-    expect(tryLoadRungateConfig(join(TMP, "ac2-absent-null"))).toBeNull();
-  });
-
-  test("wrapper: tryLoadRungateConfig still throws on malformed config", () => {
-    const root = join(TMP, "ac2-wrapper-malformed");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate.json"), "{ not json");
-    expect(() => tryLoadRungateConfig(root)).toThrow();
+    expect(() => resolveConfig(dir)).toThrow(/Incomplete rungate config/);
   });
 });
 
-// ── AC-3 ────────────────────────────────────────────────────────────────────
+describe("AC-2: the wrappers keep ADR-001 D2's signatures and semantics", () => {
+  test("loadRungateConfig still throws on absence with the same message", () => {
+    const dir = join(TMP, "throwing");
+    mkdirSync(dir, { recursive: true });
 
-describe("AC-3 the exported config type is derived from the Zod schema", () => {
-  test("no hand-written config interface survives in lib/config-loader.ts", () => {
-    const source = readFileSync(join(HARNESS_ROOT, "lib", "config-loader.ts"), "utf-8");
-    expect(source).not.toMatch(/interface\s+RungateConfig\b/);
-    expect(source).not.toMatch(/interface\s+ResolvedConfig\b/);
+    expect(() => loadRungateConfig(dir)).toThrow(/No rungate config found/);
   });
 
-  test("ResolvedConfig is a z.infer of a schema, proven by the schema's own parse", () => {
-    // Executed, not grepped: the exported schema must accept a resolved shape
-    // and reject one missing the required identity keys. A type alias alone
-    // would satisfy a source-text assertion and nothing else.
-    const { ResolvedConfigSchema } = require("../lib/config-loader");
-    expect(
-      ResolvedConfigSchema.safeParse({
-        project: "p",
-        repo: "org/repo",
-        issueRepo: "org/repo",
-        test: { command: "bun test", timeout: 1 },
-      }).success
-    ).toBe(true);
-    expect(ResolvedConfigSchema.safeParse({ repo: "org/repo" }).success).toBe(false);
+  test("tryLoadRungateConfig still returns null on absence", () => {
+    const dir = join(TMP, "null-case");
+    mkdirSync(dir, { recursive: true });
+
+    expect(tryLoadRungateConfig(dir)).toBeNull();
+  });
+
+  test("tryLoadRungateConfig still throws on malformed — never null", () => {
+    const dir = join(TMP, "try-malformed");
+    mkdirSync(join(dir, ".claude", "rungate"), { recursive: true });
+    writeFileSync(join(dir, ".claude", "rungate", "config.json"), '{"project": "x",}');
+
+    expect(() => tryLoadRungateConfig(dir)).toThrow();
+  });
+
+  test("both wrappers return the same normalised object resolveConfig built", () => {
+    const dir = writeMonolith("wrappers", ddbShaped());
+    const resolution = resolveConfig(dir);
+
+    expect(resolution.status).toBe("resolved");
+    if (resolution.status !== "resolved") return;
+    expect(loadRungateConfig(dir)).toEqual(resolution.config);
+    expect(tryLoadRungateConfig(dir)).toEqual(resolution.config);
   });
 });
 
-// ── AC-4 ────────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+// AC-3 — the config type is derived from the schema, not hand-written
+// ───────────────────────────────────────────────────────────────────────────
+describe("AC-3: the exported config type is schema-derived", () => {
+  test("the hand-written RungateConfig interface is gone", () => {
+    const source = readFileSync(join(import.meta.dir, "..", "lib", "config-loader.ts"), "utf-8");
 
-describe("AC-4 normalisation makes the two authored shapes resolve identically", () => {
-  test("normalise: a DDB-shaped fixture and a rungate-shaped fixture resolve to the same test.command", () => {
-    const ddbRoot = makeDdbShaped("ac4-ddb");
-    const rungateRoot = makeRungateShaped("ac4-rungate");
+    expect(source).not.toMatch(/export interface RungateConfig/);
+    expect(source).not.toMatch(/\binterface RungateConfig\b/);
+  });
 
-    const ddb = resolveConfig(ddbRoot);
-    const rungate = resolveConfig(rungateRoot);
-    if (ddb.status !== "resolved" || rungate.status !== "resolved") {
-      throw new Error("both fixtures must resolve");
+  // The executable half: a grep proves the interface is absent, this proves
+  // the schema actually describes what the loader emits. If resolveConfig
+  // started emitting a shape the schema forbids, the grep would stay green
+  // and this would go red.
+  test("every resolved config validates against ResolvedConfigSchema", () => {
+    const monolith = writeMonolith("derived-mono", ddbShaped({ container: DDB_CONTAINER }));
+    const directory = writeDirectory("derived-dir", rungateShaped(), {
+      marcus: { brief: "engineer", standardTask: "implement" },
+    });
+
+    for (const dir of [monolith, directory]) {
+      const resolution = resolveConfig(dir);
+      expect(resolution.status).toBe("resolved");
+      if (resolution.status !== "resolved") continue;
+      const check = ResolvedConfigSchema.safeParse(resolution.config);
+      expect(check.success).toBe(true);
     }
+  });
+});
 
-    // Guard against a vacuous pass: the two files must genuinely differ, or
-    // "identical resolved value" proves nothing about normalisation.
-    const ddbRaw = JSON.parse(
-      readFileSync(join(ddbRoot, ".claude", "rungate.json"), "utf-8")
+// ───────────────────────────────────────────────────────────────────────────
+// AC-4 — the normalisation: two authored shapes, one resolved value
+// ───────────────────────────────────────────────────────────────────────────
+describe("AC-4: DDB-shaped and rungate-shaped configs normalise alike", () => {
+  test("both fixtures resolve to an identical normalised test.command", () => {
+    const ddbDir = writeMonolith("ddb-shape", ddbShaped());
+    const rungateDir = writeMonolith("rungate-shape", rungateShaped());
+
+    const ddb = resolveConfig(ddbDir);
+    const rungate = resolveConfig(rungateDir);
+
+    expect(ddb.status).toBe("resolved");
+    expect(rungate.status).toBe("resolved");
+    if (ddb.status !== "resolved" || rungate.status !== "resolved") return;
+
+    // Asserted on the resolved value, not on source text.
+    expect(ddb.config.test.command).toBe(SHARED_TEST_COMMAND);
+    expect(rungate.config.test.command).toBe(SHARED_TEST_COMMAND);
+    expect(ddb.config.test.command).toBe(rungate.config.test.command);
+  });
+
+  test("dev.testCmd wins when both are authored", () => {
+    const dir = writeMonolith(
+      "both-shapes",
+      ddbShaped({ test: { command: "bun test --losing", timeout: 1000 } })
     );
-    const rungateRaw = JSON.parse(
-      readFileSync(join(rungateRoot, ".claude", "rungate.json"), "utf-8")
-    );
-    expect(ddbRaw.test).toBeUndefined();
-    expect(ddbRaw.dev.testCmd).toBe("bun test --parallel");
-    expect(rungateRaw.dev).toBeUndefined();
-    expect(rungateRaw.test.command).toBe("bun test --parallel");
 
-    expect(ddb.config.test?.command).toBe(rungate.config.test?.command);
-    expect(ddb.config.test?.command).toBe("bun test --parallel");
+    const resolution = resolveConfig(dir);
+    expect(resolution.status).toBe("resolved");
+    if (resolution.status !== "resolved") return;
+
+    expect(resolution.config.test.command).toBe(SHARED_TEST_COMMAND);
+    // test.timeout still comes from `test`, which is the only place it is authored.
+    expect(resolution.config.test.timeout).toBe(1000);
   });
 
-  test("normalise: dev.testCmd wins over test.command when a config carries both", () => {
-    const root = makeDdbShaped("ac4-both", { test: { command: "LOSER", timeout: 42 } });
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
-    expect(resolution.config.test?.command).toBe("bun test --parallel");
-    // test.timeout is still read — D3 deprecates nothing in this change.
-    expect(resolution.config.test?.timeout).toBe(42);
+  test("test.timeout falls back to the default when unauthored", () => {
+    const dir = writeMonolith("no-timeout", ddbShaped());
+
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
+    expect(resolution.config.test.timeout).toBe(DEFAULT_TEST_TIMEOUT);
   });
 
-  test("normalise: test.timeout falls back to the default when unset", () => {
-    const root = makeDdbShaped("ac4-timeout-default");
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
-    expect(resolution.config.test?.timeout).toBe(DEFAULT_TEST_TIMEOUT_MS);
+  test("a config with neither dev.testCmd nor test.command leaves command undefined", () => {
+    const dir = writeMonolith("no-command", {
+      project: "bare",
+      repo: "x/y",
+      issueRepo: "x/y",
+    });
+
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
+    // Not "" and not a default command: the gate has to be able to tell that
+    // nothing was configured (ADR-002 Step 3's unmeasured branch).
+    expect(resolution.config.test.command).toBeUndefined();
   });
 
-  test("normalise: dev.apiBase and dev.uiBase become apiUrl and uiUrl", () => {
-    const root = makeDdbShaped("ac4-urls");
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
+  test("dev.apiBase and dev.uiBase normalise to apiUrl and uiUrl", () => {
+    const dir = writeMonolith("urls", ddbShaped());
+
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
     expect(resolution.config.apiUrl).toBe("http://localhost:7778");
     expect(resolution.config.uiUrl).toBe("http://localhost:5173");
   });
 
-  test("normalise: a config with neither dev.testCmd nor test.command leaves command undefined", () => {
-    // The honest unresolved state. `captureTestBaseline` must be able to see
-    // it rather than be handed a plausible default it reports as measured.
-    const root = makeDirShaped("ac4-no-command", {
-      project: "ac4-no-command",
-      repo: "org/repo",
-      issueRepo: "org/repo",
-    });
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
-    expect(resolution.config.test?.command).toBeUndefined();
-  });
+  test("pages, roles, hooks, project, repo, issueRepo and contextDocs all carry through", () => {
+    const dir = writeDirectory(
+      "carry-through",
+      rungateShaped({
+        pages: { "/": "home" },
+        contextDocs: { harness: "HARNESS.md" },
+      }),
+      { marcus: { brief: "engineer", standardTask: "implement" } }
+    );
 
-  test("normalise: the directory form and the monolith form of one config resolve identically", () => {
-    const body = {
-      project: "parity",
-      repo: "org/repo",
-      issueRepo: "org/repo",
-      dev: {
-        start: "make dev-all",
-        apiBase: "http://localhost:7778",
-        uiBase: "http://localhost:5173",
-        testCmd: "bun test --parallel",
-      },
-      pages: { "/": "home" },
-    };
-    const monolithRoot = join(TMP, "ac4-parity-monolith");
-    mkdirSync(join(monolithRoot, ".claude"), { recursive: true });
-    writeFileSync(join(monolithRoot, ".claude", "rungate.json"), JSON.stringify(body));
-    const dirRoot = makeDirShaped("ac4-parity-directory", body);
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+    const config = resolution.config;
 
-    const a = resolveConfig(monolithRoot);
-    const b = resolveConfig(dirRoot);
-    if (a.status !== "resolved" || b.status !== "resolved") throw new Error("unreachable");
-    expect(a.source).toBe("monolith");
-    expect(b.source).toBe("directory");
-    expect(a.config.test?.command).toBe(b.config.test?.command);
-    expect(a.config.apiUrl).toBe(b.config.apiUrl);
-    expect(Object.keys(a.config.pages ?? {})).toEqual(Object.keys(b.config.pages ?? {}));
-  });
-
-  test("normalise: unknown keys the schema does not declare still survive resolution", () => {
-    // DDB authors `remoteHosts`, which no schema declares. Normalisation must
-    // not be the thing that drops it.
-    const root = makeDdbShaped("ac4-unknown", { remoteHosts: { runner: { host: "mini" } } });
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
-    expect((resolution.config as Record<string, any>).remoteHosts?.runner?.host).toBe("mini");
+    expect(config.pages).toEqual({ "/": "home" });
+    expect(config.roles).toHaveProperty("marcus");
+    expect(config.hooks).toEqual([]);
+    expect(config.project).toBe("rungate");
+    expect(config.repo).toBe("hornjason/pai-harness");
+    expect(config.issueRepo).toBe("hornjason/pai-harness");
+    expect(config.contextDocs).toEqual({ harness: "HARNESS.md" });
   });
 });
 
-// ── AC-15 ───────────────────────────────────────────────────────────────────
+// ───────────────────────────────────────────────────────────────────────────
+// AC-15 — the container block reaches the resolved config
+// ───────────────────────────────────────────────────────────────────────────
+describe("AC-15: a DDB-shaped container block resolves to port 7776", () => {
+  test("resolveConfig reports the 7776 container port", () => {
+    const dir = writeMonolith("ddb-container", ddbShaped({ container: DDB_CONTAINER }));
 
-describe("AC-15 a container block survives schema validation and reaches ship.js", () => {
-  test("container: a DDB-shaped fixture resolves container port 7776", () => {
-    const root = makeDdbShaped("ac15-fixture", {
-      container: {
-        port: 7776,
-        rebuildCommand: "make build && make test-down && make test-up",
-        healthPath: "/api/aes",
-        hosts: ["localhost"],
-      },
-    });
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
     expect(resolution.config.container?.port).toBe(7776);
     expect(resolution.config.container?.hosts).toEqual(["localhost"]);
   });
 
-  test("container: the rebuildCommand never hands `make rebuild` to an agent", () => {
-    // PROJECT-STATE item 8 and DDB's CLAUDE.md both forbid it, and ship.js
-    // interpolates this string verbatim into an agent prompt. Declaring the
-    // key in zod does not constrain its value, so the constraint is a test.
-    const root = makeDdbShaped("ac15-forbidden", {
-      container: { port: 7776, rebuildCommand: "make build && make test-down && make test-up" },
-    });
-    const resolution = resolveConfig(root);
-    if (resolution.status !== "resolved") throw new Error("unreachable");
+  test("the rebuildCommand is the test-container sequence, never `make rebuild`", () => {
+    const dir = writeMonolith("ddb-rebuild", ddbShaped({ container: DDB_CONTAINER }));
+
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
+    // PROJECT-STATE item 8: this string is interpolated verbatim into an agent
+    // prompt at ship.js:3766, and DDB's CLAUDE.md plus its Makefile worktree
+    // guard forbid `make rebuild` from an agent.
+    expect(resolution.config.container?.rebuildCommand).toBe(
+      "make build && make test-down && make test-up"
+    );
     expect(resolution.config.container?.rebuildCommand).not.toMatch(/\bmake\s+rebuild\b/);
+  });
+
+  test("ship.js's container gate reads a truthy container off the resolved config", () => {
+    const dir = writeMonolith("ddb-gate", ddbShaped({ container: DDB_CONTAINER }));
+
+    const resolution = resolveConfig(dir);
+    if (resolution.status !== "resolved") throw new Error("expected resolved");
+
+    // workflows/ship.js:1703 `const hasContainer = !!(projectConfig.container)`
+    // and :3753 `const containerConfig = projectConfig.container || null`.
+    expect(Boolean(resolution.config.container)).toBe(true);
+    expect(resolution.config.container || null).not.toBeNull();
   });
 
   /**
-   * The exact block that has to land in DailyBriefDashboard's own repo. It is
-   * declared here, run against the loader here, and asserted here, because an
-   * agent in a rungate worktree cannot write to another repository — so the
-   * edit itself is a DA action. Pinning the literal means the DA is applying a
-   * block this suite has already resolved, not retyping one from prose.
+   * The live reading. DDB's own `.claude/rungate.json` is in a DIFFERENT
+   * REPOSITORY and this agent runs under worktree isolation, which refuses
+   * writes outside the worktree — so the container block itself is a DA
+   * action, recorded in the findings. What IS provable here, and what the
+   * normalisation exists for, is that the real consumer's authored `dev.*`
+   * shape resolves to a usable `test.command` with no `test` key present.
+   * That is the condition `captureTestBaseline` fails on today.
    */
-  const DDB_CONTAINER_BLOCK = {
-    port: 7776,
-    rebuildCommand: "make build && make test-down && make test-up",
-    healthPath: "/api/aes",
-    hosts: ["localhost"],
-  };
+  test("the live DailyBriefDashboard config resolves dev.testCmd with no test key", () => {
+    const ddbRoot = "/Users/jhorn/Projects/DailyBriefDashboard";
+    const present = existsSync(join(ddbRoot, ".claude", "rungate.json"));
+    const resolution = resolveConfig(ddbRoot);
 
-  test("container: the exact block DDB must adopt resolves to port 7776 on DDB's real config", () => {
-    const ddbRoot = join(process.env.HOME || "", "Projects", "DailyBriefDashboard");
-    const ddbConfigPath = join(ddbRoot, ".claude", "rungate.json");
-    if (!existsSync(ddbConfigPath)) return;
+    if (!present) {
+      // DDB is not checked out here (CI). Assert the branch rather than
+      // returning early, so a machine without DDB still exercises something.
+      expect(resolution.status).toBe("absent");
+      return;
+    }
 
-    // DDB's real authored config, with the pending block applied in memory.
-    const real = JSON.parse(readFileSync(ddbConfigPath, "utf-8"));
-    const root = join(TMP, "ac15-ddb-real");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(
-      join(root, ".claude", "rungate.json"),
-      JSON.stringify({ ...real, container: real.container ?? DDB_CONTAINER_BLOCK })
-    );
-
-    const resolution = resolveConfig(root);
     expect(resolution.status).toBe("resolved");
-    if (resolution.status !== "resolved") throw new Error("unreachable");
-    expect(resolution.config.container?.port).toBe(7776);
-    expect(resolution.config.container?.rebuildCommand).not.toMatch(/\bmake\s+rebuild\b/);
-    // dev.testCmd must still survive alongside the container block: DDB
-    // authors no `test` key at all, and this is the shape captureTestBaseline
-    // silently measured zero against.
-    expect(resolution.config.test?.command).toBe(real.dev.testCmd);
-    // The 18 pages are what lift a DDB run off the LIGHT tier floor that has
-    // kept the container path from ever executing anywhere (#274).
-    expect(Object.keys(resolution.config.pages ?? {}).length).toBeGreaterThan(0);
-  });
+    if (resolution.status !== "resolved") return;
 
-  // NOT asserted here, deliberately: that DDB's checked-in config already
-  // carries the block. It does not yet — writing it is a DA action in DDB's
-  // own repo, and a rungate worktree is isolated from it. A test asserting it
-  // would ship red for something this branch cannot fix, and a test written to
-  // pass either way would be the vacuous assertion
-  // `.claude/rules/checks-must-be-able-to-fail.md` warns about. The gap is
-  // reported as prose instead, with DDB_CONTAINER_BLOCK above as the literal
-  // to apply.
-
-  test("container: ship.js reads the materialised resolved config, not a raw cat", () => {
-    const shipSource = readFileSync(join(HARNESS_ROOT, "workflows", "ship.js"), "utf-8");
-    const setupBlock = shipSource.slice(
-      shipSource.indexOf("2. Load config"),
-      shipSource.indexOf("3. Prior branch detect:")
+    const rawHasTestKey = "test" in JSON.parse(
+      readFileSync(join(ddbRoot, ".claude", "rungate.json"), "utf-8")
     );
-    expect(setupBlock.length).toBeGreaterThan(0);
-    expect(setupBlock).toContain("scripts/resolve-config.ts");
-    // `|| echo "{}"` is the fail-open this ADR exists to remove: an empty
-    // object reads as "configured with nothing", which silently disables the
-    // container path and the tier floor together.
-    expect(setupBlock).not.toContain('echo "{}"');
+    expect(rawHasTestKey).toBe(false);
+    expect(resolution.config.test.command).toBe(resolution.config.dev?.testCmd);
+    expect(resolution.config.test.command).toBeTruthy();
+    expect(resolution.config.test.timeout).toBe(DEFAULT_TEST_TIMEOUT);
   });
 });

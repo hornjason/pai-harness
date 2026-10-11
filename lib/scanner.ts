@@ -10,7 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
-import { resolveConfig, type ConfigResolution } from "./config-loader";
+import { resolveConfig } from "./config-loader";
 import type {
   ProjectScan,
   ProjectType,
@@ -158,11 +158,12 @@ function scanSpecs(root: string): SpecEntry[] {
 
 function detectConsumers(root: string): string[] {
   // First check the harness config (.claude/rungate/ directory, or the
-  // .claude/rungate.json monolith as fallback) — #70
-  // Branch on the status rather than optional-chaining the resolution: an
-  // absent resolution is truthy and has no `.consumers`, so `harness?.consumers`
-  // would not compile. That is the point of the union (ADR-002 D2(a)).
-  const resolution = resolveHarnessConfig(root);
+  // .claude/rungate.json monolith as fallback) — #70.
+  //
+  // Branching on `status` rather than optional-chaining: `{status:"absent"}`
+  // is truthy, so `resolution?.consumers` would read a resolution object as a
+  // config and fall through to the src/ scan without saying so (ADR-002 D2a).
+  const resolution = resolveConfig(root);
   if (resolution.status === "resolved") {
     const consumers = resolution.config.consumers;
     if (Array.isArray(consumers) && consumers.length > 0) return consumers;
@@ -426,18 +427,21 @@ function scanMakeTargets(root: string): string {
  * Resolves the harness config via lib/config-loader — `.claude/rungate/`
  * directory form first, `.claude/rungate.json` monolith as fallback (#70).
  *
- * This file was counted as migrated to the central loader and was not: the
- * `try/catch` that used to live here swallowed TWO different throws — the
- * loader's deliberate malformed/orphan refusal AND the ordinary "no config
- * found" — and returned `null` for both. "Not configured" and "configured
- * wrong" arrived at the caller as the same value, which is the fail-open
- * shape `.claude/rules/checks-must-be-able-to-fail.md` opens with.
+ * Returns null for ABSENCE ONLY. A config that exists but cannot be read —
+ * malformed JSON, or an orphaned directory fragment — throws, and the throw
+ * propagates out of `scanProject`.
  *
- * `resolveConfig` splits them: absence is a reported status, brokenness still
- * throws. ADR-002 Step 3.
+ * The `try { ... } catch { return null }` that used to live here is the
+ * fail-open named in `.claude/rules/checks-must-be-able-to-fail.md`. It
+ * swallowed two distinct outcomes: the deliberate orphan/malformed throw
+ * ADR-001 D2 exists to raise, AND the ordinary "no config found" throw.
+ * Both arrived as `null`, so `harness?.consumers` could not tell an
+ * unconfigured project from a broken one (ADR-002 Step 3).
  */
-export function resolveHarnessConfig(root: string): ConfigResolution {
-  return resolveConfig(root);
+function resolveHarnessConfig(root: string): Record<string, any> | null {
+  const resolution = resolveConfig(root);
+  if (resolution.status === "absent") return null;
+  return resolution.config as unknown as Record<string, any>;
 }
 
 // ── Code structure scanning (dirs, modules, routes) ────────────
@@ -661,15 +665,7 @@ export function scanProject(root: string): ProjectScan {
     } catch {}
   }
 
-  // A broken config now reaches the caller as a throw. It used to arrive as
-  // `null`, indistinguishable from an unconfigured project, and the scan went
-  // on to report a project with no roles, no consumers and no prompt
-  // keywords — a plausible-looking result built from a config nobody read.
-  const harnessResolution = resolveHarnessConfig(root);
-  const harness =
-    harnessResolution.status === "resolved"
-      ? (harnessResolution.config as unknown as Record<string, any>)
-      : null;
+  const harness = resolveHarnessConfig(root);
   const categories = buildCategories();
   const { deps, devDeps } = countDeps(root);
 
