@@ -321,7 +321,7 @@ describe("#224: the suite result reaches state through the recorder", () => {
     // below and cannot be stubbed into an extracted block, so assert the
     // refusal comes first in the file.
     const refusal = shipSource.indexOf("SUITE_MEASUREMENT_STALE");
-    const prStep = shipSource.indexOf("record-env-and-pr");
+    const prStep = shipSource.indexOf("label: 'open-pr'");
     expect(refusal, "ship.js has no SUITE_MEASUREMENT_STALE refusal").toBeGreaterThan(-1);
     expect(prStep).toBeGreaterThan(-1);
     expect(refusal, "the suite staleness check happens after the PR is opened").toBeLessThan(prStep);

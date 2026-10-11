@@ -54,8 +54,10 @@ const SHIP_SRC = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
  * The PR step, start and end. Declared as literals rather than regex-built so
  * that moving them aborts this file instead of quietly mutating nothing.
  */
-const PR_STEP_START = "  prStep = await timedAgent(`";
-const PR_STEP_END = "\n  } })\n";
+// Unindented since #254 hoisted the step out of the container conditional —
+// it is a top-level statement now, not the body of an else arm.
+const PR_STEP_START = "prStep = await timedAgent(`";
+const PR_STEP_END = "\n} })\n";
 /** The comment the deletion deliberately LEAVES BEHIND — the old PO-3/PO-4 anchor. */
 const PR_STEP_COMMENT = "create-pr";
 /** The command the PR step actually runs. */
@@ -165,7 +167,7 @@ export function prStepDeletedMutant(src: string): string {
   if (end < 0) {
     throw new Error("could not build the mutant: the PR step's terminator was not found after its signature");
   }
-  return `${src.slice(0, start)}  prStep = null // MUTANT: the PR step is gone, its comment is not\n${src.slice(end + PR_STEP_END.length)}`;
+  return `${src.slice(0, start)}prStep = null // MUTANT: the PR step is gone, its comment is not\n${src.slice(end + PR_STEP_END.length)}`;
 }
 
 /**

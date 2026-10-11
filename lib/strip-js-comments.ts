@@ -52,7 +52,31 @@ const REGEX_ALLOWED_AFTER_WORD = new Set([
 
 type Ctx = { kind: "code" | "template"; depth: number };
 
-export function stripJsComments(src: string): string {
+export interface StripOptions {
+  /**
+   * Also blank the CONTENTS of every string, template and regex literal,
+   * keeping their delimiters and every offset (#254).
+   *
+   * Off by default, because the token a caller is looking for usually lives
+   * inside a literal: `workflows/ship.js` is mostly prompts, and `pr-upsert` is
+   * a command inside one.
+   *
+   * On, the result is the view a BRACE MATCHER may count over, and nothing
+   * else. `${WORK_DIR}`, `{rebuild:'SKIP'}` and a JSON example in a prompt all
+   * carry braces that are text, and a matcher run over the comment-stripped
+   * copy closes `if (containerConfig) {` in the middle of a prompt — which is
+   * how a call site trapped inside an arm measures as outside it.
+   *
+   * The braces of a `${ … }` interpolation go with the literal; the CODE inside
+   * one is left alone, because its braces are necessarily balanced and so
+   * cannot move a match. Offsets are preserved exactly as without the option,
+   * which is what makes one view's index comparable to the other's range.
+   */
+  blankLiterals?: boolean;
+}
+
+export function stripJsComments(src: string, opts: StripOptions = {}): string {
+  const blankLiterals = opts.blankLiterals === true;
   const out = src.split("");
   const n = src.length;
   const stack: Ctx[] = [{ kind: "code", depth: 0 }];
@@ -72,14 +96,18 @@ export function stripJsComments(src: string): string {
     const d = i + 1 < n ? src[i + 1] : "";
 
     if (top.kind === "template") {
-      if (c === "\\") { i += 2; continue; }
+      if (c === "\\") { if (blankLiterals) blank(i, i + 2); i += 2; continue; }
       if (c === "`") { stack.pop(); prevSig = "`"; prevWord = ""; i++; continue; }
       if (c === "$" && d === "{") {
+        // The interpolation's own braces belong to the literal; the code
+        // between them does not, and is left intact.
+        if (blankLiterals) blank(i, i + 2);
         stack.push({ kind: "code", depth: 0 });
         prevSig = "{"; prevWord = "";
         i += 2;
         continue;
       }
+      if (blankLiterals) blank(i, i + 1);
       i++;
       continue;
     }
@@ -102,14 +130,19 @@ export function stripJsComments(src: string): string {
     }
     if (c === "'" || c === '"') {
       let j = i + 1;
+      let closed = false;
       while (j < n) {
         if (src[j] === "\\") { j += 2; continue; }
-        if (src[j] === c) { j++; break; }
+        if (src[j] === c) { j++; closed = true; break; }
         // An unterminated string would otherwise swallow the rest of the file
         // and silently disable the whole stripper — a fail-open.
         if (src[j] === "\n") break;
         j++;
       }
+      // Contents, not delimiters. The quotes stay so the surrounding code still
+      // reads as code, and an unterminated string blanks only as far as the
+      // scanner actually got.
+      if (blankLiterals) blank(i + 1, closed ? j - 1 : j);
       prevSig = c; prevWord = "";
       i = j;
       continue;
@@ -122,7 +155,9 @@ export function stripJsComments(src: string): string {
     if (c === "{") { top.depth++; prevSig = "{"; prevWord = ""; i++; continue; }
     if (c === "}") {
       if (top.depth === 0 && stack.length > 1) {
-        // Closes a `${ … }` interpolation; the enclosing template resumes.
+        // Closes a `${ … }` interpolation; the enclosing template resumes. It
+        // is the literal's brace, so it goes wherever its `${` went.
+        if (blankLiterals) blank(i, i + 1);
         stack.pop();
       } else {
         top.depth--;
@@ -139,17 +174,21 @@ export function stripJsComments(src: string): string {
         let j = i + 1;
         let inClass = false;
         let closed = false;
+        let endSlash = -1;
         while (j < n) {
           const ch = src[j];
           if (ch === "\\") { j += 2; continue; }
           if (ch === "\n") break;
           if (inClass) { if (ch === "]") inClass = false; }
           else if (ch === "[") inClass = true;
-          else if (ch === "/") { j++; closed = true; break; }
+          else if (ch === "/") { endSlash = j; j++; closed = true; break; }
           j++;
         }
         if (closed) {
           while (j < n && /[a-z]/i.test(src[j])) j++;
+          // A `{` in a pattern is a quantifier or an escaped brace, never a
+          // block — same reason the string contents go.
+          if (blankLiterals) blank(i + 1, endSlash);
           prevSig = "/"; prevWord = "";
           i = j;
           continue;
