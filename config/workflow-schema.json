@@ -195,8 +195,6 @@
         }
       }
     },
-
-    "daDirectEdits": { "type": "integer", "default": 0, "description": "Count of DA direct Edit/Write calls on project source files (not PAI config)" },
     "iterationCount": { "type": "integer", "default": 0 },
     "startTs": { "type": "string", "format": "date-time" },
     "updatedTs": { "type": "string", "format": "date-time" },
