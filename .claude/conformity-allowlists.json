@@ -1,6 +1,6 @@
 {
   "_comment": "Rungate's own conformity exemptions (#80). Each list is a RATCHET, not a mute: adding an entry that is not a real current violation fails, and an entry that stops being a violation must be removed or the build fails. Shrinking both lists to empty is the work. Consumers get their own file or none at all - these never travel.",
-  "_untestedSpecs": "DRIFT-2 - testable specs with no test referencing them by name. Over half the testable surface. CONFIG-DIRECTORY-STRUCTURE-SPEC left this list in #274: test/consumer-ceremony-fixture.test.ts parses its Consumer Config Shape table and asserts the on-disk fixture conforms, and re-checks each documented fact against the source it describes, so the spec is now read by something that can go red. 7 entries down to 6. Delisting was not optional - the ratchet refuses a stale entry, so leaving it would have failed the build.",
+  "_untestedSpecs": "DRIFT-2 - testable specs with no test referencing them by name. Over half the testable surface. CONFIG-DIRECTORY-STRUCTURE-SPEC left this list in #274: test/consumer-ceremony-fixture.test.ts parses its Consumer Config Shape table and checks the on-disk fixture against the keys the table marks required, so the spec is now read by a test rather than only by people. 7 -> 6.",
   "untestedSpecs": [
     "SESSION-LIFECYCLE-SPEC.md",
     "harness-automation-matrix.md",

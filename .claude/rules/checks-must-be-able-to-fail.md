@@ -264,120 +264,85 @@ evidence for them. None of the eleven mutations is left in the tree; all were
 run and reverted, and the two counted over 201 tests were re-measured after the
 write-back case was added.
 
-## Observe the subsystem, not the flag (#274)
+### When the fix is a VALUE and the proof has to be the subsystems (#274)
 
-When the defect is "a value came out wrong", the obvious test reads the value
-back. That test is almost always asserting the thing the fixture was set up to
-produce.
+#215 added a tier floor and proved it resolves STANDARD for a project that
+declares pages. That is a correct proof of the wrong claim. Nobody is harmed by
+the string `"LIGHT"`; they are harmed because the scope gate, Quinn local,
+container verify and prove do not run and the run still reports DONE. A suite
+that only reads the resolved tier is asserting the value the test itself set up
+the inputs to produce.
 
-#215 is the worked example of the mistake. A UI project whose issue was sized
-XS resolved to `LIGHT`, so it got no scope gate, no Quinn local, no container
-verify and no prove — and still reported DONE. #215 added a floor and proved
-the floor: given a project that declares pages, the tier resolves to
-`STANDARD`. Correct, and a proof of the wrong claim. **Nobody is harmed by the
-string `LIGHT`.** They are harmed because four subsystems did not run.
+So #274 watches the subsystems EXECUTE, each through its own output —
+`scopeRan`, the `quinn-local-1` agent label, the `container-rebuild`,
+`env-check` and `quinn-container` labels, the container-declined arm's skip
+log, and the prove workflow's `scriptPath`. Nothing in the suite reads
+`ceremonyTier`, and that prohibition is COUNTED by a scanner rather than left
+as a comment.
 
-So the consumer suite — `test/consumer-tier-gated-subsystems.test.ts` — never
-mentions the tier in an assertion. Each subsystem is watched through output
-only it produces:
+Three properties this example adds that the earlier ones did not need:
 
-| Subsystem | What is read |
-|---|---|
-| scope gate | the recorded `runGateWithHeal('scope', 'Scope')` invocation, gate name and phase |
-| Quinn local | the `quinn-local-1` agent label, with the phase and role ship.js recorded for it |
-| container verify | the `container-rebuild`, `env-check` and `quinn-container` labels, and the `Container env:` line naming the fixture's host |
-| the container-less arm | the reason it gives, which a tier-gated-out run does not give |
-| prove | the `scriptPath` of the workflow it dispatched |
-| remote pre-flight | the `PRE-FLIGHT:` line, at both resolutions — the NON-tier-gated control |
+- **The fixture needs every input the subsystem needs, not just the one the
+  issue is about.** Declaring `pages` floors the tier, and a fixture that
+  stopped there would satisfy the tier claim while SILENTLY skipping container
+  verify (which also needs `containerConfig`) and prove (which also needs
+  `hasUIACs`). Three of five running looks exactly like five of five when the
+  only thing asserted is that the ones you watched ran.
+- **The run must start from the input that would skip.** Every block is handed
+  the fixture's own LIGHT discovery, not a STANDARD the test typed in.
+  Hardcoding it to `"STANDARD"` turns 1 of 27 red — and without that case the
+  floor would be irrelevant to every observation in the file while all of them
+  stayed green.
+- **An observation of a subsystem running is only evidence if the same
+  observation has been seen to go red when the subsystem is skipped.**
 
-Each block is sliced out of `workflows/ship.js` by an exactly-once anchor and
-EXECUTED through `new Function`; the harness supplies only the names ship.js
-expects from its sandbox. Nothing matches source text for the behaviour it
-claims.
+`test/consumer-tier-downgrade-mutation.test.ts` is the worked example for the
+third. The pre-#215 defect is REBUILT — the `CEREMONY-TIER-FLOOR` block, the
+floor call and the raise removed from a copy of `workflows/ship.js`, leaving
+`hasUI` with nothing but its one-way downgrade — and a five-observation suite
+is SPAWNED twice, with one argv, differing only in `SHIP_UNDER_TEST`. Four
+properties make it work, all asserted by the test rather than left as
+conventions:
 
-### What the pattern buys, and the new way it can go wrong
+- **Green and red are compared by NAME.** "1 of 5" is satisfied by any one of
+  the five. Only `remote pre-flight runs` means what this claims, and it means
+  it because the pre-flight is the one subsystem in the set that is NOT
+  tier-gated — it runs ~450 lines before `ceremonyTier` is first read. It is
+  the positive control: a suite that failed to resolve its imports leaves 0 of
+  5, and a count alone cannot tell those apart.
+- **`ran` is read before any verdict.** Both spawns assert five test cases came
+  back from the junit report first. A suite that never loaded reports no
+  failures, which is indistinguishable from a suite that passed.
+- **The mutation is local.** All ten extracted ship.js sites are compared
+  byte-for-byte between the real source and the mutant, so the four reds are
+  caused by the tier the chain resolved and not by a mutant that damaged the
+  blocks it is measured through.
+- **Each removal site is located exactly once, and the builder throws when one
+  moves.** A second copy of the downgrade would survive the removal and leave
+  the mutant behaving like the real source.
 
-Five observations of things *happening* would all stay green under a harness
-that resolved `STANDARD` for every input — including inputs that must stay
-`LIGHT`. **An observation of a subsystem running is only evidence if the same
-observation has been seen to go red when the subsystem is skipped.** Four
-properties carry that, all asserted rather than left as conventions:
+One counting decision is part of the proof rather than a detail. `ship.js` has
+five tier-gated CONDITIONS but four tier-gated STATEMENTS — container verify
+and the container-declined arm are two arms of one `if`/`else if`. They are one
+observation, which asserts both arms. Splitting them would report five reds for
+one mutation applied to one branch point, and a mutation count that overstates
+what it measured is the same defect as a check that cannot fail, pointing the
+other way.
 
-- **Every "it ran" is paired with an "it did not run"** produced by running the
-  *same block* over a different config, not by a different code path. The pair
-  is also the vacuity guard: a harness that silently failed to execute the
-  block records nothing in both runs, and the not-ran half would pass for a
-  reason unrelated to the tier.
-- **Two reasons for the same silence are kept apart.** The container-less arm
-  names the declined config; a run the tier gated out says nothing at all. Had
-  only the first been asserted, the test would prove the string exists in
-  ship.js.
-- **One observation must not be tier-gated.** The remote pre-flight sits ~470
-  lines before `ceremonyTier` is first read, so it cannot be. It is the
-  positive control: a suite that failed to load its imports is green nowhere,
-  and a count of reds alone cannot tell "the mutation worked" from "nothing
-  ran".
-- **The prohibition is counted, not stated.** `scanAssertions` walks the
-  suite's own source and counts assertions naming the tier field; the count
-  must be 0, the total must be over 40 so the scan is not reading an empty
-  file, and a two-assertion control — one of which does read the tier — proves
-  the scanner can see one.
-
-### A scanner that reads its own file has to tell prose from code
-
-The first draft of `scanAssertions` matched `expect(` with a regex and counted
-the occurrences written inside its own doc comments, then died balancing
-parentheses across an English sentence with an apostrophe in it. Replacing it
-with a masker that blanks comments, strings, templates and regex literals
-fixed it, and the boundary is now two tests: an `expect(` in a comment or in a
-string is not an assertion, and a regex literal holding a quote does not
-swallow the rest of the file.
-
-The limit of that masker is worth writing down, because finding it cost an
-hour. **A hand-rolled JavaScript tokeniser is itself a detector narrower than
-what it detects.** Run over `workflows/ship.js` — 5,000 lines of nested
-template literals and prompts — the same masker silently lost its place inside
-a template and then reported a parse error 3,000 lines later. It is trustworthy
-over the suite it is tested against and nowhere else. So the cross-file scan in
-`test/consumer-no-rebuild-delegation.test.ts` does not parse at all: it anchors
-on an execution construct immediately applied (`execSync(`, the tagged `` Bun.$` ``)
-and reads a short fixed window after it. The window can over-report, which is
-loud; a tokeniser that mis-parses under-reports, which is not.
-
-That file also demonstrates the only honest way for a scanner to hold its own
-positive controls while being one of the files it scans: **assemble them from
-fragments**, so the construct and the forbidden command never sit next to each
-other in the file's text. Writing one out in prose makes the scan report the
-scanner — which it did, twice, while this was being written. Both times the
-detector was right and the sentence was rewritten.
-
-### What was broken to prove it
-
-Run and counted rather than asserted. `workflows/ship.js` was never modified:
-each ship.js mutation is a COPY, handed to the suite through `SHIP_UNDER_TEST`,
-which is also why the suite reads that variable.
-
-Over `test/consumer-tier-gated-subsystems.test.ts` (31 tests):
+What was broken to prove it, run and counted rather than asserted, over the
+five files #274 adds (113 tests):
 
 | Mutation | Red |
 |---|---|
-| `const hasUI = false` — the pre-#215 unconditional downgrade, restored in a copy | 12 of 31 — every tier-gated observation in all five groups, plus the pre-flight PREMISE case, which correctly stops holding because both configs now resolve the same way. **All four pre-flight OBSERVATIONS stay green**, which is the asymmetry the control exists to show |
-| the scope gate invoked as `'scopeX'` | 1 of 31 |
-| the prove dispatch pointed at `workflows/prove-x.js` | 1 of 31 |
-| the container rebuild label renamed `container-rebuild-x` | 2 of 31 — the label pair and the prompt-reaches-a-recorder case |
-| an `expect()` reading the tier field planted in the suite | 2 of 32 — the scan, and the planted test itself |
-| `maskNonCode` short-circuited to `return src` | 3 of 31 — the scan, its vacuity guard, and the prose-is-not-an-assertion boundary |
-| the downgrade rewritten as `if (ceremonyTier !== 'LIGHT')` instead | the whole file ABORTS — the Quinn-local anchor now matches twice and the extractor refuses with "matched 2 times, so this harness proves nothing". A harness that had quietly sliced the first of the two would have executed a region nobody chose |
+| the unconditional `hasUI` downgrade restored | the mutation the file ships, measured rather than claimed: the spawned suite returns 1 pass / 4 fail of 5, the single green being `remote pre-flight runs` |
+| the floor's comparison short-circuited to `return tier` in `workflows/ship.js` | 15 of 113 — and the pre-flight's own emission count stays GREEN while the "two runs resolved different tiers" case goes red, which is the asymmetry in one measurement |
+| `buildRestoredDowngradeMutant` short-circuited to `return src` | 6 of 13 in that file |
+| the downgrade site renamed to `!hasUIProject` in `workflows/ship.js` | the whole file ABORTS in `beforeAll` — 0 of 13 run |
+| `FIXTURE_TIER` hardcoded to `"STANDARD"` in the helper | 1 of 27 — the premise case |
+| `prevalidateEvidence` short-circuited to `return []` | 5 of 22 |
+| `grepNoMatchIsResult` short-circuited to `return false` — #271 reverted | 5 of 22 |
+| `rebuildExecutions` short-circuited to `return []` | 2 of 30 — only the positive controls, which is why they exist |
+| `stripComments` short-circuited to `return source` | 1 of 30 |
 
-Over `test/consumer-no-rebuild-delegation.test.ts` (16 tests):
-
-| Mutation | Red |
-|---|---|
-| a real execution of the command planted in a scanned sibling file | 1 of 16 |
-| a rebuild imperative planted in a scanned file's comment | 2 of 16 — the scan and the SC-6 restatement |
-| `scanSource` short-circuited to `return []` | 6 of 16 — all four positive controls, the planted-tree case, and the measurement against ship.js |
-| `discoverAddedFiles` short-circuited to `return []` | 4 of 16 — the membership check, both anti-vacuity cases, and the planted-tree case. The main scan stays GREEN, which is exactly why the other four exist: zero violations over zero files is the quietest pass there is |
-
-None of the eleven is left in the tree; all were run and reverted, and
-`git status` was checked afterwards to confirm `workflows/ship.js` is
-untouched.
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+and `lib/evidence-prevalidator.ts` were confirmed byte-identical afterwards.

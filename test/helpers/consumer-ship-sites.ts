@@ -1,28 +1,31 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { loadRungateConfig } from "../../lib/config-loader";
+
 /**
  * #274 — the consumer fixture, and the `workflows/ship.js` sites it drives.
  *
- * rungate's own `.claude/rungate.json` declares `pages: {}`, no `container`
- * and no `remoteHosts`, so ship.js rewrites every self-run to LIGHT and five
- * tier-gated subsystems have never executed in this repo's history. A real
- * consumer (DailyBriefDashboard — 18 pages, a container on the Mac mini, a
- * remote host entry) differs in exactly those facts and takes the other branch
- * at all five sites, plus the remote pre-flight which is not tier-gated at all.
+ * rungate's own config declares `pages: {}`, no `container` and no
+ * `remoteHosts`, so the CLI downgrade in ship.js rewrites every self-run to
+ * LIGHT and five tier-gated subsystems have never executed in this repo's
+ * history. A real consumer (DailyBriefDashboard — 18 pages, a container on the
+ * Mac mini, a remote runner) differs in exactly those facts and takes the other
+ * branch at every one of them.
  *
- * This module owns the EXTRACTION HARNESS; the assertions live in
- * `test/consumer-tier-gated-subsystems.test.ts`. The split is deliberate: the
- * test file is scanned for assertions that read the ceremony tier back (there
- * must be none), and the token has to live somewhere for the scanner to look
- * for it. Keeping it here keeps that scan from refuting itself.
+ * This module owns the extraction harness and the fixture READER; the
+ * assertions live in `test/consumer-tier-gated-subsystems.test.ts`. The split
+ * is deliberate: the test file is scanned for assertions that read the ceremony
+ * tier back (there must be none), and the token has to live somewhere for the
+ * scanner to look for it. Keeping it here keeps that scan from refuting itself.
  *
- * It does NOT own the consumer's config. That is read from
- * `test/fixtures/consumer-ui-project/.claude/rungate.json` — one fact in one
- * place. A hardcoded copy here is how run wf_536df065-969 ended up with two
- * worktrees authoring the same fixture with different content, and it would
- * also mean the thing every tier-gated assertion runs against is not the thing
- * `lib/config-loader.ts` is proven to load.
+ * The fixture itself is NOT written here. It is loaded from
+ * `test/fixtures/consumer-ui-project/.claude/rungate.json` through
+ * `lib/config-loader.ts`, the loader ship.js's setup phase uses. Run
+ * `wf_536df065-969` had two worktrees independently typing a consumer config
+ * into TypeScript with different contents; one fact belongs in one place, and
+ * the on-disk file is the one `test/consumer-ceremony-fixture.test.ts` already
+ * validates.
  *
  * Every block below is SLICED OUT OF ship.js AND EXECUTED. Nothing matches
  * source text for the behaviour it claims — `.claude/rules/checks-must-be-able-to-fail.md`
@@ -34,9 +37,8 @@ import { join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..", "..");
 const SHIP = join(REPO_ROOT, "workflows", "ship.js");
-const shipSource = readFileSync(SHIP, "utf-8");
-
 const FIXTURE_ROOT = join(REPO_ROOT, "test", "fixtures", "consumer-ui-project");
+const shipSource = readFileSync(SHIP, "utf-8");
 
 // ── extraction ───────────────────────────────────────────────
 
@@ -82,7 +84,7 @@ const TIER_CHAIN = region(
   "the config-to-ceremony-tier chain",
 );
 
-/** `skipScope`, the gate call, the verdict and its log. */
+/** `skipScope`, the scope-verdict block, the gate call, the verdict and its log. */
 const SCOPE_BLOCK = region(
   /^const skipScope = discovery\.ceremonyTier === 'LIGHT'$/m,
   /^log\(`Scope: \$\{scopeVerdict\}`\)$/m,
@@ -95,7 +97,7 @@ const QUINN_LOCAL_BLOCK = region(
   // Anchored on the shape of the else arm, not on what it says. The text of
   // that log line is asserted by RUNNING the block; an anchor spelling it out
   // would turn a changed message into "could not locate", which is a different
-  // outcome from the assertion this file actually makes.
+  // outcome from the assertion the test file actually makes.
   /^\} else \{\n {2}log\('Quinn local: .*'\)\n\}$/m,
   "the Quinn local block",
 );
@@ -107,19 +109,19 @@ const QUINN_CONTAINER_DECLS = region(
   "the container Quinn declarations",
 );
 
-/** The container config read, which the container-less cases turn off. */
+/** The container config read. */
 const CONTAINER_CONFIG_DECL = one(
   shipSource,
   /^const containerConfig = projectConfig\.container \|\| null$/m,
   "the container config declaration",
 ).text;
 
-/** Both arms of the container-verify statement. */
+/** Both arms of the container-verify statement, function wrapper included. */
 const CONTAINER_BLOCK = region(
   /^async function runContainerVerify\(\) \{$/m,
   // Same reason as above: the end anchor is the else-if arm and the two braces
-  // that close it and the function, not the skip message inside it. The skip
-  // message is asserted by running the block.
+  // that close it and the function, not the skip message inside it. The test
+  // asserts that message by running the block.
   /^\} else if \(discovery\.ceremonyTier !== 'LIGHT'\) \{\n[\s\S]*?\n\}\n\}$/m,
   "the container verify function",
 );
@@ -135,8 +137,9 @@ const PROVE_BLOCK = region(
  * The remote pre-flight.
  *
  * It sits ~450 lines before `discovery.ceremonyTier` is first read, and that
- * asymmetry is load-bearing: this one is NOT tier-gated, so it is the one
- * observation that must survive restoring the unconditional LIGHT downgrade.
+ * asymmetry is why it is observed separately: this one is NOT tier-gated, so
+ * it is the one observation that must survive restoring the unconditional
+ * LIGHT downgrade.
  */
 const PREFLIGHT_BLOCK = one(
   shipSource,
@@ -145,10 +148,10 @@ const PREFLIGHT_BLOCK = one(
 ).text;
 
 /**
- * ship.js's own `safeSSHCommand`, extracted from the SECURITY-HELPERS block
- * rather than stubbed — the pre-flight filters out any host it refuses, so a
- * stub that always returned a command would make the fixture's host reach the
- * agent through a door the real run keeps shut.
+ * ship.js's own `shellQuote` and `safeSSHCommand`, extracted from the
+ * SECURITY-HELPERS block rather than stubbed — the pre-flight filters out any
+ * host it refuses, so a stub that always returned a command would make the
+ * fixture's host reach the agent through a door the real run keeps shut.
  */
 const SECURITY_HELPERS = region(
   /^\/\/ ──── SECURITY-HELPERS-START ────$/m,
@@ -160,9 +163,9 @@ const SECURITY_HELPERS = region(
 
 export type FixtureAC = {
   id: string;
-  type?: string;
-  statement?: string;
-  evidenceMethod?: { type?: string; command?: string };
+  type: string;
+  statement: string;
+  evidenceMethod?: { type: string };
 };
 
 export type ConsumerConfigLike = {
@@ -178,19 +181,13 @@ export type ConsumerConfigLike = {
   [key: string]: unknown;
 };
 
-function readFixture<T>(...parts: string[]): T {
-  return JSON.parse(readFileSync(join(FIXTURE_ROOT, ...parts), "utf-8")) as T;
-}
-
 /**
- * The consumer's config, as `lib/config-loader.ts` reads it off disk: declared
- * pages, a container, a remote host and a nested `dev` block the flatten lines
- * have to unpack.
+ * The consumer's config, LOADED from the on-disk fixture through the harness's
+ * own loader. It differs from rungate's own in exactly the four facts that
+ * matter: declared pages, a container, a remote host, and a nested `dev` block
+ * the flatten lines have to unpack.
  */
-export const CONSUMER_FIXTURE: ConsumerConfigLike = readFixture<ConsumerConfigLike>(
-  ".claude",
-  "rungate.json",
-);
+export const CONSUMER_FIXTURE = loadRungateConfig(FIXTURE_ROOT) as unknown as ConsumerConfigLike;
 
 /** The same consumer, with the container declined in config. */
 export const CONSUMER_WITHOUT_CONTAINER: ConsumerConfigLike = {
@@ -207,26 +204,45 @@ export const CONSUMER_CLI_WITHOUT_CONTAINER: ConsumerConfigLike = {
   container: null,
 };
 
-const FIXTURE_STATE = readFixture<{ acs: FixtureAC[] }>("workflow-state.json");
+const fixtureState = JSON.parse(
+  readFileSync(join(FIXTURE_ROOT, "workflow-state.json"), "utf-8"),
+) as { acs: FixtureAC[]; sizing: { ceremonyTier: string } };
 
-const isUIShaped = (ac: FixtureAC): boolean =>
-  ac.type === "OUTCOME" ||
-  ac.evidenceMethod?.type === "PLAYWRIGHT" ||
-  ac.evidenceMethod?.type === "SCREENSHOT";
+/**
+ * The tier the fixture's DISCOVERY produced — `LIGHT`, because the issue is
+ * sized XS.
+ *
+ * Every run below starts here rather than at a tier the test chose. That is
+ * the whole consumer scenario: an XS issue on a project that declares pages.
+ * Handing the blocks a `STANDARD` the test typed in would make the floor
+ * irrelevant — the subsystems would run whether or not ship.js raised anything
+ * — and the observations would stay green over the exact regression they exist
+ * to catch.
+ */
+export const FIXTURE_TIER: string = fixtureState.sizing.ceremonyTier;
 
-/** The fixture's own AC set — one BUN_TEST/CODE AC and one PLAYWRIGHT/OUTCOME. */
-export const UI_ACS: FixtureAC[] = FIXTURE_STATE.acs;
+/**
+ * The fixture's own AC set, read from its workflow-state.json.
+ *
+ * One OUTCOME/PLAYWRIGHT AC is what makes `hasUIACs` true and the prove
+ * dispatch reachable — the fourth config fact a tier alone does not supply.
+ */
+export const UI_ACS: FixtureAC[] = fixtureState.acs;
 
-/** The same set with every UI-shaped AC removed, which is what makes prove skip. */
-export const CODE_ONLY_ACS: FixtureAC[] = FIXTURE_STATE.acs.filter((ac) => !isUIShaped(ac));
+/** The same set with every UI shape removed, so prove has nothing to prove. */
+export const CODE_ONLY_ACS: FixtureAC[] = UI_ACS.map((ac) => ({
+  ...ac,
+  type: "CODE",
+  evidenceMethod: { type: "BUN_TEST" },
+}));
 
 // ── execution ────────────────────────────────────────────────
 
-type AgentCall = { label: string; phase?: string };
+type AgentCall = { label: string; phase?: string; role?: string };
 type GateCall = { gate: string; phase: string };
 type WorkflowCall = { scriptPath: string };
 
-export type Recorded = {
+type Recorded = {
   logs: string[];
   agentCalls: AgentCall[];
   agentLabels: string[];
@@ -236,16 +252,18 @@ export type Recorded = {
   tier: string;
 };
 
-export type RunOpts = {
+type RunOpts = {
   config: ConsumerConfigLike;
-  discoveryTier: string;
+  /** Defaults to the fixture's own discovered tier — see `FIXTURE_TIER`. */
+  discoveryTier?: string;
   acs?: FixtureAC[];
 };
 
-const safeSSHCommand: (host: string, cmd: string) => string | null = new Function(
-  "log",
-  `${SECURITY_HELPERS}\nreturn safeSSHCommand`,
-)(() => {});
+const securityHelpers: { safeSSHCommand: (host: string, cmd: string) => string | null; shellQuote: (w: unknown) => string } =
+  new Function(
+    "log",
+    `${SECURITY_HELPERS}\nreturn { safeSSHCommand, shellQuote }`,
+  )(() => {});
 
 /**
  * Run a ship.js block with the module-scope names ship.js gives it, after
@@ -253,11 +271,6 @@ const safeSSHCommand: (host: string, cmd: string) => string | null = new Functio
  *
  * The tier the block sees is therefore RESOLVED by ship.js from the fixture's
  * config, not a string this harness chose.
- *
- * Every agent spawner is a RECORDING STUB. The container block interpolates
- * the fixture's `container.rebuildCommand` into a prompt string and hands it
- * to the stub, which records the label and drops the text — nothing here
- * starts a child process (#274 AC-6).
  *
  * `logs` and the call records are owned by the caller and closed over, so a
  * block that takes one of ship.js's early `return`s still reports what it did
@@ -270,33 +283,27 @@ async function runBlock(block: string, opts: RunOpts): Promise<Recorded> {
   const workflowCalls: WorkflowCall[] = [];
   const tierBox = { tier: "UNRESOLVED" };
 
-  const record = (label: string, phase: string | undefined, result: unknown) => {
-    agentCalls.push({ label, phase });
+  const record = (o: AgentCall, result: unknown) => {
+    agentCalls.push({ label: o.label, phase: o.phase, role: o.role });
     return Promise.resolve(result);
   };
 
-  const hosts = opts.config.container?.hosts ?? [];
-  const timedAgent = (_p: string, o: { label: string; phase?: string }) => {
-    let result: unknown = {};
-    if (o.label === "env-check") {
-      const reachable: Record<string, boolean> = {};
-      hosts.forEach((_h, i) => {
-        reachable[`host${i}`] = i === 0;
-      });
-      result = reachable;
-    } else if (o.label === "preflight-batch") {
-      result = {
-        hosts: Object.entries(opts.config.remoteHosts || {}).map(([name, c]) => ({
-          name,
-          reachable: true,
-          output: c.host,
-        })),
-      };
-    }
-    return record(o.label, o.phase, result);
-  };
-  const briefedAgent = (_p: string, o: { label: string; phase?: string }) =>
-    record(o.label, o.phase, { result: "PASS" });
+  const timedAgent = (_p: string, o: AgentCall) =>
+    record(
+      o,
+      o.label === "env-check"
+        ? { host0: true }
+        : o.label === "preflight-batch"
+          ? {
+              hosts: Object.entries(opts.config.remoteHosts || {}).map(([name, c]) => ({
+                name,
+                reachable: true,
+                output: c.host,
+              })),
+            }
+          : {},
+    );
+  const briefedAgent = (_p: string, o: AgentCall) => record(o, { result: "PASS" });
 
   const runGateWithHeal = (gate: string, phase: string) => {
     gateCalls.push({ gate, phase });
@@ -310,7 +317,7 @@ async function runBlock(block: string, opts: RunOpts): Promise<Recorded> {
 
   const body = [
     "const log = (m) => { logs.push(String(m)) }",
-    "const discovery = { ceremonyTier: discoveryTier, acs, filesToModify: ['lib/briefs.ts'] }",
+    "const discovery = { ceremonyTier: discoveryTier, acs, filesToModify: ['src/pages/reports.tsx'] }",
     "const projectConfig = JSON.parse(JSON.stringify(config))",
     "const parsedArgs = { remoteHosts: config.remoteHosts || {}, preflightResults: null }",
     TIER_CHAIN,
@@ -347,14 +354,14 @@ async function runBlock(block: string, opts: RunOpts): Promise<Recorded> {
     logs,
     tierBox,
     opts.config,
-    opts.discoveryTier,
+    opts.discoveryTier ?? FIXTURE_TIER,
     opts.acs ?? UI_ACS,
     timedAgent,
     briefedAgent,
     runGateWithHeal,
     workflow,
-    safeSSHCommand,
-    (w: unknown) => `'${String(w)}'`,
+    securityHelpers.safeSSHCommand,
+    securityHelpers.shellQuote,
     "/tmp/marcus-worktree",
     {},
     "/tmp/consumer",
@@ -393,7 +400,7 @@ export function runQuinnLocal(opts: RunOpts): Promise<Recorded> {
   );
 }
 
-/** ship.js's container verify and its container-less skip arm. */
+/** ship.js's container verify and its container-declined arm. */
 export function runContainerVerify(opts: RunOpts): Promise<Recorded> {
   return runBlock(
     [QUINN_CONTAINER_DECLS, CONTAINER_CONFIG_DECL, CONTAINER_BLOCK, "await runContainerVerify()"].join(
