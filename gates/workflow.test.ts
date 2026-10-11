@@ -195,14 +195,26 @@ export function prevalidationViolations(val: unknown): string[] {
     return [`evidencePrevalidation is ${typeof val}, expected a record with a verdict (#235)`];
   }
 
-  const reading = val as { verdict?: unknown; broken?: unknown };
+  const reading = val as { verdict?: unknown; acs?: unknown };
   const verdict = reading.verdict;
   if (verdict === undefined || verdict === null || verdict === "" || verdict === "UNMEASURED") {
     return unmeasured;
   }
 
-  const broken = (Array.isArray(reading.broken) ? reading.broken : [])
-    .map((b: unknown) => (typeof b === "string" ? b : String((b as { id?: unknown })?.id ?? b)))
+  // #295 — derived from `acs`, which is what the producer writes and what
+  // `EvidencePrevalidationShape` declares. This read `reading.broken`, a key
+  // no writer has ever produced and the schema has never declared, so the list
+  // was empty on every run: every FAIL fell through to the "no broken AC ids
+  // were recorded" branch below, and the refusal whose job is to say what to
+  // fix could not say it.
+  //
+  // `status === "broken"` and nothing else. `empty` is a warning rather than a
+  // refusal (lib/evidence-prevalidator.ts), and `skipped` never ran — folding
+  // either in here would turn a FAIL that names two ACs into one that names
+  // five, which is the same unusable refusal from the other direction.
+  const broken = (Array.isArray(reading.acs) ? reading.acs : [])
+    .filter((ac: unknown) => (ac as { status?: unknown })?.status === "broken")
+    .map((ac: unknown) => String((ac as { id?: unknown })?.id ?? ""))
     .filter((id: string) => id.length > 0);
 
   if (verdict === "FAIL") {
