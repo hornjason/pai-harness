@@ -51,7 +51,7 @@ describe("schema parity: v2 JSON Schema vs v3 Zod", () => {
   const V2_TOP_LEVEL = [
     "schemaVersion", "issue", "repo", "issueRepo", "projectRoot", "slug", "phase",
     "issueGoal", "sourceSpecs", "sizing", "acs", "agents", "environments", "gates",
-    "daDirectEdits", "iterationCount", "startTs", "updatedTs", "phaseTimings",
+    "iterationCount", "startTs", "updatedTs", "phaseTimings",
     "gateContract", "changelog",
   ];
 

@@ -466,7 +466,6 @@ export const WorkflowStateSchema = z.object({
     ship: GateResultSchema,
   }).optional(),
 
-  daDirectEdits: z.number().optional(),
   iterationCount: z.number().optional(),
   startTs: z.string().optional(),
   updatedTs: z.string().optional(),
@@ -541,16 +540,30 @@ export const WorkflowStateSchema = z.object({
 
   filesChangedOutsideBrief: z.array(z.string()).optional(),
 
-  quinnJourneyPath: z.string().optional(),
-
   conformityFindings: z.any().optional(),
 
   preExistingFailures: z.array(z.string()).optional(),
 
-  proofOfFix: z.object({
-    commitSha: z.string(),
-    verified: z.boolean(),
-  }).optional(),
+  /**
+   * The commit the run built and measured. Written by
+   * `scripts/record-build-commit.ts`.
+   *
+   * Read at the ship gate (`gates/workflow.test.ts`) to decide whether the run
+   * has a commit at all, and undeclared until #317 — a field that gates
+   * shipping was not in the contract describing the state it is shipped from.
+   */
+  buildCommit: z.string().optional(),
+
+  /** The merge commit, written by `gates/orchestrator.ts` after the merge. */
+  mergeCommitSha: z.string().optional(),
+
+  /**
+   * Instruction-compliance grades for the run's agents, written by
+   * `scripts/persist-compliance.ts`. `z.any()` rather than a shape: the
+   * grader owns the structure and this schema only needs to stop claiming the
+   * field does not exist.
+   */
+  compliance: z.any().optional(),
 
   // Absent means UNMEASURED (#224). Write it with
   // scripts/record-suite-measurement.ts, never by hand.
