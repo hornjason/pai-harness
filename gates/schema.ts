@@ -410,6 +410,25 @@ export const WorkflowStateSchema = z.object({
   repo: z.string().optional(),
   issueRepo: z.string().optional(),
   projectRoot: z.string().optional(),
+
+  /**
+   * The tree a gate check must MEASURE, as opposed to `projectRoot`, which is
+   * where configuration is READ from (#314).
+   *
+   * On a worktree-isolated run these differ: `projectRoot` is the main
+   * checkout, already merged and green by construction, while the change under
+   * test lives in `.claude/worktrees/<run>-N`. Eight checks executed commands
+   * against `projectRoot` and therefore measured the wrong tree — `tsc-pass`
+   * typechecked `main`, `code-committed` ran `git status` on a checkout the
+   * work was never in, and `code-pushed` asked whether `main` was ahead of its
+   * upstream. All three passed unconditionally.
+   *
+   * ship.js writes this whenever it establishes the commit directory. Absent is
+   * a refusal rather than a fallback to `projectRoot`: falling back is exactly
+   * the behaviour being removed, and it is indistinguishable from a correct
+   * measurement.
+   */
+  treeUnderTest: z.string().optional(),
   slug: z.string(),
   phase: z.enum(["GOAL", "DISCOVERY", "SCOPE", "BUILD", "VERIFY", "SHIP", "DONE", "CIRCUIT_BREAK"]),
   issueGoal: z.string().min(1, "issueGoal cannot be empty"),

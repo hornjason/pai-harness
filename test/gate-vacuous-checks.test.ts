@@ -62,6 +62,10 @@ function state(extra: Record<string, unknown> = {}) {
     slug: "pai-harness-176",
     phase: "VERIFY",
     projectRoot: PROJECT,
+    // #314 — the tree a check MEASURES. These cases plant one project and mean
+    // it to be both the config source and the thing under test, so the two are
+    // the same path here. test/tree-under-test.test.ts is where they differ.
+    treeUnderTest: PROJECT,
     issueGoal: "three gate checks that could not fail now have a red state",
     sizing: { predicted: "S", ceremonyTier: "STANDARD" },
     acs: [
