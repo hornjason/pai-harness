@@ -184,12 +184,30 @@ describe("#235: the scope gate awaits pre-validation and persists its reading", 
         evidenceMethod: { type: "command", command: "git log main..HEAD --oneline || echo none" },
       },
       {
-        // Auto-fix path: grep exits 1 on zero matches.
+        // Zero-match grep. This used to be the auto-fix example, asserting
+        // that the command was rewritten to `... || true`. #271 removed that
+        // rewrite: a grep selecting no lines is a RESULT, classified from
+        // grep's documented exit-1 convention, and wrapping it hid exit 2 —
+        // a missing file or a bad pattern — behind the same clean verdict.
+        // Kept here, inverted, so the rewrite cannot quietly come back.
         id: "AC-2",
         type: "CODE",
-        statement: "the grep that matches nothing is wrapped so it exits zero",
-        threshold: { op: "contains", value: "true" },
-        evidenceMethod: { type: "grep", command: "grep 'NEVER_MATCH_THIS_xyzzy_235' /dev/null" },
+        statement: "the grep that selects no lines is measured rather than rewritten",
+        threshold: { op: "==", value: 0 },
+        evidenceMethod: { type: "grep", command: "grep -c 'NEVER_MATCH_THIS_xyzzy_235' /dev/null" },
+      },
+      {
+        // The surviving auto-fix, so #235's actual invariant — a fix is never
+        // persisted without the command it replaced — keeps being asserted
+        // against a live path rather than against the one #271 deleted.
+        id: "AC-3",
+        type: "CODE",
+        statement: "a bun test piped through grep is rewritten to the direct form",
+        threshold: { op: "contains", value: "bun test" },
+        evidenceMethod: {
+          type: "command",
+          command: "bun test test/nothing-xyzzy-235.test.ts | grep -c pass",
+        },
       },
     ]);
 
@@ -206,10 +224,21 @@ describe("#235: the scope gate awaits pre-validation and persists its reading", 
     );
     expect(refFixed.fixedCommand).toContain("origin/main..HEAD");
 
-    const grepFixed = reading.acs.find((a: any) => a.id === "AC-2");
-    expect(grepFixed.autoFixed).toBe(true);
-    expect(grepFixed.originalCommand).toBe("grep 'NEVER_MATCH_THIS_xyzzy_235' /dev/null");
-    expect(grepFixed.fixedCommand).toContain("|| true");
+    // #271: measured, not repaired. `grep -c` on no match prints "0" and
+    // exits 1, which is exactly the value a `== 0` criterion requires.
+    const zeroCount = reading.acs.find((a: any) => a.id === "AC-2");
+    expect(zeroCount.status, "a zero-count grep was not treated as a result").toBe("ok");
+    expect(
+      zeroCount.fixedCommand ?? "",
+      "the || true rewrite came back — it hides exit 2 as well as exit 1",
+    ).not.toContain("|| true");
+
+    // #235's invariant, on the auto-fix that still exists: a fix is never
+    // persisted without the command it replaced.
+    const pipeFixed = reading.acs.find((a: any) => a.id === "AC-3");
+    expect(pipeFixed.autoFixed).toBe(true);
+    expect(pipeFixed.originalCommand, "the original command was not persisted").toContain("| grep");
+    expect(pipeFixed.fixedCommand).toBe("bun test test/nothing-xyzzy-235.test.ts");
 
     const parsed = EvidencePrevalidationSchema.safeParse(reading);
     expect(parsed.success ? null : parsed.error.issues).toBeNull();
