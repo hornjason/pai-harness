@@ -175,7 +175,7 @@ const TREE_OID = /^[0-9a-f]{40}([0-9a-f]{24})?$/
  * tree is printed). The first line tells the two apart, so an error is never
  * reported as an answer.
  */
-function mergedIntoBase(projectRoot: string, refName: string): boolean | null {
+export function mergedIntoBase(projectRoot: string, refName: string): boolean | null {
   const baseTree = git(['rev-parse', `${BASE_BRANCH}^{tree}`], projectRoot)
   if (baseTree.status !== 0) return null
 

@@ -32,7 +32,7 @@ import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { detectPriorBranch } from "../lib/prior-branch";
+import { detectPriorBranch, mergedIntoBase } from "../lib/prior-branch";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
@@ -164,5 +164,66 @@ describe("prior-branch: the merged question is asked of the tree (#185)", () => 
   test("the comparison is a merge-tree against the base", () => {
     expect(code).toContain("merge-tree");
     expect(code).toContain("--write-tree");
+  });
+});
+
+/**
+ * The fail-closed half, which the docblock claims and nothing could falsify.
+ *
+ * `mergedIntoBase` has two ways to answer "I don't know", and only one of them
+ * was covered. The case above removes the BASE, so `rev-parse main^{tree}`
+ * fails and the function returns `null` from its first line. The second way is
+ * the one that matters more and was untested: the base resolves fine, the
+ * merge is attempted, and `merge-tree` cannot use the candidate.
+ *
+ * That path is reachable and it does not look like an error from the outside.
+ * `git merge-tree --write-tree main <unusable-ref>` exits **1** — the same code
+ * a genuine conflict exits with, which is why status 1 is deliberately allowed
+ * through — but prints no tree, only "not something we can merge" on stderr.
+ * Without the `TREE_OID` guard the empty first line is compared against the
+ * base's tree and the function answers a question nobody could measure.
+ *
+ * Measured, run and reverted: changing `if (!TREE_OID.test(tree)) return null`
+ * to `return true` left **0 of 44** red across the five detection suites before
+ * this block existed. "Could not check" silently became "already landed", which
+ * is the direction that discards work — the push target is refused, the branch
+ * is reported merged, and the run opens a second branch for work that is not
+ * actually in the base. With this block the same mutation is caught.
+ */
+describe("prior-branch: an unusable ref is unmeasured, not merged (#185)", () => {
+  let root = "";
+  let work = "";
+
+  beforeAll(() => {
+    ({ root, work } = initRepo("main"));
+    commit(work, "base.txt", "base", "2021-01-01T00:00:00Z");
+  });
+
+  afterAll(() => {
+    if (root) rmSync(root, { recursive: true, force: true });
+  });
+
+  // The premise, asserted rather than assumed: a ref that DOES resolve gives a
+  // real boolean here. Without this, "null for everything" would pass below.
+  test("a usable ref still gets a real answer", () => {
+    expect(mergedIntoBase(work, "main")).toBe(true);
+  });
+
+  test("a ref merge-tree cannot use is null, and specifically not true", () => {
+    const verdict = mergedIntoBase(work, "no-such-ref-7c2b");
+    expect(
+      verdict,
+      "an unmergeable ref was answered rather than reported unmeasured",
+    ).toBeNull();
+    expect(verdict, "'could not check' became 'already landed'").not.toBe(true);
+  });
+
+  test("a ref that resolves to a non-commit is also null", () => {
+    // A blob, reached through a tag, so the ref exists and resolves — the
+    // failure is in what it points AT, which is the shape a stray tag or a
+    // corrupted ref actually takes.
+    const blob = git(["hash-object", "-w", join(work, "base.txt")], work).trim();
+    git(["tag", "blob-tag-7c2b", blob], work);
+    expect(mergedIntoBase(work, "blob-tag-7c2b")).toBeNull();
   });
 });
