@@ -363,7 +363,7 @@ describe("AC-1: a rook FAIL stops the run", () => {
     // stubbed into the extracted block: assert the refusal's `return` comes
     // first in the file, so nothing between it and the PR step can run.
     const refusal = shipSource.indexOf(DECISION_END);
-    const prStep = shipSource.indexOf("record-env-and-pr");
+    const prStep = shipSource.indexOf("create-pr");
     expect(prStep, "the PR step label moved — this guard no longer checks anything")
       .toBeGreaterThan(-1);
     expect(
@@ -861,7 +861,7 @@ describe("#169 refusal path: a stale review stops the run", () => {
     // stubbed into the extracted block, so assert the refusal comes first in
     // the file.
     const refusal = shipSource.indexOf("SECURITY_REVIEW_STALE");
-    const prStep = shipSource.indexOf("record-env-and-pr");
+    const prStep = shipSource.indexOf("create-pr");
     expect(refusal, "ship.js has no SECURITY_REVIEW_STALE refusal").toBeGreaterThan(-1);
     expect(prStep).toBeGreaterThan(-1);
     expect(refusal, "the staleness check happens after the PR is opened").toBeLessThan(prStep);

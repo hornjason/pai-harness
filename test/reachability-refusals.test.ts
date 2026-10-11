@@ -25,6 +25,13 @@ import {
  *   SECURITY-DECISION   (#129)     113 pass / 0 fail
  *   COMMIT-STATE-GUARD  (#166)      52 pass / 0 fail
  *
+ * PR-UPSERT (#254) joined both lists later and was measured the same way: the
+ * whole Ship-phase region wrapped in `if (false)` leaves every executed case
+ * in test/ship-pr-on-every-path.test.ts green and turns 5 of 407 red, all of
+ * them reachability. Run wf_c71f950f-c88 had DELETED that guard to heal an
+ * unrelated gate failure, which is why the marker is carried here rather than
+ * only in the suite that owns the block.
+ *
  * The helper under test reads the block's position in the parsed program
  * instead of its text.
  *
@@ -182,7 +189,7 @@ function between(src: string, name = "DEMO"): string {
 // other test in this file.
 
 describe("POSITIVE CONTROL — a correctly wired block is accepted", () => {
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD"]) {
+  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "PR-UPSERT"]) {
     test(`the real, unmutated workflows/ship.js ${name} pair is accepted`, () => {
       expect(
         shipSource.includes(`${name}-START`),
@@ -394,7 +401,7 @@ describe("the measured regression, rerun against the real workflows/ship.js", ()
     return lines.join("\n");
   }
 
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD"]) {
+  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "PR-UPSERT"]) {
     const mutated = wrapOutsideMarkers(shipSource, name);
 
     test(`${name}: the extracted slice is byte-identical — this is why the text-based suites saw nothing`, () => {

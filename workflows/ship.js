@@ -4167,12 +4167,17 @@ if (SKIP_GRADE) {
 
 phase('Ship')
 
-// Record container/environment test evidence.
+// ──── SHIP-PR-PATHS-START ────
+// Record container/environment test evidence. WHICH arm runs depends on the
+// consumer's config. Opening the PR does not, and is deliberately not in
+// either arm (#254) — it is a statement of the module body below.
 //
-// #137: the PR step used to report nothing back, so a run in which no PR was
-// created looked exactly like one in which a PR was created. It is captured
-// now, and the ship gate's heal text below says what is actually true rather
-// than asserting a PR exists.
+// This outer marker pair spans BOTH the arms and the PR step, because a test
+// that slices the two apart and concatenates them rebuilds a correct program
+// no matter where the PR step really sits. Measured: with the PR step put
+// back inside the `else` arm, the concatenating version of
+// test/ship-pr-on-every-path.test.ts still reported the container path opening a
+// PR. The region is executed as written.
 let prStep = null
 
 if (containerConfig) {
@@ -4193,14 +4198,32 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 } else {
-  // No container — batch record-env + create-pr into one agent
-  prStep = await timedAgent(`
-Do BOTH tasks:
+  // No container to probe. This arm records the environment and NOTHING else:
+  // the PR step used to be batched in here, which is exactly why the container
+  // arm never opened one (#254).
+  await timedAgent(`
+Record the environment as SKIP — this run has no container to probe. Run this
+one command and report its output:
 
-1. Record env as SKIP:
-   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+`, { label: 'record-env-skip', phase: 'Ship' })
+}
 
-2. Open or update the PR. Run exactly these three commands:
+// ──── PR-UPSERT-START ────
+// #137: the PR step used to report nothing back, so a run in which no PR was
+// created looked exactly like one in which a PR was created. It is captured
+// now, and the ship gate's heal text below says what is actually true rather
+// than asserting a PR exists.
+//
+// #254: this used to be the second half of the no-container arm above, so
+// `pr-upsert` appeared exactly once in this file and only ever ran when the
+// consumer had configured no container. A container consumer got no PR, no
+// draft lifecycle and a shipped status — and nothing downstream could tell
+// that apart from a run that genuinely had nothing to open, because
+// `prReadiness` reports NO_PR for both. It is a statement of the module body
+// now: every run that reaches the Ship phase opens or updates one.
+prStep = await timedAgent(`
+Open or update the PR. Run exactly these two commands:
 
 cat > ${WORK_DIR}/pr-body.md <<'RUNGATE_PR_BODY_EOF'
 Fixes #${ISSUE}
@@ -4239,18 +4262,19 @@ Report prDraft from what the command PRINTED. Do not assume it is true because
 field it asked for is not a field it observed. Omit prDraft entirely if the
 output did not carry it — "unknown" is a reading this workflow can act on and
 a guessed true is not.
-  `, { label: 'record-env-and-pr', phase: 'Ship', schema: {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' },
-      prNumber: { type: 'number' },
-      prUrl: { type: 'string' },
-      prDraft: { type: 'boolean' },
-      detail: { type: 'string' },
-    },
-    required: ['ok'],
-  } })
-}
+`, { label: 'create-pr', phase: 'Ship', schema: {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    prNumber: { type: 'number' },
+    prUrl: { type: 'string' },
+    prDraft: { type: 'boolean' },
+    detail: { type: 'string' },
+  },
+  required: ['ok'],
+} })
+// ──── PR-UPSERT-END ────
+// ──── SHIP-PR-PATHS-END ────
 
 // Every refusal from here on has to be able to say what happened to the PR,
 // and the refusal sites are scattered across three phases (#252).

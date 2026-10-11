@@ -1125,7 +1125,9 @@ over:
   which is accurate, so this criterion holds — but a whole branch of the
   workflow has no PR at all, and that is its own defect rather than part of
   this one. DailyBriefDashboard is not affected: its `.claude/rungate.json`
-  carries no `container` key, checked rather than assumed.
+  carries no `container` key, checked rather than assumed. **Fixed in
+  SC-668..SC-672 below**; this paragraph is left as written because it is the
+  record of a constraint that was known and shipped anyway.
 
 **The first version of the draft fix was wrong, and the way it was wrong is
 the point.** `upsertPR` passed `draft` only to the create path, with a comment
@@ -1594,6 +1596,77 @@ function: `prevalidationViolations` names the broken ACs out of
 closed; but it always says "no broken AC ids were recorded", which is true of
 the key and false of the reading, and a refusal the heal loop cannot act on is
 part of how #261 cost two rounds.
+
+---
+
+### Opening the PR is not one branch's job (#254)
+
+Recorded as a known constraint beside SC-631..SC-637 and fixed here.
+`pr-upsert` appeared exactly once in `workflows/ship.js`, inside the `else` arm
+of `if (containerConfig)`, batched together with "record the environment as
+SKIP" into a single agent. A consumer that configures a container therefore
+probed its container and **opened no PR at all**, while the run carried on
+through the ship gate, the readiness decision and the terminal status and
+reported a shipped result.
+
+Nothing downstream could tell that apart from a run that genuinely had nothing
+to open. `prReadiness` reports `NO_PR`, which is accurate and says nothing
+about which of the two happened, and the ship gate cannot separate the arms
+either: `rebuild: 'SKIP'` short-circuits `local-before-prod`, so both arms
+satisfy it. The PR is the only artefact a human reviews, so for a container
+consumer this workflow's entire output was a transcript.
+
+The step is a statement of the module body now. Each arm records the
+environment it measured — the container arm its probe, the no-container arm
+its SKIP — and neither owns the PR.
+
+- [x] SC-668: workflows/ship.js contains [SHIP-PR-PATHS-START, PR-UPSERT-START] — the PR step is a statement of the module body, after the `containerConfig` if/else rather than inside either arm, in a marker pair of its own so its POSITION can be read off the parse
+- [x] SC-669: workflows/ship.js contains [label: 'record-env-skip', label: 'create-pr'] — the arms record environments and nothing else; batching the PR into one of them is what made it conditional, and a label that still says it does both would hide the next recurrence
+- [x] SC-670: test/ship-pr-on-every-path.test.ts contains [the mutant's container path spawns no PR step, could not build the mutant] — the region is EXECUTED under both arms, and the mutant that relocates the step back into the `else` arm is built from the real bytes at run time; a rename aborts the file rather than passing it
+- [x] SC-671: test/ship-pr-on-every-path.test.ts contains [assertMarkedBlockReachable(shipSource, "PR-UPSERT")] — the executed cases prove which arm the spawn sits in and say nothing about whether the region runs at all, so the reachability guard is asserted beside them
+- [x] SC-672: test/reachability-refusals.test.ts contains ["COMMIT-STATE-GUARD", "PR-UPSERT"] — the marker is in BOTH lists: the positive control, where the real file must be accepted, and the measured regression, where an `if (false)` wrapper outside the markers must be refused by the real module and NOT by the mutant with its refusal constant zeroed
+
+**The guard in SC-671 is a restoration, not an addition.** Run
+`wf_c71f950f-c88` attempted this fix and was refused by security review for
+DELETING `assertMarkedBlockReachable` from the PR block while healing an
+unrelated gate failure. Deleting a guard is the cheapest way to turn a gate
+green and it is never the fix; the only thing it measures is how much the next
+reader can trust the suite.
+
+**The first version of this file's own test was the defect it was written to
+catch.** It sliced the env arms and the PR step into two separate marked
+regions and executed `ENV_BLOCK + "\n" + PR_BLOCK`. That concatenation
+reassembles a correct program no matter where the PR step actually sits:
+with the step moved back inside the `else` arm, the container case still
+reported `[record-env, create-pr]` and passed. Measured, not reasoned about —
+the mutation run reported 6 red with "the container arm reaches the PR step"
+among the survivors, which is the one case the file exists for. The region is
+one contiguous pair now, executed as ship.js orders it, and the mutant LIFTS
+the sub-region out before re-inserting it so a mutant carrying both copies
+cannot pass either.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-pr-on-every-path.test.ts` + `test/reachability-refusals.test.ts` +
+`test/ship-pr-draft.test.ts` + `test/blocking-grades.test.ts` +
+`test/security-verdict-blocks.test.ts` + `test/ship-mcp-migration.test.ts` +
+`test/suite-measurement-parity.test.ts` + `test/spec-compliance.test.ts`
+(407 tests):
+
+| Mutation | Red |
+|---|---|
+| the PR step lifted out of the module body and put back as the last statement of the `else` arm — #254, reintroduced verbatim | 7 of 407 |
+| the whole region wrapped in `if (false)`, the wrapper OUTSIDE the markers so every executed slice stays byte-identical | 5 of 407 — and all five are reachability; every executed case stayed green, which is why SC-671 is not redundant |
+| the `else` arm's agent label renamed, so the mutant builder's anchor is gone | 5 of 407 — three of them throwing `could not build the mutant`, so a drifted harness aborts rather than no-ops |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was restored from a copy taken before the first mutation and diffed after the
+last.
+
+One thing this does NOT change, recorded rather than implied: a container
+consumer's run now opens a PR, and the ship gate still cannot distinguish the
+two arms, because `environments.prod.rebuild` is `SKIP` on a down container
+and on no container alike. That is a separate reading problem and is not
+fixed here.
 
 ---
 
