@@ -9,10 +9,23 @@ governs: rungate config access — single-loader policy, null-vs-throw contract,
 
 # ADR-001: Config Loader Unification
 
-**Status:** Proposed
+**Status:** Accepted in part — D2 implemented, D1 and D4 overdue (see ADR-002)
 **Deciders:** Serena Blackwood (architecture), Rayford (DA)
 **Trigger:** Issue #70 — consumer project `agentgrit` generated all six agent briefs with no role configuration, silently
 **Governing spec:** `specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md`
+
+> **Standing, measured 2026-10-11.** D2's two-function contract shipped and is in use.
+> **D1's `runConfigAccessValidation` conformity check was never built**, and in the six days
+> since, direct `rungate.json` access grew from the ~24 sites counted here to **89 across 25
+> production files**. D4's Step E (deleting rungate's own `.claude/rungate.json`) also never
+> happened, so this repo carries both config layouts at once — a state its own scaffold cannot
+> produce — and the stale monolith is 8 days *newer* than the directory config the canonical
+> loader actually reads.
+>
+> This ADR was correct and had no effect, because the half that was enforcement is the half
+> that did not ship. It is now an instance of the defect class it describes:
+> *"A rule nothing executes is not a rule."* ADR-002 supersedes the enforcement design and
+> does not re-open D2.
 
 ---
 
