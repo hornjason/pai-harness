@@ -28,8 +28,17 @@ If you skip any step, the session is invalid.
   falsifiable claims that mean it works. Before filing an issue, reviewing a PR,
   or acting on an audit finding, say which claim it moves. Something that moves
   none of them is cleanup and should say so rather than borrowing urgency.
-- **PROJECT-STATE.md at milestones** — update after every merge, SC, or milestone.
-  Update SUCCESS.md's standing table in the same edit.
+- **PROJECT-STATE.md at milestones, and the DA writes it** — update after every
+  merge, SC, or milestone, and update SUCCESS.md's standing table in the same edit.
+  **`project-state.json`, `PROJECT-STATE.md` and `SUCCESS.md` are DA-owned: an
+  agent running in a worktree must never write them.** They are a single shared
+  state document, so four parallel worktrees each updating their own copy produce
+  four conflicting versions — and the collection guard (#178, SC-413) refuses the
+  whole run when a worktree reports a file no sub-issue claimed. On 2026-10-11
+  that cost run `wf_0b15a933-b2b` four worktrees and 2,565 lines of correct,
+  validated work, because one agent read this line and did what it said. If you
+  are an agent and think one of these files needs updating, say so in your
+  findings as prose and let the DA write it. See #296.
 - **SCs without tests are wishes** — add the test in the same session you add the SC.
 
 ## Project-Specific References
