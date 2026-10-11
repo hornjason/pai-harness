@@ -1854,66 +1854,67 @@ worth reading twice: with the stripper dead the six ordering checks go GREEN
 again, because they fall back to searching raw text — which is the defect
 #273 is about, reintroduced, and caught by the audit rather than by them.
 
-### An initialiser standing in for a measurement (#276)
+### A phase that reported PASS for never having run (#276)
 
-`workflows/ship.js` opened the Scope phase with `let scopeResult = { result:
-'PASS' }` and reported it, twice, as `scopeResult?.result || 'SKIPPED'` — once
-to the operator log and once into the DRY_RUN payload. The initialiser WAS the
-value a skipped gate reported, so over the four reachable states the two words
-came out swapped:
+`workflows/ship.js` declared `let scopeResult = { result: 'PASS' }`, ran the
+scope gate only when `skipScope` was false, and then reported
+`scopeResult?.result || 'SKIPPED'` at two sites — the operator log and the
+DRY_RUN payload. **The initialiser IS the did-not-run value**, so over the
+four reachable states the two words came out swapped:
 
-| The state | What it reported | What it is |
+| State | Reported | Should be |
 |---|---|---|
-| the gate was never spawned (LIGHT tier) | `PASS` | SKIPPED |
-| the gate ran and returned PASS | `PASS` | PASS |
-| the gate ran and returned FAIL | `FAIL` | FAIL |
-| the gate ran and returned nothing at all | `SKIPPED` | a measurement that failed |
+| the gate never ran (LIGHT tier) | PASS | SKIPPED |
+| the gate ran and passed | PASS | PASS |
+| the gate ran and failed | FAIL | FAIL |
+| the gate ran and reported nothing | SKIPPED | FAIL |
 
-Every LIGHT-tier run in this repo's history printed `Scope: PASS` for a gate
-that was never spawned — and #274 establishes that `pages:{}` forces every
-rungate self-run to LIGHT, so that is every self-run, not an edge case. The one
-state that admitted to measuring nothing was the one where the gate DID run and
-came back empty, which also walked past the early return: it read
-`scopeResult?.result === 'FAIL'`, and `undefined` is not `'FAIL'`.
+Two consequences, and the second is the worse one. #274 records that
+`pages:{}` forces every rungate self-run to LIGHT, so **every LIGHT run in
+this repo's history printed `Scope: PASS` without a scope gate ever running** —
+the artefact asserting a gate had passed is the only evidence anyone has that
+it ran. And the single state that genuinely deserved suspicion, a gate that
+answered with nothing, was the only one reported as skipped: an absent verdict
+read as a non-event rather than as a failure, which is the inverse of what
+#235 settled for an absent reading.
 
-This is `.claude/rules/checks-must-be-able-to-fail.md`'s subject told from the
-reporting side. A phase that cannot say "I did not run" is a phase whose
-absence is indistinguishable from its success, and the artefact that records it
-is not evidence of anything.
+This is #173's shape, and #173's fix is 430 lines further down the same file:
+a separate OBSERVED `ran` boolean rather than a value inferred from the tier,
+a reply that is not one of the recognised verdicts read as FAIL, and the logic
+in a marked block so a test EXECUTES it. `SKIPPED` is now reserved for the one
+fact only `scopeRan` can state, and the refusal reads the computed verdict, so
+the absent-result state reaches `SCOPE_FAILED` instead of falling through.
 
-**The fix already existed in the same file, 430 lines down.** #173 took it for
-Quinn: an observed `ran` boolean set where the work happens, a chooser that
-treats an unrecognised reply as FAIL rather than PASS, and the chooser inside
-markers so a test can EXECUTE it rather than grep for it. `scopeVerdictFor` is
-the same three properties for the scope gate, and the early return, the log
-line and the payload now read one computed verdict, so no report site can
-disagree with another.
-
-- [x] SC-673: workflows/ship.js contains [SCOPE-VERDICT-START] — the chooser lives in markers that appear exactly once, so the test extracts and runs the block rather than matching its source text, which is the only form of this assertion that has ever survived a mutation here
-- [x] SC-674: workflows/ship.js contains [let scopeRan = false] — whether the gate was spawned is OBSERVED at the spawn site, never inferred from an initialiser or from the ceremony tier, which is the half of #173 that makes the other half meaningful
-- [x] SC-675: workflows/ship.js contains [const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)] — one verdict feeds the refusal, the operator log and the dry-run payload; three expressions computing the same fact is how the two report sites could have drifted apart in the first place
-- [x] SC-676: test/ship-scope-verdict.test.ts contains [the operator log says SKIPPED, and never PASS] — the Scope phase is sliced out of ship.js and EXECUTED over all four states with its collaborators stubbed, because a grep at either report site cannot say which state produced the word it found
-- [x] SC-677: test/ship-scope-verdict.test.ts contains [a declaration quoted in a comment is not a candidate] — the enumeration of PASS-initialised result variables runs over comment-blanked source, caught on this very change: the first draft's docblock quoted the initialiser it had removed and the enumeration reported it as live code, which is #273 reappearing inside the fix for #276
+- [x] SC-673: workflows/ship.js contains [SCOPE-VERDICT-START, function scopeVerdictFor(ran, result)] — the chooser is a marked block rather than an inline ternary, so the four reachable states are extracted and RUN; every source-text assertion in this repo has survived its first mutation
+- [x] SC-674: workflows/ship.js contains [let scopeRan = false] — the did-not-run fact is observed where the gate runs, not inferred from the ceremony tier or from whatever value is sitting in the result slot, which is what made the old initialiser reportable
+- [x] SC-675: workflows/ship.js contains [let scopeResult = null] — the result starts as no verdict at all; a run that skipped the gate must not be carrying something a reader could mistake for a measurement
+- [x] SC-676: workflows/ship.js contains [if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED'] — one refusal, reading the computed verdict, above the operator log, so a gate that answered with nothing stops the run rather than being logged as skipped
+- [x] SC-677: test/ship-scope-verdict.test.ts contains [parts.sort((a, b) => a.index - b.index)] — ship.js's own statements are executed IN SOURCE ORDER, because a fixed assembly order runs the refusal first wherever the file puts it, and that mutation was run and came back green before the sort existed
+- [x] SC-678: test/ship-scope-verdict.test.ts contains [the enumeration reads code, not prose about code] — every `let xResult = { result: 'PASS' }` in ship.js must be paired with an observed `let xRan = false`, and the probe is line-anchored: an unanchored one counted the docblock explaining why the initialiser is gone
 
 What was broken to prove it, run and counted rather than asserted, over
-`test/ship-scope-verdict.test.ts` (15 tests):
+`test/ship-scope-verdict.test.ts` (25 tests):
 
 | Mutation | Red |
 |---|---|
-| the PASS initialiser restored and the report expression with it — #276 reintroduced verbatim | 9 of 15 |
-| `scopeVerdictFor` short-circuited to `return 'PASS'` — the rubber stamp | 9 of 15 |
-| the skipped verdict word swapped back (`if (!ran) return 'PASS'`) | 6 of 15 |
-| `scopeRan = true` deleted — the observation removed, so every run looks skipped | 4 of 15, and none of them a mutant-building case: the harness's anchors still match, so the four are red about behaviour |
+| the PASS initialiser restored, alone | 5 of 25 — the skipped run starts carrying a verdict again, and every mutant-building case throws `could not build the mutant` because its target is already in the tree |
+| the whole pre-#276 shape restored (initialiser + both reporting sites) | 8 of 25 — the defect itself: `Scope: PASS` for a gate nobody ran, at both reporting sites |
+| the observed-ran boolean dropped at the call site (`scopeVerdictFor(true, …)`) | 11 of 25 |
+| the chooser falls back to the result slot when it did not run | 1 of 25 — the row that exists so the `ran` argument is load-bearing rather than decorative |
+| an unrecognised reply read as a pass | 3 of 25 — including the absent-result state, which stops reaching the refusal |
+| the marker renamed | 16 of 25 — every extraction aborts rather than passing quietly |
+| the refusal never fires (`if (false)`) | 11 of 25 |
+| a second operator log added above the refusal | 10 of 25 — two log sites is ambiguity about which one is checked, and that is a refusal |
+| the refusal moved below the operator log | 2 of 25 — the ordering case, which is the one the sort in SC-677 exists for |
 
 None is left in the tree; all were run and reverted, and `workflows/ship.js`
-was diffed byte-for-byte against a copy taken before the first mutation. One
-earlier attempt at the first row is worth recording: applied through a shell
-one-liner, the quotes were eaten and the mutant carried bare `PASS` and
-`SKIPPED` identifiers. It went red on 10 of 15 — a larger number, from a
-ReferenceError that says nothing about the subject. A mutant that dies for an
-unrelated reason reads exactly like a mutation that was caught, which is why
-every mutation above was applied from a script file and the resulting source
-inspected before the suite was spawned.
+was compared byte-for-byte against a copy taken before the first mutation.
+Two rows are worth reading twice. The first is the #129 outcome: restoring the
+initialiser leaves the mutation harness nothing to mutate, so it throws instead
+of going quietly green. The last is a check that could not fail, found and
+fixed while writing this one — the runner originally assembled the extracted
+statements in a fixed order, so moving the refusal below the log changed
+nothing it could see.
 
 ---
 

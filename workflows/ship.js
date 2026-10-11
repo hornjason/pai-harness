@@ -1797,23 +1797,26 @@ const skipScope = discovery.ceremonyTier === 'LIGHT'
 
 // ──── SCOPE-VERDICT-START ────
 /**
- * What this run can honestly say the scope gate's verdict was.
+ * What this run can honestly say the scope gate's verdict was (#276).
  *
- * #276: the scope reply was initialised to a PASS verdict, so the initialiser
- * doubled as the value a skipped gate reported, and both report sites read
- * `scopeResult?.result || 'SKIPPED'`. Over the four reachable states that is
- * never-ran → PASS, ran-PASS → PASS, ran-FAIL → FAIL, ran-nothing → SKIPPED:
- * the two words swapped. Every LIGHT run in this repo's history printed
- * `Scope: PASS` without a scope gate being spawned, and the only state that
- * admitted to measuring nothing was the one where the gate DID run and came
- * back empty.
+ * What was here: the result variable was declared holding a PASS verdict and
+ * reported as `scopeResult?.result || 'SKIPPED'`. The initialiser IS the did-not-run
+ * value, so over the four reachable states the two words came out swapped —
+ * never executed → PASS, ran and passed → PASS, ran and failed → FAIL, ran
+ * and reported nothing → SKIPPED. `skipScope` is true on every LIGHT run, and
+ * every LIGHT run in this repo's history printed `Scope: PASS` without a scope
+ * gate ever running. The one state that deserved suspicion, a gate that
+ * answered with nothing, was the only one reported as skipped.
  *
- * Same shape as quinnVerdictFor below, written for this exact bug as #173: an
- * observed `ran` boolean rather than an initialiser standing in for one, and a
- * reply that is not a verdict is FAIL, not PASS — "the gate did not tell us it
- * passed" and "the gate told us it passed" are different facts and only one of
- * them is a pass. In markers rather than inline so
- * test/ship-scope-verdict.test.ts can EXECUTE it; every source-text assertion
+ * This is #173's shape, 430 lines above where #173 put it: a separate OBSERVED
+ * `ran` boolean rather than a value inferred from the tier or from whatever is
+ * sitting in the result slot, and a reply that is not one of the two verdicts
+ * read as FAIL. "The gate did not tell us it passed" and "the gate told us it
+ * passed" are different facts and only one of them is a pass; SKIPPED is
+ * reserved for the gate never having run, which only `ran` can say.
+ *
+ * In a marked block rather than an inline ternary so
+ * test/ship-scope-verdict.test.ts can EXECUTE it — every source-text assertion
  * in this repo has survived its first mutation.
  */
 function scopeVerdictFor(ran, result) {
@@ -1823,10 +1826,11 @@ function scopeVerdictFor(ran, result) {
 }
 // ──── SCOPE-VERDICT-END ────
 
-let scopeResult = null
-// Whether the scope gate was actually spawned this run. Observed where the
-// work happens, never inferred from the initialiser — see scopeVerdictFor.
+// Whether the scope gate actually ran this run, and what it said. The result
+// starts as `null` and not as a verdict: a value nobody measured must not be
+// reportable (#276).
 let scopeRan = false
+let scopeResult = null
 if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
@@ -1850,7 +1854,7 @@ This validates via Zod at write time — you get immediate error feedback.`)
   scopeRan = true
 }
 const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)
-if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult?.failures || ['scope gate produced no usable result — the step reported nothing'], workDir: WORK_DIR }
+if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult?.failures || [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`], workDir: WORK_DIR }
 log(`Scope: ${scopeVerdict}`)
 
 if (DRY_RUN) {
