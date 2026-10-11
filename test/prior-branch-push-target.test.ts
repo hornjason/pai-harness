@@ -1,52 +1,92 @@
-import { describe, expect, test } from "bun:test";
+/**
+ * The push target consults the prior branch's currency (#185)
+ *
+ * The issue was first filed as latent, on the reasoning that the resume path
+ * at ship.js's Implement phase is unreachable — both detection call sites pass
+ * `runTests: false`, so `testsPass` is always false. That reasoning was right
+ * about that branch and wrong about the consequence, because there is a SECOND
+ * consumer that never looks at `testsPass` at all: `branchToReuse` takes the
+ * nominated branch unconditionally and `pushTarget` turns it into
+ * `HEAD:<branch>`. Every nomination was a push target.
+ *
+ * Measured live on 2026-10-11: for issue 254 detection nominated
+ * `run/254-wf19f7def7-rescue` — 1 ahead of main, 8 behind, tip message "NOT
+ * reviewed, do not merge" — so the push could only be rejected as a
+ * non-fast-forward. That is a hard blocker on #254.
+ *
+ * ship.js is not importable (the Workflow sandbox has no module loading, #69),
+ * so the block is extracted by marker and executed with stubs, the same way
+ * test/security-verdict-blocks.test.ts does it.
+ *
+ * Positive control (.claude/rules/checks-must-be-able-to-fail.md): every
+ * refusal case is run twice — against the real source, and against a mutant
+ * whose single decision function is short-circuited back to the old
+ * `prior?.branch || null`. The real one must refuse and the mutant must reuse;
+ * a check that refuses everything fails the current-branch case, and one that
+ * refuses nothing fails the stale, merged and unknown cases. The mutant build
+ * aborts if the signature is not found exactly once, so renaming the function
+ * cannot turn this file green.
+ *
+ * What was broken to prove it, run and counted rather than asserted, over the
+ * six prior-branch suites (59 tests):
+ *
+ * | Mutation | Red |
+ * |---|---|
+ * | `reusablePriorBranch` short-circuited to `(prior && prior.branch) \|\| null` in the real source | 5 — the three refusals, their mutant halves having nothing left to distinguish, and the "why" assertion |
+ * | `reusablePriorBranch` renamed to `currentEnoughPriorBranch` | 4 — three throwing `could not build the mutant: the decision signature appears 0 times`, plus the call-site count |
+ *
+ * Neither is left in the tree; both were run and reverted.
+ */
+import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
-import { assertMarkedBlockReachable } from "../lib/reachability";
-
-/**
- * #185 — a nominated prior branch is a push target, so it has to be current.
- *
- * Measured on the #169 run: `detectPriorBranch` nominated `recover-169`, the
- * branch PR #177 had already been squash-merged from. It was 64 commits ahead
- * of the merge base and 4 behind main, and `commitCount: 64` — the only
- * currency signal detection reported — cannot tell those two states apart.
- * ship.js turned that nomination into `HEAD:recover-169` unconditionally, so
- * the run was one push away from reverting #176 and #178.
- *
- * The other half of the same defect was a feature that could not fire: the
- * Implement phase had a `priorBranchResult?.testsPass` resume branch, and
- * every detection call site asked for detection with `runTests: false`, so
- * `testsPass` was never anything but `false`. The resolution taken here is
- * DELETION — see `the testsPass resume path is gone` below for why.
- *
- * ship.js is not importable (the Workflow sandbox has no module loading, #69),
- * so the push-target block is extracted by marker and executed over a sandbox,
- * the same way test/security-verdict-blocks.test.ts does it. A source-text
- * assertion cannot notice that it has stopped describing the code.
- */
-
 const REPO_ROOT = join(import.meta.dir, "..");
 const SHIP_PATH = join(REPO_ROOT, "workflows", "ship.js");
-const PRECOMPUTE_PATH = join(REPO_ROOT, "scripts", "precompute-goal.ts");
 const shipSource = readFileSync(SHIP_PATH, "utf-8");
-const precomputeSource = readFileSync(PRECOMPUTE_PATH, "utf-8");
 
-const PUSH_TARGET_START = "// ──── PUSH-TARGET-START ────";
-const PUSH_TARGET_END = "// ──── PUSH-TARGET-END ────";
-const PAYLOAD_START = "// ──── PRIOR-BRANCH-PAYLOAD-START ────";
-const PAYLOAD_END = "// ──── PRIOR-BRANCH-PAYLOAD-END ────";
+const PUSH_TARGET_START = "// ──── PUSH-TARGET-CURRENCY-START ────";
+const PUSH_TARGET_END = "// ──── PUSH-TARGET-CURRENCY-END ────";
 
-function sliceBlock(source: string, startMarker: string, endMarker: string): string {
-  const start = source.indexOf(startMarker);
-  const end = source.indexOf(endMarker);
+/**
+ * The one function the whole decision goes through. Declared here as a
+ * literal so the mutation below has a single, named target: a second refusal
+ * path for the same fact would survive the mutation and the mutant would go
+ * red for a reason that has nothing to do with the mutation working.
+ */
+const DECISION_SIGNATURE = "function reusablePriorBranch(prior) {";
+
+/**
+ * The mutation: the decision collapses to what ship.js did before #185 —
+ * take whatever detection nominated.
+ */
+const DECISION_MUTANT = `${DECISION_SIGNATURE} return (prior && prior.branch) || null;`;
+
+function sliceBlock(startMarker: string, endMarker: string): string {
+  const start = shipSource.indexOf(startMarker);
+  const end = shipSource.indexOf(endMarker);
   if (start === -1 || end === -1) {
-    throw new Error(`source is missing the ${startMarker} / ${endMarker} markers`);
+    throw new Error(`ship.js is missing the ${startMarker} / ${endMarker} markers`);
   }
-  return source.slice(start + startMarker.length, end);
+  return shipSource.slice(start + startMarker.length, end);
 }
 
-const pushTargetBlock = () => sliceBlock(shipSource, PUSH_TARGET_START, PUSH_TARGET_END);
+/**
+ * Module scope on purpose: if the markers go missing, this throws and every
+ * test in the file fails to load, rather than the file quietly asserting
+ * nothing about a ship.js that lost its currency check.
+ */
+const PUSH_TARGET_BLOCK = sliceBlock(PUSH_TARGET_START, PUSH_TARGET_END);
+
+function buildMutantBlock(): string {
+  const occurrences = PUSH_TARGET_BLOCK.split(DECISION_SIGNATURE).length - 1;
+  if (occurrences !== 1) {
+    throw new Error(
+      `could not build the mutant: the decision signature appears ${occurrences} times`,
+    );
+  }
+  return PUSH_TARGET_BLOCK.replace(DECISION_SIGNATURE, DECISION_MUTANT);
+}
 
 interface PushTargetOutcome {
   branchToReuse: string | null;
@@ -54,18 +94,11 @@ interface PushTargetOutcome {
   logs: string[];
 }
 
-/**
- * Execute one copy of the push-target block over a sandbox.
- *
- * `with` over a Proxy rather than a parameter list, for the reason
- * test/security-verdict-blocks.test.ts gives: which module-scope names the
- * block reads is an implementation detail that moves, and a parameter list
- * throws outright when the block declares one of them with `const`.
- */
-function runPushTarget(priorBranchResult: unknown, block = pushTargetBlock()): PushTargetOutcome {
+/** Execute one copy of the block over a prior-branch nomination. */
+function runBlock(block: string, prior: unknown): PushTargetOutcome {
   const logs: string[] = [];
   const scope: Record<string, unknown> = {
-    priorBranchResult,
+    priorBranchResult: prior,
     log: (m: unknown) => logs.push(String(m)),
   };
   const sandbox = new Proxy(scope, {
@@ -85,312 +118,158 @@ function runPushTarget(priorBranchResult: unknown, block = pushTargetBlock()): P
   return { ...out, logs };
 }
 
-/** A nomination detection measured as current with the base. */
 const CURRENT = {
-  branch: "185-prior-branch-currency",
-  refName: "refs/heads/185-prior-branch-currency",
+  branch: "185-deep-modules",
+  refName: "refs/heads/185-deep-modules",
   commitCount: 3,
   behindCount: 0,
   isBehind: false,
   isMerged: false,
+  testsPass: false,
 };
 
-/**
- * The regression case, with the numbers the issue measured: 64 ahead, 4
- * behind, content already squash-merged into main.
- */
-const RECOVER_169 = {
-  branch: "recover-169",
-  refName: "refs/heads/recover-169",
-  commitCount: 64,
-  behindCount: 4,
-  isBehind: true,
-  isMerged: true,
+/** The branch this repository actually carries for #254, by the numbers. */
+const STALE = { ...CURRENT, branch: "254-pr-when-container", behindCount: 8, isBehind: true };
+const MERGED = { ...CURRENT, branch: "254-pr-when-container", isMerged: true };
+const UNKNOWN = {
+  branch: "254-pr-when-container",
+  refName: "refs/heads/254-pr-when-container",
+  commitCount: null,
+  behindCount: null,
+  isBehind: null,
+  isMerged: null,
+  testsPass: false,
 };
 
-describe("#185 AC-5: the push target consults currency", () => {
-  test("a current prior branch is still reused — the positive control", () => {
-    // A guard that refuses every nomination satisfies all the negative cases
-    // below and deletes #515's orphan-branch fix. This is the case that stops
-    // that from reading as success.
-    const out = runPushTarget(CURRENT);
-    expect(out.branchToReuse).toBe(CURRENT.branch);
-    expect(out.pushTarget).toBe(`HEAD:${CURRENT.branch}`);
+describe("ship.js: a stale prior branch is not a push target (#185)", () => {
+  test("a current prior branch is still reused", () => {
+    // The control that stops "refuse everything" from buying green. #515's
+    // orphan-branch problem is still solved for branches that can be pushed to.
+    const real = runBlock(PUSH_TARGET_BLOCK, CURRENT);
+    expect(real.branchToReuse).toBe("185-deep-modules");
+    expect(real.pushTarget).toBe("HEAD:185-deep-modules");
   });
 
-  test("a branch behind the base is not reused", () => {
-    const out = runPushTarget({ ...CURRENT, behindCount: 4, isBehind: true });
-    expect(out.branchToReuse).toBeNull();
-    expect(out.pushTarget).toBe("HEAD");
-    expect(out.logs.join("\n")).toMatch(/behind/i);
+  test("a branch behind the base is refused, and the mutant reuses it", () => {
+    const real = runBlock(PUSH_TARGET_BLOCK, STALE);
+    expect(real.branchToReuse).toBeNull();
+    expect(real.pushTarget).toBe("HEAD");
+    expect(real.logs.join("\n")).toContain("254-pr-when-container");
+
+    // The removal of the check, performed and observed: without it the stale
+    // branch becomes the push target again, which is exactly the live failure.
+    const mutant = runBlock(buildMutantBlock(), STALE);
+    expect(mutant.pushTarget).toBe("HEAD:254-pr-when-container");
   });
 
-  test("a branch already merged into the base is not reused", () => {
-    const out = runPushTarget({ ...CURRENT, isMerged: true });
-    expect(out.branchToReuse).toBeNull();
-    expect(out.pushTarget).toBe("HEAD");
-    expect(out.logs.join("\n")).toMatch(/merged/i);
+  test("a branch already merged into the base is refused, and the mutant reuses it", () => {
+    const real = runBlock(PUSH_TARGET_BLOCK, MERGED);
+    expect(real.branchToReuse).toBeNull();
+    expect(real.pushTarget).toBe("HEAD");
+
+    const mutant = runBlock(buildMutantBlock(), MERGED);
+    expect(mutant.pushTarget).toBe("HEAD:254-pr-when-container");
   });
 
-  test("the recover-169 shape — 64 ahead, 4 behind, squash-merged — is not reused", () => {
-    const out = runPushTarget(RECOVER_169);
-    expect(out.branchToReuse).toBeNull();
-    expect(out.pushTarget).toBe("HEAD");
+  test("a nomination whose currency is unknown is refused, and the mutant reuses it", () => {
+    // Unmeasured is not clean: a pre-computed nomination from a caller that
+    // never took the counts is a push target nobody vouched for.
+    const real = runBlock(PUSH_TARGET_BLOCK, UNKNOWN);
+    expect(real.branchToReuse).toBeNull();
+    expect(real.pushTarget).toBe("HEAD");
+
+    const mutant = runBlock(buildMutantBlock(), UNKNOWN);
+    expect(mutant.pushTarget).toBe("HEAD:254-pr-when-container");
   });
 
-  test("a nomination with no currency measurement is not reused either", () => {
-    // Unmeasured is not clean (.claude/rules/checks-must-be-able-to-fail.md).
-    // This is exactly the payload detection produced before #185, and it is
-    // also what an older caller's pre-computed args carry.
-    const out = runPushTarget({
-      branch: "recover-169",
-      refName: "refs/heads/recover-169",
-      commitCount: 64,
-    });
-    expect(out.branchToReuse).toBeNull();
-    expect(out.pushTarget).toBe("HEAD");
-    expect(out.logs.join("\n")).toMatch(/no currency measurement|not measured|unmeasured/i);
+  test("a legacy nomination carrying only a bare name is refused", () => {
+    // What `parsedArgs.priorBranch` looked like before #185 added the fields.
+    const real = runBlock(PUSH_TARGET_BLOCK, { branch: "254-pr-when-container" });
+    expect(real.branchToReuse).toBeNull();
+    expect(real.pushTarget).toBe("HEAD");
   });
 
-  test("a half-measured nomination is not reused", () => {
-    // isBehind measured false, isMerged absent: the squash-merge case is the
-    // one `commitCount` already hid, so an absent isMerged must not pass.
-    const out = runPushTarget({ ...CURRENT, isMerged: undefined });
-    expect(out.branchToReuse).toBeNull();
-    expect(out.pushTarget).toBe("HEAD");
+  test("no nomination at all pushes HEAD", () => {
+    expect(runBlock(PUSH_TARGET_BLOCK, null).pushTarget).toBe("HEAD");
+    expect(runBlock(PUSH_TARGET_BLOCK, { branch: "" }).pushTarget).toBe("HEAD");
   });
 
-  test("no nomination at all falls back to HEAD", () => {
-    expect(runPushTarget(null).pushTarget).toBe("HEAD");
-    expect(runPushTarget({ branch: "", refName: "", commitCount: null }).pushTarget).toBe("HEAD");
+  test("the refusal says which branch and why", () => {
+    const logs = runBlock(PUSH_TARGET_BLOCK, STALE).logs.join("\n");
+    expect(logs).toMatch(/behind/i);
+    expect(logs).toContain("8");
   });
 
-  test("the block is a single marked region the run actually reaches", () => {
-    for (const marker of [PUSH_TARGET_START, PUSH_TARGET_END]) {
-      expect(
-        (shipSource.match(new RegExp(marker.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"), "g")) || []).length,
-        `${marker} does not appear exactly once`,
-      ).toBe(1);
-    }
-    expect(assertMarkedBlockReachable(shipSource, "PUSH-TARGET")).toEqual(["Program"]);
-  });
-});
-
-// ── the mutation: strip the currency check from the push-target block ──
-
-/**
- * The one line the mutation removes.
- *
- * Declared as a literal rather than built by regex so that rewriting it in
- * ship.js aborts this file instead of quietly mutating nothing — the property
- * test/suite-binding-mutation.test.ts asserts for its own binding.
- */
-const CURRENCY_GUARD =
-  "const branchToReuse = priorCurrency.reusable ? priorBranchResult.branch : null";
-
-function blockWithoutCurrencyCheck(): string {
-  const block = pushTargetBlock();
-  const occurrences = block.split(CURRENCY_GUARD).length - 1;
-  if (occurrences !== 1) {
-    throw new Error(
-      `could not build the mutant: the currency guard appears ${occurrences} times, expected exactly 1. ` +
-        `Either it was rewritten, or a second branchToReuse assignment exists and removing one would leave the other reusing.`,
-    );
-  }
-  return block.replace(
-    CURRENCY_GUARD,
-    "const branchToReuse = priorBranchResult?.branch || null // MUTANT: currency is not consulted",
-  );
-}
-
-describe("#185 AC-5: the currency check is load-bearing, not decorative", () => {
-  test("the mutant reuses the stale branch while the real source refuses it", () => {
-    // One input, both copies. The mutant must REUSE — a mutation that also
-    // fell back to HEAD would mean the push target never depended on currency
-    // at all, which is this whole test's subject.
-    const real = runPushTarget(RECOVER_169);
-    const mutant = runPushTarget(RECOVER_169, blockWithoutCurrencyCheck());
-
-    expect(real.pushTarget, "the real source reused a squash-merged branch").toBe("HEAD");
-    expect(mutant.pushTarget, "with the currency check stripped the run still fell back to HEAD").toBe(
-      "HEAD:recover-169",
-    );
+  test("the decision has exactly one call site, and it is the push target's", () => {
+    const calls = shipSource.split("reusablePriorBranch(").length - 1;
+    // One declaration, one call. A second caller would be a second place for
+    // the check to be skipped.
+    expect(calls).toBe(2);
+    expect(shipSource).toContain("const branchToReuse = reusablePriorBranch(priorBranchResult)");
+    // The old unconditional assignment must be gone, not merely shadowed.
+    expect(shipSource).not.toContain("const branchToReuse = priorBranchResult?.branch || null");
   });
 
-  test("the mutant also reuses an unmeasured nomination", () => {
-    const unmeasured = { branch: "recover-169", refName: "refs/heads/recover-169", commitCount: 64 };
-    expect(runPushTarget(unmeasured).pushTarget).toBe("HEAD");
-    expect(runPushTarget(unmeasured, blockWithoutCurrencyCheck()).pushTarget).toBe("HEAD:recover-169");
-  });
-
-  test("the mutant still reuses a current branch, so the mutation is narrow", () => {
-    // If the mutant disagreed with the real source on the positive control
-    // too, the test above would pass for a mutation that broke something else.
-    expect(runPushTarget(CURRENT, blockWithoutCurrencyCheck()).pushTarget).toBe(
-      `HEAD:${CURRENT.branch}`,
-    );
-  });
-
-  test("the mutation harness aborts when the guard is rewritten", () => {
-    expect(() => {
-      const rewritten = pushTargetBlock().replace(
-        CURRENCY_GUARD,
-        "const branchToReuse = somethingElse()",
-      );
-      const occurrences = rewritten.split(CURRENCY_GUARD).length - 1;
-      if (occurrences !== 1) throw new Error("could not build the mutant");
-      return rewritten;
-    }).toThrow(/could not build the mutant/);
-  });
-});
-
-// ── both downstream readers of branchToReuse ──────────────────────────
-
-describe("#185 AC-5: the refusal reaches both readers of branchToReuse", () => {
-  test("the push step writes `HEAD:${branchToReuse}` and nothing else", () => {
-    // #164's contract: refName resolves, the bare name is the push target.
-    expect(shipSource).toContain("`HEAD:${branchToReuse}`");
-    expect(shipSource).toContain("-u origin ${pushTarget}");
-  });
-
-  test("the PR head name falls back to the committed branch", () => {
-    // shipBranch is the second reader (#136). Because the guard nulls
-    // branchToReuse rather than rewriting the push target string, both readers
-    // are covered by the one check.
-    expect(shipSource).toMatch(/const shipBranch = branchToReuse \|\| commitResult\.branch/);
-  });
-});
-
-// ── AC-4: the dead testsPass pairing is gone ──────────────────────────
-
-describe("#185 AC-4: the testsPass resume path is gone", () => {
-  test("no branch of ship.js reads the resume signal", () => {
-    // The resolution of the issue's either/or, stated here because the code is
-    // now an absence and an absence cannot explain itself: DELETED, not wired
-    // up. Making it reachable means running the prior branch's whole suite in
-    // a throwaway worktree on every ship — minutes of wall clock, on every
-    // run, to skip an Implement phase for work no run has ever resumed. The
-    // path has never executed once, so nothing regresses by removing it, and
-    // what it would have resumed is exactly the stale branch the currency
-    // check above now refuses.
-    // Counted rather than `not.toContain`, which prints the whole 4,000-line
-    // file on failure and buries the one line that matters.
-    expect(shipSource.split("priorBranchResult?.testsPass").length - 1).toBe(0);
-    expect(shipSource.split("priorBranchResult.testsPass").length - 1).toBe(0);
-  });
-
-  test("ship.js names no suite-result field of the prior branch at all", () => {
-    // Including in a comment: the issue's own evidence command is a grep, and
-    // a comment quoting the deleted expression would satisfy the grep while
-    // the code was still reading it.
-    expect((shipSource.match(/\btestsPass\b/g) || []).length).toBe(0);
-  });
-
-  test("every detection call site asks for detection without running the suite", () => {
-    const callSites = [...shipSource.matchAll(/detectPriorBranch\(\{[\s\S]*?\}\)/g)].map(m => m[0]);
-    expect(callSites.length, "ship.js stopped calling detectPriorBranch").toBeGreaterThan(0);
-    for (const call of callSites) {
-      expect(call, `a detection call site does not pass runTests:false: ${call}`).toContain(
-        "runTests:false",
-      );
-    }
-
-    const precomputeCalls = [...precomputeSource.matchAll(/detectPriorBranch\(\{[\s\S]*?\}\)/g)].map(
-      m => m[0],
-    );
-    expect(precomputeCalls.length).toBeGreaterThan(0);
-    for (const call of precomputeCalls) {
-      expect(call).toContain("runTests:false");
-    }
-  });
-
-  test("the Implement phase worktree is taken from the implementation that ran", () => {
-    expect(shipSource).toMatch(
-      /const marcusWorktreePath = implementResult\.buildResult\?\.worktreePath \|\| PROJECT_ROOT/,
-    );
-  });
-});
-
-// ── the measurement is propagated, not re-derived ─────────────────────
-
-/**
- * Execute precompute-goal.ts's priorBranch payload mapping over a stubbed
- * detection result.
- *
- * A grep for the three field names would pass over a mapping that mentioned
- * them in a comment, or that read them off the wrong object. This runs it.
- */
-function buildPayload(parsed: Record<string, unknown>) {
-  const block = sliceBlock(precomputeSource, PAYLOAD_START, PAYLOAD_END);
-  const factory = new Function("parsed", `let priorBranch;\n${block}\nreturn priorBranch`);
-  return factory(parsed) as Record<string, unknown> | undefined;
-}
-
-describe("#185: precompute-goal.ts propagates the currency measurement", () => {
-  test("behindCount, isBehind and isMerged reach the priorBranch payload", () => {
-    const payload = buildPayload({
-      branch: "recover-169",
-      refName: "refs/heads/recover-169",
-      commitCount: 64,
-      behindCount: 4,
-      isBehind: true,
-      isMerged: true,
-    });
-    expect(payload).toEqual({
-      branch: "recover-169",
-      refName: "refs/heads/recover-169",
-      commitCount: 64,
-      behindCount: 4,
-      isBehind: true,
-      isMerged: true,
-    });
-  });
-
-  test("a detection that could not measure currency reports null, not false", () => {
-    // `false` would be a claim that the branch is current. The absence of an
-    // answer is not the answer "no" — the same rule commitCount already
-    // follows at lib/prior-branch.ts.
-    const payload = buildPayload({ branch: "x", refName: "refs/heads/x" });
-    expect(payload).toEqual({
-      branch: "x",
-      refName: "refs/heads/x",
-      commitCount: null,
-      behindCount: null,
-      isBehind: null,
-      isMerged: null,
-    });
-  });
-
-  test("the payload Scope receives is refused by the push-target block when stale", () => {
-    // The two ends of the wire, joined: what precompute writes is what ship.js
-    // reads, so a field renamed on one side is caught here rather than by two
-    // suites that each pass against their own fixture.
-    const payload = buildPayload({
-      branch: "recover-169",
-      refName: "refs/heads/recover-169",
-      commitCount: 64,
-      behindCount: 4,
-      isBehind: true,
-      isMerged: true,
-    });
-    expect(runPushTarget(payload).pushTarget).toBe("HEAD");
-
-    const current = buildPayload({
-      branch: "185-live",
-      refName: "refs/heads/185-live",
-      commitCount: 2,
-      behindCount: 0,
-      isBehind: false,
-      isMerged: false,
-    });
-    expect(runPushTarget(current).pushTarget).toBe("HEAD:185-live");
-  });
-});
-
-describe("#185: ship.js still parses as a workflow script", () => {
-  test("the edited source loads", () => {
+  test("ship.js still parses as a workflow script", () => {
     const src = shipSource.replace(/^export /gm, "");
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     expect(() => new AsyncFunction("args", src)).not.toThrow();
+  });
+});
+
+describe("ship.js: the dead testsPass resume pairing is gone (#185)", () => {
+  const precompute = readFileSync(join(REPO_ROOT, "scripts", "precompute-goal.ts"), "utf-8");
+
+  test("no branch of ship.js reads the resume signal", () => {
+    expect(shipSource).not.toContain("priorBranchResult?.testsPass");
+    expect(shipSource).not.toContain("testsPass");
+    expect(shipSource).not.toContain("Skipping Implement phase");
+  });
+
+  test("every detection call site asks for detection without running the suite", () => {
+    // The pairing is what made the resume branch dead: `testsPass` can only be
+    // true when `runTests` is, and nothing asks for that.
+    // Lazy to the closing `})`, not to the first `}` — the call sites live
+    // inside template literals and `${ISSUE}` would end the match early,
+    // leaving a fragment that trivially fails to mention runTests.
+    const callSites = (src: string) =>
+      [...src.matchAll(/detectPriorBranch\(\{[\s\S]*?\}\)/g)].map(m => m[0]);
+
+    const sites = callSites(shipSource);
+    expect(sites.length).toBeGreaterThanOrEqual(2);
+    for (const site of sites) expect(site).toMatch(/runTests\s*:\s*false/);
+
+    const precomputeSites = callSites(precompute);
+    expect(precomputeSites.length).toBeGreaterThanOrEqual(1);
+    for (const site of precomputeSites) expect(site).toMatch(/runTests\s*:\s*false/);
+  });
+
+  test("the worktree Quinn validates is the one the implementation ran in", () => {
+    // The ternary's other arm was PROJECT_ROOT, reachable only from the dead
+    // resume branch.
+    expect(shipSource).toContain(
+      "const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_ROOT",
+    );
+  });
+});
+
+describe("ship.js: currency survives the trip through the workflow (#185)", () => {
+  test("the pre-computed nomination carries the currency fields", () => {
+    // A field the transport drops is a field the push-target check reads as
+    // unknown, which would make every pre-computed run stop reusing branches.
+    const block = shipSource.slice(
+      shipSource.indexOf("let priorBranchResult = parsedArgs.priorBranch"),
+      shipSource.indexOf("// ──── PUSH-TARGET-CURRENCY-START ────"),
+    );
+    for (const field of ["behindCount", "isBehind", "isMerged"]) {
+      expect(block).toContain(field);
+    }
+  });
+
+  test("precompute-goal.ts reports the currency fields it detected", () => {
+    const precompute = readFileSync(join(REPO_ROOT, "scripts", "precompute-goal.ts"), "utf-8");
+    for (const field of ["behindCount", "isBehind", "isMerged"]) {
+      expect(precompute).toContain(field);
+    }
   });
 });

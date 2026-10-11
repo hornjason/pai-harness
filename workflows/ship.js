@@ -1642,10 +1642,8 @@ bun -e "import {detectPriorBranch} from '${HARNESS_ROOT}/lib/prior-branch.ts'; c
 Return: acCount from step 1, the full JSON from step 2 as config, and prior branch from step 3.
 Report priorBranch exactly as detection returned it — branch (bare name), refName
 (the git-resolvable ref), commitCount, which is null when git could not count,
-and the currency fields behindCount, isBehind and isMerged. Copy those three
-through verbatim: null means detection could not measure, and false means it
-measured and the branch is current. Substituting one for the other is the
-whole of #185, so if a field is absent from the JSON report it as null.
+and the currency fields behindCount, isBehind and isMerged (#185). A null stays
+null in all four: it means git could not answer, not that the branch is current.
   `, { label: 'setup', phase: 'Discovery', schema: {
     type: 'object',
     properties: {
@@ -1887,15 +1885,9 @@ Detection returns two names and they are NOT interchangeable (#164):
 Merge refName. Merging the bare name of a branch that only exists on origin
 fails, because nothing here resolves it.
 
-If the JSON reports isMerged true, or isBehind true, the branch is stale: it is
-already in main, or main has moved past it. Do NOT merge it and do not treat it
-as resumable work — report it with its currency fields and stop at that. #185:
-a branch 64 ahead and 4 behind was nominated for #169, and its diff deletes
-1,344 lines of already-shipped code.
-
-Otherwise, if a prior branch exists (non-empty branch field), bring it into the
-working tree — but NOT onto the default branch (#136). Substitute the refName
-field from the JSON above for <refName>:
+If a prior branch exists (non-empty branch field), bring it into the working
+tree — but NOT onto the default branch (#136). Substitute the refName field
+from the JSON above for <refName>:
 
   cd ${PROJECT_ROOT}
   branch=$(git branch --show-current)
@@ -1911,13 +1903,21 @@ is still the branch this run pushes to.
 Return: priorBranch (bare name, empty if none), priorRefName (the ref you
 merged, empty if none), priorCommitCount (number, or null if detection
 reported null — do not substitute 0, that would claim the branch is merged),
-and the three currency fields copied verbatim from the JSON: priorBehindCount,
-priorIsBehind, priorIsMerged. Report null for any the JSON did not carry. Null
-is "not measured" and false is "measured, and the branch is current" — they are
-different answers and the push target depends on the difference (#185).
+and the three currency fields copied VERBATIM from the JSON above (#185):
+priorBehindCount, priorIsBehind, priorIsMerged. A field detection reported as
+null stays null — it means git could not answer, and substituting false there
+claims a branch is current when nobody measured whether it is. These decide
+whether this run may push onto the branch at all.
 `, { label: 'prior-branch', phase: 'Scope', schema: {
     type: 'object',
-    properties: { priorBranch: { type: 'string' }, priorRefName: { type: 'string' }, priorCommitCount: { type: ['number', 'null'] }, priorBehindCount: { type: ['number', 'null'] }, priorIsBehind: { type: ['boolean', 'null'] }, priorIsMerged: { type: ['boolean', 'null'] } },
+    properties: {
+      priorBranch: { type: 'string' },
+      priorRefName: { type: 'string' },
+      priorCommitCount: { type: ['number', 'null'] },
+      priorBehindCount: { type: ['number', 'null'] },
+      priorIsBehind: { type: ['boolean', 'null'] },
+      priorIsMerged: { type: ['boolean', 'null'] },
+    },
     required: ['priorBranch']
   }})
   if (priorResult?.priorBranch) {
@@ -1929,12 +1929,19 @@ different answers and the push target depends on the difference (#185).
       isBehind: priorResult.priorIsBehind ?? null,
       isMerged: priorResult.priorIsMerged ?? null,
     }
-    log(`Prior branch: ${priorBranchResult.branch} (${priorBranchResult.refName}) — behind ${priorBranchResult.behindCount ?? 'unmeasured'}, merged ${priorBranchResult.isMerged ?? 'unmeasured'}`)
+    log(`Prior branch merged: ${priorBranchResult.branch} (${priorBranchResult.refName})`)
   }
 } else if (priorBranchResult.branch) {
   // A pre-computed result from an older caller may carry only the bare name.
   if (!priorBranchResult.refName) priorBranchResult.refName = priorBranchResult.branch
-  log(`Prior branch (pre-computed): ${priorBranchResult.branch} (${priorBranchResult.refName}) — behind ${priorBranchResult.behindCount ?? 'unmeasured'}, merged ${priorBranchResult.isMerged ?? 'unmeasured'}`)
+  // …and no currency at all. Left as null rather than defaulted: a missing
+  // measurement is not a measurement of zero, and the push-target check below
+  // refuses a nomination nobody vouched for (#185).
+  if (priorBranchResult.behindCount === undefined) priorBranchResult.behindCount = null
+  if (priorBranchResult.isBehind === undefined) priorBranchResult.isBehind = null
+  if (priorBranchResult.isMerged === undefined) priorBranchResult.isMerged = null
+  log(`Prior branch (pre-computed): ${priorBranchResult.branch} (${priorBranchResult.refName}), ` +
+    `behind ${priorBranchResult.behindCount ?? 'unknown'}, merged ${priorBranchResult.isMerged ?? 'unknown'}`)
 }
 
 // The scope gate owns AC evidence checking end to end (#235) — see
@@ -2247,23 +2254,14 @@ Also report worktreePath: your current working directory.
 }
 // ──── DECOMPOSED-SHIP-END ────
 
-/**
- * #185: there used to be a third branch here, reading the prior branch's
- * suite-result flag. It skipped Implement entirely and took the prior branch's
- * work as this run's output, and it never executed once. That flag is only
- * ever true when `detectPriorBranch` is called with `runTests: true`, and every
- * call site — here, and in scripts/precompute-goal.ts — passes `false`.
- *
- * The issue left the resolution open: make it reachable, or remove it. Removed,
- * for two reasons. Making it reachable means checking the candidate out into a
- * throwaway worktree and running its whole suite on EVERY ship, minutes of wall
- * clock per run, to skip a phase no run has ever skipped. And what it would
- * have resumed is the same nomination the push-target block now refuses —
- * a green suite on a branch 4 behind main is still a branch 4 behind main, so
- * the feature's happy path is the #169 revert.
- *
- * Detection stays: its output is the push target, which is load-bearing.
- */
+// The resume branch that used to open this chain is gone (#185). It ran when
+// detection reported that the prior branch's own suite passed — a signal no
+// call site has ever asked for: both pass `runTests: false`, so the field was
+// false on every run this workflow has ever made. It skipped the Implement
+// phase, took `git diff main...HEAD` in PROJECT_ROOT as the file list, and
+// pinned marcusWorktreePath to PROJECT_ROOT. Dead code that reads a field
+// nothing sets is worse than absent: it describes behaviour the harness does
+// not have, and #185 was first filed as latent on exactly that reading.
 let implementResult
 if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.length >= 2) {
   implementResult = await runDecomposedShip(mDecomposition.subIssues)
@@ -2953,63 +2951,46 @@ const ENV_CHECK_SCHEMA = {
   required: ['apiStatus', 'uiStatus', 'testsStatus'],
 }
 
-// ──── PUSH-TARGET-START ────
+// ──── PUSH-TARGET-CURRENCY-START ────
 /**
- * Whether a nominated prior branch may be this run's push target (#185).
+ * The prior branch this run may push onto, or null to push a fresh HEAD (#185).
  *
- * #515 made every nomination the push target, to stop a resumed issue opening
- * a second orphan branch. What it reused, though, is whatever detection
- * nominated — "a branch whose name contains the issue number, newest first" —
- * and detection's only signal was `commitCount`, which counts FORWARD from the
- * merge base. A branch 64 ahead and 4 behind reads identically to a branch 64
- * ahead and current.
+ * Reusing the nominated branch prevents orphan branches (#515), and for two
+ * years that was the whole of the decision: `priorBranchResult?.branch`, taken
+ * unconditionally. Detection cannot nominate only good branches — it finds
+ * refs whose name mentions the issue — so the first consumer that cares has to
+ * be the one that asks whether the branch is still a sane place to land.
  *
- * Measured on the #169 run: `recover-169`, the branch PR #177 was squash-merged
- * from, was nominated with `commitCount: 64` while sitting 4 commits behind
- * main. Pushing onto it would have carried a diff that deletes 1,344 lines,
- * reverting #176 and #178. Nothing here looked.
+ * Measured live on 2026-10-11: for issue 254 detection nominated
+ * `run/254-wf19f7def7-rescue`, 1 ahead of main and 8 behind, whose own tip
+ * message says "NOT reviewed, do not merge". `HEAD:run/254-…` can only be
+ * rejected as a non-fast-forward, and that rejection blocked #254 and with it
+ * the whole path to a DailyBriefDashboard run.
  *
- * So currency is consulted, and consulted as a MEASUREMENT taken by
- * lib/prior-branch.ts rather than re-derived from git here: Scope already paid
- * for the reading, and a second derivation is a second thing that can disagree.
- * Three outcomes, each named in the log, because "no reuse" and "no nomination"
- * are different facts:
- *
- *   merged / behind  — a stale branch, refused;
- *   unmeasured       — detection reported no currency at all, also refused.
- *                      An absent reading is not a clean one
- *                      (.claude/rules/checks-must-be-able-to-fail.md). The cost
- *                      of refusing is one extra branch; the cost of reusing is
- *                      the diff above.
- *   current          — reused, which is #515's whole point and is why the
- *                      positive control in test/prior-branch-push-target.test.ts
- *                      matters as much as the refusals.
+ * Unknown is refused, not waved through. A nomination from a caller that never
+ * took the counts is a push target nobody vouched for, and the cost of being
+ * wrong is one extra branch — against a run that cannot push at all.
  */
-function priorBranchCurrency(prior) {
-  if (!prior || !prior.branch) {
-    return { reusable: false, reason: 'no prior branch was nominated' }
+function reusablePriorBranch(prior) {
+  if (!prior || !prior.branch) return null
+
+  const refusals = []
+  if (prior.isMerged === true) refusals.push('its work is already in the base branch')
+  else if (prior.isMerged !== false) refusals.push('whether it is already merged was never measured')
+  if (prior.isBehind === true) {
+    refusals.push(`it is ${prior.behindCount ?? 'some'} commit(s) behind the base branch`)
+  } else if (prior.isBehind !== false) {
+    refusals.push('how far behind the base branch it sits was never measured')
   }
-  if (prior.isMerged === true) {
-    return { reusable: false, reason: `${prior.branch} is already merged into the base` }
-  }
-  if (prior.isBehind === true || (typeof prior.behindCount === 'number' && prior.behindCount > 0)) {
-    const n = typeof prior.behindCount === 'number' ? `${prior.behindCount} commit(s)` : 'commits'
-    return { reusable: false, reason: `${prior.branch} is behind the base by ${n}` }
-  }
-  if (prior.isBehind !== false || prior.isMerged !== false) {
-    return {
-      reusable: false,
-      reason: `${prior.branch} has no currency measurement — detection reported neither isBehind nor isMerged, and unmeasured is not current`,
-    }
-  }
-  return { reusable: true, reason: `${prior.branch} is current with the base` }
+
+  if (refusals.length === 0) return prior.branch
+  log(`Not pushing onto prior branch ${prior.branch}: ${refusals.join('; ')}. Pushing HEAD instead.`)
+  return null
 }
 
-const priorCurrency = priorBranchCurrency(priorBranchResult)
-const branchToReuse = priorCurrency.reusable ? priorBranchResult.branch : null
+const branchToReuse = reusablePriorBranch(priorBranchResult)
 const pushTarget = branchToReuse ? `HEAD:${branchToReuse}` : 'HEAD'
-log(`Push target ${pushTarget} — ${priorCurrency.reason}`)
-// ──── PUSH-TARGET-END ────
+// ──── PUSH-TARGET-CURRENCY-END ────
 
 // Batched: commit + push + record state (was 3 agents, now 1)
 // When the collect step ran, the files are already staged by the script that

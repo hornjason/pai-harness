@@ -1,33 +1,40 @@
 /**
- * Rescue refs and worktree refs are not prior work (#185)
+ * A preserved worktree is not prior work to resume (#185)
  *
- * Two namespaces in this repo carry an issue number without being a branch
- * anyone should resume:
+ * scripts/preserve-worktree-work.ts exists to give REFUSED work a name so it
+ * survives worktree cleanup. Its own commit message says so: the branch this
+ * repository carries for issue 254 reads "rescued output of run wf_19f7def7-1bf
+ * — NOT reviewed, do not merge". Detection nominated it anyway, because the
+ * only thing it looked at was whether the number 254 appeared in the name, and
+ * ship.js then made it the push target.
  *
- *   - `rungate-preserved/*` is created by scripts/preserve-worktree-work.ts
- *     when a worktree is about to be removed with uncommitted or unreachable
- *     work on it. It exists so `git gc` cannot eat the commit. It is a RESCUE,
- *     written at the moment something went wrong, and its name is built from
- *     the worktree directory — which carries the issue number.
- *   - `worktree-*` is a harness scratch branch.
+ * Preservation and agent-worktree refs are harness bookkeeping. They are
+ * created by the harness, for the harness, and nothing downstream of detection
+ * should ever push to one.
  *
- * Nominating either one hands the resume path the snapshot of a failed run
- * instead of the branch the run was meant to produce, and because both are
- * written LAST they win the recency tie-break against the real branch every
- * time.
+ * Positive control (.claude/rules/checks-must-be-able-to-fail.md): every
+ * excluded ref sits in the SAME fixture as a real branch for the same issue,
+ * and the real one is deliberately the OLDEST, so recency alone would pick a
+ * scratch ref. A filter narrowed to nothing fails "the real branch is still
+ * nominated"; a filter that excludes nothing fails all three exclusion cases
+ * AND the ordering case, because the rescue branch is the newest ref present.
  *
- * Positive control (.claude/rules/checks-must-be-able-to-fail.md): the
- * excluded refs and a real branch for the SAME issue live in one fixture, and
- * the excluded ones are deliberately the newest. A filter that excludes
- * nothing fails the nomination and the null case; a filter narrowed to
- * everything fails "the real branch is still nominated". Neither can be green.
+ * What was broken to prove it, run and counted rather than asserted, over the
+ * five detection suites (45 tests):
+ *
+ * | Mutation | Red |
+ * |---|---|
+ * | `isHarnessScratchRef` short-circuited to `return false` | 5 — every exclusion case, the ordering case, and the predicate's own coverage test |
+ * | `isHarnessScratchRef` short-circuited to `return true` | 16 — detection nominates nothing at all, which is the shape that would have passed every exclusion test on its own |
+ *
+ * Neither is left in the tree; both were run and reverted.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { detectPriorBranch } from "../lib/prior-branch";
+import { detectPriorBranch, isHarnessScratchRef } from "../lib/prior-branch";
 
 function git(args: string[], cwd: string, date?: string) {
   const res = spawnSync("git", args, {
@@ -43,20 +50,21 @@ function git(args: string[], cwd: string, date?: string) {
   return res.stdout;
 }
 
-function branchWithCommit(work: string, branch: string, date: string) {
+/** A branch off main carrying one commit, left behind and not checked out. */
+function branchWithWork(work: string, branch: string, date: string) {
   git(["checkout", "-q", "-b", branch, "main"], work);
-  writeFileSync(join(work, `${branch.replace(/\//g, "_")}.txt`), branch);
+  writeFileSync(join(work, `${branch.replace(/[/]/g, "_")}.txt`), branch);
   git(["add", "-A"], work);
   git(["commit", "-q", "-m", `work on ${branch}`], work, date);
   git(["checkout", "-q", "main"], work);
 }
 
-describe("prior-branch: rescue and worktree refs are never nominated (#185)", () => {
+describe("prior-branch: harness scratch refs are never nominated (#185)", () => {
   let root = "";
   let work = "";
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), "rungate-prior-preserved-"));
+    root = mkdtempSync(join(tmpdir(), "rungate-prior-preserve-"));
     work = join(root, "work");
     git(["init", "-q", "-b", "main", work], root);
     git(["config", "user.email", "test@example.com"], work);
@@ -66,51 +74,72 @@ describe("prior-branch: rescue and worktree refs are never nominated (#185)", ()
     git(["add", "-A"], work);
     git(["commit", "-q", "-m", "base"], work, "2020-01-01T00:00:00Z");
 
-    // Issue 8820: the real branch, plus both excluded shapes. The excluded
-    // ones are NEWER, so recency alone would pick them.
-    branchWithCommit(work, "8820-real-work", "2021-01-01T00:00:00Z");
-    branchWithCommit(work, "worktree-8820-scratch", "2022-01-01T00:00:00Z");
-    // Exactly the name scripts/preserve-worktree-work.ts builds:
-    // `rungate-preserved/${basename(dir)}-${sha}`.
-    branchWithCommit(work, "rungate-preserved/worktree-8820-scratch-a1b2c3d", "2023-01-01T00:00:00Z");
+    // Issue 9901: a real branch, deliberately the OLDEST of the four, plus one
+    // ref of every kind the harness leaves lying around for the same issue.
+    branchWithWork(work, "9901-real-work", "2021-01-01T00:00:00Z");
+    // scripts/preserve-worktree-work.ts, detached-HEAD naming scheme.
+    branchWithWork(work, "rungate-preserved/worktree-9901-abc1234", "2022-01-01T00:00:00Z");
+    // An agent worktree's own branch, which preservation commits onto directly.
+    branchWithWork(work, "worktree-agent-9901deadbeef", "2022-06-01T00:00:00Z");
+    // The rescue branch this repository actually carries for #254, by shape.
+    branchWithWork(work, "run/9901-wf19f7def7-rescue", "2023-01-01T00:00:00Z");
 
-    // Issue 8821: nothing BUT excluded shapes.
-    branchWithCommit(work, "worktree-8821-scratch", "2022-02-01T00:00:00Z");
-    branchWithCommit(work, "rungate-preserved/wf_8821abc-deadbee", "2023-02-01T00:00:00Z");
+    // Issue 9902 has NOTHING but scratch refs. There is no prior work here.
+    branchWithWork(work, "run/9902-wfcafef00d-rescue", "2023-02-01T00:00:00Z");
+    branchWithWork(work, "rungate-preserved/worktree-9902-ff00ff0", "2023-03-01T00:00:00Z");
   });
 
   afterAll(() => {
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  test("the fixture really holds both excluded refs and they really are newest", () => {
-    const refs = git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], work)
-      .split("\n")
-      .map(s => s.trim())
-      .filter(Boolean);
-    expect(refs).toContain("rungate-preserved/worktree-8820-scratch-a1b2c3d");
-    expect(refs).toContain("worktree-8820-scratch");
-    expect(refs).toContain("8820-real-work");
-  });
-
-  test("the real branch is still nominated even though both excluded refs are newer", async () => {
-    const result = await detectPriorBranch({ issueNumber: 8820, projectRoot: work, runTests: false });
+  test("the real branch is still nominated even though every scratch ref is newer", async () => {
+    const result = await detectPriorBranch({ issueNumber: 9901, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
-    expect(result!.branch).toBe("8820-real-work");
-    expect(result!.refName).toBe("refs/heads/8820-real-work");
+    expect(result!.branch).toBe("9901-real-work");
   });
 
   test("an issue whose only refs are a rescue branch and a worktree branch yields no nomination", async () => {
-    const result = await detectPriorBranch({ issueNumber: 8821, projectRoot: work, runTests: false });
+    const result = await detectPriorBranch({ issueNumber: 9902, projectRoot: work, runTests: false });
     expect(result).toBeNull();
   });
 
-  test("a rescue ref is excluded by its namespace, not by the worktree name inside it", async () => {
-    // `rungate-preserved/wf_8821abc-deadbee` contains no `worktree-` segment,
-    // so the pre-existing `worktree-` filter cannot be what rejects it.
-    const refs = git(["for-each-ref", "--format=%(refname:short)", "refs/heads"], work);
-    expect(refs).toContain("rungate-preserved/wf_8821abc-deadbee");
-    const result = await detectPriorBranch({ issueNumber: 8821, projectRoot: work, runTests: false });
-    expect(result).toBeNull();
+  test("the rescue preservation branch is not nominated under any name", async () => {
+    const nine01 = await detectPriorBranch({ issueNumber: 9901, projectRoot: work, runTests: false });
+    const nine02 = await detectPriorBranch({ issueNumber: 9902, projectRoot: work, runTests: false });
+    for (const result of [nine01, nine02]) {
+      if (result) expect(result.branch).not.toContain("rescue");
+    }
+  });
+
+  test("the preserved-worktree branch is not nominated under any name", async () => {
+    const nine01 = await detectPriorBranch({ issueNumber: 9901, projectRoot: work, runTests: false });
+    const nine02 = await detectPriorBranch({ issueNumber: 9902, projectRoot: work, runTests: false });
+    for (const result of [nine01, nine02]) {
+      if (result) {
+        expect(result.branch).not.toContain("rungate-preserved/");
+        expect(result.branch).not.toContain("worktree-");
+      }
+    }
+  });
+});
+
+describe("prior-branch: the scratch-ref predicate itself (#185)", () => {
+  test("every naming scheme the harness creates is covered", () => {
+    // scripts/preserve-worktree-work.ts, lib/worktree-isolation.ts, and the
+    // run-scoped rescue namespace, in that order.
+    expect(isHarnessScratchRef("rungate-preserved/agent-a82622b-404379c")).toBe(true);
+    expect(isHarnessScratchRef("worktree-agent-a82622b50baca5118")).toBe(true);
+    expect(isHarnessScratchRef("worktree-wf_216bff9a-c13-14")).toBe(true);
+    expect(isHarnessScratchRef("run/254-wf19f7def7-rescue")).toBe(true);
+  });
+
+  test("an ordinary issue branch is not scratch", () => {
+    // The over-broad filter this rules out: one that swallows the branch names
+    // ship.js itself creates would leave detection permanently empty, and
+    // every exclusion test above would still pass.
+    expect(isHarnessScratchRef("185-deep-modules")).toBe(false);
+    expect(isHarnessScratchRef("254-pr-when-container-configured")).toBe(false);
+    expect(isHarnessScratchRef("docs-209-standing")).toBe(false);
   });
 });

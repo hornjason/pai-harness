@@ -1,26 +1,31 @@
 /**
- * A prior branch whose work is already on the base is reported as merged (#185)
+ * A candidate whose content is already in the base is not prior work (#185)
  *
- * `detectPriorBranch` nominated any ref carrying the issue number, and the
- * resume path then re-opened work that had already landed. The ancestor case
- * is the easy half; the one that actually happens in this repo is the SQUASH
- * merge, where the branch is an ancestor of nothing and `rev-list main..ref`
- * still reports every commit it ever had. The content is on main; the commits
- * are not.
+ * The branch this repository nominated for issue 254 was one commit ahead of
+ * main and eight behind it, and no field in PriorBranch said so. "Already
+ * merged" is the second half of the same blindness: a branch whose work landed
+ * in main — especially via the squash merges this repo merges PRs with — still
+ * reports `commitCount: 1` and still looks like something to resume.
  *
- * The detection is a TREE comparison — is the tree this branch produced
- * already somewhere in the base's history — and deliberately not `git cherry`:
- * cherry compares patch ids one commit at a time, which answers a different
- * question (were these patches applied individually) and is quadratic in the
- * branch length. The last test asserts the invocation is absent from the
- * source rather than trusting this paragraph.
+ * `git cherry` is the obvious tool and the wrong one: it compares patch-ids,
+ * and a squash merge produces a single commit whose patch-id matches none of
+ * the originals. So the question is asked of the TREE — merge the candidate
+ * into the base in memory and see whether the base's tree moves. If it does
+ * not, the base already contains everything the candidate has, however it got
+ * there.
  *
- * Positive control (.claude/rules/checks-must-be-able-to-fail.md): the merged,
- * the squash-merged and the unmerged branch live in the SAME fixture and are
- * measured by the same call. A detector hardwired to `true` fails the
- * unmerged case; one hardwired to `false` fails the other two; one that only
- * does the ancestor half fails the squash case, which is the half that was
- * missing.
+ * Positive control (.claude/rules/checks-must-be-able-to-fail.md): the
+ * squash-merged, the ordinarily merged and the genuinely open branch all live in ONE
+ * fixture repository and are read by the same call. A detector hardwired to
+ * `true` fails the open case; one hardwired to `false` fails both merged
+ * cases; one that answers `null` everywhere fails all three, and the null
+ * contract is pinned separately over a repo whose base does not resolve.
+ *
+ * What was broken to prove it, run and counted rather than asserted, over the
+ * five detection suites (45 tests): short-circuiting `mergedIntoBase` to
+ * `return false` turns 3 red — both merged fixtures and the unanswerable case,
+ * which is the one that stops "always false" from reading as caution. The
+ * mutation is not left in the tree; it was run and reverted.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { spawnSync } from "child_process";
@@ -45,106 +50,89 @@ function git(args: string[], cwd: string, date?: string) {
   return res.stdout;
 }
 
-function commit(work: string, name: string, date: string) {
-  writeFileSync(join(work, `${name}.txt`), name);
+function commit(work: string, file: string, body: string, date: string) {
+  writeFileSync(join(work, file), body);
   git(["add", "-A"], work);
-  git(["commit", "-q", "-m", name], work, date);
+  git(["commit", "-q", "-m", `${file}: ${body}`], work, date);
 }
 
-describe("prior-branch: work already contained in the base (#185)", () => {
+function initRepo(defaultBranch: string) {
+  const root = mkdtempSync(join(tmpdir(), "rungate-prior-merged-"));
+  const work = join(root, "work");
+  git(["init", "-q", "-b", defaultBranch, work], root);
+  git(["config", "user.email", "test@example.com"], work);
+  git(["config", "user.name", "Test"], work);
+  git(["config", "commit.gpgsign", "false"], work);
+  commit(work, "README.md", "fixture", "2020-01-01T00:00:00Z");
+  return { root, work };
+}
+
+describe("prior-branch: already-merged candidates, by tree (#185)", () => {
   let root = "";
   let work = "";
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), "rungate-prior-merged-"));
-    work = join(root, "work");
-    git(["init", "-q", "-b", "main", work], root);
-    git(["config", "user.email", "test@example.com"], work);
-    git(["config", "user.name", "Test"], work);
-    git(["config", "commit.gpgsign", "false"], work);
-    commit(work, "base", "2020-01-01T00:00:00Z");
+    ({ root, work } = initRepo("main"));
 
-    // (1) A branch merged with a real merge commit, after which main moved on.
-    git(["checkout", "-q", "-b", "8810-merged"], work);
-    commit(work, "merged-work", "2021-01-01T00:00:00Z");
-    git(["checkout", "-q", "main"], work);
-    git(["merge", "-q", "--no-ff", "--no-edit", "8810-merged"], work, "2021-01-02T00:00:00Z");
-    commit(work, "main-after-merge", "2021-01-03T00:00:00Z");
-
-    // (2) A branch SQUASH-merged into main, after which main moved on again.
-    // The branch is an ancestor of nothing, and `main..` still lists its
-    // commit, so only a tree comparison can see that the work landed.
+    // 8811 is squash-merged — the shape `git cherry` cannot see, because the
+    // squash commit's patch-id matches neither of the two it replaced.
     git(["checkout", "-q", "-b", "8811-squashed"], work);
-    commit(work, "squashed-work", "2021-02-01T00:00:00Z");
+    commit(work, "squashed-a.txt", "a", "2021-01-01T00:00:00Z");
+    commit(work, "squashed-b.txt", "b", "2021-01-02T00:00:00Z");
     git(["checkout", "-q", "main"], work);
-    git(["merge", "-q", "--squash", "8811-squashed"], work);
-    git(["commit", "-q", "-m", "squash merge of 8811"], work, "2021-02-02T00:00:00Z");
-    commit(work, "main-after-squash", "2021-02-03T00:00:00Z");
+    git(["merge", "--squash", "-q", "8811-squashed"], work);
+    git(["commit", "-q", "-m", "squashed 8811"], work, "2021-01-03T00:00:00Z");
+    // Main keeps moving afterwards, so "merged" cannot be read off the trees
+    // being equal — only off the MERGE adding nothing.
+    commit(work, "after.txt", "later", "2021-01-04T00:00:00Z");
 
-    // (3) A branch that genuinely has not landed.
+    // 8812 is real, unmerged work branched from the current tip.
     git(["checkout", "-q", "-b", "8812-open"], work);
-    commit(work, "open-work", "2021-03-01T00:00:00Z");
+    commit(work, "open.txt", "unmerged", "2021-02-01T00:00:00Z");
     git(["checkout", "-q", "main"], work);
+
+    // 8813 is merged the ordinary way, with a merge commit.
+    git(["checkout", "-q", "-b", "8813-truemerge"], work);
+    commit(work, "truemerge.txt", "c", "2021-03-01T00:00:00Z");
+    git(["checkout", "-q", "main"], work);
+    git(["merge", "--no-ff", "-q", "-m", "merge 8813", "8813-truemerge"], work, "2021-03-02T00:00:00Z");
   });
 
   afterAll(() => {
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  test("the fixture's squash really is a squash — the branch is an ancestor of nothing", () => {
-    const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", "8811-squashed", "main"], {
-      cwd: work,
-      encoding: "utf-8",
-    });
-    expect(ancestor.status).not.toBe(0);
-    // ...and the commit is still listed as unmerged by the count the detector
-    // already reported, which is why `commitCount` alone could never see it.
-    const count = spawnSync("git", ["rev-list", "--count", "main..8811-squashed"], {
-      cwd: work,
-      encoding: "utf-8",
-    });
-    expect(count.stdout.trim()).toBe("1");
-  });
-
-  test("a branch merged with a merge commit is reported merged", async () => {
-    const result = await detectPriorBranch({ issueNumber: 8810, projectRoot: work, runTests: false });
-    expect(result).not.toBeNull();
-    expect(result!.branch).toBe("8810-merged");
-    expect(result!.mergedIntoBase).toBe(true);
-  });
-
-  test("a branch squash-merged into the base is reported merged", async () => {
+  test("a squash-merged branch is reported as merged", async () => {
     const result = await detectPriorBranch({ issueNumber: 8811, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
     expect(result!.branch).toBe("8811-squashed");
-    expect(result!.mergedIntoBase).toBe(true);
-    // The count still says there is something to resume. The two facts
-    // disagree, and that disagreement is the whole point of the new one.
-    expect(result!.commitCount).toBe(1);
+    expect(result!.isMerged).toBe(true);
+    // It still looks like live work to the forward count — which is the bug.
+    expect(result!.commitCount).toBe(2);
   });
 
-  test("a branch that has not landed is not reported merged", async () => {
+  test("a branch merged with a merge commit is reported as merged", async () => {
+    const result = await detectPriorBranch({ issueNumber: 8813, projectRoot: work, runTests: false });
+    expect(result).not.toBeNull();
+    expect(result!.isMerged).toBe(true);
+  });
+
+  test("a branch holding work the base does not have is not reported as merged", async () => {
     const result = await detectPriorBranch({ issueNumber: 8812, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
     expect(result!.branch).toBe("8812-open");
-    expect(result!.mergedIntoBase).toBe(false);
+    expect(result!.isMerged).toBe(false);
   });
 });
 
-describe("prior-branch: no base means no merge claim (#185)", () => {
+describe("prior-branch: an unanswerable merge question is not false (#185)", () => {
   let root = "";
   let work = "";
 
   beforeAll(() => {
-    root = mkdtempSync(join(tmpdir(), "rungate-prior-merged-nobase-"));
-    work = join(root, "work");
-    git(["init", "-q", "-b", "trunk", work], root);
-    git(["config", "user.email", "test@example.com"], work);
-    git(["config", "user.name", "Test"], work);
-    git(["config", "commit.gpgsign", "false"], work);
-    commit(work, "base", "2020-01-01T00:00:00Z");
-    git(["checkout", "-q", "-b", "8813-no-main"], work);
-    commit(work, "work", "2021-01-01T00:00:00Z");
+    ({ root, work } = initRepo("trunk"));
+    git(["checkout", "-q", "-b", "8814-no-main"], work);
+    commit(work, "x.txt", "x", "2021-01-01T00:00:00Z");
     git(["checkout", "-q", "trunk"], work);
   });
 
@@ -152,31 +140,29 @@ describe("prior-branch: no base means no merge claim (#185)", () => {
     if (root) rmSync(root, { recursive: true, force: true });
   });
 
-  test("an unresolvable base reports not-merged rather than merged", async () => {
-    const result = await detectPriorBranch({ issueNumber: 8813, projectRoot: work, runTests: false });
+  test("with no base to compare against, isMerged is null rather than false", async () => {
+    const result = await detectPriorBranch({ issueNumber: 8814, projectRoot: work, runTests: false });
     expect(result).not.toBeNull();
-    // "I could not check" must not become "it already landed" — that would
-    // discard the branch. The conservative direction is to keep it.
-    expect(result!.mergedIntoBase).toBe(false);
+    expect(result!.isMerged).toBeNull();
+    expect(result!.isMerged).not.toBe(false);
   });
 });
 
-describe("prior-branch: the merge detector's invocation (#185)", () => {
+describe("prior-branch: the merged question is asked of the tree (#185)", () => {
   const source = readFileSync(join(REPO_ROOT, "lib", "prior-branch.ts"), "utf-8");
   const code = source
     .split("\n")
     .filter(line => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join("\n");
 
-  test("the detection source invokes no git cherry", () => {
-    expect(code).not.toContain("'cherry'");
-    expect(code).not.toContain('"cherry"');
+  test("no git cherry call is reachable from detection", () => {
+    expect(code).not.toMatch(/['"]cherry['"]/);
     expect(code).not.toContain("cherry-mark");
+    expect(code).not.toContain("git cherry");
   });
 
-  test("the detection is a tree comparison", () => {
-    // Asserted so that a later rewrite back onto patch ids has to change this
-    // line deliberately rather than by accident.
-    expect(code).toContain("^{tree}");
+  test("the comparison is a merge-tree against the base", () => {
+    expect(code).toContain("merge-tree");
+    expect(code).toContain("--write-tree");
   });
 });
