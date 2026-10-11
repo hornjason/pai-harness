@@ -1701,6 +1701,159 @@ closed; but it always says "no broken AC ids were recorded", which is true of
 the key and false of the reading, and a refusal the heal loop cannot act on is
 part of how #261 cost two rounds.
 
+### An ordering check that was reading the comments (#273)
+
+Six phase-ordering assertions in `test/spec-compliance.test.ts` — PO-1 through
+PO-6, the checks that say the harness still runs Implement before Validate and
+opens the PR before the ship gate — located their anchors with `indexOf` over
+the RAW text of `workflows/ship.js`. **Five of the eight strings they searched
+for occur only inside comments.** `PHASE 5: VALIDATE` is a banner. `create-pr`
+is a note about a step, three lines above the step. Three of the six therefore
+compared one comment to another and said nothing about code at all.
+
+Surfaced by run `wf_61a6af0d-053` on #254, which went red on two of them and
+was right to.
+
+Measured rather than argued, and measured from both sides:
+
+| The suite | The source | Result |
+|---|---|---|
+| the old anchors | the PR step deleted, its `create-pr` comment left in place | **6 pass, 0 fail** against a harness with zero `pr-upsert` call sites |
+| the new anchors | the same mutant | 2 red — PO-3 and PO-4 |
+
+This is the third shape `.claude/rules/checks-must-be-able-to-fail.md` names —
+a detector narrower than what it detects — met from an angle the rule had not
+recorded: the detector was not narrow, it was pointed at the wrong text
+entirely. Prose cannot execute, so a check anchored to prose is satisfied by
+a file that does nothing.
+
+**The fix has two halves, and the second is the one that keeps.** The anchors
+become executable tokens — `phase('Validate')`, `label: 'quinn-container'`,
+the `pr-upsert` command the PR step actually runs, `log('Running ship gate')` —
+and every search runs over `SHIP_CODE`, a comment-blanked copy produced by
+`lib/strip-js-comments.ts`. The stripper replaces comment characters with
+spaces instead of deleting them, so offsets survive: an index into `SHIP_CODE`
+is the same index into `SHIP_JS`, the ordering comparisons mean exactly what
+they did minus the prose, and `stripped.slice(i, i + a.length) === a` becomes
+an exact answer to "is the anchor at offset `i` code?" — which is what the
+anchor audit below is built on.
+
+#### What was broken to prove it, run and counted rather than asserted
+
+Over `test/ship-phase-ordering-mutation.test.ts`, which builds each mutant as a
+temp harness root of symlinks with one real file in it — the mutated
+`workflows/ship.js` — and spawns the six real checks against it. Re-measure
+with `PO_MUTATION_COUNTS=1 bun test test/ship-phase-ordering-mutation.test.ts`.
+
+| Mutation | Red |
+|---|---|
+| CONTROL — an unmutated copy, the negative control every row below subtracts from | 0 of 6 |
+| PR-STEP-DELETED — the `pr-upsert` step removed, its `create-pr` comment left behind | 2 of 6 — PO-3, PO-4 |
+| BANNER-REWORD — every `// PHASE n:` banner reworded and moved to the top of the file, in reverse order | 0 of 6 |
+| MOVE-1 — `phase('Validate')` relocated past `phase('Commit')` | 1 of 6 — PO-1 |
+| MOVE-2 — `phase('Commit')` relocated past `phase('Verify')` | 1 of 6 — PO-2 |
+| MOVE-3 — `label: 'quinn-container'` relocated past the `pr-upsert` command | 1 of 6 — PO-3 |
+| MOVE-4 — the `pr-upsert` command relocated past `log('Running ship gate')` | 1 of 6 — PO-4 |
+| MOVE-5 — `log('Running ship gate')` relocated past `phase('Prove')` | 1 of 6 — PO-5 |
+| MOVE-6 — `phase('Implement')` relocated past `phase('Validate')` | 1 of 6 — PO-6 |
+
+None is left in the tree; all were run and reverted, and the six MOVE cases are
+re-performed on every run rather than recorded here and trusted.
+
+The right-hand column names ids, not counts, and the cases assert the ids. That
+is deliberate and it is the fourth property below: `red >= 2` and
+`red >= 1` were the original assertions, and both are satisfied by a mutant
+that stopped parsing — the same number arrives from a cause that says nothing
+about whether the check reads the code it claims to read.
+
+Four properties make the harness worth the spawns, and all four are asserted
+rather than left as conventions:
+
+- **BANNER-REWORD is not decoration.** A mutation that only proves red is half
+  a proof. Six checks that go red when a comment is reworded are measuring the
+  comment, which is the defect, so the green row is the one that says the fix
+  actually landed.
+- **Each MOVE relocates code, not a line.** The two executable anchors exchange
+  positions in place — no backtick, brace or line moves — so a check that goes
+  red went red about ORDER and not about a mutant that stopped parsing. The
+  harness re-strips the mutant and asserts both anchors survive in code and the
+  order is inverted before it spawns anything.
+- **`ran` is checked before `red`.** A `-t` filter matching nothing leaves bun
+  reporting zero failures, which is indistinguishable from six passes and is
+  also what a suite that failed to load looks like.
+- **WHICH orderings refused, not how many.** `poIds` turns a run's failure
+  lines into the set of `PO-n` ids, and every mutation case compares that set
+  exactly: PR-STEP-DELETED must produce `["PO-3", "PO-4"]` — the only two
+  orderings whose subject is the PR step — and each MOVE exactly its own. A
+  failure line carrying no `PO-n` id, which is what a load error or a thrown
+  `beforeAll` looks like, surfaces in the set rather than being dropped.
+
+#### Every remaining anchor, classified
+
+Fixing six anchors is not the same as knowing what the others are doing. Every
+`indexOf`, `lastIndexOf` and `sliceBetween` anchor still used in
+`test/spec-compliance.test.ts` is below. The table is EXECUTED by AUDIT-2 and
+AUDIT-3 in `test/ship-phase-ordering-mutation.test.ts`: each row's
+classification is re-derived from the file it names, and any anchor the suite
+uses that is missing from the table fails AUDIT-3. Line numbers are as of this
+commit and are recorded for the reader, not asserted.
+
+Eight anchors are still comment-anchored, and all eight are deliberate: they
+are `sliceBetween` section markers, where the banner comment IS the section
+boundary being named. `HEAL_JS.indexOf("GRADE")` is the one that is not — it
+lands on a comment at `workflows/ship-and-heal.js:132` while the ordering it
+asserts is about code, which is #273's defect still live in a neighbouring
+test. It is recorded here rather than fixed, because the fix is a different
+test's contract.
+
+| Anchor | Searched against | Resolves at | code / comment |
+|---|---|---|---|
+| `phase('Implement')` | `SHIP_CODE` | workflows/ship.js:1897 | code |
+| `phase('Validate')` | `SHIP_CODE` | workflows/ship.js:2227 | code |
+| `phase('Commit')` | `SHIP_CODE` | workflows/ship.js:2374 | code |
+| `phase('Verify')` | `SHIP_CODE` | workflows/ship.js:3036 | code |
+| `label: 'quinn-container'` | `SHIP_CODE` | workflows/ship.js:3584 | code |
+| `pr-upsert` | `SHIP_CODE` | workflows/ship.js:4357 | code |
+| `log('Running ship gate')` | `SHIP_CODE` | workflows/ship.js:4406 | code |
+| `phase('Prove')` | `SHIP_CODE` | workflows/ship.js:4544 | code |
+| `label: 'grade'` | `SHIP_JS` | workflows/ship.js:4107 | code |
+| `phase('Ship')` | `SHIP_JS` | workflows/ship.js:4310 | code |
+| `GRADE` | `HEAL_JS` | workflows/ship-and-heal.js:132 | comment |
+| `'SHIPPED'` | `HEAL_JS` | workflows/ship-and-heal.js:255 | code |
+| `label: 'remediate'` | `HEAL_JS` | workflows/ship-and-heal.js:377 | code |
+| `` await agent(` `` | `HEAL_JS` | workflows/ship-and-heal.js:67 | code |
+| `PHASE 5: VALIDATE` | `SHIP_JS` | workflows/ship.js:2224 | comment |
+| `PHASE 6: COMMIT` | `SHIP_JS` | workflows/ship.js:2371 | comment |
+| `PHASE 7: VERIFY` | `SHIP_JS` | workflows/ship.js:3033 | comment |
+| `PHASE 8: SHIP` | `SHIP_JS` | workflows/ship.js:4307 | comment |
+| `PHASE 9: PROVE` | `SHIP_JS` | workflows/ship.js:4541 | comment |
+| `Telemetry` | `SHIP_JS` | workflows/ship.js:4565 | comment |
+| `ALREADY_SHIPPED` | `SHIP_JS` | workflows/ship.js:1716 | code |
+| `Prior work:` | `SHIP_JS` | workflows/ship.js:1730 | code |
+| `You are performing DISCOVERY` | `SHIP_JS` | workflows/ship.js:1359 | code |
+| `DISCOVERY_SCHEMA` | `SHIP_JS` | workflows/ship.js:31 | code |
+| `async function runGateWithHeal` | `SHIP_JS` | workflows/ship.js:1148 | code |
+| `PHASE 1: GOAL` | `SHIP_JS` | workflows/ship.js:1199 | comment |
+| `export const meta` | `SHIP_JS` | workflows/ship.js:1 | code |
+| `// ── Structured` | `SHIP_JS` | workflows/ship.js:18 | comment |
+
+A table that nothing can disagree with is the thing this whole section is
+about, so it was broken too, run and counted over
+`test/ship-phase-ordering-mutation.test.ts` + `test/strip-js-comments.test.ts`
+(26 tests):
+
+| Mutation | Red |
+|---|---|
+| the `pr-upsert` row's verdict flipped from `code` to `comment` | 1 — AUDIT-2 |
+| the `phase('Prove')` row deleted from the table | 1 — AUDIT-3 |
+| `stripJsComments` short-circuited to `return src` | 11 — nine stripper cases, plus AUDIT-2 and AUDIT-4 |
+| `poIds` short-circuited to `return []` | 7 — PR-STEP-DELETED and all six MOVE cases, which is the whole set that names ids rather than counting them |
+
+None is left in the tree; all were run and reverted. The last row is the one
+worth reading twice: with the stripper dead the six ordering checks go GREEN
+again, because they fall back to searching raw text — which is the defect
+#273 is about, reintroduced, and caught by the audit rather than by them.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection
