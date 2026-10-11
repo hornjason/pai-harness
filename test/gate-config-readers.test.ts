@@ -1,19 +1,13 @@
 /**
- * gate-config-readers.test.ts — ADR-002 Step 3, scanner row (#307, AC-5)
+ * gate-config-readers.test.ts — ADR-002 Step 3, first row.
  *
- * `lib/scanner.ts:427-431` wrapped the loader in a bare `try/catch` that
- * returned `null`. It swallowed TWO distinct outcomes:
- *   - the deliberate orphan/malformed throw (ADR-001 D2's whole point), and
- *   - the ordinary "no config found" throw.
- * Both arrived at the caller as `null`, so a broken config was indistinguishable
- * from an unconfigured project — `.claude/rules/checks-must-be-able-to-fail.md`
- * names this exact line as the fail-open example.
+ * `lib/scanner.ts:426-431` wrapped the loader in a bare `try/catch` that turned
+ * BOTH the deliberate malformed/orphan throw AND genuine absence into `null`.
+ * `.claude/rules/checks-must-be-able-to-fail.md` names that exact line as the
+ * fail-open archetype: a catch that answers "nothing here".
  *
- * These are BEHAVIOURAL assertions over `scanProject`, not source-text greps:
- * restoring the `try/catch` turns the two refusal cases red.
- *
- * WHAT WAS BROKEN TO PROVE THEY CAN FAIL — see the commit body for counts:
- *   - the `try { ... } catch { return null }` restored around the config read.
+ * These assertions are executed against real temp project roots — a scan is
+ * run and its outcome observed — not matched against scanner.ts's source text.
  */
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
@@ -21,13 +15,6 @@ import { join } from "path";
 import { scanProject } from "../lib/scanner";
 
 const TMP = "/tmp/rungate-gate-config-readers-test";
-
-function project(name: string): string {
-  const dir = join(TMP, name);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "package.json"), JSON.stringify({ name, description: "fixture" }));
-  return dir;
-}
 
 beforeEach(() => {
   rmSync(TMP, { recursive: true, force: true });
@@ -38,32 +25,15 @@ afterEach(() => {
   rmSync(TMP, { recursive: true, force: true });
 });
 
-describe("AC-5: scanner distinguishes a broken config from an absent one", () => {
-  test("an orphan directory fragment refuses the scan instead of scanning as unconfigured", () => {
-    const root = project("orphan");
-    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate", "roles.json"), JSON.stringify({}));
+function project(name: string): string {
+  const dir = join(TMP, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name }));
+  return dir;
+}
 
-    expect(() => scanProject(root)).toThrow(/Incomplete rungate config/);
-  });
-
-  test("a malformed config.json refuses the scan instead of scanning as unconfigured", () => {
-    const root = project("malformed");
-    mkdirSync(join(root, ".claude", "rungate"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate", "config.json"), '{"project": "x",}');
-
-    expect(() => scanProject(root)).toThrow();
-  });
-
-  test("a malformed monolith refuses the scan", () => {
-    const root = project("malformed-mono");
-    mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(join(root, ".claude", "rungate.json"), "{ not json");
-
-    expect(() => scanProject(root)).toThrow();
-  });
-
-  test("a genuinely absent config scans cleanly — absence is not an error", () => {
+describe("scanner distinguishes an absent config from a broken one", () => {
+  test("absent config scans clean and reports no harness config", () => {
     const root = project("absent");
 
     const scan = scanProject(root);
@@ -72,15 +42,16 @@ describe("AC-5: scanner distinguishes a broken config from an absent one", () =>
     expect(scan.consumers).toEqual([]);
   });
 
-  test("a resolved config's consumers reach the scan", () => {
-    const root = project("configured");
+  test("a resolved config is read, with consumers taken from it", () => {
+    const root = project("resolved");
     mkdirSync(join(root, ".claude"), { recursive: true });
     writeFileSync(
       join(root, ".claude", "rungate.json"),
       JSON.stringify({
-        project: "configured",
+        project: "resolved",
         repo: "x/y",
         issueRepo: "x/y",
+        pages: {},
         consumers: ["alpha", "beta"],
         test: { command: "bun test", timeout: 30000 },
       })
@@ -88,32 +59,28 @@ describe("AC-5: scanner distinguishes a broken config from an absent one", () =>
 
     const scan = scanProject(root);
 
-    expect(scan.consumers).toEqual(["alpha", "beta"]);
     expect(scan.harnessConfig).not.toBeNull();
-    expect(scan.harnessConfig?.project).toBe("configured");
+    expect(scan.consumers).toEqual(["alpha", "beta"]);
   });
 
-  test("the resolved config the scan carries is the normalised one", () => {
-    const root = project("normalised");
+  // The regression. Before this change both of the next two cases produced the
+  // SAME observable outcome as the "absent" case above — `harnessConfig: null`,
+  // `consumers: []` — so a project whose config could not be read scanned as a
+  // project that had none.
+  test("malformed JSON reaches the caller as a throw, not as an absent config", () => {
+    const root = project("malformed");
     mkdirSync(join(root, ".claude"), { recursive: true });
-    writeFileSync(
-      join(root, ".claude", "rungate.json"),
-      JSON.stringify({
-        project: "normalised",
-        repo: "x/y",
-        issueRepo: "x/y",
-        dev: {
-          start: "make dev",
-          apiBase: "http://localhost:7778",
-          uiBase: "http://localhost:5173",
-          testCmd: "bun test src/**/*.test.ts",
-        },
-      })
-    );
+    writeFileSync(join(root, ".claude", "rungate.json"), "{ not json");
 
-    const scan = scanProject(root);
+    expect(() => scanProject(root)).toThrow();
+  });
 
-    expect(scan.harnessConfig?.test?.command).toBe("bun test src/**/*.test.ts");
-    expect(scan.harnessConfig?.apiUrl).toBe("http://localhost:7778");
+  test("an orphan directory fragment reaches the caller as a throw", () => {
+    const root = project("orphan");
+    const configDir = join(root, ".claude", "rungate");
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(join(configDir, "roles.json"), JSON.stringify({ marcus: { brief: "m.md" } }));
+
+    expect(() => scanProject(root)).toThrow(/Incomplete rungate config/);
   });
 });

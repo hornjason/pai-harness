@@ -7,33 +7,95 @@
  */
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
-import type { ComplianceConfig, ResolvedConfig } from "./rungate-schema";
-
-export type {
-  ComplianceConfig,
-  ComplianceRule,
-  OrganizeExternalSource,
-  ResolvedConfig,
+import { z } from "zod";
+import {
+  ContainerSchema,
+  DevSchema,
+  ProdSchema,
+  ProjectHarnessSchema,
+  TestSchema,
 } from "./rungate-schema";
 
+export interface ComplianceRule {
+  description: string;
+  directives: string[];
+  reinforcement: string;
+  tiers: Record<string, { action: string; hook?: string }>;
+  threshold: { consecutive: number; promote: number };
+}
+
+export interface OrganizeExternalSource {
+  path: string;
+  type: string;
+  target: string | null;
+  method: "symlink" | "copy" | "discover";
+  matchBy: string;
+}
+
+export interface ComplianceConfig {
+  rules: Record<string, ComplianceRule>;
+  defaults: { consecutiveFailThreshold: number; tierPromotionThreshold: number };
+  organize: {
+    fileTypes: string[];
+    artifactClassification: Record<string, string>;
+    externalSources: OrganizeExternalSource[];
+  };
+}
+
 /**
- * Used when `test.timeout` is unauthored. Matches `workflows/ship.js:1705`,
- * the only other place the fallback was written down.
+ * URLs are validated where a config is AUTHORED (`parseProjectHarness`), not
+ * where it is READ. A reader that throws on a cosmetically odd `apiBase` turns
+ * a working project into a broken one, which is the opposite of ADR-001 D2's
+ * intent: the loader distinguishes present / absent / unreadable, and nothing
+ * else. Top-level keys are optional for the same reason — requiring `project`
+ * here would add a third outcome the two wrappers have no way to express.
  */
+const LooseUrl = z.string().nullish();
+
+/**
+ * The resolved shape (ADR-002 D3), derived from the authored schema rather
+ * than hand-declared. The interface this replaces claimed `test.command` was
+ * required while `TestSchema` did not declare it at all — two hand-written
+ * types for one file, disagreeing, which is how a reader could be written
+ * against a key the validator deleted.
+ *
+ * `.passthrough()` is load-bearing: consumers carry keys rungate has never
+ * heard of (DDB's `remoteHosts`), and a loader that silently drops them is the
+ * same defect as a validator that strips `container`.
+ */
+const ResolvedConfigSchema = ProjectHarnessSchema.partial()
+  .extend({
+    // `null` is what a greenfield scaffold writes for a base URL it could not
+    // detect. It is an authored absence, not a broken config.
+    dev: DevSchema.partial().extend({ apiBase: LooseUrl, uiBase: LooseUrl }).optional(),
+    test: TestSchema.extend({ apiBase: LooseUrl }).optional(),
+    prod: ProdSchema.extend({ apiBase: LooseUrl, uiBase: LooseUrl }).optional(),
+    container: ContainerSchema.optional(),
+    pages: z.record(z.unknown()).optional(),
+    // Merged from side files by the directory loader, so always present in the
+    // resolved shape — callers index them without a null check.
+    roles: z.record(z.unknown()).default({}),
+    hooks: z.array(z.unknown()).default([]),
+    compliance: z
+      .custom<ComplianceConfig>((value) => typeof value === "object" && value !== null)
+      .optional(),
+    // Normalised, not authored — see normaliseConfig.
+    apiUrl: z.string().optional(),
+    uiUrl: z.string().optional(),
+  })
+  .passthrough();
+
+export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
+
+/** ship.js:1705's fallback, kept identical so normalisation changes no run. */
 export const DEFAULT_TEST_TIMEOUT = 120000;
 
 /**
- * ADR-002 D2(a). `absent` is a legitimate state and is reported as a TRUTHY
- * object with no config fields on it.
+ * The resolution (ADR-002 D2(a)). `absent` is TRUTHY and carries no `.test`,
+ * so the four sites that wrote `config?.test?.command || fallback` cannot
+ * silently absorb it — `null`, `0`, `{}` and `""` all could.
  *
- * That is the whole reason this exists rather than the nullable it replaces:
- * `null`, `0`, `{}`, `""` and `undefined` are all falsy, so `||` and `?.`
- * absorb every one of them silently. `{ status: "absent" }` has no `.test`,
- * so `resolution.test?.command || fallback` does not compile under `tsc` and
- * does not quietly work at runtime.
- *
- * Malformed JSON and orphaned directory fragments are neither variant — they
- * THROW, per ADR-001 D2, unchanged.
+ * Malformed JSON and orphaned fragments THROW, per ADR-001 D2. Unchanged.
  */
 export type ConfigResolution =
   | { status: "resolved"; config: ResolvedConfig; source: "directory" | "monolith" }
@@ -42,9 +104,35 @@ export type ConfigResolution =
 const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
 
 /**
- * The single config resolver (ADR-002 D1). Reads the directory form in
- * preference to the monolith, normalises the authored shape into the resolved
- * shape (D3), and reports absence as data rather than as a falsy value.
+ * ADR-002 D3. `dev.*` is the authored canonical shape; `test.command` keeps
+ * being read and is NOT deprecated here — it is rungate's own live config, and
+ * moving the dogfood and the consumer path in one change would leave neither
+ * as a control for the other.
+ */
+function normaliseConfig(raw: unknown): ResolvedConfig {
+  const parsed = ResolvedConfigSchema.parse(raw);
+
+  // The trailing `?? undefined` collapses an authored `null` — a base URL the
+  // scaffold could not detect — into the same absence an omitted key gives.
+  // Two spellings of "not set" reaching readers is how this class of bug
+  // started.
+  return {
+    ...parsed,
+    apiUrl: parsed.apiUrl ?? parsed.dev?.apiBase ?? undefined,
+    uiUrl: parsed.uiUrl ?? parsed.dev?.uiBase ?? undefined,
+    test: {
+      ...parsed.test,
+      // dev.* wins. No `|| "bun test"` fallback: an absent command must stay
+      // absent so a reader can report it unmeasured rather than run the wrong
+      // suite and report 0 failures.
+      command: parsed.dev?.testCmd ?? parsed.test?.command,
+      timeout: parsed.test?.timeout ?? DEFAULT_TEST_TIMEOUT,
+    },
+  };
+}
+
+/**
+ * The single resolution point. Directory form wins over the monolith.
  */
 export function resolveConfig(projectRoot: string): ConfigResolution {
   const dirPath = join(projectRoot, ".claude", "rungate");
@@ -55,16 +143,16 @@ export function resolveConfig(projectRoot: string): ConfigResolution {
   // and silently drop issueRepo/ci/test — ADR-001 Step E keeps the monolith
   // in place during migration, so that state is on the normal upgrade path.
   if (existsSync(join(dirPath, "config.json"))) {
-    return { status: "resolved", config: normalise(loadFromDirectory(dirPath)), source: "directory" };
+    return { status: "resolved", config: loadFromDirectory(dirPath), source: "directory" };
   }
 
   if (existsSync(monolithPath)) {
-    return { status: "resolved", config: normalise(loadFromMonolith(monolithPath)), source: "monolith" };
+    return { status: "resolved", config: loadFromMonolith(monolithPath), source: "monolith" };
   }
 
   // Fragments with no config.json and no monolith is a broken directory
   // config, not an unconfigured project. Fail loudly rather than reporting
-  // absence, which the caller would read as "no rungate here".
+  // absent, which the caller would read as "no rungate here".
   const orphans = DIRECTORY_CONFIG_FILES.filter((file) => existsSync(join(dirPath, file)));
   if (orphans.length > 0) {
     throw new Error(
@@ -73,44 +161,6 @@ export function resolveConfig(projectRoot: string): ConfigResolution {
   }
 
   return { status: "absent" };
-}
-
-/**
- * ADR-002 D3. `dev.*` is the authored shape DDB uses; `test.command` is the
- * authored shape rungate uses. Neither is deprecated — reading only one is
- * the defect, and moving rungate's own config in the same change would leave
- * no control for the consumer path.
- *
- * `dev.*` wins where both are authored, because it is the shape the reference
- * consumer authored and the one the schema already described.
- *
- * This does NOT run the schema over the raw config. Validation here would
- * change the contract of two functions ADR-001 D2 froze — `RoleSchema`
- * requires `standardTask`, which several live configs and fixtures omit — and
- * a loader that throws on an under-specified role is a different decision
- * from the one this ADR took. Validation stays where it already is
- * (`gates/gate-executor.ts` via `safeParseProjectHarness`); what changes is
- * that the schema no longer deletes keys when it runs.
- */
-function normalise(raw: any): ResolvedConfig {
-  const dev = raw?.dev;
-  const authoredTest = raw?.test ?? {};
-
-  return {
-    ...raw,
-    schemaVersion: raw?.schemaVersion ?? 1,
-    apiUrl: raw?.apiUrl ?? dev?.apiBase,
-    uiUrl: raw?.uiUrl ?? dev?.uiBase,
-    test: {
-      ...authoredTest,
-      // `??`, not `||`: an authored empty string is a configuration error the
-      // caller must be able to see, not a value to fall through.
-      command: dev?.testCmd ?? authoredTest.command,
-      timeout: authoredTest.timeout ?? DEFAULT_TEST_TIMEOUT,
-    },
-    roles: raw?.roles ?? {},
-    hooks: raw?.hooks ?? [],
-  };
 }
 
 export function loadRungateConfig(projectRoot: string): ResolvedConfig {
@@ -130,16 +180,13 @@ export function loadRungateConfig(projectRoot: string): ResolvedConfig {
  * cannot be parsed still throws — per ADR-001 D2, a malformed config is
  * never a missing config. Conflating the two is what let #70 stay silent:
  * the caller could not tell "not configured" from "configured wrong".
- *
- * ADR-002 D2(a) keeps both wrappers exactly as ADR-001 D2 specified them.
- * ADR-001 is not re-opened; these are thin wrappers over `resolveConfig`.
  */
 export function tryLoadRungateConfig(projectRoot: string): ResolvedConfig | null {
   const resolution = resolveConfig(projectRoot);
   return resolution.status === "resolved" ? resolution.config : null;
 }
 
-function loadFromDirectory(dirPath: string): any {
+function loadFromDirectory(dirPath: string): ResolvedConfig {
   const config = readJson(join(dirPath, "config.json"));
   const roles = existsSync(join(dirPath, "roles.json"))
     ? readJson(join(dirPath, "roles.json"))
@@ -151,11 +198,11 @@ function loadFromDirectory(dirPath: string): any {
     ? readJson(join(dirPath, "compliance.json"))
     : undefined;
 
-  return { ...config, roles, hooks, compliance };
+  return normaliseConfig({ ...config, roles, hooks, compliance });
 }
 
-function loadFromMonolith(path: string): any {
-  return readJson(path);
+function loadFromMonolith(path: string): ResolvedConfig {
+  return normaliseConfig(readJson(path));
 }
 
 function readJson(path: string): any {

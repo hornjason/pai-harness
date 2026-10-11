@@ -158,15 +158,10 @@ function scanSpecs(root: string): SpecEntry[] {
 
 function detectConsumers(root: string): string[] {
   // First check the harness config (.claude/rungate/ directory, or the
-  // .claude/rungate.json monolith as fallback) — #70.
-  //
-  // Branching on `status` rather than optional-chaining: `{status:"absent"}`
-  // is truthy, so `resolution?.consumers` would read a resolution object as a
-  // config and fall through to the src/ scan without saying so (ADR-002 D2a).
-  const resolution = resolveConfig(root);
-  if (resolution.status === "resolved") {
-    const consumers = resolution.config.consumers;
-    if (Array.isArray(consumers) && consumers.length > 0) return consumers;
+  // .claude/rungate.json monolith as fallback) — #70
+  const harness = loadHarnessConfig(root);
+  if (harness?.consumers && Array.isArray(harness.consumers) && harness.consumers.length > 0) {
+    return harness.consumers;
   }
 
   // Scan src/ for consumer modules
@@ -427,21 +422,19 @@ function scanMakeTargets(root: string): string {
  * Resolves the harness config via lib/config-loader — `.claude/rungate/`
  * directory form first, `.claude/rungate.json` monolith as fallback (#70).
  *
- * Returns null for ABSENCE ONLY. A config that exists but cannot be read —
- * malformed JSON, or an orphaned directory fragment — throws, and the throw
- * propagates out of `scanProject`.
- *
- * The `try { ... } catch { return null }` that used to live here is the
- * fail-open named in `.claude/rules/checks-must-be-able-to-fail.md`. It
- * swallowed two distinct outcomes: the deliberate orphan/malformed throw
- * ADR-001 D2 exists to raise, AND the ordinary "no config found" throw.
- * Both arrived as `null`, so `harness?.consumers` could not tell an
- * unconfigured project from a broken one (ADR-002 Step 3).
+ * `null` means ABSENT and nothing else. The `try/catch` this replaces caught
+ * two throws, not one — the deliberate malformed/orphan throw ADR-001 D2
+ * exists to raise, and the ordinary "no config found" — and answered `null`
+ * to both, so a project whose config could not be read scanned identically to
+ * a project that had none. That is the fail-open archetype in
+ * `.claude/rules/checks-must-be-able-to-fail.md`: a catch that reports
+ * "nothing here". A broken config now propagates (ADR-002 Step 3).
  */
-function resolveHarnessConfig(root: string): Record<string, any> | null {
+function loadHarnessConfig(root: string): Record<string, any> | null {
   const resolution = resolveConfig(root);
-  if (resolution.status === "absent") return null;
-  return resolution.config as unknown as Record<string, any>;
+  return resolution.status === "resolved"
+    ? (resolution.config as unknown as Record<string, any>)
+    : null;
 }
 
 // ── Code structure scanning (dirs, modules, routes) ────────────
@@ -665,7 +658,7 @@ export function scanProject(root: string): ProjectScan {
     } catch {}
   }
 
-  const harness = resolveHarnessConfig(root);
+  const harness = loadHarnessConfig(root);
   const categories = buildCategories();
   const { deps, devDeps } = countDeps(root);
 
