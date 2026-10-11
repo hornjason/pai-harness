@@ -2277,6 +2277,52 @@ function collectDestination(dir, projectRoot = PROJECT_ROOT, harnessRoot = HARNE
 }
 // ──── COLLECT-DESTINATION-END ────
 
+// ──── COLLECT-TARGET-START ────
+/**
+ * Where a multi-worktree collection is assembled, and therefore where the
+ * commit step will run (#267).
+ *
+ * This used to be `PROJECT_ROOT`, unconditionally, and that put two of this
+ * workflow's own rules in direct contradiction. The commit step refuses to
+ * commit from `main` — #136, because a run once pushed straight to main with
+ * a ref an agent chose while recovering from a failed push — and the project
+ * root is on `main`, which is its resting state and where the DA sits while
+ * the run executes. So the collector wrote the work to the one directory the
+ * committer was forbidden to use, and the run ended COMMIT_FAILED with
+ * nothing it could change to get past it. Observed on wf_19f7def7-1bf, which
+ * produced a complete implementation and committed none of it.
+ *
+ * The guard is right. The destination was wrong: it picked a directory by
+ * path without regard for what was checked out there.
+ *
+ * So prefer the IMPLEMENTATION worktree. It is already on this run's branch,
+ * which is the only kind of place the commit step accepts — and it is where
+ * `commitDir` already points for every single-worktree run, so the collect
+ * path stops being the one that behaves differently.
+ *
+ * Every candidate goes through `collectDestination` first. This function must
+ * not become a way around that allowlist: the paths reaching it originate in
+ * agent replies (#155), and a destination is interpolated into a `git add`.
+ * Falling back to the project root keeps the uncontained run working, and the
+ * branch guard then applies to it on its merits — an operator running with no
+ * isolation on main SHOULD be refused.
+ */
+function collectTarget(worktrees, marcusPath, projectRoot = PROJECT_ROOT, harnessRoot = HARNESS_ROOT) {
+  const ok = p => {
+    const d = collectDestination(p, projectRoot, harnessRoot)
+    return d && d !== projectRoot ? d : null
+  }
+  const preferred = ok(marcusPath)
+  if (preferred) return preferred
+  const list = Array.isArray(worktrees) ? worktrees : []
+  for (const w of list) {
+    const d = ok(w)
+    if (d) return d
+  }
+  return projectRoot
+}
+// ──── COLLECT-TARGET-END ────
+
 // ──── COLLECT-CLAIM-START ────
 /**
  * Whether the only worktree in a run is held to its own claim (#228).
@@ -2676,14 +2722,19 @@ if (distinctWorktrees.length > 1) {
   // One implementation — see collectAgentWork above. The inline copy that
   // used to live here is what let the remediation loops be written without
   // one at all (#155).
-  const collected = await collectAgentWork(agentResults, PROJECT_ROOT, 'Commit', 'collect-worktrees')
+  // Addressed to the same directory the commit will run in, and chosen rather
+  // than assumed (#267). Computed BEFORE the collection so the two cannot
+  // disagree: staging in one directory and committing from another is a
+  // collect that reports success over a commit that finds nothing.
+  const collectInto = collectTarget(distinctWorktrees, marcusWorktreePath)
+  const collected = await collectAgentWork(agentResults, collectInto, 'Commit', 'collect-worktrees')
   if (!collected.ok) {
     return shipFailed('Commit', `Could not collect parallel worktree output (#81): ${collected.detail}`)
   }
-  // Everything now lives in the project root and is already staged there.
-  commitDir = PROJECT_ROOT
+  // Everything now lives in the collect target and is already staged there.
+  commitDir = collectInto
   alreadyStaged = true
-  log(`Collected and staged ${collected.collected} files into the project root`)
+  log(`Collected and staged ${collected.collected} files into ${collectInto}`)
 }
 
 // Environment status schema — values constrained to PASS/FAIL/SKIP

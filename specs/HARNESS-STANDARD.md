@@ -1534,6 +1534,57 @@ What was broken to prove it, run and counted rather than asserted, over
 
 None is left in the tree; all were run and reverted.
 
+#### Two of this workflow's own rules in contradiction (2026-10-10, #267)
+
+The third refusal-the-branch-cannot-satisfy found in one day, and the only one
+of the three that predates today's work.
+
+When a run's implementation spans more than one worktree — which is what a
+remediation round produces — the collect path assembled everything into
+`PROJECT_ROOT` and set `commitDir` to it. The commit step, run in `commitDir`,
+refuses `main`:
+
+    case "$branch" in main|master) echo "REFUSING: ..."; exit 1;; esac
+
+The project root is on `main`. That is its resting state and where the DA sits
+while a run executes. So the collector wrote the work to the one directory the
+committer is forbidden to commit from. Run `wf_19f7def7-1bf` produced a
+complete implementation of #254 and committed none of it.
+
+The guard is not the defect and is unchanged. #136 is why it exists. The
+destination was wrong: it chose a directory by path with no regard for what
+was checked out there. The collection now prefers the IMPLEMENTATION worktree,
+which is already on the run's branch and is where `commitDir` points for every
+single-worktree run — so the collect path stops being the one that behaves
+differently.
+
+**The leak was worse than the refusal.** On refusal the collected work was left
+STAGED, on `main`, in the primary working tree: 907 lines of unreviewed agent
+output one `git commit` away from the default branch, with nothing announcing
+it. A refusal is supposed to leave nothing mergeable (#252), and that left
+something one command from it. With the destination fixed the project root is
+never written when worktrees exist; an uncontained run still works there by
+design, and the branch guard then applies to it on its merits.
+
+- [x] SC-664: workflows/ship.js contains [COLLECT-TARGET-START, function collectTarget(worktrees] — the destination is decided rather than assumed, in a marked block that can be extracted and EXECUTED, because a path constant cannot be tested and this one was wrong for the whole life of the collect path
+- [x] SC-665: workflows/ship.js contains [collectTarget(distinctWorktrees, marcusWorktreePath)] — computed BEFORE the collection and used for both the destination and `commitDir`, so staging in one directory and committing from another is not expressible
+- [x] SC-666: workflows/ship.js contains [const d = collectDestination(p, projectRoot, harnessRoot)] — every candidate goes through the existing allowlist; the chooser must not become a way around it, since these paths originate in agent replies (#155) and a destination is interpolated into a `git add`
+- [x] SC-667: test/ship-collect-target.test.ts contains [ship never commits to the default branch] — the branch guard is asserted intact by the same suite that fixes the thing it refused, because a version of this change that deleted the guard would pass every other case in the file
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-collect-target.test.ts` + `test/collect-claim-enforcement.test.ts` +
+`test/ship-collect-destination.test.ts` (69 tests):
+
+| Mutation | Red |
+|---|---|
+| the destination set back to `PROJECT_ROOT` — the defect, reintroduced verbatim | 1 of 69 |
+| the implementation worktree no longer preferred, so the first entry wins by order | 2 of 69 — right by accident on the common case, which is why order is not the rule |
+| `collectDestination` bypassed inside the chooser | 4 of 69 |
+| the branch guard deleted — the fix buying its green by weakening what refused | 1 of 69 |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was diffed byte-for-byte against a copy taken before the first mutation.
+
 Filed rather than fixed here, because it is a different defect in a different
 function: `prevalidationViolations` names the broken ACs out of
 `reading.broken`, and no writer produces that key —
