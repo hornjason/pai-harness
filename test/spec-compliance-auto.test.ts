@@ -23,8 +23,8 @@ const SHIP_JS = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
 const PROVE_JS = readFileSync(join(HR, "workflows/prove.js"), "utf-8");
 
 describe("auto-spec: ship.js claims from HARNESS-SKILL-CHAIN.md", () => {
-  // Spec line 70: **Gate:** Template files with HIGH findings from agnix cannot ship. RepoRails findings are advisory 
-  test("AUTO-GATE-1: Gate: Template files with HIGH findings from agnix cannot ship. RepoRails findings are", () => {
+  // Spec line 327: **Gate:** `bun test test/phase-0.test.ts` — 0 failures
+  test("AUTO-GATE-1: Gate: `bun test test/phase-0.test.ts` — 0 failures", () => {
     expect(SHIP_JS.toLowerCase()).toContain("gate");
   });
 
@@ -35,16 +35,6 @@ describe("auto-spec: ship.js claims from HARNESS-SKILL-CHAIN.md", () => {
 
   // Spec line 102: extracts four hardcoded claim shapes — `` `make x` ``, `**GATE:**`, ports, and
   test("AUTO-GATE-2: Gate: extracts four hardcoded claim shapes — `` `make x` ``, ``, ports, and", () => {
-    expect(SHIP_JS.toLowerCase()).toContain("gate");
-  });
-
-  // Spec line 272: - **Container-only** → read project CLAUDE.md for container deploy command (e.g., `make rebuild`)
-  test("AUTO-MAKE-1: Spec requires make rebuild", () => {
-    expect(SHIP_JS.toLowerCase()).toContain("rebuild");
-  });
-
-  // Spec line 327: **Gate:** `bun test test/phase-0.test.ts` — 0 failures
-  test("AUTO-GATE-1: Gate: `bun test test/phase-0.test.ts` — 0 failures", () => {
     expect(SHIP_JS.toLowerCase()).toContain("gate");
   });
 
@@ -61,6 +51,26 @@ describe("auto-spec: ship.js claims from HARNESS-SKILL-CHAIN.md", () => {
   // Spec line 96: 9. **GATE: Ship gate PASS. PR ready for review.**
   test("AUTO-GATE-5: Gate: 9.  Ship gate PASS. PR ready for review.", () => {
     expect(SHIP_JS.toLowerCase()).toContain("ship");
+  });
+
+  // Spec line 272: - **Container-only** → read project CLAUDE.md for container deploy command (e.g., `make rebuild`)
+  test("AUTO-MAKE-1: Spec requires make rebuild", () => {
+    expect(SHIP_JS.toLowerCase()).toContain("rebuild");
+  });
+
+  // Spec line 70: **Gate:** Template files with HIGH findings from agnix cannot ship. RepoRails findings are advisory 
+  test("AUTO-GATE-1: Gate: Template files with HIGH findings from agnix cannot ship. RepoRails findings are", () => {
+    expect(SHIP_JS.toLowerCase()).toContain("gate");
+  });
+
+  // Spec line 184: **Mitigation:** Writer and verifier must be separate agents (SC-66). Marcus writes code + tests. Qui
+  test("AUTO-QUINN-1: Quinn verifies in SHIP", () => {
+    expect(SHIP_JS.toLowerCase()).toContain("quinn");
+  });
+
+  // Spec line 171: | D-21 | Writer and verifier must be separate agents | Same-agent test authorship has 31.7% semantic
+  test("AUTO-QUINN-1: Quinn verifies in SHIP", () => {
+    expect(SHIP_JS.toLowerCase()).toContain("quinn");
   });
 
 });

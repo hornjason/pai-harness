@@ -14,6 +14,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { collectSpecFiles } from "../lib/spec-files";
 import { resolve, join } from "path";
 import { harnessRootFor } from "../lib/paths";
 
@@ -94,13 +95,36 @@ function parseTestable(content: string): boolean | null {
   return testableMatch[1] === "true";
 }
 
+/**
+ * Whether a spec makes claims about THIS harness's own workflows (#225).
+ *
+ * Every claim this script extracts is asserted against `workflows/ship.js` or
+ * `workflows/prove.js`, so it only means anything for a spec describing the
+ * harness. `specs/bootstrap-data-flow/template-architecture.md` describes what
+ * a SCAFFOLDED CONSUMER's files look like, and its `make dev-all` /
+ * `make test-rebuild` / `make prove-up` are examples of a consumer Makefile —
+ * turning them into "rungate's ship.js must contain this string" is a false
+ * assertion about a different project.
+ *
+ * This was always true; it only started firing when #225 made the collectors
+ * recursive and the consumer-facing specs became visible for the first time.
+ * The opt-out is frontmatter rather than a path rule so it stays explicit and
+ * reviewable, and so making a spec visible to the conformity engine and making
+ * it a source of harness claims remain two separate decisions.
+ */
+function parseWorkflowClaims(content: string): boolean {
+  const fm = content.match(/^---\n([\s\S]*?)\n---/);
+  if (!fm) return true;
+  return !/^workflow-claims:\s*false\s*$/m.test(fm[1]);
+}
+
 function discoverTestableSpecs(specsDir: string): { path: string; name: string }[] {
-  const files = readdirSync(specsDir).filter(f => f.endsWith(".md"));
+  const files = collectSpecFiles(specsDir); // #225 — subdirectories too
   const testable: { path: string; name: string }[] = [];
   for (const f of files) {
     const fullPath = join(specsDir, f);
     const content = readFileSync(fullPath, "utf-8");
-    if (parseTestable(content) === true) {
+    if (parseTestable(content) === true && parseWorkflowClaims(content)) {
       testable.push({ path: fullPath, name: f });
     }
   }
@@ -306,7 +330,7 @@ export function main(root: string) {
   }
 
   const testableSpecs = discoverTestableSpecs(SPECS_DIR);
-  const allFiles = readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
+  const allFiles = collectSpecFiles(SPECS_DIR); // #225 — subdirectories too
 
   console.log(`Spec discovery: ${allFiles.length} specs scanned, ${testableSpecs.length} testable`);
 

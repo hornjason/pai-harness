@@ -29,7 +29,7 @@ testable: true
 - [x] SC-17: AGENTS.md is under [150] lines — scaffold WARNS if over
 - [ ] SC-18: Empty sections omitted from AGENTS.md (no consumers = no Consumers section)
 - [x] SC-19: CLAUDE.md contains [@AGENTS.md] bridge for cross-tool compatibility
-- [x] SC-20: src/index.ts exists (new code projects get stub as agent starting point)
+- [ ] SC-20: src/index.ts exists (new code projects get stub as agent starting point)
 - [x] SC-21: rungate.json has no hardcoded port numbers — all detected from Makefile/config or null
 - [x] SC-24: Conformity test calls all 9 suites (scaffold, spec-discovery, spec-drift, doc-hygiene, agent-validation, fallow, constraint-candidates, package-validation, tsconfig-validation)
 - [x] SC-25: AGENTS.md Commands section includes all harness commands (bun test, tsc, conformity, sync-tests, create-spec, create-adr, extract-constraints, re-scaffold)
@@ -54,18 +54,18 @@ testable: true
 - [x] SC-88: All 9 ship workflow prompt templates exist in harness prompts/ (discovery, marcus, quinn, rook, serena, aditi, environment, container-rebuild, container-verify)
 - [x] SC-89: All 11 Layer 1 methodology templates exist in harness prompts/ (rca, blast-radius, prevention, regression, read-before-write, quinn-decision-tree, evidence-hierarchy, ac-format, coding-principles, testing-strategy, escalation-decision-tree)
 - [x] SC-90: Brief-assembler embeds relevant Layer 1 methodology templates into per-agent briefs at ship time
-- [x] SC-91: .git/hooks/pre-commit exists (scaffold creates with secret scan HYGIENE-12, in-repo not global)
-- [x] SC-92: .git/hooks/pre-push exists (scaffold creates with conformity test, in-repo not global)
+- [x] SC-91: scripts/git-hooks/pre-commit exists (the tracked source the scaffold installs into .git/hooks; secret scan HYGIENE-12, in-repo not global). Asserts the template, not the installed copy: .git/ is not version-controlled, so an SC naming .git/hooks/pre-commit passes in a working tree that happens to have it installed and fails in every fresh clone and in CI (#225)
+- [x] SC-92: scripts/git-hooks/pre-push exists (the tracked source the scaffold installs into .git/hooks; conformity test, in-repo not global). Asserts the template, not the installed copy, for the reason given on SC-91 (#225)
 - [x] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
-- [x] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
-- [x] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
+- [ ] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
+- [ ] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
 - [x] SC-97: Pre-flight checks git repo (git init if not), package.json (bun init if not), .gitignore (create if not)
 - [x] SC-98: Pre-flight runs BEFORE Phase 0 — .gitignore exists before any git add
 - [x] SC-99: Post-scaffold commits all harness files when `--commit` is passed — opt-in since #216, because a scaffold run must not write to a consumer's git history unasked
 - [x] SC-100: Post-scaffold commit only runs if there are actual changes (no empty commits), and refuses outright on a tree holding work the scaffold did not generate
 - [x] SC-101: rungate.json uses field-level merge — auto-detected fields overwritten, manual fields preserved
 - [x] SC-107: Makefile fallback chain: each field tries Makefile → package.json → null in order
-- [x] SC-114: AGENTS.md has section [Research Tools] listing available tools with usage examples
+- [ ] SC-114: AGENTS.md has section [Research Tools] listing available tools with usage examples
 - [x] SC-115: Coding principles reference doc (deep modules, boundary validation, etc.) ships with harness and is referenced in Marcus briefs
 - [x] SC-116: Coding principles doc auto-updated via Context7 or research on harness update — not static training data
 - [x] SC-117: Testing strategy reference doc (PBT, contract tests, tautological trap) ships with harness and is referenced in Marcus briefs
@@ -77,8 +77,8 @@ testable: true
 - [x] SC-123: .github/copilot-instructions.md exists (created if missing, never overwritten — scaffold skips on existing)
 - [x] SC-124: rungate.json envVars field populated from .env.example if it exists — null if no .env.example
 - [x] SC-125: CODE-MAP.md frontmatter includes scan-paths array listing directories scanned
-- [x] SC-126: AGENTS.md has section [Code Style] auto-detected from runtime (Bun/Node), language (TS/JS), module system (ESM/CJS)
-- [x] SC-128: AGENTS.md has section [Harness-Managed Files] with file/customize/don't table
+- [ ] SC-126: AGENTS.md has section [Code Style] auto-detected from runtime (Bun/Node), language (TS/JS), module system (ESM/CJS)
+- [ ] SC-128: AGENTS.md has section [Harness-Managed Files] with file/customize/don't table
 - [x] SC-138: Agent briefs cap at 10 essential rules per Layer 1 template — instruction stacking beyond 16 degrades compliance 50%+
 - [x] SC-139: AGENTS.md Rules section at most [200] words (excluding tables/headers) — always-on context must be lean
 - [x] SC-140: Brief structure: Core Principles at START, ACs at END — methodology in middle (mitigates "Lost in the Middle" attention decay)

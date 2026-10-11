@@ -42,11 +42,24 @@ const CHECKED_SC_BASELINE = 261;
 
 /**
  * Checked SCs whose statement matches no pattern in the matcher registry, so
- * no assertion can be built for them. 54 on the day checked SCs were first
- * collected (#209). This is a ratchet, not a target: it may fall freely, and
- * any rise means a new SC was written in prose that the engine cannot bind to.
+ * no assertion can be built for them. This is a ratchet, not a target: it may
+ * fall freely, and any rise means a new SC was written in prose that the
+ * engine cannot bind to.
+ *
+ * 54 on the day checked SCs were first collected (#209). Raised to 239 by
+ * #225, and the rise is not a regression — it is the previous number being
+ * wrong. The spec collectors read `specs/` without descending, so
+ * `specs/bootstrap-data-flow/` — six specs, 254 SCs — was invisible to every
+ * one of them. 185 of those SCs are checked `[x]` and match no pattern: they
+ * were counted as nothing because they were never looked at.
+ *
+ * Read this number as the debt it is. 239 SCs are marked done, carry no
+ * assertion the engine can build, and are therefore wishes by this project's
+ * own rule. The honest way down is a matcher that binds them or an SC
+ * rewritten in a form that binds — not unchecking them, which the
+ * CHECKED_SC_BASELINE above exists to catch.
  */
-const UNMATCHED_CHECKED_RATCHET = 54;
+const UNMATCHED_CHECKED_RATCHET = 239;
 
 function specFiles(): string[] {
   return readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
