@@ -1916,6 +1916,67 @@ fixed while writing this one — the runner originally assembled the extracted
 statements in a fixed order, so moving the refusal below the log changed
 nothing it could see.
 
+### A prior branch described by one number that could not distinguish anything (#185)
+
+`detectPriorBranch` nominated a ref and reported `commitCount`. Three facts the
+resume decision needs were not in the answer, and each absence has its own
+failure:
+
+| Fact | What the old answer said | What it cost |
+|---|---|---|
+| how far behind the base it is | nothing | a candidate 64 ahead and 4 behind read exactly like one on the base's tip |
+| whether the work already landed | `commitCount: 1` | a squash-merged branch reopened, because the graph still lists its commit |
+| whether the ref is work at all | nominated it | `rungate-preserved/*` and `worktree-*` carry the issue number and are written LAST, so they win the recency tie-break against the real branch |
+
+The second is the one that is specific to this repo. A squash merge leaves the
+branch an ancestor of nothing while its content sits on main, so `rev-list
+main..ref` reports every commit it ever had. The commit graph cannot see the
+merge; the TREE can, because a squash commit reproduces the branch tip's tree
+exactly. Detection is therefore "does the tree this branch produced appear
+anywhere in the base's history", which stays true after main moves on, and
+deliberately not `git cherry` — patch-id comparison answers a different
+question and is linear in the branch length rather than the base's.
+
+`behindCount` follows `commitCount`'s rule from #164 rather than inventing a
+second one: a number is a claim, and when no base resolves there is no claim,
+so the value is `null`. `0` would say "this branch is current". `isBehind` is
+false for an unmeasured branch for the same reason — no measurement is not
+evidence of staleness — and `mergedIntoBase` fails closed in the opposite
+direction, because "I could not check" becoming "it already landed" discards
+work.
+
+- [x] SC-679: lib/prior-branch.ts contains [behindCount: number | null, isBehind: boolean] — currency is on the record the decision reads, not recomputed by each caller; `null` for an unanswerable count matches commitCount's existing rule, so the two numbers cannot disagree about what "unknown" looks like
+- [x] SC-680: lib/prior-branch.ts contains [function divergenceFromBase, --left-right] — both sides come from ONE `rev-list`, so ahead and behind can never be measured against different bases, and a call that cannot run returns `null` for both rather than a pair of zeroes nobody took
+- [x] SC-681: lib/prior-branch.ts contains [function mergedIntoBase, merge-tree --write-tree] — "already merged" is measured by merging into the base in memory and asking whether the result is the base's own tree, which is true however the work landed. That covers the squash merge this repository actually uses, where no commit on either side shares a patch-id with the other, and it keeps holding after the base moves on because the MERGE adding nothing is what is read, never the two trees happening to be equal. Three-valued on purpose: an unusable ref prints no tree and returns `null`, so "could not check" never arrives as "already landed", which is the direction that discards work
+- [x] SC-682: lib/prior-branch.ts contains [isHarnessScratchRef, rungate-preserved/] — one exported predicate holds every namespace that carries an issue number without being resumable work, so adding the rescue namespace is a line rather than a second `startsWith` somewhere else, and the predicate is exported so its coverage is testable directly rather than only through detection
+- [x] SC-683: test/prior-branch-currency.test.ts contains [the two candidates no longer read identically] — the stale and the current branch are measured in the SAME fixture against the SAME base, and the defect is asserted directly: equal `commitCount`, different `behindCount`
+- [x] SC-684: test/prior-branch-merged-detection.test.ts contains [a squash-merged branch is reported as merged, commitCount).toBe(2)] — the fixture proves its own premise in the same assertion block, because a "squash" fixture git treats as an ancestor would pass for a reason unrelated to squashing. `commitCount` staying 2 while `isMerged` is true IS the premise: the commit graph still sees two unmerged commits, so only the tree-level reading can be what answered
+- [x] SC-685: test/prior-branch-merged-detection.test.ts contains [no git cherry call is reachable from detection, merge-tree] — the prose claim about patch ids is a test rather than a paragraph a later rewrite can quietly contradict, and it is asserted in both directions: `cherry` absent AND `merge-tree` present, so deleting the detection outright cannot satisfy it
+- [x] SC-687: test/prior-branch-merged-detection.test.ts contains [an unusable ref is unmeasured, not merged, a usable ref still gets a real answer] — `mergedIntoBase` has two ways to answer "I don't know" and only the first was reachable by a test, so the fail-closed promise in its docblock could not be falsified: changing the `TREE_OID` guard to `return true` left 0 of 44 red. The uncovered path is the one that matters, because `merge-tree` exits 1 for an unusable ref exactly as it does for a real conflict, so the error arrives looking like an answer. The premise case is part of the criterion: a usable ref must still return a real boolean, or "null for everything" would satisfy the refusal half on its own
+- [x] SC-686: test/prior-branch-preservation-exclusion.test.ts contains [the real branch is still nominated even though every scratch ref is newer, an ordinary issue branch is not scratch] — the excluded refs are deliberately the NEWEST in the fixture, so a filter that does nothing loses the nomination to them; a positive-control branch for the same issue is still nominated, so a filter narrowed to everything cannot buy green either
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/prior-branch-currency.test.ts` + `test/prior-branch-merged-detection.test.ts`
++ `test/prior-branch-preservation-exclusion.test.ts` + `test/prior-branch.test.ts`
++ `test/prior-branch-remotes.test.ts` (47 tests):
+
+| Mutation | Red |
+|---|---|
+| the behind side hardwired to `0` | 2 of 44 — the stale branch reads as current, and the two-candidates case stops distinguishing them |
+| `mergedIntoBase` short-circuited to `return false` | 3 of 47 — the merge-commit case, the squash case, and the usable-ref premise guard. Re-measured after the implementation changed from an ancestor-plus-tree-in-history pair to one `merge-tree`; the earlier table recorded 2 of 44 against `isContainedInBase`, which no longer exists |
+| `mergedIntoBase`'s `TREE_OID` guard changed to `return true` | **0 of 44 before this was caught, 2 of 47 after.** The docblock promised fail-closed and nothing could falsify it: the only "unmeasured" test removed the BASE, so it returned `null` from the function's first line and never reached the guard. `merge-tree --write-tree main <unusable-ref>` exits 1 — the same code a real conflict exits with, which is why 1 is deliberately allowed through — and prints no tree, so without the guard an empty line is compared against the base's tree and "could not check" becomes "already landed". That direction discards work. The new block in test/prior-branch-merged-detection.test.ts reaches it, and carries a usable-ref premise case so "null for everything" cannot pass it |
+| `rungate-preserved/` dropped from the exclusion list | 3 of 44 — the rescue ref wins the recency tie-break and is nominated for both issues |
+| `isBehind` hardwired to `false` | 1 of 44 — the flag has to be derived from the count rather than decorating it |
+| an unanswerable divergence reported as `{ ahead: 0, behind: 0 }` | 2 of 44 — the new null case AND #164's pre-existing one, which is how the rewrite is shown not to have dropped the older rule |
+| a `git cherry` invocation added back to the detector | 1 of 44 — the source check, which is otherwise a sentence nobody re-reads |
+
+None is left in the tree; all were run and reverted, and `lib/prior-branch.ts`
+was compared byte-for-byte against a copy taken before the first mutation. The
+sixth row is the one worth reading twice: #164 settled that an unanswerable
+count is `null`, and this change replaced the `rev-list` call that rule was
+written against. The mutation shows the older test still guards it, so the
+rewrite inherited the rule rather than restating it.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

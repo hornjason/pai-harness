@@ -155,7 +155,21 @@ if (existsSync(configPath)) {
   // refName is the git-resolvable ref; branch is the bare push target (#164).
   // commitCount is null when git could not count — not 0, which would claim
   // the prior branch holds nothing.
-  let priorBranch: { branch: string; refName: string; commitCount: number | null } | undefined;
+  //
+  // behindCount/isBehind/isMerged travel with it (#185): ship.js refuses to
+  // push onto a branch that is behind the base or already merged into it, and
+  // a transport that drops those fields hands the refusal an unknown, which it
+  // also refuses. Same null rule — an absent measurement stays null.
+  let priorBranch:
+    | {
+        branch: string;
+        refName: string;
+        commitCount: number | null;
+        behindCount: number | null;
+        isBehind: boolean | null;
+        isMerged: boolean | null;
+      }
+    | undefined;
   try {
     const priorResult = execSync(
       `bun -e "import {detectPriorBranch} from '${resolve(projectRoot)}/node_modules/@anthropic-ai/claude-code/lib/prior-branch.ts'; void 0;" 2>/dev/null || echo '{}'`,
@@ -173,6 +187,9 @@ if (existsSync(configPath)) {
         branch: parsed.branch,
         refName: parsed.refName || parsed.branch,
         commitCount: parsed.commitCount ?? null,
+        behindCount: parsed.behindCount ?? null,
+        isBehind: parsed.isBehind ?? null,
+        isMerged: parsed.isMerged ?? null,
       };
     }
   } catch {
