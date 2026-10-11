@@ -1,332 +1,343 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join, relative } from "path";
-
 /**
- * #274 SC-6, as a scan rather than a promise.
+ * #274 AC-6 — nothing this issue adds delegates a container rebuild.
  *
- * The prohibition, verbatim: "No part of this delegates `make rebuild` to an
- * agent — DailyBriefDashboard's CLAUDE.md forbids it and the Makefile has a
- * worktree guard that exits 1." #274 builds a consumer FIXTURE and touches no
- * DDB container, so what could actually go wrong is not a container being
- * rebuilt — it is a file in this slice quietly acquiring a process execution,
- * or an agent prompt telling someone else to run one.
+ * SC-6 is a prohibition, verbatim: "No part of this delegates the DDB rebuild
+ * to an agent — DDB's CLAUDE.md forbids it and the Makefile has a worktree
+ * guard that exits 1." This issue builds a FIXTURE of a consumer that HAS a
+ * container, which is exactly the situation in which that delegation is one
+ * careless line away: the fixture's `container.rebuildCommand` is a real DDB
+ * command, carried as an inert string so ship.js's container block has
+ * something to interpolate.
  *
- * Four properties make this a check and not a line in a report:
+ * ## Why this scans by EXECUTION CONSTRUCT and not by the command's name
  *
- * - **It scans by EXECUTION CONSTRUCT, not by the literal command.** `make
- *   rebuild` already appears as inert text in `test/directive-extractor.test.ts`
- *   and `test/spec-compliance-auto.test.ts`, and the consumer fixture carries
- *   it as a config VALUE on purpose. A string-presence check would be a false
- *   positive here, and — worse — would go green the day the command is renamed.
- * - **It asserts the command IS present.** Zero violations over files that
- *   never mention rebuilding is a vacuous pass, and is also what a discovery
- *   that silently returned nothing looks like.
- * - **It distinguishes an instruction from a value.** `rebuildCommand: "make
- *   rebuild"` is a fact the consumer declared; an imperative naming that
- *   command is someone being told to run it. Both boundaries are tested,
- *   because narrowing a detector is the change most likely to buy green with
- *   blindness (#235) — and this paragraph had to be rewritten once because the
- *   detector correctly flagged the example it originally spelled out.
- * - **Its own positive controls are assembled from fragments**, so the literal
- *   construct-plus-command adjacency never appears in this file's text. That
- *   matters because this file is itself one of the scanned files: a scanner
- *   whose controls made it report itself could only be made green by deleting
- *   the controls, which is how a check loses the ability to fail.
+ * A check for the literal command string would be both a false positive and a
+ * check that cannot fail. False positive, because the string already appears
+ * as inert text in `test/directive-extractor.test.ts` and
+ * `test/spec-compliance-auto.test.ts`, and because the fixture is REQUIRED to
+ * carry it. Cannot fail, because the dangerous thing was never the string — it
+ * is a child process. An agent prompt telling an agent to rebuild with no
+ * command in it is just as much a delegation, and a `spawnSync` of a shell
+ * script that rebuilds would not contain the words at all.
  *
- * The file set is DISCOVERED, not declared, so a file a later slice of #274
- * adds under the same paths is covered without this test being edited.
+ * So the scan finds every EXECUTION construct in the added files, extracts the
+ * text of the call, and asserts none of them names a rebuild, podman or
+ * docker. Both halves are measured: that the scanner finds constructs at all
+ * (this issue does spawn `bun test`), and that it SEES a planted violation.
+ *
+ * ## The self-reference trap, and how it is closed
+ *
+ * This file is in its own scan list, and a detector that names what it detects
+ * is evidence for nothing — `.claude/rules/checks-must-be-able-to-fail.md`
+ * records the same trap in #171, where a spec phrase survived inside the SC
+ * line demanding it and a whole-section search went green over a spec that no
+ * longer explained itself.
+ *
+ * So the detector's own vocabulary and its planted controls live inside ONE
+ * marked region, and that region is REMOVED from this file before this file is
+ * scanned. The removal is bounded and asserted: the region must exist exactly
+ * once, removing it must change the source, and what is left must still be
+ * most of the file, or the exemption would have swallowed the subject.
  */
+import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 
-// ── the files this issue adds ────────────────────────────────
+/** Every file #274 adds. A path that is not here is not scanned. */
+const ADDED_FILES = [
+  "test/fixtures/consumer-ui-project/.claude/rungate.json",
+  "test/fixtures/consumer-ui-project/workflow-state.json",
+  "test/helpers/consumer-ship-sites.ts",
+  "test/consumer-ceremony-fixture.test.ts",
+  "test/consumer-tier-gated-subsystems.test.ts",
+  "test/consumer-tier-downgrade-mutation.test.ts",
+  "test/consumer-scope-gate-prevalidation.test.ts",
+  "test/consumer-no-rebuild-delegation.test.ts",
+];
 
-/** Every file under `dir`, recursively. A missing directory contributes nothing. */
-function walk(dir: string): string[] {
-  if (!existsSync(dir)) return [];
-  const out: string[] = [];
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    if (statSync(full).isDirectory()) out.push(...walk(full));
-    else out.push(full);
-  }
-  return out;
+const SELF = "test/consumer-no-rebuild-delegation.test.ts";
+
+// ──── DETECTOR-START ────
+
+/**
+ * Anything that starts a child process. Named constructs rather than a single
+ * catch-all, because a bare `exec` would also match `execute`, and a detector
+ * that matches prose is the shape this repo keeps getting wrong.
+ */
+const EXECUTION_CONSTRUCTS: Array<{ name: string; re: RegExp }> = [
+  { name: "spawnSync", re: /\bspawnSync\s*\(/g },
+  { name: "spawn", re: /(?<![.A-Za-z])spawn\s*\(/g },
+  { name: "execSync", re: /\bexecSync\s*\(/g },
+  { name: "execFileSync", re: /\bexecFileSync\s*\(/g },
+  { name: "execFile", re: /\bexecFile\s*\(/g },
+  { name: "exec", re: /(?<![A-Za-z.])exec\s*\(/g },
+  { name: "Bun.$", re: /Bun\s*\.\s*\$\s*`/g },
+  { name: "Bun.spawn", re: /Bun\s*\.\s*spawn(?:Sync)?\s*\(/g },
+  { name: "child_process", re: /\bchild_process\b/g },
+];
+
+/** The container runtimes that must never be shelled out to directly. */
+const CONTAINER_RUNNERS = new RegExp(
+  [`\\b${["pod", "man"].join("")}\\b`, `\\b${["doc", "ker"].join("")}\\b`].join("|"),
+  "i",
+);
+
+const MAKE = "make";
+const REBUILD = "rebuild";
+
+/**
+ * Does this call text name a rebuild or a container runtime?
+ *
+ * `make` and `rebuild` are matched as a PAIR rather than as the adjacent
+ * phrase, because an argv form splits them — handing `"make"` and `["rebuild"]`
+ * to `spawnSync` is the same delegation with a comma in it, and a detector
+ * that only knew the shell form would miss the one a TypeScript file is most
+ * likely to use. The pairing is scoped to the text of a single child-process
+ * call, which is narrow enough that both words appearing together means what
+ * it looks like.
+ */
+function namesARebuild(text: string): boolean {
+  if (CONTAINER_RUNNERS.test(text)) return true;
+  return new RegExp(`\\b${MAKE}\\b`, "i").test(text) && new RegExp(`\\b${REBUILD}`, "i").test(text);
 }
 
 /**
- * The paths #274 adds, discovered from the tree rather than listed here.
+ * A prompt that tells an agent to rebuild, with or without a command.
  *
- * Three shapes, which between them are everything the parent issue's sub-issues
- * add that could execute anything: the consumer suites, the shared extraction
- * helper, and the on-disk consumer fixture. The Markdown #274 touches is
- * MODIFIED rather than added, and is prose: it cannot execute, and a rule file
- * that must quote the forbidden command in order to forbid it would otherwise
- * be unwritable.
+ * ship.js's own container block carries one — that is the harness's text, not
+ * this issue's — so the scan is scoped to the added files. The imperative is
+ * the bare form an instruction takes; the descriptive forms ("the rebuild
+ * command", "rebuildCommand") are what prose uses to point AT a rebuild, and a
+ * detector that cannot tell them apart is the #235 mistake.
  */
-function discoverAddedFiles(root: string): string[] {
-  const testDir = join(root, "test");
-  const suites = existsSync(testDir)
-    ? readdirSync(testDir)
-        .filter((f) => f.startsWith("consumer-") && f.endsWith(".test.ts"))
-        .map((f) => join(testDir, f))
-    : [];
-  const helper = join(testDir, "helpers", "consumer-ship-sites.ts");
-  const helpers = existsSync(helper) ? [helper] : [];
-  const fixture = walk(join(testDir, "fixtures", "consumer-ui-project"));
-  return [...suites, ...helpers, ...fixture].sort();
-}
+const REBUILD_IMPERATIVE = new RegExp(
+  `(?:\\brun\\b|\\bexecute\\b|\\binvoke\\b)[^.\\n]{0,80}\\b${MAKE}\\s+${REBUILD}\\b|` +
+    `\\b${REBUILD}\\b\\s+the\\s+(?:test\\s+)?container\\b`,
+  "i",
+);
 
-const ADDED_FILES = discoverAddedFiles(REPO_ROOT);
-const rel = (p: string) => relative(REPO_ROOT, p);
+/** One planted delegation per construct the detector claims to cover. */
+const PLANTED_DELEGATIONS: Array<[string, string]> = [
+  ["spawnSync", `${["spawn", "Sync"].join("")}("${MAKE}", ["${REBUILD}"])`],
+  ["execSync", `${["exec", "Sync"].join("")}("${MAKE} ${REBUILD}")`],
+  ["Bun.$", "Bun.$`" + `${MAKE} ${REBUILD}` + "`"],
+  ["exec", `${"exec"}("${["doc", "ker"].join("")} compose up")`],
+  ["spawn", `${"spawn"}("${["pod", "man"].join("")}", ["build", "."])`],
+];
 
-// ── what counts as a violation ───────────────────────────────
+/** Prompts the imperative detector must SEE. */
+const PLANTED_IMPERATIVES = [
+  `Run this EXACT command and report the output: cd /project && ${MAKE} ${REBUILD}`,
+  `You have ONE task: ${REBUILD} the test container.`,
+];
 
-/**
- * Process-execution constructs, matched only where the identifier is
- * immediately applied — `execSync(`, not the word `execSync` in a sentence or
- * in this file's own control fragments.
- *
- * Case-sensitive on purpose: the constructs are lowerCamel and the commands
- * are lowercase, so nothing here can be satisfied by prose in capitals.
- */
-const EXEC_CONSTRUCTS = ["execSync", "execFileSync", "execFile", "exec", "spawnSync", "spawn"];
+/** Prose the imperative detector must NOT fire on. */
+const INNOCENT_PROSE = [
+  `the fixture's container.${REBUILD}Command is carried as an inert string`,
+  `DDB's CLAUDE.md forbids ${MAKE} ${REBUILD} and the Makefile has a worktree guard`,
+  `ship.js interpolates the ${REBUILD} command into a prompt`,
+];
 
-const EXEC_CALL = new RegExp(`\\b(${EXEC_CONSTRUCTS.join("|")})\\s*\\(`, "g");
-
-/** `Bun.$` and a tagged `$` take a template literal rather than a call. */
-const TAGGED_SHELL = /(?<![\w.$])(Bun\.\$|\$)`/g;
-
-/**
- * How far past a construct the command may sit and still be that construct's
- * argument. Deliberately short. The error direction is over-reporting, which
- * is loud; a window long enough to never miss would quietly start matching the
- * next statement.
- */
-const EXEC_WINDOW = 220;
-
-/** The containers this issue must never touch, however they are spelled. */
-const FORBIDDEN_COMMAND = /make\s+rebuild|podman|docker/;
-
-/**
- * An INSTRUCTION to rebuild, as opposed to a mention of one.
- *
- * Narrowed deliberately, and the boundary is two tests rather than a comment:
- * `rebuildCommand: "make rebuild"` is a declared value this issue carries
- * inert, while an imperative aimed at a container is someone being told to do
- * it. A detector that could not tell those apart would have to flag the
- * fixture, and a detector narrowed until it flags nothing is the defect
- * `.claude/rules/checks-must-be-able-to-fail.md` is about.
- *
- * The example sentences this comment would naturally spell out live in the
- * controls below instead, assembled from fragments — writing one here makes
- * the scan report this file, correctly.
- */
-const REBUILD_INSTRUCTION =
-  /rebuild\s+the\s+(\w+\s+){0,2}container|\b(run|execute|invoke|perform)\b[^\n]{0,40}?(make\s+rebuild|podman\s+\w|docker\s+\w)/i;
-
-export type Violation = { kind: "execution" | "rebuild-instruction"; construct: string; snippet: string };
-
-/** Every forbidden execution and every rebuild instruction in `source`. */
-export function scanSource(source: string): Violation[] {
-  const found: Violation[] = [];
-
-  for (const re of [EXEC_CALL, TAGGED_SHELL]) {
-    re.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(source)) !== null) {
-      const window = source.slice(m.index, m.index + EXEC_WINDOW);
-      if (FORBIDDEN_COMMAND.test(window)) {
-        found.push({ kind: "execution", construct: m[1], snippet: window.slice(0, 100) });
+/** The text of a call starting at the `(` that `open` points at, parens balanced. */
+function callText(src: string, open: number): string {
+  let depth = 0;
+  let i = open;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "'" || c === '"' || c === "`") {
+      const quote = c;
+      i++;
+      while (i < src.length) {
+        if (src[i] === "\\") i += 2;
+        else if (src[i] === quote) {
+          i++;
+          break;
+        } else i++;
       }
+      continue;
     }
+    if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+    i++;
   }
-
-  const instruction = source.match(REBUILD_INSTRUCTION);
-  if (instruction) {
-    found.push({
-      kind: "rebuild-instruction",
-      construct: instruction[0].trim(),
-      snippet: source.slice(Math.max(0, instruction.index! - 40), instruction.index! + 80),
-    });
-  }
-
-  return found;
+  // Unbalanced: hand back a generous window rather than nothing, so a
+  // violation cannot hide behind a parse failure.
+  return src.slice(open, open + 1000);
 }
 
-const scanFile = (path: string) => scanSource(readFileSync(path, "utf-8"));
+interface Site {
+  file: string;
+  construct: string;
+  text: string;
+}
 
-// ── the scan over the files this issue adds ──────────────────
-
-describe("#274 SC-6: nothing this issue adds executes or delegates a rebuild", () => {
-  test("the discovery found this slice's two suites", () => {
-    const names = ADDED_FILES.map(rel);
-    expect(names).toContain("test/consumer-tier-gated-subsystems.test.ts");
-    expect(names).toContain("test/consumer-no-rebuild-delegation.test.ts");
-  });
-
-  test("every discovered file is free of forbidden executions and rebuild instructions", () => {
-    const violations = ADDED_FILES.flatMap((p) =>
-      scanFile(p).map((v) => `${rel(p)}: ${v.kind} [${v.construct}] — ${v.snippet}`),
-    );
-    expect(violations).toEqual([]);
-  });
-
-  test("the zero is not the command being absent — it is present and inert", () => {
-    // The anti-vacuity property. Without it the scan above reports a clean
-    // slice for a set of files that never mentioned rebuilding, and keeps
-    // reporting one if the discovery silently returns an empty list.
-    const carriers = ADDED_FILES.filter((p) => readFileSync(p, "utf-8").includes("make rebuild"));
-    expect(carriers.map(rel)).toContain("test/consumer-tier-gated-subsystems.test.ts");
-  });
-
-  test("every file carrying the command carries it as a declared value", () => {
-    // Wherever the fixture config lives — inline in the suite now, on disk once
-    // the fixture file lands — the command sits beside a key, never in an
-    // argument list. This file is excluded by name: it carries the command in
-    // its controls, which is the point of them.
-    const carriers = ADDED_FILES.filter(
-      (p) =>
-        rel(p) !== "test/consumer-no-rebuild-delegation.test.ts" &&
-        readFileSync(p, "utf-8").includes("make rebuild"),
-    );
-    expect(carriers.length).toBeGreaterThan(0);
-    for (const p of carriers) {
-      expect(readFileSync(p, "utf-8")).toMatch(/["']?rebuildCommand["']?\s*:\s*["']make rebuild["']/);
+/** Every execution site in `source`, with the text of the call it starts. */
+export function executionSites(file: string, source: string): Site[] {
+  const sites: Site[] = [];
+  for (const { name, re } of EXECUTION_CONSTRUCTS) {
+    for (const m of source.matchAll(new RegExp(re.source, "g"))) {
+      const at = m.index ?? 0;
+      const paren = source.indexOf("(", at);
+      const wholeWord = name === "child_process" || name === "Bun.$" || paren < 0;
+      const text = wholeWord ? source.slice(at, at + 400) : callText(source, paren);
+      sites.push({ file, construct: name, text });
     }
-  });
-});
+  }
+  return sites;
+}
 
-// ── the scan is shown able to fail ───────────────────────────
+/** The execution sites that name a rebuild, podman or docker. */
+export function rebuildDelegations(file: string, source: string): Site[] {
+  return executionSites(file, source).filter((s) => namesARebuild(s.text));
+}
+
+// ──── DETECTOR-END ────
+
+// Assembled, not written: a literal here would be a second copy of the marker
+// and the uniqueness assertion below would refuse the file it is checking.
+const DETECTOR_START = `// ──── DETECTOR${"-START"} ────`;
+const DETECTOR_END = `// ──── DETECTOR${"-END"} ────`;
+
+const sourceOf = (rel: string): string => readFileSync(join(REPO_ROOT, rel), "utf-8");
 
 /**
- * Control sources, assembled at runtime. The construct name and the command
- * never sit next to each other in this file's own text, which is how a file
- * that scans itself can still hold its positive controls.
+ * The text of `rel` that this file is entitled to judge.
+ *
+ * For every file but this one, that is the whole file. For this one the
+ * detector's own vocabulary is cut out first — it names every token it looks
+ * for, so leaving it in would report the detector as the violation and leave
+ * nothing distinguishing a clean tree from a dirty one.
  */
-const EXEC_SYNC = "exec" + "Sync";
-const SPAWN_SYNC = "spawn" + "Sync";
-const BUN_SHELL = "Bun." + "$";
-const BACKTICK = "`";
-const REBUILD_PHRASE = "rebuild the " + "test container";
+export function scannableSource(rel: string, source = sourceOf(rel)): string {
+  if (rel !== SELF) return source;
+  const a = source.indexOf(DETECTOR_START);
+  const b = source.indexOf(DETECTOR_END);
+  if (a < 0 || b <= a) {
+    throw new Error(
+      `${SELF} has no DETECTOR marker pair — the self-reference exemption cannot be bounded, ` +
+        `so this scan proves nothing`,
+    );
+  }
+  return source.slice(0, a) + source.slice(b + DETECTOR_END.length);
+}
 
-const EXEC_CONTROL = `${EXEC_SYNC}("cd /srv/ddb && make rebuild");`;
-const PODMAN_CONTROL = `${SPAWN_SYNC}("podman", ["build", "-t", "ddb", "."]);`;
-const TAGGED_CONTROL = `await ${BUN_SHELL}${BACKTICK}docker compose up -d${BACKTICK};`;
-const BENIGN_SPAWN_CONTROL = `${SPAWN_SYNC}("bun", ["test", mutantPath], { cwd: tmp });`;
-const DISTANT_MENTION_CONTROL = [
-  `${SPAWN_SYNC}("bun", ["test", mutantPath], { cwd: tmp });`,
-  ..."x".repeat(10).split("").map((_, i) => `// filler line ${i} keeping the mention out of the window`),
-  "// the consumer's own Makefile is the only thing that runs it",
-].join("\n");
-const INERT_VALUE_CONTROL = 'const container = { rebuildCommand: "make rebuild", port: 7776 };';
-const PROSE_CONTROL = "// the consumer declares its own rebuild command; we never run one";
-const PROMPT_CONTROL = `await timedAgent('You have ONE task: ${REBUILD_PHRASE}.', { label: 'container-rebuild' })`;
-
-describe("#274 SC-6: the scan catches what it claims to catch", () => {
-  test("a direct execution of make rebuild is a violation", () => {
-    expect(scanSource(EXEC_CONTROL).map((v) => v.kind)).toEqual(["execution"]);
+describe("#274 AC-6: every file this issue adds exists and is scanned", () => {
+  test("each listed file is on disk", () => {
+    for (const rel of ADDED_FILES) {
+      expect(existsSync(join(REPO_ROOT, rel)), `${rel} is listed but missing`).toBe(true);
+    }
+    expect(ADDED_FILES.length).toBe(8);
+    expect(new Set(ADDED_FILES).size).toBe(ADDED_FILES.length);
+    expect(ADDED_FILES).toContain(SELF);
   });
 
-  test("a raw podman spawn is a violation", () => {
-    expect(scanSource(PODMAN_CONTROL).map((v) => v.construct)).toEqual([SPAWN_SYNC]);
+  test("the self-reference exemption is bounded, and does not swallow the subject", () => {
+    const whole = sourceOf(SELF);
+    const scanned = scannableSource(SELF, whole);
+    expect(whole.split(DETECTOR_START).length - 1).toBe(1);
+    expect(whole.split(DETECTOR_END).length - 1).toBe(1);
+    expect(scanned.length).toBeLessThan(whole.length);
+    // What the file DOES is still judged — only the detector's vocabulary is
+    // cut. An exemption that removed the test bodies would pass every
+    // assertion below for the wrong reason, so each suite title is required to
+    // survive the cut.
+    for (const title of [
+      "every file this issue adds exists and is scanned",
+      "no added file executes a rebuild, podman or docker",
+      "no agent prompt in the added files instructs a rebuild",
+    ]) {
+      expect(scanned, `the exemption swallowed the "${title}" suite`).toContain(title);
+    }
+    expect(scannableSource("test/helpers/consumer-ship-sites.ts")).toBe(
+      sourceOf("test/helpers/consumer-ship-sites.ts"),
+    );
   });
 
-  test("a tagged-template docker invocation is a violation", () => {
-    // `Bun.$` takes no parentheses, so a call-anchored scan alone would miss
-    // it entirely and report clean.
-    expect(scanSource(TAGGED_CONTROL).map((v) => v.construct)).toEqual([BUN_SHELL]);
-  });
-
-  test("an instruction to rebuild a container is a violation wherever it appears", () => {
-    expect(scanSource(PROMPT_CONTROL).map((v) => v.kind)).toEqual(["rebuild-instruction"]);
-  });
-
-  test("spawning the test runner is not a violation", () => {
-    // A sibling slice of #274 spawns `bun test` to run a mutant suite. A scan
-    // that flagged every child process would refuse correct work, and the
-    // pressure to loosen it is how detectors stop detecting.
-    expect(scanSource(BENIGN_SPAWN_CONTROL)).toEqual([]);
-  });
-
-  test("a benign spawn is not tainted by a mention far below it", () => {
-    expect(scanSource(DISTANT_MENTION_CONTROL)).toEqual([]);
-  });
-
-  test("the command as a declared value is not a violation", () => {
-    expect(scanSource(INERT_VALUE_CONTROL)).toEqual([]);
-  });
-
-  test("the command named in prose is not a violation", () => {
-    expect(scanSource(PROSE_CONTROL)).toEqual([]);
+  test("an unmarked detector region is refused, not silently skipped", () => {
+    const unmarked = sourceOf(SELF).replace(DETECTOR_START, "// nothing here");
+    expect(() => scannableSource(SELF, unmarked)).toThrow(/no DETECTOR marker pair/);
   });
 });
 
-// ── the discovery is shown able to see, and to see more ──────
+describe("#274 AC-6: no added file executes a rebuild, podman or docker", () => {
+  test("the scan finds zero rebuild delegations", () => {
+    const found = ADDED_FILES.flatMap((rel) => rebuildDelegations(rel, scannableSource(rel)));
+    expect(
+      found.map((s) => `${s.file}: ${s.construct} ${s.text.slice(0, 120)}`),
+      "an added file starts a child process that names a rebuild",
+    ).toEqual([]);
+  });
 
-describe("#274 SC-6: the discovery covers files this slice has not written yet", () => {
-  const sandbox = join(tmpdir(), `rungate-274-scan-${process.pid}`);
+  test("the scan has something to look at", () => {
+    // Vacuity guard. A scanner that found no execution constructs at all would
+    // report zero delegations forever. This issue genuinely spawns `bun test`
+    // in test/consumer-tier-downgrade-mutation.test.ts.
+    const sites = ADDED_FILES.flatMap((rel) => executionSites(rel, scannableSource(rel)));
+    expect(sites.length).toBeGreaterThan(0);
+    expect(sites.some((s) => s.construct === "spawnSync")).toBe(true);
+  });
 
-  test("a planted suite, helper and fixture are all discovered and all scanned", () => {
-    // Three of the five paths #274 adds belong to sibling slices and do not
-    // exist in this worktree. Planting them proves the discovery reaches them
-    // when they land, rather than quietly scanning only what happens to be
-    // here — which would be a check that shrinks as the issue grows.
-    rmSync(sandbox, { recursive: true, force: true });
-    mkdirSync(join(sandbox, "test", "helpers"), { recursive: true });
-    mkdirSync(join(sandbox, "test", "fixtures", "consumer-ui-project", ".claude"), { recursive: true });
+  test("the scan SEES a planted delegation, in each construct it claims to cover", () => {
+    // The mutation, performed and observed. Without it, a scanner whose
+    // regexes matched nothing would be indistinguishable from a clean tree.
+    expect(PLANTED_DELEGATIONS.length).toBe(5);
+    for (const [construct, src] of PLANTED_DELEGATIONS) {
+      const hits = rebuildDelegations("planted.ts", src);
+      expect(hits.length, `the scanner missed a planted ${construct} delegation`).toBeGreaterThan(0);
+      expect(hits.some((h) => h.construct === construct)).toBe(true);
+    }
+  });
 
-    writeFileSync(join(sandbox, "test", "consumer-planted.test.ts"), EXEC_CONTROL);
-    writeFileSync(join(sandbox, "test", "helpers", "consumer-ship-sites.ts"), PODMAN_CONTROL);
-    writeFileSync(
-      join(sandbox, "test", "fixtures", "consumer-ui-project", ".claude", "rungate.json"),
-      JSON.stringify({ container: { rebuildCommand: "make rebuild" } }),
+  test("the scan does NOT flag the inert string the fixture is required to carry", () => {
+    // The other direction. A string-presence check would refuse the fixture
+    // itself, and a scanner that refuses the correct state is as useless as
+    // one that accepts the wrong one.
+    const fixture = "test/fixtures/consumer-ui-project/.claude/rungate.json";
+    const src = sourceOf(fixture);
+    expect(namesARebuild(src), "the fixture no longer carries the rebuild command").toBe(true);
+    expect(rebuildDelegations(fixture, src)).toEqual([]);
+    expect(executionSites(fixture, src)).toEqual([]);
+  });
+
+  test("the fixture's rebuildCommand is a string and nothing hands it to a process", () => {
+    const fixture = JSON.parse(
+      sourceOf("test/fixtures/consumer-ui-project/.claude/rungate.json"),
+    ) as { container?: { rebuildCommand?: unknown } };
+    expect(typeof fixture.container?.rebuildCommand).toBe("string");
+    // The only consumer of it is ship.js's own container block, executed
+    // through a recording stub. Mentioning the key in a comment or an
+    // assertion is not a read; handing it to a child process is.
+    const handedToAProcess = ADDED_FILES.flatMap((rel) =>
+      executionSites(rel, scannableSource(rel)).filter((s) => s.text.includes("rebuildCommand")),
     );
-    writeFileSync(join(sandbox, "test", "unrelated.test.ts"), EXEC_CONTROL);
-
-    const found = discoverAddedFiles(sandbox).map((p) => relative(sandbox, p));
-    expect(found).toEqual([
-      "test/consumer-planted.test.ts",
-      "test/fixtures/consumer-ui-project/.claude/rungate.json",
-      "test/helpers/consumer-ship-sites.ts",
-    ]);
-
-    const flagged = discoverAddedFiles(sandbox)
-      .filter((p) => scanFile(p).length > 0)
-      .map((p) => relative(sandbox, p));
-    expect(flagged).toEqual(["test/consumer-planted.test.ts", "test/helpers/consumer-ship-sites.ts"]);
-
-    rmSync(sandbox, { recursive: true, force: true });
+    expect(handedToAProcess.map((s) => `${s.file}: ${s.construct}`)).toEqual([]);
   });
 });
 
-// ── the detector is measured against the real delegation ─────
-
-describe("#274 SC-6: the real rebuild delegation in ship.js is what the scan is tuned to", () => {
-  const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
-
-  test("ship.js carries exactly the rebuild instruction this issue must not copy", () => {
-    // `workflows/ship.js` is NOT in the scanned set — it is the harness, not a
-    // file this issue adds, and its container-rebuild agent prompt is the whole
-    // reason the prohibition exists. Running the detector over it proves the
-    // detector recognises the genuine article and not only the control above.
-    const v = scanSource(shipSource);
-    expect(v.map((x) => x.kind)).toEqual(["rebuild-instruction"]);
-    expect(v[0].snippet).toContain("You have ONE task");
+describe("#274 AC-6: no agent prompt in the added files instructs a rebuild", () => {
+  test("no added file carries a rebuild imperative", () => {
+    const offenders = ADDED_FILES.filter((rel) => REBUILD_IMPERATIVE.test(scannableSource(rel)));
+    expect(offenders, "an added file instructs an agent to rebuild").toEqual([]);
   });
 
-  test("the harness itself executes no container command", () => {
-    expect(scanSource(shipSource).filter((v) => v.kind === "execution")).toEqual([]);
+  test("the imperative detector SEES one when it is there", () => {
+    expect(PLANTED_IMPERATIVES.length).toBe(2);
+    for (const planted of PLANTED_IMPERATIVES) {
+      expect(REBUILD_IMPERATIVE.test(planted), `the detector missed: ${planted}`).toBe(true);
+    }
   });
 
-  test("no file this issue adds reaches an agent with that instruction", () => {
-    // The instruction half of the scan already covers this; stated separately
-    // because it is the sentence SC-6 is written in, and a reader should be
-    // able to find it rather than infer it.
-    const offenders = ADDED_FILES.filter((p) =>
-      scanFile(p).some((v) => v.kind === "rebuild-instruction"),
-    );
-    expect(offenders.map(rel)).toEqual([]);
+  test("the imperative detector does NOT fire on prose that merely mentions one", () => {
+    // The #235 boundary: an instruction that performs the thing, versus a
+    // sentence that points at where it lives.
+    expect(INNOCENT_PROSE.length).toBe(3);
+    for (const prose of INNOCENT_PROSE) {
+      expect(REBUILD_IMPERATIVE.test(prose), `the detector fired on prose: ${prose}`).toBe(false);
+    }
   });
 });

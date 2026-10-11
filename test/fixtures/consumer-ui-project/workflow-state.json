@@ -24,7 +24,7 @@
     {
       "id": "AC-2",
       "type": "OUTCOME",
-      "statement": "Every declared route renders in the browser without a client-side console error",
+      "statement": "Every declared route responds without a client-side render error in the browser",
       "specElement": "pages",
       "threshold": { "op": "==", "value": 0, "unit": "console errors" },
       "evidenceMethod": { "type": "PLAYWRIGHT", "command": "bunx playwright test test/routes.spec.ts" },
