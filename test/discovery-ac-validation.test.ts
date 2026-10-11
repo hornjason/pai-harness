@@ -91,7 +91,58 @@ const CASES: Array<{ name: string; ac: Record<string, unknown>; reject: boolean 
   { name: "tautology: no errors", ac: ok({ statement: "no errors" }), reject: true },
   { name: "behavioural language", ac: ok({ statement: "DA should check the collection target before committing" }), reject: true },
   { name: "behavioural language, other form", ac: ok({ statement: "remember to run the suite before pushing the branch" }), reject: true },
+
+  // The base shape, not only the heuristics. Security review of 41edf8e5
+  // called this a validator differential, and it was right: a copy that
+  // checks the clever rules and skips the dull ones lets an AC through here
+  // that the state schema still rejects at the commit recorder — #269
+  // surviving its own fix for a narrower set of inputs.
+  { name: "an operator outside the enum", ac: ok({ threshold: { op: "~=", value: 5 } }), reject: true },
+  { name: "a threshold with no value", ac: ok({ threshold: { op: ">=" } }), reject: true },
+  { name: "a threshold that is not an object", ac: ok({ threshold: "lots" }), reject: true },
+  { name: "an evidenceMethod type outside the enum", ac: ok({ evidenceMethod: { type: "VIBES" } }), reject: true },
+  { name: "a lowercase evidenceMethod type is allowed", ac: ok({ evidenceMethod: { type: "grep", command: "grep -c x f" } }), reject: false },
+  { name: "no evidenceMethod at all is allowed", ac: ok({ evidenceMethod: undefined }), reject: false },
+  { name: "a type outside CODE|OUTCOME", ac: ok({ type: "VIBES" }), reject: true },
+  { name: "no type at all is allowed", ac: ok({ type: undefined }), reject: false },
+  { name: "a non-string id", ac: ok({ id: 6 }), reject: true },
+  // The schema's `z.string()` accepts "". The copy must too, however much an
+  // empty id deserves refusing: a copy stricter than the schema refuses runs
+  // that are fine, and nothing downstream ever contradicts it. The matrix
+  // caught this when the check was first written to reject empty ids.
+  { name: "an empty id, which the schema allows", ac: ok({ id: "" }), reject: false },
+  { name: "a missing statement", ac: ok({ statement: undefined }), reject: true },
+  { name: "contains with a string value", ac: ok({ threshold: { op: "contains", value: "SHIPPED" } }), reject: false },
+  { name: "exists with a string value", ac: ok({ threshold: { op: "exists", value: "true" } }), reject: false },
 ];
+
+/**
+ * There is no deliberate divergence, and that is worth one test rather than a
+ * sentence.
+ *
+ * I expected one. `ACSchema` lists `evidence` without `.optional()` at the
+ * field, and Discovery does not produce it, so I wrote this block to document
+ * a gap the copy had to leave. The matrix said otherwise: `EvidenceSchema` is
+ * itself `.nullable().optional()` (gates/schema.ts:45), so an AC with no
+ * evidence is simply valid and there is nothing to diverge about.
+ *
+ * It stays as a test because the premise could become true. If `evidence`
+ * ever stops being optional, every Discovery AC starts failing `ACSchema`,
+ * and the copy would then have to refuse every run or knowingly diverge —
+ * a decision someone should be forced to make rather than discover.
+ */
+describe("#269: the copy has no exceptions, and the schema has no trap in it", () => {
+  test("an AC with no evidence is valid to BOTH, so no divergence is needed", () => {
+    const noEvidence = { ...ok() } as Record<string, unknown>;
+    delete noEvidence.evidence;
+    expect(
+      ACSchema.safeParse(noEvidence).success,
+      "`evidence` became required — Discovery does not produce it, so either the copy must " +
+        "now refuse every run or it must knowingly diverge. Decide which, here.",
+    ).toBe(true);
+    expect(acDiscoveryViolations([noEvidence])).toEqual([]);
+  });
+});
 
 describe("#269: the inlined rules agree with the schema they stand in for", () => {
   test.each(CASES.map(c => [c.name, c.ac, c.reject] as const))(
@@ -153,12 +204,26 @@ describe("#269: the refusal is usable and the run stops before implementing", ()
     expect(v.join(" "), "a valid AC was reported as a violation").not.toContain("AC-2");
   });
 
-  test("junk input does not throw and does not silently pass", () => {
+  test("a list that is not a list is refused, not treated as empty", () => {
+    // Security review of 41edf8e5 called this a fail-open default and was
+    // right. `acs` is REQUIRED by DISCOVERY_SCHEMA, so anything that is not a
+    // list is a defect rather than a run with nothing to check — and the
+    // first version of this function returned [] for it, which is the shape
+    // of the bug it exists to catch. #251 learned the same thing about the
+    // success criteria: an unreadable list is not an empty one.
+    expect(acDiscoveryViolations([]), "an empty AC list is a different thing and is allowed here")
+      .toEqual([]);
+    for (const notAList of [null, undefined, 42, "AC-1", { "0": {} }]) {
+      const v = acDiscoveryViolations(notAList as unknown);
+      expect(v.length, `an unreadable AC list was treated as clean: ${JSON.stringify(notAList)}`)
+        .toBeGreaterThan(0);
+    }
+  });
+
+  test("junk entries do not throw and do not silently pass", () => {
     // The ACs arrive from a structured-output layer, so the shape is usually
     // right — but "usually" is not a guard, and an exception here would take
     // down the Discovery phase rather than refusing it.
-    expect(acDiscoveryViolations([])).toEqual([]);
-    expect(acDiscoveryViolations(null as unknown)).toEqual([]);
     for (const junk of [null, undefined, 42, "string", []]) {
       expect(() => acDiscoveryViolations([junk]), `threw on ${JSON.stringify(junk)}`).not.toThrow();
       expect(acDiscoveryViolations([junk]).length, `junk AC accepted: ${JSON.stringify(junk)}`)
@@ -179,6 +244,25 @@ describe("#269: the refusal is usable and the run stops before implementing", ()
     expect(discovery, "the violations are computed and never refused on").toMatch(
       /acViolations[\s\S]{0,600}?discoveryRefusal = shipFailed/,
     );
+  });
+
+  test("the refusal does not claim to know where the run has got to", () => {
+    // `runDiscovery` runs twice on some runs — once at the start, and again
+    // from the verify-regression path, where the commit ALREADY EXISTS. An
+    // earlier draft of this refusal said "so this run could not record its
+    // own commit", which is true on the first pass and false on the second.
+    // Security review of 41edf8e5 called that a control misfire and it was
+    // right: a refusal that misstates the run's state sends the next reader
+    // looking for the wrong thing, which is most of what #261 and #267 cost.
+    const refusal = shipSource.slice(
+      shipSource.indexOf("const acViolations = acDiscoveryViolations(discovery.acs)"),
+      shipSource.indexOf("// Nothing is dropped in silence"),
+    );
+    expect(refusal.length, "the AC-validation refusal moved").toBeGreaterThan(100);
+    expect(
+      refusal,
+      "the refusal asserts a commit state it cannot know on the regression path",
+    ).not.toMatch(/could not record its own commit|before any commit|nothing has been committed/);
   });
 
   test("the Discovery prompt states the rule rather than only enforcing it", () => {

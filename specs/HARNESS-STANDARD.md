@@ -1637,6 +1637,42 @@ was diffed byte-for-byte against a copy taken before the first mutation. The
 last row is why the parity assertion compares verdicts in both directions
 rather than asserting "the copy refuses what the schema refuses".
 
+**Security review of 41edf8e5 found three defects in the first version, all
+three real, and all three the same classes this file is about.** Recorded
+because the first version had already passed CI, the full suite and a
+mutation table.
+
+- **Fail-open default.** `acDiscoveryViolations` opened with
+  `if (!Array.isArray(acs)) return []`. `acs` is REQUIRED by
+  `DISCOVERY_SCHEMA`, so a non-list is a defect and not a run with nothing to
+  check — and returning no violations for the one input the function cannot
+  interpret is the exact shape of the bug it exists to catch. #251 had learned
+  this about the success criteria eight hours earlier, in a function thirty
+  lines further down the same file, and I wrote it again anyway.
+- **Validator differential.** The copy implemented the five interesting
+  heuristics and none of the dull base-shape rules, so an AC with an operator
+  outside the enum passed Discovery and was still refused by the state schema
+  at the commit recorder. That is #269 surviving its own fix for a narrower
+  set of inputs. The copy now checks the operator enum, the evidence-method
+  enum, the type enum, the id type and a threshold with no value, and the
+  matrix carries a case for each.
+- **Control misfire.** The refusal text said "so this run could not record its
+  own commit". `runDiscovery` is also called from the verify-regression path,
+  where the commit already exists, so the sentence is true on the first pass
+  and false on the second. A refusal that misstates the run's state sends the
+  next reader after the wrong thing, which is most of what #261 and #267 cost
+  in wall-clock.
+
+Widening the copy then made the matrix fail twice more, in the useful
+direction: the copy refused an empty `id` and a missing `evidence` where
+`ACSchema` accepts both. Both were corrected toward the schema, because a
+copy STRICTER than the thing it stands in for refuses runs that are fine and
+nothing downstream ever contradicts it. The second of those also killed a
+"deliberate divergence" section written on a wrong premise —
+`EvidenceSchema` is `.nullable().optional()`, so there was no divergence to
+document — and that block is now a test that fires if the premise ever
+becomes true.
+
 #### The pattern across all four
 
 Four defects in one day, all the same shape at a different level: **a check

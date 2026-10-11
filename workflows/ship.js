@@ -669,7 +669,20 @@ async function briefedAgent(prompt, opts = {}) {
  * Do not add a rule to this function without adding its case to that table.
  */
 function acDiscoveryViolations(acs) {
-  if (!Array.isArray(acs)) return []
+  // An unreadable list is not an empty one (#251), and `acs` is REQUIRED by
+  // DISCOVERY_SCHEMA, so anything that is not a list here is a defect and not
+  // a run with nothing to check. Returning [] would have made this function
+  // fail open on the one input it cannot interpret — the exact shape of the
+  // bug it exists to catch.
+  if (!Array.isArray(acs)) {
+    return ['the acceptance criteria are not a list, so none of them could be checked — ' +
+      'an unreadable list is not an empty one (#269)']
+  }
+  const OPS = ['==', '>=', '<=', '>', '<', '!=', 'contains', 'exists']
+  const EVIDENCE_TYPES = [
+    'GREP_CHECK', 'FILE_EXISTS', 'CURL_CHECK', 'BUN_TEST', 'SCREENSHOT', 'PLAYWRIGHT',
+    'COMMAND', 'MANUAL', 'grep', 'command', 'api', 'screenshot', 'manual',
+  ]
   const GARBAGE = [
     /^file exists?$/i,
     /^it works?$/i,
@@ -687,18 +700,47 @@ function acDiscoveryViolations(acs) {
       out.push(`${id}: not an acceptance criterion — the discovery output is the wrong shape here`)
       continue
     }
+    // The base shape, not only the heuristics. A copy that checks the clever
+    // rules and skips the dull ones leaves a differential: an AC with an
+    // operator outside the enum passes here and is still rejected by the
+    // state schema at the commit recorder, which is #269 surviving its own
+    // fix for a narrower set of inputs.
+    // Non-string only, NOT empty-string. `ACSchema` is `z.string()` and
+    // accepts "", and a copy that refuses more than the schema refuses valid
+    // runs — which is the worse of the two drift directions, because nothing
+    // downstream would ever contradict it. The parity matrix caught exactly
+    // this when the check was first written as `|| ac.id.trim() === ''`.
+    if (typeof ac.id !== 'string') {
+      out.push(`${id}: id is not a string — a criterion a refusal cannot name`)
+    }
+    if (ac.type !== undefined && ac.type !== 'CODE' && ac.type !== 'OUTCOME') {
+      out.push(`${id}: type "${ac.type}" is not CODE or OUTCOME`)
+    }
     const statement = typeof ac.statement === 'string' ? ac.statement : ''
     if (!statement) {
       out.push(`${id}: no statement — an unstated criterion cannot be measured`)
     }
-    if (!ac.threshold) {
+    if (!ac.threshold || typeof ac.threshold !== 'object') {
       out.push(`${id}: missing threshold — a criterion with no threshold has no pass condition`)
     } else {
+      if (!OPS.includes(ac.threshold.op)) {
+        out.push(`${id}: threshold operator "${ac.threshold.op}" is not one of ${OPS.join(' ')}`)
+      }
+      if (ac.threshold.value === undefined) {
+        out.push(`${id}: threshold has an operator and no value`)
+      }
       const numVal = Number(ac.threshold.value)
       if (ac.threshold.op === '>=' && !isNaN(numVal) && numVal <= 1) {
         out.push(
           `${id}: threshold too weak (${ac.threshold.op} ${ac.threshold.value}) — effectively always passes`,
         )
+      }
+    }
+    if (ac.evidenceMethod !== undefined) {
+      if (!ac.evidenceMethod || typeof ac.evidenceMethod !== 'object') {
+        out.push(`${id}: evidenceMethod is not an object`)
+      } else if (!EVIDENCE_TYPES.includes(ac.evidenceMethod.type)) {
+        out.push(`${id}: evidenceMethod type "${ac.evidenceMethod.type}" is not a known evidence type`)
       }
     }
     if (statement) {
@@ -1529,12 +1571,20 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
   // anyway (#269). Same place and same reason as the coverage check below:
   // every one of these refusals used to arrive at the COMMIT RECORDER, four
   // phases and one full implementation after the cheapest moment to fix it.
+  // This phase runs twice on some runs — once at the start, and again from
+  // the verify-regression path at `runDiscovery('Verify gate found ACs were
+  // wrong: ...')`. The refusal therefore may NOT describe where the run has
+  // got to. An earlier draft said "so this run could not record its own
+  // commit", which is true on the first pass and false on the second, where
+  // the commit already exists. A refusal that misstates the run's state sends
+  // the next reader looking for the wrong thing, which is the cost #261 and
+  // #267 were mostly made of.
   const acViolations = acDiscoveryViolations(discovery.acs)
   if (acViolations.length > 0) {
     discoveryRefusal = shipFailed(
       'Discovery',
       `${acViolations.length} acceptance criterion/criteria would be rejected by the state ` +
-        `schema, so this run could not record its own commit:\n  - ` + acViolations.join('\n  - '),
+        `schema and must be fixed before this run can go further:\n  - ` + acViolations.join('\n  - '),
     )
     return false
   }
