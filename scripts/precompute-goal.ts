@@ -155,7 +155,23 @@ if (existsSync(configPath)) {
   // refName is the git-resolvable ref; branch is the bare push target (#164).
   // commitCount is null when git could not count — not 0, which would claim
   // the prior branch holds nothing.
-  let priorBranch: { branch: string; refName: string; commitCount: number | null } | undefined;
+  //
+  // behindCount/isBehind/isMerged are the currency measurement (#185). They are
+  // carried through to Scope rather than re-derived there, because ship.js's
+  // push-target block turns this payload straight into `HEAD:<branch>` and a
+  // second derivation is a second thing that can disagree with this one. Each
+  // follows commitCount's rule: null means git could not answer, and false
+  // means it answered "the branch is current". Collapsing those is the defect.
+  let priorBranch:
+    | {
+        branch: string;
+        refName: string;
+        commitCount: number | null;
+        behindCount: number | null;
+        isBehind: boolean | null;
+        isMerged: boolean | null;
+      }
+    | undefined;
   try {
     const priorResult = execSync(
       `bun -e "import {detectPriorBranch} from '${resolve(projectRoot)}/node_modules/@anthropic-ai/claude-code/lib/prior-branch.ts'; void 0;" 2>/dev/null || echo '{}'`,
@@ -168,13 +184,18 @@ if (existsSync(configPath)) {
       { encoding: "utf-8", timeout: 15000, cwd: projectRoot }
     ).trim();
     const parsed = JSON.parse(detectResult);
+    // ──── PRIOR-BRANCH-PAYLOAD-START ────
     if (parsed.branch) {
       priorBranch = {
         branch: parsed.branch,
         refName: parsed.refName || parsed.branch,
         commitCount: parsed.commitCount ?? null,
+        behindCount: parsed.behindCount ?? null,
+        isBehind: parsed.isBehind ?? null,
+        isMerged: parsed.isMerged ?? null,
       };
     }
+    // ──── PRIOR-BRANCH-PAYLOAD-END ────
   } catch {
     // Prior branch detection failed — workflow will fall back to agent
   }

@@ -1916,6 +1916,66 @@ fixed while writing this one — the runner originally assembled the extracted
 statements in a fixed order, so moving the refusal below the log changed
 nothing it could see.
 
+### A prior branch described by one number that could not distinguish anything (#185)
+
+`detectPriorBranch` nominated a ref and reported `commitCount`. Three facts the
+resume decision needs were not in the answer, and each absence has its own
+failure:
+
+| Fact | What the old answer said | What it cost |
+|---|---|---|
+| how far behind the base it is | nothing | a candidate 64 ahead and 4 behind read exactly like one on the base's tip |
+| whether the work already landed | `commitCount: 1` | a squash-merged branch reopened, because the graph still lists its commit |
+| whether the ref is work at all | nominated it | `rungate-preserved/*` and `worktree-*` carry the issue number and are written LAST, so they win the recency tie-break against the real branch |
+
+The second is the one that is specific to this repo. A squash merge leaves the
+branch an ancestor of nothing while its content sits on main, so `rev-list
+main..ref` reports every commit it ever had. The commit graph cannot see the
+merge; the TREE can, because a squash commit reproduces the branch tip's tree
+exactly. Detection is therefore "does the tree this branch produced appear
+anywhere in the base's history", which stays true after main moves on, and
+deliberately not `git cherry` — patch-id comparison answers a different
+question and is linear in the branch length rather than the base's.
+
+`behindCount` follows `commitCount`'s rule from #164 rather than inventing a
+second one: a number is a claim, and when no base resolves there is no claim,
+so the value is `null`. `0` would say "this branch is current". `isBehind` is
+false for an unmeasured branch for the same reason — no measurement is not
+evidence of staleness — and `mergedIntoBase` fails closed in the opposite
+direction, because "I could not check" becoming "it already landed" discards
+work.
+
+- [x] SC-679: lib/prior-branch.ts contains [behindCount: number | null, isBehind: boolean] — currency is on the record the decision reads, not recomputed by each caller; `null` for an unanswerable count matches commitCount's existing rule, so the two numbers cannot disagree about what "unknown" looks like
+- [x] SC-680: lib/prior-branch.ts contains [function countDivergence, --left-right] — both sides come from ONE `rev-list`, so ahead and behind can never be measured against different bases, and a call that cannot run returns `null` for both rather than a pair of zeroes nobody took
+- [x] SC-681: lib/prior-branch.ts contains [function isContainedInBase, ^{tree}] — the ancestor check is the cheap half and the tree-in-history check is the half that catches a squash merge; the second is what the old code was missing entirely
+- [x] SC-682: lib/prior-branch.ts contains [EXCLUDED_BRANCH_PREFIXES, rungate-preserved/] — one list holds every namespace that carries an issue number without being resumable work, so adding the rescue namespace is a line rather than a second `startsWith` somewhere else
+- [x] SC-683: test/prior-branch-currency.test.ts contains [the two candidates no longer read identically] — the stale and the current branch are measured in the SAME fixture against the SAME base, and the defect is asserted directly: equal `commitCount`, different `behindCount`
+- [x] SC-684: test/prior-branch-merged-detection.test.ts contains [the fixture's squash really is a squash] — the fixture proves its own premise before anything is asserted about it, because a "squash" fixture that git treats as an ancestor would make the tree half pass for a reason unrelated to squashing
+- [x] SC-685: test/prior-branch-merged-detection.test.ts contains [the detection source invokes no git cherry] — the prose claim about patch ids is a test rather than a paragraph a later rewrite can quietly contradict
+- [x] SC-686: test/prior-branch-preservation-exclusion.test.ts contains [both excluded refs are newer] — the excluded refs are deliberately the NEWEST in the fixture, so a filter that does nothing loses the nomination to them; a positive-control branch for the same issue is still nominated, so a filter narrowed to everything cannot buy green either
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/prior-branch-currency.test.ts` + `test/prior-branch-merged-detection.test.ts`
++ `test/prior-branch-preservation-exclusion.test.ts` + `test/prior-branch.test.ts`
++ `test/prior-branch-remotes.test.ts` (44 tests):
+
+| Mutation | Red |
+|---|---|
+| the behind side hardwired to `0` | 2 of 44 — the stale branch reads as current, and the two-candidates case stops distinguishing them |
+| `isContainedInBase` short-circuited to `return false` | 2 of 44 — both the merge-commit and the squash case |
+| the tree half removed, leaving only `merge-base --is-ancestor` | 1 of 44 — exactly the squash case, which is the whole reason the tree half exists |
+| `rungate-preserved/` dropped from the exclusion list | 3 of 44 — the rescue ref wins the recency tie-break and is nominated for both issues |
+| `isBehind` hardwired to `false` | 1 of 44 — the flag has to be derived from the count rather than decorating it |
+| an unanswerable divergence reported as `{ ahead: 0, behind: 0 }` | 2 of 44 — the new null case AND #164's pre-existing one, which is how the rewrite is shown not to have dropped the older rule |
+| a `git cherry` invocation added back to the detector | 1 of 44 — the source check, which is otherwise a sentence nobody re-reads |
+
+None is left in the tree; all were run and reverted, and `lib/prior-branch.ts`
+was compared byte-for-byte against a copy taken before the first mutation. The
+sixth row is the one worth reading twice: #164 settled that an unanswerable
+count is `null`, and this change replaced the `rev-list` call that rule was
+written against. The mutation shows the older test still guards it, so the
+rewrite inherited the rule rather than restating it.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

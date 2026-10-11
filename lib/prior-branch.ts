@@ -18,6 +18,26 @@ export interface PriorBranch {
    * `0` is a claim ("nothing to resume"); `null` is the absence of one.
    */
   commitCount: number | null;
+  /**
+   * Commits on the base that this branch does not have, or `null` when git
+   * could not answer (#185). Same rule as `commitCount`: `0` is a claim
+   * ("this branch is current"), `null` is the absence of one. Without it a
+   * candidate 64 ahead and 4 behind reads exactly like one sitting on the
+   * base's tip, and only one of those two is cheap to resume.
+   */
+  behindCount: number | null;
+  /**
+   * True only when a behind count was actually taken AND it was non-zero.
+   * An unmeasured branch is not evidence of staleness.
+   */
+  isBehind: boolean;
+  /**
+   * The work this branch carries is already contained in the base — either
+   * because it is an ancestor of it, or because the tree it produced appears
+   * in the base's history, which is what a squash merge leaves behind (#185).
+   * Fails closed: when the check cannot be made, the branch is kept.
+   */
+  mergedIntoBase: boolean;
   testsPass: boolean;
 }
 
@@ -70,6 +90,77 @@ const CANDIDATE_REF_NAMESPACES = [
 /** The base the prior branch's commits are counted against. */
 const BASE_BRANCH = 'main'
 
+/**
+ * Branch namespaces that carry an issue number without being work to resume (#185).
+ *
+ * `worktree-*` is a harness scratch branch. `rungate-preserved/*` is written
+ * by scripts/preserve-worktree-work.ts at the moment a worktree is about to be
+ * removed with unreachable work on it — a rescue snapshot of a run that went
+ * wrong, named after the worktree directory, which carries the issue number.
+ * Both are written LAST, so without this list they win the recency tie-break
+ * against the branch the run was actually meant to produce.
+ */
+const EXCLUDED_BRANCH_PREFIXES = ['worktree-', 'rungate-preserved/'] as const
+
+interface Divergence {
+  /** Commits on the branch and not on the base. */
+  ahead: number | null;
+  /** Commits on the base and not on the branch. */
+  behind: number | null;
+}
+
+/**
+ * Both sides of the base/branch divergence, in one git call.
+ *
+ * `rev-list --left-right --count base...ref` prints "<behind>\t<ahead>": the
+ * left side is reachable from the base only, the right side from the ref only.
+ * A call that cannot run has not told us either number, so both are `null` —
+ * `0` would be a measurement nobody took.
+ */
+function countDivergence(refName: string, projectRoot: string): Divergence {
+  const res = git(['rev-list', '--left-right', '--count', `${BASE_BRANCH}...${refName}`], projectRoot)
+  if (res.status !== 0) return { ahead: null, behind: null }
+  const [left, right] = res.stdout.trim().split(/\s+/)
+  const behind = parseInt(left ?? '', 10)
+  const ahead = parseInt(right ?? '', 10)
+  if (!Number.isFinite(behind) || !Number.isFinite(ahead)) return { ahead: null, behind: null }
+  return { ahead, behind }
+}
+
+/**
+ * Is this branch's work already on the base?
+ *
+ * Two shapes, because the second one is the one that actually happens here:
+ *
+ *   1. The ref is an ancestor of the base — a fast-forward or merge-commit
+ *      merge. `merge-base --is-ancestor` answers this directly.
+ *   2. The base squash-merged it. Then the ref is an ancestor of nothing and
+ *      `rev-list base..ref` still reports every commit the branch ever had,
+ *      so the commit graph cannot see it. The TREE can: a squash commit
+ *      reproduces the branch tip's tree exactly, so the question becomes
+ *      "does the tree this branch produced appear anywhere in the base's
+ *      history", which stays true after the base moves on.
+ *
+ * Deliberately not patch-id comparison (`git cherry`): that asks whether each
+ * patch was applied individually, which is a different question, and it is
+ * linear in the branch length against linear in the base's.
+ *
+ * Fails closed. Every unanswerable step returns `false`, because "I could not
+ * check" must not become "it already landed" — that direction discards work.
+ */
+function isContainedInBase(refName: string, projectRoot: string): boolean {
+  if (git(['merge-base', '--is-ancestor', refName, BASE_BRANCH], projectRoot).status === 0) return true
+
+  const tree = git(['rev-parse', '--verify', `${refName}^{tree}`], projectRoot)
+  if (tree.status !== 0) return false
+  const wanted = tree.stdout.trim()
+  if (!wanted) return false
+
+  const history = git(['log', '--format=%T', BASE_BRANCH], projectRoot, 30_000)
+  if (history.status !== 0) return false
+  return history.stdout.split('\n').some(line => line.trim() === wanted)
+}
+
 interface RefCandidate {
   branch: string;
   refName: string;
@@ -103,7 +194,7 @@ function listCandidateRefs(projectRoot: string): RefCandidate[] {
 
     // `refs/remotes/origin/HEAD` is a symref to the default branch, not work.
     if (!branch || branch === 'HEAD' || branch === 'main' || branch === 'master') continue
-    if (branch.startsWith('worktree-')) continue
+    if (EXCLUDED_BRANCH_PREFIXES.some(prefix => branch.startsWith(prefix))) continue
 
     const candidate: RefCandidate = {
       branch,
@@ -129,11 +220,13 @@ export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranc
     c.ts > best.ts || (c.ts === best.ts && c.local && !best.local) ? c : best
   )
 
-  // A rev-list that cannot run has not told us the branch is fully merged.
-  const revList = git(['rev-list', '--count', `${BASE_BRANCH}..${selected.refName}`], projectRoot)
-  const parsedCount = parseInt(revList.stdout.trim(), 10)
-  const commitCount =
-    revList.status === 0 && Number.isFinite(parsedCount) ? parsedCount : null
+  // A rev-list that cannot run has not told us the branch is fully merged,
+  // nor that it is current (#164, #185).
+  const { ahead, behind } = countDivergence(selected.refName, projectRoot)
+  const commitCount = ahead
+  const behindCount = behind
+  const isBehind = behindCount !== null && behindCount > 0
+  const mergedIntoBase = isContainedInBase(selected.refName, projectRoot)
 
   let testsPass = false
   if (runTests) {
@@ -151,7 +244,15 @@ export async function detectPriorBranch(opts: DetectOptions): Promise<PriorBranc
     }
   }
 
-  return { branch: selected.branch, refName: selected.refName, commitCount, testsPass }
+  return {
+    branch: selected.branch,
+    refName: selected.refName,
+    commitCount,
+    behindCount,
+    isBehind,
+    mergedIntoBase,
+    testsPass,
+  }
 }
 
 // ── detectExistingPR ────────────────────────────────────────
