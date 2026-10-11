@@ -1977,6 +1977,74 @@ count is `null`, and this change replaced the `rev-list` call that rule was
 written against. The mutation shows the older test still guards it, so the
 rewrite inherited the rule rather than restating it.
 
+### The PR step runs on every path, not only the no-container one (#254)
+
+`workflows/ship.js` had exactly one `pr-upsert` call site and it sat inside the
+`else` arm of `if (containerConfig)`, batched into the same agent as the
+`environments.prod` reading for agent-count reasons. A consumer who configures
+a test container therefore got a run that implemented, tested, committed and
+pushed a branch, recorded a shipped status — and opened nothing. `prStep`
+stayed `null`, the ship gate's heal text said "NO PR was opened for this run",
+and #252's entire draft lifecycle (`--draft`, `prReadiness`, `pr-ready`) was
+unreachable on that path because there was no PR to be a draft of. Not a
+latent defect on a path nobody takes: DDB's 7776-before-7777 rule REQUIRES
+container config, so adding it is what flips the run onto that arm.
+
+The batching is what hid it, so the fix unbatches. Each arm keeps its own
+`record-env` spawn — the container one still reads both the up and the down
+case — and the PR step is hoisted to the top level, where it runs on every path
+that reaches the Ship phase. Its label moves from `record-env-and-pr` to
+`open-pr`, because a step that no longer records an environment should not keep
+saying it does.
+
+"Outside the conditional" is a question about brace extent, not about text: a
+`grep` for `pr-upsert` is satisfied by the broken file, and so is "`pr-upsert`
+appears after `if (containerConfig)`". So the check brace-matches the real
+conditional over two offset-preserving views of the same bytes —
+`stripJsComments(src)` to FIND the call (it lives in a template literal, and a
+comment naming it must not count, which is #273's lesson) and
+`stripJsComments(src, { literals: "blank" })` to COUNT braces (the agent
+prompts and `bun -e "… = {rebuild:'SKIP'}"` strings carry braces that are
+balanced today and one prompt edit from not being).
+
+- [x] SC-688: workflows/ship.js contains [prStep = await timedAgent(`, label: 'open-pr'] at the top level — the PR step is assigned outside `if (containerConfig)`, so the container reading and the PR stop being one agent's job; the brace-matched extent is what asserts it, because every text-level form of the question is also satisfied by the broken file
+- [x] SC-689: test/ship-pr-on-every-path.test.ts contains [export function prPositionViolations, containerArmExtent] — the position question is one exported total function over a brace-matched extent, so the mutation cases can call it on deliberately broken sources; it returns a violation rather than throwing when an anchor has moved, because a thrown error reads as a refusal the check never made
+- [x] SC-690: test/ship-pr-on-every-path.test.ts contains [export function prStepMovedIntoElseArmMutant, export function prStepMovedIntoIfArmMutant, export function prStepDeletedMutant] — five mutant-construction sites, not one, each built from the real ship.js on every run and each throwing `could not build the mutant` if its target has moved; the `if`-arm case exists because the issue text only ever names `else`, and a check written to that text passes the other arm
+- [x] SC-691: test/ship-pr-on-every-path.test.ts contains [export function containerArmRecordEnvViolations, s.environments.prod.rebuild = 'SKIP'] — the container arm's own `record-env` spawn and BOTH its readings survive the hoist, asserted inside the brace-matched arm rather than over the whole file, and with no `pr-upsert` folded back into either arm
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-pr-on-every-path.test.ts` (15 tests):
+
+| Mutation | Red |
+|---|---|
+| the whole pre-#254 `workflows/ship.js` restored — PR step back inside `else`, batched with the SKIP reading | 11 of 15 — the defect itself, including both `record-env` arm cases and the `if`-arm mutant, which cannot even be built because the step's terminator is indented |
+| the PR step's signature renamed (`timedAgent` → `spawnThePrStep`) | 5 of 15 — four of them throwing `could not build the mutant: the PR step signature appears 0 times`, which is the harness aborting rather than passing quietly |
+| the no-container arm's `record-env` spawn deleted outright | 5 of 15 — both AC-4 real-source cases, both AC-4 mutant cases, and the deletion case, whose `create-pr` comment went with it |
+| `prPositionViolations` short-circuited to `return []` | 3 of 15 — the three AC-2 mutant cases; the real-source half stays green, which is why each case asserts both |
+| `containerArmRecordEnvViolations` short-circuited to `return []` | 3 of 15 — the same shape from the AC-4 side |
+| `braceView` changed to keep literals (`stripJsComments(src)`) | 1 of 15 — the row that exists so the masked view is load-bearing rather than decorative. Only one, and that is the finding: the braces inside today's prompts happen to be balanced, so a literal-blind counter gets the right span by luck. The case measures the luck instead of assuming it holds |
+| `blankLiterals` hardwired to `false` in lib/strip-js-comments.ts | 1 of 15 — the same row, mutated at the library end rather than the caller's, because a reader-only proof cannot catch a producer that stopped producing |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`,
+`lib/strip-js-comments.ts` and `test/ship-pr-on-every-path.test.ts` were each
+compared byte-for-byte against copies taken before the first mutation.
+
+The six phase-ordering checks and their mutation harness were re-run against
+the hoisted file: 13 of 13 green in `test/ship-phase-ordering-mutation.test.ts`,
+with PR-STEP-DELETED still reporting exactly `PO-3, PO-4` and the control and
+BANNER-REWORD runs still reporting 0 red of 6.
+
+One cross-tree bug fell out of that re-run and is fixed here. The harness read
+its subject with `readFileSync(join(HR, "workflows/ship.js"))` while its anchor
+audit read `SUITE_ROOT`, so under `HARNESS_ROOT=<main>` from a worktree it
+graded `main`'s workflow with this branch's constants and reported `could not
+build the mutant` — a refusal about which tree was being read, dressed as a
+refusal about the code. The subject now comes from `SUITE_ROOT`, for the reason
+the audit block already gave: the suite, its anchors and the workflow have to
+come out of one tree. The mutant root still symlinks `HR` for every sibling
+file. Verified both ways: 13 of 13 green with `HARNESS_ROOT` unset and with it
+pointed at a different checkout.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

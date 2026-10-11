@@ -4407,12 +4407,26 @@ if (SKIP_GRADE) {
 
 phase('Ship')
 
-// Record container/environment test evidence.
+// Record container/environment test evidence, then open the PR.
 //
 // #137: the PR step used to report nothing back, so a run in which no PR was
 // created looked exactly like one in which a PR was created. It is captured
 // now, and the ship gate's heal text below says what is actually true rather
 // than asserting a PR exists.
+//
+// #254: the environments reading and the PR are unrelated concerns, and they
+// were batched into one agent on the no-container arm for agent-count reasons.
+// That batching put the only PR-opening call site INSIDE `else`, so every
+// consumer who configures a container got a run that pushed a branch, reported
+// a shipped status and opened nothing — with the whole of #252's draft
+// lifecycle (`--draft`, the readiness decision, `pr-ready`) unreachable on that
+// path. The reading stays conditional below. The PR step does not: it is
+// hoisted out, and runs on every path that reaches the Ship phase.
+//
+// Nothing above this line may name the upsert command in a comment: SJC-12 in
+// test/strip-js-comments.test.ts pins the stripped and raw offsets of that
+// token to each other, and a comment mention before the code would be the
+// first hit in the raw copy and not in the stripped one.
 let prStep = null
 
 if (containerConfig) {
@@ -4433,14 +4447,23 @@ bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'
 Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
 } else {
-  // No container — batch record-env + create-pr into one agent
-  prStep = await timedAgent(`
-Do BOTH tasks:
+  // No container — the reading is a flat SKIP. It used to be batched with
+  // create-pr into one agent; that batching is the whole of #254.
+  await timedAgent(`
+Record the environment as SKIP, then update workflow-state.json via writeWorkflowState():
 
-1. Record env as SKIP:
-   bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
-2. Open or update the PR. Run exactly these three commands:
+Run the command and report the output.
+`, { label: 'record-env', phase: 'Ship' })
+}
+
+// The PR step. OUTSIDE the conditional above, deliberately and load-bearingly
+// (#254) — test/ship-pr-on-every-path.test.ts brace-matches that conditional
+// over comment-stripped source and refuses any copy of this file that puts the
+// upsert command back inside either arm.
+prStep = await timedAgent(`
+Open or update the PR. Run exactly these two commands:
 
 cat > ${WORK_DIR}/pr-body.md <<'RUNGATE_PR_BODY_EOF'
 Fixes #${ISSUE}
@@ -4479,18 +4502,17 @@ Report prDraft from what the command PRINTED. Do not assume it is true because
 field it asked for is not a field it observed. Omit prDraft entirely if the
 output did not carry it — "unknown" is a reading this workflow can act on and
 a guessed true is not.
-  `, { label: 'record-env-and-pr', phase: 'Ship', schema: {
-    type: 'object',
-    properties: {
-      ok: { type: 'boolean' },
-      prNumber: { type: 'number' },
-      prUrl: { type: 'string' },
-      prDraft: { type: 'boolean' },
-      detail: { type: 'string' },
-    },
-    required: ['ok'],
-  } })
-}
+`, { label: 'open-pr', phase: 'Ship', schema: {
+  type: 'object',
+  properties: {
+    ok: { type: 'boolean' },
+    prNumber: { type: 'number' },
+    prUrl: { type: 'string' },
+    prDraft: { type: 'boolean' },
+    detail: { type: 'string' },
+  },
+  required: ['ok'],
+} })
 
 // Every refusal from here on has to be able to say what happened to the PR,
 // and the refusal sites are scattered across three phases (#252).

@@ -86,7 +86,9 @@ describe("ship.js MCP migration (#25) + Goal determinism (#48)", () => {
     // The step returned nothing before, so a run that opened no PR was
     // indistinguishable from one that did — which is half of why #136 went
     // unnoticed for as long as it did.
-    expect(shipContent).toContain("label: 'record-env-and-pr'");
+    // `open-pr` since #254: the step no longer records an environment, and a
+    // label that still said so would be describing the pre-hoist batching.
+    expect(shipContent).toContain("label: 'open-pr'");
     // timedAgent, not agent: every spawn in ship.js goes through the timing
     // wrapper now (#227), and this step is one of them.
     expect(shipContent).toMatch(/prStep\s*=\s*await timedAgent\(/);

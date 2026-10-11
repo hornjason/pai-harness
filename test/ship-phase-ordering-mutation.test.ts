@@ -48,14 +48,28 @@ const HR = harnessRoot();
 /** The tree holding the SUITE under test — this worktree, not necessarily HR. */
 const SUITE_ROOT = join(import.meta.dir, "..");
 const SUITE_REL = "test/spec-compliance.test.ts";
-const SHIP_SRC = readFileSync(join(HR, "workflows/ship.js"), "utf-8");
+/**
+ * The subject is read from SUITE_ROOT, for the reason the anchor audit below
+ * already gives: the suite, its anchors and the workflow it describes have to
+ * come out of ONE tree, or the agreement is between two versions of the repo.
+ * In CI the two roots are the same path. In a worktree they are not, and
+ * reading HR here graded `main`'s `ship.js` with this branch's constants —
+ * which #254 surfaced as `could not build the mutant` the moment the PR step
+ * changed indentation. The mutant root still symlinks HR for every sibling
+ * file; only `workflows/ship.js` is ours, which is the point of building it.
+ */
+const SHIP_SRC = readFileSync(join(SUITE_ROOT, "workflows/ship.js"), "utf-8");
 
 /**
  * The PR step, start and end. Declared as literals rather than regex-built so
  * that moving them aborts this file instead of quietly mutating nothing.
+ *
+ * Unindented since #254: the step was hoisted out of `if (containerConfig)`
+ * so that a run with a container configured opens a PR at all, which put it at
+ * the top level of the file.
  */
-const PR_STEP_START = "  prStep = await timedAgent(`";
-const PR_STEP_END = "\n  } })\n";
+const PR_STEP_START = "prStep = await timedAgent(`";
+const PR_STEP_END = "\n} })\n";
 /** The comment the deletion deliberately LEAVES BEHIND — the old PO-3/PO-4 anchor. */
 const PR_STEP_COMMENT = "create-pr";
 /** The command the PR step actually runs. */
@@ -165,7 +179,7 @@ export function prStepDeletedMutant(src: string): string {
   if (end < 0) {
     throw new Error("could not build the mutant: the PR step's terminator was not found after its signature");
   }
-  return `${src.slice(0, start)}  prStep = null // MUTANT: the PR step is gone, its comment is not\n${src.slice(end + PR_STEP_END.length)}`;
+  return `${src.slice(0, start)}prStep = null // MUTANT: the PR step is gone, its comment is not\n${src.slice(end + PR_STEP_END.length)}`;
 }
 
 /**

@@ -37,7 +37,32 @@
  * is `)` followed by `/`, which is read as division; no such construct exists
  * in the files this is pointed at, and `test/strip-js-comments.test.ts`
  * asserts the outcome on the real file rather than trusting the scanner.
+ *
+ * ## `literals: "blank"` — the same scanner, one brace question further (#254)
+ *
+ * Asking "is this call site inside `if (containerConfig) { … } else { … }`?"
+ * means matching that conditional's braces, and a brace counter run over the
+ * default output counts the braces inside `${…}`-free agent prompts and
+ * `bun -e "… s.environments.prod = {rebuild:'SKIP'} …"` strings too. Those are
+ * balanced today and a one-character prompt edit is all it takes for them not
+ * to be — a detector whose view of the input can silently shrink, which is the
+ * second shape `.claude/rules/checks-must-be-able-to-fail.md` names.
+ *
+ * So the option blanks literal CONTENTS as well, through this one scanner
+ * rather than a second copy of it. Offsets are still preserved, so a caller
+ * locates a token in the default output and matches braces in the blanked one,
+ * and the two answers are about the same bytes. `pr-upsert` lives inside a
+ * template literal, so the default output is the only one that can find it —
+ * the pair is the point, not either half.
  */
+
+export interface StripJsCommentsOptions {
+  /**
+   * `"keep"` (default) leaves string, template and regex contents alone.
+   * `"blank"` replaces them with spaces too, leaving only code punctuation.
+   */
+  literals?: "keep" | "blank";
+}
 
 /** Characters after which a `/` starts a regex literal rather than a division. */
 const REGEX_ALLOWED_AFTER = new Set([
@@ -52,7 +77,8 @@ const REGEX_ALLOWED_AFTER_WORD = new Set([
 
 type Ctx = { kind: "code" | "template"; depth: number };
 
-export function stripJsComments(src: string): string {
+export function stripJsComments(src: string, options: StripJsCommentsOptions = {}): string {
+  const blankLiterals = options.literals === "blank";
   const out = src.split("");
   const n = src.length;
   const stack: Ctx[] = [{ kind: "code", depth: 0 }];
@@ -72,7 +98,7 @@ export function stripJsComments(src: string): string {
     const d = i + 1 < n ? src[i + 1] : "";
 
     if (top.kind === "template") {
-      if (c === "\\") { i += 2; continue; }
+      if (c === "\\") { if (blankLiterals) blank(i, i + 2); i += 2; continue; }
       if (c === "`") { stack.pop(); prevSig = "`"; prevWord = ""; i++; continue; }
       if (c === "$" && d === "{") {
         stack.push({ kind: "code", depth: 0 });
@@ -80,6 +106,7 @@ export function stripJsComments(src: string): string {
         i += 2;
         continue;
       }
+      if (blankLiterals) blank(i, i + 1);
       i++;
       continue;
     }
@@ -102,14 +129,16 @@ export function stripJsComments(src: string): string {
     }
     if (c === "'" || c === '"') {
       let j = i + 1;
+      let closedAt = -1;
       while (j < n) {
         if (src[j] === "\\") { j += 2; continue; }
-        if (src[j] === c) { j++; break; }
+        if (src[j] === c) { closedAt = j; j++; break; }
         // An unterminated string would otherwise swallow the rest of the file
         // and silently disable the whole stripper — a fail-open.
         if (src[j] === "\n") break;
         j++;
       }
+      if (blankLiterals) blank(i + 1, closedAt >= 0 ? closedAt : j);
       prevSig = c; prevWord = "";
       i = j;
       continue;
@@ -150,6 +179,9 @@ export function stripJsComments(src: string): string {
         }
         if (closed) {
           while (j < n && /[a-z]/i.test(src[j])) j++;
+          // The delimiters go too: `/a{2}/` carries braces that belong to the
+          // pattern, and a brace counter has no business seeing them.
+          if (blankLiterals) blank(i, j);
           prevSig = "/"; prevWord = "";
           i = j;
           continue;
