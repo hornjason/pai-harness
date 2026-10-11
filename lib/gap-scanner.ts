@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync, existsSync, statSync } from "fs";
+import { collectSpecFiles } from "./spec-files";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -232,7 +233,7 @@ function checkSpecScRatio(projectRoot: string): GapResult {
   let totalUnchecked = 0;
 
   try {
-    const specFiles = readdirSync(specsDir).filter((f) => f.endsWith(".md"));
+    const specFiles = collectSpecFiles(specsDir); // #225 — subdirectories too
 
     for (const file of specFiles) {
       const content = readFileSync(join(specsDir, file), "utf-8");

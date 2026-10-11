@@ -1,7 +1,13 @@
 {
   "_comment": "Rungate's own conformity exemptions (#80). Each list is a RATCHET, not a mute: adding an entry that is not a real current violation fails, and an entry that stops being a violation must be removed or the build fails. Shrinking both lists to empty is the work. Consumers get their own file or none at all - these never travel.",
   "_untestedSpecs": "DRIFT-2 - testable specs with no test referencing them by name. Over half the testable surface. CONFIG-DIRECTORY-STRUCTURE-SPEC must leave this list before SC-478/479 are rewritten as behavioral assertions, or they would be honest assertions nothing executes.",
+  "_untestedSpecs_225": "The five bootstrap-data-flow entries are NEW to this list and are not new violations: #225 made the spec collectors recursive, so DRIFT-2 can see specs/ subdirectories for the first time. They had been untested since the directory was created and the check was structurally unable to say so. Listing them here banks the visibility; it does not excuse them. Note they are safe to name here precisely because this is not a test file - DRIFT-2 searches test/*.test.ts for a spec's name, so an allowlist living under test/ would have made every listed spec read as referenced.",
   "untestedSpecs": [
+    "bootstrap-data-flow/cli-commands-for-file-creation.md",
+    "bootstrap-data-flow/consumer-requirements.md",
+    "bootstrap-data-flow/problem-statement.md",
+    "bootstrap-data-flow/rca-protocol.md",
+    "bootstrap-data-flow/template-architecture.md",
     "SESSION-LIFECYCLE-SPEC.md",
     "harness-automation-matrix.md",
     "CONFIG-DIRECTORY-STRUCTURE-SPEC.md",

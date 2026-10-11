@@ -6,6 +6,9 @@ created: 2026-09-20
 updated: 2026-09-20
 governs: Template Architecture + 5 more
 testable: true
+# The `make` commands below are examples of a scaffolded CONSUMER's Makefile,
+# not requirements on this harness's own workflows/ship.js (#225).
+workflow-claims: false
 ---
 
 ## Template Architecture

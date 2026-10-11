@@ -7,6 +7,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { collectSpecFiles } from "./spec-files";
 import { spawnSync } from "child_process";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -351,7 +352,7 @@ export function collectTestableSpecs(root: string, extraSpecDirs?: string[]): Ma
 
   const localSpecs = join(root, "specs");
   if (existsSync(localSpecs)) {
-    for (const f of readdirSync(localSpecs).filter(f => f.endsWith(".md"))) {
+    for (const f of collectSpecFiles(localSpecs)) {
       const content = readFileSync(join(localSpecs, f), "utf-8");
       const fm = parseFrontmatter(content);
       if (fm?.testable === "true") {
@@ -553,16 +554,10 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       const specsDir = join(root, "specs");
       if (!existsSync(specsDir)) return;
 
-      // Scan specs/*.md and specs/*/*.md (one level deep)
-      const specFiles: string[] = [];
-      for (const f of readdirSync(specsDir)) {
-        if (f.endsWith(".md")) {
-          specFiles.push(f);
-        } else if (existsSync(join(specsDir, f)) && readdirSync(specsDir, { withFileTypes: true }).find(d => d.name === f && d.isDirectory())) {
-          const subFiles = readdirSync(join(specsDir, f)).filter(sf => sf.endsWith(".md") && sf !== "INDEX.md");
-          specFiles.push(...subFiles.map(sf => `${f}/${sf}`));
-        }
-      }
+      // #225 — the hand-rolled one-level descent that used to live here is
+      // now the shared collector, so the seven flat callers get the same
+      // behaviour instead of this one site being the only correct reader.
+      const specFiles = collectSpecFiles(specsDir);
 
       const missing = specFiles.filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
@@ -667,16 +662,47 @@ const matcherHandlers: Record<string, MatcherHandler> = {
   },
 
   "count-threshold": (sc, match) => {
-    const file = match[1].replace(/`/g, "").trim();
+    // #225 — the registry's regex is `^(.+?)\s+(?:is under|at most)…`, which
+    // is wider than this handler was. "AGENTS.md Rules section at most [200]
+    // words" matched, and the whole phrase "AGENTS.md Rules section" was then
+    // treated as a path: the file did not exist, so the check failed an SC
+    // that the tree satisfies (97 words against a threshold of 200). The
+    // registry's own `syntax` field says `{file} is under [N] lines|words`
+    // and never promised sections, so the regex admitted a form the handler
+    // could not honour — the shape #212 is about, met from the handler side.
+    const subject = match[1].replace(/`/g, "").trim();
+    const sectionMatch = subject.match(/^(\S+)\s+(.+?)\s+section$/i);
+    const file = sectionMatch ? sectionMatch[1] : subject;
+    const section = sectionMatch ? sectionMatch[2] : null;
     const threshold = parseInt(match[2]);
     const unit = match[3].toLowerCase();
+    // "(excluding tables/headers)" is part of the criterion, not commentary:
+    // a Rules section is mostly a table, and counting the table's words
+    // measures the opposite of the leanness the SC asks for.
+    const excludeTables = /excluding\s+tables/i.test(sc.statement);
     return (root) => {
       const path = join(root, file);
       if (!existsSync(path)) {
         expect(existsSync(path)).toBe(true);
         return;
       }
-      const content = readFileSync(path, "utf-8");
+      let content = readFileSync(path, "utf-8");
+      if (section) {
+        const lines = content.split("\n");
+        const start = lines.findIndex(l => new RegExp(`^#+\\s+${section}\\s*$`, "i").test(l));
+        // A named section that is not there is a failure of the criterion,
+        // not a reason to measure the whole file and probably pass.
+        expect(start, `${file} has no "${section}" section to measure`).toBeGreaterThan(-1);
+        const rest = lines.slice(start + 1);
+        const end = rest.findIndex(l => /^#+\s/.test(l));
+        content = (end === -1 ? rest : rest.slice(0, end)).join("\n");
+      }
+      if (excludeTables) {
+        content = content
+          .split("\n")
+          .filter(l => !/^\s*\|/.test(l) && !/^#+\s/.test(l))
+          .join("\n");
+      }
       if (unit.startsWith("line")) {
         const lineCount = content.trimEnd().split("\n").length;
         expect(lineCount).toBeLessThanOrEqual(threshold);
@@ -1053,7 +1079,7 @@ export function runSpecDiscovery(root: string) {
 
     test("every .md in specs/ has testable field", () => {
       if (!existsSync(specsDir)) return;
-      const missing = readdirSync(specsDir).filter(f => f.endsWith(".md")).filter(f => {
+      const missing = collectSpecFiles(specsDir).filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return !fm || !("testable" in fm);
       });
@@ -1065,7 +1091,7 @@ export function runSpecDiscovery(root: string) {
 
     test("at least one testable spec exists", () => {
       if (!existsSync(specsDir)) return;
-      const testable = readdirSync(specsDir).filter(f => f.endsWith(".md")).filter(f => {
+      const testable = collectSpecFiles(specsDir).filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return fm?.testable === "true";
       });
@@ -1136,7 +1162,7 @@ export function runSpecDrift(
 
     test("DRIFT-2: Every testable spec is referenced by at least one test", () => {
       if (!existsSync(specsDir)) return checkSkipped("DRIFT-2", "no specs/ directory");
-      const testable = readdirSync(specsDir).filter(f => f.endsWith(".md")).filter(f => {
+      const testable = collectSpecFiles(specsDir).filter(f => {
         const fm = parseFrontmatter(readFileSync(join(specsDir, f), "utf-8"));
         return fm?.testable === "true";
       });
@@ -1271,7 +1297,7 @@ export function runDocHygiene(
     test("HYGIENE-1: All specs have non-empty governs field", () => {
       if (!existsSync(specsDir)) return checkSkipped("HYGIENE-1", "no specs/ directory");
       const missing: string[] = [];
-      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+      for (const f of collectSpecFiles(specsDir)) { // #225 — subdirectories too
         const content = readFileSync(join(specsDir, f), "utf-8");
         const fm = parseFrontmatter(content);
         if (!fm) continue;
@@ -1286,16 +1312,10 @@ export function runDocHygiene(
       if (!existsSync(specsDir)) return;
       const missing: string[] = [];
 
-      // Scan specs/*.md and specs/*/*.md (one level deep)
-      const specFiles: string[] = [];
-      for (const f of readdirSync(specsDir)) {
-        if (f.endsWith(".md")) {
-          specFiles.push(f);
-        } else if (existsSync(join(specsDir, f)) && readdirSync(specsDir, { withFileTypes: true }).find(d => d.name === f && d.isDirectory())) {
-          const subFiles = readdirSync(join(specsDir, f)).filter(sf => sf.endsWith(".md") && sf !== "INDEX.md");
-          specFiles.push(...subFiles.map(sf => `${f}/${sf}`));
-        }
-      }
+      // #225 — the hand-rolled one-level descent that used to live here is
+      // now the shared collector, so the seven flat callers get the same
+      // behaviour instead of this one site being the only correct reader.
+      const specFiles = collectSpecFiles(specsDir);
 
       for (const f of specFiles) {
         const content = readFileSync(join(specsDir, f), "utf-8");
@@ -2138,7 +2158,7 @@ export function runAbsenceValidation(root: string) {
     test("ABSENCE-1: anti-criteria use absence verification", () => {
       const specsDir = join(root, "specs");
       if (!existsSync(specsDir)) return;
-      for (const f of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
+      for (const f of collectSpecFiles(specsDir)) { // #225 — subdirectories too
         const content = readFileSync(join(specsDir, f), "utf-8");
         const antiCriteria = content.match(/^- \[ \] SC-A\d+:.+$/gm) || [];
         for (const ac of antiCriteria) {
