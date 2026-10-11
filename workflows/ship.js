@@ -1795,7 +1795,38 @@ Return sub-issues in dependency order (foundations first).
 phase('Scope')
 const skipScope = discovery.ceremonyTier === 'LIGHT'
 
-let scopeResult = { result: 'PASS' }
+// ──── SCOPE-VERDICT-START ────
+/**
+ * What this run can honestly say the scope gate's verdict was.
+ *
+ * #276: the scope reply was initialised to a PASS verdict, so the initialiser
+ * doubled as the value a skipped gate reported, and both report sites read
+ * `scopeResult?.result || 'SKIPPED'`. Over the four reachable states that is
+ * never-ran → PASS, ran-PASS → PASS, ran-FAIL → FAIL, ran-nothing → SKIPPED:
+ * the two words swapped. Every LIGHT run in this repo's history printed
+ * `Scope: PASS` without a scope gate being spawned, and the only state that
+ * admitted to measuring nothing was the one where the gate DID run and came
+ * back empty.
+ *
+ * Same shape as quinnVerdictFor below, written for this exact bug as #173: an
+ * observed `ran` boolean rather than an initialiser standing in for one, and a
+ * reply that is not a verdict is FAIL, not PASS — "the gate did not tell us it
+ * passed" and "the gate told us it passed" are different facts and only one of
+ * them is a pass. In markers rather than inline so
+ * test/ship-scope-verdict.test.ts can EXECUTE it; every source-text assertion
+ * in this repo has survived its first mutation.
+ */
+function scopeVerdictFor(ran, result) {
+  if (!ran) return 'SKIPPED'
+  const v = result && typeof result === 'object' ? result.result : undefined
+  return v === 'PASS' || v === 'FAIL' ? v : 'FAIL'
+}
+// ──── SCOPE-VERDICT-END ────
+
+let scopeResult = null
+// Whether the scope gate was actually spawned this run. Observed where the
+// work happens, never inferred from the initialiser — see scopeVerdictFor.
+let scopeRan = false
 if (!skipScope) {
   scopeResult = await runGateWithHeal('scope', 'Scope', `Fix scope gate failures.
 For AC/threshold/sourceSpec failures: fix in workflow-state.json via writeWorkflowState().
@@ -1816,9 +1847,11 @@ For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or p
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 This validates via Zod at write time — you get immediate error feedback.`)
-  if (scopeResult?.result === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult.failures, workDir: WORK_DIR }
+  scopeRan = true
 }
-log(`Scope: ${scopeResult?.result || 'SKIPPED'}`)
+const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)
+if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult?.failures || ['scope gate produced no usable result — the step reported nothing'], workDir: WORK_DIR }
+log(`Scope: ${scopeVerdict}`)
 
 if (DRY_RUN) {
   log('DRY RUN — stopping after scope. No agents will be spawned.')
@@ -1828,7 +1861,7 @@ if (DRY_RUN) {
     sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
     acs: discovery.acs.map(ac => ({ id: ac.id, type: ac.type, statement: ac.statement })),
     priorWork: discovery.priorWork,
-    scopeResult: scopeResult?.result || 'SKIPPED',
+    scopeResult: scopeVerdict,
     workDir: WORK_DIR,
   }
 }

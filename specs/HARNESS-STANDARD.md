@@ -1854,6 +1854,67 @@ worth reading twice: with the stripper dead the six ordering checks go GREEN
 again, because they fall back to searching raw text — which is the defect
 #273 is about, reintroduced, and caught by the audit rather than by them.
 
+### An initialiser standing in for a measurement (#276)
+
+`workflows/ship.js` opened the Scope phase with `let scopeResult = { result:
+'PASS' }` and reported it, twice, as `scopeResult?.result || 'SKIPPED'` — once
+to the operator log and once into the DRY_RUN payload. The initialiser WAS the
+value a skipped gate reported, so over the four reachable states the two words
+came out swapped:
+
+| The state | What it reported | What it is |
+|---|---|---|
+| the gate was never spawned (LIGHT tier) | `PASS` | SKIPPED |
+| the gate ran and returned PASS | `PASS` | PASS |
+| the gate ran and returned FAIL | `FAIL` | FAIL |
+| the gate ran and returned nothing at all | `SKIPPED` | a measurement that failed |
+
+Every LIGHT-tier run in this repo's history printed `Scope: PASS` for a gate
+that was never spawned — and #274 establishes that `pages:{}` forces every
+rungate self-run to LIGHT, so that is every self-run, not an edge case. The one
+state that admitted to measuring nothing was the one where the gate DID run and
+came back empty, which also walked past the early return: it read
+`scopeResult?.result === 'FAIL'`, and `undefined` is not `'FAIL'`.
+
+This is `.claude/rules/checks-must-be-able-to-fail.md`'s subject told from the
+reporting side. A phase that cannot say "I did not run" is a phase whose
+absence is indistinguishable from its success, and the artefact that records it
+is not evidence of anything.
+
+**The fix already existed in the same file, 430 lines down.** #173 took it for
+Quinn: an observed `ran` boolean set where the work happens, a chooser that
+treats an unrecognised reply as FAIL rather than PASS, and the chooser inside
+markers so a test can EXECUTE it rather than grep for it. `scopeVerdictFor` is
+the same three properties for the scope gate, and the early return, the log
+line and the payload now read one computed verdict, so no report site can
+disagree with another.
+
+- [x] SC-673: workflows/ship.js contains [SCOPE-VERDICT-START] — the chooser lives in markers that appear exactly once, so the test extracts and runs the block rather than matching its source text, which is the only form of this assertion that has ever survived a mutation here
+- [x] SC-674: workflows/ship.js contains [let scopeRan = false] — whether the gate was spawned is OBSERVED at the spawn site, never inferred from an initialiser or from the ceremony tier, which is the half of #173 that makes the other half meaningful
+- [x] SC-675: workflows/ship.js contains [const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)] — one verdict feeds the refusal, the operator log and the dry-run payload; three expressions computing the same fact is how the two report sites could have drifted apart in the first place
+- [x] SC-676: test/ship-scope-verdict.test.ts contains [the operator log says SKIPPED, and never PASS] — the Scope phase is sliced out of ship.js and EXECUTED over all four states with its collaborators stubbed, because a grep at either report site cannot say which state produced the word it found
+- [x] SC-677: test/ship-scope-verdict.test.ts contains [a declaration quoted in a comment is not a candidate] — the enumeration of PASS-initialised result variables runs over comment-blanked source, caught on this very change: the first draft's docblock quoted the initialiser it had removed and the enumeration reported it as live code, which is #273 reappearing inside the fix for #276
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-scope-verdict.test.ts` (15 tests):
+
+| Mutation | Red |
+|---|---|
+| the PASS initialiser restored and the report expression with it — #276 reintroduced verbatim | 9 of 15 |
+| `scopeVerdictFor` short-circuited to `return 'PASS'` — the rubber stamp | 9 of 15 |
+| the skipped verdict word swapped back (`if (!ran) return 'PASS'`) | 6 of 15 |
+| `scopeRan = true` deleted — the observation removed, so every run looks skipped | 4 of 15, and none of them a mutant-building case: the harness's anchors still match, so the four are red about behaviour |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was diffed byte-for-byte against a copy taken before the first mutation. One
+earlier attempt at the first row is worth recording: applied through a shell
+one-liner, the quotes were eaten and the mutant carried bare `PASS` and
+`SKIPPED` identifiers. It went red on 10 of 15 — a larger number, from a
+ReferenceError that says nothing about the subject. A mutant that dies for an
+unrelated reason reads exactly like a mutation that was caught, which is why
+every mutation above was applied from a script file and the resulting source
+inspected before the suite was spawned.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection
