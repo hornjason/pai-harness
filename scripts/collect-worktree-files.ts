@@ -255,6 +255,24 @@ for (const m of collected.missing) {
   console.error(`collect: WARNING agent reported a file that does not exist: ${m}`);
 }
 
+// The guard above on `groups.length` tests how many WORKTREES were supplied.
+// That is not the question. Run wf_ea3e428f-64f (#273) supplied one worktree
+// and five files, every file failed to resolve, and the script exited zero —
+// 926 lines of correct work dropped, and ship.js went on to commit nothing and
+// call it a success, which is the exact sentence the earlier guard's comment
+// uses to describe what it exists to prevent (#279).
+//
+// Files resolved is the question, so it is asked here, after collection, where
+// the answer exists.
+if (collected.copied.length === 0) {
+  console.error(
+    `collect: ${collected.missing.length} reported file(s) resolved to nothing and none were collected — ` +
+      "refusing to report an empty collection as success",
+  );
+  for (const m of collected.missing) console.error(`collect:   unresolved: ${m}`);
+  process.exit(1);
+}
+
 // Stage here rather than printing a list for the caller to stage.
 //
 // The caller is workflows/ship.js, which can only reach this script through an
