@@ -1977,6 +1977,57 @@ count is `null`, and this change replaced the `rev-list` call that rule was
 written against. The mutation shows the older test still guards it, so the
 rewrite inherited the rule rather than restating it.
 
+### The ceremony tier had a downgrade and no floor (#215)
+
+`discovery.ceremonyTier` is chosen by the discovery LLM from issue SIZE alone,
+and the only code that adjusted it afterwards was a one-way DOWNGRADE:
+`if (!hasUI && tier !== 'LIGHT') tier = 'LIGHT'`. `hasUI === true` never raised
+anything. So a project that DECLARES pages, whose issue the discovery agent
+happened to size XS, ran LIGHT — which switches off the scope gate, Quinn
+local, Quinn verify, container verify and prove — and the run still reported
+DONE. DailyBriefDashboard declares 18 pages and would have had all 18 untested.
+
+The fix is the downgrade's symmetric partner, and it RAISES only. Config beats
+judgement on purpose: `pages` is a fact the consumer declared, size is an
+opinion an LLM formed from an issue title. A project already at THOROUGH keeps
+it, a genuine `pages:{}` project is still downgraded to LIGHT by the existing
+clamp, and a tier outside the enum is raised rather than trusted — "the ranking
+cannot place this value" must not arrive as "it is high enough already".
+
+`workflows/ship.js` is a workflow script rather than an importable module, so a
+source-text assertion would prove only that the text exists. The floor is
+therefore a marked block that `test/ship-ceremony-tier-floor.test.ts` EXTRACTS
+and RUNS, and ship.js's own tier statements — the `hasUI` computation, the
+existing downgrade, the floor call and the raise — are extracted and executed
+together in SOURCE ORDER, so the downgrade overwriting the floor would be
+visible. Position is asserted separately by `assertMarkedBlockReachable`,
+because the 2026-10-08 mutation leaves every one of those extractions
+byte-identical over a block that never runs.
+
+- [x] SC-688: workflows/ship.js contains [CEREMONY-TIER-FLOOR-START, function ceremonyTierFloor(tier, hasUI)] — the floor is a marked block rather than an inline ternary, so the whole (tier, hasUI) table is extracted and RUN; ship.js cannot be imported, and every source-text assertion in this repo has survived its first mutation
+- [x] SC-689: workflows/ship.js contains [const flooredTier = ceremonyTierFloor(discovery.ceremonyTier, hasUI)] — the chooser is APPLIED to the tier the phases read, at one site, below the downgrade; a floor that is computed and never assigned is the shape this whole section exists to catch
+- [x] SC-690: workflows/ship.js contains [if (!hasUI && discovery.ceremonyTier !== 'LIGHT')] — the existing CLI downgrade survives the change, because replacing a broken one-way clamp with a guard that forces STANDARD unconditionally is the same defect pointing the other way
+- [x] SC-691: test/ship-ceremony-tier-floor.test.ts contains [parts.sort((a, b) => a.index - b.index)] — ship.js's own tier statements are executed IN SOURCE ORDER, inheriting SC-677's rule: a fixed assembly order would apply the floor before the downgrade wherever the file put them, and the downgrade overwriting the floor is exactly the regression this has to be able to see
+- [x] SC-692: test/ship-ceremony-tier-floor.test.ts contains [the real source is accepted and the if (false) mutant is REFUSED] — both halves, in one test: the unmutated file resolves to `["Program"]` and the wrapped copy raises `ReachabilityRefusal`, so a refusal that fired for every input could not buy green
+- [x] SC-693: test/ship-ceremony-tier-floor.test.ts contains [the wrapper is outside the markers: the marked bytes are untouched] — the slice the execution tests read is asserted byte-identical between the real source and the mutant, which is the reason reachability is checked at all rather than a second way of saying the block exists
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/ship-ceremony-tier-floor.test.ts` (31 tests) and, for the first row,
+`test/reachability-refusals.test.ts` as well (88 tests together):
+
+| Mutation | Red |
+|---|---|
+| the whole `CEREMONY-TIER-FLOOR` region wrapped in `if (false)`, with the wrapper OUTSIDE the marker comments | 4 of 88 — 2 of 31 in the new file alone. The mutation that defeated BLOCKING-GRADES, SECURITY-DECISION and COMMIT-STATE-GUARD on 2026-10-08, run here verbatim. Every extraction and every executed row stayed GREEN: only the two reachability assertions and the two positive controls in `test/reachability-refusals.test.ts` could say the block was dead |
+| the floor's comparison short-circuited to `return tier` | 6 of 31 — the raised row in both tables, the operator log, and all three cases that build the in-test no-raise mutant, which now throws `could not build the mutant` because its target is already in the tree |
+| the raise removed, leaving `flooredTier` computed and never assigned | 10 of 31 — every extraction aborts with `could not locate the tier raise`, rather than passing quietly over a floor nothing applies |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was compared byte-for-byte against a copy taken before the first mutation. The
+first row is the one worth reading twice, and it is why the block is marked at
+all: the mutation changes nothing a text match or an execution of the extracted
+slice can see, so without the reachability assertion this section would have
+shipped 31 green tests over a floor that never ran.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

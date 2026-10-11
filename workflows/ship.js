@@ -1704,9 +1704,43 @@ const hasContainer = !!(projectConfig.container)
 const testCommand = projectConfig.test?.command || projectConfig.dev?.testCmd || 'bun test'
 const testTimeout = projectConfig.test?.timeout || 120000
 
+// ──── CEREMONY-TIER-FLOOR-START ────
+/**
+ * #215. The tier was chosen by the discovery LLM from issue SIZE alone, and the
+ * only code that adjusted it was the one-way downgrade below. `hasUI === true`
+ * never RAISED anything, so a UI project whose issue was sized XS ran LIGHT —
+ * no scope gate, no Quinn local, no Quinn verify, no container verify, no
+ * prove — and still reported DONE. DailyBriefDashboard declares 18 pages and
+ * would have had all 18 untested.
+ *
+ * So the downgrade gets a symmetric partner. Config beats judgement on purpose:
+ * `pages` is a fact the consumer declared, size is an opinion an LLM formed
+ * from an issue title.
+ *
+ * This RAISES and never lowers. A project already at THOROUGH keeps it, and a
+ * genuine CLI project (`pages:{}`) is not touched here at all — the downgrade
+ * below still owns that direction. A tier outside the enum is raised rather
+ * than trusted, because "the ranking cannot place this value" must not arrive
+ * as "it is high enough already".
+ */
+const CEREMONY_TIER_RANK = { LIGHT: 0, STANDARD: 1, THOROUGH: 2 }
+function ceremonyTierFloor(tier, hasUI) {
+  if (!hasUI) return tier
+  const rank = CEREMONY_TIER_RANK[tier]
+  if (rank === undefined) return 'STANDARD'
+  return rank < CEREMONY_TIER_RANK.STANDARD ? 'STANDARD' : tier
+}
+// ──── CEREMONY-TIER-FLOOR-END ────
+
 if (!hasUI && discovery.ceremonyTier !== 'LIGHT') {
   log(`PROJECT TYPE: CLI/library (pages:{} empty) — overriding ${discovery.ceremonyTier} → LIGHT (no Quinn, no container)`)
   discovery.ceremonyTier = 'LIGHT'
+}
+
+const flooredTier = ceremonyTierFloor(discovery.ceremonyTier, hasUI)
+if (flooredTier !== discovery.ceremonyTier) {
+  log(`PROJECT TYPE: UI (${Object.keys(pagesConfig).length} pages declared) — raising ${discovery.ceremonyTier} → ${flooredTier} (declared pages floor the tier)`)
+  discovery.ceremonyTier = flooredTier
 }
 
 // ── Prior-work short circuit ────────────────────────────────
