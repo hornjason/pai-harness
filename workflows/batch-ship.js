@@ -82,7 +82,7 @@ Read GitHub issue #${issue.number}: "${issue.title}"
 ${issue.body}
 
 Project root: ${PROJECT_ROOT}
-Read ${PROJECT_ROOT}/ARCHITECTURE.md for module context.
+Read ${PROJECT_ROOT}/ARCHITECTURE.md for module context (if it exists; many projects have no such file — do not treat its absence as a blocker).
 
 Size this issue:
 - XS: single file, obvious fix, <30 min
