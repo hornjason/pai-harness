@@ -182,7 +182,7 @@ function between(src: string, name = "DEMO"): string {
 // other test in this file.
 
 describe("POSITIVE CONTROL — a correctly wired block is accepted", () => {
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD"]) {
+  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "CEREMONY-TIER-FLOOR"]) {
     test(`the real, unmutated workflows/ship.js ${name} pair is accepted`, () => {
       expect(
         shipSource.includes(`${name}-START`),
@@ -394,7 +394,7 @@ describe("the measured regression, rerun against the real workflows/ship.js", ()
     return lines.join("\n");
   }
 
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD"]) {
+  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "CEREMONY-TIER-FLOOR"]) {
     const mutated = wrapOutsideMarkers(shipSource, name);
 
     test(`${name}: the extracted slice is byte-identical — this is why the text-based suites saw nothing`, () => {
