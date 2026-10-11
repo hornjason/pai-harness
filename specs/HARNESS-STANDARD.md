@@ -2028,6 +2028,87 @@ all: the mutation changes nothing a text match or an execution of the extracted
 slice can see, so without the reachability assertion this section would have
 shipped 31 green tests over a floor that never ran.
 
+### The tier-gated subsystems a self-run has never entered (#274)
+
+`workflows/ship.js` decides the ceremony tier from the consumer's declared
+`pages`. rungate's own `.claude/rungate/config.json` declares `pages: {}`, so
+`hasUI` is false on every self-run and the downgrade at that site fires every
+time: whatever Discovery sized the issue at, the run is rewritten to LIGHT. The
+scope gate, Quinn local, container verify and prove are all gated on
+`tier !== 'LIGHT'`, which means **no run this repo has ever made against itself
+has entered any of them.** A consumer that declares pages — DailyBriefDashboard
+declares 18 — keeps STANDARD and enters all of them on its first run.
+
+Observing that those subsystems run on a declared-pages fixture is cheap and
+proves nothing on its own: an observation that read `tier === 'STANDARD'`, or
+one asserting a constant, would look identical. So the observations are
+MUTATED. `test/consumer-tier-downgrade-mutation.test.ts` runs in two modes over
+one file. With `CONSUMER_TIER_SHIP_SOURCE` set it makes six observations
+against the ship.js at that path, each evaluating a guard condition captured
+VERBATIM out of that source — `if (!skipScope)`, the Quinn-local `if`, both
+branches of the container decision, `if (shouldProve)` and the pre-flight
+`else if` — over a fixture declaring 18 pages, one remote host and no
+container. With the variable unset it is the driver: it builds the mutant,
+spawns the observation suite twice, and counts.
+
+**The mutation is one edit at one site:** `const hasUI = false`, replacing the
+computation that reads the declared pages. That is the whole of the pre-#274
+world restored — the downgrade's `!hasUI` guard becomes true on every run, and
+the #215 floor cannot raise the tier back because the floor reads the same
+`hasUI`. Every other byte of ship.js, including all five tier-gated guards, is
+left exactly as it is, which is what makes the reds attributable. The mutant is
+written to a `mkdtemp` path, removed in `afterAll`, and `workflows/ship.js` is
+compared byte-for-byte afterwards.
+
+Both runs go through one spawn descriptor, and the test asserts leaf by leaf
+that the two descriptors differ in exactly ONE place: the path to the source
+under test. That leaf is an environment entry rather than a command-line
+argument because `bun test` rewrites `process.argv` to `[bun, <test file>]` and
+drops the rest — which is not left as a comment, it is probed by a spawned
+child that cannot see a sentinel path put on its command line.
+
+**The expected red count for this chain is `4 of 6`**, and the four are named:
+
+| Observation | Clean | `const hasUI = false` |
+|---|---|---|
+| OBS-1 the scope gate runs | green | **red** |
+| OBS-2 Quinn local runs | green | **red** |
+| OBS-3 container verify reaches its config check | green | **red** |
+| OBS-4 prove runs | green | **red** |
+| OBS-5 container Quinn stays skipped | green | green |
+| OBS-6 the remote pre-flight runs | green | green |
+
+Four and not five, and the asymmetry is load-bearing twice over. ship.js has
+five tier-gated sites, but `if (tier !== 'LIGHT' && containerConfig)` and its
+`else if (tier !== 'LIGHT')` are exclusive branches of one decision, so no
+fixture can enter both — declare a container and the first flips while the
+second becomes unreachable, which the driver asserts on a fixture variant so
+that "four" is a property of the decision tree rather than a site this file
+forgot. And OBS-6 is green in both because the remote pre-flight sits ~450
+lines ABOVE the first read of `discovery.ceremonyTier`: it is the control that
+separates "the tier stopped reaching the subsystems" from "the mutant broke the
+suite".
+
+- [x] SC-694: test/consumer-tier-downgrade-mutation.test.ts contains [const hasUI = false, could not build the mutant: the hasUI computation appears] — the downgrade is RESTORED on a copy of ship.js every run, and a hasUI computation that was changed or duplicated aborts the file instead of passing it with nothing mutated
+- [x] SC-695: test/consumer-tier-downgrade-mutation.test.ts contains [the two spawn descriptors differ in exactly one leaf, bun drops trailing argv] — both suites are spawned over one descriptor whose only difference is the path to the source under test, and the reason that difference is an env entry rather than an argv element is measured by a probe rather than asserted in prose
+- [x] SC-696: test/consumer-tier-downgrade-mutation.test.ts contains [the mutant run is red in exactly four] — the count is asserted as an exact equality against the four named observations, not as a threshold, and both runs are first asserted to have reported all six so that a child which failed to load cannot read as green
+- [x] SC-697: test/consumer-tier-downgrade-mutation.test.ts contains [exclusive branches of one decision] — the fifth tier-gated site is accounted for rather than omitted: it is the branch the fixture cannot reach, and the driver flips it on a container-declaring variant to show it is gated the same way
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/consumer-tier-downgrade-mutation.test.ts` (18 driver tests, each run
+spawning 6 observations):
+
+| Mutation | Red |
+|---|---|
+| `const hasUI = false` in the spawned copy — the subject of this section | 4 of 6 observations, and 0 of 18 driver tests. This is the measurement rather than a failure: the driver is green precisely when the mutant is red in those four and green in the other two |
+| `buildMutantSource` returns `src` unchanged | the whole file aborts — `0 pass, 1 fail`, the 18 driver tests never registered, because `beforeAll` throws `could not build the mutant: the replacement changed nothing`. A harness that silently mutated nothing would otherwise report both runs green and the four reds would simply disappear |
+| the `hasUI` site string pointed at text ship.js does not contain | the same abort, `0 pass, 1 fail`, with `the hasUI computation appears 0 times` — the renamed-target case, and the reason the refusal is a count rather than a substring test |
+| SC-696's token changed to a count the test file does not contain | 1 of 312 in `test/scaffold-conformity.test.ts` — the four SC lines above are executed against this file rather than being prose about it, so a count recorded here that the test stops asserting goes red |
+
+None is left in the tree; all were run and reverted, and `workflows/ship.js`
+was compared byte-for-byte against the copy the driver takes before it builds
+anything.
+
 ---
 
 ## 6. ITERATION — Convergence + stuck detection

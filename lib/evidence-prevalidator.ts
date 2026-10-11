@@ -56,6 +56,23 @@ export interface EvidencePrevalidationReading {
   checkedAt: string;
   /** Per-AC results. Empty — and only empty — when the verdict is UNMEASURED. */
   acs: PrevalidationResult[];
+  /**
+   * The ids of the ACs classified `broken`, in the order they were measured.
+   *
+   * Derived from `acs`, never supplied — `EvidencePrevalidationSchema` refuses
+   * a reading whose `broken` disagrees with its own results, so this cannot
+   * drift into an independent claim.
+   *
+   * It exists because the gate's single refusal site,
+   * `prevalidationViolations` in gates/workflow.test.ts, names the ACs to fix
+   * out of exactly this key — and until #274 no writer produced it. Every
+   * genuine FAIL therefore refused with "no broken AC ids were recorded", which
+   * is true of the key and false of the reading: the per-AC results were right
+   * there under `acs`. Fail-closed, so nothing shipped that should not have,
+   * but a refusal the heal loop cannot act on costs a round and teaches
+   * nothing, which is part of how #261 cost two.
+   */
+  broken: string[];
   /** Why the reading is UNMEASURED. Null — and only null — when it is not. */
   reason: string | null;
 }
@@ -311,6 +328,7 @@ export async function measureEvidencePrevalidation(
     verdict: "UNMEASURED",
     checkedAt,
     acs: [],
+    broken: [],
     reason,
   });
 
@@ -348,6 +366,10 @@ export async function measureEvidencePrevalidation(
     verdict: broken.length > 0 ? "FAIL" : "PASS",
     checkedAt,
     acs: results,
+    // Mapped from the same filter the verdict is derived from, at the single
+    // site that derives it, so the verdict and the names it refuses under
+    // cannot disagree.
+    broken: broken.map((r) => r.id),
     reason: null,
   };
 }

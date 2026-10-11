@@ -185,6 +185,7 @@ tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
 | `verdict` | `PASS` \| `FAIL` \| `UNMEASURED` | Derived from the per-AC results, never supplied by a caller |
 | `checkedAt` | string | ISO timestamp of the dry-run |
 | `acs` | array | One entry per AC: `id`, `status`, and the auto-fix fields below. Empty — and only empty — when UNMEASURED |
+| `broken` | array of AC ids | The ACs `acs` classified `broken`, in measured order. Derived, never supplied. Required on a FAIL (#274) |
 | `reason` | string \| null | Why the reading is UNMEASURED. Null, and only null, when it is not |
 | `takenAt` | `scope` \| `verify`, optional | Which gate measured it (#264). Absent means a run older than the field |
 
@@ -195,6 +196,36 @@ tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
 | `PASS` | Every evidence command was dry-run and none is broken. `empty` output is a warning, not a refusal, and still appears in `acs` |
 | `FAIL` | At least one AC's command is broken and could not be auto-fixed. A FAIL must name one — a FAIL with no `broken` entry is refused by Zod |
 | `UNMEASURED` | The pre-validation did not produce a result: it threw, or there were no ACs. Carries a `reason` and no `acs` |
+
+**The FAIL shape, and why `broken` is part of it (#274).** A FAIL carries two
+views of the same fact: the per-AC results under `acs`, and the ids under
+`broken`. The second is not redundancy. `prevalidationViolations` in
+`gates/workflow.test.ts` — the single site that turns this reading into a
+refusal — names the ACs to fix out of `broken`, and until #274 **no writer
+produced that key**: `measureEvidencePrevalidation` returned per-AC results and
+nothing else, so every genuine FAIL refused with "no broken AC ids were
+recorded", which was true of the key and false of the reading. Fail-closed, so
+nothing shipped that should not have — but a refusal the heal loop cannot act
+on costs a round and teaches it nothing.
+
+So a FAIL must satisfy all three of these, and Zod refuses it otherwise:
+
+| On a FAIL | Rule |
+|---|---|
+| `acs` | At least one entry with `status: "broken"` |
+| `broken` | Present, and exactly the ids of those entries, in the same order |
+| `reason` | `null` — a measured verdict explains itself through its ACs |
+
+`broken` is **derived, never supplied.** It is mapped from the same filter the
+verdict is derived from, at the single site that derives it, and the schema
+compares it against `acs` on every verdict — a PASS or an UNMEASURED that names
+a broken AC is refused the same way a FAIL that names the wrong one is. A list a
+writer could set independently of `acs` would be a second source of truth for
+one fact, and the refusal would name whichever of the two was wrong.
+
+It is optional only for backward compatibility, the same way `takenAt` is: a
+reading written before the field existed still validates. A FAIL does not get
+that amnesty, because naming what to fix is the entire job of that verdict.
 
 Unlike `suiteMeasurement`, `UNMEASURED` **is** writable here. There, recording it
 would give a caller a way to park an unmeasured run in the field that proves the
@@ -225,6 +256,7 @@ Verify, so the rewrite is the only record that anything happened.
 ```json
 { "evidencePrevalidation": {
   "verdict": "FAIL", "checkedAt": "2026-10-09T18:04:11.000Z", "reason": null,
+  "broken": ["AC-2"],
   "acs": [
     { "id": "AC-1", "status": "ok", "autoFixed": true,
       "originalCommand": "git log main..HEAD --oneline",

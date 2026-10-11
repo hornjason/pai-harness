@@ -3,6 +3,7 @@ import { readFileSync } from "fs";
 import { join } from "path";
 
 import { ReachabilityRefusal, assertMarkedBlockReachable } from "../lib/reachability";
+import { markerRegion, one } from "./helpers/consumer-ship-sites";
 
 /**
  * workflows/ship.js — a project that DECLARES pages cannot run below STANDARD,
@@ -40,22 +41,12 @@ const END = `// ──── ${MARKER}-END ────`;
 // ── extraction ───────────────────────────────────────────────
 
 /**
- * The one occurrence of `re` in `source`, or a thrown error naming the site.
- *
- * Exactly-once is the point rather than a convenience: a second copy of any of
- * these sites would survive the mutations below and leave a mutant red for a
- * reason unconnected to the mutation working.
+ * `one()` and `markerRegion()` come from `test/helpers/consumer-ship-sites.ts`
+ * so that the repo has ONE extractor over ship.js rather than one per suite
+ * (#274). Exactly-once is the point rather than a convenience: a second copy of
+ * any of these sites would survive the mutations below and leave a mutant red
+ * for a reason unconnected to the mutation working.
  */
-function one(source: string, re: RegExp, label: string): { text: string; index: number } {
-  const all = [...source.matchAll(new RegExp(re.source, `${re.flags.replace(/g/g, "")}g`))];
-  if (all.length !== 1) {
-    throw new Error(
-      `could not locate ${label} in workflows/ship.js: ${re} matched ${all.length} times, ` +
-        `so this test proves nothing`,
-    );
-  }
-  return { text: all[0][0], index: all[0].index! };
-}
 
 /**
  * The tier statements, each anchored to a whole line (or to a whole brace-closed
@@ -69,10 +60,7 @@ const SITES = {
 };
 
 function floorBlock(source: string): string {
-  const a = source.indexOf(START);
-  const b = source.indexOf(END);
-  if (a < 0 || b <= a) throw new Error(`workflows/ship.js is missing the ${MARKER} markers`);
-  return source.slice(a, b);
+  return markerRegion(source, MARKER);
 }
 
 /** The floor chooser, extracted from its markers and executed. */
@@ -308,15 +296,17 @@ describe("#215 AC-6: the floor is load-bearing, not decorative", () => {
   });
 
   test("the mutant ships a UI project at LIGHT where the real source floors it", () => {
-    const mutant = noRaiseMutant();
-    expect(runTierBlock(mutant, { tier: "LIGHT", pages: { ...UI_PAGES } }).tier).toBe("LIGHT");
-    expect(runTierBlock(shipSource, { tier: "LIGHT", pages: { ...UI_PAGES } }).tier).toBe("STANDARD");
+    const mutated = runTierBlock(noRaiseMutant(), { tier: "LIGHT", pages: { ...UI_PAGES } });
+    const real = runTierBlock(shipSource, { tier: "LIGHT", pages: { ...UI_PAGES } });
+    expect(mutated.tier).toBe("LIGHT");
+    expect(real.tier).toBe("STANDARD");
   });
 
   test("the mutant is not a no-op elsewhere: the CLI downgrade still fires in it", () => {
     // Guards the inverse mistake — a mutant that broke everything would make
     // the row above pass for a reason unconnected to the floor.
-    expect(runTierBlock(noRaiseMutant(), { tier: "STANDARD", pages: {} }).tier).toBe("LIGHT");
+    const cli = runTierBlock(noRaiseMutant(), { tier: "STANDARD", pages: {} });
+    expect(cli.tier).toBe("LIGHT");
   });
 
   test("the no-raise mutant builder refuses when its target has moved", () => {
