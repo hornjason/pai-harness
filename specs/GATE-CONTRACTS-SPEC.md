@@ -512,6 +512,289 @@ see the instance it was built from is this repository's house defect,
 reproduced inside the test written to end it, and caught only by the two
 cases whose job is to prove the detector can match at all.
 
+## The evidence chain had no mandatory link (#277)
+
+`evidence-method-executed` opened with
+`if (t !== "COMMAND" && t !== "command") return false`. `EVIDENCE_METHOD_TYPES`
+has thirteen members; the check covered two. `threshold-crosscheck` opened with
+`if (!ac.threshold || !ac.evidence) continue`, so the one state it had no
+opinion about was an AC with no evidence — which is exactly the state an AC is
+in when nobody recorded any. `EvidenceSchema` is `.nullable().optional()`, so
+absent is schema-valid.
+
+An AC declaring `BUN_TEST` and `threshold: >= 5`, with nothing ever run and
+nothing ever recorded, passed both checks. So did `PLAYWRIGHT`, `SCREENSHOT`
+and `GREP_CHECK`. **Eleven of thirteen types reached a verdict with nothing
+behind them**, and the lower-case aliases widen the hole rather than closing
+it: `grep` is a distinct enum member from `command`.
+
+### Why a matrix and not an example
+
+The defect was not that one type was handled wrongly. It was that twelve were
+never considered, because the check was written for the one in front of
+whoever wrote it. A single planted `BUN_TEST` case would be satisfied by a
+check that handled `BUN_TEST` and nothing else — the same mistake with a
+different constant. So the table is generated **from** the enum, every member
+carries a declared verdict, and adding a member without declaring one turns it
+red (SC-746). The expected verdicts are written down rather than computed,
+because a map derived from the same predicate the code uses agrees with every
+bug the code has.
+
+### Two links, and each proven to be load-bearing
+
+`missingEvidenceViolations` requires the evidence to EXIST;
+`thresholdCrosscheckViolations` requires its value to clear the bar. Neither
+is sufficient alone, and the test asserts the pairing directly: for an AC with
+no evidence, crosscheck is silent **and** the existence check must speak. If
+both are quiet, that is #277 reopened.
+
+The three `continue` branches in crosscheck are now decisions rather than
+gaps, each driven: no evidence (silent here, caught by the other link), a
+non-numeric evidence shape such as a screenshot URL, and a non-numeric
+operator — `contains` and `exists` are legitimate `THRESHOLD_OPS` members and
+`parseFloat` on their value is meaningless, not lenient.
+
+### The exemptions are chosen
+
+Eleven types were exempt because a comparison missed them, which is
+indistinguishable from a decision until somebody writes the decision down.
+`EVIDENCE_EXEMPT_TYPES` names `MANUAL` and its lower-case alias with a reason
+each, and a `SKIP` verdict exempts because it is a declaration rather than a
+silence — `PENDING` does not, and that pair is asserted.
+
+### Extracted to a library, for a reason worth recording
+
+The functions live in `lib/evidence-required.ts`, not beside the checks that
+call them. `gates/workflow.test.ts` only executes when a gate spawns it with
+`TEST_WORK_DIR`; the first version of the test imported it to reach one
+function and **registered sixteen of its gate checks in the ordinary suite**,
+where `sf()` reads nothing and all sixteen passed vacuously. Sixteen checks
+that could not fail, added by a test written to close a hole of exactly that
+shape, and found by reading the junit per-classname output rather than the
+pass count.
+
+- [x] SC-743: lib/evidence-required.ts contains [missingEvidenceViolations] — an AC carrying a threshold and no recorded evidence is refused for every evidenceMethod.type, because the check covered two of thirteen and the other eleven reached a verdict with nothing behind them
+- [x] SC-744: lib/evidence-required.ts contains [EVIDENCE_EXEMPT_TYPES] — every exemption is enumerated with a reason, because an exemption produced by a comparison falling through is indistinguishable from one somebody decided on
+- [x] SC-745: test/gate-vacuous-checks.test.ts contains [evidence-method-executed reaches its refusal] — the check is driven against a planted state through the real gate, because a unit test of the violations function stays green when the call site returns before reaching it
+- [x] SC-746: test/evidence-required.test.ts contains [the matrix covers the enum exactly] — the verdict table is generated from EVIDENCE_METHOD_TYPES and a member added without a row turns it red, because the table ossifying while the enum grows is how eleven types became exempt in the first place
+
+### What was broken to prove it (#277)
+
+Run and counted over `test/evidence-required.test.ts` plus
+`test/gate-vacuous-checks.test.ts` (73 tests). None is left in the tree; all
+were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| the check narrowed back to COMMAND only — SC-5 verbatim | 16 of 73 |
+| `missingEvidenceViolations` short-circuited to `return []` | 24 of 73 |
+| `thresholdCrosscheckViolations` short-circuited to `return []` | 8 of 73 |
+| `hasRecordedEvidence` returns true, so an empty evidence object counts | 1 of 73 |
+| `e.value != null` weakened to `Boolean(e.value)`, so a measured 0 reads as absent | 1 of 73 |
+| `missingEvidenceViolations` renamed | 1 of 33 — and 40 tests never ran: the rename breaks the import, so the file aborts rather than refusing. Red for a different reason than a copied binding would be, which is why the single-binding assertion exists alongside it |
+| `WEBHOOK` added to `EVIDENCE_METHOD_TYPES` with no matrix row | 4 of 42 |
+
+The second row is the one that matters most. Short-circuiting the existence
+check turns a quarter of the file red — including the case asserting that
+crosscheck's silence on a missing-evidence AC is only safe because something
+else speaks first.
+
+## The rest of the hardcoding, fixed rather than filed (#343, #344)
+
+#304's sweep found hardcoded **routes**. Looking for them turned up the same
+defect in three other shapes, and all of them are fixed here rather than left
+as issues — the policy changed mid-session: a defect uncovered while fixing a
+defect is part of that defect's blast radius, and filing it just pays the
+context cost twice.
+
+| Site | Literal | What it did to another consumer |
+|---|---|---|
+| `lib/transcript-checker.ts` | `textLower.includes("make rebuild")` | The forbidden-command directive fell through to `N/A`, which `computeScore` drops from its denominator. The rule went unenforced, the score did not move, and nothing named the directive that had stopped being measured. |
+| `lib/create-brief.ts`, `gates/brief-assembler.ts` | "Never run \`make rebuild\`" | One consumer's prohibition emitted into every consumer's agent brief. The agent obeys it; nobody finds out it was invented. |
+| `lib/scaffold/steps.ts` | `existsSync(makefile) ? "make rebuild"` | Inferred from a Makefile EXISTING, not from the target existing. A project with a Makefile and no `rebuild` target got a `prod.rebuild` that cannot run. `scripts/scaffold-rungate-config.ts:66` already checked the target; the two are now consistent. |
+| `workflows/verify.js`, `workflows/batch-ship.js` | ports, container name, app root, test dir, two routes | Three produce a loud false FAIL. The test directory produces a false **PASS** — `bun test --isolate test/unit/` against a project with no such directory runs zero tests and reports success with a count of nothing. |
+| `gates/workflow.test.ts` | `if (port !== 7776)` | `quinn-container-port` warned that a consumer's correct port was wrong, naming a port they do not run. |
+
+### A forbidden command is named by the directive, not by the harness
+
+`forbiddenCommandsIn` reads the command out of the directive text — a
+"never run X" rule already says what X is. The extractor is deliberately
+narrow about what counts as a command: lower-case start, no slashes or dots,
+so `` `.github/workflows/ci.yml` `` and `` `CODE-MAP.md` `` are paths and not
+commands. The opposite failure is the worse one: reporting VIOLATED because
+somebody ran a command containing the name of a file they were told not to
+edit would make the check untrustworthy in the direction that matters.
+
+### Unconfigured is SKIP, named, never PASS
+
+Every reader in `workflows/verify.js` states what its absence means and emits
+a `SKIP` carrying the missing key. The test-suite step additionally instructs
+that a run matching zero tests is a FAIL — "the suite did not run" and "the
+suite passed" were indistinguishable, and that is the one of the four that
+was silently green rather than loudly red.
+
+### The #304 ratchet moved the other way
+
+`workflows/` held two route literals as an exact list, with a note saying it
+would go red as an instruction to delist when #344 landed. It landed, it went
+red, the list is now empty. A skipped directory would have stayed skipped
+forever; a count had to be changed by someone reading why it was there.
+
+- [x] SC-747: lib/transcript-checker.ts contains [forbiddenCommandsIn] — a NEVER directive's forbidden command is read from the directive rather than matched against a literal, because one consumer's command meant the rule fell through to N/A for everyone else and N/A is excluded from the compliance denominator
+- [x] SC-748: test/transcript-checker.test.ts contains [a backticked PATH is not treated as a command] — the extractor refuses paths, because reporting VIOLATED for a file somebody was told not to edit is a worse failure than the hole it replaces
+- [x] SC-749: workflows/verify.js contains [UNMEASURED, not PASS] — every mechanical check names the config key it could not find and skips, because a test command pointed at a directory that does not exist runs zero tests and reports success
+- [x] SC-750: test/scaffold-make-targets.test.ts contains [a make target is inferred from the target] — the scaffold writes `make rebuild` only when the Makefile declares that target, because inferring it from the file's existence hands a project a command that fails with "No rule to make target"
+
+### What was broken to prove it (#343, #344)
+
+| Mutation | Red |
+|---|---|
+| `forbiddenCommandsIn` returns `[]` | 6 of 24 in `test/transcript-checker.test.ts` |
+| `COMMANDISH` loosened to `/^.+$/`, so any backticked token counts | 2 of 24 |
+| `make rebuild` replanted as a literal arm in the detector | 1 of 24 |
+| `makeTarget` weakened back to `existsSync(makefile)` | 3 of 6 in `test/scaffold-make-targets.test.ts` |
+
+### A guard that scored 0 red, and what it was actually doing
+
+`forbiddenCommandsIn` shipped with an extra line in front of the regex:
+
+```ts
+if (token.includes("/") || token.includes(".")) continue;
+```
+
+Added for safety, to stop backticked paths being read as commands. Mutating
+it away scored **0 red**, which is the only reason anyone looked at it.
+
+`COMMANDISH` already rejects `.github/workflows/ci.yml` (leading dot),
+`CODE-MAP.md` (upper case) and `project-state.json` (a dot in the first
+word). The extra line had never once changed a path's verdict. What it *did*
+change was `npm run deploy.prod` — a legitimate command with a dot in it,
+silently dropped and therefore silently unenforced.
+
+So the guard could only ever remove true positives. It is deleted, the
+rejection it was supposedly doing is asserted against the regex that actually
+does it, and the dotted command has a case of its own. A line that cannot
+fail is not merely decorative here; this one was costing coverage.
+
+## The status file that could not be wrong (#343, follow-up)
+
+`PROJECT-STATE.md` is the first thing AGENTS.md tells a session to read, and
+it is how a human finds out where the project is. Nothing made it go red when
+it stopped being true.
+
+The pre-commit hook runs `scripts/update-project-state.ts` on every commit,
+and that script printed `✅ Updated PROJECT-STATE.md (25/25 SCs done)` every
+time. It only **re-renders** the markdown from `project-state.json`; writing
+session content is the DA's job. So across eight commits and four merges on
+2026-10-12 it reported success eight times while the latest recorded session
+stayed at 38, dated the day before.
+
+Two separate fail-opens, and the second one is why the first went unnoticed:
+
+- **The claim was unconditional.** A line that says "updated" after an
+  unchanged re-render is the fail-open shape this repo keeps finding — green
+  for a reason that has nothing to do with the thing being correct. It now
+  diffs before and after and names which of the two files it actually
+  rewrote, or says plainly that it re-renders and does not write session
+  content.
+- **The count could not move.** `25/25` is Phase 0+1, complete for weeks and
+  unrelated to whatever is being committed. A number that cannot change is not
+  a status; it is decoration that reads as one.
+
+### Why this refuses rather than auto-writes
+
+The narrative is the content worth having — which defects were the same class,
+what the lesson was, what policy changed — and a machine cannot write it.
+Noticing it is MISSING is pure mechanism: compare merge commits on `main`
+against what the latest session entry accounts for. A generated placeholder
+would satisfy the check and tell the reader nothing, which is strictly worse
+than the staleness it replaced, so the test names the uncovered merges and
+stops.
+
+`mergesOnMain` reports `ok: false` rather than an empty list when `git log`
+fails, and a separate case asserts the probe reads something. Without it a
+failed git invocation returns zero commits and every assertion in the file
+passes — the exact defect the file exists to catch, in the file that catches
+it.
+
+### The probe shipped blind to how PRs actually land here
+
+The first version asked git for `--merges`, and it was green. This repo
+**squash-merges**: a landed PR is an ordinary first-parent commit whose subject
+GitHub suffixes with `(#N)`. There are old true merges in the history, so the
+readability case passed; no merge commit had landed since the last session, so
+the comparison passed too. A detector narrower than what it detects, in the
+file written to catch exactly that.
+
+CI found it, and not by catching the blindness — `actions/checkout` plus a
+`--depth=1` base fetch left `origin/main` with no history, so the probe read
+nothing and the readability case refused. The depth was enough for the
+conformity ratchet, which only diffs the tip, and nothing else had ever asked
+the log a question. Fixed in the generator rather than the generated file:
+`lib/scaffold/steps.ts` now emits `--depth=200`.
+
+Reverting the squash fix scored **0 red**, which is why SC-754 exists. It runs
+the probe twice over the same window — once unrestricted, once restricted to
+merge commits — and asserts the restricted one sees strictly fewer landed PRs.
+Empirical rather than a source grep, and the filter string is composed rather
+than written as a literal, so the assertion is not its own evidence.
+
+- [x] SC-751: test/project-state-currency.test.ts contains [every PR landed since the last recorded session is accounted for] — commits on `main` carrying a PR number are compared against the newest session entry and the uncovered ones are named, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
+- [x] SC-754: test/project-state-currency.test.ts contains [the probe sees squashes, which is how PRs actually land here] — the unrestricted probe must find strictly more landed PRs than a merge-commit-only one, because this repo squash-merges and a `--merges` probe is blind to every PR that lands
+- [x] SC-752: scripts/update-project-state.ts contains [This script re-renders; it does not write session content] — the renderer reports which files it changed instead of claiming success unconditionally, because eight commits of staleness each got a green checkmark
+
+### A generator whose every assertion was vacuous (#343, follow-up)
+
+`scripts/sync-spec-tests.ts` emitted twelve cases into
+`test/spec-compliance-auto.test.ts`, every one a bare substring search of a
+4,000-line workflow file. Counted in `workflows/ship.js`:
+
+| Search term | Occurrences |
+|---|---|
+| `"x"` (from the literal spec phrase `` `make x` ``) | 563 |
+| `"ship"` | 264 |
+| `"gate"` | 196 |
+| `"quinn"` | 94 |
+| `"rebuild"` | 17 |
+
+Not "unlikely to fail" — the terms are structural vocabulary of the file being
+searched, so the assertions were true before the spec sentences existed and
+would stay true if the behaviour were deleted. Twelve named checks counted in
+the suite total and in every compliance report, measuring nothing.
+
+Found because the SC line added above for #343 — about REMOVING a hardcoded
+`make rebuild` — matched the `` `make x` `` shape and generated a thirteenth
+case asserting ship.js **contains** "rebuild". A spec sentence describing a
+deletion generated a test demanding the thing's presence.
+
+Removed rather than weakened, for the reason #315 removed
+`evidence-target-valid`: a name in a report with nothing behind it is worse
+than an absence, because the absence is visible. Rebuilding spec-claim
+extraction is real work with a real design question in front of it — what IS
+the checkable content of "Spec requires make rebuild"? — and keeping these
+does not do it. The hand-written checks that were genuinely load-bearing
+already live in `test/spec-compliance-config.test.ts`.
+
+The replacement guard is structural rather than a threshold: the generator may
+not emit `toContain` against a whole-file binding at all. Whole-file presence
+is the answer that dodges the design question, so it is the one shape the
+output cannot take.
+
+- [x] SC-753: test/sync-spec-tests-paths.test.ts contains [no case is a bare substring search of a whole workflow file] — the generated file is parsed and any `toContain` against a `*_JS` whole-file binding is a violation, because an assertion a human never read before it joined the suite total has no other place for its quality bar
+
+### What was broken to prove it (SC-751..754)
+
+| Mutation | Red |
+|---|---|
+| `project-state.json`'s latest `session.date` rolled back to 2026-09-01 | 2 of 6 in `test/project-state-currency.test.ts` — the uncovered PRs, and the markdown no longer naming the date it was rendered from |
+| the git probe pointed at `origin/no-such-ref` | 1 of 6 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
+| the renderer's honest message replaced with `"ran."` | 1 of 6 |
+| the probe restricted to merge commits again | 1 of 6 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
+| the squash subject form dropped from the parser | 1 of 6 |
+| the deleted generator output replanted (`expect(SHIP_JS.toLowerCase()).toContain("gate")`) | caught by the detector's own planted control, which asserts it fires on the two verbatim cases #343 removed |
+
+None is left in the tree; all were run and reverted.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

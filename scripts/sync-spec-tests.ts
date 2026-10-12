@@ -141,102 +141,66 @@ interface Claim {
   context: string;
 }
 
-function extractClaims(spec: string): Claim[] {
-  const claims: Claim[] = [];
-  const lines = spec.split("\n");
-  let claimCounter = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const lineNum = i + 1;
-
-    // Make commands: make test-up, make prove-up, make test-rebuild, make rebuild
-    const makeMatch = line.match(/`(make\s+[\w-]+)`/);
-    if (makeMatch) {
-      const cmd = makeMatch[1];
-      // Determine target based on section context and command name
-      const isProveSection = lines.slice(Math.max(0, i - 30), i).some(l => /Step 4.*PROVE|PROVE.*post-merge|Layer 3.*Prove/i.test(l));
-      const isReleaseSection = lines.slice(Math.max(0, i - 20), i).some(l => /Step 5.*RELEASE|RELEASE/i.test(l));
-      // Skip release commands — they belong to release skill, not ship/prove
-      if (isReleaseSection) continue;
-      const target = isProveSection || cmd.includes("prove") ? "prove" : "ship";
-      // For ship, test-up may have been upgraded to test-rebuild — check for either
-      const searchTerm = cmd.replace("make ", "");
-      claims.push({
-        id: `AUTO-MAKE-${++claimCounter}`,
-        spec_line: lineNum,
-        claim: `Spec requires make ${searchTerm}`,
-        target,
-        assertion_type: "contains",
-        search_term: searchTerm,
-        context: line.trim().slice(0, 100),
-      });
-    }
-
-    // GATE markers
-    if (line.includes("**GATE:") || line.includes("**Gate:**")) {
-      const gateText = line.replace(/\*\*/g, "").replace("GATE:", "").replace("Gate:", "").trim();
-      const target = line.toLowerCase().includes("prove") ? "prove" : "ship";
-      claims.push({
-        id: `AUTO-GATE-${++claimCounter}`,
-        spec_line: lineNum,
-        claim: `Gate: ${gateText.slice(0, 80)}`,
-        target,
-        assertion_type: "contains",
-        search_term: gateText.includes("Quinn") ? "quinn" : gateText.includes("Ship gate") ? "ship" : "gate",
-        context: line.trim().slice(0, 100),
-      });
-    }
-
-    // Port references in context of specific tools
-    const portMatch = line.match(/:(\d{4})\b/);
-    if (portMatch) {
-      const port = portMatch[1];
-      if (["7776", "7777", "7778", "5173"].includes(port)) {
-        // Determine which file should reference this port
-        const isProveSection = lines.slice(Math.max(0, i - 20), i).some(l => /Step 4.*PROVE|PROVE.*post-merge/i.test(l));
-        const target = isProveSection ? "prove" : "ship";
-        claims.push({
-          id: `AUTO-PORT-${++claimCounter}`,
-          spec_line: lineNum,
-          claim: `Port ${port} referenced in ${isProveSection ? "PROVE" : "SHIP"} context`,
-          target,
-          assertion_type: "port",
-          search_term: port,
-          context: line.trim().slice(0, 100),
-        });
-      }
-    }
-
-    // Quinn + action verb patterns
-    const quinnMatch = line.match(/Quinn\s+(validates|captures|tests|navigates|compares|verifies)/i);
-    if (quinnMatch) {
-      const action = quinnMatch[1].toLowerCase();
-      const isProveSection = lines.slice(Math.max(0, i - 20), i).some(l => /Step 4.*PROVE|PROVE.*post-merge/i.test(l));
-      const target = isProveSection ? "prove" : "ship";
-      claims.push({
-        id: `AUTO-QUINN-${++claimCounter}`,
-        spec_line: lineNum,
-        claim: `Quinn ${action} in ${isProveSection ? "PROVE" : "SHIP"}`,
-        target,
-        assertion_type: "contains",
-        search_term: "quinn",
-        context: line.trim().slice(0, 100),
-      });
-    }
-  }
-
-  // Deduplicate by search_term + target
-  const seen = new Set<string>();
-  return claims.filter(c => {
-    const key = `${c.target}:${c.assertion_type}:${c.search_term}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+/**
+ * #277/#343 — this emitted twelve assertions, every one of which was a bare
+ * substring presence check against a 4,000-line workflow file.
+ *
+ * Four claim shapes were extracted from spec prose — \`make x\`, \`**GATE:**\`,
+ * a port number, and "Quinn <verb>" — and each became
+ * \`expect(SHIP_JS.toLowerCase()).toContain(<search_term>)\` where the search
+ * term was a generic word lifted out of the sentence. Counted in ship.js:
+ *
+ *     "gate"     196 occurrences
+ *     "ship"     264
+ *     "quinn"     94
+ *     "rebuild"   17
+ *     "x"        563      <- from the literal spec phrase \`make x\`
+ *
+ * None of them could fail. Not "unlikely to fail" — the terms are structural
+ * vocabulary of the file being searched, so the assertions were true before
+ * the spec sentence existed and would stay true if the behaviour were
+ * deleted. Twelve named checks, zero measurement, counted in the suite total
+ * and in every compliance report.
+ *
+ * Found because an SC line added in #343 — about REMOVING a hardcoded
+ * \`make rebuild\` — matched the \`make x\` shape and generated a thirteenth
+ * test asserting ship.js contains "rebuild". A spec sentence describing the
+ * deletion of a thing generated a test demanding its presence.
+ *
+ * Removed rather than weakened, which is what #315 did with
+ * \`evidence-target-valid\` for the same reason: a name in a report with
+ * nothing behind it is worse than an absence, because the absence is visible.
+ * Rebuilding spec-claim extraction with assertions that can fail is real
+ * work with a real design question behind it — what IS the checkable content
+ * of "Spec requires make rebuild"? — and it is not done by keeping these.
+ *
+ * \`test/spec-compliance-config.test.ts\` holds the hand-written checks that
+ * used to live in the generated file and are genuinely load-bearing.
+ */
+function extractClaims(_spec: string): Claim[] {
+  return [];
 }
 
 function generateTest(claims: Claim[]): string {
+  // No claims means no file worth importing: the header alone would read
+  // `workflows/ship.js` at module scope to populate two constants nothing
+  // uses, so a missing workflow file would fail a suite that asserts nothing.
+  if (claims.length === 0) {
+    return [
+      `// AUTO-GENERATED by scripts/sync-spec-tests.ts — do not edit manually`,
+      `// Regenerate: bun scripts/sync-spec-tests.ts`,
+      ``,
+      `// No generated claims. extractClaims returns nothing on purpose — see the`,
+      `// docblock above it in scripts/sync-spec-tests.ts. The twelve assertions`,
+      `// this file used to hold were bare substring checks for words like "gate"`,
+      `// and "ship" against a file containing them 196 and 264 times.`,
+      `//`,
+      `// Hand-written spec-compliance checks live in`,
+      `// test/spec-compliance-config.test.ts and test/spec-compliance.test.ts.`,
+      ``,
+    ].join("\n");
+  }
+
   const shipClaims = claims.filter(c => c.target === "ship" || c.target === "both");
   const proveClaims = claims.filter(c => c.target === "prove" || c.target === "both");
 

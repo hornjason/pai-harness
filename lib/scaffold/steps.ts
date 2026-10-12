@@ -751,6 +751,28 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
 
   // Scan port from Makefile, docker-compose.yml, or .env.example
   const makefile = join(root, "Makefile");
+
+  /**
+   * #343 — does the Makefile actually declare this target?
+   *
+   * The `dev.start` and `prod.rebuild` defaults tested only that a Makefile
+   * EXISTED, then wrote `make dev-all` / `make rebuild` into the consumer's
+   * config. Those are one consumer's target names. A project with a Makefile
+   * and no `rebuild` target got a `prod.rebuild` that cannot run, and the
+   * failure surfaces at rebuild time as "No rule to make target" rather than
+   * as a scaffold that guessed.
+   *
+   * `scripts/scaffold-rungate-config.ts:66` already did it this way; this
+   * brings the two into line rather than inventing a third behaviour.
+   */
+  const makeTarget = (name: string): boolean => {
+    if (!existsSync(makefile)) return false;
+    try {
+      return new RegExp(`^${name}\\s*:`, "m").test(readFileSync(makefile, "utf-8"));
+    } catch {
+      return false;
+    }
+  };
   const detectedPort = (() => {
     if (existsSync(makefile)) {
       const content = readFileSync(makefile, "utf-8");
@@ -857,14 +879,14 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
       repo,
       issueRepo: repo,
       dev: {
-        start: existsSync(makefile) ? "make dev-all" : "bun run dev",
+        start: makeTarget("dev-all") ? "make dev-all" : "bun run dev",
         apiBase: detectedPort ? `http://localhost:${detectedPort}` : null,
         uiBase: null as string | null,
         testCmd,
         typeCheck: typeCheckCmd,
       },
       prod: {
-        rebuild: existsSync(makefile) ? "make rebuild" : undefined,
+        rebuild: makeTarget("rebuild") ? "make rebuild" : undefined,
         apiBase: null as string | null,
       },
       pages: scannedPages,
@@ -1773,9 +1795,14 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
   const baseRefStep =
     SAFE_BRANCH.test(baseBranch) && !baseBranch.includes("..")
-      ? `      - name: Fetch the comparison base for the conformity ratchet
+      ? // `--depth=200`, not `--depth=1`. The conformity ratchet only diffs the
+        // tip and was happy with one commit, but a tip with no history behind
+        // it makes any check that reads the recent log unmeasurable — and an
+        // empty log is indistinguishable from a clean one. Two hundred commits
+        // is a few hundred KB and spans months of this project's history.
+        `      - name: Fetch the comparison base for the conformity ratchet
         run: |
-          git fetch --no-tags --depth=1 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
+          git fetch --no-tags --depth=200 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
             || echo "WARN: could not fetch ${baseBranch}; the conformity allowlist growth check will report UNMEASURED."`
       : // Not a fetchable ref: a glob pattern, a leading dash, or a traversal
         // segment. Emitted as a comment so the omission is visible in the

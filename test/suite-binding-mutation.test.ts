@@ -3,7 +3,7 @@ import { spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
 
@@ -184,9 +184,16 @@ export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): s
   // The mutant runs from a temp directory, so every relative specifier has to
   // become absolute. If one survives, the mutant dies on module resolution and
   // exits non-zero, which reads as a refusal it never made.
+  // #277: the `..` arm had never been exercised. The pattern matched both
+  // `./x` and `../x` but captured only the part AFTER the slashes, then
+  // joined it to GATES_DIR — so `../lib/x` became `gates/lib/x`, one level
+  // wrong, and the mutant died on module resolution. A non-zero exit reads
+  // as a refusal, which is exactly what the leftover check below exists to
+  // prevent and what this arm quietly reintroduced for any import outside
+  // `gates/`. The whole specifier is resolved now.
   const relocated = shortCircuited.replace(
-    /from "\.\.?\/([A-Za-z0-9._\-/]+)"/g,
-    (_m, rest: string) => `from "${join(GATES_DIR, rest)}"`,
+    /from "(\.\.?\/[A-Za-z0-9._\-/]+)"/g,
+    (_m, spec: string) => `from "${resolve(GATES_DIR, spec)}"`,
   );
   const leftover = relocated.match(/from "\.\.?\//g) || [];
   if (leftover.length > 0) {
@@ -311,6 +318,25 @@ describe("#224 mutant: removing the binding makes the gate ship the failure", ()
     // refusal. The leftover sweep is what notices.
     const withLeftover = `${readFileSync(GATE_SUITE, "utf-8")}\nimport { q } from "./odd$name";\n`;
     expect(() => buildMutantSource(withLeftover)).toThrow(/relative import/);
+  });
+
+  test("a parent-relative import resolves to the right level (#277)", () => {
+    // The `..` arm had never run. The pattern matched `../lib/x` but captured
+    // only `lib/x` and joined it to GATES_DIR, producing `gates/lib/x` — one
+    // level wrong. The mutant then died on module resolution, and that
+    // non-zero exit reads as a refusal it never made, which is the precise
+    // failure the leftover sweep above exists to prevent and which this arm
+    // reintroduced for every import outside `gates/`.
+    //
+    // Found when `gates/workflow.test.ts` gained its first `../lib/` import
+    // and three mutation harnesses went red at once.
+    const out = buildMutantSource(readFileSync(GATE_SUITE, "utf-8"));
+    const parents = [...out.matchAll(/from "([^"]*\/lib\/[^"]*)"/g)].map(m => m[1]);
+    expect(parents.length, "no parent-relative import left to check — this control is now blind").toBeGreaterThan(0);
+    for (const p of parents) {
+      expect(p, `${p} was resolved one level too deep`).not.toContain("/gates/lib/");
+      expect(existsSync(`${p}.ts`), `${p} does not exist — the mutant would die on module resolution`).toBe(true);
+    }
   });
 
   test("nothing the suite-binding mutation wrote is left anywhere in the tree", () => {

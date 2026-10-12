@@ -85,6 +85,16 @@ const OPTIONAL_HARNESS_KEYS: Record<string, { absent: "early-return" | "derived-
     absent: "early-return",
     why: "prod-smoke only applies where a smoke test is declared.",
   },
+  "container.port": {
+    absent: "early-return",
+    why: "#344. `quinn-container-port` used to compare Quinn's port against a literal 7776 — " +
+      "one consumer's container port — so every other consumer got a warning naming a port " +
+      "they do not run. It reads `container.port` now, and with none configured it says it " +
+      "could not determine whether the container was tested rather than inventing a number " +
+      "to disagree with. Early-return because a project with no container has no container " +
+      "port to test on, and there is no honest default: a guessed port warns about the " +
+      "wrong thing, which is the defect being removed.",
+  },
   "prod.containerName": {
     absent: "early-return",
     why: "container-has-fix needs a container to inspect. It falls back to prod.imageName, " +

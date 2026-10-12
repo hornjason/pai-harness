@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fetch the comparison base for the conformity ratchet
         run: |
-          git fetch --no-tags --depth=1 origin '+refs/heads/main:refs/remotes/origin/main' \
+          git fetch --no-tags --depth=200 origin '+refs/heads/main:refs/remotes/origin/main' \
             || echo "WARN: could not fetch main; the conformity allowlist growth check will report UNMEASURED."
       - uses: oven-sh/setup-bun@v2
         with:

@@ -110,6 +110,18 @@ export const ProjectHarnessSchema = z.object({
   container: ContainerSchema.optional(),
   pages: z.record(z.string()).optional(),
   codeCommittedPaths: z.array(z.string()).optional(),
+  /**
+   * Commands an agent must never run in this project (#343).
+   *
+   * `lib/transcript-checker.ts` used to hardcode `make rebuild` — one
+   * consumer's rule — so for every other consumer the forbidden-command
+   * directive fell through to N/A, which `computeScore` drops from its
+   * denominator. The rule went unenforced and the score did not move.
+   *
+   * No default. A guessed prohibition is worse than none: agent briefs quote
+   * it, agents obey it, and nobody finds out it was invented.
+   */
+  forbiddenCommands: z.array(z.string()).optional(),
   consumers: z.array(z.string()).optional(),
   promptKeywords: z.record(z.array(z.string())).optional(),
   contextDocs: z.record(z.string().nullable()).optional(),

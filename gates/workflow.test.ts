@@ -6,6 +6,10 @@ import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
 import { extractTestFailureCount, subtractTestBaseline } from "./gate-executor";
 import { typecheckFailures } from "./typecheck-gate";
+import {
+  missingEvidenceViolations,
+  thresholdCrosscheckViolations,
+} from "../lib/evidence-required";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -692,38 +696,17 @@ describe("verify checks", () => {
   });
 
   // 18. evidence-method-executed (GAP → PORTED)
-  test("evidence-method-executed: COMMAND ACs have evidence content", () => {
+  test("evidence-method-executed: ACs with a threshold have evidence recorded", () => {
     if (!isVerifyPlus()) return;
-    const missing = (sf("acs") || []).filter((ac: any) => {
-      const t = ac.evidenceMethod?.type;
-      if (t !== "COMMAND" && t !== "command") return false;
-      return !ac.evidence || (typeof ac.evidence === "object" && !ac.evidence.content);
-    });
-    expect(missing.map((ac: any) => ac.id)).toEqual([]);
+    const violations = missingEvidenceViolations(sf("acs"));
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 19. threshold-crosscheck (GAP → PORTED)
   test("threshold-crosscheck: evidence values meet threshold", () => {
     if (!isVerifyPlus()) return;
-    const violations: string[] = [];
-    for (const ac of sf("acs") || []) {
-      if (!ac.threshold || !ac.evidence) continue;
-      const val = typeof ac.evidence === "object" ? ac.evidence.value : null;
-      if (val == null) continue;
-      const exp = parseFloat(String(ac.threshold.value));
-      if (isNaN(exp) || isNaN(val)) continue;
-      let pass = true;
-      switch (ac.threshold.op) {
-        case ">=": pass = val >= exp; break;
-        case "<=": pass = val <= exp; break;
-        case ">": pass = val > exp; break;
-        case "<": pass = val < exp; break;
-        case "==": pass = val === exp; break;
-        case "!=": pass = val !== exp; break;
-      }
-      if (!pass) violations.push(`${ac.id}: ${val} ${ac.threshold.op} ${exp} = false`);
-    }
-    expect(violations).toEqual([]);
+    const violations = thresholdCrosscheckViolations(sf("acs"));
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 20. tests-pass (GAP → PORTED)
@@ -933,8 +916,19 @@ describe("verify checks", () => {
     }
   });
 
-  // quinn-container-port: Quinn must test on container :7776, not dev :7778 (#1371)
-  test("quinn-container-port: Quinn tested on container port 7776", () => {
+  // quinn-container-port: Quinn must test the CONTAINER, not the dev server (#1371)
+  //
+  // #344: this compared against a literal 7776 — one consumer's container
+  // port. Every other consumer got a warning saying their correct port was
+  // the wrong one, naming a port they do not run. The expected port comes
+  // from `container.port`, which was already a declared schema key, and with
+  // none configured the check says it could not look rather than inventing a
+  // number to disagree with.
+  //
+  // Still a warning rather than a failure, deliberately and not by oversight:
+  // turning it into a refusal changes what blocks live runs and needs its own
+  // measurement. What is fixed here is that it stops being wrong.
+  test("quinn-container-port: Quinn tested the container, not the dev server", () => {
     const quinn = sf("agents")?.quinn;
     if (!quinn?.spawned) return;
     const agentPort = quinn.port;
@@ -944,8 +938,24 @@ describe("verify checks", () => {
       console.warn("WARN: quinn-container-port: no port recorded in quinn agent data — cannot verify container testing");
       return;
     }
-    if (port !== 7776) {
-      console.warn(`WARN: quinn-container-port: Quinn tested on port ${port}, expected 7776 (container). Testing on dev (:7778) does not validate container behavior.`);
+    // Bound to `harness`, not to a name of its own: #315's key registry only
+    // sees reads off a binding called `harness`, so `const expected =
+    // loadProjectHarness()?...` would have been a config key the registry
+    // could not account for. Its guard caught this on the first run.
+    const harness = loadProjectHarness();
+    const expected = harness?.container?.port;
+    if (!expected) {
+      console.warn(
+        "WARN: quinn-container-port: the project sets no `container.port`, so whether Quinn " +
+          `tested the container could not be determined (it used :${port}). UNMEASURED, not PASS.`,
+      );
+      return;
+    }
+    if (port !== expected) {
+      console.warn(
+        `WARN: quinn-container-port: Quinn tested on port ${port}, expected ${expected} ` +
+          `(container.port). Testing the dev server does not validate container behavior.`,
+      );
     }
   });
 

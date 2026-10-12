@@ -575,3 +575,53 @@ describe("#315: code-committed reaches its refusal", () => {
     expectRed("code-committed", "a dirty file inside the configured scope was not caught.");
   });
 });
+
+describe("#277: evidence-method-executed reaches its refusal", () => {
+  // The driven half. The unit cases in test/evidence-required.test.ts stay
+  // green when the CALL SITE returns before reaching the function — and this
+  // one opens with `if (!isVerifyPlus()) return`, so a state in the wrong
+  // phase would satisfy every unit assertion while the gate looked at
+  // nothing. That is the #277 defect in the test written to close it.
+  const ac = (extra: Record<string, unknown> = {}) => ({
+    id: "AC-9",
+    type: "CODE",
+    statement: "a bun test run records how many tests passed",
+    threshold: { op: ">=", value: 5 },
+    evidenceMethod: { type: "BUN_TEST" },
+    ...extra,
+  });
+
+  test("a BUN_TEST AC with no evidence is REFUSED — 1 of the 11", () => {
+    plantState({ acs: [ac()] });
+    expectRed(
+      "evidence-method-executed",
+      "a BUN_TEST AC with a threshold and no evidence reached the verdict unchallenged",
+    );
+  });
+
+  test("a PLAYWRIGHT AC with no evidence is refused — the type DDB will use", () => {
+    plantState({ acs: [ac({ id: "AC-10", evidenceMethod: { type: "PLAYWRIGHT" } })] });
+    expectRed("evidence-method-executed", "a PLAYWRIGHT AC with no evidence was waved through");
+  });
+
+  test("the same AC WITH evidence is green — the paired control", () => {
+    // A check that refuses everything satisfies both cases above.
+    plantState({ acs: [ac({ evidence: { type: "test-output", content: "7 pass", value: 7 } })] });
+    expectGreen("evidence-method-executed", "a properly evidenced AC was refused");
+  });
+
+  test("a MANUAL AC with no evidence is green — the named exemption, driven", () => {
+    plantState({ acs: [ac({ id: "AC-11", evidenceMethod: { type: "MANUAL" } })] });
+    expectGreen("evidence-method-executed", "the MANUAL exemption is not reaching the gate");
+  });
+
+  test("threshold-crosscheck still refuses a measured shortfall", () => {
+    plantState({ acs: [ac({ evidence: { type: "test-output", value: 2 } })] });
+    expectRed("threshold-crosscheck", "2 >= 5 was accepted");
+  });
+
+  test("and passes a measured success", () => {
+    plantState({ acs: [ac({ evidence: { type: "test-output", value: 9 } })] });
+    expectGreen("threshold-crosscheck", "9 >= 5 was refused");
+  });
+});
