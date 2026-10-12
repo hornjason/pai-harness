@@ -1009,10 +1009,35 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
         }
         if (behavioral.length > 0) {
           addBehavioralCount(behavioral.length);
-          test(`INFO: ${behavioral.length} behavioral SCs (runtime-only, routed to SESSION-AUDIT-SPEC)`, () => {
-            console.log(`Behavioral SCs in ${specFile} (verified via SESSION-AUDIT-SPEC):\n  ${behavioral.join("\n  ")}`);
-            expect(true).toBe(true);
-          });
+          // This is a REPORT, not a test, and that is the fix (#328).
+          //
+          // It used to be a `test()` whose body was `expect(true).toBe(true)`
+          // — shape three in .claude/rules/checks-must-be-able-to-fail.md,
+          // written out literally rather than arrived at by accident, and the
+          // only executable check on 40 ticked criteria.
+          //
+          // The first attempt at a repair kept the `test()` and asserted that
+          // every listed SC carries the `(behavioral)` marker. The mutation
+          // harness measured that at ZERO red, and it was right to: this list
+          // is only ever appended to when `entry.kind === "behavioral"`, which
+          // happens only when `isBehavioralSC(sc)` is already true. The
+          // assertion was a tautology — a second unfalsifiable check wearing
+          // the first one's clothes.
+          //
+          // There is nothing locally falsifiable to put here. Whether a
+          // behavioral criterion is SATISFIED is a runtime question this file
+          // cannot answer, and whether it is CLASSIFIED correctly is true by
+          // construction. So the slot stops pretending: the listing stays,
+          // because findability is genuinely useful, and the teeth live in
+          // test/behavioral-sc-ratchet.test.ts, which bounds the population
+          // and which the same harness measures at 1 red when slackened.
+          //
+          // A report that admits it is a report is strictly better than a test
+          // that cannot fail, because only one of them is counted as evidence.
+          console.log(
+            `Behavioral SCs in ${specFile} — NOT VERIFIED HERE, bounded by ` +
+              `BEHAVIORAL_TICKED_RATCHET (#328):\n  ${behavioral.join("\n  ")}`,
+          );
         }
         if (unmatched.length > 0) {
           // SC-287 used to FAIL here in strict mode. That branch had never
