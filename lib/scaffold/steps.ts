@@ -1744,6 +1744,45 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   const branchList = branches.map((b: string) => `      - ${JSON.stringify(String(b))}`).join("\n");
   const runsOn = JSON.stringify(String(runner));
 
+  // DRIFT-3 (#302) refuses a conformity exemption added in the same change as
+  // the violation it exempts, by comparing the allowlist against the default
+  // branch. `actions/checkout` fetches one commit and no remote-tracking ref,
+  // so the check had nothing to compare against and reported UNMEASURED —
+  // which is how a ratchet becomes decorative.
+  //
+  // A ONE-COMMIT fetch of the base, not `fetch-depth: 0`: `git show
+  // <ref>:<path>` needs only that commit, and full history is a real cost to
+  // impose on every consumer for one file read.
+  //
+  // The fetch must not FAIL the run — a repo whose default branch is not the
+  // first configured branch, or a fork PR without access, would otherwise go
+  // red over a fetch rather than over its code. But it must not be silent
+  // either: a swallowed fetch leaves the ratchet unmeasured, and an
+  // unmeasured ratchet is a decorative one. So the failure branch prints.
+  // The check downstream is what decides — advisory for a consumer, while
+  // rungate's own suite asserts the base IS readable, so a failed fetch
+  // surfaces as a red test here rather than as a quiet pass.
+  //
+  // The branch name reaches a shell command, so it is validated AND quoted,
+  // not either alone. The charset excludes every shell metacharacter and both
+  // quote marks, which is what makes the single-quoted refspec below safe to
+  // interpolate — the two defences are chosen to agree rather than to differ,
+  // because a validator that admits something its consumer treats differently
+  // is the gap, not the absence of a validator.
+  const baseBranch = String(branches[0] ?? "main");
+  const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
+  const baseRefStep =
+    SAFE_BRANCH.test(baseBranch) && !baseBranch.includes("..")
+      ? `      - name: Fetch the comparison base for the conformity ratchet
+        run: |
+          git fetch --no-tags --depth=1 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
+            || echo "WARN: could not fetch ${baseBranch}; the conformity allowlist growth check will report UNMEASURED."`
+      : // Not a fetchable ref: a glob pattern, a leading dash, or a traversal
+        // segment. Emitted as a comment so the omission is visible in the
+        // generated file rather than looking like it was never considered.
+        `      # No comparison base fetched: the first configured branch (${JSON.stringify(baseBranch)}) is not a plain ref name,
+      # so the conformity allowlist growth check will report UNMEASURED.`;
+
   // The typecheck step used to be emitted unconditionally as `bunx tsc --noEmit`.
   // Without a tsconfig.json tsc prints its help text and exits 1, so every
   // scaffolded consumer that is not already a TypeScript project got a CI step
@@ -1778,6 +1817,7 @@ jobs:
     runs-on: ${runsOn}
     steps:
       - uses: actions/checkout@v4
+${baseRefStep}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "${bunVersion}"
