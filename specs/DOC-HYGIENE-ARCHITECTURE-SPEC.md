@@ -66,6 +66,64 @@ Council session (2026-10-02) produced 12 decisions across 3 rounds with architec
 - [x] SC-514: lib/doc-hygiene.ts contains [git, diff, changed, skip]
 - [x] SC-515: lib/compliance-report.ts contains [promotion, precision, WARN, FAIL, 80]
 
+### Phase 3 — A stamp adds, it never replaces (#299)
+
+`DocHygiene.hook.ts` rebuilt every `.md`'s frontmatter from its four required
+keys and discarded the rest:
+
+```ts
+const fmLines = REQUIRED.map(k => `${k}: ${stamped[k]}`).join('\n');
+newContent = content.replace(FRONTMATTER_RE, `---\n${fmLines}\n---`);
+```
+
+Editing `.claude/rules/key-files.md` dropped its `description:` — the field
+Claude Code's rule loading surfaces a rule by — and all eight rules files
+carried it. The damage was one file per edit, only to files somebody had
+touched, and nothing went red: **a rules file that has stopped being surfaced
+to agents is indistinguishable from one that is surfaced and ignored.**
+
+Underneath it, a second failure. The parser was `line.split(":")`, which
+cannot represent a YAML block value, so `harness-managed.md`'s `paths:` list —
+the list declaring which files the scaffold owns — would have been flattened
+even by a merge written over that parser's output.
+
+Three rules now hold, and the third is the one that keeps the other two:
+
+1. **Add, never replace.** A key already present keeps the value somebody gave
+   it, block values included. New keys are appended after everything existing,
+   so a diff reads as additions.
+2. **Refuse what you cannot read.** A block in a shape the parser does not
+   understand is returned unchanged. Rewriting a block you cannot read is
+   exactly what this was.
+3. **The hook and the library are held in step by an executed parity case.**
+   The hook lives in `~/.pai/hooks/`, outside this repo, so it cannot import
+   `lib/frontmatter.ts` and the logic is duplicated. The parity test runs both
+   over one input and compares bytes; without it the fix decays back into the
+   bug the first time one side is edited.
+
+The hook cases are driven where the hook exists and report a named, printed
+skip where it does not — a consumer who has never installed PAI must not be
+refused for a file they do not have. The convention-parity cases need nothing
+but this repo and always run; they are what would have gone red the moment the
+hook shipped.
+
+- [x] SC-729: lib/frontmatter.ts contains [stampFrontmatter] — stamping merges into the existing block instead of rebuilding it, so a field the formatter does not own survives a write
+- [x] SC-730: lib/frontmatter.ts contains [could not be parsed] — a block in an unrecognised shape is returned unchanged rather than rewritten into something smaller
+- [x] SC-731: test/rules-frontmatter.test.ts contains [every rules file declares a description] — the convention the hook violated is asserted over the real files, and this check needs nothing outside this repo so it runs in CI
+- [x] SC-732: test/rules-frontmatter.test.ts contains [it agrees with lib/frontmatter.ts on the same input] — the hook is executed and its output compared byte-for-byte with the library, because the two cannot share code and nothing else stops them drifting
+
+#### What was broken to prove it (#299)
+
+Run and counted over `test/rules-frontmatter.test.ts` (22 tests). None is left
+in the tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `stampFrontmatter` overwrites keys already present | 2 of 22 |
+| the parser guesses at an unindented non-key line instead of refusing | 2 of 22 |
+| the trailing newline absorbed back into the last entry's block | 2 of 22 |
+| the HOOK's merge reverted to the original rebuild-from-REQUIRED | 3 of 22 — strip, flatten, and the library parity case |
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)

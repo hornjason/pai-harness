@@ -1,4 +1,5 @@
 ---
+description: Key files and documentation routing for this project
 doc-type: reference
 status: active
 owner: jason
