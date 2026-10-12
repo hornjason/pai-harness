@@ -802,3 +802,85 @@ describe("#228 / AC-3+AC-4: a refused collection preserves the work and says whe
     expect(args).toContain(WT_B);
   });
 });
+
+/**
+ * #229 — claimKey's normalisation, and the division of labour it depends on.
+ *
+ * The audit and the collector decide one path's fate and normalise it
+ * differently: `claimKey` is textual, `collect-worktree-files.ts` resolves
+ * with `realpathSync`. Where the two readings can differ, the key must either
+ * be normalised the same way or refused — a path that reads as uncontested to
+ * the audit and resolves onto a claimed file in the collector is the original
+ * #178 clobber reached through normalisation.
+ *
+ * `escapesWorktree` already carries the refusal half and is well covered:
+ * neutralising it turns 3 of these tests red, and so does breaking either of
+ * its two halves on its own. The NORMALISATION half was not covered at all —
+ * deleting the duplicate-slash collapse from `claimKey` measured 0 red — so
+ * these cases exist to make each rewrite in that line falsifiable.
+ */
+describe("#229: claimKey normalises exactly what it claims to, and refuses the rest", () => {
+  const WT = "/tmp/wt-a";
+
+  test("duplicate slashes collapse, so one path cannot wear two keys", () => {
+    // The measured gap. Without this, `lib//a.ts` and `lib/a.ts` are distinct
+    // keys: a worktree claims one spelling and reports the other, the audit
+    // finds no owner for the reported key, and the collector writes it anyway
+    // because the filesystem does not distinguish them.
+    expect(claimKey(WT, "lib//a.ts")).toBe("lib/a.ts");
+    expect(claimKey(WT, "lib///nested////a.ts")).toBe("lib/nested/a.ts");
+    expect(claimKey(WT, "lib//a.ts")).toBe(claimKey(WT, "lib/a.ts"));
+  });
+
+  test("a leading ./ is stripped, repeatedly", () => {
+    expect(claimKey(WT, "./lib/a.ts")).toBe("lib/a.ts");
+    expect(claimKey(WT, "././lib/a.ts")).toBe("lib/a.ts");
+    expect(claimKey(WT, "./lib/a.ts")).toBe(claimKey(WT, "lib/a.ts"));
+  });
+
+  test("a trailing slash is trimmed", () => {
+    expect(claimKey(WT, "lib/sub/")).toBe("lib/sub");
+    expect(claimKey(WT, "lib/sub//")).toBe("lib/sub");
+  });
+
+  test("the worktree prefix is stripped, with or without its trailing slash", () => {
+    expect(claimKey(WT, `${WT}/lib/a.ts`)).toBe("lib/a.ts");
+    expect(claimKey(`${WT}/`, `${WT}/lib/a.ts`)).toBe("lib/a.ts");
+    // A different worktree's path is NOT stripped — it stays absolute, which
+    // is what escapesWorktree refuses.
+    expect(claimKey(WT, "/tmp/wt-b/lib/a.ts")).toBe("/tmp/wt-b/lib/a.ts");
+  });
+
+  test("empty and nullish inputs produce the empty key, not a crash", () => {
+    expect(claimKey(WT, "")).toBe("");
+    expect(claimKey(WT, "   ")).toBe("");
+    expect(claimKey(WT, null)).toBe("");
+    expect(claimKey(WT, undefined)).toBe("");
+  });
+
+  test("a traversal segment is deliberately NOT collapsed — it is refused instead", () => {
+    // This is the design decision, pinned so a later "tidy-up" that teaches
+    // claimKey to resolve `..` cannot land silently. Collapsing here would
+    // make the key match a claim the worktree never made; refusing keeps the
+    // textual key and lets escapesWorktree reject it. Both halves are
+    // asserted together because either alone permits the bypass.
+    expect(claimKey(WT, "test/../workflows/ship.js")).toBe("test/../workflows/ship.js");
+    expect(claimKey(WT, "test/../workflows/ship.js")).not.toBe("workflows/ship.js");
+
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT, filesChanged: ["workflows/ship.js"], claimedFiles: ["workflows/ship.js"] },
+      {
+        worktreePath: "/tmp/wt-b",
+        filesChanged: ["test/../workflows/ship.js"],
+        claimedFiles: ["test/../workflows/ship.js"],
+      },
+    ]);
+
+    // The second worktree claimed the path it reported, so the claim check
+    // alone would wave it through. The refusal has to come from the boundary.
+    const refused = audit.violations.map(v => JSON.stringify(v)).join(" ");
+    expect(refused).toContain("..");
+    const kept = audit.candidates.flatMap(c => c.filesChanged);
+    expect(kept, "a traversal path reached the collector").not.toContain("test/../workflows/ship.js");
+  });
+});
