@@ -1,10 +1,10 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync } from "fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, existsSync } from "fs";
 import { join } from "path";
 import { detectDrift, extractKeywords } from "../scripts/detect-sc-drift";
 
 const ROOT = join(import.meta.dir, "..");
-const TEMP_DIR = join(ROOT, ".tmp-sc-drift-test");
+const TEMP_DIR = mkdtempSync(join(ROOT, ".tmp-sc-drift-test-"));
 const TEMP_SPECS = join(TEMP_DIR, "specs");
 
 beforeAll(() => {

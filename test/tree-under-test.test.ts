@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 
 /**
@@ -41,7 +41,7 @@ const GATE_SUITE = join(REPO_ROOT, "gates", "workflow.test.ts");
  * `bunx tsc` may fail to resolve a compiler at all, and that exits non-zero,
  * which reads as "the type error was caught" no matter what the files contain.
  */
-const SCRATCH = join(REPO_ROOT, ".tree-under-test-scratch");
+const SCRATCH = mkdtempSync(join(REPO_ROOT, ".tree-under-test-scratch-"));
 
 /**
  * The mutant lives in gates/ so its relative imports (`./schema` and friends)

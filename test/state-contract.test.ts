@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 
 /**
@@ -215,7 +215,7 @@ describe("#317: the workflow-state contract is reconciled with its producers and
  * red half on its own.
  */
 describe("#317: each reconciliation is able to fail", () => {
-  const SCRATCH = join(ROOT, ".state-contract-scratch");
+  const SCRATCH = mkdtempSync(join(ROOT, ".state-contract-scratch-"));
 
   /** A miniature harness: a schema, a reader and a writer. */
   function plant(opts: { declared: string[]; read: string[]; written: string[] }): string {

@@ -4,9 +4,19 @@ node_modules/
 .pai-work/
 .gate-salt
 .fallow/
-# test/gate-vacuous-checks.test.ts plants a project here; it lives inside the
-# repo so `bunx tsc` resolves the same compiler the real check uses (#176).
-.gate-vacuous-test/
+# Test scratch trees. These live inside the repo rather than under /tmp so
+# `bunx tsc` resolves the same compiler the real check uses (#176).
+#
+# Each name carries an mkdtemp suffix (#323 SC-6): a fixed path is a shared
+# mutable resource, and two suites or two sessions running at once write the
+# same directory and delete each other's fixtures mid-assertion. That is a
+# flake that looks like a logic failure, which is the hardest kind to chase —
+# and the reason this project found a flake worth a PR in the first place.
+.gate-vacuous-test-*/
+.tree-under-test-scratch-*/
+.spec-collection-scratch-*/
+.state-contract-scratch-*/
+.tmp-sc-drift-test-*/
 
 # Added by rungate scaffold
 dist/
