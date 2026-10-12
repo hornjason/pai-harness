@@ -68,6 +68,15 @@ const ISSUES = parsedArgs.issues || []
 const ENV = parsedArgs.environment || 'test'
 const MAX_CONCURRENT = 4
 
+// #344: this hardcoded one consumer's ports and test directory, same as
+// workflows/verify.js did. Both come from the consumer's own config now, and
+// an unconfigured reader says so rather than guessing — a `bun test` pointed
+// at a directory that does not exist runs zero tests and reports success.
+const HARNESS = parsedArgs.harness || {}
+const TIER = (ENV === "prod" ? HARNESS.prod : HARNESS.dev) || {}
+const API_BASE = TIER.apiBase || null
+const TEST_CMD = (HARNESS.dev && HARNESS.dev.testCmd) || null
+
 // ════════════════════════════════════════════════════════════
 // PHASE 1: INTAKE — Size each issue and detect overlaps
 // ════════════════════════════════════════════════════════════
@@ -199,7 +208,7 @@ ${sizing.filesToModify.map(f => `- ${f}`).join('\n')}
 ## Development
 - Write regression test FIRST (red), then implement (green)
 - Run tsc --noEmit after changes
-- Run bun test --isolate test/unit/
+${TEST_CMD ? `- Run ${TEST_CMD} — if it runs ZERO tests, that is a FAIL, not a pass` : "- (the project sets no `dev.testCmd`; do not invent one — report that no suite was run)"}
 
 ## Report
 - issueNumber, success (boolean), filesChanged, commitSha, branch
@@ -239,7 +248,7 @@ if (uiIssues.length > 0) {
   quinnResults = await parallel(
     uiIssues.map(result => () => agent(`
 ## QA Verification
-Port: ${ENV === 'prod' ? '7777' : '7776'}
+Base URL: ${API_BASE || '(none configured — do not probe, report UNMEASURED)'}
 Playwright project: ${ENV === 'prod' ? '--project=ci' : '--project=test'}
 
 Test changes from issue #${result.issueNumber}.

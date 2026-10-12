@@ -364,8 +364,7 @@ describe("#304: no consumer route literal is left in the harness", () => {
   // There were five. Three in gates/gate-executor.ts — the liveness check,
   // plus the prove gate's dev probe behind a `process.exit(1)` and its prod
   // probe behind a warning — and two prompt-side, in workflows/. All five are
-  // fixed except the two in `workflows/verify.js`, which are held below as a
-  // counted ratchet rather than an exemption.
+  // fixed; the last two went in #344.
   const CLEAN = ["gates", "lib"];
   const DIRS = [...CLEAN, "workflows"];
   //
@@ -421,26 +420,21 @@ describe("#304: no consumer route literal is left in the harness", () => {
     ).toEqual([]);
   });
 
-  test("workflows/ holds exactly its two known routes — a ratchet, not an exemption", () => {
-    // `workflows/verify.js` smoke-tests two DailyBriefDashboard endpoints by
-    // name, and they are the smallest part of its problem: it also hardcodes
-    // DDB's ports (`ENV === 'prod' ? '7777' : '7776'`), its container name
-    // (`pai-dashboard`) and its in-container app path. Making it config-driven
-    // is #344, not #304.
+  test("workflows/ holds no route literals either — the ratchet is now empty", () => {
+    // This shipped holding two: `workflows/verify.js` smoke-tested two of one
+    // consumer's endpoints by name, alongside that consumer's ports, container
+    // name, app root and test directory. #344 fixed all of it, and the list
+    // went red on the next run demanding to be emptied.
     //
-    // Held as an exact count rather than a skipped directory. A directory left
-    // out of the sweep is a directory nobody measures again; a count refuses
-    // growth, and goes red as an instruction to DELIST when #344 lands rather
-    // than quietly tolerating the debt forever.
+    // That is the ratchet working in the direction ratchets usually do not.
+    // A skipped directory would have stayed skipped; a count had to be
+    // changed, by someone reading why it was there.
     const found = routesIn(["workflows"]).sort();
     expect(
       found,
       `workflows/ route literals changed. If you FIXED one, delete it from this list — the ` +
         `ratchet has to move both ways or it becomes a permanent licence (#304, #344).`,
-    ).toEqual([
-      "workflows/verify.js: /api/action-triggers",
-      "workflows/verify.js: /api/aes",
-    ]);
+    ).toEqual([]);
   });
 
   test("the sweep would catch one — planted control", () => {

@@ -48,8 +48,40 @@ const ACS = parsedArgs.acceptanceCriteria || []
 const CHANGED_FILES = parsedArgs.changedFiles || []
 const DECLARED_SCOPE = parsedArgs.declaredScope || []
 const ENV = parsedArgs.environment || 'test'
-const PORT = ENV === 'prod' ? '7777' : '7776'
 const SIZE = parsedArgs.size || 'S'
+
+// ── #344: four hardcodings, all one consumer's ───────────────────────────
+//
+// This file was a DailyBriefDashboard script living in the harness. It
+// hardcoded that consumer's two ports (`ENV === 'prod' ? '7777' : '7776'`),
+// its container name (`pai-dashboard`), its in-container app root (`/app/`),
+// its test directory (`test/unit/`) and two of its API routes.
+//
+// Three of those produce a loud false FAIL for anyone else. The test
+// directory produces a false PASS — a `bun test` pointed at a directory that
+// does not exist runs zero tests and the agent reports PASS with a count of
+// nothing, which is the worst of the four and the quietest.
+//
+// Everything now comes from the consumer's own config. Each reader states
+// what its absence means, and absence never silently becomes a pass: a check
+// with nothing to look at reports SKIP with the missing key named, so the
+// gap is visible rather than inferred from a green run.
+const HARNESS = parsedArgs.harness || {}
+const baseFor = (env) => (env === 'prod' ? HARNESS.prod : HARNESS.dev) || {}
+const API_BASE = baseFor(ENV).apiBase || null
+const UI_BASE = baseFor(ENV).uiBase || null
+const CONTAINER = HARNESS.container || {}
+const CONTAINER_NAME = CONTAINER.name || null
+const CONTAINER_APP_ROOT = CONTAINER.appRoot || null
+const SMOKE_ROUTES = Array.isArray(HARNESS.smokeRoutes) ? HARNESS.smokeRoutes : []
+const TEST_CMD = (HARNESS.dev && HARNESS.dev.testCmd) || null
+const TYPECHECK_CMD = (HARNESS.dev && HARNESS.dev.typeCheck) || 'npx tsc --noEmit'
+
+const skip = (label, why) => () => Promise.resolve({
+  verdict: 'SKIP',
+  reason: `${why} This is UNMEASURED, not PASS (#344).`,
+  findings: [],
+})
 
 // ════════════════════════════════════════════════════════════
 // PHASE 0: FILE-SCOPE VALIDATION (fail-fast gate)
@@ -80,31 +112,40 @@ log('Running mechanical verification: tsc + tests + container + smoke')
 const mechanical = await parallel([
   () => agent(`
 Run TypeScript type checking on the project:
-cd ${PROJECT_ROOT} && npx tsc --noEmit 2>&1 | tail -20
+cd ${PROJECT_ROOT} && ${TYPECHECK_CMD} 2>&1 | tail -20
 Report PASS if no errors, FAIL with the error output if errors found.
   `, { label: 'tsc', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
 
-  () => agent(`
+  // The false-PASS one. `bun test --isolate test/unit/` against a project
+  // with no `test/unit/` runs nothing and reports PASS with a count of zero.
+  TEST_CMD
+    ? () => agent(`
 Run the unit test suite:
-cd ${PROJECT_ROOT} && bun test --isolate test/unit/ 2>&1 | tail -30
-Report PASS with test count if all pass, FAIL with failing test names.
-  `, { label: 'unit-tests', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
+cd ${PROJECT_ROOT} && ${TEST_CMD} 2>&1 | tail -30
+Report PASS with the test count if all pass, FAIL with failing test names.
+If the command ran ZERO tests, report FAIL — a suite that matched nothing has
+not passed, it has not run.
+  `, { label: 'unit-tests', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA })
+    : skip('unit-tests', 'The project sets no `dev.testCmd`, so no suite was run.'),
 
-  () => agent(`
+  CONTAINER_NAME && CONTAINER_APP_ROOT
+    ? () => agent(`
 Verify the running container has current code:
-1. podman ps | grep pai-dashboard (check if running)
-2. podman inspect pai-dashboard --format '{{.Created}}' (check container age)
+1. podman ps | grep ${CONTAINER_NAME} (check if running)
+2. podman inspect ${CONTAINER_NAME} --format '{{.Created}}' (check container age)
 3. For changed files, verify they exist in container:
-${CHANGED_FILES.slice(0, 5).map(f => `   podman exec pai-dashboard test -f /app/${f} && echo "OK: ${f}" || echo "MISSING: ${f}"`).join('\n')}
+${CHANGED_FILES.slice(0, 5).map(f => `   podman exec ${CONTAINER_NAME} test -f ${CONTAINER_APP_ROOT.replace(/\/+$/, '')}/${f} && echo "OK: ${f}" || echo "MISSING: ${f}"`).join('\n')}
 Report PASS if current, FAIL if stale or files missing.
-  `, { label: 'container', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
+  `, { label: 'container', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA })
+    : skip('container', 'The project sets no `container.name` / `container.appRoot`, so container freshness was not checked.'),
 
-  () => agent(`
+  API_BASE && SMOKE_ROUTES.length > 0
+    ? () => agent(`
 Smoke test critical API endpoints:
-1. curl -s -w "\\n%{http_code}" http://localhost:${PORT}/api/aes | tail -1
-2. curl -s -w "\\n%{http_code}" http://localhost:${PORT}/api/action-triggers | tail -1
+${SMOKE_ROUTES.map((r, i) => `${i + 1}. curl -s -w "\\n%{http_code}" ${API_BASE.replace(/\/+$/, '')}${r} | tail -1`).join('\n')}
 Report PASS if all return HTTP 200, FAIL if any return 404/500/empty.
-  `, { label: 'smoke-test', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA }),
+  `, { label: 'smoke-test', phase: 'Mechanical', model: 'haiku', schema: VERIFY_RESULT_SCHEMA })
+    : skip('smoke-test', `The project sets no ${API_BASE ? '`smokeRoutes`' : `\`${ENV === 'prod' ? 'prod' : 'dev'}.apiBase\``}, so no endpoint was probed.`),
 ])
 
 const [tsc, tests, container, smoke] = mechanical
@@ -147,7 +188,7 @@ Instructions by evidence type:
 - test: Run the specific test and confirm it passes
 
 Project root: ${PROJECT_ROOT}
-Port: ${PORT}
+API base: ${API_BASE || "(not configured — do not guess one)"}
 
 Return whether evidence was successfully collected and the detail.
     `, { label: `evidence:${ac.id}`, phase: 'Evidence', model: 'haiku', schema: EVIDENCE_SCHEMA })
@@ -170,7 +211,7 @@ const agentResults = await parallel([
   () => hasUIChanges
     ? agent(`
 ## QA Verification
-Environment: port ${PORT}, Playwright project ${ENV === 'prod' ? '--project=ci' : '--project=test'}
+Environment: ${UI_BASE || API_BASE || "(no base URL configured)"}, Playwright project ${ENV === 'prod' ? '--project=ci' : '--project=test'}
 
 Test as a BRAND NEW USER who has never seen this dashboard:
 - Every section understandable within 30 seconds?
@@ -198,7 +239,7 @@ ${CHANGED_FILES.map(f => `- ${f}`).join('\n')}
 
 Scope constraints:
 - Read-only on production config — NEVER write to .env, credentials, aes.json
-- Active probing on port ${PORT} only
+- Active probing against ${API_BASE || "(no apiBase configured — do not probe)"} only
 - Do not trigger bootstrap, wipe, or reset flows
 
 Check for: injection vulnerabilities, credential exposure, path traversal, XSS, missing input validation.
