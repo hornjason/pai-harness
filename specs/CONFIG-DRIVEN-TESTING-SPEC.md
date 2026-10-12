@@ -155,6 +155,59 @@ is a contract change and needs review, not an unattended patch.
 - [x] SC-553: test/spec-compliance.test.ts contains [CHAIN-1] and not contains [test("SC-] — a test file may not use SC numbering that belongs to no spec, because the flipper cannot tell a local label from a reference
 - [x] SC-554: test/sync-sc-status-matching.test.ts contains [claimed by nothing] — the outcome is asserted, not just the mechanism: the real bootstrap criterion is credited to no test file
 
+### A compound criterion asserted only its first clause (#220)
+
+`content-contains` captures exactly one bracket list and `matchPattern` returns
+on the first registry hit, so a criterion written as `FILE contains [a] and not
+contains [b]` bound, asserted `[a]`, and discarded everything after it with no
+signal — not reported unmatched, not warned about. The criterion reported
+satisfied having checked half of what it says.
+
+The sweep posted to the issue before the fix: of **267** ticked non-behavioral
+criteria that bind a matcher, **39** carried unconsumed text and **21**
+discarded a whole bracket-list assertion. Every one of the 21 bound
+`content-contains`; no other matcher loses an assertion.
+
+Three of the 21 were discarding something **false**, so they were ticked while
+asserting an untruth. Two of those three turned out to be criteria that
+overreached rather than code that was wrong: they forbade `execSync` in modules
+that legitimately shell out to git, curl and the test runner, when what the
+GitHub migration forbids is the `gh` CLI. Nobody found out for the same reason
+the defect existed — the clause had never once been evaluated.
+
+**The decision, stated rather than left implicit.** Compound statements are
+**parsed into every clause, not refused.** Three reasons, in order of weight:
+
+1. Refusing would turn 21 criteria malformed at once in exchange for asserting
+   strictly less than parsing does.
+2. The defect is **not about negation**. Two of the 21 carry a *positive*
+   second clause naming a different file, and a rule written in terms of
+   `not contains` would leave those exactly as unasserted as before.
+3. A criterion's requirement ends where its explanation begins, so everything
+   from the first ` — ` is rationale and never becomes a clause. Without that
+   rule a rationale reading "the reader and the writer agree" parses as one.
+
+Residue that survives parsing is split deliberately. A **leftover bracket list
+is refused** and named, because it is an assertion that would be dropped; after
+parsing, that count is zero. **Prose residue is not refused** — around eight
+criteria state real requirements as prose (`and is under 3,000 tokens`), and
+rewriting those into testable form is #211's work, not this one's. Refusing
+them would make 39 criteria malformed to fix 21.
+
+One asymmetry is deliberate and bounded: an **absence** clause on a `.ts`/`.js`
+target is evaluated with comments stripped, because an absence claim is about
+code — the guard that must not shell out to a CLI necessarily names that CLI in
+its own docblock. Stripping can only turn a violation into a non-violation, so
+it cannot make a passing criterion fail. Presence clauses still read raw text;
+changing that could flip currently-green criteria to red and is out of scope
+here.
+
+- [x] SC-694: lib/conformity.ts contains [parseCompoundClauses, unconsumedAssertion] — the parse and the view-check are exported, so both can be mutated directly rather than inferred from a passing suite
+- [x] SC-695: config/matcher-registry.json contains [content-contains-compound] — the compound matcher is a registry entry ordered ahead of content-contains, not a widening of it; content-contains keeps its original narrow regex
+- [x] SC-696: test/compound-sc-clauses.test.ts contains [the corpus carries no silently discarded assertion] — the corpus sweep is a test, so a criterion written tomorrow that drops a clause fails the suite instead of being found by the next audit
+- [x] SC-697: test/compound-sc-clauses.test.ts contains [the recovered clause is EXECUTED, not merely parsed] — a parse that nothing runs is the same vacuous shape this issue is about
+- [x] SC-698: test/compound-sc-clauses.test.ts contains [a POSITIVE second clause on another file is recovered] — the third shape is pinned, so a later simplification to "negation only" fails rather than silently unasserting two criteria
+
 ## Implementation
 
 ### Phase A: SC Classification

@@ -14,6 +14,7 @@ import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
 import { readFreshCache } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
+import { stripJsComments } from "./strip-js-comments";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -495,6 +496,91 @@ function loadRegistry(projectRoot?: string): Array<{ name: string; regex: string
   }
 }
 
+// ── Compound success criteria (#220) ────────────────────────
+//
+// `content-contains` captures exactly one bracket list and `matchPattern`
+// returns on the first registry hit, so "FILE contains [a] and not contains
+// [b]" bound, asserted [a], and discarded the rest with no signal. 21 ticked
+// SCs were in that state; three of them asserted something false and passed
+// anyway. The sweep is in #220.
+//
+// Two rules the parser follows, both of which a narrower reading gets wrong:
+//
+//  - An SC's requirement ends where its explanation begins. Everything from
+//    the first " — " is rationale, and rationale saying "the reader and the
+//    writer agree" must not become a clause.
+//  - The defect is NOT about negation. Two of the 21 carry a POSITIVE second
+//    clause naming a different file, and a fix written in terms of
+//    "not contains" would leave those just as unasserted.
+
+export type SCClause = { file: string; items: string[]; negated: boolean };
+
+const CLAUSE_HEAD = /^(\S+)\s+contains?\s+\[([^\]]+)\]/;
+const CLAUSE_TAIL =
+  /^\s+and\s+(?:(\S*[./]\S*)\s+)?(not\s+contains?|does\s+not\s+contain|must\s+NOT\s+contain|has\s+no|contains?)\s+\[([^\]]+)\]/i;
+
+/** Rationale is commentary, not requirement. */
+const requirementOf = (statement: string) => statement.split(" — ")[0].trimEnd();
+
+const splitItems = (raw: string) => raw.split(",").map(i => i.trim()).filter(Boolean);
+
+const isCodeFile = (file: string) => /\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file);
+
+/**
+ * Parse a contains-family statement into every clause it states.
+ * Returns null when the statement is not compound, so callers fall through to
+ * the single-clause matcher rather than this becoming a second way to bind.
+ */
+export function parseCompoundClauses(statement: string): SCClause[] | null {
+  const body = requirementOf(statement);
+  const head = CLAUSE_HEAD.exec(body);
+  if (!head) return null;
+
+  const headFile = head[1].replace(/`/g, "");
+  const clauses: SCClause[] = [{ file: headFile, items: splitItems(head[2]), negated: false }];
+
+  let end = head[0].length;
+  for (;;) {
+    const tail = CLAUSE_TAIL.exec(body.slice(end));
+    if (!tail) break;
+    end += tail[0].length;
+    const verb = tail[2].toLowerCase();
+    clauses.push({
+      file: (tail[1] ?? headFile).replace(/`/g, ""),
+      items: splitItems(tail[3]),
+      negated: /\bnot\b|has\s+no/.test(verb),
+    });
+  }
+  return clauses.length > 1 ? clauses : null;
+}
+
+/**
+ * The guard's view of its own input: text a contains-family statement states
+ * but no clause consumed. A leftover bracket list is a requirement that would
+ * be silently dropped, so it is named rather than discarded.
+ *
+ * Prose residue is deliberately NOT refused here. Around eight SCs carry real
+ * requirements as prose ("and is under 3,000 tokens"); refusing those turns 39
+ * SCs malformed at once, and rewriting them into testable form is #211's work.
+ * Returns null for statements no contains-family matcher owns — other matchers
+ * answer for their own spans, and "AGENTS.md is under [200] lines" is not a
+ * discarded assertion.
+ */
+export function unconsumedAssertion(statement: string): string | null {
+  const body = requirementOf(statement);
+  const head = CLAUSE_HEAD.exec(body);
+  if (!head) return null;
+
+  let end = head[0].length;
+  for (;;) {
+    const tail = CLAUSE_TAIL.exec(body.slice(end));
+    if (!tail) break;
+    end += tail[0].length;
+  }
+  const residue = body.slice(end).trim();
+  return /\[[^\]]+\]/.test(residue) ? residue : null;
+}
+
 // Handler registry — one function per pattern type
 const matcherHandlers: Record<string, MatcherHandler> = {
   "file-exists": (sc, match) => {
@@ -626,6 +712,32 @@ const matcherHandlers: Record<string, MatcherHandler> = {
       if (!existsSync(testDir)) return;
       const testFiles = readdirSync(testDir).filter(f => f.includes("conformity") || f.includes("canary"));
       expect(testFiles.length).toBeGreaterThanOrEqual(1);
+    };
+  },
+
+  "content-contains-compound": (sc) => {
+    const clauses = parseCompoundClauses(sc.statement);
+    // Not actually compound — fall through so `content-contains` handles it.
+    if (!clauses) return null;
+    return (root) => {
+      for (const clause of clauses) {
+        const path = resolveFilePath(root, clause.file);
+        if (!existsSync(path)) {
+          expect(existsSync(path)).toBe(true);
+          return;
+        }
+        const content = readFileSync(path, "utf-8");
+        const view = clause.negated && isCodeFile(clause.file)
+          ? stripJsComments(content)
+          : content;
+        for (const item of clause.items) {
+          if (clause.negated) {
+            expect(view).not.toContain(item);
+          } else {
+            expect(view).toContain(item);
+          }
+        }
+      }
     };
   },
 
