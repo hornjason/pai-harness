@@ -56,3 +56,32 @@ The organize-project tool (#30) also needs config for external source locations 
 - [x] SC-485: Re-scaffold splits existing `rungate.json` into directory structure (behavioral)
 - [x] SC-486: lib/organize.ts contains [scanExternalSources, loadComplianceConfig, externalSources, matchBy]
 - [x] SC-487: lib/organize.ts contains [artifactClassification, classifyDocument, non-markdown] — the extension list (.html, .pdf) is config data in `.claude/rungate/`, not source text; asserting it against the module was asserting that the design had NOT been made config-driven
+
+### Phase 3 — the documented layout must reach the tier control (#310)
+
+Migrating to the layout this spec recommends used to switch off the control
+that decides how much of the harness runs. The Discovery setup prompt read the
+config with `cat ${PROJECT_ROOT}/.claude/rungate.json 2>/dev/null || echo "{}"`,
+which sees only the monolith — so a consumer who complied with this document
+got `cat` failing, `echo "{}"`, empty `pages`, `hasUI === false`, a forced
+LIGHT tier, and the scope gate, Quinn local, container verify, Quinn verify and
+prove all skipped. No error, no log line. Shape 1 in
+`.claude/rules/checks-must-be-able-to-fail.md`, attached to the tier control.
+
+Tested as one chain rather than in parts, because every part was individually
+correct: the loader handled both layouts, the tier logic computed properly, and
+the whole defect was which of them the prompt called.
+
+Two things the test had to get right, both of which it got wrong first:
+
+- The statement that forces LIGHT is the `!hasUI` **downgrade**, not
+  `ceremonyTierFloor`. The floor RAISES a tier — `floor('STANDARD', false)`
+  returns `'STANDARD'` — so a test written against the floor reports the old
+  fallback as harmless.
+- The prompt explains in prose that there is "deliberately no `|| echo {}`
+  fallback", so a detector reading the whole step reports the defect the text
+  says was removed. The detector reads the step's command lines only.
+
+- [x] SC-708: test/config-reaches-ceremony-tier.test.ts contains [18 resolved pages produce a NON-LIGHT tier] — the directory layout is carried all the way to the tier decision, through the real resolver subprocess, rather than the loader and the tier logic being checked separately and the gap between them assumed
+- [x] SC-709: test/config-reaches-ceremony-tier.test.ts contains [an unresolvable config refuses instead of becoming] — a config that cannot be read exits non-zero and writes nothing, and is distinguished from a config that reads fine and has no pages, because collapsing those two makes every CLI project fail setup
+- [x] SC-710: test/config-reaches-ceremony-tier.test.ts contains [the prose explaining the absent fallback is NOT read as the fallback] — the prompt names the token it forbids, so the boundary between its commands and its explanation is asserted rather than assumed
