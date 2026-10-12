@@ -7,8 +7,8 @@
  * of every longer one that starts with it, so eighteen test files were credited
  * as covering the shortest ID in the repo and not one of them mentioned it. One
  * passing run of any of the eighteen ticked it wherever it was unchecked:
- * `specs/SPEC-TEMPLATE.md:190`, the literal placeholder
- * `- [ ] SC-1: [first criterion]`, and a real unimplemented bootstrap criterion.
+ * `specs/SPEC-TEMPLATE.md:190`, where it is the unnumbered placeholder
+ * criterion, and a real unimplemented bootstrap criterion.
  * A ticked template means every spec generated from it inherits a criterion
  * that is done before anyone writes it.
  *
@@ -26,7 +26,6 @@ import { join } from "path";
 import {
   findTestFilesForSCs,
   findUncheckedSCs,
-  stripFixtureMentions,
 } from "../scripts/sync-sc-status";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -88,8 +87,13 @@ describe("#148: an SC ID matches as a whole token", () => {
     // 9 of them contained no such token at all.
     const target = SHORTEST_ID;
     const found = findTestFilesForSCs(new Set([target]));
+    // Checked against the RAW file. The oracle used to be the fixture-stripped
+    // copy, which after #149 is the same view the credit decision is made on —
+    // and a test whose oracle is the thing under test asserts nothing. The raw
+    // text is the independent statement #148 actually meant: whatever else is
+    // true, a credited file contains the token.
     const liars = [...found.keys()].filter(file => {
-      const text = stripFixtureMentions(readFileSync(join(REPO_ROOT, "test", file), "utf-8"));
+      const text = readFileSync(join(REPO_ROOT, "test", file), "utf-8");
       return !new RegExp(`\\b${target}(?!\\d)`).test(text);
     });
     expect(liars).toEqual([]);

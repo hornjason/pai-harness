@@ -151,7 +151,7 @@ receives IDs without spec files, so it cannot apply the `scopedKey` discipline
 every other part of this tool uses. Making a test declare which spec it covers
 is a contract change and needs review, not an unattended patch.
 
-- [x] SC-552: scripts/sync-sc-status.ts contains [stripFixtureMentions] — a spec line embedded as test input is not a claim about the criterion it names
+- [x] SC-552: scripts/sync-sc-status.ts contains [coverageClaimIds] — a spec line embedded as test input is not a claim about the criterion it names
 - [x] SC-553: test/spec-compliance.test.ts contains [CHAIN-1] and not contains [test("SC-] — a test file may not use SC numbering that belongs to no spec, because the flipper cannot tell a local label from a reference
 - [x] SC-554: test/sync-sc-status-matching.test.ts contains [claimed by nothing] — the outcome is asserted, not just the mechanism: the real bootstrap criterion is credited to no test file
 
