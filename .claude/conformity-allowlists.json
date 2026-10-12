@@ -2,6 +2,7 @@
   "_comment": "Rungate's own conformity exemptions (#80). Each list is a RATCHET, not a mute: adding an entry that is not a real current violation fails, and an entry that stops being a violation must be removed or the build fails. Shrinking both lists to empty is the work. Consumers get their own file or none at all - these never travel.",
   "_untestedSpecs": "DRIFT-2 - testable specs with no test referencing them by name. Over half the testable surface.",
   "_untestedSpecs_310": "CONFIG-DIRECTORY-STRUCTURE-SPEC.md is DELISTED as of #310: test/config-reaches-ceremony-tier.test.ts references it and drives the layout it documents all the way to the ceremony-tier decision. This entry carried the note that the spec had to leave the list before SC-478/479 could be rewritten as behavioral assertions; that precondition is now met. The delisting was not a choice - DRIFT-2 ratchets both ways and the build failed on the stale entry, which is the list working.",
+  "_untestedSpecs_299": "DOC-HYGIENE-ARCHITECTURE-SPEC.md is DELISTED as of #299: test/rules-frontmatter.test.ts references it and drives the frontmatter stamping it now governs, including executing the real DocHygiene hook. Same as #310, the delisting was not a choice - DRIFT-2 ratchets both ways and the build failed on the stale entry the moment a test started naming the spec. That is the list working.",
   "_untestedSpecs_225": "The five bootstrap-data-flow entries are NEW to this list and are not new violations: #225 made the spec collectors recursive, so DRIFT-2 can see specs/ subdirectories for the first time. They had been untested since the directory was created and the check was structurally unable to say so. Listing them here banks the visibility; it does not excuse them. Note they are safe to name here precisely because this is not a test file - DRIFT-2 searches test/*.test.ts for a spec's name, so an allowlist living under test/ would have made every listed spec read as referenced.",
   "untestedSpecs": [
     "bootstrap-data-flow/cli-commands-for-file-creation.md",
@@ -11,7 +12,6 @@
     "bootstrap-data-flow/template-architecture.md",
     "SESSION-LIFECYCLE-SPEC.md",
     "harness-automation-matrix.md",
-    "DOC-HYGIENE-ARCHITECTURE-SPEC.md",
     "INSTRUCTION-COMPLIANCE-SPEC.md",
     "HARNESS-SKILL-CONTRACT.md",
     "AGENT-BRIEF-TEMPLATE-SPEC.md"
