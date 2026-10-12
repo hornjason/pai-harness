@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-11",
+  "updated": "2026-10-12",
   "priorities": [
     "P0 CRITICAL PATH TO PHASE C (measured 2026-10-11, see #274) — the order below is forced by dependencies, not preference. Every rungate self-run is rewritten to LIGHT by workflows/ship.js:1705 because the repo's own config sets pages:{}, so the scope gate, Quinn local, Quinn verify, prove and the remote pre-flight have NEVER executed here. DailyBriefDashboard configures 18 pages and enters all five on its first run.",
     "P0.1: #273 — DONE, merged eba80415 (PR #284). Six phase-ordering checks in test/spec-compliance.test.ts asserted on COMMENTS. Verified on main by the mutation that defined it: gutting the PR step out of ship.js while leaving its comment at :4338 gave 6 pass / 0 fail before and gives 4 pass / 2 fail after. The converse also holds — rewording three phase banner comments with no code change leaves all six green, which is the false red that had refused #254 four times.",
