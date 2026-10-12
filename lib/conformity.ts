@@ -1226,6 +1226,42 @@ export function runSpecDrift(
  *   runSpecDrift's untestedAllowlist — the generated consumer test calls
  *   `runDocHygiene(ROOT, findings)`.
  */
+/**
+ * Every path's most recent commit date, from ONE git subprocess (#323).
+ *
+ * Exported so the regression test can run it against the repository and
+ * compare it to the per-file calls it replaced — a single site to mutate, and
+ * the only way to prove the parser still agrees with git rather than merely
+ * being faster. A detector that got quicker by finding less would pass every
+ * timing test and none of the ones that matter.
+ *
+ * Walks newest-first, so the first time a path appears is its latest commit
+ * and later entries are ignored. Paths deleted or renamed earlier in history
+ * also appear; they are never looked up, which is cheaper than filtering them.
+ */
+export function lastCommitDates(root: string, docDirs: string[]): Map<string, string> {
+  const lastCommit = new Map<string, string>();
+  try {
+    const log = spawnSync(
+      "git",
+      ["-C", root, "log", "--format=%H %ci", "--name-only", "--", ...docDirs],
+      { timeout: 60_000, maxBuffer: 64 * 1024 * 1024 },
+    );
+    let currentDate = "";
+    for (const line of log.stdout.toString().split("\n")) {
+      const header = /^[0-9a-f]{7,40} (\d{4}-\d{2}-\d{2})/.exec(line);
+      if (header) {
+        currentDate = header[1];
+        continue;
+      }
+      const path = line.trim();
+      if (!path || !currentDate) continue;
+      if (!lastCommit.has(path)) lastCommit.set(path, currentDate);
+    }
+  } catch {}
+  return lastCommit;
+}
+
 export function runDocHygiene(
   root: string,
   _findings?: unknown[],
@@ -1586,22 +1622,37 @@ export function runDocHygiene(
       // Filter out reference/ paths (AC-2)
       const filtered = scanTargets.filter(f => !f.startsWith("reference/") && !f.includes("/reference/"));
 
+      // One git call for every file, not one per file (#323).
+      //
+      // This was `spawnSync("git", ["log", "-1", ..., "--", rel])` inside the
+      // loop: 60 serial subprocesses against the same repository, each with
+      // its own 5-second timeout. Nothing was wrong with any single call — the
+      // test was load-sensitive by construction, and if any one spawn was slow
+      // (another suite holding the index, a busy machine, a cold cache) it hit
+      // the timeout and the test went red. Measured at 1 failure in 3
+      // identical runs, always at ~5007 ms. It also got worse on its own as
+      // the repo grew, because more docs means more dice rolls.
+      //
+      // `--name-only` over the whole history, walked newest-first, gives every
+      // path's most recent commit date from a single subprocess. The first
+      // time a path is seen is its latest commit, so later entries are
+      // ignored.
+      const lastCommit = lastCommitDates(root, docDirs);
+
       const staleUnreferenced: { file: string; daysSince: number }[] = [];
       for (const rel of filtered) {
-        // Check git age
-        try {
-          const result = spawnSync("git", ["-C", root, "log", "-1", "--format=%ci", "--", rel], { timeout: 5_000 });
-          const dateStr = result.stdout.toString().trim().split(" ")[0];
-          if (!dateStr) continue;
-          const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
-          if (daysSince <= threshold) continue;
+        const dateStr = lastCommit.get(rel);
+        // No commit for this path means it is untracked or newly added, which
+        // is the opposite of stale.
+        if (!dateStr) continue;
+        const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+        if (daysSince <= threshold) continue;
 
-          // Check cross-references: filename must appear somewhere in the codebase index
-          const basename = rel.split("/").pop()!;
-          if (index.includes(basename)) continue;
+        // Check cross-references: filename must appear somewhere in the codebase index
+        const basename = rel.split("/").pop()!;
+        if (index.includes(basename)) continue;
 
-          staleUnreferenced.push({ file: rel, daysSince: Math.floor(daysSince) });
-        } catch {}
+        staleUnreferenced.push({ file: rel, daysSince: Math.floor(daysSince) });
       }
 
       // AC-3: Each warning includes git mv archival command
