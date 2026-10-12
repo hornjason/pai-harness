@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { collectSpecFiles } from "../lib/spec-files";
 
@@ -21,7 +21,7 @@ import { collectSpecFiles } from "../lib/spec-files";
  */
 
 const ROOT = join(import.meta.dir, "..");
-const SCRATCH = join(ROOT, ".spec-collection-scratch");
+const SCRATCH = mkdtempSync(join(ROOT, ".spec-collection-scratch-"));
 
 beforeEach(() => {
   rmSync(SCRATCH, { recursive: true, force: true });
