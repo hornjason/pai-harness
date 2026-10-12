@@ -31,7 +31,8 @@
  * or ship with an eight-entry exemption list nobody can interpret. #339 is
  * for resolving the nine; this file stays within what it can measure.
  *
- * Covers SC-723, SC-724, SC-725, SC-726 of GATE-CONTRACTS-SPEC.md.
+ * Covers SC-723, SC-724, SC-725, SC-726, SC-727, SC-728 of
+ * GATE-CONTRACTS-SPEC.md.
  */
 import { describe, test, expect, afterAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
@@ -84,7 +85,36 @@ const OPTIONAL_HARNESS_KEYS: Record<string, { absent: "early-return" | "derived-
     absent: "early-return",
     why: "prod-smoke only applies where a smoke test is declared.",
   },
+  "prod.containerName": {
+    absent: "early-return",
+    why: "container-has-fix needs a container to inspect. It falls back to prod.imageName, " +
+      "and the check is already gated on prod.rebuild above it, so a project with no " +
+      "promotion step never reaches this read.",
+  },
+  "prod.imageName": {
+    absent: "early-return",
+    why: "the fallback for prod.containerName — see that entry.",
+  },
 };
+
+/**
+ * Every binding `loadProjectHarness()`'s result is given in the gate suite.
+ *
+ * Security review raised this one: `harnessKeys` below matches
+ * `harness?.<key>`, so a read written as `harness.codeCommittedPaths`, or
+ * against a differently-named const, would be invisible to the registry — a
+ * detector narrower than what it detects, which is shape two in
+ * .claude/rules/checks-must-be-able-to-fail.md and the exact way a guard like
+ * this gets bypassed without anybody meaning to.
+ *
+ * So the binding name is pinned first, and the key scan runs against a form
+ * that is now the only one available.
+ */
+function harnessBindings(): string[] {
+  const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
+  return [...src.matchAll(/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*loadProjectHarness\(\)/g)]
+    .map(m => m[1]);
+}
 
 function harnessKeys(): string[] {
   // Comments stripped first. The docblocks beside these call sites explain
@@ -104,6 +134,29 @@ describe("#315: every optional config key a gate reads carries a recorded reason
     // Positive control. A stripper that ate the whole file, or a regex that
     // stopped matching, would make every assertion below pass vacuously.
     expect(harnessKeys().length).toBeGreaterThan(2);
+  });
+
+  test("the harness value is always bound to `harness` — the detector's assumption, asserted", () => {
+    // Without this, a call site writing `const cfg = loadProjectHarness()`
+    // would read config keys the registry never sees.
+    const bindings = harnessBindings();
+    expect(bindings.length, "no loadProjectHarness() binding found at all").toBeGreaterThan(2);
+    expect([...new Set(bindings)]).toEqual(["harness"]);
+  });
+
+  test("every read of it is optional-chained, so none escapes the key scan", () => {
+    // `harness.foo` would be invisible to a scan for `harness?.foo`. It is
+    // also a crash waiting to happen — loadProjectHarness returns null when
+    // the project has no config file — so refusing it costs nothing.
+    const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
+    const unchained = [...src.matchAll(/\bharness\.[A-Za-z0-9_$]+/g)].map(m => m[0]);
+    expect(
+      unchained,
+      `gates/workflow.test.ts reads the harness config without optional chaining: ` +
+        `${unchained.join(", ")}. The registry scan only sees \`harness?.<key>\`, so these ` +
+        `keys would bypass it — and loadProjectHarness() returns null for a project with no ` +
+        `config file, so they would also throw.`,
+    ).toEqual([]);
   });
 
   test("no unexplained key is read", () => {

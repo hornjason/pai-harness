@@ -272,6 +272,8 @@ found to have no locatable implementation.
 - [x] SC-724: gates/workflow.test.ts contains [git status --porcelain] — an unset path list means the whole tree rather than no check, so absence is a derived default and never a silent pass
 - [x] SC-725: test/gate-optional-config-keys.test.ts contains [no unexplained key is read] — every optional config key a gate check reads carries a recorded meaning for its absence, ratcheting both ways so a stale entry is refused as well as a new one
 - [x] SC-726: test/gate-vacuous-checks.test.ts contains [uncommitted work is caught with NO codeCommittedPaths configured] — the check is executed against a planted git repo with real uncommitted work, because a unit test of the violations function stays green when the call site returns before reaching it
+- [x] SC-727: gates/workflow.test.ts contains [execArgv] — a value read out of the consumer's own config reaches git and the container runtime in argv form, because the shell-string form interpolated it straight into a command
+- [x] SC-728: test/gate-optional-config-keys.test.ts contains [every read of it is optional-chained] — the key scan's own assumption is asserted rather than assumed, because a read written without optional chaining, or against a differently-named binding, would be invisible to the registry guarding it
 
 ### What was broken to prove it (#315)
 
@@ -283,6 +285,28 @@ tree; both were run and reverted.
 |---|---|
 | `if (paths.length === 0) return;` restored at the call site — SC-E4 verbatim | 2 of 54 — the driven fixture with uncommitted work, and the source-text guard against the early return coming back |
 | `codeCommittedViolations` short-circuited to `return []` | 7 of 54 — every driven red case and every unit refusal |
+| the shell-string form of the status command restored | 1 of 56 — a config path carrying `; touch <canary>` creates the canary |
+| the unchained `harness.prod.containerName` read restored | 2 of 56 — the binding invariant the key scan rests on |
+
+### Security review, second round
+
+Two findings, both real and both now driven rather than argued with.
+
+- **Command injection.** `codeCommittedPaths` and `prod.containerName` are
+  read out of the consumer's own `.claude/rungate.json` and were interpolated
+  into shell strings — `exec(\`git status --porcelain -- ${paths.join(" ")}\`)`
+  and the container `inspect` command. Both moved to argv form, which removes
+  the shell rather than sanitising for it. A driven test plants a path
+  containing `; touch <canary>` and asserts the canary does not appear.
+- **Detector differential.** The registry scanned for `harness?.<key>`, so a
+  read written as `harness.<key>`, or against a differently-named binding,
+  would have been invisible to the guard meant to catch it — shape two,
+  pointed at the guard itself. The scan's assumptions are now assertions: the
+  `loadProjectHarness()` result is bound to exactly one name, and every read
+  off it is optional-chained. Finding that turned up a second const also
+  called `harness`, parsed inline from the tree under test, whose four config
+  keys the registry had never seen; it is renamed `treeHarness` and its keys
+  are registered.
 
 ## Gate Chain Order (SC-375)
 

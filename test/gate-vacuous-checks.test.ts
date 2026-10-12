@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
@@ -549,6 +549,23 @@ describe("#315: code-committed reaches its refusal", () => {
       "a configured narrowing to src/ did not exclude a dirty docs/ file, so the key " +
         "has stopped being a narrowing.",
     );
+  });
+
+  test("a shell metacharacter in a configured path is inert (#315 security review)", () => {
+    // `codeCommittedPaths` is read out of the consumer's own rungate.json and
+    // the old line interpolated it into a shell string:
+    //   exec(`git status --porcelain -- ${paths.join(" ")}`)
+    // Argv form removes the shell rather than sanitising for it. Driven: the
+    // payload would create a file if a shell saw it, and the check must
+    // simply report the path as not matching anything.
+    const canary = join(PROJECT, "pwned.txt");
+    plantHarness({ codeCommittedPaths: [`src; touch ${canary}`] });
+    plantRepo();
+    plantState({ phase: "SHIP" });
+
+    const r = runCheck("code-committed");
+    expect(r.ran, `the check never ran:\n${r.output}`).toBe(true);
+    expect(existsSync(canary), "a config-supplied path reached a shell").toBe(false);
   });
 
   test("a configured list still refuses dirt inside it", () => {

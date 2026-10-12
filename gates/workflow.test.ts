@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
-import { execSync, spawnSync } from "child_process";
+import { execSync, execFileSync, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
@@ -34,6 +34,36 @@ function exec(cmd: string, cwd?: string): { ok: boolean; output: string } {
     return { ok: true, output };
   } catch (e: any) {
     return { ok: false, output: (e.stdout ?? "").trim() };
+  }
+}
+
+/**
+ * Argv-form git, for commands carrying a value out of a config file.
+ *
+ * `exec` above goes through a shell, so `git status --porcelain -- ${paths}`
+ * hands consumer-authored strings to `sh`. `codeCommittedPaths` is read from
+ * the project's own `.claude/rungate.json`, and a path list is exactly the
+ * kind of field somebody pastes into without thinking about quoting. Argv
+ * form removes the shell rather than trying to sanitise for it.
+ *
+ * `--` is passed by the caller, so a pathspec beginning with `-` is a
+ * pathspec and not an option.
+ */
+function execArgvOf(bin: string, args: string[], cwd?: string): { ok: boolean; output: string } {
+  try {
+    const output = execFileSync(bin, args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    return { ok: true, output };
+  } catch (e: any) {
+    return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
+  }
+}
+
+function execArgv(args: string[], cwd?: string): { ok: boolean; output: string } {
+  try {
+    const output = execFileSync("git", args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    return { ok: true, output };
+  } catch (e: any) {
+    return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
   }
 }
 
@@ -508,13 +538,19 @@ describe("scope checks", () => {
     const harnessPath = join(projectRoot, ".claude", "rungate.json");
     const makefilePath = join(projectRoot, "Makefile");
     if (!existsSync(harnessPath) || !existsSync(makefilePath)) return;
-    const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
+    // Named treeHarness, not harness: `harness` means the loadProjectHarness()
+    // result everywhere else in this file, and test/gate-optional-config-keys.test.ts
+    // enumerates reads off it so no gate check can gate on an unexplained config
+    // key. A second const with the same name reading a different file would be
+    // invisible to that scan — which is how the scan was first written, and what
+    // the security review on #315 caught.
+    const treeHarness = JSON.parse(readFileSync(harnessPath, "utf-8"));
     const makefile = readFileSync(makefilePath, "utf-8");
 
     const warnings: string[] = [];
 
     // Check dev port — match PORT= in the dev-all/dev section of Makefile
-    const devPort = harness.dev?.apiBase?.match(/:(\d+)/)?.[1];
+    const devPort = treeHarness?.dev?.apiBase?.match(/:(\d+)/)?.[1];
     if (devPort) {
       const devSection = makefile.match(/dev.*environment[^]*?PORT=(\d+)/i);
       const makeDevPort = devSection?.[1];
@@ -524,7 +560,7 @@ describe("scope checks", () => {
     }
 
     // Check prod port — match PORT= in container run commands
-    const prodPort = harness.prod?.apiBase?.match(/:(\d+)/)?.[1];
+    const prodPort = treeHarness?.prod?.apiBase?.match(/:(\d+)/)?.[1];
     if (prodPort) {
       const makeProdPort = makefile.match(/-e PORT=(\d+)/)?.[1];
       if (makeProdPort && prodPort !== makeProdPort) {
@@ -566,10 +602,17 @@ describe("verify checks", () => {
     expect(treeViolations, treeViolations.join("\n")).toEqual([]);
     const root = treeRoot();
     if (!root) return;
-    const containerName = harness.prod.containerName || harness.prod.imageName;
+    const containerName = harness?.prod?.containerName || harness?.prod?.imageName;
     if (!containerName) return;
     const runtime = exec("command -v podman") .ok ? "podman" : "docker";
-    const inspect = exec(`${runtime} inspect --format='{{index .Config.Labels "org.opencontainers.image.revision"}}' ${containerName}`);
+    // Argv form: containerName comes out of the consumer's rungate.json and
+    // the old line interpolated it into a shell command (#315 security review).
+    const inspect = execArgvOf(runtime, [
+      "inspect",
+      "--format={{index .Config.Labels \"org.opencontainers.image.revision\"}}",
+      "--",
+      containerName,
+    ]);
     if (!inspect.ok || !inspect.output) return;
     const containerSha = inspect.output.replace(/'/g, "").trim();
     const head = exec("git rev-parse HEAD", root);
@@ -783,8 +826,11 @@ describe("verify checks", () => {
     const harness = loadProjectHarness();
     const paths: string[] = harness?.codeCommittedPaths || [];
     const configured = paths.length > 0;
-    const result = exec(
-      configured ? `git status --porcelain -- ${paths.join(" ")}` : "git status --porcelain",
+    // Argv form: `paths` comes out of the consumer's own rungate.json and
+    // `exec` goes through a shell. The old line interpolated it straight
+    // into one.
+    const result = execArgv(
+      ["status", "--porcelain", ...(configured ? ["--", ...paths] : [])],
       root,
     );
     const violations = codeCommittedViolations(result, { configured, paths });
