@@ -97,8 +97,8 @@ Used in lib/, hooks/, gates/, and scripts/ where TypeScript code needs GitHub ac
 ### Phase 2 — Migrate infrastructure code (hooks, gates, lib)
 
 - [x] SC-494: hooks/IssueCloseGuard.hook.ts contains [github, getIssue] and not contains [Bun.spawnSync, gh issue]
-- [x] SC-495: gates/gate-executor.ts contains [github, getIssue] and not contains [execSync, gh issue]
-- [x] SC-496: gates/orchestrator.ts contains [github, addLabels, addComment] and not contains [execSync, gh issue]
+- [x] SC-495: gates/gate-executor.ts contains [github, getIssue] and not contains [gh issue, gh pr, gh api] — the forbidden token was `execSync` until #220 made the clause readable, and it was wrong: this module legitimately shells out to git, curl and the test runner, so the criterion banned 23 call sites the migration never had an opinion about. What the migration forbids is the gh CLI. Nobody found out because the clause had never once been evaluated
+- [x] SC-496: gates/orchestrator.ts contains [github, addLabels, addComment] and not contains [gh issue, gh pr, gh api] — same correction as SC-495; the four `execSync` sites here are `git rev-parse`, `git rev-list` and `git push`
 - [x] SC-497: lib/prior-branch.ts contains [github, listPRs] and not contains [execSync, gh pr]
 - [x] SC-498: lib/branch-cleanup.ts contains [github, listPRs] and not contains [execSync, gh pr]
 

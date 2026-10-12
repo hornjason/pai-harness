@@ -49,6 +49,13 @@
     "notes": "Checks that a conformity or canary test file exists in the test/ directory."
   },
   {
+    "name": "content-contains-compound",
+    "syntax": "{file} contains [{items}] and [{file2}] [not] contains [{items2}]",
+    "regex": "^(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]\\s+and\\s+(?:\\S*[./]\\S*\\s+)?(?:not\\s+contains?|does\\s+not\\s+contain|must\\s+NOT\\s+contain|has\\s+no|contains?)\\s+\\[",
+    "example": "gates/orchestrator.ts contains [github] and not contains [gh issue]",
+    "notes": "MUST precede content-contains. A compound statement is asserted clause by clause; without this entry content-contains binds first, asserts only the leading bracket list, and discards every later clause with no signal (#220). A second clause may name its own file and may be positive — two of the 21 compound SCs found in the corpus are positive clauses on a different file. Absence clauses on .ts/.js targets are evaluated with comments stripped, because an absence claim is about code."
+  },
+  {
     "name": "content-contains",
     "syntax": "{file} contains [{item1}, {item2}, ...]",
     "regex": "^(\\S+)\\s+contains?\\s+\\[([^\\]]+)\\]",
