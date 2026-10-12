@@ -403,6 +403,8 @@ to delist when #344 lands. Ratchets move both ways (#310, #299).
 - [x] SC-738: test/dev-liveness.test.ts contains [a base path is kept, not discarded] — the health path is appended to the base path rather than resolved against the origin, because resolution drops the prefix and probes a healthy server at the wrong place
 - [x] SC-739: test/dev-liveness.test.ts contains [the recordable URL does not] — credentials a consumer puts in apiBase reach curl but never a printed line or a recorded detail, because detail lands in ship-evidence.json and gets attached to issues
 - [x] SC-740: test/dev-liveness.test.ts contains [relaxing a refusal is recorded] — the prove gate carries both tiers' liveness readings into prove-input.json with DOWN and UNMEASURED distinct, because a refusal removed in favour of a stdout line is a fail-open
+- [x] SC-741: test/dev-liveness.test.ts contains [a credential in the QUERY STRING is redacted] — every query value in a recorded URL is blanked rather than the ones whose key looks secret, because a key list needs updating for the next consumer's naming and nothing goes red when it does not
+- [x] SC-742: test/dev-liveness.test.ts contains [the retracted claim is not still in the tree] — a source comment claiming the B3 reproducer reads the liveness field is refused while the prompt does not mention liveness, because the claim was written once without checking
 
 ### What was broken to prove it (#304)
 
@@ -423,6 +425,9 @@ the tree; all were run and reverted.
 | every `redactSecrets` call in `lib/dev-liveness.ts` replaced with identity | 3 of 35 |
 | the prove gate's `liveness` array emptied in `prove-input.json` | 1 of 35 |
 | `plan.url` printed instead of `plan.safeUrl` at the gate | 1 of 35 |
+| `safeForRecord` loses its query rule, keeping only `redactSecrets` | 3 of 41 |
+| the liveness write to the workflow state dropped | 1 of 41 |
+| the retracted "B3 reproducer reads them" claim replanted | 1 of 41 — **0 of 41 before the guard was rewritten to read raw source** |
 
 ### Security review, addressed rather than argued with (#304)
 
@@ -453,10 +458,49 @@ No consumer sets `dev.healthPath` yet, so on merge every one of them stops
 being refused there. Reporting DOWN instead would be wrong — that is the
 whole issue — but letting the gap evaporate into a `console.warn` is a
 fail-open. The readings for both tiers, including the ones that measured
-nothing, now go into `prove-input.json`, where the B3 reproducer reads them
-and `prove-evidence.json` carries them forward. `DOWN` and `UNMEASURED` are
+nothing, now go onto the workflow state — the durable artefact later gates
+read — as well as into `prove-input.json`. `DOWN` and `UNMEASURED` are
 recorded as distinct states, because collapsing them is precisely what makes
 an unmeasured gate look checked.
+
+### Security review, second round
+
+Two more, and the second is a correction to this spec.
+
+- **Redaction covered one form and shipped the other.** `redactSecrets`
+  handles userinfo and bare GitHub tokens; it does not touch a query string,
+  and a health route is exactly where a consumer puts `?access_token=…`. Both
+  the probe URL and the "these do not combine" detail carried it through.
+  `safeForRecord` now blanks **every** query value — not the ones whose key
+  looks secret, because a key list is a detector narrower than what it
+  detects and nothing goes red when it falls behind a consumer's naming. The
+  origin and path, which are what identify the probe, survive.
+
+- **The record is written and nothing reads it.** No check refuses on the
+  liveness reading, so the control the relaxation removed has not been
+  replaced — "recorded but never consumed" is the #213 shape. Tracked as
+  **#346**, with the correct refusal spelled out there: not "FAIL if
+  UNMEASURED", which reinstates the false FAIL, but the contradiction — an
+  OUTCOME AC claiming server-dependent evidence while liveness was never
+  measured. Adding a new refusal to a live gate needs its blast radius
+  measured, the same reasoning that deferred #341 out of #315.
+
+**The retracted claim.** The first version of this section said the B3
+reproducer reads the liveness field and `prove-evidence.json` carries it
+forward. It does not — `gates/prompts/prove-reproducer.md` never mentions
+liveness — and the sentence was written without checking. It is now asserted
+instead of narrated: a test reads the prompt, and if the prompt does not
+mention liveness it refuses any source comment claiming otherwise.
+
+Getting that guard to work took two attempts, and the failure is worth
+recording because it is this file's subject. Both the first version of it and
+the `#346` reference check searched the **comment-stripped** source for a
+sentence that can only ever appear in a comment. The `#346` one failed
+visibly. The retracted-claim one passed — and replanting the false claim
+verbatim scored **0 red**. A check that passed because of what it never
+looked at, written twice in a row in the test file whose subject is that
+defect, and caught only because the mutation was run rather than reasoned
+about.
 
 The fourth row is the one worth reading, and it is the reason the planted
 control exists. The first version of the sweep required a quote on each side

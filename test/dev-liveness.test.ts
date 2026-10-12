@@ -21,8 +21,8 @@
  * distinction #185 drew for `mergedIntoBase`, in the direction that matters.
  * Reporting DOWN looks fail-closed and is simply wrong.
  *
- * Covers SC-733, SC-734, SC-735, SC-736, SC-738, SC-739, SC-740 of
- * GATE-CONTRACTS-SPEC.md.
+ * Covers SC-733, SC-734, SC-735, SC-736, SC-738, SC-739, SC-740, SC-741,
+ * SC-742 of GATE-CONTRACTS-SPEC.md.
  */
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
@@ -212,6 +212,46 @@ describe("#304: credentials in apiBase never reach a durable artefact", () => {
     if (t.kind === "unmeasured") expect(t.detail).not.toContain("ghp_abcdefghij1234567890");
   });
 
+  test("a credential in the QUERY STRING is redacted", () => {
+    // Second security round. `redactSecrets` covers userinfo and bare GitHub
+    // tokens and does not touch a query string — and a health route is
+    // exactly where a consumer puts `?access_token=…`. The first version of
+    // this fix redacted the one form it had been shown and shipped the other.
+    const t = probeTarget("dev", {
+      apiBase: "http://localhost:7777",
+      healthPath: "/health?access_token=s3cr3tvalue&deep=1",
+    });
+    expect(t.kind).toBe("probe");
+    if (t.kind === "probe") {
+      expect(t.url, "curl must still get the real query").toContain("s3cr3tvalue");
+      expect(t.safeUrl).not.toContain("s3cr3tvalue");
+      expect(t.safeUrl, "the path is needed to identify the probe").toContain("/health");
+    }
+  });
+
+  test("every query value goes, not a list of suspicious key names", () => {
+    // A key allowlist is a detector narrower than what it detects: it needs
+    // updating for the next consumer's naming and nothing goes red when it
+    // is not. `deep=1` is harmless and still blanked, on purpose.
+    const t = probeTarget("dev", {
+      apiBase: "http://localhost:7777",
+      healthPath: "/health?zzz=abc&q=def",
+    });
+    if (t.kind === "probe") {
+      expect(t.safeUrl).not.toContain("abc");
+      expect(t.safeUrl).not.toContain("def");
+      expect(t.safeUrl).toContain("<redacted>");
+    }
+  });
+
+  test("an unmeasured detail quoting healthPath is redacted too", () => {
+    // The other leak site: the "these do not combine" branch quotes the path
+    // verbatim to explain what it could not use.
+    const t = probeTarget("dev", { apiBase: "ftp://x", healthPath: "/health?api_key=leakme123" });
+    expect(t.kind).toBe("unmeasured");
+    if (t.kind === "unmeasured") expect(t.detail).not.toContain("leakme123");
+  });
+
   test("the gate prints safeUrl, never url", () => {
     // The library can redact perfectly and the call site can print the other
     // field. Three print sites and one recorded detail, all asserted.
@@ -233,6 +273,57 @@ describe("#304: relaxing a refusal is recorded, not evaporated", () => {
 
   test("the prove gate carries its liveness readings into prove-input.json", () => {
     expect(code).toMatch(/liveness: \[devLiveness, prodLiveness\]\.filter\(Boolean\)/);
+  });
+
+  test("and onto the workflow state, which is what later gates read", () => {
+    // Second security round. prove-input.json is consumed by one spawned
+    // agent and discarded; writing only there leaves the record as ephemeral
+    // as the stdout line it replaced.
+    expect(code).toMatch(/state\.liveness = proveInput\.liveness/);
+    expect(code).toMatch(/writeFileSync\(stateFile, JSON\.stringify\(state/);
+  });
+
+  test("the gap is named in the source, not just in an issue", () => {
+    // The record is written and no check refuses on it (#346). A reader of
+    // this function has to be able to see that, or the next person treats a
+    // passing prove gate as evidence liveness was measured.
+    //
+    // Read RAW, not comment-stripped: the note lives in a comment, which is
+    // the one thing `code` has removed. The first version of this assertion
+    // searched the stripped text for a string that can only appear in a
+    // comment, and failed for a reason that had nothing to do with the note
+    // being absent.
+    const raw = readFileSync(join(ROOT, "gates", "gate-executor.ts"), "utf-8");
+    const relaxation = raw.slice(raw.indexOf("REFUSAL RELAXATION"));
+    expect(
+      relaxation.slice(0, relaxation.indexOf("const proveInput")),
+      "#346 is not referenced where the relaxation lives",
+    ).toContain("#346");
+  });
+
+  test("the retracted claim is not still in the tree", () => {
+    // An earlier draft asserted the B3 reproducer reads this field. It does
+    // not — gates/prompts/prove-reproducer.md never mentions liveness — and
+    // the claim was written without checking. Asserted so it cannot come
+    // back as a comment nobody re-verifies.
+    // RAW again, for the same reason as the test above, and it took a
+    // mutation scoring 0 red to notice: the first version searched `code`,
+    // which is comment-stripped, for a sentence that can only ever appear in
+    // a comment. Replanting the claim verbatim left it green. That is a
+    // check that passed because of what it never looked at, written twice in
+    // a row inside the file whose subject is that defect.
+    const prompt = readFileSync(join(ROOT, "gates", "prompts", "prove-reproducer.md"), "utf-8");
+    const reproducerReadsIt = /liveness/i.test(prompt);
+    expect(reproducerReadsIt, "the prompt now reads liveness — delete this guard").toBe(false);
+
+    const raw = readFileSync(join(ROOT, "gates", "gate-executor.ts"), "utf-8");
+    const claims = [...raw.matchAll(/B3 reproducer reads (?:them|it|the field)/g)]
+      .filter(m => !raw.slice(m.index!, m.index! + 120).includes("It does not"));
+    expect(
+      claims.map(m => raw.slice(m.index!, m.index! + 60)),
+      "the source claims the B3 reproducer reads the liveness field. It does not — " +
+        "gates/prompts/prove-reproducer.md never mentions liveness (#346).",
+    ).toEqual([]);
   });
 
   test("the UNMEASURED branch records before it warns", () => {

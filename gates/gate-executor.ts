@@ -407,7 +407,7 @@ function checkVerifyPendingACs(state: Record<string, any>): { results: GateResul
 
 // ── Prove reproducer (B3) ───────────────────────────────────────────────
 
-async function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string, harnessRoot: string): Promise<void> {
+async function runProveReproducer(state: Record<string, any>, issue: number, issueRepo: string, workDir: string, harnessRoot: string, stateFile: string): Promise<void> {
   const tier = state.sizing?.ceremonyTier || "STANDARD";
   if (tier === "LIGHT") {
     console.log("prove gate: LIGHT tier — skipping reproducer (API check only)");
@@ -460,8 +460,18 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   // `dev.healthPath` yet, so on merge every one of them stops being refused
   // here. Reporting DOWN instead would be wrong — that is the whole issue —
   // but letting the gap evaporate into a stdout line is the fail-open the
-  // security review named. So the reading goes into `prove-input.json`,
-  // which the B3 reproducer reads and `prove-evidence.json` carries forward.
+  // security review named. So the reading is written to the workflow state,
+  // which is durable and which later gates read, as well as to
+  // `prove-input.json`.
+  //
+  // It is RECORDED, not yet CONSUMED — no check refuses on it. That is
+  // deliberate and it is a gap, tracked as #346: the honest refusal is "an
+  // OUTCOME AC claims server-dependent evidence while liveness was never
+  // measured", and adding a new refusal to a live gate needs its blast
+  // radius measured rather than guessed at here. An earlier draft of this
+  // comment claimed the B3 reproducer reads the field. It does not —
+  // `gates/prompts/prove-reproducer.md` never mentions liveness — and the
+  // claim was written without checking.
   const devTarget = probeTarget("dev", { apiBase, healthPath: devHealthPath });
   let devLiveness: { tier: string; status: "UP" | "UNMEASURED"; detail: string } | null = null;
   if (apiBase) {
@@ -517,6 +527,12 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
     // fail-open.
     liveness: [devLiveness, prodLiveness].filter(Boolean),
   };
+  // And on the workflow state, which is the durable artefact later gates
+  // read. prove-input.json is consumed by one spawned agent and discarded;
+  // writing only there would make the record as ephemeral as the stdout line
+  // it replaced.
+  state.liveness = proveInput.liveness;
+  writeFileSync(stateFile, JSON.stringify(state, null, 2));
   const proveInputPath = join(workDir, "prove-input.json");
   writeFileSync(proveInputPath, JSON.stringify(proveInput, null, 2));
 
@@ -1662,7 +1678,7 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // B3: Prove Reproducer
   if (gate === "prove") {
-    await runProveReproducer(state, issue, issueRepo, workDir, harnessRoot);
+    await runProveReproducer(state, issue, issueRepo, workDir, harnessRoot, sf);
   }
 
   // Scope pre-flight checks — awaited, and persisted before the gate tests

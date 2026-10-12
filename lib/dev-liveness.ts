@@ -120,6 +120,28 @@ export function livenessUrl(apiBase: string, healthPath: string): string | null 
  *
  * One function so "unconfigured is UNMEASURED, never DOWN" is decided once.
  */
+/**
+ * Everything that may be printed or recorded goes through this, never through
+ * `redactSecrets` alone.
+ *
+ * Second security round. `redactSecrets` covers userinfo and bare GitHub
+ * tokens; it does not touch a query string, and a health route is exactly
+ * where a consumer puts `?access_token=…`. Both the probe URL and the
+ * "these do not combine" detail quoted `healthPath` verbatim.
+ *
+ * Every query VALUE is blanked rather than the ones whose key looks secret.
+ * A key list is a detector narrower than what it detects — it needs updating
+ * for the next consumer's naming, and nothing goes red when it is not. The
+ * query is never needed to identify which URL was probed; origin and path
+ * are, and they survive.
+ */
+export function safeForRecord(text: string): string {
+  return redactSecrets(text).replace(
+    /([?&][A-Za-z0-9_.\[\]%-]+=)[^&\s)'"`]+/g,
+    "$1<redacted>",
+  );
+}
+
 export type ProbeTarget =
   | { kind: "unmeasured"; detail: string }
   | { kind: "probe"; url: string; safeUrl: string };
@@ -139,7 +161,7 @@ export function probeTarget(
   if (!healthPath) {
     return {
       kind: "unmeasured",
-      detail: redactSecrets(
+      detail: safeForRecord(
         `the project sets no \`${tier}.healthPath\`, so liveness at ${apiBase} was not ` +
         `checked. No path is guessed on purpose (#304): a guessed route 404s on a healthy ` +
         `server, and reporting DOWN for a server that is up blocks a correct run and names ` +
@@ -151,7 +173,7 @@ export function probeTarget(
   if (!url) {
     return {
       kind: "unmeasured",
-      detail: redactSecrets(
+      detail: safeForRecord(
         `\`${tier}.apiBase\` (${apiBase}) and \`${tier}.healthPath\` (${healthPath}) do not ` +
         `combine into an http(s) URL on the same origin, so liveness was not checked.`,
       ),
@@ -163,7 +185,7 @@ export function probeTarget(
   // ship-evidence.json, which is durable and gets attached to issues — the
   // same leak #213 found in push `detail`, and the reason redactSecrets is
   // imported rather than written again here.
-  return { kind: "probe", url, safeUrl: redactSecrets(url) };
+  return { kind: "probe", url, safeUrl: safeForRecord(url) };
 }
 
 export function livenessPlan(
