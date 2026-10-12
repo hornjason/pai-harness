@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 import { lastCommitDates } from "../lib/conformity";
 import { stripJsComments } from "../lib/strip-js-comments";
@@ -30,7 +31,17 @@ import { stripJsComments } from "../lib/strip-js-comments";
 const ROOT = join(import.meta.dir, "..");
 const DOC_DIRS = ["specs", "docs", "docs/adr", "docs/research", "docs/council", "docs/guides"];
 
-/** The same scan HYGIENE-11 performs, so the comparison covers its real inputs. */
+/**
+ * The same scan HYGIENE-11 performs, so the comparison covers its real inputs.
+ *
+ * The root-level sweep is the half that matters here, and it is why the first
+ * version of this file proved nothing about six files. It mirrored only the
+ * DOC_DIRS loop, agreed with the oracle 59 out of 59, and was green over a map
+ * that contained no entry for AGENTS.md, CLAUDE.md, SUCCESS.md, HARNESS.md,
+ * CODE-MAP.md or PROJECT-STATE.md. An equivalence test is only as wide as the
+ * input set it builds: a helper that mirrors half the production scan reports
+ * perfect agreement about the half it copied.
+ */
 function docFiles(): string[] {
   const out: string[] = [];
   for (const rel of DOC_DIRS) {
@@ -42,7 +53,13 @@ function docFiles(): string[] {
       } catch {}
     }
   }
+  for (const f of readdirSync(ROOT).filter(f => f.endsWith(".md"))) out.push(f);
   return out.filter(f => !f.startsWith("reference/") && !f.includes("/reference/"));
+}
+
+/** Root-level markdown alone — the set the first cut of the fix could not see. */
+function rootDocs(): string[] {
+  return readdirSync(ROOT).filter(f => f.endsWith(".md"));
 }
 
 describe("#323: HYGIENE-11's date lookup is one git call and still agrees with git", () => {
@@ -55,7 +72,7 @@ describe("#323: HYGIENE-11's date lookup is one git call and still agrees with g
       const files = docFiles();
       expect(files.length, "no docs scanned — this comparison would be vacuous").toBeGreaterThan(20);
 
-      const fast = lastCommitDates(ROOT, DOC_DIRS);
+      const fast = lastCommitDates(ROOT, files);
       const disagreements: string[] = [];
       let compared = 0;
 
@@ -83,8 +100,68 @@ describe("#323: HYGIENE-11's date lookup is one git call and still agrees with g
     // The boundary the loop handled with `if (!dateStr) continue`. A path with
     // no commit is newly added, which is the opposite of stale — returning a
     // date for it would make the newest file in the repo look like the oldest.
-    const fast = lastCommitDates(ROOT, DOC_DIRS);
+    const fast = lastCommitDates(ROOT, docFiles());
     expect(fast.has("specs/this-file-has-never-existed-9f3a.md")).toBe(false);
+  });
+
+  test("root-level markdown is covered, not just the doc directories", () => {
+    // The defect a security review caught in the first cut of this fix, kept
+    // as its own case because the equivalence test above cannot express it:
+    // if the lookup set shrinks, the oracle shrinks with it and both sides
+    // agree about nothing. This one names the files directly.
+    const roots = rootDocs();
+    expect(roots.length, "no root-level markdown found — this case would be vacuous").toBeGreaterThan(3);
+
+    const fast = lastCommitDates(ROOT, docFiles());
+    const uncovered = roots.filter(f => {
+      const r = spawnSync("git", ["-C", ROOT, "log", "-1", "--format=%ci", "--", f], { timeout: 20_000 });
+      return r.stdout.toString().trim() !== "" && !fast.has(f);
+    });
+    expect(
+      uncovered,
+      `git knows a commit date for these root-level docs and the single call does not: ${uncovered.join(", ")}`,
+    ).toEqual([]);
+  });
+
+  test("passing directories instead of the lookup set is what loses them", () => {
+    // The mutation, performed rather than described: the exact argument the
+    // first cut passed, showing the hole it opened. This is the case that
+    // would have caught the defect before it was pushed.
+    const byDirectory = lastCommitDates(ROOT, DOC_DIRS);
+    const tracked = rootDocs().filter(f => {
+      const r = spawnSync("git", ["-C", ROOT, "log", "-1", "--format=%ci", "--", f], { timeout: 20_000 });
+      return r.stdout.toString().trim() !== "";
+    });
+    expect(tracked.length, "no tracked root-level docs — nothing to lose").toBeGreaterThan(3);
+    expect(
+      tracked.every(f => !byDirectory.has(f)),
+      "passing DOC_DIRS no longer drops root-level docs; if the scan changed, " +
+        "this case is stale and the one above is the real guard",
+    ).toBe(true);
+  });
+
+  test("a git failure throws rather than reporting an empty history", () => {
+    // Fail-closed. spawnSync does not throw on a non-zero exit, so the
+    // original `catch {}` turned any broken invocation into an empty map —
+    // every file reading as newly added, which is indistinguishable from a
+    // clean run. An unreadable repo must be loud.
+    // A `.git` that is not a repository: the existsSync guard lets it through,
+    // git refuses it, and the question is whether the refusal is reported or
+    // swallowed. Note the argument must NOT be a bogus flag — everything the
+    // function passes sits after `--`, so git reads it as a pathspec and exits
+    // 0 with no matches, which is a clean empty result rather than a failure.
+    const brokenRepo = mkdtempSync(join(tmpdir(), "rg-badgit-"));
+    writeFileSync(join(brokenRepo, ".git"), "not a gitdir pointer\n");
+    expect(() => lastCommitDates(brokenRepo, ["x.md"])).toThrow(/git log exited/);
+  });
+
+  test("a directory with no .git returns empty without throwing", () => {
+    // The converse, and the reason the throw above is guarded: scaffolded
+    // projects are not repositories, and "nothing is tracked" is a real
+    // answer there rather than a failure.
+    const notARepo = mkdtempSync(join(tmpdir(), "rg-nogit-"));
+    expect(existsSync(join(notARepo, ".git")), "the fixture is a repo, so this proves nothing").toBe(false);
+    expect(lastCommitDates(notARepo, ["x.md"]).size).toBe(0);
   });
 
   test("HYGIENE-11 makes one git call, not one per file", () => {
@@ -109,6 +186,19 @@ describe("#323: HYGIENE-11's date lookup is one git call and still agrees with g
     expect(body, "HYGIENE-11 no longer uses the shared single-call lookup").toContain(
       "lastCommitDates(",
     );
+
+    // The argument, not just the call. "It calls the shared lookup" was true
+    // of the version that passed `docDirs` and silently lost every root-level
+    // doc. The pathspec has to be the same list the loop below looks up, and
+    // the only way to say that mechanically is to name it.
+    const call = /lastCommitDates\(\s*root\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)/.exec(body);
+    expect(call, "HYGIENE-11's call to lastCommitDates is not in the expected shape").not.toBeNull();
+    expect(
+      call?.[1],
+      `HYGIENE-11 passes '${call?.[1]}' as the pathspec; it must pass the set it ` +
+        `then looks up ('filtered'), or files outside those directories get no ` +
+        `date and read as newly added (#323)`,
+    ).toBe("filtered");
   });
 
   test("the guard would catch the defect it was written for", () => {

@@ -1238,15 +1238,42 @@ export function runSpecDrift(
  * Walks newest-first, so the first time a path appears is its latest commit
  * and later entries are ignored. Paths deleted or renamed earlier in history
  * also appear; they are never looked up, which is cheaper than filtering them.
+ *
+ * `pathspecs` must be the SET OF PATHS THE CALLER WILL LOOK UP, not the
+ * directories they mostly live in. The first version of this took the six doc
+ * directories, which is where the staleness scan finds most of its files — but
+ * the scan also walks root-level markdown, and `git log -- specs docs` cannot
+ * report a commit for `AGENTS.md`. Six files silently dropped out of the
+ * lookup and `if (!dateStr) continue` read that as "newly added, so not
+ * stale". A detector narrower than what it detects, shipped inside the fix for
+ * a different instance of the same thing. Passing the lookup set makes the
+ * pathspec and the keys the same list by construction, so they cannot drift.
+ *
+ * Fails CLOSED. `spawnSync` does not throw when git exits non-zero, so a
+ * broken invocation would otherwise return an empty map and every file would
+ * read as newly added — total blindness that looks exactly like a clean run.
  */
-export function lastCommitDates(root: string, docDirs: string[]): Map<string, string> {
+export function lastCommitDates(root: string, pathspecs: string[]): Map<string, string> {
   const lastCommit = new Map<string, string>();
-  try {
+  // Not a git repository: nothing is tracked, so no path has a commit date.
+  // That is a real answer, not a failure, and scaffolded projects hit it.
+  if (!existsSync(join(root, ".git"))) return lastCommit;
+  if (pathspecs.length === 0) return lastCommit;
+  {
     const log = spawnSync(
       "git",
-      ["-C", root, "log", "--format=%H %ci", "--name-only", "--", ...docDirs],
+      ["-C", root, "log", "--format=%H %ci", "--name-only", "--", ...pathspecs],
       { timeout: 60_000, maxBuffer: 64 * 1024 * 1024 },
     );
+    if (log.error) {
+      throw new Error(`lastCommitDates: git log could not run in ${root}: ${log.error.message}`);
+    }
+    if (log.status !== 0) {
+      throw new Error(
+        `lastCommitDates: git log exited ${log.status} in ${root}: ` +
+          `${log.stderr?.toString().trim() || "(no stderr)"}`,
+      );
+    }
     let currentDate = "";
     for (const line of log.stdout.toString().split("\n")) {
       const header = /^[0-9a-f]{7,40} (\d{4}-\d{2}-\d{2})/.exec(line);
@@ -1258,7 +1285,7 @@ export function lastCommitDates(root: string, docDirs: string[]): Map<string, st
       if (!path || !currentDate) continue;
       if (!lastCommit.has(path)) lastCommit.set(path, currentDate);
     }
-  } catch {}
+  }
   return lastCommit;
 }
 
@@ -1637,7 +1664,15 @@ export function runDocHygiene(
       // path's most recent commit date from a single subprocess. The first
       // time a path is seen is its latest commit, so later entries are
       // ignored.
-      const lastCommit = lastCommitDates(root, docDirs);
+      //
+      // `filtered` is passed, NOT `docDirs`. The first cut of this fix passed
+      // the six doc directories, and `git log -- specs docs` has nothing to
+      // say about the six root-level markdown files this scan also walks —
+      // AGENTS.md, CLAUDE.md, SUCCESS.md and friends dropped out of the map,
+      // and the `if (!dateStr) continue` below read that as "newly added, so
+      // not stale". Handing it the exact lookup set keeps the pathspec and the
+      // keys the same list by construction.
+      const lastCommit = lastCommitDates(root, filtered);
 
       const staleUnreferenced: { file: string; daysSince: number }[] = [];
       for (const rel of filtered) {
