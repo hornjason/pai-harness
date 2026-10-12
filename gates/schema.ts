@@ -444,6 +444,26 @@ export const WorkflowStateSchema = z.object({
 
   acs: z.array(ACSchema),
 
+  /**
+   * Dev- and prod-server liveness as the prove gate measured it, or did not
+   * (#304).
+   *
+   * `UNMEASURED` is a first-class status, not an absence. The prove gate used
+   * to `process.exit(1)` when a server did not answer at a route hardcoded
+   * into the harness; the route is read from `dev.healthPath` now, and a
+   * consumer that has not set one cannot be probed. Reporting DOWN for that
+   * consumer is a false FAIL on a healthy server, so the gate does not refuse
+   * — which means the gap has to be written down somewhere durable, or
+   * relaxing the refusal is a silent fail-open.
+   *
+   * Nothing refuses on this yet; #346 defines the refusal that should.
+   */
+  liveness: z.array(z.object({
+    tier: z.string(),
+    status: z.enum(["UP", "DOWN", "UNMEASURED"]),
+    detail: z.string(),
+  })).optional(),
+
   governingSpec: z.object({
     path: z.string(),
     detectedFrom: z.string().optional(),

@@ -327,6 +327,191 @@ It is reachable rather than dead code, so making it refuse changes behaviour
 on a live consumer, and that needs its blast radius measured first rather
 than guessed at in an adjacent PR.
 
+## A probe with a consumer's route baked into it (#304)
+
+`checkDevServerLiveness` curled a literal `${apiBase}/api/admin/health`.
+`apiBase` came from config; the path did not — it is one consumer's endpoint,
+written into the harness. The probe only runs for a project that sets
+`dev.apiBase` and has a server-dependent OUTCOME AC, and rungate sets no
+`dev` key at all, so that one consumer is the only project that has ever
+reached the line. It worked by coincidence.
+
+The first consumer with a different health route is told its running server is
+DOWN and to start it. A false FAIL naming the wrong cause is worse than no
+check, because the stated remedy is to start something already running.
+
+### One site named, five found
+
+The issue described one. The grep it asked for found five, and that ratio is
+the argument for point 1 of its own test plan — the cheap sweep is worth more
+than the fix it was written to follow.
+
+| Site | What it did | Fixed |
+|---|---|---|
+| `gates/gate-executor.ts` `checkDevServerLiveness` | the site #304 named; FAIL result | yes |
+| `gates/gate-executor.ts` prove gate, dev | same route, behind `process.exit(1)` — the worst of the three, because the consequence is a hard refusal | yes |
+| `gates/gate-executor.ts` prove gate, prod | same route against `prod.apiBase`, behind a warning — the least visible | yes |
+| `workflows/prove.js` `ensure-dev-server` | named a route in an agent prompt | yes |
+| `workflows/verify.js` smoke test | two DDB endpoints, alongside DDB's ports, container name and app path | **no** — #344 |
+
+### No default path, and that is the decision this turns on
+
+`dev.healthPath ?? "/health"` is the obvious shape and is wrong for the same
+reason the hardcoded route was: a guessed path 404s on a healthy server,
+`curl -sf` exits non-zero, and the probe reports DOWN. **Unconfigured has to
+mean UNMEASURED** — a recorded WARN, never a FAIL. This is #185's
+`mergedIntoBase` distinction in the direction that matters: reporting DOWN
+looks fail-closed and is simply wrong, and it blocks a correct run.
+
+`probeTarget` is one function so that decision is made once for all three
+gate-executor sites. The alternative — three call sites each deciding what an
+absent path means — is how the second and third copies came to exist.
+
+### The guard that should have caught this never looked below the top level
+
+`test/anti.test.ts` SC-A1 — "no project-specific references in workflows" —
+has existed the whole time and is the check this bug should have tripped. Its
+`findTsFiles` did not recurse. It read only the top level of `gates/`,
+`lib/` and `scripts/`, so the three consumer references under `lib/scaffold/`
+were invisible to it, and it reported clean. A guard passing because of what
+it never looked at, inside the file whose entire job is refusing consumer
+specifics.
+
+Writing the consumer's name into a comment while fixing #304 is what turned
+it red — which is the correct behaviour, and the comments were reworded
+rather than the guard weakened. The walk is now recursive, the three known
+references are an exact list that ratchets both ways, and a planted control
+asserts the walk reaches `lib/scaffold/` at all, because the list assertion
+would pass vacuously against a flat walk exactly as it did before.
+
+SC-A1 still only matches the consumer's *name*. It would not have caught
+`/api/admin/health`, which carries no name — that is what the route sweep in
+`test/dev-liveness.test.ts` is for, and why both exist.
+
+### `workflows/verify.js` is a counted ratchet, not an exemption
+
+Its two route literals are held as an exact list in
+`test/dev-liveness.test.ts`. A directory skipped by the sweep is a directory
+nobody measures again; a count refuses growth AND goes red as an instruction
+to delist when #344 lands. Ratchets move both ways (#310, #299).
+
+- [x] SC-733: lib/dev-liveness.ts contains [probeTarget] — one function decides where to probe and what an absent path means, because three call sites deciding separately is how the second and third copies of the hardcoded route came to exist
+- [x] SC-734: test/dev-liveness.test.ts contains [a different consumer's route is probed] — two fixture consumers with different health paths both produce a probe at their own URL, and the two URLs are asserted to differ so the test cannot be matching a constant
+- [x] SC-735: test/dev-liveness.test.ts contains [unconfigured means UNMEASURED, never DOWN] — a consumer with no health path configured produces neither UP nor DOWN but an explicit unmeasured result, because "could not check" must never become "it is down"
+- [x] SC-736: test/dev-liveness.test.ts contains [no API route path is written into] — the harness is swept for consumer route literals with comments stripped, because the single fix leaves the class open and the sweep is what found four of the five instances
+- [x] SC-737: test/anti.test.ts contains [the walk reaches subdirectories] — SC-A1's file walk is recursive and proven to reach lib/scaffold/, because the flat version read only the top level and reported clean over three consumer references it never opened
+- [x] SC-738: test/dev-liveness.test.ts contains [a base path is kept, not discarded] — the health path is appended to the base path rather than resolved against the origin, because resolution drops the prefix and probes a healthy server at the wrong place
+- [x] SC-739: test/dev-liveness.test.ts contains [the recordable URL does not] — credentials a consumer puts in apiBase reach curl but never a printed line or a recorded detail, because detail lands in ship-evidence.json and gets attached to issues
+- [x] SC-740: test/dev-liveness.test.ts contains [relaxing a refusal is recorded] — the prove gate carries both tiers' liveness readings into prove-input.json with DOWN and UNMEASURED distinct, because a refusal removed in favour of a stdout line is a fail-open
+- [x] SC-741: test/dev-liveness.test.ts contains [a credential in the QUERY STRING is redacted] — every query value in a recorded URL is blanked rather than the ones whose key looks secret, because a key list needs updating for the next consumer's naming and nothing goes red when it does not
+- [x] SC-742: test/dev-liveness.test.ts contains [the retracted claim is not still in the tree] — a source comment claiming the B3 reproducer reads the liveness field is refused while the prompt does not mention liveness, because the claim was written once without checking
+
+### What was broken to prove it (#304)
+
+Run and counted over `test/dev-liveness.test.ts` (25 tests). None is left in
+the tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `probeTarget`'s `!healthPath` branch returns `{kind:"probe", url: apiBase + "/health"}` — the default this spec argues against, written in | 2 of 25 |
+| `livenessUrl`'s `url.origin !== base.origin` check removed | 1 of 25 |
+| `livenessUrl`'s scheme allowlist removed | 2 of 25 |
+| `ROUTE` restored to the quote-anchored form it was first written with | 2 of 25 — the planted control and the `workflows/` ratchet |
+| the literal `/api/admin/health` replanted in `gates/gate-executor.ts` | 1 of 25 |
+| `hasServerDependentOutcomeAC` short-circuited to `return true` | 3 of 25 |
+| SC-A1's walk made flat again | 2 of 11 in `test/anti.test.ts` — the ratchet and the planted control |
+| a new `lib/` file naming the consumer planted | 2 of 11 — the unexpected-reference list and the ratchet |
+| `livenessUrl` resolves against the base instead of appending to its path | 1 of 35 |
+| every `redactSecrets` call in `lib/dev-liveness.ts` replaced with identity | 3 of 35 |
+| the prove gate's `liveness` array emptied in `prove-input.json` | 1 of 35 |
+| `plan.url` printed instead of `plan.safeUrl` at the gate | 1 of 35 |
+| `safeForRecord` loses its query rule, keeping only `redactSecrets` | 3 of 41 |
+| the liveness write to the workflow state dropped | 1 of 41 |
+| the retracted "B3 reproducer reads them" claim replanted | 1 of 41 — **0 of 41 before the guard was rewritten to read raw source** |
+
+### Security review, addressed rather than argued with (#304)
+
+Two findings, both real, both driven rather than reasoned about.
+
+- **A base path was silently discarded.** `livenessUrl` resolved the health
+  path against the base — `new URL("/health", "http://host/base/api")` yields
+  `http://host/health`. A consumer whose API is mounted under a prefix would
+  be probed at the wrong place and reported DOWN on a healthy server, which
+  is **this issue's own bug, reintroduced by URL resolution semantics** inside
+  the function written to remove it. It now appends to `base.pathname`, keeps
+  the same-origin check, adds a prefix check, and refuses a `//`-prefixed
+  path by name rather than relying on the origin comparison to catch it.
+
+- **Credentials reached a durable artefact.** `apiBase` may legitimately carry
+  userinfo, and the probe URL was printed and written into `detail`, which
+  lands in `ship-evidence.json` and gets attached to issues. `ProbeTarget`
+  now carries `url` and `safeUrl` as separate fields — curl gets the first,
+  every print and every record gets the second — and the unmeasured `detail`
+  strings that quote `apiBase` are redacted. `redactSecrets` is imported from
+  `lib/verified-push.ts` rather than written again; a second copy is how two
+  redactors drift and one of them stops covering a form.
+
+A third point the review raised is a **refusal relaxation**, and it is the
+one worth stating rather than silently accepting. The prove gate used to
+`process.exit(1)` when `dev.apiBase` was set and the server did not answer.
+No consumer sets `dev.healthPath` yet, so on merge every one of them stops
+being refused there. Reporting DOWN instead would be wrong — that is the
+whole issue — but letting the gap evaporate into a `console.warn` is a
+fail-open. The readings for both tiers, including the ones that measured
+nothing, now go onto the workflow state — the durable artefact later gates
+read — as well as into `prove-input.json`. `DOWN` and `UNMEASURED` are
+recorded as distinct states, because collapsing them is precisely what makes
+an unmeasured gate look checked.
+
+### Security review, second round
+
+Two more, and the second is a correction to this spec.
+
+- **Redaction covered one form and shipped the other.** `redactSecrets`
+  handles userinfo and bare GitHub tokens; it does not touch a query string,
+  and a health route is exactly where a consumer puts `?access_token=…`. Both
+  the probe URL and the "these do not combine" detail carried it through.
+  `safeForRecord` now blanks **every** query value — not the ones whose key
+  looks secret, because a key list is a detector narrower than what it
+  detects and nothing goes red when it falls behind a consumer's naming. The
+  origin and path, which are what identify the probe, survive.
+
+- **The record is written and nothing reads it.** No check refuses on the
+  liveness reading, so the control the relaxation removed has not been
+  replaced — "recorded but never consumed" is the #213 shape. Tracked as
+  **#346**, with the correct refusal spelled out there: not "FAIL if
+  UNMEASURED", which reinstates the false FAIL, but the contradiction — an
+  OUTCOME AC claiming server-dependent evidence while liveness was never
+  measured. Adding a new refusal to a live gate needs its blast radius
+  measured, the same reasoning that deferred #341 out of #315.
+
+**The retracted claim.** The first version of this section said the B3
+reproducer reads the liveness field and `prove-evidence.json` carries it
+forward. It does not — `gates/prompts/prove-reproducer.md` never mentions
+liveness — and the sentence was written without checking. It is now asserted
+instead of narrated: a test reads the prompt, and if the prompt does not
+mention liveness it refuses any source comment claiming otherwise.
+
+Getting that guard to work took two attempts, and the failure is worth
+recording because it is this file's subject. Both the first version of it and
+the `#346` reference check searched the **comment-stripped** source for a
+sentence that can only ever appear in a comment. The `#346` one failed
+visibly. The retracted-claim one passed — and replanting the false claim
+verbatim scored **0 red**. A check that passed because of what it never
+looked at, written twice in a row in the test file whose subject is that
+defect, and caught only because the mutation was run rather than reasoned
+about.
+
+The fourth row is the one worth reading, and it is the reason the planted
+control exists. The first version of the sweep required a quote on each side
+of the route and so did not match `` `curl -sf ${apiBase}/api/admin/health` ``
+— the literal it was written for, which is preceded by `}`. Restoring that
+pattern leaves the absence claim green over every live instance; only the
+planted control and the `workflows/` ratchet go red. A detector that cannot
+see the instance it was built from is this repository's house defect,
+reproduced inside the test written to end it, and caught only by the two
+cases whose job is to prove the detector can match at all.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

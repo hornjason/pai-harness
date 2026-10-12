@@ -282,17 +282,25 @@ phase('Validate')
 // Ensure dev server is running for OUTCOME AC evidence collection
 if (PROJECT_ROOT) {
   log('Checking dev server availability')
+  // #304: this prompt used to name a health route of its own. The path is the
+  // consumer's and comes from config; with no `dev.healthPath` set the answer
+  // is UNMEASURED, and the agent is told so explicitly — guessing a route 404s
+  // on a healthy server and "could not check" must never become "it is down".
   await agent(`
-Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/rungate.json to get dev.apiBase and dev.start.
+Check if the dev server is running. Read ${PROJECT_ROOT}/.claude/rungate.json to get
+dev.apiBase, dev.healthPath and dev.start.
 
-1. Try: curl -sf $(dev.apiBase)/api/health -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
-2. If DEV_DOWN and dev.start exists:
-   - Run: cd ${PROJECT_ROOT} && $(dev.start) &
+1. If dev.apiBase or dev.healthPath is missing, report UNMEASURED and stop. Do NOT
+   guess a health route and do NOT report the server as down — an unconfigured probe
+   is not a failed one, and a guessed path 404s on a server that is up.
+2. Otherwise try: curl -sf "<dev.apiBase><dev.healthPath>" -o /dev/null && echo "DEV_UP" || echo "DEV_DOWN"
+3. If DEV_DOWN and dev.start exists:
+   - Run: cd ${PROJECT_ROOT} && <dev.start> &
    - Wait 10 seconds, then retry the health check
    - Report: started (boolean), apiBase, command used
-3. If DEV_UP: report already running
+4. If DEV_UP: report already running
 
-Report the dev server status.
+Report the dev server status as UP, DOWN or UNMEASURED.
 `, { label: 'ensure-dev-server', phase: 'Validate' })
 }
 

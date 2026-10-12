@@ -8,6 +8,20 @@ export const DevSchema = z.object({
   testCmd: z.string().optional(),
   typeCheck: z.string().optional(),
   note: z.string().optional(),
+  /**
+   * The path the dev-server liveness probe requests, relative to `apiBase`.
+   *
+   * #304. `checkDevServerLiveness` used to curl a literal
+   * `${apiBase}/api/admin/health` — one consumer's route written into
+   * the harness. It worked for exactly one consumer by coincidence, and the
+   * first consumer with a different health route would be told its running
+   * server was DOWN and to start it. `container.healthPath` was already a
+   * declared concept; `dev` had no equivalent, so this is it.
+   *
+   * No default. A probe that guesses a path reports DOWN for a server that is
+   * up, and "could not check" must never become "it is down".
+   */
+  healthPath: z.string().optional(),
 });
 
 /**
@@ -51,6 +65,8 @@ export const ProdSchema = z.object({
   apiBase: z.string().url().optional(),
   uiBase: z.string().url().optional(),
   smokeTest: z.string().optional(),
+  /** See `DevSchema.healthPath` — the prove gate probes this tier too (#304). */
+  healthPath: z.string().optional(),
 });
 
 const McpServerSchema = z.object({
