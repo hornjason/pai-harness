@@ -6,6 +6,7 @@ import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASON
 import { ZodError } from "zod";
 import { createGitHubClient, addLabels, addComment, type GitHubClient } from "../lib/github";
 import { computeACHash } from "../lib/workflow-security";
+import { verifiedPush, leftWorkLocal, type PushOutcome } from "../lib/verified-push";
 
 /**
  * ADR-009 acHash over AC *definition* fields only.
@@ -339,6 +340,67 @@ export function generateShipEvidence(
     detail: ac.evidence?.content || ac.evidence || "no evidence",
   }));
 
+  // Auto-push, BEFORE the evidence is written (#213).
+  //
+  // The order is the point. This used to be the last thing the function did,
+  // inside `try { … } catch {}`, and `runGate` only calls this function once
+  // the ship gate has already recorded PASS — so a rejected push, an unset
+  // upstream, or a push that reached no remote all produced a run that
+  // reported success with the commit still on the local branch, and left no
+  // trace anywhere a human or a later gate would look.
+  //
+  // Running it first means the outcome lands in ship-evidence.json, which is
+  // the artefact the run is judged by. It still does not fail the gate: the
+  // verdict was reached before this function was called, and inventing a
+  // second place for a gate to fail would hide the first. Recorded and loud,
+  // not fatal.
+  //
+  // GATE_PASSED_PUSH is carried over verbatim: scripts/git-hooks/pre-push
+  // reads it and skips re-running the gates when the SHA matches the one the
+  // ship gate recorded. #213's body calls it "set here and read nowhere" —
+  // that is wrong, and dropping it would make every gate-passed push re-run
+  // the whole suite from inside the hook.
+  // The tree is process.cwd(), deliberately, and NOT `state.projectRoot`.
+  // Two reasons, and the second is the one that settles it:
+  //
+  //  - `mergeCommitSha` above comes from `gitSha()` with no argument, which is
+  //    process.cwd(). A push from a different tree would confirm a remote
+  //    against a SHA this evidence never measured — the two have to be the
+  //    same repo or the artefact contradicts itself.
+  //  - `state.projectRoot` is a value read out of workflow-state.json. Letting
+  //    a field in a state file choose which repository a `git push` runs
+  //    against is a privileged operation taking its target from data, and the
+  //    code this replaces did not do that. Minimal scope: keep the tree the
+  //    old call used.
+  //
+  // `verifiedPush` is total and documented not to throw, but this is
+  // post-verdict bookkeeping and the old code could not crash the run no
+  // matter what. An unexpected throw is recorded as UNMEASURED, which
+  // `leftWorkLocal` already treats as "work may be local" — fail closed.
+  let pushOutcome: PushOutcome | null = null;
+  if (issueRepo && issue > 0) {
+    try {
+      pushOutcome = verifiedPush(process.cwd(), {
+        env: { ...process.env, GATE_PASSED_PUSH: "1" },
+      });
+    } catch (e: any) {
+      pushOutcome = {
+        kind: "unmeasured",
+        detail: `the auto-push threw (${e?.name ?? typeof e}), so whether the commit reached ` +
+          `the remote is unknown. UNMEASURED is not PASS.`,
+      };
+    }
+  }
+  if (pushOutcome) {
+    const line = `Auto-push: ${pushOutcome.kind} — ${pushOutcome.detail}`;
+    if (leftWorkLocal(pushOutcome)) {
+      console.error(`\n⚠️  SHIP EVIDENCE MAY DESCRIBE A COMMIT THAT IS NOT ON THE REMOTE`);
+      console.error(`    ${line}`);
+    } else {
+      console.log(line);
+    }
+  }
+
   const evidence = {
     contractVersion: "1.0",
     issueNumber: issue,
@@ -347,6 +409,10 @@ export function generateShipEvidence(
     capturedAt: ts,
     iterationCount: iterCount,
     sizing: { predicted, actual: predicted },
+    // Absent when there was no issue to ship against, which is the one case
+    // where no push was attempted. Absent and "attempted, outcome unknown"
+    // must not look the same — that equivalence is the whole of #213.
+    ...(pushOutcome ? { push: pushOutcome, pushLeftWorkLocal: leftWorkLocal(pushOutcome) } : {}),
   };
 
   const evidencePath = join(workDir, "ship-evidence.json");
@@ -375,21 +441,6 @@ export function generateShipEvidence(
       ].join("\n");
 
       addComment(github, issueRepo, issue, commentBody).catch(() => {});
-    } catch {}
-
-    // Auto-push
-    try {
-      const ahead = execSync("git rev-list --count @{upstream}..HEAD", {
-        encoding: "utf-8",
-        timeout: 5000,
-      }).trim();
-      if (parseInt(ahead) > 0) {
-        execSync("git push", {
-          timeout: 30000,
-          env: { ...process.env, GATE_PASSED_PUSH: "1" },
-          stdio: "pipe",
-        });
-      }
     } catch {}
   }
 

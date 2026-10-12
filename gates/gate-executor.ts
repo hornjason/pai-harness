@@ -888,7 +888,46 @@ function parseGateResults(testOutput: string, earlyResults: GateResult[], earlyF
 
 // ── Conformity findings ─────────────────────────────────────────────────
 
-function readConformityFindings(state: Record<string, any>): void {
+/**
+ * #213, second verdict-bearing catch.
+ *
+ * The `catch {}` at the end of this function covered both the read and the
+ * parse, so a findings file that exists and cannot be read left
+ * `state.conformityFindings` absent — exactly what a project with no findings
+ * file at all produces. Every consumer tests `if (state.conformityFindings)`,
+ * so "the conformity scan found nothing" and "the conformity scan's output is
+ * corrupt" were the same value, and the second one reads as the first.
+ *
+ * The marker is a distinct shape rather than a thrown error on purpose. This
+ * runs inside gate post-processing after the verdict is computed; making it
+ * fatal would turn a bookkeeping fault into a crash. UNMEASURED has to be
+ * recorded as UNMEASURED, and the one thing it must never do is pass for
+ * clean.
+ *
+ * The error message is withheld from the recorded marker on purpose: a JSON
+ * parse error quotes the bytes it choked on, and this file is machine-written
+ * from a scan of the project. `err.name` says enough to tell a parse failure
+ * from a read failure without copying file contents into workflow-state.json.
+ */
+export function unreadableConformityMarker(path: string, err: unknown): Record<string, unknown> {
+  const name = err instanceof Error ? err.name : typeof err;
+  return {
+    unreadable: true,
+    path,
+    reason: name,
+    detail:
+      `${path} exists and could not be read as JSON (${name}). This is UNMEASURED, not an ` +
+      `empty findings list — treat it as "the conformity scan's output is unusable".`,
+  };
+}
+
+/** True when a recorded findings value is the unreadable marker above. */
+export function conformityFindingsUnreadable(findings: unknown): boolean {
+  return !!findings && typeof findings === "object" &&
+    (findings as Record<string, unknown>).unreadable === true;
+}
+
+export function readConformityFindings(state: Record<string, any>): void {
   const projectRoot = state.projectRoot || process.cwd();
   const findingsPath = join(projectRoot, ".rungate", "conformity-findings.json");
   if (existsSync(findingsPath)) {
@@ -920,7 +959,13 @@ function readConformityFindings(state: Record<string, any>): void {
       if (!state.conformityFindings) {
         state.conformityFindings = findings;
       }
-    } catch {}
+    } catch (e) {
+      const marker = unreadableConformityMarker(findingsPath, e);
+      console.error(`WARN: ${marker.detail}`);
+      if (!state.conformityFindings) {
+        state.conformityFindings = marker;
+      }
+    }
   }
 }
 
