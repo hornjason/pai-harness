@@ -89,13 +89,38 @@ const OPTIONAL_HARNESS_KEYS: Record<string, { absent: "early-return" | "derived-
     absent: "early-return",
     why: "container-has-fix needs a container to inspect. It falls back to prod.imageName, " +
       "and the check is already gated on prod.rebuild above it, so a project with no " +
-      "promotion step never reaches this read.",
+      "promotion step never reaches this read. Note that the check ALSO passes on four " +
+      "distinct unmeasurable states once it is past this point — #341, deliberately not " +
+      "fixed here because refusing would change behaviour on a live consumer.",
   },
   "prod.imageName": {
     absent: "early-return",
     why: "the fallback for prod.containerName — see that entry.",
   },
 };
+
+/**
+ * The notation guards, declared once.
+ *
+ * Each is used by the assertion that enforces it AND by the planted control
+ * that proves it can match. Two copies would let the enforcing one be
+ * narrowed while the control kept passing against the old pattern — the
+ * detector-differential shape, reintroduced inside the file that exists to
+ * catch it.
+ */
+const PATTERNS = {
+  // A global regex carries lastIndex between uses, and these are shared by an
+  // assertion and its control. Built fresh at each call so one use cannot
+  // leave the next one starting halfway through the file.
+  bracketAccess: String.raw`\bharness\s*\??\.?\s*\[`,
+  destructure: String.raw`(?:const|let|var)\s*\{[^}]*\}\s*=\s*harness\b`,
+  unchained: String.raw`\bharness\.[A-Za-z0-9_$]+`,
+  binding: String.raw`(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*loadProjectHarness\(\)`,
+  keyRead: String.raw`harness\?\.([A-Za-z0-9_?.]+)`,
+} as const;
+
+const re = (k: keyof typeof PATTERNS) => new RegExp(PATTERNS[k], "g");
+
 
 /**
  * Every binding `loadProjectHarness()`'s result is given in the gate suite.
@@ -112,7 +137,7 @@ const OPTIONAL_HARNESS_KEYS: Record<string, { absent: "early-return" | "derived-
  */
 function harnessBindings(): string[] {
   const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
-  return [...src.matchAll(/(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*loadProjectHarness\(\)/g)]
+  return [...src.matchAll(re("binding"))]
     .map(m => m[1]);
 }
 
@@ -123,7 +148,7 @@ function harnessKeys(): string[] {
   // explanation says was removed.
   const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
   const found = new Set<string>();
-  for (const m of src.matchAll(/harness\?\.([A-Za-z0-9_?.]+)/g)) {
+  for (const m of src.matchAll(re("keyRead"))) {
     found.add(m[1].replace(/\?/g, ""));
   }
   return [...found].sort();
@@ -149,7 +174,7 @@ describe("#315: every optional config key a gate reads carries a recorded reason
     // also a crash waiting to happen — loadProjectHarness returns null when
     // the project has no config file — so refusing it costs nothing.
     const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
-    const unchained = [...src.matchAll(/\bharness\.[A-Za-z0-9_$]+/g)].map(m => m[0]);
+    const unchained = [...src.matchAll(re("unchained"))].map(m => m[0]);
     expect(
       unchained,
       `gates/workflow.test.ts reads the harness config without optional chaining: ` +
@@ -157,6 +182,52 @@ describe("#315: every optional config key a gate reads carries a recorded reason
         `keys would bypass it — and loadProjectHarness() returns null for a project with no ` +
         `config file, so they would also throw.`,
     ).toEqual([]);
+  });
+
+  test("no bracket or computed access escapes the scan", () => {
+    // Third-round security review. `harness?.["codeCommittedPaths"]` passes
+    // both assertions above — it IS optional-chained, and the binding IS
+    // named `harness` — yet `harnessKeys` matches only dotted identifiers,
+    // so the key would be invisible to the registry. A control that can be
+    // bypassed by changing notation is not a control.
+    const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
+    const bracket = [...src.matchAll(re("bracketAccess"))].map(m => m[0]);
+    expect(
+      bracket,
+      `the harness config is read with bracket notation: ${bracket.join(", ")}. The registry ` +
+        `scan matches dotted identifiers only, so these keys bypass it. Use \`harness?.key\`.`,
+    ).toEqual([]);
+  });
+
+  test("the harness value is not destructured — that would hide keys too", () => {
+    // `const { prod } = harness ?? {}` reads config keys the scan cannot see,
+    // and it is the obvious thing to write when a check needs three of them.
+    const src = stripJsComments(readFileSync(WORKFLOW_TESTS, "utf-8"));
+    const destructured = [...src.matchAll(re("destructure"))]
+      .map(m => m[0]);
+    expect(
+      destructured,
+      `the harness config is destructured: ${destructured.join(", ")}. Those keys are ` +
+        `invisible to the registry scan.`,
+    ).toEqual([]);
+  });
+
+  test("the notation guards can fail — planted control", () => {
+    // All three guards above are absence claims against the real file and
+    // pass trivially while it is well-behaved. The same regexes are run over
+    // planted sources carrying exactly the bypasses they describe, so a green
+    // run means "no bypass present", not "the regex stopped matching".
+    expect('const x = harness?.["codeCommittedPaths"];'.match(re("bracketAccess"))).not.toBeNull();
+    expect('const x = harness["codeCommittedPaths"];'.match(re("bracketAccess"))).not.toBeNull();
+    expect("const { prod } = harness ?? {};".match(re("destructure"))).not.toBeNull();
+    expect("const p = harness.prod;".match(re("unchained"))).not.toBeNull();
+    expect([...'const cfg = loadProjectHarness();'.matchAll(re("binding"))][0]?.[1]).toBe("cfg");
+
+    // And the well-behaved form is not caught by any of them.
+    const ok = "const harness = loadProjectHarness();\n  if (!harness?.prod?.rebuild) return;";
+    expect(ok.match(re("bracketAccess"))).toBeNull();
+    expect(ok.match(re("destructure"))).toBeNull();
+    expect(ok.match(re("unchained"))).toBeNull();
   });
 
   test("no unexplained key is read", () => {

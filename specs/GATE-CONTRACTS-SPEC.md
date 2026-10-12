@@ -287,6 +287,8 @@ tree; both were run and reverted.
 | `codeCommittedViolations` short-circuited to `return []` | 7 of 54 — every driven red case and every unit refusal |
 | the shell-string form of the status command restored | 1 of 56 — a config path carrying `; touch <canary>` creates the canary |
 | the unchained `harness.prod.containerName` read restored | 2 of 56 — the binding invariant the key scan rests on |
+| a bracket-notation read (`harness?.["prod"]`) planted | 2 of 34 in the registry file |
+| a differently-named binding (`const cfgAlias = loadProjectHarness()`) planted | 1 of 34 |
 
 ### Security review, second round
 
@@ -307,6 +309,23 @@ Two findings, both real and both now driven rather than argued with.
   called `harness`, parsed inline from the tree under test, whose four config
   keys the registry had never seen; it is renamed `treeHarness` and its keys
   are registered.
+
+A third round found the same control still bypassable, which is the point of
+running the review again rather than once. `harness?.["codeCommittedPaths"]`
+satisfies both of the assertions added in round two — it IS optional-chained,
+the binding IS named `harness` — and is invisible to a scan for dotted
+identifiers. Bracket access and destructuring are now refused too, and all
+five patterns are declared once and shared between the assertion that
+enforces each and the planted control that proves it can match; two copies
+would let the enforcing one be narrowed while the control kept passing
+against the old pattern, which is the detector-differential shape
+reintroduced inside the file that exists to catch it.
+
+The round-three fail-open finding — `container-has-fix` passing on four
+distinct unmeasurable states — is **#341**, deliberately not fixed here.
+It is reachable rather than dead code, so making it refuse changes behaviour
+on a live consumer, and that needs its blast radius measured first rather
+than guessed at in an adjacent PR.
 
 ## Gate Chain Order (SC-375)
 
