@@ -168,6 +168,39 @@ if (state.notes && scCountPattern.test(state.notes)) {
   state.notes = state.notes ? `${state.notes}\n${suffix}` : suffix;
 }
 
-writeFileSync(STATE_JSON, JSON.stringify(state, null, 2) + "\n");
-writeFileSync(STATE_MD, render(state) + "\n");
-console.log(`✅ Updated PROJECT-STATE.md (${state.phases.reduce((n, p) => n + p.scs.filter(s => s.done).length, 0)}/${state.phases.reduce((n, p) => n + p.scs.length, 0)} SCs done)`);
+/**
+ * Report what actually changed, not that the script ran.
+ *
+ * This printed `✅ Updated PROJECT-STATE.md (25/25 SCs done)` on every commit
+ * unconditionally — the pre-commit hook calls it every time. It only ever
+ * RE-RENDERS the markdown from `project-state.json`; nothing here writes new
+ * session content, which is the DA's job. So across eight commits on
+ * 2026-10-12 it reported success eight times while the latest recorded
+ * session stayed at 38, dated the previous day. A green line for work that
+ * was never done, in the file whose entire purpose is telling a human where
+ * the project is.
+ *
+ * The SC count was the same shape: `25/25` comes from Phase 0+1, which has
+ * been complete for weeks, and has nothing to do with the work being
+ * committed. A number that cannot move is not a status.
+ */
+const jsonBefore = existsSync(STATE_JSON) ? readFileSync(STATE_JSON, "utf-8") : "";
+const mdBefore = existsSync(STATE_MD) ? readFileSync(STATE_MD, "utf-8") : "";
+const jsonAfter = JSON.stringify(state, null, 2) + "\n";
+const mdAfter = render(state) + "\n";
+
+writeFileSync(STATE_JSON, jsonAfter);
+writeFileSync(STATE_MD, mdAfter);
+
+const changed = [
+  jsonBefore !== jsonAfter ? "project-state.json" : null,
+  mdBefore !== mdAfter ? "PROJECT-STATE.md" : null,
+].filter(Boolean);
+
+const latest = state.session?.date ?? "(none recorded)";
+if (changed.length === 0) {
+  console.log(`project-state: unchanged — latest recorded session is ${latest}. ` +
+    `This script re-renders; it does not write session content.`);
+} else {
+  console.log(`✅ project-state: rewrote ${changed.join(" + ")} — latest recorded session ${latest} (${done}/${total} Phase 0+1 SCs)`);
+}
