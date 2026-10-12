@@ -106,7 +106,7 @@ Quinn plus a verb. SC-to-test is `scripts/sync-sc-status.ts`, which reads
 
 - [x] SC-544: scripts/sync-spec-tests.ts contains [resolveSyncPaths, harnessRoot, "specs"]
 - [x] SC-545: scripts/sync-spec-tests.ts contains [import.meta.main] — importing it for its path helpers must not rewrite a test file
-- [x] SC-546: test/spec-compliance-auto.test.ts contains [harnessRoot, Source: specs/] — the generated file resolves paths at run time instead of baking in whoever last ran it
+- [x] SC-546: test/sync-spec-tests-paths.test.ts contains [a file with no cases explains why, and one with cases reads its own tree] — a generated file carrying cases must resolve paths at run time instead of baking in whoever last ran it, and one carrying none must say so; the assertion moved off the generated file itself when #343 emptied it, because an SC demanding an import that a correctly-empty file has no reason to hold is a ratchet nobody can satisfy
 - [x] SC-547: test/sync-spec-tests-paths.test.ts contains [resolveSyncPaths, HARNESS_ROOT]
 - [x] SC-551: test/sync-spec-tests-paths.test.ts contains [running it as a script, sentinel, spawnSync] — the root the script picks for ITSELF is proven by running it, because every assertion that passes a root in cannot see the default that caused #141
 
