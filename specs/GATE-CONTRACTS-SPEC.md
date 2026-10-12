@@ -146,6 +146,57 @@ rather than the harness: the type check, the dev-server liveness curl,
 - **PASS:** All delegated gate functions complete without error, aggregated fails === 0
 - **FAIL:** Any delegated function reports failures; consumer (run-gate.ts) aggregates and writes gate result
 
+## Post-verdict steps must record their own outcome (#213)
+
+`generateShipEvidence` runs from `runGate` only when the ship gate has already
+recorded PASS. Everything it does happens after the verdict, so nothing
+downstream re-reads it and a failure inside it is invisible by construction.
+
+It ended with five statements wrapped in `try { … } catch {}`. Four distinct
+ways for the auto-push to leave the commit on the local branch — a rejected
+push, no upstream, a `rev-list` count that `parseInt` turned into `NaN`, and a
+push that exited 0 against a remote that never received it — all produced the
+same observable result as success: a run reporting PASS, a `ship-evidence.json`
+naming a SHA, and that SHA only on this machine.
+
+The `code-pushed` check in `gates/workflow.test.ts` does not cover this and is
+not made redundant by it. That one runs *during* the gate and compares HEAD
+against `@{upstream}`, a local remote-tracking ref that only fetch and push
+update. This one runs *after* the verdict and asks the remote with
+`ls-remote`, because "did the commit leave the machine" is a question a local
+ref cannot answer.
+
+The same shape, second instance: `readConformityFindings` caught both its read
+and its parse and recorded nothing, so an unreadable findings file left
+`state.conformityFindings` absent — byte-identical to a project that has no
+findings at all, which is how every consumer's `if (state.conformityFindings)`
+reads it.
+
+Neither change makes the gate fail. The verdict was reached before these ran,
+and a second place for a gate to fail would obscure the first. The rule is
+that the outcome is **recorded and loud**, and that UNMEASURED never passes for
+clean.
+
+- [x] SC-714: lib/verified-push.ts contains [ls-remote] — a push the gate claims succeeded is confirmed by reading the remote back, because `git push` exiting 0 is a claim by git rather than a reading of the remote
+- [x] SC-715: lib/verified-push.ts contains [no-upstream, unmeasured, not-attempted, rejected, unconfirmed] — each failure mode is its own recorded outcome, so the four paths the empty catch collapsed into silence are now distinguishable from each other as well as from success
+- [x] SC-716: lib/verified-push.ts contains [parseInt] — an ahead-count that is not digits is UNMEASURED rather than zero, because the original compared `NaN > 0`, which is false, so an unreadable count skipped the push exactly as if there were nothing to push
+- [x] SC-717: gates/orchestrator.ts contains [pushLeftWorkLocal] — the push outcome is written into ship-evidence.json, which is the artefact the run is judged by, rather than printed into a log nobody reads
+- [x] SC-718: gates/gate-executor.ts contains [unreadableConformityMarker] — an unreadable findings file sets a distinct marker that a consumer can tell apart from an empty findings list
+- [x] SC-719: test/gate-auto-push.test.ts contains [the shim did not intercept the push] — the remote read-back is proven able to fail by a `git` shim that exits 0 on push without doing anything, driven on every run rather than recorded once in a PR body
+
+### What was broken to prove it (#213)
+
+Run and counted over `test/gate-auto-push.test.ts` (32 tests). None is left in
+the tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| the local/remote SHA comparison short-circuited (`if (false)`) | 3 of 32 — the unconfirmed cases and the real-remote mutation case start reporting `pushed` |
+| the unreadable-remote branch short-circuited | 2 of 32 — a push whose `ls-remote` fails reads as confirmed |
+| `parseInt` semantics restored for the ahead-count | 2 of 32 — an empty or garbled count silently becomes "nothing to push" again |
+| the no-upstream branch short-circuited | 3 of 32 — including the real temp repo on a branch that has never been pushed |
+| `readConformityFindings`'s catch emptied back out | 2 of 32 — the marker and the empty-vs-unreadable distinction both vanish |
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
