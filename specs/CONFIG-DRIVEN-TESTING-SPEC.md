@@ -255,6 +255,40 @@ falls back.
 - [x] SC-706: test/matcher-registry-parity.test.ts contains [the subject under test cannot switch off the check verifying it] — the restriction is asserted from both sides: the shadowing entry is ignored AND a purely additive custom matcher still resolves, so the guard cannot be satisfied by disabling custom matchers wholesale
 - [x] SC-707: lib/conformity.ts contains [message withheld] — a config parse failure reports the error's type and not its message, because a JSON parse error quotes the bytes around the fault and the file is the consumer's own
 
+### The exemption ratchet only turned one way (#302)
+
+`.claude/conformity-allowlists.json` calls itself "a RATCHET, not a mute:
+adding an entry that is not a real current violation fails, and an entry that
+stops being a violation must be removed or the build fails." Half of that was
+enforced. **Staleness** was real — DRIFT-2 and the orphan check both refuse an
+entry that no longer names a violation, and that half caught a live case
+during #310, when a spec became referenced and its entry had to go.
+
+**Growth was not enforced at all.** A new entry for a genuinely new violation
+is not stale, so every check passed. An agent could introduce a conformity
+violation and exempt it in the same commit — passing a gate by editing the
+gate, which is the one move this harness exists to refuse.
+
+Direction is the whole design. Removals always pass: an agent that fixes a
+violation and delists it is the case the ratchet is FOR, and refusing it would
+trade one outage for another. Only additions are reported. The comparison base
+is `origin/main` rather than the merge base, which is safe in the direction
+that matters — entries added on main that a branch does not carry read as
+removals and pass, so a stale base cannot produce a false refusal.
+
+It belongs in the conformity suite, not the collection guard: the guard sees
+paths rather than contents, and would catch only growth arriving through agent
+collection, missing a human commit, a heal round, or a single-worktree run
+that bypasses collection entirely.
+
+DRIFT-3 is advisory — and says so — when `origin/main` cannot be read, because
+a consumer may legitimately not have it. rungate's own suite asserts the base
+IS readable, because here an unreadable base is a fault rather than a setup.
+
+- [x] SC-711: lib/conformity.ts contains [DRIFT-3: the exemption lists did not GROW] — growth is refused in the same suite as staleness, so every source is covered rather than only the one an agent happens to use
+- [x] SC-712: test/allowlist-growth.test.ts contains [a REMOVED entry is not growth] — the legitimate direction is asserted alongside the refusal, because a growth check that also refuses removals would block the fix it exists to encourage
+- [x] SC-713: test/allowlist-growth.test.ts contains [an unreadable base is reported as unreadable] — the UNMEASURED branch is driven against a ref that cannot exist, rather than left as a branch that never runs in a healthy checkout
+
 ## Implementation
 
 ### Phase A: SC Classification

@@ -431,6 +431,55 @@ function loadConformityAllowlists(root: string): {
 }
 
 /**
+ * The exemption lists in a conformity-allowlists file, keyed by list name.
+ *
+ * Every array-valued key is read, not just the two `loadConformityAllowlists`
+ * consumes. A list added later must be covered by the growth check the day it
+ * appears, not the day someone remembers to add it here — the opposite
+ * arrangement is how an exemption mechanism acquires an unwatched corner.
+ */
+export function allowlistEntries(json: string): Record<string, string[]> {
+  const parsed = JSON.parse(json);
+  const lists: Record<string, string[]> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (Array.isArray(value)) lists[key] = value.map(String);
+  }
+  return lists;
+}
+
+/**
+ * Entries present in `headJson` and absent from `baseJson` (#302).
+ *
+ * The existing ratchet enforces STALENESS — an entry that stops being a
+ * violation fails the build — and that half is real. It does not enforce
+ * GROWTH: a new entry for a genuinely new violation is not stale, so every
+ * check passes. An agent could introduce a violation and exempt it in the
+ * same commit, which is the one move this harness exists to prevent — an
+ * agent must not be able to pass a gate by editing the gate.
+ *
+ * Direction is the whole point. REMOVALS always pass: an agent that fixes a
+ * violation and delists it is the case the ratchet is for, and refusing that
+ * would trade one outage for another. Only additions are reported.
+ *
+ * Comparing against `origin/main` rather than the merge base is deliberate
+ * and safe in the direction that matters: entries added on main that a branch
+ * does not carry read as REMOVALS and pass, so the base can be stale without
+ * producing a false refusal.
+ */
+export function allowlistAdditions(baseJson: string, headJson: string): string[] {
+  const base = allowlistEntries(baseJson);
+  const head = allowlistEntries(headJson);
+  const added: string[] = [];
+  for (const [list, entries] of Object.entries(head)) {
+    const before = new Set(base[list] ?? []);
+    for (const entry of entries) {
+      if (!before.has(entry)) added.push(`${list}: ${entry}`);
+    }
+  }
+  return added;
+}
+
+/**
  * Report a check that did not run, rather than returning silently.
  *
  * A bare `return` on a missing directory reads as a pass in every report, which
@@ -1508,6 +1557,49 @@ export function runSpecDrift(
         s => testable.includes(s) && !orphaned.includes(s),
       );
       expect(staleAllowlist).toEqual([]);
+    });
+
+    test("DRIFT-3: the exemption lists did not GROW", () => {
+      // #302. The staleness checks above enforce one direction: an entry that
+      // stops being a violation fails. A NEW entry for a genuinely new
+      // violation is not stale, so until now an agent could introduce a
+      // conformity violation and exempt it in the same commit — passing a
+      // gate by editing the gate, which is the one move this harness exists
+      // to refuse.
+      //
+      // It sits here rather than in the collection guard deliberately. The
+      // collection guard sees paths, not contents, and would catch only
+      // growth arriving via agent collection — not a human commit, a heal
+      // round, or a single-worktree run that bypasses collection entirely.
+      const allowlistPath = join(root, ".claude", "conformity-allowlists.json");
+      if (!existsSync(allowlistPath)) return;
+
+      const show = spawnSync("git", ["-C", root, "show", `origin/main:.claude/conformity-allowlists.json`], {
+        encoding: "utf-8",
+        timeout: 20_000,
+      });
+
+      if (show.error || show.status !== 0) {
+        // ADVISORY, not a refusal, and only here. A consumer may legitimately
+        // have no `origin/main` — a fresh scaffold, a local-only repo — and
+        // refusing for want of a comparison base would break every one of
+        // them on upgrade for a rule they never opted into. That is the same
+        // judgement loadConformityAllowlists already makes about a missing
+        // allowlist file. rungate's own suite asserts the base IS readable,
+        // because in this repo an unreadable one is a fault, not a setup.
+        console.warn(
+          `WARN DRIFT-3: could not read origin/main's copy of the conformity allowlist, so ` +
+            `growth was NOT checked. This is UNMEASURED, not clean.`,
+        );
+        return;
+      }
+
+      const added = allowlistAdditions(show.stdout, readFileSync(allowlistPath, "utf-8"));
+      expect(
+        added,
+        `an exemption was ADDED relative to origin/main. Fix the violation, or make the ` +
+          `exemption a deliberate recorded decision rather than a diff.`,
+      ).toEqual([]);
     });
   });
 }
