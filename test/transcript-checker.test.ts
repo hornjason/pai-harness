@@ -1,12 +1,15 @@
 import { describe, test, expect } from "bun:test";
 import {
   checkCompliance,
+  forbiddenCommandsIn,
   computeScore,
   formatReport,
   parseToolCalls,
   type ComplianceResult,
 } from "../lib/transcript-checker.js";
 import type { Directive } from "../lib/directive-extractor.js";
+import { readFileSync } from "fs";
+import { join } from "path";
 
 // ── Test helpers ─────────────────────────────────────────
 
@@ -195,3 +198,106 @@ describe("transcript-checker", () => {
     }
   });
 });
+
+/**
+ * #343 — the forbidden-command check fired for one consumer only.
+ *
+ * `checkNeverDirective` carried `if (textLower.includes("make rebuild"))` —
+ * one consumer's forbidden command, written into the harness. For every other
+ * consumer that arm never matched, the directive fell through to
+ * `status: "N/A"`, and `computeScore` excludes N/A from `checkable`. So the
+ * rule went unenforced, the compliance score did not drop, and nothing named
+ * the directive that had stopped being measured.
+ *
+ * Found by the sweep in #304, which was looking for hardcoded routes and
+ * turned up hardcoded commands next to them.
+ *
+ * Covers SC-747, SC-748 of GATE-CONTRACTS-SPEC.md.
+ */
+describe("#343: a NEVER directive names its own forbidden command", () => {
+  const never = (text: string) => [makeDirective({ type: "never", text })];
+  const ran = (...cmds: string[]) =>
+    makeTranscript(cmds.map(c => ({ name: "Bash", input: { command: c } })));
+  const statusOf = (text: string, ...cmds: string[]) =>
+    checkCompliance(never(text), ran(...cmds))[0].status;
+
+  const DDB = "Never run `make rebuild` from the project root";
+  const OTHER = "Never run `npm run deploy:prod`";
+
+  test("the original consumer's command still works — no regression", () => {
+    expect(statusOf(DDB, "make rebuild")).toBe("VIOLATED");
+  });
+
+  test("and is FOLLOWED when it was not run", () => {
+    expect(statusOf(DDB, "bun test")).toBe("FOLLOWED");
+  });
+
+  test("a DIFFERENT consumer's command is enforced too — the whole issue", () => {
+    // Before #343 this was N/A: unenforced, and invisible in the score
+    // because computeScore drops N/A from the denominator.
+    expect(statusOf(OTHER, "npm run deploy:prod"), "a non-DDB forbidden command is still unenforced")
+      .toBe("VIOLATED");
+  });
+
+  test("and is FOLLOWED when that consumer did not run it", () => {
+    // Paired control: a check reporting VIOLATED for everything satisfies
+    // the case above on its own.
+    expect(statusOf(OTHER, "npm test")).toBe("FOLLOWED");
+  });
+
+  test("several forbidden commands in one directive are all covered", () => {
+    const d = "Never run `podman build` or `docker compose up` directly";
+    expect(statusOf(d, "docker compose up -d")).toBe("VIOLATED");
+    expect(statusOf(d, "podman build .")).toBe("VIOLATED");
+    expect(statusOf(d, "echo hi")).toBe("FOLLOWED");
+  });
+
+  test("a backticked PATH is not treated as a command", () => {
+    // The opposite failure, and the worse one. Reporting VIOLATED because
+    // somebody ran a command containing the name of a file they were told
+    // not to edit would make the check untrustworthy in the other direction.
+    expect(forbiddenCommandsIn("Never edit `.github/workflows/ci.yml` directly")).toEqual([]);
+    expect(forbiddenCommandsIn("Do not modify `CODE-MAP.md`")).toEqual([]);
+    expect(forbiddenCommandsIn("Never touch `project-state.json`")).toEqual([]);
+  });
+
+  test("a directive naming no command at all stays N/A rather than guessing", () => {
+    // `spawn` is caught by an earlier, more specific arm, so this uses a
+    // directive no arm claims. Unmeasurable must stay unmeasured.
+    expect(statusOf("Never leave a finished branch unpushed", "git status")).toBe("N/A");
+  });
+
+  test("the extractor finds nothing in a directive with no backticks", () => {
+    expect(forbiddenCommandsIn("Never run the production rebuild")).toEqual([]);
+  });
+
+  test("a command containing a DOT is still a command", () => {
+    // The first version carried an extra `token.includes(".")` guard in front
+    // of COMMANDISH, added for safety. Mutating it away scored 0 red: the
+    // regex already rejects every path on its own, so the line never changed
+    // a path's verdict once. What it did was drop this — a real command,
+    // silently unenforced by a guard that looked careful.
+    expect(forbiddenCommandsIn("Never run `npm run deploy.prod`")).toEqual(["npm run deploy.prod"]);
+    expect(statusOf("Never run `npm run deploy.prod`", "npm run deploy.prod")).toBe("VIOLATED");
+  });
+
+  test("the path rejection is load-bearing on its own", () => {
+    // Paired with the case above: narrowing is only safe if the thing left
+    // doing the work actually does it.
+    for (const p of [".github/workflows/ci.yml", "CODE-MAP.md", "project-state.json", "make -C sub/dir build"]) {
+      expect(forbiddenCommandsIn(`Never touch \`${p}\``), `${p} was read as a command`).toEqual([]);
+    }
+  });
+
+  test("the hardcoded command is gone from the detector", () => {
+    const src = readFileSync(join(import.meta.dir, "..", "lib", "transcript-checker.ts"), "utf-8");
+    // Comments stripped crudely: this file's own explanation names the
+    // command it exists to have removed, which would report itself.
+    const code = src
+      .split("\n")
+      .filter(l => !l.trim().startsWith("*") && !l.trim().startsWith("//") && !l.trim().startsWith("/*"))
+      .join("\n");
+    expect(code, "one consumer's command is back in the detector").not.toContain('includes("make rebuild")');
+  });
+});
+

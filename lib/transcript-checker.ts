@@ -136,6 +136,46 @@ function checkRunDirective(d: Directive, bashes: string[]): ComplianceResult {
   };
 }
 
+/**
+ * The commands a NEVER directive names, taken FROM the directive (#343).
+ *
+ * This check used to carry `if (textLower.includes("make rebuild"))` — one
+ * consumer's forbidden command, written into the harness. For every other
+ * consumer that arm never matched, the directive fell through to
+ * `status: "N/A"`, and `computeRate` excludes N/A from its denominator. So
+ * the rule was not enforced, the compliance rate did not drop, and nothing
+ * named the directive that had stopped being measured.
+ *
+ * A "never run X" directive already says what X is. Reading it out of the
+ * directive makes the check work for every consumer and removes the literal.
+ *
+ * Deliberately narrow about what counts as a command. A backticked token has
+ * to start with a lower-case letter and carry no slash in its first word, so
+ * `` `.github/workflows/ci.yml` ``, `` `CODE-MAP.md` `` and
+ * `` `project-state.json` `` are paths rather than commands. Reporting
+ * VIOLATED because somebody ran a command naming a file they were told not to
+ * edit is a worse failure than the hole this replaces.
+ *
+ * This shipped with an extra `if (token.includes("/") || token.includes("."))
+ * continue;` in front, added for safety. Mutating it away scored **0 red**,
+ * which is how it was found: `COMMANDISH` already rejects all three paths on
+ * its own, so the line never once changed the verdict for a path. What it did
+ * do was reject `npm run deploy.prod` — a legitimate command with a dot in
+ * it. A guard that can only ever remove true positives, kept because it
+ * looked careful.
+ */
+const COMMANDISH = /^[a-z][a-z0-9_-]*(?: [a-z0-9_.:=-]+)*$/;
+
+export function forbiddenCommandsIn(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(/`([^`]+)`/g)) {
+    const token = m[1].trim();
+    if (!COMMANDISH.test(token)) continue;
+    out.add(token);
+  }
+  return [...out];
+}
+
 function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall[]): ComplianceResult {
   const textLower = d.text.toLowerCase();
 
@@ -168,11 +208,6 @@ function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall
     return { directive: d, status: testRuns.length <= 2 ? "FOLLOWED" : "VIOLATED", evidence: `${testRuns.length} bun test runs` };
   }
 
-  if (textLower.includes("make rebuild")) {
-    const rebuilds = bashes.filter((b) => b.includes("make rebuild"));
-    return { directive: d, status: rebuilds.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${rebuilds.length} rebuild calls` };
-  }
-
   if (textLower.includes("implementation code") || textLower.includes("modify source code")) {
     const writes = toolCalls.filter((c) => (c.name === "Write" || c.name === "Edit") && /\.(ts|js|tsx|jsx)$/.test(c.input.file_path || ""));
     return { directive: d, status: writes.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${writes.length} source file writes` };
@@ -181,6 +216,19 @@ function checkNeverDirective(d: Directive, bashes: string[], toolCalls: ToolCall
   if (textLower.includes("run builds") || textLower.includes("run tests") || (textLower.includes("builds") && textLower.includes("deployments"))) {
     const buildRuns = bashes.filter((b) => /\b(bun test|bun run|npm test|npm run build|make build|make deploy)\b/.test(b));
     return { directive: d, status: buildRuns.length === 0 ? "FOLLOWED" : "VIOLATED", evidence: `${buildRuns.length} build/test/deploy commands` };
+  }
+
+  // #343. Last, so every specific arm above still wins, and generic rather
+  // than one consumer's command: whatever the directive forbids by name is
+  // what gets grepped for. This is what the `make rebuild` arm used to be.
+  const forbidden = forbiddenCommandsIn(d.text);
+  if (forbidden.length > 0) {
+    const hits = bashes.filter((b) => forbidden.some((c) => b.includes(c)));
+    return {
+      directive: d,
+      status: hits.length === 0 ? "FOLLOWED" : "VIOLATED",
+      evidence: `${hits.length} call(s) to ${forbidden.map((c) => `\`${c}\``).join(", ")}`,
+    };
   }
 
   return { directive: d, status: "N/A", evidence: "Cannot verify mechanically" };

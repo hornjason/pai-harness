@@ -56,7 +56,7 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
   }
   sections.push(buildGitProtocol(state.issue));
   sections.push(buildFilesSection(contextFiles));
-  sections.push(buildScopeSection(scopeOut));
+  sections.push(buildScopeSection(scopeOut, harness?.forbiddenCommands));
   sections.push(buildVerifySection(verifyCommands));
   sections.push(buildReportSection());
 
@@ -227,7 +227,7 @@ function buildFilesSection(contextFiles: Array<{ path: string; reason: string }>
   return lines.join("\n");
 }
 
-function buildScopeSection(scopeOut: string[]): string {
+function buildScopeSection(scopeOut: string[], forbiddenCommands?: string[]): string {
   const lines = ["## Scope — do NOT touch"];
 
   if (scopeOut.length === 0) {
@@ -238,7 +238,17 @@ function buildScopeSection(scopeOut: string[]): string {
     }
   }
 
-  lines.push("- Never run `make rebuild` — DA does that");
+  // #343: this said "Never run `make rebuild`" — one consumer's forbidden
+  // command, written into every consumer's brief. The command comes from the
+  // consumer's own `forbiddenCommands` now, and nothing is emitted when none
+  // is configured. A guessed prohibition in a brief is worse than silence:
+  // the agent obeys it, and nobody finds out it was invented.
+  for (const cmd of forbiddenCommands ?? []) {
+    lines.push(`- Never run \`${cmd}\` — the DA runs it, not you`);
+  }
+  // Harness-general, not consumer-specific: these files are DA-owned for
+  // every project, because parallel worktrees each writing their own copy
+  // produce conflicting state (#296).
   lines.push("- Never modify `project-state.json` or `PROJECT-STATE.md` — DA manages these");
 
   return lines.join("\n");

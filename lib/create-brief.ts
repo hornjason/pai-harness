@@ -10,7 +10,11 @@ import type { AgentMeta } from "./generators/types";
 /**
  * Generate an agent brief markdown template with standard sections and variable placeholders.
  */
-export function generateBriefTemplate(roleName: string, description: string): string {
+export function generateBriefTemplate(
+  roleName: string,
+  description: string,
+  forbiddenCommands?: string[],
+): string {
   const today = new Date().toISOString().split("T")[0];
   const displayName = roleName.charAt(0).toUpperCase() + roleName.slice(1);
 
@@ -48,9 +52,21 @@ You are ${displayName}, ${description}.
 
 ## Rules
 
-- Never run \`make rebuild\` — only the DA does that
-- Verify before asserting — try it first, report what actually happened
+${forbiddenRules(forbiddenCommands)}- Verify before asserting — try it first, report what actually happened
 `;
+}
+
+/**
+ * #343 — this template hardcoded "Never run \`make rebuild\`".
+ *
+ * That is one consumer's rule, emitted into every consumer's brief template.
+ * It comes from the project's own \`forbiddenCommands\` now, and nothing is
+ * emitted when none is configured: a guessed prohibition is worse than
+ * silence, because the agent obeys it and nobody finds out it was invented.
+ */
+function forbiddenRules(commands: string[] | undefined): string {
+  if (!commands || commands.length === 0) return "";
+  return commands.map(c => `- Never run \\\`${c}\\\` — only the DA does that\n`).join("");
 }
 
 /**
