@@ -118,6 +118,66 @@ export function unpushedViolations(
   ];
 }
 
+/**
+ * #315 — `code-committed` has never executed.
+ *
+ * The body read `harness?.codeCommittedPaths || []` and returned early on an
+ * empty list. **Nothing authors that key.** Measured on main: neither
+ * rungate's `.claude/rungate/config.json`, nor its legacy
+ * `.claude/rungate.json`, nor DailyBriefDashboard's names it. So the check
+ * whose entire job is confirming the shipped work is committed hit the early
+ * return on every run this repository has ever made — shape one in
+ * .claude/rules/checks-must-be-able-to-fail.md, keyed to a config value that
+ * does not exist.
+ *
+ * It compounded with #314: the status also ran in `projectRoot`, the main
+ * checkout, which is clean during a worktree run. Both halves had to be
+ * fixed or the check means nothing; #314 fixed the tree, this fixes the scope.
+ *
+ * ## The scope decision (SC-E2), recorded here rather than left to infer
+ *
+ * The key becomes OPTIONAL WITH A DERIVED DEFAULT rather than required.
+ *
+ * Requiring it would refuse at scaffold time for every consumer that has
+ * never heard of it — an outage for a rule nobody opted into, which is the
+ * same reasoning `loadConformityAllowlists` and #302's growth check already
+ * apply. And the default is not a guess: for a check named "no uncommitted
+ * changes in project", the honest scope is **the whole tree**, and a
+ * configured path list is a narrowing a consumer opts into, not the thing
+ * that switches the check on.
+ *
+ * Untracked files are included, because `--porcelain` already honours
+ * `.gitignore` and a source file that was never added is exactly the
+ * uncommitted work this check exists to catch. Build artefacts that trip it
+ * belong in `.gitignore`; that is the right pressure rather than a reason to
+ * narrow the check.
+ *
+ * Exported as the single binding this check's refusal is routed through, so
+ * `return []` is one edit and the mutation is a measurement rather than a
+ * claim in a PR body.
+ */
+export function codeCommittedViolations(
+  status: { ok: boolean; output: string },
+  scope: { configured: boolean; paths: string[] },
+): string[] {
+  if (!status.ok) {
+    return [
+      `code-committed: \`git status\` could not be read in the tree under test ` +
+        `(${status.output || "no output"}). This is UNMEASURED, not PASS — a git ` +
+        `invocation that fails for an unknown reason says nothing about whether the ` +
+        `work is committed.`,
+    ];
+  }
+  const dirty = status.output.split("\n").map(l => l.trim()).filter(Boolean);
+  if (dirty.length === 0) return [];
+  const where = scope.configured ? ` within ${scope.paths.join(", ")}` : "";
+  const shown = dirty.slice(0, 10).join("; ");
+  return [
+    `code-committed: ${dirty.length} uncommitted change(s) in the tree under test${where}: ` +
+      `${shown}${dirty.length > 10 ? ` … and ${dirty.length - 10} more` : ""}`,
+  ];
+}
+
 /** The tree to run commands in, or null when the state does not name one. */
 function treeRoot(): string | null {
   const t = sf("treeUnderTest");
@@ -717,14 +777,18 @@ describe("verify checks", () => {
     expect(treeViolations, treeViolations.join("\n")).toEqual([]);
     const root = treeRoot();
     if (!root) return;
+    // #315: an unset `codeCommittedPaths` used to early-return here, and
+    // nothing authors that key, so this check had never run. The whole tree
+    // is the default scope; a configured list is a narrowing, not a switch.
     const harness = loadProjectHarness();
-    const paths = harness?.codeCommittedPaths || [];
-    if (paths.length === 0) return;
-    const result = exec(`git status --porcelain -- ${paths.join(" ")}`, root);
-    const dirty = result.output.split("\n").filter(Boolean).length;
-    if (dirty > 0) {
-      expect(`${dirty} uncommitted files`).toBe("0 uncommitted files");
-    }
+    const paths: string[] = harness?.codeCommittedPaths || [];
+    const configured = paths.length > 0;
+    const result = exec(
+      configured ? `git status --porcelain -- ${paths.join(" ")}` : "git status --porcelain",
+      root,
+    );
+    const violations = codeCommittedViolations(result, { configured, paths });
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 23. code-pushed (GAP → PORTED)
@@ -1105,21 +1169,21 @@ describe("spec traceability", () => {
   });
 
   // 32. evidence-target-valid (GAP → PORTED)
-  test("evidence-target-valid: evidence commands target files within scope", () => {
-    const harness = loadProjectHarness();
-    const paths = harness?.codeCommittedPaths || [];
-    if (paths.length === 0) return;
-    const commands = (sf("acs") || [])
-      .map((ac: any) => ac.evidenceMethod?.command || "")
-      .filter(Boolean);
-    if (commands.length === 0) return;
-    const fileRefs: string[] = commands.join("\n").match(/[^\s]+(\/[^\s]+|\.[a-z]+)/g) || [];
-    const outside = fileRefs.filter(ref => {
-      if (/^-/.test(ref) || /^\|/.test(ref)) return false;
-      return !paths.some((p: string) => ref.includes(p));
-    });
-    // Informational — outside refs are common (test fixtures, config)
-  });
+  //
+  // #315 found this one while fixing `code-committed`, and it is worse than
+  // the defect it was filed for. It read the same unauthored
+  // `codeCommittedPaths` key and early-returned — but even past that return
+  // it computed an `outside` list and **discarded it**, under a comment
+  // saying outside refs are common. It has no assertion. It is a name in the
+  // gate list and nothing else, and it cannot fail for any input.
+  //
+  // Deleted rather than left standing, because a check that asserts nothing
+  // reads as coverage in every report that counts gate checks. The threshold
+  // it would need — which evidence file references count as out of scope —
+  // does not exist yet and inventing one here would be a guess that goes red
+  // on every run. It is recorded in OPTIONAL_HARNESS_KEYS in
+  // test/gate-optional-config-keys.test.ts so it cannot be quietly re-added,
+  // and #338 tracks building it with a threshold that has evidence behind it.
 });
 
 // ═══ SHIP CHECKS (7 functions) ════════════════════════════════════════
