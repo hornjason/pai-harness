@@ -458,8 +458,34 @@ function loadBuiltInRegistry(): Array<{ name: string; regex: string }> {
  * and merges any `customMatchers` array entries with the built-in registry.
  * Consumer entries with the same `name` as a built-in entry override the built-in.
  */
-function loadRegistry(projectRoot?: string): Array<{ name: string; regex: string }> {
-  const cacheKey = projectRoot ?? "__builtin__";
+/**
+ * `allowBuiltInOverride` is the difference between the AUTHORING view and the
+ * VERIFICATION view of the same config, and the two must not be the same.
+ *
+ * A consumer may name a custom matcher after a built-in, and `create-spec`
+ * honours it — that is a documented feature and extending the vocabulary is
+ * the point of custom matchers. But the conformity engine is verifying the
+ * very project that wrote that config, and `.claude/rungate.json` shadowing
+ * `content-contains` with a regex that matches nothing would switch the
+ * check off from inside the subject under test. The run would stay green and
+ * report nothing unusual, which is the defect class this repo exists to
+ * catch, arriving through its own extension point.
+ *
+ * So the engine takes `allowBuiltInOverride: false`: a consumer may ADD a
+ * matcher, never REPLACE one. A shadowing entry is dropped and named, rather
+ * than dropped quietly, because a consumer who meant it needs to know it did
+ * not take effect.
+ *
+ * This only became reachable when the runner started passing its project root
+ * (#212). Before that the engine ignored consumer config entirely, which is
+ * why the asymmetry had never had to be stated.
+ */
+function loadRegistry(
+  projectRoot?: string,
+  opts?: { allowBuiltInOverride?: boolean },
+): Array<{ name: string; regex: string }> {
+  const allowOverride = opts?.allowBuiltInOverride ?? true;
+  const cacheKey = `${projectRoot ?? "__builtin__"}::${allowOverride ? "permissive" : "strict"}`;
   if (_registryCache.has(cacheKey)) return _registryCache.get(cacheKey)!;
 
   const builtIn = loadBuiltInRegistry();
@@ -474,26 +500,71 @@ function loadRegistry(projectRoot?: string): Array<{ name: string; regex: string
     return builtIn;
   }
 
+  let customMatchers: Array<{ name: string; regex: string }>;
   try {
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    const customMatchers: Array<{ name: string; regex: string }> = config.customMatchers ?? [];
-    if (customMatchers.length === 0) {
-      _registryCache.set(cacheKey, builtIn);
-      return builtIn;
-    }
-
-    // Merge: consumer entries override built-in entries with same name
-    const merged = builtIn.filter(
-      (entry) => !customMatchers.some((c) => c.name === entry.name)
+    customMatchers = config.customMatchers ?? [];
+  } catch (err) {
+    // Falling back to the built-ins is right — one consumer's broken config
+    // must not take the engine's own matchers down with it. Doing it in
+    // silence was not: every SC written against a custom matcher then reads
+    // as unrecognised, with nothing anywhere saying the config failed to
+    // parse (#212).
+    //
+    // The error's TYPE is reported and its message is not. A parse failure's
+    // message routinely quotes the bytes around the offending position, and
+    // this file is a project's own config — echoing its contents into build
+    // logs is how a secret in a misplaced field reaches somewhere it was
+    // never meant to go.
+    console.warn(
+      `WARN: ${configPath} could not be read as JSON (${err instanceof Error ? err.name : "error"}; ` +
+        `message withheld — it can quote file contents). ` +
+        `Falling back to the built-in matcher registry — any customMatchers in that file are NOT loaded, ` +
+        `so SCs written against them will be reported as having no matcher.`,
     );
-    merged.push(...customMatchers);
-
-    _registryCache.set(cacheKey, merged);
-    return merged;
-  } catch {
     _registryCache.set(cacheKey, builtIn);
     return builtIn;
   }
+
+  if (customMatchers.length === 0) {
+    _registryCache.set(cacheKey, builtIn);
+    return builtIn;
+  }
+
+  const builtInNames = new Set(builtIn.map((e) => e.name));
+  const accepted: Array<{ name: string; regex: string }> = [];
+  for (const candidate of customMatchers) {
+    if (!allowOverride && builtInNames.has(candidate.name)) {
+      console.warn(
+        `WARN: ${configPath} defines a custom matcher named "${candidate.name}", which is a built-in. ` +
+          `A project cannot replace a built-in matcher while being verified by it — the entry is IGNORED. ` +
+          `Rename it to extend the vocabulary instead.`,
+      );
+      continue;
+    }
+    // Compiled here rather than at use: a regex that cannot compile would
+    // otherwise throw from inside the matcher loop, taking down a run over
+    // one bad consumer entry. The entry is refused; the rest still load.
+    try {
+      new RegExp(candidate.regex, "i");
+    } catch {
+      console.warn(
+        `WARN: ${configPath} custom matcher "${candidate.name}" has a regex that does not compile — the entry is IGNORED.`,
+      );
+      continue;
+    }
+    accepted.push(candidate);
+  }
+
+  // Built-ins first. In the permissive view a shadowing entry has already
+  // displaced its built-in; in the strict view it was dropped above, so
+  // ordering alone cannot let a consumer entry pre-empt a built-in check.
+  const merged = allowOverride
+    ? [...builtIn.filter((e) => !accepted.some((c) => c.name === e.name)), ...accepted]
+    : [...builtIn, ...accepted];
+
+  _registryCache.set(cacheKey, merged);
+  return merged;
 }
 
 // ── Compound success criteria (#220) ────────────────────────
@@ -989,20 +1060,63 @@ const matcherHandlers: Record<string, MatcherHandler> = {
   },
 };
 
-export function matchPattern(sc: ParsedSC, projectRoot?: string): AssertionFn | null {
-  const registry = loadRegistry(projectRoot);
+/**
+ * The names the engine can actually assert. Exported so the registry can be
+ * reconciled against it (#212) instead of the two drifting apart unobserved —
+ * `matchPattern` iterates the REGISTRY, so a handler missing from it is
+ * unreachable however well tested, and an entry missing a handler asserts
+ * nothing while still matching the author's syntax.
+ */
+export function matcherHandlerNames(): string[] {
+  return Object.keys(matcherHandlers);
+}
+
+/**
+ * Why a statement did or did not become an assertion.
+ *
+ * `matchPattern` answered `null` for two different situations, and collapsing
+ * them is the defect in #212: a statement that matched a registry regex whose
+ * entry has no handler was reported exactly like a statement that matched
+ * nothing at all. The first means "recognised, and nothing implements it";
+ * the second means "unrecognised". SUCCESS.md claim 4 — "could not measure"
+ * must never read as "nothing wrong" — needs them distinct.
+ */
+export type MatcherResolution =
+  | { kind: "assert"; matcher: string; assertion: AssertionFn }
+  | { kind: "unimplemented"; matcher: string }
+  | { kind: "unrecognised" };
+
+export function resolveMatcher(sc: ParsedSC, projectRoot?: string): MatcherResolution {
+  // Strict view: the project being verified may add matchers, never replace a
+  // built-in one. See loadRegistry's docblock — `isMatchablePattern` keeps the
+  // permissive view because it answers an authoring question, not a
+  // verification one.
+  const registry = loadRegistry(projectRoot, { allowBuiltInOverride: false });
+  let recognisedBy: string | null = null;
+
   for (const entry of registry) {
     const regex = new RegExp(entry.regex, "i");
     const match = sc.statement.match(regex);
-    if (match) {
-      const handler = matcherHandlers[entry.name];
-      if (handler) {
-        const result = handler(sc, match);
-        if (result) return result;
-      }
+    if (!match) continue;
+
+    const handler = matcherHandlers[entry.name];
+    if (!handler) {
+      // Recognised. Remember which matcher claimed it, but keep looking — a
+      // later entry may both match and be implemented, and that is a better
+      // answer than refusing.
+      recognisedBy ??= entry.name;
+      continue;
     }
+    const result = handler(sc, match);
+    if (result) return { kind: "assert", matcher: entry.name, assertion: result };
   }
-  return null;
+
+  return recognisedBy ? { kind: "unimplemented", matcher: recognisedBy } : { kind: "unrecognised" };
+}
+
+export function matchPattern(sc: ParsedSC, projectRoot?: string): AssertionFn | null {
+  const outcome = resolveMatcher(sc, projectRoot);
+  return outcome.kind === "assert" ? outcome.assertion : null;
 }
 
 /**
@@ -1036,6 +1150,7 @@ export type SCPlanEntry =
   | { kind: "behavioral"; sc: ParsedSC; routing: string | null }
   | { kind: "todo"; sc: ParsedSC }
   | { kind: "unmatched"; sc: ParsedSC }
+  | { kind: "unimplemented"; sc: ParsedSC; matcher: string }
   | { kind: "assert"; sc: ParsedSC; assertion: AssertionFn };
 
 /**
@@ -1045,13 +1160,20 @@ export type SCPlanEntry =
  *   assert      — checked and matchable; runs for real and may fail
  *   unmatched   — checked but the statement binds to no matcher: a coverage
  *                 gap, reported and ratcheted rather than silently dropped
+ *   unimplemented — checked, and the statement DID match a registry entry
+ *                 that has no handler. Reported apart from `unmatched`
+ *                 because "recognised and nothing implements it" is a
+ *                 different defect from "unrecognised", and the author of
+ *                 such an SC was told by create-spec that it was valid (#212)
  */
 export function planSCTests(scs: ParsedSC[], projectRoot?: string): SCPlanEntry[] {
   return scs.map((sc): SCPlanEntry => {
     if (isBehavioralSC(sc)) return { kind: "behavioral", sc, routing: getBehavioralRouting(sc) };
     if (!sc.checked) return { kind: "todo", sc };
-    const assertion = matchPattern(sc, projectRoot);
-    return assertion ? { kind: "assert", sc, assertion } : { kind: "unmatched", sc };
+    const outcome = resolveMatcher(sc, projectRoot);
+    if (outcome.kind === "assert") return { kind: "assert", sc, assertion: outcome.assertion };
+    if (outcome.kind === "unimplemented") return { kind: "unimplemented", sc, matcher: outcome.matcher };
+    return { kind: "unmatched", sc };
   });
 }
 
@@ -1095,9 +1217,18 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
     for (const [specFile, metadata] of specMap) {
       describe(specFile, () => {
         const unmatched: string[] = [];
+        const unimplemented: string[] = [];
         const behavioral: string[] = [];
         const specPath = resolveSpecPath(specFile);
-        for (const entry of planSCTests(metadata.scs)) {
+        // `root`, not nothing: without it `loadRegistry` never reads the
+        // consumer's `.claude/rungate.json`, so every custom matcher is
+        // invisible to the engine while `create-spec` — which DOES pass a
+        // project root to `isMatchablePattern` — accepts criteria written
+        // against them. That is the authoring-tool/engine divergence in #212,
+        // and it was not hypothetical: the planted-project test in
+        // test/matcher-registry-parity.test.ts reported its criterion as
+        // `unmatched` until this argument was supplied.
+        for (const entry of planSCTests(metadata.scs, root)) {
           const { sc } = entry;
           if (entry.kind === "behavioral") {
             behavioral.push(`${sc.id}: ${sc.statement} → ${entry.routing}`);
@@ -1108,6 +1239,12 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
             test.todo(`${sc.id}: ${sc.statement}`, () => {});
           } else if (entry.kind === "unmatched") {
             unmatched.push(`${sc.id}: ${sc.statement}`);
+          } else if (entry.kind === "unimplemented") {
+            // Not folded into `unmatched`: this SC's syntax WAS recognised,
+            // and create-spec would have told its author it was valid. The
+            // gap is a registry entry with no handler, which is a different
+            // thing to fix and a different thing to report (#212).
+            unimplemented.push(`${sc.id}: matched "${entry.matcher}", which has no handler — ${sc.statement}`);
           } else {
             // A CHECKED SC claims the work is done. Run its assertion for
             // real: no try/catch, so it fails the suite when the claim is
@@ -1166,6 +1303,24 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
           test(`${level}: ${unmatched.length} checked SCs have no pattern matcher`, () => {
             console.warn(`Unmatched checked SCs in ${specFile}:\n  ${unmatched.join("\n  ")}`);
             expect(unmatched.length).toBeGreaterThan(0);
+          });
+        }
+        // Deliberately BELOW the unmatched branch, not between it and the
+        // behavioral report. #328's guard slices the source from the
+        // behavioral branch to `if (unmatched.length > 0) {` and asserts that
+        // region contains no `test(` — the behavioral slot must stay a report.
+        // This block legitimately IS a test, so placing it in that window
+        // turns #328's guard red. The guard is right; this belongs here.
+        if (unimplemented.length > 0) {
+          // Unlike the unmatched aggregate above, this one FAILS, and it can
+          // afford to: the population is zero in this repo and the parity
+          // test in test/matcher-registry-parity.test.ts keeps it there, so
+          // it cannot turn specs red en masse. A registry entry with no
+          // handler is a harness defect, not a backlog of prose criteria
+          // waiting to be rewritten — the author was told by create-spec that
+          // their syntax was valid, and the engine then asserted nothing.
+          test(`FAIL: ${unimplemented.length} SCs matched a registry entry that has no handler`, () => {
+            expect(unimplemented).toEqual([]);
           });
         }
       });
