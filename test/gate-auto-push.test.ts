@@ -29,10 +29,11 @@
  * means it is re-measured on every suite run, per
  * .claude/rules/checks-must-be-able-to-fail.md.
  *
- * Covers SC-714, SC-715, SC-716, SC-717, SC-718, SC-719 of GATE-CONTRACTS-SPEC.md.
+ * Covers SC-714, SC-715, SC-716, SC-717, SC-718, SC-719, SC-720, SC-721,
+ * SC-722 of GATE-CONTRACTS-SPEC.md.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync, chmodSync, mkdirSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { execFileSync } from "child_process";
@@ -42,6 +43,7 @@ import {
   verifiedPush,
   leftWorkLocal,
   OUTCOMES_LEAVING_WORK_LOCAL,
+  redactSecrets,
   type PushReadings,
   type Reading,
 } from "../lib/verified-push";
@@ -51,6 +53,7 @@ import {
   conformityFindingsUnreadable,
 } from "../gates/gate-executor";
 import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 const ok = (output = ""): Reading => ({ ok: true, output });
 const bad = (output = "boom"): Reading => ({ ok: false, output });
@@ -196,6 +199,109 @@ describe("#213: classifyPush names every way a push can leave work local", () =>
     expect([...OUTCOMES_LEAVING_WORK_LOCAL].sort()).toEqual(
       ["no-upstream", "not-attempted", "rejected", "unconfirmed", "unmeasured"],
     );
+  });
+});
+
+describe("#213: a recorded outcome does not carry credentials", () => {
+  // Every `detail` ends up in ship-evidence.json, which is durable, and git
+  // quotes the remote URL when authentication fails. An HTTPS remote with an
+  // embedded PAT would otherwise write that PAT into the artefact.
+  const PAT = "ghp_0123456789abcdefghijklmnopqrstuvwx";
+
+  test("userinfo in a URL is stripped", () => {
+    const line = `fatal: Authentication failed for 'https://jhorn:${PAT}@github.com/o/r.git/'`;
+    const out = redactSecrets(line);
+    expect(out).not.toContain(PAT);
+    expect(out).not.toContain("jhorn:");
+    // Narrow, not scorched: the host still has to be identifiable.
+    expect(out).toContain("github.com/o/r.git");
+  });
+
+  test("userinfo that is not token-shaped is stripped by the URL rule alone", () => {
+    // The two rules overlap on a PAT in a URL, so without this case the
+    // userinfo rule could be deleted and only one assertion would notice.
+    const out = redactSecrets("fatal: cannot access 'https://jhorn:hunter2@git.example/o/r'");
+    expect(out).not.toContain("hunter2");
+    expect(out).not.toContain("jhorn");
+    expect(out).toContain("git.example/o/r");
+  });
+
+  test("a bare token outside a URL is stripped too", () => {
+    expect(redactSecrets(`remote: token ${PAT} is invalid`)).not.toContain(PAT);
+    expect(redactSecrets("github_pat_11ABCDEFG0abcdefghijkl")).toBe("<redacted-token>");
+  });
+
+  test("an ordinary remote URL is left alone", () => {
+    // A redactor that mangles every URL would make the recorded reason
+    // useless, which is the failure mode opposite to the one above.
+    const url = "https://github.com/hornjason/pai-harness.git";
+    expect(redactSecrets(`fatal: could not read from '${url}'`)).toContain(url);
+    expect(redactSecrets("git@github.com:o/r.git")).toBe("git@github.com:o/r.git");
+  });
+
+  test("a rejected push's recorded detail is redacted", () => {
+    // The redaction is applied in classifyPush, not only in the git runner,
+    // so this holds for readings built any way at all. Asserted through the
+    // real recording path rather than against the helper alone.
+    const o = classifyPush(
+      healthy({ push: bad(`fatal: Authentication failed for 'https://x:${PAT}@github.com/o/r'`) }),
+    );
+    expect(o.kind).toBe("rejected");
+    expect(JSON.stringify(o)).not.toContain(PAT);
+  });
+
+  test("a remote NAME that is a URL with credentials is redacted", () => {
+    // `branch.<b>.remote` holds a name by convention; a URL is legal there.
+    const o = classifyPush(
+      healthy({ remoteName: ok(`https://x:${PAT}@github.com/o/r\n`), remote: bad("nope") }),
+    );
+    expect(JSON.stringify(o)).not.toContain(PAT);
+  });
+});
+
+describe("#213: the gate's call site does not widen what the push trusts", () => {
+  // Security review raised three things about this change. Two of them are
+  // about the call site rather than the library, so they are pinned here
+  // where a later edit has to move them deliberately.
+  const SITE = readFileSync(join(import.meta.dir, "..", "gates", "orchestrator.ts"), "utf-8");
+  const CODE = stripJsComments(SITE);
+
+  test("the push runs in process.cwd(), not a tree named by workflow-state.json", () => {
+    // `mergeCommitSha` in the same evidence object comes from `gitSha()` with
+    // no argument, which is process.cwd(). A push against `state.projectRoot`
+    // would confirm a remote for a SHA this artefact never measured — and it
+    // would let a field in a state file choose which repository a privileged
+    // operation runs against, which the code this replaced did not do.
+    //
+    // Comments stripped: the reasoning above is also written beside the call,
+    // and a detector reading raw source would find `state.projectRoot` there
+    // and report the defect its own explanation describes.
+    expect(CODE).toMatch(/verifiedPush\(process\.cwd\(\)/);
+    const call = CODE.slice(CODE.indexOf("verifiedPush("), CODE.indexOf("verifiedPush(") + 200);
+    expect(call, "the push target is read out of the state file").not.toContain("projectRoot");
+  });
+
+  test("the env passed in is process.env plus the one flag, nothing else", () => {
+    expect(CODE).toMatch(/env:\s*\{\s*\.\.\.process\.env,\s*GATE_PASSED_PUSH:\s*"1",?\s*\}/);
+  });
+
+  test("GATE_PASSED_PUSH is still set, because the pre-push hook reads it", () => {
+    // #213's body says it is "set here and read nowhere". It is read.
+    const hook = readFileSync(
+      join(import.meta.dir, "..", "scripts", "git-hooks", "pre-push"), "utf-8",
+    );
+    expect(hook).toContain("process.env.GATE_PASSED_PUSH");
+    expect(CODE).toContain("GATE_PASSED_PUSH");
+  });
+
+  test("an unexpected throw is recorded as UNMEASURED, not allowed to crash the run", () => {
+    // The code this replaced was `try { … } catch {}`: wrong about the
+    // swallowing, right that post-verdict bookkeeping must not crash a run
+    // that has already passed. Both properties now hold at once.
+    const guarded = CODE.slice(CODE.indexOf("let pushOutcome"), CODE.indexOf("const evidence"));
+    expect(guarded).toMatch(/try\s*\{/);
+    expect(guarded).toContain('kind: "unmeasured"');
+    expect(guarded, "an empty catch is back").not.toMatch(/catch\s*(\([^)]*\))?\s*\{\s*\}/);
   });
 });
 

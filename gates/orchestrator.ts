@@ -6,7 +6,7 @@ import { WorkflowStateSchema, ACSchema, AfkBatchPlanSchema, REJECTED_SKIP_REASON
 import { ZodError } from "zod";
 import { createGitHubClient, addLabels, addComment, type GitHubClient } from "../lib/github";
 import { computeACHash } from "../lib/workflow-security";
-import { verifiedPush, leftWorkLocal } from "../lib/verified-push";
+import { verifiedPush, leftWorkLocal, type PushOutcome } from "../lib/verified-push";
 
 /**
  * ADR-009 acHash over AC *definition* fields only.
@@ -360,12 +360,37 @@ export function generateShipEvidence(
   // ship gate recorded. #213's body calls it "set here and read nowhere" —
   // that is wrong, and dropping it would make every gate-passed push re-run
   // the whole suite from inside the hook.
-  const pushOutcome =
-    issueRepo && issue > 0
-      ? verifiedPush(state.projectRoot || process.cwd(), {
-          env: { ...process.env, GATE_PASSED_PUSH: "1" },
-        })
-      : null;
+  // The tree is process.cwd(), deliberately, and NOT `state.projectRoot`.
+  // Two reasons, and the second is the one that settles it:
+  //
+  //  - `mergeCommitSha` above comes from `gitSha()` with no argument, which is
+  //    process.cwd(). A push from a different tree would confirm a remote
+  //    against a SHA this evidence never measured — the two have to be the
+  //    same repo or the artefact contradicts itself.
+  //  - `state.projectRoot` is a value read out of workflow-state.json. Letting
+  //    a field in a state file choose which repository a `git push` runs
+  //    against is a privileged operation taking its target from data, and the
+  //    code this replaces did not do that. Minimal scope: keep the tree the
+  //    old call used.
+  //
+  // `verifiedPush` is total and documented not to throw, but this is
+  // post-verdict bookkeeping and the old code could not crash the run no
+  // matter what. An unexpected throw is recorded as UNMEASURED, which
+  // `leftWorkLocal` already treats as "work may be local" — fail closed.
+  let pushOutcome: PushOutcome | null = null;
+  if (issueRepo && issue > 0) {
+    try {
+      pushOutcome = verifiedPush(process.cwd(), {
+        env: { ...process.env, GATE_PASSED_PUSH: "1" },
+      });
+    } catch (e: any) {
+      pushOutcome = {
+        kind: "unmeasured",
+        detail: `the auto-push threw (${e?.name ?? typeof e}), so whether the commit reached ` +
+          `the remote is unknown. UNMEASURED is not PASS.`,
+      };
+    }
+  }
   if (pushOutcome) {
     const line = `Auto-push: ${pushOutcome.kind} — ${pushOutcome.detail}`;
     if (leftWorkLocal(pushOutcome)) {

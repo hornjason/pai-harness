@@ -120,7 +120,14 @@ export function parseLsRemoteSha(output: string, ref: string): string | null {
  * upstream is reported as a missing upstream rather than surfacing later as a
  * confusing push failure.
  */
-export function classifyPush(r: PushReadings): PushOutcome {
+export function classifyPush(raw: PushReadings): PushOutcome {
+  // Every `detail` below interpolates git's own output, and every `detail`
+  // ends up in ship-evidence.json. Redacting once here rather than at each
+  // interpolation means a `detail` added later cannot forget to do it — and
+  // it holds for callers that build readings by hand, not only for the ones
+  // that came through `runner`.
+  const r = redactReadings(raw);
+
   if (!r.localSha.ok || !/^[0-9a-f]{7,64}$/i.test(r.localSha.output.trim())) {
     return {
       kind: "unmeasured",
@@ -230,6 +237,44 @@ export function classifyPush(r: PushReadings): PushOutcome {
   };
 }
 
+/**
+ * Strip credentials out of anything git says before it is recorded.
+ *
+ * The push outcome's `detail` is written into ship-evidence.json, which is a
+ * durable artefact, and printed. git's failure output quotes the remote URL —
+ * `fatal: Authentication failed for 'https://user:ghp_…@github.com/o/r.git'`
+ * — so a push that fails to authenticate against an HTTPS remote with an
+ * embedded token would write that token into the artefact. The remote name
+ * read from `branch.<b>.remote` can be a URL for the same reason.
+ *
+ * Two independent rules rather than one, because they fail differently: the
+ * userinfo rule catches the structured case and the token rule catches a bare
+ * token that reached the output some other way.
+ */
+export function redactSecrets(text: string): string {
+  return text
+    // scheme://user:secret@host — the password is what matters, but the
+    // username is dropped too: a PAT is often supplied AS the username.
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/\s@]+@/gi, "$1<redacted>@")
+    // Bare GitHub token forms, in case one arrives outside a URL.
+    .replace(/\b(gh[pousr]|github_pat)_[A-Za-z0-9_]{10,}/g, "<redacted-token>");
+}
+
+const redactReading = (x: Reading | null): Reading | null =>
+  x === null ? null : { ok: x.ok, output: redactSecrets(x.output) };
+
+function redactReadings(r: PushReadings): PushReadings {
+  return {
+    branch: redactReading(r.branch)!,
+    remoteName: redactReading(r.remoteName)!,
+    remoteRef: redactReading(r.remoteRef)!,
+    ahead: redactReading(r.ahead)!,
+    localSha: redactReading(r.localSha)!,
+    push: redactReading(r.push),
+    remote: redactReading(r.remote),
+  };
+}
+
 function runner(cwd: string, env: NodeJS.ProcessEnv) {
   return (args: string[], timeout: number): Reading => {
     try {
@@ -240,13 +285,13 @@ function runner(cwd: string, env: NodeJS.ProcessEnv) {
         timeout,
         stdio: ["ignore", "pipe", "pipe"],
       });
-      return { ok: true, output: output ?? "" };
+      return { ok: true, output: redactSecrets(output ?? "") };
     } catch (e: any) {
       // stderr is where git explains a rejection, and the original threw it
       // away. Both streams are kept because which one carries the reason
       // depends on the subcommand.
       const parts = [e?.stdout, e?.stderr, e?.message].filter(Boolean).map(String);
-      return { ok: false, output: parts.join("\n").trim() };
+      return { ok: false, output: redactSecrets(parts.join("\n").trim()) };
     }
   };
 }
@@ -258,6 +303,18 @@ function runner(cwd: string, env: NodeJS.ProcessEnv) {
  * on PATH. That is how test/gate-auto-push.test.ts performs the mutation this
  * change has to survive — a `git push` that exits 0 without doing anything —
  * as a measurement on every run rather than a sentence in a PR body.
+ *
+ * It resolves the `git` binary, so it is worth saying what it is not: it is
+ * not a widening of trust. The only production caller passes `process.env`
+ * plus one flag, and anyone who can set `process.env` already controls PATH
+ * for the whole process. The shape of that call site is asserted in
+ * test/gate-auto-push.test.ts, so a later caller that funnels a value from a
+ * state file or an issue body into `env` is caught rather than assumed away.
+ *
+ * It does not throw. Every git invocation's failure becomes a `Reading` with
+ * `ok: false`, and `classifyPush` is total, so the worst case is an outcome of
+ * `unmeasured` — which `leftWorkLocal` counts as "work may be local". There is
+ * no input for which this reports success without having read the remote.
  */
 export function verifiedPush(
   cwd: string,

@@ -183,11 +183,15 @@ clean.
 - [x] SC-717: gates/orchestrator.ts contains [pushLeftWorkLocal] — the push outcome is written into ship-evidence.json, which is the artefact the run is judged by, rather than printed into a log nobody reads
 - [x] SC-718: gates/gate-executor.ts contains [unreadableConformityMarker] — an unreadable findings file sets a distinct marker that a consumer can tell apart from an empty findings list
 - [x] SC-719: test/gate-auto-push.test.ts contains [the shim did not intercept the push] — the remote read-back is proven able to fail by a `git` shim that exits 0 on push without doing anything, driven on every run rather than recorded once in a PR body
+- [x] SC-720: lib/verified-push.ts contains [redactReadings] — git's output is stripped of credentials before any of it reaches a recorded outcome, because a failed HTTPS push quotes the remote URL and ship-evidence.json is durable
+- [x] SC-721: gates/orchestrator.ts contains [verifiedPush(process.cwd()] — the push runs in the tree `gitSha()` measured rather than one named by workflow-state.json, so a privileged operation does not take its target from a data field and the artefact cannot contradict itself
+- [x] SC-722: gates/orchestrator.ts contains [the auto-push threw] — an unexpected throw in post-verdict bookkeeping is recorded as UNMEASURED instead of crashing a run that has already passed, which is the one property the empty catch had and had to be kept
 
 ### What was broken to prove it (#213)
 
-Run and counted over `test/gate-auto-push.test.ts` (32 tests). None is left in
-the tree; all were run and reverted.
+Run and counted over `test/gate-auto-push.test.ts`. None is left in the tree;
+all were run and reverted. The first five were measured at 32 tests, the last
+two at 38 after the redaction cases were added.
 
 | Mutation | Red |
 |---|---|
@@ -196,6 +200,33 @@ the tree; all were run and reverted.
 | `parseInt` semantics restored for the ahead-count | 2 of 32 — an empty or garbled count silently becomes "nothing to push" again |
 | the no-upstream branch short-circuited | 3 of 32 — including the real temp repo on a branch that has never been pushed |
 | `readConformityFindings`'s catch emptied back out | 2 of 32 — the marker and the empty-vs-unreadable distinction both vanish |
+| `redactReadings` bypassed in `classifyPush` | 2 of 38 — a hand-built reading carrying a PAT reaches the recorded outcome |
+| the URL-userinfo rule deleted, leaving only the token rule | 2 of 38 — the two rules overlap on a PAT in a URL, so a non-token password is what separates them |
+| the push target changed back to `state.projectRoot \|\| process.cwd()` | 1 of 42 |
+| the call site's guard reverted to `catch {}` | 1 of 42 |
+
+### Security review, addressed rather than argued with
+
+Three findings on the first push of this change. All three are about the call
+site or the trust boundary rather than the classifier, and all three are now
+pinned by tests so a later edit has to move them deliberately.
+
+- **The push took its tree from `state.projectRoot`.** That is a field in a
+  state file choosing which repository a `git push` runs against, and the code
+  being replaced did not do it. Reverted to `process.cwd()`, which is also the
+  tree `gitSha()` measured for `mergeCommitSha` — a push from anywhere else
+  would confirm a remote against a SHA the artefact never took.
+- **`verifiedPush` takes an injectable `env` and resolves the `git` binary.**
+  Kept: it is how the standing push-no-op mutation is performed, and the only
+  production caller passes `process.env` plus one flag, which is no wider than
+  the ambient environment already is. The call site's exact shape is now
+  asserted, so a later caller funnelling a state-file value into `env` is
+  caught rather than assumed away.
+- **Fail-open.** The classifier is total and its unknown case is `unmeasured`,
+  which `leftWorkLocal` counts as "work may be local" — there is no input for
+  which it reports success without having read the remote. The real gap was
+  adjacent: an unexpected throw would now crash post-verdict bookkeeping that
+  the old empty catch could not. That is recorded as UNMEASURED instead.
 
 ## Gate Chain Order (SC-375)
 
