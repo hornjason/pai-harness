@@ -208,6 +208,53 @@ here.
 - [x] SC-697: test/compound-sc-clauses.test.ts contains [the recovered clause is EXECUTED, not merely parsed] — a parse that nothing runs is the same vacuous shape this issue is about
 - [x] SC-698: test/compound-sc-clauses.test.ts contains [a POSITIVE second clause on another file is recovered] — the third shape is pinned, so a later simplification to "negation only" fails rather than silently unasserting two criteria
 
+### Nothing reconciled the registry with its handlers (#212)
+
+`matchPattern` iterates the **registry** and looks each entry's handler up by
+name, so the two sets must agree and nothing made them.
+`test/matcher-registry.test.ts` validates the registry's internal shape — unique
+names, compiling regexes, examples matching their own regex — and contains zero
+references to the conformity engine. Its only count assertion is a floor pinned
+to the current number, so adding a handler with no registry entry kept it green.
+The sets were identical when measured, and held that way by luck.
+
+The two drift directions fail differently, which is why one test is not enough:
+
+- **A registry entry with no handler asserts nothing, silently.** The statement
+  *matched* — the author's syntax was recognised — and `matchPattern` still
+  returned `null`, which downstream is indistinguishable from "no pattern
+  matched at all". That collapses *recognised but unimplemented* into
+  *unrecognised*; SUCCESS.md claim 4 requires them distinct. Worse, the two
+  tools disagree by design: `create-spec` validates with `isMatchablePattern`,
+  which checks the regex and not the handler, so an author is told their
+  criterion is valid and the engine then generates nothing for it.
+- **A handler with no registry entry is unreachable.** `matchPattern` never
+  iterates the handler map, so the handler is dead however well it is tested —
+  the shape #200 was filed for.
+
+`resolveMatcher` now returns which of the three happened, and `matchPattern` is
+a thin wrapper over it that still answers `AssertionFn | null`, so no existing
+caller changes. The engine reports an `unimplemented` criterion as a FAIL rather
+than folding it into the unmatched ratchet: that population is zero and a parity
+test keeps it there, so unlike the prose backlog it cannot turn specs red en
+masse.
+
+`loadRegistry`'s fallback to the built-ins on an unparseable consumer config is
+correct — one consumer's broken file must not take the engine's own matchers
+down with it — but it happened in silence, so every SC written against a custom
+matcher read as unrecognised with nothing saying why. It now warns and still
+falls back.
+
+- [x] SC-699: lib/conformity.ts contains [matcherHandlerNames, resolveMatcher] — the handler set and the three-way outcome are exported, so parity is a comparison of two real sets rather than an inference from a passing suite
+- [x] SC-700: test/matcher-registry-parity.test.ts contains [every registry entry has a handler, every handler has a registry entry] — both directions, each naming its offenders, because the two kinds of drift are different defects
+- [x] SC-701: lib/conformity.ts contains [could not be read as JSON] — a consumer config that fails to parse says so instead of degrading to the built-ins unannounced
+- [x] SC-702: test/matcher-registry-parity.test.ts contains [the exception list holds only ids that genuinely diverge] — the create-spec/engine agreement list ratchets both ways, so an entry that stops diverging must be delisted rather than left to accumulate
+- [x] SC-703: lib/conformity.ts contains [planSCTests(metadata.scs, root)] — the engine resolves matchers against the consumer's project root, because `create-spec` validates WITH one and the runner passed none, so every consumer custom matcher was accepted at authoring time and invisible at verification time
+- [x] SC-704: test/matcher-registry-parity.test.ts contains [the engine's refusal is executed, not just written] — the refusal branch is driven against a planted project rather than asserted, because it only runs when the population is non-empty and in this repo it never is
+- [x] SC-705: lib/conformity.ts contains [allowBuiltInOverride] — the engine resolves against a registry a consumer may extend but not replace, so a project cannot shadow a built-in matcher with one that never matches and switch off the check verifying it
+- [x] SC-706: test/matcher-registry-parity.test.ts contains [the subject under test cannot switch off the check verifying it] — the restriction is asserted from both sides: the shadowing entry is ignored AND a purely additive custom matcher still resolves, so the guard cannot be satisfied by disabling custom matchers wholesale
+- [x] SC-707: lib/conformity.ts contains [message withheld] — a config parse failure reports the error's type and not its message, because a JSON parse error quotes the bytes around the fault and the file is the consumer's own
+
 ## Implementation
 
 ### Phase A: SC Classification
