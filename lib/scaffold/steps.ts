@@ -1795,9 +1795,14 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   const SAFE_BRANCH = /^[A-Za-z0-9][A-Za-z0-9._\/-]*$/;
   const baseRefStep =
     SAFE_BRANCH.test(baseBranch) && !baseBranch.includes("..")
-      ? `      - name: Fetch the comparison base for the conformity ratchet
+      ? // `--depth=200`, not `--depth=1`. The conformity ratchet only diffs the
+        // tip and was happy with one commit, but a tip with no history behind
+        // it makes any check that reads the recent log unmeasurable — and an
+        // empty log is indistinguishable from a clean one. Two hundred commits
+        // is a few hundred KB and spans months of this project's history.
+        `      - name: Fetch the comparison base for the conformity ratchet
         run: |
-          git fetch --no-tags --depth=1 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
+          git fetch --no-tags --depth=200 origin '+refs/heads/${baseBranch}:refs/remotes/origin/${baseBranch}' \\
             || echo "WARN: could not fetch ${baseBranch}; the conformity allowlist growth check will report UNMEASURED."`
       : // Not a fetchable ref: a glob pattern, a leading dash, or a traversal
         // segment. Emitted as a comment so the omission is visible in the

@@ -134,7 +134,7 @@ describe("#302: CI is given the comparison base the ratchet needs", () => {
   // 128 and DRIFT-3 reported UNMEASURED on every run. The environment was
   // wrong, not the assertion, so the fix is to supply the base rather than to
   // relax the check.
-  const FETCH_STEP = /git fetch --no-tags --depth=1 origin '\+refs\/heads\/\S+:refs\/remotes\/origin\/[^']+'/;
+  const FETCH_STEP = /git fetch --no-tags --depth=(\d+) origin '\+refs\/heads\/\S+:refs\/remotes\/origin\/[^']+'/;
 
   test("the scaffold generator emits a base-ref fetch step", () => {
     // Fix the source, not the output: the workflow file is harness-managed
@@ -143,16 +143,26 @@ describe("#302: CI is given the comparison base the ratchet needs", () => {
     expect(generator).toMatch(FETCH_STEP);
   });
 
-  test("it fetches ONE commit, not the whole history", () => {
-    // The full-history alternative would also work and costs every consumer a
-    // full clone for a single file read.
+  test("the depth is bounded, and deep enough to read a log", () => {
+    // This shipped at `--depth=1`, which is all the ratchet needs: it diffs
+    // the tip and reads one file. The cost argument against full history
+    // still holds and is why there is an upper bound here at all.
     //
-    // Comments stripped first: the generator's own comment explains why that
-    // alternative was rejected, and names it. A detector reading raw source
-    // reports the defect the comment says was avoided — this test failed
-    // exactly that way on its first run.
+    // One commit turned out to be too few once something else asked the base
+    // a question. `test/project-state-currency.test.ts` compares landed PRs
+    // on main against the newest session entry, and under depth=1 it read an
+    // empty log — which is indistinguishable from a clean one, so it had to
+    // refuse as UNMEASURED. The environment was wrong, not the assertion.
+    //
+    // Comments stripped first: the generator's own comment explains the
+    // alternative that was rejected and names it. A detector reading raw
+    // source reports the defect the comment says was avoided — this test
+    // failed exactly that way on its first run.
     const generator = stripJsComments(readFileSync(join(ROOT, "lib/scaffold/steps.ts"), "utf-8"));
     expect(generator).not.toMatch(/fetch-depth:\s*0/);
+    const depth = Number(FETCH_STEP.exec(generator)?.[1]);
+    expect(depth, "a shallow base cannot answer a question about recent history").toBeGreaterThanOrEqual(50);
+    expect(depth, "this is a base for comparison, not a clone").toBeLessThanOrEqual(1000);
   });
 
   test("a failed fetch prints rather than being swallowed", () => {

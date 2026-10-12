@@ -713,11 +713,34 @@ stops.
 
 `mergesOnMain` reports `ok: false` rather than an empty list when `git log`
 fails, and a separate case asserts the probe reads something. Without it a
-failed git invocation returns zero merges and every assertion in the file
+failed git invocation returns zero commits and every assertion in the file
 passes — the exact defect the file exists to catch, in the file that catches
 it.
 
-- [x] SC-751: test/project-state-currency.test.ts contains [every merge since the last recorded session is accounted for] — merges on `main` are compared against the newest session entry and the uncovered ones are named, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
+### The probe shipped blind to how PRs actually land here
+
+The first version asked git for `--merges`, and it was green. This repo
+**squash-merges**: a landed PR is an ordinary first-parent commit whose subject
+GitHub suffixes with `(#N)`. There are old true merges in the history, so the
+readability case passed; no merge commit had landed since the last session, so
+the comparison passed too. A detector narrower than what it detects, in the
+file written to catch exactly that.
+
+CI found it, and not by catching the blindness — `actions/checkout` plus a
+`--depth=1` base fetch left `origin/main` with no history, so the probe read
+nothing and the readability case refused. The depth was enough for the
+conformity ratchet, which only diffs the tip, and nothing else had ever asked
+the log a question. Fixed in the generator rather than the generated file:
+`lib/scaffold/steps.ts` now emits `--depth=200`.
+
+Reverting the squash fix scored **0 red**, which is why SC-754 exists. It runs
+the probe twice over the same window — once unrestricted, once restricted to
+merge commits — and asserts the restricted one sees strictly fewer landed PRs.
+Empirical rather than a source grep, and the filter string is composed rather
+than written as a literal, so the assertion is not its own evidence.
+
+- [x] SC-751: test/project-state-currency.test.ts contains [every PR landed since the last recorded session is accounted for] — commits on `main` carrying a PR number are compared against the newest session entry and the uncovered ones are named, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
+- [x] SC-754: test/project-state-currency.test.ts contains [the probe sees squashes, which is how PRs actually land here] — the unrestricted probe must find strictly more landed PRs than a merge-commit-only one, because this repo squash-merges and a `--merges` probe is blind to every PR that lands
 - [x] SC-752: scripts/update-project-state.ts contains [This script re-renders; it does not write session content] — the renderer reports which files it changed instead of claiming success unconditionally, because eight commits of staleness each got a green checkmark
 
 ### A generator whose every assertion was vacuous (#343, follow-up)
@@ -759,13 +782,15 @@ output cannot take.
 
 - [x] SC-753: test/sync-spec-tests-paths.test.ts contains [no case is a bare substring search of a whole workflow file] — the generated file is parsed and any `toContain` against a `*_JS` whole-file binding is a violation, because an assertion a human never read before it joined the suite total has no other place for its quality bar
 
-### What was broken to prove it (SC-751..753)
+### What was broken to prove it (SC-751..754)
 
 | Mutation | Red |
 |---|---|
-| `project-state.json`'s latest `session.date` rolled back to 2026-09-01 | 2 of 5 in `test/project-state-currency.test.ts` — the uncovered merges, and the markdown no longer naming the date it was rendered from |
-| the git probe pointed at `origin/no-such-ref` | 1 of 5 — the readability case alone, which is the point: the merge comparison returns early and stays silent rather than reporting clean |
-| the renderer's honest message replaced with `"ran."` | 1 of 5 |
+| `project-state.json`'s latest `session.date` rolled back to 2026-09-01 | 2 of 6 in `test/project-state-currency.test.ts` — the uncovered PRs, and the markdown no longer naming the date it was rendered from |
+| the git probe pointed at `origin/no-such-ref` | 1 of 6 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
+| the renderer's honest message replaced with `"ran."` | 1 of 6 |
+| the probe restricted to merge commits again | 1 of 6 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
+| the squash subject form dropped from the parser | 1 of 6 |
 | the deleted generator output replanted (`expect(SHIP_JS.toLowerCase()).toContain("gate")`) | caught by the detector's own planted control, which asserts it fires on the two verbatim cases #343 removed |
 
 None is left in the tree; all were run and reverted.
