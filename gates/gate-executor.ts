@@ -33,6 +33,7 @@ import {
 import { EvidencePrevalidationSchema } from "./schema";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
+import { livenessPlan, probeTarget } from "../lib/dev-liveness";
 import { createGitHubClient, getIssue, addLabels } from "../lib/github";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
@@ -436,38 +437,56 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   let apiBase = "";
   let uiBase = "";
   let devStart = "";
+  let devHealthPath = "";
+  let prodCfg: { apiBase?: string; healthPath?: string } = {};
   if (existsSync(harnessPath)) {
     const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
     apiBase = harness.dev?.apiBase || "";
     uiBase = harness.dev?.uiBase || "";
     devStart = harness.dev?.start || "";
+    devHealthPath = harness.dev?.healthPath || "";
+    prodCfg = { apiBase: harness.prod?.apiBase || "", healthPath: harness.prod?.healthPath || "" };
   }
 
+  // #304. This used to curl `${apiBase}/api/admin/health` and `process.exit(1)`
+  // on failure — the worst of the three copies of that route, because the
+  // consequence is a hard refusal rather than a FAIL line. A consumer whose
+  // health route is anything else had its prove gate killed on a server that
+  // was up, told to start it.
+  const devTarget = probeTarget("dev", { apiBase, healthPath: devHealthPath });
   if (apiBase) {
-    try {
-      execSync(`curl -sf ${apiBase}/api/admin/health`, { timeout: 10000, encoding: "utf-8" });
-      console.log(`prove gate: health check PASS (${apiBase})`);
-    } catch {
-      console.error(`prove gate: FAIL — dev server not responding at ${apiBase}`);
-      if (devStart) console.error(`Start it with: ${devStart}`);
-      process.exit(1);
+    if (devTarget.kind === "unmeasured") {
+      console.warn(`WARN: prove gate — dev liveness UNMEASURED: ${devTarget.detail}`);
+    } else {
+      try {
+        execFileSync("curl", ["-sf", "--max-time", "10", "--", devTarget.url], {
+          timeout: 10000, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
+        });
+        console.log(`prove gate: health check PASS (${devTarget.url})`);
+      } catch {
+        console.error(`prove gate: FAIL — dev server not responding at ${devTarget.url}`);
+        if (devStart) console.error(`Start it with: ${devStart}`);
+        process.exit(1);
+      }
     }
   }
 
-  // Prod health check — WARN only
-  const prodApiBase = (() => {
-    if (existsSync(harnessPath)) {
-      const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-      return harness.prod?.apiBase || "";
-    }
-    return "";
-  })();
-  if (prodApiBase) {
-    try {
-      execSync(`curl -sf ${prodApiBase}/api/admin/health`, { timeout: 10000, encoding: "utf-8" });
-      console.log(`prove gate: prod health check PASS (${prodApiBase})`);
-    } catch {
-      console.warn(`WARN: prove gate — prod server not responding at ${prodApiBase} (STANDARD+ requires prod evidence)`);
+  // Prod health check — WARN only. Third copy of the same hardcoded route
+  // (#304), and the one most likely to go unnoticed, because its only
+  // consequence is a warning line nobody reads.
+  if (prodCfg.apiBase) {
+    const prodTarget = probeTarget("prod", prodCfg);
+    if (prodTarget.kind === "unmeasured") {
+      console.warn(`WARN: prove gate — prod liveness UNMEASURED: ${prodTarget.detail}`);
+    } else {
+      try {
+        execFileSync("curl", ["-sf", "--max-time", "10", "--", prodTarget.url], {
+          timeout: 10000, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
+        });
+        console.log(`prove gate: prod health check PASS (${prodTarget.url})`);
+      } catch {
+        console.warn(`WARN: prove gate — prod server not responding at ${prodTarget.url} (STANDARD+ requires prod evidence)`);
+      }
     }
   }
 
@@ -1013,28 +1032,68 @@ function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string, ha
   console.log("B1: AC Adversary spawned in background — verify gate will check result");
 }
 
+/**
+ * #304 — the probe used to curl a literal `${apiBase}/api/admin/health`.
+ *
+ * `apiBase` came from config; the path did not. It is one consumer's
+ * route, and because this only runs for a project that sets `dev.apiBase` —
+ * which rungate does not — DDB is the only project that has ever reached the
+ * line. It worked for one consumer by coincidence.
+ *
+ * The decision now lives in `livenessPlan` in lib/dev-liveness.ts, which is
+ * pure, so every branch is exercisable without a server. This function does
+ * the one thing that needs a network. Three outcomes, all recorded:
+ *
+ *   not-applicable — nothing asked for a server. Silent, as before.
+ *   unmeasured     — asked for, not configured. WARNed and recorded as a
+ *                    WARN result, never as a FAIL. A probe with no route
+ *                    reporting DOWN is a false FAIL on a healthy server, and
+ *                    its stated remedy is to start something already running.
+ *   probe          — exactly one http(s) URL, argv-form, no shell.
+ */
 function checkDevServerLiveness(state: Record<string, any>, results: GateResult[]): number {
   let addedFails = 0;
-  const hasServerDependentOutcomeACs = (state.acs || []).some((ac: any) =>
-    ac.type === "OUTCOME" && ac.evidenceMethod?.type &&
-    ["PLAYWRIGHT", "HTTP", "CURL", "SCREENSHOT"].includes(ac.evidenceMethod.type.toUpperCase())
-  );
-  if (hasServerDependentOutcomeACs && state.projectRoot) {
-    const harnessPath = join(state.projectRoot, ".claude", "rungate.json");
-    if (existsSync(harnessPath)) {
-      const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-      const apiBase = harness?.dev?.apiBase;
-      if (apiBase) {
-        try {
-          execSync(`curl -sf ${apiBase}/api/admin/health`, { timeout: 5000, encoding: "utf-8" });
-          console.log(`Dev server liveness: ${apiBase} — UP`);
-        } catch {
-          addedFails++;
-          results.push({ check: "dev-server-liveness: OUTCOME ACs require running dev server", result: "FAIL" as const, detail: `${apiBase} not responding — run '${harness?.dev?.start || "make dev-all"}' first` });
-          console.log(`Dev server liveness: ${apiBase} — DOWN. Start with: ${harness?.dev?.start || "make dev-all"}`);
-        }
-      }
+  if (!state.projectRoot) return 0;
+  const harnessPath = join(state.projectRoot, ".claude", "rungate.json");
+  let harness: any = null;
+  if (existsSync(harnessPath)) {
+    try {
+      harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
+    } catch {
+      harness = null;
     }
+  }
+
+  const plan = livenessPlan(state.acs, harness?.dev);
+  if (plan.kind === "not-applicable") return 0;
+
+  if (plan.kind === "unmeasured") {
+    results.push({
+      check: "dev-server-liveness: UNMEASURED",
+      result: "WARN" as const,
+      detail: plan.detail,
+    });
+    console.log(`Dev server liveness: UNMEASURED — ${plan.detail}`);
+    return 0;
+  }
+
+  try {
+    // Argv form: both halves of the URL come out of the consumer's own
+    // rungate.json and the old line interpolated them into a shell string.
+    execFileSync("curl", ["-sf", "--max-time", "5", "--", plan.url], {
+      timeout: 5000,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    console.log(`Dev server liveness: ${plan.url} — UP`);
+  } catch {
+    addedFails++;
+    results.push({
+      check: "dev-server-liveness: OUTCOME ACs require running dev server",
+      result: "FAIL" as const,
+      detail: `${plan.url} not responding — run '${plan.startHint}' first`,
+    });
+    console.log(`Dev server liveness: ${plan.url} — DOWN. Start with: ${plan.startHint}`);
   }
   return addedFails;
 }

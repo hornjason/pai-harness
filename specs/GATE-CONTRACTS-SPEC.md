@@ -327,6 +327,106 @@ It is reachable rather than dead code, so making it refuse changes behaviour
 on a live consumer, and that needs its blast radius measured first rather
 than guessed at in an adjacent PR.
 
+## A probe with a consumer's route baked into it (#304)
+
+`checkDevServerLiveness` curled a literal `${apiBase}/api/admin/health`.
+`apiBase` came from config; the path did not — it is one consumer's endpoint,
+written into the harness. The probe only runs for a project that sets
+`dev.apiBase` and has a server-dependent OUTCOME AC, and rungate sets no
+`dev` key at all, so that one consumer is the only project that has ever
+reached the line. It worked by coincidence.
+
+The first consumer with a different health route is told its running server is
+DOWN and to start it. A false FAIL naming the wrong cause is worse than no
+check, because the stated remedy is to start something already running.
+
+### One site named, five found
+
+The issue described one. The grep it asked for found five, and that ratio is
+the argument for point 1 of its own test plan — the cheap sweep is worth more
+than the fix it was written to follow.
+
+| Site | What it did | Fixed |
+|---|---|---|
+| `gates/gate-executor.ts` `checkDevServerLiveness` | the site #304 named; FAIL result | yes |
+| `gates/gate-executor.ts` prove gate, dev | same route, behind `process.exit(1)` — the worst of the three, because the consequence is a hard refusal | yes |
+| `gates/gate-executor.ts` prove gate, prod | same route against `prod.apiBase`, behind a warning — the least visible | yes |
+| `workflows/prove.js` `ensure-dev-server` | named a route in an agent prompt | yes |
+| `workflows/verify.js` smoke test | two DDB endpoints, alongside DDB's ports, container name and app path | **no** — #344 |
+
+### No default path, and that is the decision this turns on
+
+`dev.healthPath ?? "/health"` is the obvious shape and is wrong for the same
+reason the hardcoded route was: a guessed path 404s on a healthy server,
+`curl -sf` exits non-zero, and the probe reports DOWN. **Unconfigured has to
+mean UNMEASURED** — a recorded WARN, never a FAIL. This is #185's
+`mergedIntoBase` distinction in the direction that matters: reporting DOWN
+looks fail-closed and is simply wrong, and it blocks a correct run.
+
+`probeTarget` is one function so that decision is made once for all three
+gate-executor sites. The alternative — three call sites each deciding what an
+absent path means — is how the second and third copies came to exist.
+
+### The guard that should have caught this never looked below the top level
+
+`test/anti.test.ts` SC-A1 — "no project-specific references in workflows" —
+has existed the whole time and is the check this bug should have tripped. Its
+`findTsFiles` did not recurse. It read only the top level of `gates/`,
+`lib/` and `scripts/`, so the three consumer references under `lib/scaffold/`
+were invisible to it, and it reported clean. A guard passing because of what
+it never looked at, inside the file whose entire job is refusing consumer
+specifics.
+
+Writing the consumer's name into a comment while fixing #304 is what turned
+it red — which is the correct behaviour, and the comments were reworded
+rather than the guard weakened. The walk is now recursive, the three known
+references are an exact list that ratchets both ways, and a planted control
+asserts the walk reaches `lib/scaffold/` at all, because the list assertion
+would pass vacuously against a flat walk exactly as it did before.
+
+SC-A1 still only matches the consumer's *name*. It would not have caught
+`/api/admin/health`, which carries no name — that is what the route sweep in
+`test/dev-liveness.test.ts` is for, and why both exist.
+
+### `workflows/verify.js` is a counted ratchet, not an exemption
+
+Its two route literals are held as an exact list in
+`test/dev-liveness.test.ts`. A directory skipped by the sweep is a directory
+nobody measures again; a count refuses growth AND goes red as an instruction
+to delist when #344 lands. Ratchets move both ways (#310, #299).
+
+- [x] SC-733: lib/dev-liveness.ts contains [probeTarget] — one function decides where to probe and what an absent path means, because three call sites deciding separately is how the second and third copies of the hardcoded route came to exist
+- [x] SC-734: test/dev-liveness.test.ts contains [a different consumer's route is probed] — two fixture consumers with different health paths both produce a probe at their own URL, and the two URLs are asserted to differ so the test cannot be matching a constant
+- [x] SC-735: test/dev-liveness.test.ts contains [unconfigured means UNMEASURED, never DOWN] — a consumer with no health path configured produces neither UP nor DOWN but an explicit unmeasured result, because "could not check" must never become "it is down"
+- [x] SC-736: test/dev-liveness.test.ts contains [no API route path is written into] — the harness is swept for consumer route literals with comments stripped, because the single fix leaves the class open and the sweep is what found four of the five instances
+- [x] SC-737: test/anti.test.ts contains [the walk reaches subdirectories] — SC-A1's file walk is recursive and proven to reach lib/scaffold/, because the flat version read only the top level and reported clean over three consumer references it never opened
+
+### What was broken to prove it (#304)
+
+Run and counted over `test/dev-liveness.test.ts` (25 tests). None is left in
+the tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `probeTarget`'s `!healthPath` branch returns `{kind:"probe", url: apiBase + "/health"}` — the default this spec argues against, written in | 2 of 25 |
+| `livenessUrl`'s `url.origin !== base.origin` check removed | 1 of 25 |
+| `livenessUrl`'s scheme allowlist removed | 2 of 25 |
+| `ROUTE` restored to the quote-anchored form it was first written with | 2 of 25 — the planted control and the `workflows/` ratchet |
+| the literal `/api/admin/health` replanted in `gates/gate-executor.ts` | 1 of 25 |
+| `hasServerDependentOutcomeAC` short-circuited to `return true` | 3 of 25 |
+| SC-A1's walk made flat again | 2 of 11 in `test/anti.test.ts` — the ratchet and the planted control |
+| a new `lib/` file naming the consumer planted | 2 of 11 — the unexpected-reference list and the ratchet |
+
+The fourth row is the one worth reading, and it is the reason the planted
+control exists. The first version of the sweep required a quote on each side
+of the route and so did not match `` `curl -sf ${apiBase}/api/admin/health` ``
+— the literal it was written for, which is preceded by `}`. Restoring that
+pattern leaves the absence claim green over every live instance; only the
+planted control and the `workflows/` ratchet go red. A detector that cannot
+see the instance it was built from is this repository's house defect,
+reproduced inside the test written to end it, and caught only by the two
+cases whose job is to prove the detector can match at all.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
