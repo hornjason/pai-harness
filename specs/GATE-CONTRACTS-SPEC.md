@@ -400,6 +400,9 @@ to delist when #344 lands. Ratchets move both ways (#310, #299).
 - [x] SC-735: test/dev-liveness.test.ts contains [unconfigured means UNMEASURED, never DOWN] — a consumer with no health path configured produces neither UP nor DOWN but an explicit unmeasured result, because "could not check" must never become "it is down"
 - [x] SC-736: test/dev-liveness.test.ts contains [no API route path is written into] — the harness is swept for consumer route literals with comments stripped, because the single fix leaves the class open and the sweep is what found four of the five instances
 - [x] SC-737: test/anti.test.ts contains [the walk reaches subdirectories] — SC-A1's file walk is recursive and proven to reach lib/scaffold/, because the flat version read only the top level and reported clean over three consumer references it never opened
+- [x] SC-738: test/dev-liveness.test.ts contains [a base path is kept, not discarded] — the health path is appended to the base path rather than resolved against the origin, because resolution drops the prefix and probes a healthy server at the wrong place
+- [x] SC-739: test/dev-liveness.test.ts contains [the recordable URL does not] — credentials a consumer puts in apiBase reach curl but never a printed line or a recorded detail, because detail lands in ship-evidence.json and gets attached to issues
+- [x] SC-740: test/dev-liveness.test.ts contains [relaxing a refusal is recorded] — the prove gate carries both tiers' liveness readings into prove-input.json with DOWN and UNMEASURED distinct, because a refusal removed in favour of a stdout line is a fail-open
 
 ### What was broken to prove it (#304)
 
@@ -416,6 +419,44 @@ the tree; all were run and reverted.
 | `hasServerDependentOutcomeAC` short-circuited to `return true` | 3 of 25 |
 | SC-A1's walk made flat again | 2 of 11 in `test/anti.test.ts` — the ratchet and the planted control |
 | a new `lib/` file naming the consumer planted | 2 of 11 — the unexpected-reference list and the ratchet |
+| `livenessUrl` resolves against the base instead of appending to its path | 1 of 35 |
+| every `redactSecrets` call in `lib/dev-liveness.ts` replaced with identity | 3 of 35 |
+| the prove gate's `liveness` array emptied in `prove-input.json` | 1 of 35 |
+| `plan.url` printed instead of `plan.safeUrl` at the gate | 1 of 35 |
+
+### Security review, addressed rather than argued with (#304)
+
+Two findings, both real, both driven rather than reasoned about.
+
+- **A base path was silently discarded.** `livenessUrl` resolved the health
+  path against the base — `new URL("/health", "http://host/base/api")` yields
+  `http://host/health`. A consumer whose API is mounted under a prefix would
+  be probed at the wrong place and reported DOWN on a healthy server, which
+  is **this issue's own bug, reintroduced by URL resolution semantics** inside
+  the function written to remove it. It now appends to `base.pathname`, keeps
+  the same-origin check, adds a prefix check, and refuses a `//`-prefixed
+  path by name rather than relying on the origin comparison to catch it.
+
+- **Credentials reached a durable artefact.** `apiBase` may legitimately carry
+  userinfo, and the probe URL was printed and written into `detail`, which
+  lands in `ship-evidence.json` and gets attached to issues. `ProbeTarget`
+  now carries `url` and `safeUrl` as separate fields — curl gets the first,
+  every print and every record gets the second — and the unmeasured `detail`
+  strings that quote `apiBase` are redacted. `redactSecrets` is imported from
+  `lib/verified-push.ts` rather than written again; a second copy is how two
+  redactors drift and one of them stops covering a form.
+
+A third point the review raised is a **refusal relaxation**, and it is the
+one worth stating rather than silently accepting. The prove gate used to
+`process.exit(1)` when `dev.apiBase` was set and the server did not answer.
+No consumer sets `dev.healthPath` yet, so on merge every one of them stops
+being refused there. Reporting DOWN instead would be wrong — that is the
+whole issue — but letting the gap evaporate into a `console.warn` is a
+fail-open. The readings for both tiers, including the ones that measured
+nothing, now go into `prove-input.json`, where the B3 reproducer reads them
+and `prove-evidence.json` carries them forward. `DOWN` and `UNMEASURED` are
+recorded as distinct states, because collapsing them is precisely what makes
+an unmeasured gate look checked.
 
 The fourth row is the one worth reading, and it is the reason the planted
 control exists. The first version of the sweep required a quote on each side

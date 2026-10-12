@@ -453,18 +453,30 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   // consequence is a hard refusal rather than a FAIL line. A consumer whose
   // health route is anything else had its prove gate killed on a server that
   // was up, told to start it.
+  //
+  // The UNMEASURED branch is a REFUSAL RELAXATION and has to be recorded as
+  // one. Before this change a consumer with `dev.apiBase` set got
+  // `process.exit(1)` when its server was down; no consumer sets
+  // `dev.healthPath` yet, so on merge every one of them stops being refused
+  // here. Reporting DOWN instead would be wrong — that is the whole issue —
+  // but letting the gap evaporate into a stdout line is the fail-open the
+  // security review named. So the reading goes into `prove-input.json`,
+  // which the B3 reproducer reads and `prove-evidence.json` carries forward.
   const devTarget = probeTarget("dev", { apiBase, healthPath: devHealthPath });
+  let devLiveness: { tier: string; status: "UP" | "UNMEASURED"; detail: string } | null = null;
   if (apiBase) {
     if (devTarget.kind === "unmeasured") {
+      devLiveness = { tier: "dev", status: "UNMEASURED", detail: devTarget.detail };
       console.warn(`WARN: prove gate — dev liveness UNMEASURED: ${devTarget.detail}`);
     } else {
       try {
         execFileSync("curl", ["-sf", "--max-time", "10", "--", devTarget.url], {
           timeout: 10000, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
         });
-        console.log(`prove gate: health check PASS (${devTarget.url})`);
+        devLiveness = { tier: "dev", status: "UP", detail: devTarget.safeUrl };
+        console.log(`prove gate: health check PASS (${devTarget.safeUrl})`);
       } catch {
-        console.error(`prove gate: FAIL — dev server not responding at ${devTarget.url}`);
+        console.error(`prove gate: FAIL — dev server not responding at ${devTarget.safeUrl}`);
         if (devStart) console.error(`Start it with: ${devStart}`);
         process.exit(1);
       }
@@ -474,18 +486,24 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   // Prod health check — WARN only. Third copy of the same hardcoded route
   // (#304), and the one most likely to go unnoticed, because its only
   // consequence is a warning line nobody reads.
+  let prodLiveness: { tier: string; status: "UP" | "DOWN" | "UNMEASURED"; detail: string } | null = null;
   if (prodCfg.apiBase) {
     const prodTarget = probeTarget("prod", prodCfg);
     if (prodTarget.kind === "unmeasured") {
+      prodLiveness = { tier: "prod", status: "UNMEASURED", detail: prodTarget.detail };
       console.warn(`WARN: prove gate — prod liveness UNMEASURED: ${prodTarget.detail}`);
     } else {
       try {
         execFileSync("curl", ["-sf", "--max-time", "10", "--", prodTarget.url], {
           timeout: 10000, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"],
         });
-        console.log(`prove gate: prod health check PASS (${prodTarget.url})`);
+        prodLiveness = { tier: "prod", status: "UP", detail: prodTarget.safeUrl };
+        console.log(`prove gate: prod health check PASS (${prodTarget.safeUrl})`);
       } catch {
-        console.warn(`WARN: prove gate — prod server not responding at ${prodTarget.url} (STANDARD+ requires prod evidence)`);
+        // DOWN here, unlike dev, is a measurement: the route was configured
+        // and the probe ran. UNMEASURED above is not.
+        prodLiveness = { tier: "prod", status: "DOWN", detail: prodTarget.safeUrl };
+        console.warn(`WARN: prove gate — prod server not responding at ${prodTarget.safeUrl} (STANDARD+ requires prod evidence)`);
       }
     }
   }
@@ -494,6 +512,10 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
     issueBody, issueTitle, issueNumber: issue,
     acs: state.acs || [], apiBase, uiBase,
     beforeState: state.beforeState || null, projectRoot,
+    // #304: the liveness readings, including the ones that measured nothing.
+    // UNMEASURED has to be durable or relaxing the refusal above is a silent
+    // fail-open.
+    liveness: [devLiveness, prodLiveness].filter(Boolean),
   };
   const proveInputPath = join(workDir, "prove-input.json");
   writeFileSync(proveInputPath, JSON.stringify(proveInput, null, 2));
@@ -1085,15 +1107,17 @@ function checkDevServerLiveness(state: Record<string, any>, results: GateResult[
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
     });
-    console.log(`Dev server liveness: ${plan.url} — UP`);
+    // safeUrl everywhere it is printed or recorded: `detail` lands in
+    // ship-evidence.json, which is durable (#213).
+    console.log(`Dev server liveness: ${plan.safeUrl} — UP`);
   } catch {
     addedFails++;
     results.push({
       check: "dev-server-liveness: OUTCOME ACs require running dev server",
       result: "FAIL" as const,
-      detail: `${plan.url} not responding — run '${plan.startHint}' first`,
+      detail: `${plan.safeUrl} not responding — run '${plan.startHint}' first`,
     });
-    console.log(`Dev server liveness: ${plan.url} — DOWN. Start with: ${plan.startHint}`);
+    console.log(`Dev server liveness: ${plan.safeUrl} — DOWN. Start with: ${plan.startHint}`);
   }
   return addedFails;
 }

@@ -38,13 +38,15 @@
  * server. `probeLiveness` performs the one it returns.
  */
 
+import { redactSecrets } from "./verified-push";
+
 export type LivenessPlan =
   /** Nothing to probe: no server-dependent OUTCOME AC in this run. */
   | { kind: "not-applicable"; detail: string }
   /** A probe is wanted and the config does not say where to look. */
   | { kind: "unmeasured"; detail: string }
-  /** Probe this URL. */
-  | { kind: "probe"; url: string; startHint: string };
+  /** Probe `url`; print and record `safeUrl`, which never carries credentials. */
+  | { kind: "probe"; url: string; safeUrl: string; startHint: string };
 
 /** True when any AC's evidence needs a server standing up to produce it. */
 export const SERVER_DEPENDENT_EVIDENCE = ["PLAYWRIGHT", "HTTP", "CURL", "SCREENSHOT"] as const;
@@ -78,10 +80,30 @@ export function livenessUrl(apiBase: string, healthPath: string): string | null 
   }
   if (!ALLOWED_SCHEMES.has(base.protocol)) return null;
   if (!healthPath.startsWith("/")) return null;
-  // Resolved against the base rather than concatenated, so a path carrying
-  // `..` cannot climb out of it and a query string survives intact.
-  const url = new URL(healthPath, base);
+  // A `//`-prefixed path is protocol-relative, not a path. Refused by name
+  // rather than caught by the origin check below, because the two differ in
+  // what they would do with it and only one of them is obvious to a reader.
+  if (healthPath.startsWith("//")) return null;
+
+  // Appended to the base's own path, NOT resolved against it.
+  //
+  // `new URL("/health", "http://host/base/api")` yields `http://host/health`
+  // — the base path is silently discarded. A consumer whose API is mounted
+  // under a prefix would be probed at the wrong place and reported DOWN on a
+  // healthy server, which is the bug this whole module exists to remove,
+  // reintroduced by URL resolution semantics. Found by the security review
+  // of the first version of this fix, which did resolve.
+  const joined = base.pathname.replace(/\/+$/, "") + healthPath;
+  let url: URL;
+  try {
+    url = new URL(joined, base);
+  } catch {
+    return null;
+  }
+  // Still checked, because `..` in the path can climb and a stray scheme can
+  // appear. Appending removes the protocol-relative case, not every case.
   if (url.origin !== base.origin) return null;
+  if (!url.pathname.startsWith(base.pathname.replace(/\/+$/, "") + "/")) return null;
   return url.toString();
 }
 
@@ -100,7 +122,7 @@ export function livenessUrl(apiBase: string, healthPath: string): string | null 
  */
 export type ProbeTarget =
   | { kind: "unmeasured"; detail: string }
-  | { kind: "probe"; url: string };
+  | { kind: "probe"; url: string; safeUrl: string };
 
 export function probeTarget(
   tier: string,
@@ -117,23 +139,31 @@ export function probeTarget(
   if (!healthPath) {
     return {
       kind: "unmeasured",
-      detail:
+      detail: redactSecrets(
         `the project sets no \`${tier}.healthPath\`, so liveness at ${apiBase} was not ` +
         `checked. No path is guessed on purpose (#304): a guessed route 404s on a healthy ` +
         `server, and reporting DOWN for a server that is up blocks a correct run and names ` +
         `the wrong cause. This is UNMEASURED, not DOWN.`,
+      ),
     };
   }
   const url = livenessUrl(apiBase, healthPath);
   if (!url) {
     return {
       kind: "unmeasured",
-      detail:
+      detail: redactSecrets(
         `\`${tier}.apiBase\` (${apiBase}) and \`${tier}.healthPath\` (${healthPath}) do not ` +
         `combine into an http(s) URL on the same origin, so liveness was not checked.`,
+      ),
     };
   }
-  return { kind: "probe", url };
+  // Two fields on purpose. `url` is what curl is handed and may carry
+  // credentials the consumer put in `apiBase` deliberately; `safeUrl` is the
+  // only one that may be printed or recorded. The gate's `detail` lands in
+  // ship-evidence.json, which is durable and gets attached to issues — the
+  // same leak #213 found in push `detail`, and the reason redactSecrets is
+  // imported rather than written again here.
+  return { kind: "probe", url, safeUrl: redactSecrets(url) };
 }
 
 export function livenessPlan(
@@ -156,6 +186,7 @@ export function livenessPlan(
   return {
     kind: "probe",
     url: target.url,
+    safeUrl: target.safeUrl,
     startHint: dev?.start || "the project's dev-server start command",
   };
 }

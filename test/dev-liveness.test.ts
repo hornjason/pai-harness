@@ -21,7 +21,8 @@
  * distinction #185 drew for `mergedIntoBase`, in the direction that matters.
  * Reporting DOWN looks fail-closed and is simply wrong.
  *
- * Covers SC-733, SC-734, SC-735, SC-736 of GATE-CONTRACTS-SPEC.md.
+ * Covers SC-733, SC-734, SC-735, SC-736, SC-738, SC-739, SC-740 of
+ * GATE-CONTRACTS-SPEC.md.
  */
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
@@ -29,6 +30,7 @@ import { join } from "path";
 import {
   livenessPlan,
   livenessUrl,
+  probeTarget,
   hasServerDependentOutcomeAC,
 } from "../lib/dev-liveness";
 import { stripJsComments } from "../lib/strip-js-comments";
@@ -137,6 +139,19 @@ describe("#304: the URL the probe is handed is bounded", () => {
 
   test("a path that climbs out of the base origin is refused", () => {
     expect(livenessUrl("http://localhost:7777", "//evil.example/health")).toBeNull();
+    expect(livenessUrl("http://localhost:7777/base", "/../../elsewhere")).toBeNull();
+  });
+
+  test("a base path is kept, not discarded", () => {
+    // Security review of the first version of this fix. `new URL("/health",
+    // "http://host/base/api")` yields `http://host/health` — the prefix is
+    // silently dropped, so a consumer whose API is mounted under one is
+    // probed at the wrong place and reported DOWN on a healthy server. That
+    // is this issue's own bug, reintroduced by URL resolution semantics.
+    expect(livenessUrl("http://localhost:7777/base/api", "/health"))
+      .toBe("http://localhost:7777/base/api/health");
+    expect(livenessUrl("http://localhost:7777/base/", "/health"))
+      .toBe("http://localhost:7777/base/health");
   });
 
   test("a relative path is refused — it must be rooted", () => {
@@ -157,6 +172,89 @@ describe("#304: the URL the probe is handed is bounded", () => {
   test("a refused URL becomes unmeasured, not a probe of something else", () => {
     const plan = livenessPlan(outcomeAC("HTTP"), { apiBase: "file:///x", healthPath: "/health" });
     expect(plan.kind).toBe("unmeasured");
+  });
+});
+
+describe("#304: credentials in apiBase never reach a durable artefact", () => {
+  // Security review. `detail` and the printed URL land in ship-evidence.json,
+  // which is attached to issues — the same leak #213 found in push `detail`,
+  // which is why redactSecrets is imported rather than written a second time.
+  const CREDS = "http://jhorn:hunter2@localhost:7777";
+
+  test("the probe URL keeps the credentials — curl still needs them", () => {
+    const t = probeTarget("dev", { apiBase: CREDS, healthPath: "/healthz" });
+    expect(t.kind).toBe("probe");
+    if (t.kind === "probe") expect(t.url).toContain("hunter2");
+  });
+
+  test("the recordable URL does not", () => {
+    const t = probeTarget("dev", { apiBase: CREDS, healthPath: "/healthz" });
+    if (t.kind === "probe") {
+      expect(t.safeUrl).not.toContain("hunter2");
+      expect(t.safeUrl).not.toContain("jhorn");
+      expect(t.safeUrl, "redaction ate the host too").toContain("localhost:7777/healthz");
+    }
+  });
+
+  test("an unmeasured detail naming apiBase is redacted", () => {
+    // The branch that leaked: no healthPath, so the detail quotes apiBase
+    // verbatim to say where it would have looked.
+    const t = probeTarget("dev", { apiBase: CREDS });
+    expect(t.kind).toBe("unmeasured");
+    if (t.kind === "unmeasured") {
+      expect(t.detail).not.toContain("hunter2");
+      expect(t.detail).toContain("<redacted>");
+    }
+  });
+
+  test("a bare token in apiBase is redacted too", () => {
+    const t = probeTarget("dev", { apiBase: "http://localhost:7777/ghp_abcdefghij1234567890" });
+    if (t.kind === "unmeasured") expect(t.detail).not.toContain("ghp_abcdefghij1234567890");
+  });
+
+  test("the gate prints safeUrl, never url", () => {
+    // The library can redact perfectly and the call site can print the other
+    // field. Three print sites and one recorded detail, all asserted.
+    const code = stripJsComments(readFileSync(join(ROOT, "gates", "gate-executor.ts"), "utf-8"));
+    const liveness = code.slice(code.indexOf("function checkDevServerLiveness"));
+    const body = liveness.slice(0, liveness.indexOf("\nfunction "));
+    expect(body, "a raw probe URL is printed or recorded").not.toMatch(/\$\{plan\.url\}/);
+    expect(body).toMatch(/\$\{plan\.safeUrl\}/);
+  });
+});
+
+describe("#304: relaxing a refusal is recorded, not evaporated", () => {
+  // Security review, second finding. The prove gate used to `process.exit(1)`
+  // when `dev.apiBase` was set and the server did not answer. No consumer
+  // sets `dev.healthPath` yet, so on merge every one of them stops being
+  // refused there. Reporting DOWN instead would be wrong — that is the whole
+  // issue — but a relaxation that leaves only a stdout line is a fail-open.
+  const code = stripJsComments(readFileSync(join(ROOT, "gates", "gate-executor.ts"), "utf-8"));
+
+  test("the prove gate carries its liveness readings into prove-input.json", () => {
+    expect(code).toMatch(/liveness: \[devLiveness, prodLiveness\]\.filter\(Boolean\)/);
+  });
+
+  test("the UNMEASURED branch records before it warns", () => {
+    // A `console.warn` with no assignment beside it is the shape that was
+    // flagged. Both tiers.
+    expect(code).toMatch(/devLiveness = \{ tier: "dev", status: "UNMEASURED"/);
+    expect(code).toMatch(/prodLiveness = \{ tier: "prod", status: "UNMEASURED"/);
+  });
+
+  test("prod DOWN and prod UNMEASURED are distinct recorded states", () => {
+    // The distinction the record exists to preserve: DOWN means the probe
+    // ran, UNMEASURED means it could not. Collapsing them is what makes an
+    // unmeasured gate look checked.
+    expect(code).toMatch(/prodLiveness = \{ tier: "prod", status: "DOWN"/);
+    expect(code).toMatch(/prodLiveness = \{ tier: "prod", status: "UP"/);
+  });
+
+  test("dev still refuses when it CAN measure — the relaxation is scoped", () => {
+    // Paired control. A change that simply deleted the refusal would satisfy
+    // every assertion above.
+    const dev = code.slice(code.indexOf("const devTarget = probeTarget"));
+    expect(dev.slice(0, dev.indexOf("prodLiveness"))).toContain("process.exit(1)");
   });
 });
 
