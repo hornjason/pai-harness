@@ -1,6 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
-import { execSync, spawnSync } from "child_process";
+import { execSync, execFileSync, spawnSync } from "child_process";
 import { createHash } from "crypto";
 import { join } from "path";
 import { WorkflowStateSchema } from "./schema";
@@ -34,6 +34,36 @@ function exec(cmd: string, cwd?: string): { ok: boolean; output: string } {
     return { ok: true, output };
   } catch (e: any) {
     return { ok: false, output: (e.stdout ?? "").trim() };
+  }
+}
+
+/**
+ * Argv-form git, for commands carrying a value out of a config file.
+ *
+ * `exec` above goes through a shell, so `git status --porcelain -- ${paths}`
+ * hands consumer-authored strings to `sh`. `codeCommittedPaths` is read from
+ * the project's own `.claude/rungate.json`, and a path list is exactly the
+ * kind of field somebody pastes into without thinking about quoting. Argv
+ * form removes the shell rather than trying to sanitise for it.
+ *
+ * `--` is passed by the caller, so a pathspec beginning with `-` is a
+ * pathspec and not an option.
+ */
+function execArgvOf(bin: string, args: string[], cwd?: string): { ok: boolean; output: string } {
+  try {
+    const output = execFileSync(bin, args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    return { ok: true, output };
+  } catch (e: any) {
+    return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
+  }
+}
+
+function execArgv(args: string[], cwd?: string): { ok: boolean; output: string } {
+  try {
+    const output = execFileSync("git", args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    return { ok: true, output };
+  } catch (e: any) {
+    return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
   }
 }
 
@@ -115,6 +145,66 @@ export function unpushedViolations(
     `code-pushed: the branch tracks ${upstream.output} but the commit count ` +
       `could not be read. This is UNMEASURED, not PASS — a git invocation that ` +
       `fails for an unknown reason says nothing about whether work is unpushed.`,
+  ];
+}
+
+/**
+ * #315 — `code-committed` has never executed.
+ *
+ * The body read `harness?.codeCommittedPaths || []` and returned early on an
+ * empty list. **Nothing authors that key.** Measured on main: neither
+ * rungate's `.claude/rungate/config.json`, nor its legacy
+ * `.claude/rungate.json`, nor DailyBriefDashboard's names it. So the check
+ * whose entire job is confirming the shipped work is committed hit the early
+ * return on every run this repository has ever made — shape one in
+ * .claude/rules/checks-must-be-able-to-fail.md, keyed to a config value that
+ * does not exist.
+ *
+ * It compounded with #314: the status also ran in `projectRoot`, the main
+ * checkout, which is clean during a worktree run. Both halves had to be
+ * fixed or the check means nothing; #314 fixed the tree, this fixes the scope.
+ *
+ * ## The scope decision (SC-E2), recorded here rather than left to infer
+ *
+ * The key becomes OPTIONAL WITH A DERIVED DEFAULT rather than required.
+ *
+ * Requiring it would refuse at scaffold time for every consumer that has
+ * never heard of it — an outage for a rule nobody opted into, which is the
+ * same reasoning `loadConformityAllowlists` and #302's growth check already
+ * apply. And the default is not a guess: for a check named "no uncommitted
+ * changes in project", the honest scope is **the whole tree**, and a
+ * configured path list is a narrowing a consumer opts into, not the thing
+ * that switches the check on.
+ *
+ * Untracked files are included, because `--porcelain` already honours
+ * `.gitignore` and a source file that was never added is exactly the
+ * uncommitted work this check exists to catch. Build artefacts that trip it
+ * belong in `.gitignore`; that is the right pressure rather than a reason to
+ * narrow the check.
+ *
+ * Exported as the single binding this check's refusal is routed through, so
+ * `return []` is one edit and the mutation is a measurement rather than a
+ * claim in a PR body.
+ */
+export function codeCommittedViolations(
+  status: { ok: boolean; output: string },
+  scope: { configured: boolean; paths: string[] },
+): string[] {
+  if (!status.ok) {
+    return [
+      `code-committed: \`git status\` could not be read in the tree under test ` +
+        `(${status.output || "no output"}). This is UNMEASURED, not PASS — a git ` +
+        `invocation that fails for an unknown reason says nothing about whether the ` +
+        `work is committed.`,
+    ];
+  }
+  const dirty = status.output.split("\n").map(l => l.trim()).filter(Boolean);
+  if (dirty.length === 0) return [];
+  const where = scope.configured ? ` within ${scope.paths.join(", ")}` : "";
+  const shown = dirty.slice(0, 10).join("; ");
+  return [
+    `code-committed: ${dirty.length} uncommitted change(s) in the tree under test${where}: ` +
+      `${shown}${dirty.length > 10 ? ` … and ${dirty.length - 10} more` : ""}`,
   ];
 }
 
@@ -448,13 +538,19 @@ describe("scope checks", () => {
     const harnessPath = join(projectRoot, ".claude", "rungate.json");
     const makefilePath = join(projectRoot, "Makefile");
     if (!existsSync(harnessPath) || !existsSync(makefilePath)) return;
-    const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
+    // Named treeHarness, not harness: `harness` means the loadProjectHarness()
+    // result everywhere else in this file, and test/gate-optional-config-keys.test.ts
+    // enumerates reads off it so no gate check can gate on an unexplained config
+    // key. A second const with the same name reading a different file would be
+    // invisible to that scan — which is how the scan was first written, and what
+    // the security review on #315 caught.
+    const treeHarness = JSON.parse(readFileSync(harnessPath, "utf-8"));
     const makefile = readFileSync(makefilePath, "utf-8");
 
     const warnings: string[] = [];
 
     // Check dev port — match PORT= in the dev-all/dev section of Makefile
-    const devPort = harness.dev?.apiBase?.match(/:(\d+)/)?.[1];
+    const devPort = treeHarness?.dev?.apiBase?.match(/:(\d+)/)?.[1];
     if (devPort) {
       const devSection = makefile.match(/dev.*environment[^]*?PORT=(\d+)/i);
       const makeDevPort = devSection?.[1];
@@ -464,7 +560,7 @@ describe("scope checks", () => {
     }
 
     // Check prod port — match PORT= in container run commands
-    const prodPort = harness.prod?.apiBase?.match(/:(\d+)/)?.[1];
+    const prodPort = treeHarness?.prod?.apiBase?.match(/:(\d+)/)?.[1];
     if (prodPort) {
       const makeProdPort = makefile.match(/-e PORT=(\d+)/)?.[1];
       if (makeProdPort && prodPort !== makeProdPort) {
@@ -506,10 +602,17 @@ describe("verify checks", () => {
     expect(treeViolations, treeViolations.join("\n")).toEqual([]);
     const root = treeRoot();
     if (!root) return;
-    const containerName = harness.prod.containerName || harness.prod.imageName;
+    const containerName = harness?.prod?.containerName || harness?.prod?.imageName;
     if (!containerName) return;
     const runtime = exec("command -v podman") .ok ? "podman" : "docker";
-    const inspect = exec(`${runtime} inspect --format='{{index .Config.Labels "org.opencontainers.image.revision"}}' ${containerName}`);
+    // Argv form: containerName comes out of the consumer's rungate.json and
+    // the old line interpolated it into a shell command (#315 security review).
+    const inspect = execArgvOf(runtime, [
+      "inspect",
+      "--format={{index .Config.Labels \"org.opencontainers.image.revision\"}}",
+      "--",
+      containerName,
+    ]);
     if (!inspect.ok || !inspect.output) return;
     const containerSha = inspect.output.replace(/'/g, "").trim();
     const head = exec("git rev-parse HEAD", root);
@@ -717,14 +820,21 @@ describe("verify checks", () => {
     expect(treeViolations, treeViolations.join("\n")).toEqual([]);
     const root = treeRoot();
     if (!root) return;
+    // #315: an unset `codeCommittedPaths` used to early-return here, and
+    // nothing authors that key, so this check had never run. The whole tree
+    // is the default scope; a configured list is a narrowing, not a switch.
     const harness = loadProjectHarness();
-    const paths = harness?.codeCommittedPaths || [];
-    if (paths.length === 0) return;
-    const result = exec(`git status --porcelain -- ${paths.join(" ")}`, root);
-    const dirty = result.output.split("\n").filter(Boolean).length;
-    if (dirty > 0) {
-      expect(`${dirty} uncommitted files`).toBe("0 uncommitted files");
-    }
+    const paths: string[] = harness?.codeCommittedPaths || [];
+    const configured = paths.length > 0;
+    // Argv form: `paths` comes out of the consumer's own rungate.json and
+    // `exec` goes through a shell. The old line interpolated it straight
+    // into one.
+    const result = execArgv(
+      ["status", "--porcelain", ...(configured ? ["--", ...paths] : [])],
+      root,
+    );
+    const violations = codeCommittedViolations(result, { configured, paths });
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 23. code-pushed (GAP → PORTED)
@@ -1105,21 +1215,21 @@ describe("spec traceability", () => {
   });
 
   // 32. evidence-target-valid (GAP → PORTED)
-  test("evidence-target-valid: evidence commands target files within scope", () => {
-    const harness = loadProjectHarness();
-    const paths = harness?.codeCommittedPaths || [];
-    if (paths.length === 0) return;
-    const commands = (sf("acs") || [])
-      .map((ac: any) => ac.evidenceMethod?.command || "")
-      .filter(Boolean);
-    if (commands.length === 0) return;
-    const fileRefs: string[] = commands.join("\n").match(/[^\s]+(\/[^\s]+|\.[a-z]+)/g) || [];
-    const outside = fileRefs.filter(ref => {
-      if (/^-/.test(ref) || /^\|/.test(ref)) return false;
-      return !paths.some((p: string) => ref.includes(p));
-    });
-    // Informational — outside refs are common (test fixtures, config)
-  });
+  //
+  // #315 found this one while fixing `code-committed`, and it is worse than
+  // the defect it was filed for. It read the same unauthored
+  // `codeCommittedPaths` key and early-returned — but even past that return
+  // it computed an `outside` list and **discarded it**, under a comment
+  // saying outside refs are common. It has no assertion. It is a name in the
+  // gate list and nothing else, and it cannot fail for any input.
+  //
+  // Deleted rather than left standing, because a check that asserts nothing
+  // reads as coverage in every report that counts gate checks. The threshold
+  // it would need — which evidence file references count as out of scope —
+  // does not exist yet and inventing one here would be a guess that goes red
+  // on every run. It is recorded in OPTIONAL_HARNESS_KEYS in
+  // test/gate-optional-config-keys.test.ts so it cannot be quietly re-added,
+  // and #338 tracks building it with a threshold that has evidence behind it.
 });
 
 // ═══ SHIP CHECKS (7 functions) ════════════════════════════════════════

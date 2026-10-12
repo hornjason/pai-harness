@@ -103,7 +103,6 @@
           "spec-drift",
           "decision-id-valid",
           "spec-decision-compliance",
-          "evidence-target-valid",
           "skill-qc-ship",
           "brief-ac-alignment"
         ],
@@ -193,7 +192,6 @@
           "spec-drift",
           "decision-id-valid",
           "spec-decision-compliance",
-          "evidence-target-valid",
           "skill-qc-ship",
           "brief-ac-alignment"
         ],

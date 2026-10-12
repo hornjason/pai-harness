@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
+import { initFixtureRepo, commitFixture } from "./helpers/git-fixture";
 
 /**
  * #176 — the three checks in gates/workflow.test.ts that could not fail.
@@ -468,5 +469,109 @@ describe("#126 verify fan-out: an absent agent is a refusal, not a warning", () 
     const r = runCheck(B1);
     expect(r.ran).toBe(true);
     expect(r.red).toBe(true);
+  });
+});
+
+/**
+ * #315 — `code-committed` had never executed.
+ *
+ * It read `harness?.codeCommittedPaths || []` and returned early on an empty
+ * list, and nothing authors that key: not rungate's
+ * `.claude/rungate/config.json`, not its legacy `.claude/rungate.json`, not
+ * DailyBriefDashboard's. The check whose entire job is confirming the shipped
+ * work is committed hit the early return on every run this repository has
+ * made. Fourth instance of the class after #294, #307 SC-A1 and the two in
+ * this file's own header.
+ *
+ * The unit cases live in test/gate-optional-config-keys.test.ts. These are
+ * here because the unit ones exercise `codeCommittedViolations` directly, and
+ * that cannot tell whether the CHECK reaches it — an early return at the call
+ * site leaves every unit case green. The check is executed against a planted
+ * git repo with real uncommitted work, which is SC-E4's "a fixture with
+ * uncommitted work" read literally.
+ */
+describe("#315: code-committed reaches its refusal", () => {
+  /**
+   * A real repo, committed clean, optionally left dirty afterwards.
+   *
+   * Called AFTER plantHarness so the config file is in the seed commit.
+   * Otherwise `.claude/rungate.json` is untracked and the derived whole-tree
+   * scope reports it — a fixture artefact that would read as the check
+   * refusing a clean tree, which is how a correct check gets narrowed back
+   * into uselessness.
+   */
+  function plantRepo(opts: { dirty?: "src" | "docs" } = {}): void {
+    mkdirSync(join(PROJECT, "src"), { recursive: true });
+    mkdirSync(join(PROJECT, "docs"), { recursive: true });
+    writeFileSync(join(PROJECT, "src", "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(PROJECT, "docs", "n.md"), "n\n");
+    // initFixtureRepo rather than a local `git config` helper: #84's guard
+    // refuses an argv-form identity write it cannot see a target directory
+    // in, and a helper that closes over PROJECT is exactly that. The shared
+    // fixture also carries its own identity, so the repo does not depend on
+    // the developer's ~/.gitconfig (#71).
+    initFixtureRepo(PROJECT);
+    commitFixture(PROJECT, "seed");
+    if (opts.dirty === "src") writeFileSync(join(PROJECT, "src", "a.ts"), "export const a = 2;\n");
+    if (opts.dirty === "docs") writeFileSync(join(PROJECT, "docs", "n.md"), "changed\n");
+  }
+
+  test("uncommitted work is caught with NO codeCommittedPaths configured", () => {
+    // The case the check existed for and had never reached. Before #315 this
+    // was green: the harness file has no such key, so the body returned
+    // before running `git status` at all.
+    plantHarness({});
+    plantRepo({ dirty: "src" });
+    plantState({ phase: "SHIP" });
+    expectRed(
+      "code-committed",
+      "a tree with an uncommitted source file passed. An unset codeCommittedPaths " +
+        "is being read as 'nothing to check' rather than 'the whole tree'.",
+    );
+  });
+
+  test("a clean tree still passes — the default scope is not a blanket refusal", () => {
+    // Paired with the case above. A red case alone is satisfied by a check
+    // that fails on everything, and a whole-tree default is exactly the
+    // change most likely to do that.
+    plantHarness({});
+    plantRepo();
+    plantState({ phase: "SHIP" });
+    expectGreen("code-committed", "a clean tree was refused by the derived default scope.");
+  });
+
+  test("a configured list narrows the scope — dirt outside it passes", () => {
+    plantHarness({ codeCommittedPaths: ["src"] });
+    plantRepo({ dirty: "docs" });
+    plantState({ phase: "SHIP" });
+    expectGreen(
+      "code-committed",
+      "a configured narrowing to src/ did not exclude a dirty docs/ file, so the key " +
+        "has stopped being a narrowing.",
+    );
+  });
+
+  test("a shell metacharacter in a configured path is inert (#315 security review)", () => {
+    // `codeCommittedPaths` is read out of the consumer's own rungate.json and
+    // the old line interpolated it into a shell string:
+    //   exec(`git status --porcelain -- ${paths.join(" ")}`)
+    // Argv form removes the shell rather than sanitising for it. Driven: the
+    // payload would create a file if a shell saw it, and the check must
+    // simply report the path as not matching anything.
+    const canary = join(PROJECT, "pwned.txt");
+    plantHarness({ codeCommittedPaths: [`src; touch ${canary}`] });
+    plantRepo();
+    plantState({ phase: "SHIP" });
+
+    const r = runCheck("code-committed");
+    expect(r.ran, `the check never ran:\n${r.output}`).toBe(true);
+    expect(existsSync(canary), "a config-supplied path reached a shell").toBe(false);
+  });
+
+  test("a configured list still refuses dirt inside it", () => {
+    plantHarness({ codeCommittedPaths: ["src"] });
+    plantRepo({ dirty: "src" });
+    plantState({ phase: "SHIP" });
+    expectRed("code-committed", "a dirty file inside the configured scope was not caught.");
   });
 });

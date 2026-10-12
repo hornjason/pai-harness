@@ -228,6 +228,105 @@ pinned by tests so a later edit has to move them deliberately.
   adjacent: an unexpected throw would now crash post-verdict bookkeeping that
   the old empty catch could not. That is recorded as UNMEASURED instead.
 
+## A check keyed to a config value nobody authors (#315)
+
+`code-committed` read `harness?.codeCommittedPaths || []` and returned early
+on an empty list. **Nothing authors that key** — measured on main, neither
+rungate's `.claude/rungate/config.json`, nor its legacy
+`.claude/rungate.json`, nor DailyBriefDashboard's names it. So the check whose
+entire job is confirming the shipped work is committed hit the early return on
+every run this repository has ever made.
+
+Fourth instance of the class, after `dev.testCmd` vs `test.command` (#294),
+`container` being undeclared in the schema (#307 SC-A1), and the two
+`local-*-validated` checks in #176. Hence the registry rather than two edits:
+the point is to make a fifth impossible to add unexplained.
+
+### The scope decision, recorded (SC-E2)
+
+**Optional with a derived default**, not required. Requiring it would refuse
+at scaffold time for every consumer that has never heard of it — an outage for
+a rule nobody opted into, the same reasoning `loadConformityAllowlists` and
+#302's growth check already apply. And the default is not a guess: for a check
+named "no uncommitted changes in project" the honest scope is the whole tree,
+and a configured path list is a narrowing a consumer opts into, not the thing
+that switches the check on.
+
+Untracked files count, because `--porcelain` already honours `.gitignore` and
+a source file that was never added is exactly the uncommitted work this check
+exists to catch. An artefact that trips it belongs in `.gitignore`; that is
+the right pressure rather than a reason to narrow the check.
+
+### `evidence-target-valid` was removed, not fixed
+
+It read the same unauthored key — and past that early return it computed an
+`outside` list and discarded it under a comment saying outside refs are
+common. It had no `expect` at all: a name in `config/ceremony-profiles.json`
+and nothing else. Deleted from the suite **and** delisted from the two
+profiles that named it, because leaving either half would have the contract
+claim a measurement that does not happen. #338 tracks rebuilding it with a
+threshold that has evidence behind it; #339 tracks the nine profile names
+found to have no locatable implementation.
+
+- [x] SC-723: gates/workflow.test.ts contains [codeCommittedViolations] — the refusal routes through one exported function, so short-circuiting it is a measurement rather than a claim in a PR body
+- [x] SC-724: gates/workflow.test.ts contains [git status --porcelain] — an unset path list means the whole tree rather than no check, so absence is a derived default and never a silent pass
+- [x] SC-725: test/gate-optional-config-keys.test.ts contains [no unexplained key is read] — every optional config key a gate check reads carries a recorded meaning for its absence, ratcheting both ways so a stale entry is refused as well as a new one
+- [x] SC-726: test/gate-vacuous-checks.test.ts contains [uncommitted work is caught with NO codeCommittedPaths configured] — the check is executed against a planted git repo with real uncommitted work, because a unit test of the violations function stays green when the call site returns before reaching it
+- [x] SC-727: gates/workflow.test.ts contains [execArgv] — a value read out of the consumer's own config reaches git and the container runtime in argv form, because the shell-string form interpolated it straight into a command
+- [x] SC-728: test/gate-optional-config-keys.test.ts contains [every read of it is optional-chained] — the key scan's own assumption is asserted rather than assumed, because a read written without optional chaining, or against a differently-named binding, would be invisible to the registry guarding it
+
+### What was broken to prove it (#315)
+
+Run and counted over `test/gate-vacuous-checks.test.ts` plus
+`test/gate-optional-config-keys.test.ts` (54 tests). Neither is left in the
+tree; both were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `if (paths.length === 0) return;` restored at the call site — SC-E4 verbatim | 2 of 54 — the driven fixture with uncommitted work, and the source-text guard against the early return coming back |
+| `codeCommittedViolations` short-circuited to `return []` | 7 of 54 — every driven red case and every unit refusal |
+| the shell-string form of the status command restored | 1 of 56 — a config path carrying `; touch <canary>` creates the canary |
+| the unchained `harness.prod.containerName` read restored | 2 of 56 — the binding invariant the key scan rests on |
+| a bracket-notation read (`harness?.["prod"]`) planted | 2 of 34 in the registry file |
+| a differently-named binding (`const cfgAlias = loadProjectHarness()`) planted | 1 of 34 |
+
+### Security review, second round
+
+Two findings, both real and both now driven rather than argued with.
+
+- **Command injection.** `codeCommittedPaths` and `prod.containerName` are
+  read out of the consumer's own `.claude/rungate.json` and were interpolated
+  into shell strings — `exec(\`git status --porcelain -- ${paths.join(" ")}\`)`
+  and the container `inspect` command. Both moved to argv form, which removes
+  the shell rather than sanitising for it. A driven test plants a path
+  containing `; touch <canary>` and asserts the canary does not appear.
+- **Detector differential.** The registry scanned for `harness?.<key>`, so a
+  read written as `harness.<key>`, or against a differently-named binding,
+  would have been invisible to the guard meant to catch it — shape two,
+  pointed at the guard itself. The scan's assumptions are now assertions: the
+  `loadProjectHarness()` result is bound to exactly one name, and every read
+  off it is optional-chained. Finding that turned up a second const also
+  called `harness`, parsed inline from the tree under test, whose four config
+  keys the registry had never seen; it is renamed `treeHarness` and its keys
+  are registered.
+
+A third round found the same control still bypassable, which is the point of
+running the review again rather than once. `harness?.["codeCommittedPaths"]`
+satisfies both of the assertions added in round two — it IS optional-chained,
+the binding IS named `harness` — and is invisible to a scan for dotted
+identifiers. Bracket access and destructuring are now refused too, and all
+five patterns are declared once and shared between the assertion that
+enforces each and the planted control that proves it can match; two copies
+would let the enforcing one be narrowed while the control kept passing
+against the old pattern, which is the detector-differential shape
+reintroduced inside the file that exists to catch it.
+
+The round-three fail-open finding — `container-has-fix` passing on four
+distinct unmeasurable states — is **#341**, deliberately not fixed here.
+It is reachable rather than dead code, so making it refuse changes behaviour
+on a live consumer, and that needs its blast radius measured first rather
+than guessed at in an adjacent PR.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
