@@ -11,7 +11,8 @@
  *   import { detectDrift } from "./detect-sc-drift"  # Programmatic use
  */
 
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import { collectSpecFiles } from "../lib/spec-files";
 import { join } from "path";
 
 export interface DriftResult {
@@ -93,8 +94,19 @@ export function detectDrift(specsDir: string, projectRoot: string): DriftResult 
     return { drifted, stale, checked };
   }
 
-  // Read all .md files in specs directory
-  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md"));
+  // Every spec, including the ones in subdirectories (#158, missed by #225).
+  //
+  // This was `readdirSync(specsDir).filter(f => f.endsWith(".md"))` — a tenth
+  // flat collector that #225's sweep did not reach. The consequence is worse
+  // than a missed file, because of what sits on the other side of it:
+  // `scripts/sync-sc-status.ts` scans recursively (`new Bun.Glob("**/*.md")`,
+  // :54) and then calls `detectDrift` (:366) as its gate. So the flipper could
+  // see all 254 SCs under `specs/bootstrap-data-flow/` while the drift
+  // detector it trusts could see none of them: a subdirectory SC could never
+  // be reported stale, and therefore auto-flipped to [x] with no drift gate at
+  // all. The two halves disagreed about what a spec is, and the half with the
+  // narrower view was the one holding the brakes.
+  const specFiles = collectSpecFiles(specsDir);
 
   for (const specFile of specFiles) {
     const specPath = join(specsDir, specFile);

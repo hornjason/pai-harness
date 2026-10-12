@@ -1,5 +1,5 @@
 import { test, expect, describe, beforeAll } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
@@ -135,10 +135,35 @@ describe("contract: STANDARD tier", () => {
   beforeAll(() => {
     const dir = join(TEST_BASE, "standard");
     mkdirSync(dir, { recursive: true });
+    rmSync(STANDARD_PROJECT, { recursive: true, force: true });
     mkdirSync(STANDARD_PROJECT, { recursive: true });
     writeFileSync(join(STANDARD_PROJECT, "target.ts"), "export const fix = true;\n");
     writeFileSync(join(STANDARD_PROJECT, "target.test.ts"),
       'import { test, expect } from "bun:test";\ntest("canary", () => { expect(1).toBe(1); });\n');
+
+    // The fixture is a real repository on a branch with an upstream, because
+    // the gate it is asserted to pass contains `code-pushed: no unpushed
+    // commits` (#174).
+    //
+    // It was a bare directory until now, and that is why this contract was
+    // green: `git rev-list --count @{upstream}..HEAD` failed, and the check
+    // read the failure as nothing-to-report. The fixture did not satisfy
+    // `code-pushed`; it was merely unreadable by it. A contract test asserting
+    // a well-formed project passes the ship gate has to MODEL a well-formed
+    // project, and a shipped project is pushed.
+    //
+    // `-c user.*` because CI has no global git identity, and a commit that
+    // cannot be authored would put the fixture straight back to unreadable.
+    const g = (args: string) =>
+      execSync(`git -c user.email=t@t -c user.name=t ${args}`, { cwd: STANDARD_PROJECT, stdio: "ignore" });
+    const remote = join(TEST_BASE, "standard-remote.git");
+    rmSync(remote, { recursive: true, force: true });
+    execSync(`git init --bare -b main ${remote}`, { stdio: "ignore" });
+    g("init -b main");
+    g("add -A");
+    g('commit -m "fixture"');
+    g(`remote add origin ${remote}`);
+    g("push -u origin main");
     writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
       schemaVersion: 2, issue: 9998, repo: "test/repo", issueRepo: "test/repo",
       projectRoot: STANDARD_PROJECT, slug: "standard", phase: "DONE",

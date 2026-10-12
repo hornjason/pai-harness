@@ -70,6 +70,54 @@ export function treeUnderTestViolations(tree: unknown, checkName: string): strin
   return [];
 }
 
+/**
+ * Does the tree have commits its upstream does not (#174)?
+ *
+ * The reading that matters is NOT just the count. `git rev-list --count
+ * @{upstream}..HEAD` fails outright when there is no upstream, and the old
+ * body read that failure as nothing-to-report:
+ *
+ *     if (!result.ok) return; // no upstream
+ *
+ * A branch with no upstream has never been pushed, which is the strongest
+ * possible failure of a check named "no unpushed commits" — and it was the one
+ * input that passed unconditionally. Fail-open, shape one in
+ * .claude/rules/checks-must-be-able-to-fail.md, in the check whose whole job is
+ * to notice unpushed work.
+ *
+ * It is reachable, not theoretical. The happy path sets upstream
+ * (`workflows/ship.js:3161`, `git push -u origin ${pushTarget}`), but both
+ * remediation re-pushes do not — `:3324` and `:4704` run
+ * `git push origin HEAD:${shipBranch}`. So a run that needed remediation
+ * arrives here with no upstream and is waved through.
+ *
+ * Exported as the single binding this check's refusal is routed through, so
+ * `return []` is one edit and the mutation is a real measurement rather than a
+ * claim in a PR body.
+ */
+export function unpushedViolations(
+  count: { ok: boolean; output: string },
+  upstream: { ok: boolean; output: string },
+): string[] {
+  if (count.ok) {
+    return count.output === "0" ? [] : [`code-pushed: ${count.output} commits ahead of upstream`];
+  }
+  if (!upstream.ok) {
+    return [
+      "code-pushed: the branch has no upstream, so nothing on it has been " +
+        "pushed. This is the WORST case for this check, not an exemption from " +
+        "it — the previous code returned here and passed (#174). A remediation " +
+        "re-push uses `git push origin HEAD:<branch>`, which does not set " +
+        "upstream, so this is reachable on any run that needed one.",
+    ];
+  }
+  return [
+    `code-pushed: the branch tracks ${upstream.output} but the commit count ` +
+      `could not be read. This is UNMEASURED, not PASS — a git invocation that ` +
+      `fails for an unknown reason says nothing about whether work is unpushed.`,
+  ];
+}
+
 /** The tree to run commands in, or null when the state does not name one. */
 function treeRoot(): string | null {
   const t = sf("treeUnderTest");
@@ -689,11 +737,10 @@ describe("verify checks", () => {
     expect(treeViolations, treeViolations.join("\n")).toEqual([]);
     const root = treeRoot();
     if (!root) return;
-    const result = exec("git rev-list --count @{upstream}..HEAD", root);
-    if (!result.ok) return; // no upstream
-    if (result.output !== "0") {
-      expect(`${result.output} commits ahead`).toBe("0 commits ahead");
-    }
+    const count = exec("git rev-list --count @{upstream}..HEAD", root);
+    const upstream = exec("git rev-parse --abbrev-ref --symbolic-full-name @{upstream}", root);
+    const violations = unpushedViolations(count, upstream);
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 25. local-api-validated (GAP → PORTED)
