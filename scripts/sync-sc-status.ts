@@ -15,6 +15,7 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
+import { stripJsComments } from "../lib/strip-js-comments";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
@@ -74,24 +75,113 @@ export function scMentionPattern(id: string): RegExp {
   return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
 }
 
+/** Opens a `describe`/`test`/`it` title, allowing `.each(...)`, `.only`, `.skip`. */
+const TITLE_CALL = /\b(?:describe|test|it)\s*(?:\.\w+\s*(?:\([^)]*\))?\s*)*\(\s*$/;
+
 /**
- * Remove the mentions that are fixture data rather than coverage claims (#149).
+ * The success criteria a source file CLAIMS to cover (#149).
  *
- * Tests of the spec tooling embed spec lines and SC records as input. They
- * assert how an SC is parsed, flipped or scanned — nothing about the criterion
- * the ID names. Seven files carried `- [ ] SC-1: …` or `id: "SC-1"` as fixture
- * text, and between them they certified a real unimplemented bootstrap
- * criterion as done.
+ * The old rule was "the file mentions the id". Tests of the spec tooling embed
+ * spec lines and SC records as INPUT — they assert how an SC is parsed,
+ * flipped or scanned, and nothing about the criterion the id names — so a
+ * mention was never evidence of coverage. #148 removed the two worst shapes by
+ * name with a pair of regexes; this replaces the convention, which is what
+ * that fix deferred here.
  *
- * Only these two shapes are stripped. Anything else — a mention in a test
- * title, a header comment — still counts, because that is this project's
- * existing convention for declaring which criteria a file covers. Replacing
- * the convention itself is #149.
+ * ## The rule
+ *
+ * One question, not a list of shapes: **is the id the whole of what was
+ * written, or is it embedded in something else?**
+ *
+ *   claim   a mention in a comment, or in a describe/test/it title
+ *   data    everything else — any id inside a string literal
+ *
+ * A list of forbidden shapes is a second place to forget, and forgetting there
+ * reads as the mention being a claim, which is the failure direction that
+ * flatters us. An allowlist of two declaring positions cannot fail that way:
+ * a shape nobody thought of is not credited.
+ *
+ * ## Why not "a complete string literal also counts"
+ *
+ * Because it cannot be made safe, and the attempt is worth recording. A
+ * criterion registry is real coverage:
+ *
+ *     const EXPECTED_REREVIEW_SCS = ["SC-621", "SC-622", …];   // coverage
+ *
+ * but so is this, and it is a test PARAMETER naming the criterion a bug was
+ * about:
+ *
+ *     const SHORTEST_ID = "SC-1";                               // not coverage
+ *     const scs = [{ id: "SC-1", done: true }];                 // not coverage
+ *     findTestFilesForSCs(new Set(["SC-9", "SC-92"]), dir);     // not coverage
+ *
+ * All four are bare ids in quotes. Nothing syntactic separates them — not
+ * `id:`, not array-vs-scalar, not the variable's name. A rule that credited
+ * them would certify criteria nobody tested, and that is the direction this
+ * project's own `.claude/rules/checks-must-be-able-to-fail.md` says never to
+ * fail in.
+ *
+ * So a registry declares itself with a comment. That costs one line, it is
+ * already the convention most files follow, and unlike an inference it cannot
+ * be wrong in the flattering direction.
+ *
+ * ## Why a bare literal counts
+ *
+ * #149's body proposed titles and comments only. Measured against the tree,
+ * that demotes `const EXPECTED_REREVIEW_SCS = ["SC-621", …]` in
+ * test/harness-standard-security.test.ts — a criterion registry driving a
+ * per-criterion loop, which .claude/rules/checks-must-be-able-to-fail.md holds
+ * up as the worked example for that spec. It is a BETTER coverage mechanism
+ * than a hand-written title because the ids cannot drift from the assertions,
+ * and a rule that dropped it would push authors toward the weaker pattern.
+ *
+ * ## Why it is built on stripJsComments rather than on lines
+ *
+ * The three categories have to be told apart at the right level, and a
+ * line-oriented detector cannot do it. `fixtureTestDir("x", "// covers SC-92")`
+ * contains a comment that is STRING DATA: a rule asking "does this line start
+ * with //" is fooled by its own test fixture. stripJsComments is an
+ * offset-preserving scanner over exactly these contexts, so two views of the
+ * same source — comments blanked, and comments plus literal CONTENTS blanked —
+ * classify every character by subtraction, with no second lexer to drift.
  */
-export function stripFixtureMentions(content: string): string {
-  return content
-    .replace(/- \[[ x]\] SC-\d+/g, "")
-    .replace(/\bid:\s*["']SC-\d+["']/g, "");
+export function coverageClaimIds(source: string): Set<string> {
+  const noComments = stripJsComments(source);
+  const codeOnly = stripJsComments(source, { blankLiterals: true });
+  const claims = new Set<string>();
+
+  for (const m of source.matchAll(/\bSC-\d+(?!\d)/g)) {
+    const id = m[0];
+    const at = m.index!;
+
+    // Blanked by the first pass => the id sits in a comment. Offsets are
+    // preserved, so this is an exact answer rather than a heuristic.
+    if (noComments[at] !== source[at]) {
+      claims.add(id);
+      continue;
+    }
+
+    // Survives the first pass but not the second => inside a literal. Code
+    // context is neither (and `SC-7` is not a legal identifier anyway), so it
+    // can only be something like a stray token; count it rather than guess.
+    if (codeOnly[at] === source[at]) {
+      claims.add(id);
+      continue;
+    }
+
+    // Inside a literal. The only literal that declares coverage is a test
+    // title — the project's oldest convention, and prose by definition, so no
+    // rule about the literal's contents can apply to it. Walk out to the
+    // opening delimiter, which survives `blankLiterals`; that is the property
+    // that makes the boundary findable without a second parser.
+    let open = at;
+    while (open > 0 && !/['"`]/.test(codeOnly[open])) open--;
+    if (!/['"`]/.test(codeOnly[open] ?? "")) continue;
+
+    if (TITLE_CALL.test(codeOnly.slice(Math.max(0, open - 120), open))) claims.add(id);
+  }
+
+  return claims;
 }
 
 export function findTestFilesForSCs(scIds: Set<string>, testDir?: string): Map<string, string[]> {
@@ -100,11 +190,8 @@ export function findTestFilesForSCs(scIds: Set<string>, testDir?: string): Map<s
   if (!existsSync(dir)) return testFileToSCs;
 
   for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
-    const content = stripFixtureMentions(readFileSync(join(dir, file), "utf-8"));
-    const foundSCs: string[] = [];
-    for (const id of scIds) {
-      if (scMentionPattern(id).test(content)) foundSCs.push(id);
-    }
+    const claimed = coverageClaimIds(readFileSync(join(dir, file), "utf-8"));
+    const foundSCs = [...scIds].filter(id => claimed.has(id));
     if (foundSCs.length > 0) {
       testFileToSCs.set(file, foundSCs);
     }

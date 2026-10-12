@@ -232,6 +232,17 @@ function rereviewProse(): string {
   return firstBullet === -1 ? section : section.slice(0, firstBullet);
 }
 
+/**
+ * Covers SC-621, SC-622, SC-623, SC-624.
+ *
+ * The registry below drives a per-criterion loop, which is a stronger form of
+ * coverage than a hand-written test title because the ids cannot drift from
+ * the assertions. It is not, however, something a coverage detector can
+ * recognise: a bare id in an array is indistinguishable from a test parameter
+ * or a fixture record, so `coverageClaimIds` credits only comments and titles
+ * and never tries to infer intent from a literal (#149). This comment is the
+ * declaration that inference would have had to guess.
+ */
 const EXPECTED_REREVIEW_SCS = ["SC-621", "SC-622", "SC-623", "SC-624"];
 
 describe("#171: the re-review decision is recorded in HARNESS-STANDARD.md", () => {
