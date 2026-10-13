@@ -120,6 +120,63 @@ hooks are driven as subprocesses rather than matched as text.
 - [x] SC-626: test/test-suite-lock.test.ts contains [sibling workers sharing one session id spend separate rate budgets, a refused run neither consumes nor re-arms the budget window, the hooks derive and pass a worker identity] — the sibling case, the refusal case and the two hooks are all asserted by running them; the hooks are driven as subprocesses rather than grepped (#239)
 - [x] SC-627: test/test-suite-lock-key-mutation.test.ts contains [could not build the mutant, MUTANT: #239 counter key reverted to the bare session id] — the key change is proved by removing it from a copy of the source every run, and a renamed or duplicated binding aborts the file instead of passing it (#239)
 - [x] SC-518: Machine-wide hooks are registered in user settings, not project settings — issue #67-A. Project `.claude/settings.json` only loads for sessions started in that directory, so a cross-session cap registered there is inert for every session rooted elsewhere, including sessions working on the repo via an added working directory. Registration must appear in exactly one scope: the two are not de-duplicated, so dual registration fires the hook twice and consumes two slots per suite.
+- [x] SC-825: lib/issue-create-override.ts contains [verifyPhaseRefusal] — the VERIFY lock's decision is ONE exported function in lib/, not eight lines in the hook, so there is one binding to mutate and the hook stays the thin trigger SC-371 and SC-372 ask for
+- [x] SC-826: lib/issue-create-override.ts contains [external-audit] — a second override naming an origin outside the ship loop. `follow-up` was the only one, so #362, #363 and #364 all had to claim they were follow-up work from a shipped issue, and they were not
+- [x] SC-827: test/verify-phase-lock.test.ts contains [the override word is in the TITLE] — the bypass the issue named is a table row, and the hook is SPAWNED over a real VERIFY state. A decision correct in lib/ that the hook never consults is the decorative check this repo keeps finding
+
+### A guard wider than the thing it guards (#365)
+
+`hooks/VerifyPhaseLock.hook.ts:72` decided with:
+
+```ts
+if (cmd.includes('--label') && cmd.includes('follow-up')) process.exit(0);
+```
+
+That is not a test that a label argument equals `follow-up`. It is a test
+that the string appears somewhere in the command, so
+
+```
+gh issue create --label bug --title "Fix the follow-up handler"
+```
+
+bypassed the lock entirely while applying no override label at all. Shape two
+of `.claude/rules/checks-must-be-able-to-fail.md` — a detector that cannot
+tell an argument from a word in a title — pointed outward rather than inward.
+
+The same shape hid a **second bypass one line down**, which the issue did not
+name. `cmd.includes('gh issue comment')` is unreachable for a plain comment,
+because the create check above it has already exited; it is reachable for
+`gh issue comment … && gh issue create …`, where the comment clause excuses
+the create clause. Deciding per *clause* rather than per *command* closes
+both with one change.
+
+**The second defect is about the tracker, not the hook.** `follow-up` means
+"follow-up work from a shipped issue" and was the only override, so anything
+filed during VERIFY had to claim an origin it did not have. #362, #363 and
+#364 came from an external audit of DailyBriefDashboard and project-ape and
+all three wear `follow-up`; an agent filtering that label for loose ends from
+recent ships gets three unrelated results. `external-audit` is accepted as a
+second override and the refusal text is generated from the same map the
+decision reads, so a third one cannot be accepted while the message still
+names two.
+
+#### What was broken to prove it (SC-825..827)
+
+Run and counted over `test/verify-phase-lock.test.ts` (26 tests):
+
+| Mutation | Red |
+|---|---|
+| the matcher reverted to `cmd.includes('follow-up')` — **the mutation the issue specified** | 11 of 26 |
+| `verifyPhaseRefusal` always allows | 8 of 26 |
+| `external-audit` removed from the override map | 5 of 26 |
+| `labelValues` reads only the spaced long form, not `=` or `-l` | 3 of 26 |
+| clause splitting removed — the whole command is one clause | 2 of 26 |
+| the hook stops consulting the library and inlines the old test | 2 of 26 |
+| `tokenize` stops honouring quotes | 2 of 26 |
+| `createsIssue` matches a bare `create` token anywhere | 1 of 26 |
+
+None is left in the tree; all were run and reverted. The hook is 84 lines,
+within SC-371.
 
 ## Implementation
 

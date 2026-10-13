@@ -1,0 +1,177 @@
+/**
+ * Covers SC-825, SC-826, SC-827 (HOOK-ARCHITECTURE-SPEC.md).
+ *
+ * #365 — `hooks/VerifyPhaseLock.hook.ts` decided whether to allow an issue
+ * with:
+ *
+ *     if (cmd.includes('--label') && cmd.includes('follow-up'))
+ *
+ * which is a test that the string `follow-up` appears anywhere in the
+ * command. The issue named the case that passes today and must not:
+ *
+ *   > `--label bug --title "Fix the follow-up handler"` → **must refuse**.
+ *   > This passes today.
+ *   >
+ *   > Per the mutation standard: reverting the matcher to
+ *   > `cmd.includes('follow-up')` must turn the first case red. If it stays
+ *   > green the test is asserting on something other than the matcher.
+ *
+ * So the table below is driven against `verifyPhaseRefusal`, the one
+ * exported decision, and the last describe SPAWNS the hook over stdin — a
+ * decision that is correct in `lib/` and not reached by the hook is the
+ * defect this repo keeps finding.
+ */
+import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
+import {
+  OVERRIDE_LABELS,
+  clauses,
+  createsIssue,
+  labelValues,
+  tokenize,
+  verifyPhaseRefusal,
+} from "../lib/issue-create-override";
+
+const ROOT = join(import.meta.dir, "..");
+const HOOK = join(ROOT, "hooks", "VerifyPhaseLock.hook.ts");
+const scratch: string[] = [];
+
+afterEach(() => {
+  while (scratch.length) rmSync(scratch.pop()!, { recursive: true, force: true });
+});
+
+/** [command, allowed, why]. `allowed === false` means the lock must refuse. */
+const TABLE: Array<[string, boolean, string]> = [
+  // The four the issue asked for, in its order.
+  [`gh issue create --label bug --title "Fix the follow-up handler"`, false,
+    "the override word is in the TITLE — this is the bypass #365 is about"],
+  ["gh issue create --label follow-up --title 'x'", true, "the documented override"],
+  ["gh issue create --label external-audit --title 'x'", true, "the origin #362/#363/#364 actually had"],
+  ["gh issue create --label bug --title 'x'", false, "a label, but not an override"],
+
+  // Argument forms gh accepts. Each would have been missed by a matcher that
+  // only knows the spaced long form.
+  ["gh issue create --label=follow-up", true, "the = form"],
+  ["gh issue create -l follow-up", true, "the short form"],
+  ["gh issue create -l=external-audit", true, "the short = form"],
+  ["gh issue create --label bug,follow-up", true, "gh takes a comma list in one flag"],
+  ["gh issue create --label 'follow up'", false, "a space is not a hyphen"],
+
+  // Shapes the old substring form got wrong in the other direction.
+  ["gh issue create --label --title follow-up", false,
+    "`--label` with no value, and the word appears as a positional"],
+  ["gh issue comment 7 --body 'see follow-up'", true, "not a create at all"],
+  ["gh issue list --label follow-up", true, "not a create at all"],
+  ["gh issue comment 7 --body x && gh issue create --label bug", false,
+    "the comment clause must not excuse the create clause"],
+  ["gh issue create --label follow-up && gh issue create --label bug", false,
+    "every create in the command needs its own override"],
+  ["gh issue create --label follow-up && gh issue create --label external-audit", true,
+    "both creates carry one"],
+  ["echo 'gh issue create --label bug'", true,
+    "a quoted command inside another is an argument, not a create"],
+];
+
+describe("#365 SC-825: the override is a label argument, not a word in the command", () => {
+  for (const [cmd, allowed, why] of TABLE) {
+    test(`${allowed ? "allows" : "refuses"}: ${cmd}`, () => {
+      const refusal = verifyPhaseRefusal(cmd);
+      if (allowed) expect(refusal, why).toBeNull();
+      else expect(refusal, why).not.toBeNull();
+    });
+  }
+
+  test("the table exercises both outcomes", () => {
+    // A positive control on the table itself. Every case above is satisfied
+    // by a matcher that always allows, or always refuses, unless both
+    // outcomes are present — and `test.each`-style loops report zero
+    // failures over an empty or one-sided table, not zero tests.
+    const allows = TABLE.filter(([, a]) => a).length;
+    expect(allows).toBeGreaterThan(2);
+    expect(TABLE.length - allows).toBeGreaterThan(2);
+  });
+});
+
+describe("#365 SC-826: the parts the decision is built from", () => {
+  test("a quoted argument is one token, flags inside it are not flags", () => {
+    expect(tokenize(`gh issue create --title "a --label follow-up b"`)).toEqual([
+      "gh", "issue", "create", "--title", "a --label follow-up b",
+    ]);
+  });
+
+  test("an unterminated quote does not split into things that look like flags", () => {
+    // The direction this is allowed to be wrong in. A malformed command
+    // yielding a stray `--label` token would be an override nobody wrote.
+    expect(tokenize(`gh issue create --title "oops --label follow-up`)).toEqual([
+      "gh", "issue", "create", "--title", "oops --label follow-up",
+    ]);
+  });
+
+  test("clauses split on shell separators", () => {
+    expect(clauses("a && b ; c | d").map(c => c[0])).toEqual(["a", "b", "c", "d"]);
+  });
+
+  test("createsIssue needs the three words adjacent", () => {
+    expect(createsIssue(["gh", "issue", "create"])).toBe(true);
+    expect(createsIssue(["gh", "issue", "list"])).toBe(false);
+    expect(createsIssue(["gh", "create", "issue"])).toBe(false);
+    expect(createsIssue(["create"])).toBe(false);
+  });
+
+  test("labelValues reads every form and nothing else", () => {
+    expect(labelValues(tokenize("x --label a -l b --label=c -l=d --title --label"))).toEqual([
+      "a", "b", "c", "d",
+    ]);
+  });
+
+  test("both overrides are documented where the refusal reads them", () => {
+    // The refusal text is generated from the same map the decision uses, so
+    // a third override cannot be accepted while the message still names two.
+    const refusal = verifyPhaseRefusal("gh issue create --label bug")!;
+    for (const name of Object.keys(OVERRIDE_LABELS)) expect(refusal).toContain(`--label ${name}`);
+    expect(Object.keys(OVERRIDE_LABELS)).toContain("external-audit");
+  });
+});
+
+describe("#365 SC-827: the hook reaches the decision", () => {
+  /**
+   * Spawn the real hook with a real VERIFY workflow state.
+   *
+   * A decision that is correct in `lib/` and never consulted is the
+   * decorative check `.claude/rules/checks-must-be-able-to-fail.md` is
+   * about, and the unreachable `gh issue comment` branch this change
+   * deleted is what that looks like when it ships.
+   */
+  function runHook(cmd: string, phase: string): string {
+    const work = mkdtempSync(join(tmpdir(), "rungate-vpl-"));
+    scratch.push(work);
+    mkdirSync(join(work, "run"), { recursive: true });
+    writeFileSync(join(work, "run", "workflow-state.json"), JSON.stringify({ phase }));
+    const r = spawnSync("bun", [HOOK], {
+      input: JSON.stringify({ tool_name: "Bash", tool_input: { command: cmd } }),
+      encoding: "utf-8",
+      timeout: 60_000,
+      env: { ...process.env, RUNGATE_WORK_DIR: work },
+    });
+    return r.stdout;
+  }
+
+  test("the title bypass is blocked by the hook, not just by the library", () => {
+    const out = runHook(`gh issue create --label bug --title "Fix the follow-up handler"`, "VERIFY");
+    expect(out, "the hook allowed the command #365 is about").toContain('"decision":"block"');
+  }, 120_000);
+
+  test("an override label passes the hook", () => {
+    expect(runHook("gh issue create --label external-audit --title 'x'", "VERIFY")).toBe("");
+  }, 120_000);
+
+  test("outside VERIFY the hook does not block", () => {
+    // The control. A hook that blocked everything would satisfy the first
+    // case, and this is the phase gate it must still respect.
+    const out = runHook(`gh issue create --label bug --title "Fix the follow-up handler"`, "EXECUTION");
+    expect(out, "the lock fired outside the phase it locks").toBe("");
+  }, 120_000);
+});
