@@ -1318,6 +1318,112 @@ Two rows are the point.
 
 One branch was **deleted** on the strength of a 0: `command.trim() === ""` could not be distinguished by any input, since an empty command yields no paths either way. A branch no test can cover is one line permanently unverifiable, so it is gone rather than excused.
 
+## Named checks that nobody could locate (#339)
+
+`config/ceremony-profiles.json` named 41 gate checks. Nine had no
+`test("<name>: …")` in `gates/workflow.test.ts`, and nothing checked the
+correspondence in either direction.
+
+### The first thing to establish: nothing selects on these lists
+
+`applyCeremonyOverrides` reads a tier's check list only to re-add protected
+checks. Nothing filters which tests run — `gates/workflow.test.ts` executes
+all of its checks at every tier and gates internally on phase.
+
+So an unimplemented name is not an unrun check. It is a **claim of coverage
+in the document a reader consults to decide whether a tier is enough**, which
+is worse in one specific way: it is the thing that gets trusted.
+
+It also fixes the shape of the reverse direction. "A check not in a profile
+never runs" is false here; "a check not in a profile is undocumented" is the
+real statement, which is why `alwaysRun` exists in the registry below.
+
+### Resolving the nine took three passes and was wrong twice
+
+| name | where it actually is |
+|---|---|
+| `acs-have-threshold` | `gates/schema.ts`, as `missing threshold` |
+| `acs-no-behavioral-language` | `gates/schema.ts`, as `BEHAVIORAL_PATTERN` |
+| `acs-have-type` | `gates/schema.ts` — but the field was `.optional()` |
+| `spec-drift` | `lib/conformity.ts`, as `runSpecDrift` |
+| `dead-exports` | `lib/conformity.ts`, FALLOW-2 inside `runFallowCheck` |
+| `acs-have-evidence-method` | `gates/workflow.test.ts` — missed by a census that assumed a colon |
+| `consumer-chain-verified` | nothing, anywhere |
+| `skill-qc-goal`, `skill-qc-ship` | `scripts/skill-qc-validator.sh`, which nothing invokes |
+| `evidence-target-valid` | removed in #315, replaced in #338 |
+
+No search for a profile's name finds the first five. That is #339's claim
+made precise: the information exists, it is not recoverable from the name,
+and until now it lived in whoever last looked. `config/check-registry.json`
+is that knowledge as data (SC-3), and `lib/check-registry.ts` refuses drift
+in both directions.
+
+### Two defects found inside the resolution
+
+**`acs-have-type` was named by all three tiers and not enforced.** The field
+was `type: z.enum(["CODE","OUTCOME"]).optional()`, so an AC with no type
+passed the check named after requiring one — this repo's central defect class
+sitting inside a check list. **0 of the 456 ACs across the 82 recorded runs
+in `~/.rungate` lack a type**, so refining it starts a named check being true
+rather than starting it failing. The inlined copy in `workflows/ship.js`
+moved in the same change, held in step by #269's parity matrix.
+
+**A gate check with a prose title cannot be referenced from a profile at
+all.** `test("no FAIL verdicts in DONE")` was structurally undocumentable
+rather than merely undocumented, and is now
+`no-fail-verdicts-in-done`. Referenced by nothing else; the rename is local.
+
+### Why the describe block is the discriminator
+
+A kebab-case heuristic over the file also collects `baseline`, `zero`,
+`subtracts` and `pre-existing` from `test-baseline-subtraction` — prose.
+
+The numbered `// 32. name` comments are not usable either, and are worth
+recording as their own small instance: **40 comments for 65 tests, with 12,
+13, 14 and 32 each used twice and eight numbers skipped.** A numbering
+scheme nobody checks, which is this issue's subject one level down. It is
+left alone rather than renumbered; the registry does not depend on it.
+
+### What was delisted
+
+`consumer-chain-verified`, `skill-qc-goal` and `skill-qc-ship` resolve to
+nothing live and are removed from the profiles in the same change (SC-4),
+recorded in the registry's `delisted` block with the reason. Re-adding one is
+then a visible edit with a message naming what was already searched for.
+
+- [x] SC-796: config/check-registry.json contains [gateDescribes] — where every named check is implemented is data a reader can see, not prose, because resolving nine of them by hand took three passes and was wrong twice
+- [x] SC-797: lib/check-registry.ts contains [checkRegistryViolations] — both directions are refused by one exported function, so a profile cannot name a check with no entry and an entry cannot point at an implementation that is not there
+- [x] SC-798: lib/check-registry.ts contains [stale-always-run] — the always-run list ratchets both ways, because an allowlist whose entries are never re-checked becomes a place to park names
+- [x] SC-799: gates/schema.ts contains [missing type (CODE or OUTCOME)] — `acs-have-type` is enforced rather than named, because the field was optional and 0 of 456 recorded ACs lacked a type
+- [x] SC-800: test/check-registry.test.ts contains [a fabricated profile name turns it red] — the refusal is driven by adding an invented name to a copy of the real profiles, not asserted
+
+### What was broken to prove it (SC-796..800)
+
+Over `test/check-registry.test.ts` and `test/discovery-ac-validation.test.ts`
+(54 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the schema stops requiring a type | 8 of 54 |
+| `checkRegistryViolations` returns `[]` | 7 of 54 |
+| `gateTestsIn` ignores the describe block | 6 of 54 |
+| the standalone placeholder counts as a check | 5 of 54 |
+| the registry drops an entry | 3 of 54 |
+| the unregistered-profile-name direction removed | 2 of 54 |
+| the implementation-resolves direction removed | 2 of 54 |
+| a delisted check is re-added to a profile | 2 of 54 |
+| the undocumented-gate-check direction removed | 1 of 54 |
+| the always-run staleness ratchet removed | 1 of 54 |
+| the symbol check ignored, path existence only | 1 of 54 |
+| a workflow test may be registered anywhere | 1 of 54 |
+| the delisted reason dropped from the message | 1 of 54 |
+
+The symbol row is the one worth naming. An entry pointing at a file that
+exists but no longer contains the check reads exactly like an entry written
+from memory, and a path-existence check passes for both. Resolution asserts
+the **symbol**, so a check that moves out of its file is caught rather than
+inherited.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

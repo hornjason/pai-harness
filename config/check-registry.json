@@ -1,0 +1,113 @@
+{
+  "$comment": "#339. Where every gate check named by config/ceremony-profiles.json is implemented. Enforced both directions by test/check-registry.test.ts — a profile cannot name a check with no entry, and an entry cannot point at an implementation that is not there. Edit this when you add a check, not after someone asks where it lives.",
+  "gateDescribes": [
+    "scope checks",
+    "verify checks",
+    "B1/B2 agent results",
+    "spec traceability",
+    "ship checks",
+    "prompt immutability",
+    "prove checks"
+  ],
+  "checks": {
+    "acs-exist": { "impl": "gates/workflow.test.ts" },
+    "acs-have-evidence-method": { "impl": "gates/workflow.test.ts" },
+    "acs-no-skillmd-enforcement": { "impl": "gates/workflow.test.ts" },
+    "ac-issue-alignment": { "impl": "gates/workflow.test.ts" },
+    "source-spec-cited": { "impl": "gates/workflow.test.ts" },
+    "spec-elements-in-acs": { "impl": "gates/workflow.test.ts" },
+    "sizing-declared": { "impl": "gates/workflow.test.ts" },
+    "issue-goal-captured": { "impl": "gates/workflow.test.ts" },
+    "local-before-prod": { "impl": "gates/workflow.test.ts" },
+    "container-has-fix": { "impl": "gates/workflow.test.ts" },
+    "all-acs-have-evidence": { "impl": "gates/workflow.test.ts" },
+    "all-acs-pass": { "impl": "gates/workflow.test.ts" },
+    "evidence-type-valid": { "impl": "gates/workflow.test.ts" },
+    "evidence-type-ratio": { "impl": "gates/workflow.test.ts" },
+    "evidence-method-executed": { "impl": "gates/workflow.test.ts" },
+    "evidence-portable": { "impl": "gates/workflow.test.ts" },
+    "threshold-crosscheck": { "impl": "gates/workflow.test.ts" },
+    "tests-pass": { "impl": "gates/workflow.test.ts" },
+    "tsc-pass": { "impl": "gates/workflow.test.ts" },
+    "code-committed": { "impl": "gates/workflow.test.ts" },
+    "code-pushed": { "impl": "gates/workflow.test.ts" },
+    "local-api-validated": { "impl": "gates/workflow.test.ts" },
+    "local-ui-validated": { "impl": "gates/workflow.test.ts" },
+    "quinn-on-ui-change": { "impl": "gates/workflow.test.ts" },
+    "brief-ac-alignment": { "impl": "gates/workflow.test.ts" },
+    "spec-decision-compliance": { "impl": "gates/workflow.test.ts" },
+    "decision-id-valid": { "impl": "gates/workflow.test.ts" },
+    "all-gates-pass": { "impl": "gates/workflow.test.ts" },
+    "branch-merged": { "impl": "gates/workflow.test.ts" },
+    "prod-rebuild-pass": { "impl": "gates/workflow.test.ts" },
+    "prod-smoke-pass": { "impl": "gates/workflow.test.ts" },
+    "prod-quinn-pass": { "impl": "gates/workflow.test.ts" },
+    "prod-quinn-spot": { "impl": "gates/workflow.test.ts" },
+
+    "acs-have-type": {
+      "impl": "gates/schema.ts",
+      "symbol": "missing type (CODE or OUTCOME)",
+      "note": "#339 made this true. The field was `.optional()`, so an AC with no type passed the check named after requiring one. 0 of 456 ACs across 82 recorded runs lacked a type, so refining it starts a check being enforced rather than starting it failing."
+    },
+    "acs-have-threshold": {
+      "impl": "gates/schema.ts",
+      "symbol": "missing threshold",
+      "note": "A superRefine on ACSchema, not a test in workflow.test.ts. Three greps for `acs-have-threshold` found nothing; the rule is there under a different name, which is the whole reason this registry is data."
+    },
+    "acs-no-behavioral-language": {
+      "impl": "gates/schema.ts",
+      "symbol": "BEHAVIORAL_PATTERN",
+      "note": "Same superRefine. #339 listed this among nine checks with no locatable implementation; it has one, spelled nothing like its profile name."
+    },
+    "spec-drift": {
+      "impl": "lib/conformity.ts",
+      "symbol": "runSpecDrift",
+      "note": "Part of the conformity suite the scaffold generates, not the workflow gate."
+    },
+    "dead-exports": {
+      "impl": "lib/conformity.ts",
+      "symbol": "runFallowCheck",
+      "note": "FALLOW-2. Warn-only unless the suite is run in failing mode, and skippable via opts.skipUnusedExports — so the profile naming it overstates what a THOROUGH run measures. Recorded rather than silently accepted; tightening it is a separate change with its own blast radius."
+    }
+  },
+  "alwaysRun": {
+    "$comment": "Gate checks that run at every tier because nothing selects on the profile lists — see the spec. Listed so the reverse direction is enforceable: a check in a gate describe must be named by a profile OR appear here. Not an exemption list: each entry is asserted to exist, and the set is asserted to be exactly what is in the file.",
+    "acs-measurable": "scope checks",
+    "sourceSpecs-required": "scope checks",
+    "before-state-captured": "scope checks",
+    "discovery-evidence": "scope checks",
+    "governing-spec-exists": "scope checks",
+    "harness-port-validation": "scope checks",
+    "no-fail-verdicts-in-done": "verify checks",
+    "outcome-acs-no-skip": "verify checks",
+    "outcome-evidence-behavioral": "verify checks",
+    "evidence-prevalidation": "verify checks",
+    "quinn-container-port": "verify checks",
+    "ac-spec-traceability": "verify checks",
+    "marcus-committed": "verify checks",
+    "prove-evidence-type": "verify checks",
+    "acHash-consistency-verify": "verify checks",
+    "contextual-skip-validation": "verify checks",
+    "b1-prompt-exists": "B1/B2 agent results",
+    "b2-prompt-exists": "B1/B2 agent results",
+    "b1-adversary-verify-structure": "B1/B2 agent results",
+    "b2-evidence-validator-structure": "B1/B2 agent results",
+    "quinn-tested-changed-files": "ship checks",
+    "verify-blockers-cleared": "ship checks",
+    "witness-chain": "ship checks",
+    "witness-ac-verdict": "ship checks",
+    "pre-registration": "ship checks",
+    "acHash-consistency-ship": "ship checks",
+    "prove-label-enforcement": "ship checks",
+    "prompt-immutability": "prompt immutability",
+    "prove-evidence-exists": "prove checks",
+    "prove-evidence-verdict": "prove checks"
+  },
+  "delisted": {
+    "$comment": "#339 SC-4: named by a profile, resolving to nothing, removed from the profiles in the same change. Kept here so re-adding one without an implementation is a visible edit rather than a quiet one.",
+    "consumer-chain-verified": "No implementation anywhere in lib/, gates/, scripts/, workflows/ or hooks/. Named by THOROUGH.verify. Nothing has ever measured it.",
+    "skill-qc-goal": "scripts/skill-qc-validator.sh exists and nothing invokes it — no caller in any source directory, workflow or hook. Named by STANDARD.scope and THOROUGH.scope.",
+    "skill-qc-ship": "Same uninvoked script. Named by STANDARD.verify and THOROUGH.verify.",
+    "evidence-target-valid": "Removed in #315 because it asserted nothing, and replaced in #338 by evidence-portable after the measurement showed its premise did not hold."
+  }
+}
