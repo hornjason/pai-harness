@@ -338,6 +338,91 @@ Ship succeeds → Grade (always) →
 
 SCs for #588 (config-driven grading) and #589 (remediation pass) will be added when those issues are built. See design decisions D-8 through D-12 and the Remediation Flow section above for the design.
 
+## The blocking-grade check trusted the summary it was given (#195)
+
+#188 made a compliance grade able to stop a run. Two independent background
+security reviews then found the same defect inside that fix, three times over:
+**the decision depended on free text an LLM authored, and "I could not measure
+it" was indistinguishable from "there was nothing to find."**
+
+| Finding | What it looked like |
+|---|---|
+| Empty reads as clean, and the prompt instructed it | `ship.js` told the grader "If no transcripts found, return `{"grades": []}`". The shape check was `!Array.isArray(grades)` — and `[]` IS an array, so a grading step that found no transcripts produced the same verdict as a run with perfect compliance. |
+| The model is in the data path | The deterministic work is `scripts/grade-deterministic.ts`, but what reached the decision was the agent's SUMMARY of that script's output, cross-checked against nothing. |
+| Parser/validator differential | `String(entry).split(':')[0]` read an id out of prose the agent wrote. `"TDD_SEQUENCE_VIOLATED: no green phase"` matched; `"Marcus violated TDD_SEQUENCE_VIOLATED"` did not, and nothing noticed. #144's shape, one domain over. |
+
+### What is trusted from the model, bounded rather than removed
+
+Per #69 the Workflow sandbox has no filesystem and no exec, so everything
+reaches `ship.js` through an agent. That constraint is not contested here
+(AC-4). Three things are therefore trusted and stated so a reader knows the
+boundary: that the agent ran the command it was told to, that
+`rawGradeOutput` is that command's stdout, and that it did not edit the stdout
+to agree with a summary it also wrote.
+
+The third is bounded by making **disagreement the refusing direction**. A
+model that wants to hide a violation must now alter two fields consistently
+rather than omit one, and the omission — the cheap failure, and the one a
+confused grader produces by accident — refuses.
+
+One input does NOT cross the agent boundary: `SPAWNED_ROLES`, recorded in
+`timedAgent` because that is the single door every agent call goes through.
+The run knows which agents it started, so "the grades array is empty" stops
+being indistinguishable from "the run was clean" without asking a model
+anything.
+
+### Unmeasured, disagreement and violation are three refusals, not one
+
+They are checked in that order and named separately. Conflating them produces
+a refusal that cannot say whether the run lied about a number, whether its
+grader disagreed with itself, or whether nobody looked.
+
+`skipGrade` is untouched (AC-3): an authorised opt-out that still logs that no
+blocking-grade check ran. `BLOCKING_GRADE_VIOLATIONS` is untouched (AC-5) —
+which violations block is #188's settled decision, and this issue is only
+about whether the check can see them.
+
+### A cross-check that refused a correct run
+
+The first version of the disagreement check used `raw.includes(id)`, and
+`NOT_TDD_SEQUENCE_VIOLATED_EITHER` contains `TDD_SEQUENCE_VIOLATED`. #188's
+own declared-set case uses that exact string to prove the blocking set is a
+list and not a prefix match, and it went red. A gate that refuses correct runs
+gets switched off, which is how a gate dies — so the comparison is a whole
+token, with a paired case proving the id inside ordinary prose still trips it.
+
+- [x] SC-764: workflows/ship.js contains [unmeasuredGradeViolations, no grade for] — a run refuses when the grades omit a role it spawned, when the grades array is empty, or when `rawGradeOutput` is absent, because a measurement that did not happen is not one that passed
+- [x] SC-765: workflows/ship.js contains [violationIds] and the grade schema requires it — the blocking decision reads a structured id array; the prose prefix stays as a second reading so a violation survives either representation, but it is no longer the only one
+- [x] SC-766: workflows/ship.js contains [gradeSummaryDisagreements] — the agent returns the grading script's own stdout and a summary that omits a blocking id the script printed refuses, because the summary is not the authority over the thing it summarises
+- [x] SC-767: workflows/ship.js must NOT contain [If no transcripts found] — the prompt stops instructing the agent to report emptiness as a successful result. Worded for `content-not-contains` rather than the issue's `not contains`, which no matcher owns; the bracket payload also carries no comma or `]`, since items are comma-split and the regex ends at the first bracket — `return` on its own would match everywhere in the file and the clause would assert nothing
+- [x] SC-768: test/blocking-grades-trust.test.ts contains [ship.js actually records the roles it spawns] — the AGENT-TIMING block is executed and `SPAWNED_ROLES` read back from it, because every other case injects that set and stays green when the production wiring is removed
+
+### What was broken to prove it (SC-764..768)
+
+Over `test/blocking-grades-trust.test.ts` + `test/blocking-grades.test.ts`
+(44 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `unmeasuredGradeViolations` returns `[]` | 6 of 44 |
+| the unmeasured check never consulted by the decision | 6 |
+| `gradeSummaryDisagreements` returns `[]` | 2 |
+| `rawGradeOutput` no longer required | 2 |
+| the cross-check back to a substring match | 2 |
+| `timedAgent` stops recording the role | 2 — and **0 of 40** before SC-768 was added |
+| the empty-grades case removed | 1 — and **0 of 40** before a fixture with grades `[]` AND a present raw output existed |
+| the role-coverage check removed | 1 |
+| `violationIds` no longer required of a grade | 1 |
+| the blocking read back to prose only | 1 |
+| the prompt tells the agent emptiness is a result again | 1 |
+
+The two zero rows are the same shape and worth naming. Each was a branch whose
+refusal was already produced by a neighbouring branch on every fixture that
+existed, so removing it changed nothing observable — a guard that is correct,
+load-bearing in production, and unmeasured.
+
+**Not done here:** AC-6 moved to #197 (Phase 2) by the issue's own rescope.
+
 ## Baseline (2026-09-20)
 
 31 files scanned. 15 HIGH findings across 6 files:

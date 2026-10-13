@@ -484,8 +484,23 @@ function timingInstruction(label) {
  * test/agent-timings.test.ts parses ship.js and fails on any `agent(` call
  * outside this block.
  */
+/**
+ * Roles this run actually spawned (#195).
+ *
+ * Recorded here because this is the one door every agent call goes through,
+ * for the same reason the timing bracket is: 39 call sites each remembering
+ * is 39 chances to forget, and a forgotten one is invisible.
+ *
+ * This is the only input to the grade check that did NOT cross an agent
+ * boundary. It is what makes "the grades array is empty" distinguishable from
+ * "nothing ran" — the run knows which agents it started, and no model is
+ * involved in that knowledge.
+ */
+const SPAWNED_ROLES = new Set()
+
 async function timedAgent(prompt, opts = {}) {
   const label = opts.label
+  if (typeof opts.role === 'string' && opts.role.trim()) SPAWNED_ROLES.add(opts.role.trim())
   if (!label) {
     // Not a refusal: a missing label must not kill a ship run, and inventing
     // one would merge two call sites into a single row. Run it, and say so.
@@ -4346,7 +4361,23 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
    mtime is the file's lifetime, not the call's, and that is the measurement this
    step replaced.
 
-5. Return a JSON object with grades array, efficiency metrics, and timing. If no transcripts found, return {"grades": [], "efficiency": null, "timing": []}.
+5. Return a JSON object with grades array, efficiency metrics, timing, and the
+   GRADING SCRIPT'S OWN STDOUT, verbatim, as rawGradeOutput.
+
+   Finding no transcripts is a FAILURE, not a result. Do NOT return an empty
+   grades array to mean "nothing to report" — an empty array is how this step
+   says "this run was measured and was clean", and a measurement that did not
+   happen must not look like one that did (#195). If you cannot find the
+   transcripts or the grading command fails, say so in rawGradeOutput and
+   return whatever grades you did obtain; the workflow refuses rather than
+   shipping on an absence.
+
+   For each grade, violationIds MUST list the bare violation identifiers the
+   script reported for that role — e.g. ["TDD_SEQUENCE_VIOLATED", "COMP-9"] —
+   as a separate field from the human-readable flagged strings. The blocking
+   decision reads violationIds. Do not reword, summarise or omit an id, and do
+   not edit rawGradeOutput to agree with your summary: the two are compared,
+   and a disagreement refuses the run.
   `, { label: 'grade', phase: 'Verify', schema: {
     type: 'object',
     properties: {
@@ -4356,10 +4387,22 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
           role: { type: 'string' },
           total: { type: 'number' },
           followed: { type: 'number' },
-          flagged: { type: 'array', items: { type: 'string' } }
+          flagged: { type: 'array', items: { type: 'string' } },
+          // #195: the blocking decision reads THIS, not a prefix split out of
+          // `flagged`. The prose was written by the agent, so its grammar was
+          // a convention it happened to follow — "Marcus violated
+          // TDD_SEQUENCE_VIOLATED" defeats `split(':')[0]` completely and
+          // nothing noticed. Required, because a grade that cannot say which
+          // ids it found has not shown that it found none.
+          violationIds: { type: 'array', items: { type: 'string' } }
         },
-        required: ['role', 'total', 'followed']
+        required: ['role', 'total', 'followed', 'violationIds']
       }},
+      // #195: the grading script's own stdout, so the agent's summary can be
+      // cross-checked rather than believed. The model cannot leave the data
+      // path (#69 — the sandbox has no exec), so the bound is that hiding a
+      // violation now takes two consistent edits instead of one omission.
+      rawGradeOutput: { type: 'string' },
       efficiency: { type: 'object', properties: {
         fileEfficiency: { type: 'string' },
         deliverableRatio: { type: 'string' },
@@ -4388,7 +4431,7 @@ Find the workflow transcript directory and run grading + efficiency analysis + w
         required: ['agent']
       }}
     },
-    required: ['grades']
+    required: ['grades', 'rawGradeOutput']
   }})
 
   if (gradeResult?.grades) {
@@ -4501,13 +4544,93 @@ const BLOCKING_GRADE_VIOLATIONS = ['TDD_SEQUENCE_VIOLATED']
 //
 // Everything is shape-checked rather than trusted: `grades` crosses an agent
 // boundary, and a non-array `flagged` must not throw its way past a refusal.
+/**
+ * Everything this run can PROVE was not measured (#195).
+ *
+ * Separate from the violation reading on purpose: a violation means the run
+ * lied about a number, and an unmeasured grade means nobody looked. Both
+ * refuse, and conflating them produces a refusal that cannot say which
+ * happened.
+ *
+ * `SPAWNED_ROLES` is the only input here that did not cross an agent
+ * boundary. The run knows which agents it started, so "the grades array is
+ * empty" stops being indistinguishable from "the run was clean" without
+ * asking a model anything.
+ */
+function unmeasuredGradeViolations(gradeResult, spawned) {
+  const out = []
+  const grades = Array.isArray(gradeResult?.grades) ? gradeResult.grades : []
+
+  const raw = typeof gradeResult?.rawGradeOutput === 'string' ? gradeResult.rawGradeOutput : ''
+  if (!raw.trim()) {
+    out.push('rawGradeOutput is absent or empty — the grading script\'s own output is what the summary is checked against, and without it the summary is simply believed')
+  }
+
+  const graded = new Set(grades.map(g => String(g?.role ?? '').trim()).filter(Boolean))
+  for (const role of Array.isArray(spawned) ? spawned : [...(spawned || [])]) {
+    if (!graded.has(role)) out.push(`no grade for ${role}, which this run spawned`)
+  }
+  if (grades.length === 0 && graded.size === 0) {
+    out.push('the grades array is empty — a grading step that measured nothing is not a run that was clean')
+  }
+
+  for (const g of grades) {
+    if (!Array.isArray(g?.violationIds)) {
+      out.push(`${g?.role || 'unknown'}: no violationIds field — a grade that cannot say which ids it found has not shown that it found none`)
+    }
+  }
+  return out
+}
+
+/**
+ * The summary says one thing and the script's stdout says another (#195).
+ *
+ * Only the BLOCKING set is compared. Comparing every id would make any
+ * wording difference between the script and the agent's summary a refusal,
+ * and a gate that stops every run gets switched off — which is how a gate
+ * dies, the same reasoning that keeps BLOCKING_GRADE_VIOLATIONS narrow.
+ *
+ * The direction matters: an id in the raw output that the summary omits is
+ * the refusing case. The reverse — a summary naming more than the script did
+ * — already blocks through the violation reading below.
+ */
+function gradeSummaryDisagreements(gradeResult) {
+  const raw = typeof gradeResult?.rawGradeOutput === 'string' ? gradeResult.rawGradeOutput : ''
+  if (!raw.trim()) return []
+  const claimed = new Set()
+  for (const g of Array.isArray(gradeResult?.grades) ? gradeResult.grades : []) {
+    for (const id of Array.isArray(g?.violationIds) ? g.violationIds : []) claimed.add(String(id).trim())
+  }
+  const out = []
+  for (const id of BLOCKING_GRADE_VIOLATIONS) {
+    // Whole token, not a substring. `raw.includes('TDD_SEQUENCE_VIOLATED')`
+    // is true of `NOT_TDD_SEQUENCE_VIOLATED_EITHER`, which is a different id
+    // and deliberately so — the declared-set tests use exactly that string to
+    // prove the blocking set is a list and not a prefix match. A cross-check
+    // that fires on it refuses correct runs, which is how a gate dies.
+    const token = new RegExp(`(^|[^A-Za-z0-9_-])${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^A-Za-z0-9_-]|$)`)
+    if (token.test(raw) && !claimed.has(id)) {
+      out.push(`the grading script's output names ${id} and the summary does not — the two disagree, and the summary is not the authority`)
+    }
+  }
+  return out
+}
+
 function blockingGradeViolations(grades) {
   const found = []
   for (const g of Array.isArray(grades) ? grades : []) {
+    // #195: the structured field is the authority. `flagged` is kept as a
+    // SECOND reading so a violation survives either representation, but it is
+    // no longer the only one — the prose was authored by the agent and its
+    // grammar was never guaranteed.
+    const ids = Array.isArray(g?.violationIds) ? g.violationIds.map(x => String(x).trim()) : []
     const flagged = Array.isArray(g?.flagged) ? g.flagged : []
-    for (const entry of flagged) {
-      const id = String(entry).split(':')[0].trim()
-      if (BLOCKING_GRADE_VIOLATIONS.includes(id)) {
+    const fromProse = flagged.map(entry => String(entry).split(':')[0].trim())
+    const seen = new Set()
+    for (const entry of [...ids, ...fromProse]) {
+      const id = entry
+      if (BLOCKING_GRADE_VIOLATIONS.includes(id) && !seen.has(id)) {
+        seen.add(id)
         // Name the CALL SITE, not just the role (#240). A decomposed run
         // produces several `marcus` grades, and "marcus: TDD_SEQUENCE_VIOLATED"
         // over four of them says which rule broke but not which agent broke
@@ -4536,6 +4659,27 @@ if (SKIP_GRADE) {
   log(`GRADE BLOCK: ${reason}`)
   return shipFailed('Grade', reason, { grades: [] })
 } else {
+  // Unmeasured FIRST, and reported as its own kind (#195). A run that was
+  // never graded and a run graded clean produced the same verdict, which is
+  // the defect #188 exists to fix reproduced inside the fix. Checking it
+  // before the violation reading also means the violation refusal can be
+  // trusted to be about a measurement that happened.
+  const unmeasured = unmeasuredGradeViolations(gradeResult, SPAWNED_ROLES)
+  if (unmeasured.length > 0) {
+    for (const u of unmeasured) log(`GRADE BLOCK: ${u}`)
+    return shipFailed('Grade',
+      `BLOCKING_GRADE_UNMEASURED: compliance was not measured, which is not the same as measuring clean — ${unmeasured.join('; ')}`,
+      { grades: gradeResult.grades })
+  }
+
+  const disagreements = gradeSummaryDisagreements(gradeResult)
+  if (disagreements.length > 0) {
+    for (const d of disagreements) log(`GRADE BLOCK: ${d}`)
+    return shipFailed('Grade',
+      `BLOCKING_GRADE_DISAGREEMENT: ${disagreements.join('; ')}`,
+      { grades: gradeResult.grades })
+  }
+
   const blocked = blockingGradeViolations(gradeResult.grades)
   if (blocked.length > 0) {
     for (const b of blocked) log(`GRADE BLOCK: ${b}`)

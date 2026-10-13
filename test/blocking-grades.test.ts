@@ -98,16 +98,56 @@ interface Outcome {
  * the assertions here read that — `reason` is now the summary, and a summary
  * that happened to contain the right substring would pass either way.
  */
+/**
+ * Fill in the fields #195 added, so these cases keep asking what they asked.
+ *
+ * Every fixture here predates `violationIds` and `rawGradeOutput`, and
+ * without them the block now refuses as UNMEASURED before reaching the
+ * violation reading — which would make this whole file a test of #195's
+ * refusals rather than of #188's.
+ *
+ * `violationIds` is derived from the same prose each case already supplies,
+ * which is exactly the equivalence those cases were written to assert. The
+ * structured-id cases that must NOT derive it live in
+ * test/blocking-grades-trust.test.ts, where the prose is deliberately
+ * unparseable.
+ *
+ * Left alone when `grades` is not an array: cases 318 and 323 exist to drive
+ * the shape refusal, and completing them would delete the thing they test.
+ */
+function completeForTrustChecks(gradeResult: unknown): unknown {
+  const gr = gradeResult as Record<string, any> | null | undefined;
+  if (!gr || !Array.isArray(gr.grades)) return gradeResult;
+  const grades = gr.grades.map((g: any) => ({
+    ...g,
+    violationIds: Array.isArray(g?.violationIds)
+      ? g.violationIds
+      : (Array.isArray(g?.flagged) ? g.flagged : []).map((e: unknown) => String(e).split(":")[0].trim()),
+  }));
+  const raw = typeof gr.rawGradeOutput === "string" && gr.rawGradeOutput.trim()
+    ? gr.rawGradeOutput
+    : grades.map((g: any) =>
+        `${g.role}: ${g.followed}/${g.total}` +
+        (g.flagged?.length ? `\n${g.flagged.map((f: string) => `${g.role}: ${f}`).join("\n")}` : ""),
+      ).join("\n") || "no violations";
+  return { ...gr, grades, rawGradeOutput: raw };
+}
+
 async function runBlock(block: string, scope: Record<string, unknown> = {}): Promise<Outcome> {
   const logs: string[] = [];
+  const merged = { ...scope };
+  if ("gradeResult" in merged) merged.gradeResult = completeForTrustChecks(merged.gradeResult);
   const full: Record<string, unknown> = {
     log: (m: unknown) => logs.push(String(m)),
     SKIP_GRADE: false,
     ISSUE: 188,
     SLUG: "pai-harness-188",
     WORK_DIR: "/tmp/pai-harness-188",
-    gradeResult: { grades: [] },
-    ...scope,
+    // #195: the roles this run spawned. Empty here — these fixtures are about
+    // what the grades SAY, not about which agents ran.
+    SPAWNED_ROLES: new Set<string>(),
+    gradeResult: completeForTrustChecks({ grades: [{ role: "marcus", total: 1, followed: 1 }] }),
+    ...merged,
   };
   const sandbox = new Proxy(full, {
     has: () => true,
