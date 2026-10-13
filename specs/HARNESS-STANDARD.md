@@ -1370,7 +1370,7 @@ thing in the suite that reads ship.js as JavaScript rather than as text.
 
 ---
 
-### The full-suite rate is 4, and it is stated once (2026-10-10)
+### The full-suite rate is 4, and it is stated once (2026-10-10; the number superseded 2026-10-13, the reasoning not)
 
 DIR-L29's budget moved from 2 full suites per worker per 30 minutes to 4.
 Two was measured against a session that ran the suite as a gate and then got
@@ -1429,6 +1429,63 @@ What was broken to prove it, run and counted rather than asserted, over
 | the default raised to 99, above `MAX_TRACKED_RUNS` | 15 |
 | the environment clamp raised from the policy to `MAX_TRACKED_RUNS` — the control bypass, reintroduced | 1 |
 | COMP-2 pointed back at the environment-aware resolver — the self-grading bypass, reintroduced | 1 |
+
+None is left in the tree; all were run and reverted.
+
+---
+
+### Raising the rate to 8 nearly made a security test stop measuring (2026-10-13)
+
+The rate moved from 4 to 8 at Jason's direction, on the argument the section
+above already makes and the one below reinforces: the rate and the concurrency
+cap are different things, and in a single session with nothing overlapping,
+`DEFAULT_CAPACITY` is the one doing the protecting. Four was reached three
+times in one afternoon of backlog work, once mid-reconciliation — the stall the
+budget exists to prevent, arriving from the other side, exactly as the
+2026-10-10 note predicts.
+
+**The number was the easy part. Setting it to 8 would have silently retired the
+control-bypass fix.** `MAX_TRACKED_RUNS` was also 8, and the environment clamp
+is `Math.min(parsed, DEFAULT_MAX_RUNS_PER_WORKER)` while the option clamp is
+`Math.min(option, MAX_TRACKED_RUNS)`. At equality those are the same function.
+No input distinguishes them, so the one-way property — the whole finding of the
+d6cc5acf security review — becomes unobservable: the code still says it, and
+nothing can tell whether it is true. That is this repo's defect class exactly,
+reached not by writing a bad check but by moving a constant underneath a good
+one.
+
+Measured rather than argued. With the clamp retargeted at `MAX_TRACKED_RUNS`
+(the bypass reintroduced verbatim) and retention held at 8, the test named
+after that finding — "the environment CANNOT raise it — the control-bypass
+finding" — **passes**. The only reds are the new invariant below and an
+unrelated option case. Retention is therefore 12, and the headroom is
+load-bearing rather than generous; it costs a slice length inside a file
+already bounded by `MAX_COUNTER_BYTES`.
+
+- [x] SC-801: test/test-suite-lock.test.ts contains [the rate reached retention — the one-way env clamp is no longer measurable by any input] — the rate is asserted STRICTLY less than retention, not `<=`. The weaker form is satisfied at equality, which is the state in which the clamp cannot be measured, so the invariant that permits the hazard is the one that has to be ruled out
+- [x] SC-802: test/test-suite-lock.test.ts contains [the policy value is what it is for stated reasons] — exactly ONE test pins the rate's value, and it pins the two relationships that make the value safe beside it. Every other case derives from the constant, which is why one pin is enough and also why it must exist: eighteen tests re-asserting the same literal went red for a deliberate policy change, and a number re-stated in eighteen places is a number nobody can move on purpose
+- [x] SC-803: test/test-suite-lock.test.ts contains [the raise was a rate change; concurrency must not move with it] — `DEFAULT_CAPACITY` is asserted unchanged in the same test that pins the rate, because the two are routinely confused and this raise was approved on the distinction between them
+
+The eighteen red tests are the finding, not the inconvenience. Every one was
+re-asserting `4` rather than a behaviour, so the suite could say the rate had
+not moved and could not say whether the rate still worked. The cases now drive
+`DEFAULT_MAX_RUNS_PER_WORKER` runs and ask whether the next one is refused. The
+same stale-literal bug was in the test fixtures: `test/test-suite-budget.test.ts`
+set `capacity: 8` to keep the concurrency cap out of budget questions, a number
+sized against a per-worker rate of 4. At 8 the loops filled the slots and two
+budget tests failed with a concurrency refusal. It is now derived from both
+budgets.
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/test-suite-lock.test.ts` + `test/test-suite-budget.test.ts` (154 tests):
+
+| Mutation | Red |
+|---|---|
+| the environment clamp retargeted at `MAX_TRACKED_RUNS` — the control bypass, reintroduced | 1 |
+| the same mutation with retention back at 8 | 1, and **not the clamp's own test** — it passes. The reds are SC-801's invariant and the option case |
+| the rate lowered back to 4 | 1 — the single pin, which is the point of there being one |
+| `DEFAULT_CAPACITY` raised from 2 to 4 alongside the rate | 17 |
+| `MAX_TRACKED_RUNS` dropped to 6, below the rate | 10 |
 
 None is left in the tree; all were run and reverted.
 

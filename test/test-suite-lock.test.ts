@@ -22,7 +22,9 @@ import {
   heldSlots,
   isFullSuiteCommand,
   releaseFullSuiteSlot,
+  DEFAULT_CAPACITY,
   DEFAULT_MAX_RUNS_PER_WORKER,
+  MAX_TRACKED_RUNS,
   resolveMaxRuns,
   wouldAllowFullSuite,
 } from "../lib/test-suite-lock";
@@ -1244,7 +1246,7 @@ describe("#239: the hooks derive and pass a worker identity", () => {
 });
 
 /**
- * The RATE itself (2026-10-10, raised 2 → 4).
+ * The RATE itself (2026-10-10, raised 2 → 4; 2026-10-13, raised 4 → 8).
  *
  * Everything above pins `maxRunsPerSession: 2`, which is deliberate — those
  * cases are about the rule and a moving number would have made them pass for
@@ -1254,13 +1256,27 @@ describe("#239: the hooks derive and pass a worker identity", () => {
  * looked at. So the default is driven here, through the real gate, with no
  * option and no environment.
  *
- * WHAT WAS BROKEN TO PROVE THIS FAILS: setting the default back to 2 turns
- * the fourth-run case red; raising it above MAX_TRACKED_RUNS turns the
- * retention case red, because the counter forgets runs the budget still
- * believes are spent and the fifth run is quietly allowed.
+ * WHAT WAS BROKEN TO PROVE THIS FAILS: raising the default above
+ * MAX_TRACKED_RUNS turns the retention case red, because the counter forgets
+ * runs the budget still believes are spent and the run past the line is
+ * quietly allowed. Lowering the default no longer turns anything red here by
+ * itself, which is the price of deriving the cases from the constant — so the
+ * VALUE is pinned once, below, and that pin is the case a silent lowering
+ * breaks.
  */
-describe("the full-suite rate: four per worker per window", () => {
+describe("the full-suite rate: DEFAULT_MAX_RUNS_PER_WORKER per worker per window", () => {
   const t0 = 1_700_000_000_000;
+  /**
+   * Derived from the constant, not pinned at a literal (2026-10-13, raised
+   * 4 → 8). Pinning made eighteen tests red for a policy change that was
+   * deliberate, and every one of them was re-asserting the same number
+   * rather than a behaviour. The policy VALUE is pinned once, in
+   * "the policy value is what it is for stated reasons" below, together with
+   * the two relationships that make it safe. Everything else asks whether
+   * the Nth run is allowed and the N+1th refused, which is the rule.
+   */
+  const N = DEFAULT_MAX_RUNS_PER_WORKER;
+  const upToTheCap = [...Array(N).keys()];
   /** No maxRunsPerSession and no env — exactly what the hook passes. */
   const live = (ms: number) => ({ lockDir: dir, now: t0 + ms });
 
@@ -1271,34 +1287,35 @@ describe("the full-suite rate: four per worker per window", () => {
     return d;
   };
 
-  test("the fourth run inside the window is allowed", () => {
-    // At the old rate of 2 this is the case that goes red, which is the whole
-    // reason it is written as the fourth and not as "some number of runs".
-    for (const i of [0, 1, 2]) expect(spend(i * 1000).allow).toBe(true);
-    expect(spend(3000).allow, "the raised rate did not reach production").toBe(true);
+  test("every run up to the rate is allowed", () => {
+    // At the old rate of 2 the third of these went red; at 4, the fifth. The
+    // case is "the last one the policy permits", whatever the policy says.
+    for (const i of upToTheCap) {
+      expect(spend(i * 1000).allow, `run ${i + 1} of ${N} was refused`).toBe(true);
+    }
   });
 
-  test("the fifth is still refused — this raised the cap, it did not remove it", () => {
-    for (const i of [0, 1, 2, 3]) expect(spend(i * 1000).allow).toBe(true);
+  test("the one after it is still refused — this raised the cap, it did not remove it", () => {
+    for (const i of upToTheCap) expect(spend(i * 1000).allow).toBe(true);
 
-    const fifth = spend(4000);
-    expect(fifth.allow).toBe(false);
-    expect(fifth.reason).toContain("DIR-L29");
-    expect(fifth.reason).toContain("4/4");
+    const overTheLine = spend(N * 1000);
+    expect(overTheLine.allow).toBe(false);
+    expect(overTheLine.reason).toContain("DIR-L29");
+    expect(overTheLine.reason).toContain(`${N}/${N}`);
   });
 
   test("the rate never exceeds what the counter file remembers", () => {
     // MAX_TRACKED_RUNS bounds retention. A rate above it spends entries that
     // were already dropped, so the budget silently resets mid-window — the
     // cap would read as enforced and not be.
-    expect(resolveMaxRuns(undefined, undefined)).toBeLessThanOrEqual(8);
-    expect(resolveMaxRuns(99, undefined)).toBeLessThanOrEqual(8);
-    expect(resolveMaxRuns(undefined, "99")).toBeLessThanOrEqual(8);
+    expect(resolveMaxRuns(undefined, undefined)).toBeLessThanOrEqual(MAX_TRACKED_RUNS);
+    expect(resolveMaxRuns(99, undefined)).toBeLessThanOrEqual(MAX_TRACKED_RUNS);
+    expect(resolveMaxRuns(undefined, "99")).toBeLessThanOrEqual(MAX_TRACKED_RUNS);
   });
 
-  test("the window still expires it, so four is a rate and not a quota", () => {
-    for (const i of [0, 1, 2, 3]) expect(spend(i * 1000).allow).toBe(true);
-    expect(spend(4000).allow).toBe(false);
+  test("the window still expires it, so the cap is a rate and not a quota", () => {
+    for (const i of upToTheCap) expect(spend(i * 1000).allow).toBe(true);
+    expect(spend(N * 1000).allow).toBe(false);
     // 31 minutes — past the 30-minute window.
     expect(spend(31 * 60_000).allow).toBe(true);
   });
@@ -1306,7 +1323,30 @@ describe("the full-suite rate: four per worker per window", () => {
 
 describe("resolveMaxRuns: the override cannot turn the guard off", () => {
   test("the default is what applies with no option and no environment", () => {
-    expect(resolveMaxRuns(undefined, undefined)).toBe(4);
+    expect(resolveMaxRuns(undefined, undefined)).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
+  });
+
+  test("the policy value is what it is for stated reasons", () => {
+    // The ONE pin. Everything else in this file derives from the constant, so
+    // this is the only case a silent change to the number has to get past, and
+    // it carries the two relationships that make the number safe rather than
+    // just the number.
+    expect(DEFAULT_MAX_RUNS_PER_WORKER, "the rate moved without this line moving").toBe(8);
+
+    // Strictly less, not <=. At equality the environment clamp below
+    // (`min(parsed, DEFAULT_MAX_RUNS_PER_WORKER)`) and the option clamp
+    // (`min(option, MAX_TRACKED_RUNS)`) are the same function, and no input
+    // can tell whether the one-way clamp from the d6cc5acf security review is
+    // still there. The slack is what keeps that property observable.
+    expect(
+      DEFAULT_MAX_RUNS_PER_WORKER,
+      "the rate reached retention — the one-way env clamp is no longer measurable by any input",
+    ).toBeLessThan(MAX_TRACKED_RUNS);
+
+    // Untouched by the 2026-10-13 raise, and the reason the raise was safe:
+    // the 2026-10-05 reboot was 5,360 MB and 33 processes from suites running
+    // AT ONCE. Rate and concurrency are different things.
+    expect(DEFAULT_CAPACITY, "the raise was a rate change; concurrency must not move with it").toBe(2);
   });
 
   test("an explicit option wins over the environment", () => {
@@ -1318,7 +1358,6 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     // to resolve through the environment, so a run that spent eight suites
     // could be graded against a threshold of eight. A grader measures against
     // the policy; a run does not get to move the line it is measured by.
-    expect(DEFAULT_MAX_RUNS_PER_WORKER).toBe(4);
     const checker = readFileSync(
       join(import.meta.dir, "..", "lib", "transcript-checker.ts"),
       "utf-8",
@@ -1345,22 +1384,29 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     //
     // One-way is the whole fix: tightening is always safe, so the loosening
     // direction has no reason to exist.
-    expect(resolveMaxRuns(undefined, "8")).toBe(4);
-    expect(resolveMaxRuns(undefined, "99")).toBe(4);
-    expect(resolveMaxRuns(undefined, "6")).toBe(4);
+    //
+    // Every value here is above the policy rate AND at or below retention, so
+    // the assertion fails if the clamp is retargeted at MAX_TRACKED_RUNS —
+    // which is the loosening the review rejected, and the exact mutation that
+    // goes undetectable if the rate is ever raised to retention.
+    expect(resolveMaxRuns(undefined, "9")).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
+    expect(resolveMaxRuns(undefined, String(MAX_TRACKED_RUNS))).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
+    expect(resolveMaxRuns(undefined, "99")).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
   });
 
   test("an explicit option may still raise it — that is a caller, not the run", () => {
     // The distinction the one-way clamp turns on. Code in this repo passing a
     // number is not the graded work talking; it is bounded only by what the
     // counter file can remember.
-    expect(resolveMaxRuns(6, undefined)).toBe(6);
-    expect(resolveMaxRuns(99, undefined)).toBe(8);
+    expect(resolveMaxRuns(DEFAULT_MAX_RUNS_PER_WORKER + 1, undefined)).toBe(
+      DEFAULT_MAX_RUNS_PER_WORKER + 1,
+    );
+    expect(resolveMaxRuns(99, undefined)).toBe(MAX_TRACKED_RUNS);
   });
 
   test("zero is a real answer, not a missing one", () => {
-    // `?? default` would have read 0 as absent and handed back 4 — the
-    // deliberate stop turning into the normal rate.
+    // `?? default` would have read 0 as absent and handed back the full rate
+    // — the deliberate stop turning into the normal rate.
     expect(resolveMaxRuns(0, undefined)).toBe(0);
     expect(resolveMaxRuns(undefined, "0")).toBe(0);
   });
@@ -1378,7 +1424,7 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     // applies. Every path that is not a clearly valid integer has to land on
     // a bounded number — NaN would make `recent.length < maxRuns` false and
     // refuse everything, and Infinity would disable the cap entirely.
-    expect(resolveMaxRuns(undefined, env)).toBe(4);
+    expect(resolveMaxRuns(undefined, env)).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
   });
 
   test.each([
@@ -1387,6 +1433,6 @@ describe("resolveMaxRuns: the override cannot turn the guard off", () => {
     ["NaN", NaN],
     ["Infinity", Infinity],
   ])("a %s option falls back rather than being used", (_l, option) => {
-    expect(resolveMaxRuns(option as number, undefined)).toBe(4);
+    expect(resolveMaxRuns(option as number, undefined)).toBe(DEFAULT_MAX_RUNS_PER_WORKER);
   });
 });
