@@ -41,19 +41,45 @@ export const OVERRIDE_LABELS: Record<string, string> = {
 };
 
 /**
+ * Shell operators that end one command and begin another.
+ *
+ * Emitted as their OWN tokens, which is the whole point. The first version
+ * of this file split on whitespace alone, so `foo;gh issue create` and
+ * `gh issue comment 1&&gh issue create` produced the tokens `foo;gh` and
+ * `1&&gh` — and since those are not the word `gh`, `createsIssue` said no
+ * and the lock allowed both. That is the same defect as the substring
+ * matcher this file replaced, one layer in: a parser that disagrees with the
+ * shell about where a command begins. Found by the commit security review,
+ * not by me.
+ *
+ * A newline is in the list for the same reason. Without it,
+ * `gh issue create --label follow-up` and `gh issue create --label bug` on
+ * two lines are one clause, and the first line's override covers the second.
+ *
+ * Longest first: `&&` must be tried before `&`, `||` before `|`.
+ */
+const OPERATORS = ["&&", "||", ";;", ";", "|", "&", "(", ")", "\n"];
+
+/**
  * Split a command the way a shell would, so an argument can be told from a
- * word inside a quoted string.
+ * word inside a quoted string — and an operator from a word glued to one.
  *
  * Not a full shell parser and does not need to be: the only question is
- * which tokens are arguments. Unterminated quotes yield the rest of the
- * string as one token, which keeps a malformed command from silently
- * splitting into tokens that look like flags.
+ * where one command ends and the next begins, and which tokens are its
+ * arguments. Unterminated quotes yield the rest of the string as one token,
+ * which keeps a malformed command from splitting into things that look like
+ * flags nobody wrote.
  */
 export function tokenize(cmd: string): string[] {
   const out: string[] = [];
   let cur = "";
   let quote: '"' | "'" | null = null;
   let started = false;
+  const flush = () => {
+    if (started) out.push(cur);
+    cur = "";
+    started = false;
+  };
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
     if (c === "\\" && quote !== "'" && i + 1 < cmd.length) {
@@ -71,30 +97,64 @@ export function tokenize(cmd: string): string[] {
       started = true;
       continue;
     }
+    const op = OPERATORS.find(o => cmd.startsWith(o, i));
+    if (op) {
+      flush();
+      out.push(op);
+      i += op.length - 1;
+      continue;
+    }
     if (/\s/.test(c)) {
-      if (started) out.push(cur);
-      cur = "";
-      started = false;
+      flush();
       continue;
     }
     cur += c;
     started = true;
   }
-  if (started) out.push(cur);
+  flush();
   return out;
 }
 
-/** Shell operators that end one command and begin another. */
-const SEPARATORS = new Set(["&&", "||", ";", "|", "&"]);
+const SEPARATORS = new Set(OPERATORS);
 
-/** The command list, one token array per clause. */
-export function clauses(cmd: string): string[][] {
-  const out: string[][] = [[]];
+/**
+ * The command list, one token array per clause, descending into `-c`.
+ *
+ * The recursion is why `echo 'gh issue create --label bug'` stays allowed
+ * while `bash -c 'gh issue create --label bug'` does not. A quoted string is
+ * data to `echo` and a command to a shell, and only the second one files an
+ * issue. Refusing both would be the safer direction and the wrong one — a
+ * guard that refuses commands which create nothing is a guard people learn
+ * to work around.
+ *
+ * **There is deliberately no allowlist of shell names here.** The first
+ * version had one — `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, with the
+ * program name resolved past any `VAR=value` prefix — and removing it
+ * scored **0 red of 38**. No command could be written that the allowlist
+ * decided: a non-shell interpreter's `-c` argument is source code, and
+ * source code quotes the command it runs, so the inner text arrives as one
+ * token and `createsIssue` needs three adjacent ones. `python3 -c
+ * "print('gh issue create --label bug')"` is a table case and is allowed
+ * with or without the allowlist. A branch no input can distinguish is a
+ * branch that will be wrong silently, so it is gone rather than kept for
+ * reassurance.
+ */
+export function clauses(cmd: string, depth = 0): string[][] {
+  const flat: string[][] = [[]];
   for (const t of tokenize(cmd)) {
-    if (SEPARATORS.has(t)) out.push([]);
-    else out[out.length - 1].push(t);
+    if (SEPARATORS.has(t)) flat.push([]);
+    else flat[flat.length - 1].push(t);
   }
-  return out.filter(c => c.length > 0);
+
+  const out: string[][] = [];
+  for (const c of flat) {
+    if (c.length === 0) continue;
+    out.push(c);
+    if (depth >= 4) continue; // a wrapper chain this deep is not an accident
+    const i = c.indexOf("-c");
+    if (i >= 0 && i + 1 < c.length) out.push(...clauses(c[i + 1], depth + 1));
+  }
+  return out;
 }
 
 /** Does this clause invoke `gh issue create`? */

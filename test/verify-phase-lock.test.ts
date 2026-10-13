@@ -73,6 +73,29 @@ const TABLE: Array<[string, boolean, string]> = [
     "both creates carry one"],
   ["echo 'gh issue create --label bug'", true,
     "a quoted command inside another is an argument, not a create"],
+
+  // Found by the commit security review of the FIRST version of this file,
+  // which split on whitespace alone. Every one of these was allowed. They
+  // are the same defect as the substring matcher, one layer in: a parser
+  // that disagrees with the shell about where a command begins.
+  ["foo;gh issue create --label bug", false,
+    "a separator with no space before `gh` — the token was `foo;gh`"],
+  ["gh issue comment 1&&gh issue create --label bug", false,
+    "`&&` glued to its neighbours — the token was `1&&gh`"],
+  ["gh issue create --label follow-up\ngh issue create --label bug", false,
+    "a newline is a separator; without it one override covered both creates"],
+  ["(gh issue create --label bug)", false, "a subshell — the token was `(gh`"],
+  ["bash -c \"gh issue create --label bug\"", false,
+    "a shell's -c argument is a command, not data"],
+  ["sh -c \"gh issue create --label follow-up\"", true,
+    "...and the override still works through one"],
+  ["bash -c \"bash -c \\\"gh issue create --label bug\\\"\"", false,
+    "nesting does not shake the guard off"],
+  ["GH_TOKEN=x gh issue create --label bug", false, "an env prefix is not the program"],
+  ["GH_TOKEN=x bash -c 'gh issue create --label bug'", false,
+    "an env prefix in front of the SHELL — the program name is the second token"],
+  [`python3 -c "print('gh issue create --label bug')"`, true,
+    "-c is code for an interpreter that is not a shell; descending into it is a false refusal"],
 ];
 
 describe("#365 SC-825: the override is a label argument, not a word in the command", () => {
@@ -110,8 +133,37 @@ describe("#365 SC-826: the parts the decision is built from", () => {
     ]);
   });
 
-  test("clauses split on shell separators", () => {
+  test("clauses split on shell separators, spaced or not", () => {
     expect(clauses("a && b ; c | d").map(c => c[0])).toEqual(["a", "b", "c", "d"]);
+    expect(clauses("a&&b;c|d").map(c => c[0]), "operators glued to words").toEqual([
+      "a", "b", "c", "d",
+    ]);
+    expect(clauses("a\nb").map(c => c[0]), "a newline ends a command").toEqual(["a", "b"]);
+  });
+
+  test("an operator is a token even inside a word, but not inside quotes", () => {
+    expect(tokenize("1&&gh")).toEqual(["1", "&&", "gh"]);
+    expect(tokenize(`--title "a && b"`)).toEqual(["--title", "a && b"]);
+  });
+
+  test("a -c argument is parsed as a command; anything else is data", () => {
+    // Refusing `echo` too would be the safer direction and the wrong one —
+    // a guard that refuses commands creating nothing is a guard people
+    // learn to work around. `-c` is the whole condition: an allowlist of
+    // shell names was removed because no input could distinguish it.
+    expect(clauses(`bash -c "gh issue create"`).some(createsIssue)).toBe(true);
+    expect(clauses(`echo "gh issue create"`).some(createsIssue)).toBe(false);
+  });
+
+  test("the recursion is bounded", () => {
+    // Four levels, then it stops looking. Not a correctness property —
+    // a wrapper chain that deep is not an accident — but an unbounded
+    // recursion over attacker-shaped input is its own problem.
+    const deep = Array.from({ length: 12 }).reduce<string>(
+      acc => `bash -c "${acc.replace(/"/g, '\\"')}"`,
+      "gh issue create --label bug",
+    );
+    expect(() => clauses(deep)).not.toThrow();
   });
 
   test("createsIssue needs the three words adjacent", () => {

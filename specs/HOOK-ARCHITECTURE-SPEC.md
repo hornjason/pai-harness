@@ -160,23 +160,68 @@ second override and the refusal text is generated from the same map the
 decision reads, so a third one cannot be accepted while the message still
 names two.
 
+#### The first fix was the same defect, narrower
+
+The commit security review found three issues in the replacement, and it was
+right about all of them. The first tokenizer split on **whitespace alone**,
+so a shell operator glued to a word never became an operator and `gh` never
+started a token. Measured against that version:
+
+| command | first fix |
+|---|---|
+| `foo;gh issue create --label bug` | **allowed** — the token was `foo;gh` |
+| `gh issue comment 1&&gh issue create --label bug` | **allowed** — the token was `1&&gh` |
+| `(gh issue create --label bug)` | **allowed** — the token was `(gh` |
+| `gh issue create --label follow-up` ⏎ `gh issue create --label bug` | **allowed** — a newline is not a separator, so one override covered both |
+| `bash -c "gh issue create --label bug"` | **allowed** — the whole inner command was one quoted token |
+
+That is the substring matcher's defect wearing the opposite sign. The old one
+was *wider* than a label and matched a word in a title; the new one was
+*narrower* than a command and missed the command. Both are shape two of
+`.claude/rules/checks-must-be-able-to-fail.md`, and writing the fix for one
+is clearly no protection against writing the other.
+
+Operators are now their own tokens regardless of surrounding whitespace,
+newline included, and a `-c` argument is parsed as a command.
+
+**The shell allowlist was removed because nothing could distinguish it.**
+The first version of the recursion descended only into `sh`, `bash`, `zsh`,
+`dash`, `ksh` and `fish`, resolving the program name past any `VAR=value`
+prefix. Deleting the check scored **0 red of 38**: a non-shell interpreter's
+`-c` argument is source code, source code quotes the command it runs, and
+quoted text arrives as one token while `createsIssue` needs three adjacent
+ones. `python3 -c "print('gh issue create --label bug')"` is a table case and
+is allowed either way. A branch no input can distinguish is a branch that
+will be wrong silently, so it is gone rather than kept for reassurance.
+
 #### What was broken to prove it (SC-825..827)
 
-Run and counted over `test/verify-phase-lock.test.ts` (26 tests):
+Run and counted over `test/verify-phase-lock.test.ts` (39 tests):
 
 | Mutation | Red |
 |---|---|
-| the matcher reverted to `cmd.includes('follow-up')` — **the mutation the issue specified** | 11 of 26 |
-| `verifyPhaseRefusal` always allows | 8 of 26 |
-| `external-audit` removed from the override map | 5 of 26 |
-| `labelValues` reads only the spaced long form, not `=` or `-l` | 3 of 26 |
-| clause splitting removed — the whole command is one clause | 2 of 26 |
-| the hook stops consulting the library and inlines the old test | 2 of 26 |
-| `tokenize` stops honouring quotes | 2 of 26 |
-| `createsIssue` matches a bare `create` token anywhere | 1 of 26 |
+| the matcher reverted to `cmd.includes('follow-up')` — **the mutation the issue specified** | 14 of 39 |
+| `verifyPhaseRefusal` always allows | 16 of 39 |
+| `tokenize` stops honouring quotes | 7 of 39 |
+| operators stop being their own tokens — **the whitespace-only split the review found** | 6 of 39 |
+| `external-audit` removed from the override map | 5 of 39 |
+| the `-c` recursion removed | 4 of 39 |
+| clause splitting removed — the whole command is one clause | 3 of 39 |
+| the newline dropped from the operator list | 2 of 39 |
+| `labelValues` reads only the spaced long form, not `=` or `-l` | 2 of 39 |
+| the hook stops consulting the library and inlines the old test | 2 of 39 |
+| `createsIssue` matches a bare `create` token anywhere | 1 of 39 |
+| the recursion depth bound raised from 4 to 400 | **0 of 39** |
 
-None is left in the tree; all were run and reverted. The hook is 84 lines,
-within SC-371.
+The last row is recorded rather than hidden, and unlike the allowlist it is
+kept. The bound is a resource property and not a decision property: a
+mutation that raises it is *supposed* to leave every verdict unchanged, and
+the test that covers it asserts only that a twelve-deep wrapper chain does
+not throw. An unverified branch that cannot change an answer is a different
+thing from one that silently can.
+
+None of the twelve is left in the tree; all were run and reverted. The hook
+is 84 lines, within SC-371.
 
 ## Implementation
 
