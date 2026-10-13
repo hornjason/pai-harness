@@ -1520,6 +1520,133 @@ run and is not satisfied here; the next pipeline run provides it.
 
 ---
 
+### "Test as CI sees it" saw half of it (#168)
+
+`scripts/test-clean-env.ts` ends CLAUDE.md's MANDATORY GATE and is listed in
+`AGENTS.md` as "Test as CI sees it". On 2026-10-07 it reported **2998 pass /
+0 fail** on a tree where CI reported **2 fail**, and both failures were real.
+
+It strips the developer's *environment* — `HOME`, `gh` credentials, git
+identity — which was #71's defect and is still worth doing. It then ran in the
+developer's *checkout*: a full clone with every ref and all of history. CI
+runs `actions/checkout@v4`, which fetches one commit onto a detached HEAD with
+no local branches. Any test whose behaviour depends on a ref or on history was
+unmodelled, and `test/prior-branch.test.ts` was exactly that — it counts
+`main..<ref>`, which resolves on a developer's clone and does not resolve in
+CI, so #164's correct `commitCount: null` met two assertions still demanding a
+number.
+
+A check that passed because of what it never looked at, in the tool the gate
+leans on. Every run since #71 was trusted for a property it did not have.
+
+#### The model is read from the workflow, and that is the load-bearing part
+
+The obvious implementation is `git clone --depth 1`, detach, delete `main`.
+That was the first draft, and it was **already wrong**: #347 added a
+`git fetch --depth=200 origin main` step to the `test` job, so `origin/main`
+does exist by the time the suite runs. The hardcoded model reported two
+failures CI does not have — `test/project-state-currency.test.ts` and
+`test/allowlist-growth.test.ts`, both of which read `origin/main` — and a
+model wrong in that direction costs exactly what a model wrong in the other
+one does.
+
+So `lib/ci-checkout.ts` parses `.github/workflows/ci.yml`: the checkout
+step's `fetch-depth` (defaulting to 1, as the action documents), and every
+`git fetch` the job runs afterwards, replayed in order. When CI changes, the
+model follows. When the parse cannot find what it expects it returns a reason
+and the caller refuses, because a guessed checkout is the defect being
+modelled.
+
+#### Every refusal is a refusal
+
+With the decision written inline in the script, replacing it with "warn and
+run in the working tree anyway" scored **0 red**. That is the worst outcome
+this change could produce: a caller who asked for the strict check, was told
+it could not be built, and got the unmodelled run reported as the strict one.
+The decision moved into `prepareCiCheckout`, the script does nothing but
+translate `ok: false` into one shared exit code, and there is deliberately no
+fall-back parameter — a caller who wants the working tree asks for it up
+front with `--no-ci-checkout`, where the choice is visible.
+
+- [x] SC-580: scripts/test-clean-env.ts contains [fetch-depth, shallow, git] — the git checkout is part of what "as CI sees it" means, not only the environment variables, and the depth comes from the workflow rather than from an assumption that was already stale
+- [x] SC-581: test/test-clean-env.test.ts contains [--depth 1, detach, no local main] — a planted ref-dependent test is shown to fail inside the modelled checkout while a planted control passes, because a harness that broke every run would satisfy the first assertion alone
+- [x] SC-582: scripts/test-clean-env.ts contains [CI checkout, what this does NOT model] — the six remaining gaps are named in the file and printed on every run, because the claim being replaced failed by being unqualified
+- [x] SC-777: lib/ci-checkout.ts contains [isSafeRefspec] — a refspec read out of a workflow is checked against an allowlist before it becomes a `git fetch` argument, because `--upload-pack=<cmd>` makes git execute that command and an argv array does nothing about a value that is itself an option
+
+#### A refspec that is secretly a git option (#168, review of the first commit)
+
+A security review of the first commit found it, and it is the kind this
+codebase has not had much of: not a fail-open, an **argument injection**.
+
+The refspec is read out of a workflow file and pushed into an argv. Using an
+argv array rather than a shell string stops shell metacharacters and does
+nothing at all about a value that is itself an option — and `git fetch`
+accepts options anywhere on its command line, including `--upload-pack=<cmd>`,
+which makes git **execute that command**.
+
+The reach is wider than the file being parsed suggests. rungate scaffolds
+other projects, so this parses workflow files it does not own: a repo whose
+CI contains `git fetch origin '--upload-pack=...'` would be cloning arbitrary
+execution into whoever ran the harness against it.
+
+An allowlist rather than a denylist of leading dashes — the characters a real
+refspec needs are a small closed set, and enumerating what is forbidden is how
+the next option syntax gets through. Checked at the parse boundary and again
+in the plan builder, because the builder is exported and a caller can hand it
+a model the parser never saw.
+
+| Mutation | Red |
+|---|---|
+| `isSafeRefspec` rejects everything | 4 of 22 |
+| `isSafeRefspec` accepts everything | 2 of 22 |
+| the parser stops validating | 1 of 22 |
+| the plan builder stops validating | 1 of 22 |
+| the allowlist becomes a leading-dash denylist | 1 of 22 |
+
+The first row is the control working. An allowlist tight enough to reject
+every real refspec would satisfy the hostile case and break every consumer
+project, so the ordinary forms — wildcards, slashes, hyphens, underscores —
+are asserted accepted in the same test.
+
+#### What was broken to prove it (SC-580..582)
+
+Over `test/test-clean-env.test.ts` (19 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the local-branch deletion step dropped from the plan | 4 of 19 |
+| the clone is no longer shallow | 2 of 19 |
+| a missing `fetch-depth` read as full history instead of 1 | 2 of 19 |
+| a missing job defaulted instead of refused | 2 of 19 |
+| the checkout left attached to `main` | 1 of 19 |
+| the final local-branch assertion removed | 1 of 19 |
+| the workflow's fetch steps never replayed | 1 of 19 |
+| `fetch-depth` scanned across the whole job rather than the one step | 1 of 19 |
+| a missing checkout step defaulted instead of refused | 1 of 19 |
+| the `UNMODELLED` list emptied | 1 of 19 |
+| the script ignores the model and runs in the working tree | 1 of 19 |
+| `--no-ci-checkout` silently modelled anyway | 1 of 19 |
+| `prepareCiCheckout` falls back instead of refusing | 1 of 19 — and **0 of 13** while that decision lived inline in the script |
+| an unreadable working tree treated as a clean one | 1 of 19 |
+| an unparseable workflow silently defaults | 1 of 19 |
+| the script stops routing refusals through the shared exit constant | 1 of 19 |
+
+The thirteenth row is why the refactor happened rather than a comment being
+added. Thirteen tests covered the library and the script's behaviour, and the
+one decision that could silently undo the entire issue was reachable without
+any of them noticing.
+
+#### What a green run here still does not promise
+
+Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
+every run: the runner OS (CI is ubuntu-latest), a fresh `bun install`
+(node_modules is linked), the pinned bun version, the pull-request merge
+commit `actions/checkout` builds, network and API availability, and files git
+ignores. Naming them is the difference between a model and a promise, and the
+promise is what failed.
+
+---
+
 ### A check that could not PASS (2026-10-10)
 
 `.claude/rules/checks-must-be-able-to-fail.md` is about a check that passes
