@@ -32,6 +32,36 @@
  * issue. An agent filtering that label to find loose ends from recent ships
  * gets three unrelated results. `external-audit` exists for exactly that
  * origin and is accepted here.
+ *
+ * ## What this is, and what it is not
+ *
+ * Stated because two rounds of commit security review walked the parser
+ * inward and a third would too. **This is workflow discipline over `gh`
+ * invocations reaching PreToolUse on Bash. It is not a sandbox.** It exists
+ * to catch a reflex — an agent mid-VERIFY reaching for `gh issue create`
+ * when `verifyBlockers[]` is the right place — and a reflex is defeated by
+ * saying no to the command shapes someone actually types.
+ *
+ * So the parser is held to ordinary shapes: operators with or without
+ * surrounding whitespace, newlines, subshells, command substitution
+ * including backticks, a path-qualified binary, quoted arguments, and
+ * `-c` / `-lc` / `eval` wrappers. **Every one of those was a measured bypass
+ * of an earlier version of this file**, and each has a row in
+ * `test/verify-phase-lock.test.ts`.
+ *
+ * Out of scope ON PURPOSE, and not a gap to file:
+ *
+ * - `curl` against the REST API, or the GitHub MCP tools — neither is Bash,
+ *   so the hook never sees them.
+ * - `ssh host "gh issue create …"` — that runs on another machine against
+ *   whatever repo it is configured for, and descending into every remote
+ *   command mentioning `gh` buys false refusals, not safety.
+ * - A caller who writes a script and runs it.
+ *
+ * Each of those takes a decision to get around the lock, and an agent that
+ * has made that decision is a problem no matcher fixes. Chasing them trades
+ * false refusals — which teach people to work around a guard — for
+ * protection against someone already doing so.
  */
 
 /** Labels that permit an issue to be filed mid-VERIFY, and what each means. */
@@ -56,9 +86,13 @@ export const OVERRIDE_LABELS: Record<string, string> = {
  * `gh issue create --label follow-up` and `gh issue create --label bug` on
  * two lines are one clause, and the first line's override covers the second.
  *
+ * Backticks are here for the same reason `(` and `)` are: they delimit a
+ * command substitution, and without them `` `gh issue create` `` yields the
+ * token `` `gh `` rather than `gh`.
+ *
  * Longest first: `&&` must be tried before `&`, `||` before `|`.
  */
-const OPERATORS = ["&&", "||", ";;", ";", "|", "&", "(", ")", "\n"];
+const OPERATORS = ["&&", "||", ";;", ";", "|", "&", "(", ")", "`", "\n"];
 
 /**
  * Split a command the way a shell would, so an argument can be told from a
@@ -151,19 +185,50 @@ export function clauses(cmd: string, depth = 0): string[][] {
     if (c.length === 0) continue;
     out.push(c);
     if (depth >= 4) continue; // a wrapper chain this deep is not an accident
-    const i = c.indexOf("-c");
-    if (i >= 0 && i + 1 < c.length) out.push(...clauses(c[i + 1], depth + 1));
+    for (const inner of commandArguments(c)) out.push(...clauses(inner, depth + 1));
   }
   return out;
 }
 
-/** Does this clause invoke `gh issue create`? */
+/** Arguments of this clause that are themselves commands. */
+function commandArguments(tokens: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (COMMAND_FLAG.test(t) || basename(t) === "eval") {
+      if (i + 1 < tokens.length) out.push(tokens[i + 1]);
+    }
+  }
+  return out;
+}
+
+/** The program a token names, ignoring any path it was reached by. */
+const basename = (t: string) => t.split("/").pop()!;
+
+/**
+ * Does this clause invoke `gh issue create`?
+ *
+ * Compared on the basename, because `/usr/bin/gh issue create` and
+ * `./gh issue create` are the same command and the first version of this
+ * function allowed both.
+ */
 export function createsIssue(tokens: string[]): boolean {
   for (let i = 0; i + 2 < tokens.length; i++) {
-    if (tokens[i] === "gh" && tokens[i + 1] === "issue" && tokens[i + 2] === "create") return true;
+    if (basename(tokens[i]) === "gh" && tokens[i + 1] === "issue" && tokens[i + 2] === "create") {
+      return true;
+    }
   }
   return false;
 }
+
+/**
+ * Flags whose next argument is a command string rather than data.
+ *
+ * `-c`, but also `-lc` and `-ic`: short flags combine, and only the last
+ * letter takes the argument, so `sh -lc "…"` is a login shell running a
+ * command. Both of those were allowed until the second security review.
+ */
+const COMMAND_FLAG = /^-[A-Za-z]*c$/;
 
 /**
  * The values passed to `--label` / `-l`, in both the spaced and `=` forms.

@@ -23,7 +23,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -96,6 +96,19 @@ const TABLE: Array<[string, boolean, string]> = [
     "an env prefix in front of the SHELL — the program name is the second token"],
   [`python3 -c "print('gh issue create --label bug')"`, true,
     "-c is code for an interpreter that is not a shell; descending into it is a false refusal"],
+
+  // Found by the SECOND commit security review, of the fix for the first.
+  // Every one was allowed.
+  ["`gh issue create --label bug`", false, "backticks — the token was '`gh'"],
+  ["$(gh issue create --label bug)", false, "command substitution"],
+  ["/usr/bin/gh issue create --label bug", false, "a path-qualified binary is the same binary"],
+  ["./gh issue create --label bug", false, "...and so is a relative one"],
+  ["sh -lc 'gh issue create --label bug'", false,
+    "short flags combine; only the last letter takes the argument"],
+  ["bash -ic 'gh issue create --label bug'", false, "the same, interactively"],
+  ["eval 'gh issue create --label bug'", false, "eval's argument is a command"],
+  ["`gh issue create --label follow-up`", true, "and the override survives all of it"],
+  ["/usr/bin/gh issue create --label external-audit", true, "...both of them"],
 ];
 
 describe("#365 SC-825: the override is a label argument, not a word in the command", () => {
@@ -153,6 +166,17 @@ describe("#365 SC-826: the parts the decision is built from", () => {
     // shell names was removed because no input could distinguish it.
     expect(clauses(`bash -c "gh issue create"`).some(createsIssue)).toBe(true);
     expect(clauses(`echo "gh issue create"`).some(createsIssue)).toBe(false);
+  });
+
+  test("the out-of-scope boundary is written down where the next reviewer reads it", () => {
+    // Two rounds of security review walked this parser inward and a third
+    // would too. The answer to "what about `curl`?" is a documented scope,
+    // not another branch — a guard that refuses commands creating nothing
+    // teaches people to work around it. If this assertion is failing,
+    // someone deleted the paragraph, not the boundary.
+    const src = readFileSync(join(ROOT, "lib", "issue-create-override.ts"), "utf-8");
+    expect(src, "the scope boundary is undocumented").toContain("It is not a sandbox");
+    for (const outOfScope of ["curl", "ssh host", "MCP"]) expect(src).toContain(outOfScope);
   });
 
   test("the recursion is bounded", () => {
