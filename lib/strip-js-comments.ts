@@ -215,3 +215,55 @@ export function stripJsComments(src: string, opts: StripOptions = {}): string {
 
   return out.join("");
 }
+
+/**
+ * Which offsets lie inside a comment (#360).
+ *
+ * Lives here rather than beside its caller because it is the inverse of what
+ * `stripJsComments` already knows, and a second scanner answering the same
+ * question is a second scanner to drift.
+ *
+ * The subtlety is that blanking writes a SPACE and leaves newlines alone, so
+ * "differs from the source" is true for a comment's words and FALSE for the
+ * whitespace between them. A naive maximal run therefore stops at the first
+ * space: the first version of #360's census read `SC-633,` as the whole
+ * enclosing comment, which made every comment in the repo look like a bare
+ * id and put 192 of 220 credits in the wrong bucket.
+ *
+ * So: mark the differing offsets, then bridge runs of whitespace that have a
+ * marked offset on both sides. Consecutive line comments merge into one
+ * block, which is the right answer for `// …\n// …` and is stated here
+ * because it is a choice rather than an accident.
+ */
+export function commentMask(src: string): boolean[] {
+  const blanked = stripJsComments(src);
+  const mask = Array.from(src, (ch, i) => blanked[i] !== ch);
+  let i = 0;
+  while (i < src.length) {
+    if (!mask[i] && /\s/.test(src[i])) {
+      let j = i;
+      while (j < src.length && !mask[j] && /\s/.test(src[j])) j++;
+      if (i > 0 && mask[i - 1] && j < src.length && mask[j]) {
+        for (let k = i; k < j; k++) mask[k] = true;
+      }
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return mask;
+}
+
+/** The maximal masked run around `at`, and where in it `at` fell. */
+export function enclosingComment(
+  src: string,
+  mask: boolean[],
+  at: number,
+): { text: string; offset: number } {
+  if (!mask[at]) return { text: "", offset: -1 };
+  let lo = at;
+  let hi = at;
+  while (lo > 0 && mask[lo - 1]) lo--;
+  while (hi + 1 < src.length && mask[hi + 1]) hi++;
+  return { text: src.slice(lo, hi + 1), offset: at - lo };
+}
