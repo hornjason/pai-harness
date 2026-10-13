@@ -94,3 +94,67 @@ lib/validators/
 - SC-364 is the critical gate: output must be IDENTICAL before and after. Diff the generated files
 - Don't change behavior during decomposition — this is a pure refactor
 - AGENT-BRIEF-TEMPLATE-SPEC (SC-348–SC-357) should land first — it externalizes templates, simplifying the agent-briefs generator extraction
+
+---
+
+### The scaffold wrote a dependency only one machine could resolve (#362)
+
+`addPaiHarnessDevDep` ended with:
+
+```ts
+const harnessRelative = require("path").relative(root, dirname(dirname(__dirname)));
+pkg.devDependencies["rungate"] = `file:${harnessRelative}`;
+```
+
+Every scaffolded project got a path to a sibling directory on whichever
+machine ran the scaffold, and that path was then pinned into the consumer's
+`bun.lock`. On CI, or on any second machine, it does not exist and
+`bun install` exits 1. **A consumer cannot install its dependencies on a
+clean clone** — a failure at step zero, before any gate or tier question can
+be asked, and the cause of DailyBriefDashboard's CI failing on every run
+from 2026-10-03.
+
+`--no-optional` does not help, and that is worth recording because it was the
+attempted fix (DDB `d009d9f1`): `--frozen-lockfile` resolves the `file:`
+entries pinned in the lock whether or not they are optional.
+
+**The floor is the harness's MINOR, not its exact patch**, and the
+distinction is the whole design. A caret on the current version — `^0.2.2`
+from a tree at 0.2.2 — cannot resolve until that version is published, and
+this repo runs ahead of npm: 0.2.1 was the newest published version while
+the tree said 0.2.2, and #364 is about there being no release workflow at
+all. A consumer scaffolded in that window would get an unresolvable
+dependency, which is the same defect wearing a semver range instead of a
+path. `^0.2.0` is satisfied by every published 0.2.x, so it resolves to the
+newest available today and picks up the next release with no re-scaffold.
+
+- [x] SC-813: lib/scaffold/steps.ts contains [harnessDevDepRange] — one function decides the range, and it can never return a path. The fallback for an unreadable version is a narrower range, not `*` and not `file:`: `*` would let a consumer install a major they were never scaffolded against
+- [x] SC-814: test/scaffold-installable.test.ts contains [no sibling harness] — `bun install` is RUN, in `os.tmpdir()`, which shares no ancestor with this checkout, so no relative `file:` path can reach the harness by any route. The issue named the decorative version by name: a fixture that can still resolve the harness proves nothing
+- [x] SC-815: test/scaffold-installable.test.ts contains [--frozen-lockfile] — the CI invocation is run as a SECOND install over the lock the first one wrote, which reproduces CI's conditions rather than approximating them. That is the command that fails over a pinned `file:` entry even with `--no-optional`
+
+### What was broken to prove it (SC-813..815)
+
+Run and counted over `test/scaffold-installable.test.ts` +
+`test/scaffold-determinism.test.ts` (18 tests):
+
+| Mutation | Red |
+|---|---|
+| the `file:` dependency restored verbatim — the original defect | 4 of 18 |
+| the range becomes the exact current patch (`^0.2.2`, unpublished) | 3 of 18 |
+| the unparseable-version fallback becomes `*` | 1 of 18 |
+
+The middle row is the one that proves the install cases are real. An
+exact-patch caret is still a semver range and still not a path, so every
+shape assertion stays green — the three reds are the two `bun install` cases
+and the floor case, which means those installs genuinely resolve against the
+registry rather than against anything on this machine.
+
+None is left in the tree; all were run and reverted.
+
+**Not done here, and the issue says so itself:** the range resolves to 0.2.1
+today, which predates the `bin` added in #363. A consumer installing from
+npm therefore gets a working dependency and a `rungate` command that is one
+release behind. Publishing is an outward-facing action with its own
+authorization, and #364 — no release workflow, npm on 0.2.1 against a repo
+735 commits in — is where that belongs. This change is what makes a publish
+worth doing; it does not perform one.

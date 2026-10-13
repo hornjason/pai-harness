@@ -6,12 +6,41 @@
  * Validates: project type detection, directory creation, AGENTS.md generation,
  * test file creation, spec frontmatter injection, no-overwrite guarantee.
  */
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
 const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.ts");
+
+/**
+ * How long a single scaffold is allowed to take, and how long the test
+ * running it is allowed to take. The second must exceed the first.
+ *
+ * Every case in this file spawns a real `bun scripts/scaffold-project.ts`,
+ * and a `--fix` run on a project with no CODE-MAP.md spawns a SECOND bun
+ * process to generate one (`lib/scaffold/steps.ts`). Measured on this
+ * machine: 1.42s for the whole scaffold, 1.04s of it the nested generator —
+ * 73% of the operation is a second cold bun start.
+ *
+ * Bun's default per-test timeout is 5000ms, which is a THIRD of what
+ * `runScaffold` itself declares the operation may take. So the runner killed
+ * the test while the helper was still willing to wait, and on 2026-10-13 it
+ * did: `reports what it created and what it skipped` died at 5007ms on CI
+ * while its near-identical neighbour passed in 834ms. The report read
+ * "this test timed out after 5000ms" and carried none of the scaffold's
+ * output, because the helper never got to catch anything. An earlier run on
+ * main lost `SC-525 > --type code (default) behavior is unchanged` the same
+ * way at 30s.
+ *
+ * A verdict that depends on how busy the runner was is not a measurement of
+ * the code — the same defect as a check that cannot fail, pointed the other
+ * way. The fix is one budget, derived in both places, with the ordering
+ * asserted below rather than left as a comment.
+ */
+const SCAFFOLD_TIMEOUT_MS = 15_000;
+const TEST_TIMEOUT_MS = SCAFFOLD_TIMEOUT_MS + 5_000;
+setDefaultTimeout(TEST_TIMEOUT_MS);
 
 function createTempDir(): string {
   const dir = join("/tmp", `scaffold-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -26,13 +55,42 @@ function runScaffold(projectPath: string, opts?: { expectFail?: boolean; fix?: b
   try {
     return execSync(`bun ${SCRIPT} ${projectPath}${argStr}`, {
       encoding: "utf-8",
-      timeout: 15000,
+      timeout: SCAFFOLD_TIMEOUT_MS,
     });
   } catch (e: any) {
     if (opts?.expectFail) return e.stderr || e.stdout || "";
     throw e;
   }
 }
+
+describe("scaffold-project: the test budget must outlast the thing it measures", () => {
+  test("the per-test timeout strictly exceeds the scaffold's own", () => {
+    // If this ever inverts, every one of the spawning cases in this file can
+    // be killed before `runScaffold` is allowed to fail, and the failure
+    // report loses the scaffold's output — which is the only thing in it that
+    // says what went wrong.
+    expect(
+      TEST_TIMEOUT_MS,
+      "bun would kill the test before execSync times out, discarding the scaffold's output",
+    ).toBeGreaterThan(SCAFFOLD_TIMEOUT_MS);
+  });
+
+  test("no case in this file relies on bun's 5s default", () => {
+    // A positive control on the line that makes the budget apply. Deleting
+    // the call leaves both constants declared, correctly ordered, and
+    // completely inert — the exact shape of a check that passes because of
+    // what it never looked at.
+    //
+    // Anchored to a top-level statement, and that is not fussiness. The
+    // first draft used `toContain` on the bare call text, and deleting the
+    // real call left this file green: the only remaining occurrence was the
+    // string literal inside this assertion, certifying itself. Same trap as
+    // `.claude/rules/claiming-sc-coverage.md`, met from the other side.
+    const APPLIED = /^setDefaultTimeout\(TEST_TIMEOUT_MS\);$/m;
+    const src = readFileSync(join(import.meta.dir, "scaffold-project.test.ts"), "utf-8");
+    expect(APPLIED.test(src), "the budget is declared but never applied").toBe(true);
+  });
+});
 
 // ── Test 1: Project Type Detection ─────────────────────────────
 

@@ -517,6 +517,54 @@ rather than a fixture, from a baseline of 259 credits:
 
 None is left in the tree; all were run and reverted.
 
+## A test killed by the runner is not a measurement of the code (2026-10-13)
+
+`test/unit/scaffold-project.test.ts` has 31 cases that spawn a real
+`bun scripts/scaffold-project.ts`, and a `--fix` run on a project with no
+CODE-MAP.md spawns a **second** bun process to generate one. Measured here:
+1.42s for the scaffold, 1.04s of it the nested generator — 73% of the
+operation is a second cold bun start.
+
+Not one of the 31 declared a timeout, so all of them ran under bun's 5000ms
+default, while `runScaffold` itself passed `timeout: 15000` to `execSync`.
+**The per-test budget was a third of what the helper declared the operation
+might need.** The runner therefore killed the test while the helper was still
+willing to wait, and on 2026-10-13 it did: `reports what it created and what
+it skipped` died at 5007ms on CI while its near-identical neighbour passed in
+834ms. The report read "this test timed out after 5000ms" and carried none of
+the scaffold's output, because the `catch` never ran. An earlier run on `main`
+lost `SC-525 > --type code (default) behavior is unchanged` the same way at
+30s.
+
+A verdict that turns on how busy the runner was is decoupled from the code
+under test — the same defect as a check that cannot fail, pointed the other
+way, and it costs the diagnostic output on the way through. One budget is
+declared, the test budget is derived from it, and the ordering between them is
+asserted rather than commented.
+
+- [x] SC-816: test/unit/scaffold-project.test.ts contains [setDefaultTimeout(TEST_TIMEOUT_MS)] — the budget is APPLIED, not merely declared. Two correctly-ordered constants that nothing reads are inert, and the file would keep running on the 5s default with a passing ordering test to say otherwise
+- [x] SC-817: test/unit/scaffold-project.test.ts contains [the per-test timeout strictly exceeds] — the ordering is a check, not a convention. Inverting it silently restores the regime where every spawning case can be killed before its own helper is allowed to fail
+
+### What was broken to prove it (SC-816..817)
+
+Run and counted over `test/unit/scaffold-project.test.ts` (38 tests):
+
+| Mutation | Red |
+|---|---|
+| `TEST_TIMEOUT_MS` derived as `SCAFFOLD_TIMEOUT_MS - 5_000` — still above bun's default, so every real case passes | 1 of 38 |
+| the `setDefaultTimeout` call deleted — both constants intact, nothing applying them | 1 of 38 |
+
+**The second row did not work the first time, and that is the entry worth
+keeping.** The draft asserted `toContain("setDefaultTimeout(TEST_TIMEOUT_MS)")`.
+Deleting the real call left the file green at 38 pass — the only surviving
+occurrence of the token was the string literal inside the assertion, matching
+itself. The same self-reference trap
+`.claude/rules/claiming-sc-coverage.md` is about, met from the other side.
+Anchoring to a top-level statement (`/^setDefaultTimeout\(TEST_TIMEOUT_MS\);$/m`)
+makes the assertion's own indented, quoted line unmatchable.
+
+Neither mutation is left in the tree; both were run and reverted.
+
 ## Implementation
 
 ### Phase A: SC Classification
