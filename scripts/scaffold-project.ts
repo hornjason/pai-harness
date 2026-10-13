@@ -13,6 +13,7 @@ import { detectProjectType } from "../lib/scanner";
 import {
   safeDir,
   safeWrite,
+  regenerateOwned,
   generateAgentsMdContent,
   refreshScopedRulesStep,
   refreshAgentsMd,
@@ -113,9 +114,8 @@ if (fix) {
   const copilotInstructions = `# Copilot Instructions\n\nRead [AGENTS.md](../AGENTS.md) for project context, key files, specs, and workflow.\n\nAll project knowledge lives in AGENTS.md. Start there.\n`;
   safeWrite(join(projectPath, ".github", "copilot-instructions.md"), copilotInstructions, ".github/copilot-instructions.md", actions);
 
-  // Phase 0.7: Create conformity test
-  const conformityTest = generateConformityTest();
-  safeWrite(join(projectPath, testDirName, "scaffold-conformity.test.ts"), conformityTest, `${testDirName}/scaffold-conformity.test.ts`, actions);
+  // Phase 0.7: regenerate the conformity test. Strategy passed, not looked up — the label carries the project's own test dir, which may not be `test/` (#208).
+  regenerateOwned(join(projectPath, testDirName, "scaffold-conformity.test.ts"), generateConformityTest(projectPath), `${testDirName}/scaffold-conformity.test.ts`, actions, "regenerate");
 }
 
 // Validators always run — only write when --fix is passed

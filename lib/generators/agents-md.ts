@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ProjectScan } from "./types";
+import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
 
 /**
  * Build the AGENTS.md frontmatter block.
@@ -338,21 +339,24 @@ ${createRows.join("\n")}
     content: `---
 description: Files managed by rungate scaffold — do not edit directly
 paths:
-  - ".github/workflows/**"
-  - ".claude/agents/**"
-  - "CODE-MAP.md"
-  - "test/scaffold-conformity.test.ts"
+${OWNED_FILES.filter(f => f.strategy !== "create-only")
+  .map(f => `  - ${JSON.stringify(f.path.replace("/*.md", "/**"))}`)
+  .join("\n")}
 ---
 
-These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**
+These files are managed by rungate. **Do not edit them directly.** What
+"managed" means differs per file — the third column says which, because
+#208 was a row that promised regeneration for a file the generator skipped
+forever.
 
-| File | How to customize | What NOT to do |
-|------|-----------------|----------------|
-| \`.github/workflows/ci.yml\` | Set \`ci\` fields in \`.claude/rungate/config.json\`; add your own jobs alongside the generated \`test\` job | Don't edit the generated \`test\` job |
-| \`.github/workflows/gates.yml\` | Settings from \`.claude/rungate/config.json\`; add your own jobs alongside the generated \`gates\` job | Don't edit the generated \`gates\` job |
-| \`.claude/agents/*.md\` | Settings from \`.claude/rungate/roles.json\` | Don't edit briefs |
-| \`test/scaffold-conformity.test.ts\` | Runs automatically | Don't edit |
-| \`CODE-MAP.md\` | Auto-generated from code scan | Don't edit |
+${ownedFilesTable()}
+
+| Strategy | What re-scaffold does |
+|----------|----------------------|
+| regenerate | Rewrites it every run; reports CHANGED only when the bytes differ |
+| provenance | Rewrites it unless you edited it, in which case it is preserved and reported (#370) |
+| job-preserving | Owns named jobs inside a file you also write to; your jobs are carried forward |
+| create-only | Seeds it once and never touches it again — the content is yours, not the harness's |
 
 ### The workflow files are job-owned, not file-owned (#216)
 

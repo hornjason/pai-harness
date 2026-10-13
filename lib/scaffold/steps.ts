@@ -21,6 +21,12 @@ import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, 
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
+import {
+  OWNED_FILES,
+  SCAFFOLD_REFUSE,
+  decideOwnedWrite,
+  type WriteStrategy,
+} from "./owned-files";
 
 /**
  * Look for a declared health route in the places a server declares one.
@@ -48,17 +54,89 @@ function detectHealthPath(root: string): string | null {
 
 // ── Helpers ────────────────────────────────────────────────────
 
+/**
+ * Seed a file once. The content afterwards belongs to someone else.
+ *
+ * This is `create-only` in `OWNED_FILES` terms, and it is correct for
+ * `project-state.json` and `PROJECT-STATE.md` (DA-owned, #296) and for the
+ * two files the harness seeds but does not claim.
+ *
+ * It was ALSO being used for `test/scaffold-conformity.test.ts`, which
+ * `.claude/rules/harness-managed.md` claims is "regenerated on re-scaffold"
+ * (#208). It was not: it was skipped forever, and the run said
+ * `SKIP (already exists)`, which reads exactly like "already current". That
+ * call site now uses `regenerateOwned`.
+ *
+ * The wording changed with it. "SKIP … already exists" describes the check
+ * that was performed; "seeded once" describes the policy, and a reader of
+ * the log can tell that apart from "looked and found no difference".
+ *
+ * **It delegates rather than reimplementing, and that is load-bearing.** The
+ * first draft read the decision and then branched on `action !== "create"`,
+ * which is equivalent for every input `create-only` can produce today — and
+ * exactly because it is equivalent, it ABSORBED a mutation: deleting the
+ * `create-only` branch from `decideOwnedWrite` made every seeded file fall
+ * through to the regenerate path, and `safeWrite` reported `UNCHANGED` and
+ * declined to write anyway. Nothing went red. The #296 protection was
+ * asserted in the declaration and enforced in a second place, so mutating
+ * the declaration proved nothing. One writer, one decider.
+ */
 export function safeWrite(filePath: string, content: string, label: string, actions: string[]): void {
-  if (existsSync(filePath)) {
-    actions.push(`SKIP: ${label} (already exists)`);
+  regenerateOwned(filePath, content, label, actions, "create-only");
+}
+
+/**
+ * Write a file the harness OWNS, and report what actually changed.
+ *
+ * The difference from `safeWrite` is the whole of #208: this one writes
+ * every run, compares bytes, and reports `UNCHANGED` only after looking.
+ * `0 changed` becomes a measurement rather than the absence of an attempt.
+ *
+ * `strategy` comes from `OWNED_FILES`, which is the declaration the doc
+ * table is reconciled against — so a file cannot be claimed as managed in
+ * prose while being written by a helper that skips it.
+ */
+export function ownedStrategy(label: string): WriteStrategy {
+  for (const owned of OWNED_FILES) {
+    if (owned.path === label) return owned.strategy;
+    if (owned.path.includes("*")) {
+      const [prefix, suffix] = owned.path.split("*");
+      if (label.startsWith(prefix) && label.endsWith(suffix)) return owned.strategy;
+    }
+  }
+  // An unlisted file is regenerated. The direction this is allowed to be
+  // wrong in: a file nobody declared gets rewritten with the generator's
+  // own output, which is recoverable. Defaulting to create-only would make
+  // forgetting to declare a file look exactly like #208.
+  return "regenerate";
+}
+
+export function regenerateOwned(
+  filePath: string,
+  content: string,
+  label: string,
+  actions: string[],
+  strategy: WriteStrategy = ownedStrategy(label),
+): void {
+  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  const decision = decideOwnedWrite(strategy, existing, content);
+
+  if (decision.action === "preserve") {
+    actions.push(
+      `${SCAFFOLD_REFUSE}: ${label} (${decision.reason}) — generator output withheld; ` +
+        `delete the file and re-run to accept it`,
+    );
     return;
   }
-  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+  if (decision.action === "unchanged") {
+    actions.push(`UNCHANGED: ${label} (${decision.reason})`);
+    return;
   }
-  writeFileSync(filePath, content);
-  actions.push(`CREATED: ${label}`);
+
+  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  writeFileSync(filePath, decision.content!);
+  actions.push(`${decision.action === "create" ? "CREATED" : "CHANGED"}: ${label}`);
 }
 
 export function safeDir(dirPath: string, label: string, actions: string[]): void {
@@ -593,24 +671,69 @@ export function refreshAgentsMd(root: string, type: ProjectType, actions: string
 
 // ── Conformity test generation ─────────────────────────────────
 
-export function generateConformityTest(): string {
+/**
+ * Whether the project being scaffolded IS the harness.
+ *
+ * Surfaced by #208. The generator emitted `from "rungate/lib/conformity"`
+ * unconditionally, but rungate's own copy on disk imported
+ * `"../lib/conformity"` — so that file had been hand-adapted, and
+ * `safeWrite`'s skip was the only thing preserving the adaptation. Making
+ * the file regenerate without teaching the generator this distinction would
+ * have replaced a working self-hosted test with a consumer-shaped one.
+ *
+ * Read from `package.json`'s name rather than from the path, because a
+ * clone, a worktree or a temp fixture all have different directory names
+ * and the same identity.
+ */
+export function isSelfHosted(root: string): boolean {
+  const pkgPath = join(root, "package.json");
+  if (!existsSync(pkgPath)) return false;
+  try {
+    return JSON.parse(readFileSync(pkgPath, "utf-8")).name === "rungate";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The conformity suite every scaffolded project runs.
+ *
+ * Two things here were only ever wrong because nothing regenerated this file
+ * (#208), and both are fixed in the same change that makes it regenerate:
+ *
+ * 1. Every call passed a `findings` array. No entry point has ever taken one
+ *    — findings accumulate in a module-level collector that
+ *    `writeFindingsReport(root)` reads. The extra argument typechecked
+ *    nowhere and did nothing anywhere; it survived because the only tree that
+ *    typechecks this file is rungate's, and rungate's copy was the
+ *    hand-adapted one the skip preserved.
+ * 2. `runDirectoryValidation` was missing. rungate's hand-adapted copy ran
+ *    it; the template did not. Regenerating without it would have deleted a
+ *    live check — the same silent-coverage-loss this issue is about, just
+ *    pointed the other way.
+ */
+export function generateConformityTest(root?: string): string {
+  // A package cannot import itself by name without an `exports` map, and
+  // adding one to make a generated string uniform would be the tail wagging
+  // the dog.
+  const from = root && isSelfHosted(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runPackageValidation, runTsconfigValidation, writeFindingsReport } from "rungate/lib/conformity";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
-const findings: any[] = [];
 
-runScaffoldConformity(ROOT, findings);
-runSpecDiscovery(ROOT, findings);
-runSpecDrift(ROOT, findings);
-runDocHygiene(ROOT, findings);
-runFallowCheck(ROOT, findings);
-runAgentFileValidation(ROOT, findings);
-runPackageValidation(ROOT, findings);
-runTsconfigValidation(ROOT, findings);
+runScaffoldConformity(ROOT);
+runSpecDiscovery(ROOT);
+runSpecDrift(ROOT);
+runDocHygiene(ROOT);
+runFallowCheck(ROOT);
+runAgentFileValidation(ROOT);
+runDirectoryValidation(ROOT);
+runPackageValidation(ROOT);
+runTsconfigValidation(ROOT);
 
-afterAll(() => writeFindingsReport(ROOT, findings));
+afterAll(() => writeFindingsReport(ROOT));
 `;
 }
 
