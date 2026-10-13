@@ -37,7 +37,14 @@ import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
 
-const DEFAULT_CAPACITY = 2;
+/**
+ * Suites allowed to run AT ONCE. Measured, not chosen: one full suite peaks at
+ * 5,360 MB and 33 processes on this machine, and three at once rebooted it on
+ * 2026-10-05. Exported so the rate tests can assert it did not move when the
+ * rate did — the two are routinely confused, and the 2026-10-13 raise was
+ * approved on exactly that distinction.
+ */
+export const DEFAULT_CAPACITY = 2;
 const DEFAULT_TTL_SECONDS = 420;
 
 /**
@@ -69,8 +76,34 @@ const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
  *
  * Must stay <= MAX_TRACKED_RUNS, which bounds what the counter file retains.
  * A budget larger than what is remembered is a budget that silently resets.
+ *
+ * Raised again from 4 to 8 on 2026-10-13, at Jason's direction, on the
+ * argument the paragraph above already makes: the rate and the concurrency
+ * cap are different things, and in a single-session run with nothing
+ * overlapping, `DEFAULT_CAPACITY` is the one doing the protecting. Four was
+ * reached three times in one afternoon of backlog work — once mid-
+ * reconciliation, which is the stall this budget exists to prevent arriving
+ * from the other side, exactly as the 2026-10-10 note describes.
+ *
+ * 8 is the ceiling, not a step toward a larger one. Going higher means raising
+ * retention first and saying why — a budget above what the counter file
+ * remembers resets silently.
+ *
+ * Raising the rate to 8 forced `MAX_TRACKED_RUNS` up to 12 in the same change,
+ * and NOT for capacity. At 8 the rate would have equalled retention, and then
+ * `Math.min(parsed, DEFAULT_MAX_RUNS_PER_WORKER)` below and
+ * `Math.min(option, MAX_TRACKED_RUNS)` above become the same function: no input
+ * distinguishes them, so the one-way environment clamp — the whole finding of
+ * the d6cc5acf security review — stops being observable by any test. The
+ * property would still have been coded and would no longer have been checkable.
+ * Retention is a slice length bounded by `MAX_COUNTER_BYTES`; headroom there
+ * costs nothing and keeps the clamp measurable.
+ *
+ * What did NOT change, and must not: `DEFAULT_CAPACITY` stays at 2. The
+ * 2026-10-05 reboot was 5,360 MB and 33 processes per suite running at once,
+ * and nothing here touches that.
  */
-export const DEFAULT_MAX_RUNS_PER_WORKER = 4;
+export const DEFAULT_MAX_RUNS_PER_WORKER = 8;
 
 /**
  * Full suites ONE SHIP RUN may spend in total, across every agent in it.
@@ -737,8 +770,19 @@ export function runCounterPath(lockDir: string, runId: string): string {
 /** Generous for the real format (~20 bytes/run); far below a memory problem. */
 const MAX_COUNTER_BYTES = 64 * 1024;
 
-/** Entries kept per session. Only `maxRuns` can ever be spent; the rest is slack. */
-const MAX_TRACKED_RUNS = 8;
+/**
+ * Entries kept per session. Only `maxRuns` can ever be spent; the rest is slack.
+ *
+ * Exported so tests derive the retention invariant rather than re-pinning the
+ * number beside it — two literals that must agree are one of them going stale.
+ *
+ * Raised 8 → 12 on 2026-10-13 alongside the rate. The slack is now load-bearing
+ * and not merely generous: at zero slack the environment clamp in
+ * `resolveMaxRuns` becomes indistinguishable from the option clamp, and a
+ * security property no input can observe is not a property. See
+ * `DEFAULT_MAX_RUNS_PER_WORKER`.
+ */
+export const MAX_TRACKED_RUNS = 12;
 
 function readRuns(path: string, maxRuns: number): number[] {
   const budget = Math.max(0, Math.min(maxRuns, MAX_TRACKED_RUNS));
