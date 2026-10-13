@@ -15,6 +15,7 @@ import {
   containerProvenanceViolations,
   resolveContainerRuntime,
 } from "../lib/container-provenance";
+import { evidencePortabilityViolations } from "../lib/evidence-portability";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -1274,6 +1275,22 @@ describe("spec traceability", () => {
   // on every run. It is recorded in OPTIONAL_HARNESS_KEYS in
   // test/gate-optional-config-keys.test.ts so it cannot be quietly re-added,
   // and #338 tracks building it with a threshold that has evidence behind it.
+  //
+  // #338 measured it, and the original name does not survive the
+  // measurement. Across 82 completed runs, 278 of 542 classifiable evidence
+  // file references fall OUTSIDE the AC's own contextFiles, and the largest
+  // category is the test file that proves the AC. "Within scope" is not a
+  // property real runs have, so no threshold for it exists to state.
+  //
+  // What the same measurement did find is below: 11.1% of evidence commands
+  // cannot run anywhere but the machine that wrote them.
+
+  // 32. evidence-portable (#338 — replaces evidence-target-valid)
+  test("evidence-portable: no evidence command is pinned to one machine", () => {
+    if (!isVerifyPlus()) return;
+    const violations = evidencePortabilityViolations(sf("acs"));
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
 });
 
 // ═══ SHIP CHECKS (7 functions) ════════════════════════════════════════
