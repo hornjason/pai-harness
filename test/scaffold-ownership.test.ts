@@ -19,7 +19,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -377,6 +377,13 @@ describe("#208 AC-2: measured on this repo", () => {
     ]) {
       writeFileSync(join(clone, rel), readFileSync(join(ROOT, rel), "utf-8"));
     }
+
+    // Dependencies too. A clone has no `node_modules`, so the scaffold's
+    // own `import { z } from "zod"` cannot resolve from /tmp. It passed
+    // locally because bun fell back to auto-install and failed on CI where
+    // that is off — the difference is removed rather than the failure
+    // skipped, so both sides run the same thing for the same reason.
+    symlinkSync(join(ROOT, "node_modules"), join(clone, "node_modules"), "dir");
 
     const conformity = join(clone, "test", "scaffold-conformity.test.ts");
     expect(existsSync(conformity), "the fixture does not have the file under test").toBe(true);
