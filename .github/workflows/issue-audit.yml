@@ -1,0 +1,53 @@
+# Not managed by rungate. The scaffold regenerates the `test` job in ci.yml and
+# the `gates` job in gates.yml by name; this file is caller-owned.
+#
+# #144 — IssueCloseGuard is a PreToolUse hook that predicts, from the text of a
+# Bash command, whether the command will close a protected issue. Five
+# consecutive security-review rounds each found a real differential between what
+# it believes and what the shell plus gh actually do. The class does not close,
+# because it is "every way to close a GitHub issue from a shell".
+#
+# Jason's decision of 2026-10-08 (Option C): the hook stays as fast feedback and
+# stops being a security control. THIS is the control. It reads the outcome
+# rather than predicting it, so it cannot be bypassed by phrasing — the web UI,
+# a wrapper script and a raw REST PATCH all land in the same place.
+#
+# It runs on a SCHEDULE because a control that only fires when someone remembers
+# to run it locally is the same fail-open as #140.
+#
+# Every `uses:` is pinned to a commit SHA, and a test asserts it.
+name: Issue closure audit
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily, off the hour to avoid the scheduler's peak
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Label the findings (default: report only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  issues: write # labelling a finding is the whole point
+
+jobs:
+  audit-issue-closures:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.0.2
+        with:
+          bun-version: "latest"
+      - run: bun install
+
+      # APPLY is passed through env:, not interpolated into the script. It is a
+      # typed boolean today, but a run: line that reads `${{ inputs.* }}`
+      # directly is one input-type change away from the injection GitHub's own
+      # guidance opens with.
+      - name: Audit
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLY: ${{ inputs.apply && '--apply' || '' }}
+        run: bun scripts/audit-issue-closures.ts --repo "$GITHUB_REPOSITORY" $APPLY
