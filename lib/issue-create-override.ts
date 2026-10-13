@@ -59,6 +59,8 @@
  * - Variable indirection — `GH=gh; $GH issue create`. Resolving it means
  *   tracking assignments across clauses, which is the shell interpreter this
  *   file is explicitly not, and nobody reaches for `$GH` by reflex.
+ * - Here-strings and here-documents — `bash <<< "gh issue create …"`. Same
+ *   reason: a deliberate construction, not a reflex.
  * - A caller who writes a script and runs it.
  *
  * Each of those takes a decision to get around the lock, and an agent that
@@ -251,10 +253,36 @@ export function createsIssue(tokens: string[]): boolean {
 const COMMAND_FLAG = /^-[A-Za-z]*c$/;
 
 /**
+ * Flags of `gh issue create` that do NOT consume the following token.
+ *
+ * Everything else that looks like a flag is assumed to take a value, which
+ * is the conservative direction here — see `labelValues`.
+ */
+const BOOLEAN_FLAGS = new Set(["-w", "--web", "-h", "--help", "--recover-only"]);
+
+/**
  * The values passed to `--label` / `-l`, in both the spaced and `=` forms.
  *
  * `gh` accepts a comma-separated list in one flag, so `--label a,b` is two
  * labels and not one named `a,b`.
+ *
+ * **A token that is another flag's value is data, not a flag.** Scanning for
+ * `--label=` anywhere in the clause reintroduced #365 exactly — the defect
+ * this whole file exists to fix — through the back door:
+ *
+ *     gh issue create --label bug --title "--label=follow-up"
+ *
+ * `gh` gives that title to the issue and applies only `bug`; the old scan
+ * read the title as an override and allowed it. Found by the third round of
+ * commit security review, and it is the same bypass as the original with one
+ * more layer of quoting. The unquoted form is the same command — the shell
+ * strips the quotes either way, so the quoting is not what makes it work.
+ *
+ * So the walk tracks arity the way `gh`'s own flag parser does: a flag
+ * consumes the next token unless it is known to be boolean. An unknown flag
+ * is assumed to take a value, which can only ever cause a `--label` to be
+ * MISSED — and a missed label is a refusal, the direction this guard is
+ * allowed to be wrong in.
  */
 export function labelValues(tokens: string[]): string[] {
   const out: string[] = [];
@@ -266,12 +294,24 @@ export function labelValues(tokens: string[]): string[] {
   };
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
+    if (!t.startsWith("-") || t === "-" || t === "--") continue;
+
+    const eq = t.indexOf("=");
+    if (eq !== -1) {
+      const name = t.slice(0, eq);
+      if (name === "--label" || name === "-l") add(t.slice(eq + 1));
+      continue; // `--flag=value` carries its own value; it consumes nothing
+    }
     if (t === "--label" || t === "-l") {
-      if (i + 1 < tokens.length && !tokens[i + 1].startsWith("-")) add(tokens[++i]);
+      if (i + 1 < tokens.length) add(tokens[++i]);
       continue;
     }
-    if (t.startsWith("--label=")) add(t.slice("--label=".length));
-    else if (t.startsWith("-l=")) add(t.slice("-l=".length));
+    // `-lfollow-up` — pflag lets a short flag carry its value attached.
+    if (/^-l[^-=]/.test(t)) {
+      add(t.slice(2));
+      continue;
+    }
+    if (!BOOLEAN_FLAGS.has(t)) i++; // this flag eats the next token
   }
   return out;
 }

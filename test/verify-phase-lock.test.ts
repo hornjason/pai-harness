@@ -125,10 +125,29 @@ const TABLE: Array<[string, boolean, string]> = [
   ["gh issue create --label follow-up --body 'a#b'", true,
     "`#` mid-word is not a comment either — the shell's rule is word-start"],
 
+  // Found by the THIRD review's second pass: #365's own defect, reintroduced
+  // by the parser that fixed it. A flag-shaped VALUE was read as a flag.
+  [`gh issue create --label bug --title "--label=follow-up"`, false,
+    "the override is the TITLE again — #365 with one more layer of quoting"],
+  ["gh issue create --label bug --title '--label=external-audit'", false, "either override"],
+  [`gh issue create --label bug --body "--label=follow-up"`, false, "any value-taking flag"],
+  [`gh issue create --label bug --title "-l=follow-up"`, false, "the short form too"],
+  ["gh issue create --label bug --title --label=follow-up", false,
+    "unquoted is the same command — the shell strips the quotes either way"],
+  // ...and the forms that must keep working, because a guard that refuses a
+  // real override teaches people to work around it.
+  [`gh issue create --label="follow-up"`, true, "a partially quoted value is still a flag"],
+  [`gh issue create "--label=follow-up"`, true, "...and so is a fully quoted one"],
+  ["gh issue create -lfollow-up", true, "pflag lets a short flag carry its value attached"],
+  ["gh issue create --web --label follow-up", true,
+    "a BOOLEAN flag eats nothing — assuming it did would refuse a real override"],
+
   // Documented as out of scope, asserted so the boundary is a measurement
   // rather than a claim. See the module docblock.
   ["GH=gh; $GH issue create --label bug", true,
     "variable indirection — resolving it is the shell interpreter this is not"],
+  ["bash <<< 'gh issue create --label bug'", true,
+    "a here-string is not a shape anyone types to file an issue"],
 ];
 
 describe("#365 SC-825: the override is a label argument, not a word in the command", () => {
@@ -239,6 +258,22 @@ describe("#365 SC-826: the parts the decision is built from", () => {
     expect(labelValues(tokenize("x --label a -l b --label=c -l=d --title --label"))).toEqual([
       "a", "b", "c", "d",
     ]);
+    expect(labelValues(tokenize("x -le")), "a short flag's attached value").toEqual(["e"]);
+  });
+
+  test("a flag's value is data, even when it is shaped like a flag", () => {
+    // The whole of #365, reintroduced by the parser that fixed it: scanning
+    // for `--label=` anywhere let a TITLE carry the override again.
+    expect(
+      labelValues(tokenize(`gh issue create --label bug --title "--label=follow-up"`)),
+      "the title was read as a label",
+    ).toEqual(["bug"]);
+    // ...and the direction this is allowed to be wrong in. An unknown flag
+    // is assumed to take a value, so a `--label` hidden behind one is missed
+    // — which refuses, rather than allows.
+    expect(labelValues(tokenize("x --unknown --label follow-up"))).toEqual([]);
+    // A boolean flag eats nothing, or every override after one would vanish.
+    expect(labelValues(tokenize("x --web --label follow-up"))).toEqual(["follow-up"]);
   });
 
   test("both overrides are documented where the refusal reads them", () => {

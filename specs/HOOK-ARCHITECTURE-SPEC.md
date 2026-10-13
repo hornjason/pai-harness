@@ -184,6 +184,7 @@ syntax — a backslash-newline and a `#` comment.
 | `eval 'gh issue create --label bug'` | fix 2 | `eval`'s argument is a command |
 | a create wrapped across two lines with a trailing backslash | fix 3 | a backslash-newline was read as an escaped character, so the token was a newline glued to `create` |
 | `gh issue create --label bug # --label follow-up` | fix 3 | `#` was not a comment, so a commented-out override counted as one |
+| `gh issue create --label bug --title "--label=follow-up"` | fix 3 | a flag-shaped *value* was read as a flag — #365 itself, through the back door |
 
 That is the substring matcher's defect wearing the opposite sign. The
 original was *wider* than a label and matched a word in a title; all three
@@ -191,8 +192,8 @@ replacements were *narrower* than a command and missed the command. Every one
 is shape two of `.claude/rules/checks-must-be-able-to-fail.md`, and having
 just written the fix for one was no protection against writing the next.
 
-Round three's two are worth separating from rounds one and two, because they
-are not evasion. A long command wrapped across lines and a note after a
+Round three's first two are worth separating from rounds one and two, because
+they are not evasion. A long command wrapped across lines and a note after a
 command are things people type for their own reasons, which puts them inside
 the boundary below rather than outside it: the lock exists to catch a reflex,
 and both of these are reflexes. The fixes are the shell's own rules — a
@@ -200,6 +201,26 @@ backslash-newline joins and contributes nothing, and `#` opens a comment only
 at the start of a word. Both directions of the second are asserted, because
 treating every `#` as a comment would silently truncate
 `--title '#5 regression'`.
+
+**Round three's third is #365 itself, reintroduced by the parser written to
+fix it.** `labelValues` scanned the clause for a token beginning `--label=`,
+which is a detector wider than the thing it guards in exactly the original
+way: `--title "--label=follow-up"` gives `gh` a *title* and the label `bug`,
+while the scan read an override and allowed it. The quoting is not what makes
+it work — the shell strips it either way, and the unquoted form is the same
+command.
+
+The fix is to walk the clause tracking arity the way `gh`'s own flag parser
+does: a flag consumes the next token unless it is known to be boolean. An
+unknown flag is assumed to take a value, so the only error this can make is
+to MISS a `--label` — and a missed label is a refusal, the direction this
+guard is allowed to be wrong in. Both ends are asserted, because the opposite
+default would have eaten the override in `--web --label follow-up`.
+
+That this bypass existed at all is the strongest evidence for the rule the
+whole file is an instance of. A detector narrower than what it detects and a
+detector wider than it are the same defect, and fixing one of them is the
+moment you are most likely to write the other.
 
 **The shell allowlist was removed because nothing could distinguish it.**
 Fix one's recursion descended only into `sh`, `bash`, `zsh`, `dash`, `ksh`
@@ -224,51 +245,61 @@ and the GitHub MCP tools, because neither is Bash and the hook never sees
 them; `ssh host "gh issue create …"`, because that runs on another machine
 against whatever repo it is configured for; variable indirection
 (`GH=gh; $GH issue create`), because resolving it means tracking assignments
-across clauses and nobody reaches for `$GH` by reflex; and a caller who writes
-a script and runs it. Each takes a decision to get around the lock, and an
-agent that has made that decision is a problem no matcher fixes. Chasing them
-trades false refusals — which teach people to work around a guard — for
-protection against someone already doing so.
+across clauses and nobody reaches for `$GH` by reflex; here-strings and
+here-documents, for the same reason; and a caller who writes a script and
+runs it. Each takes a decision to get around the lock, and an agent that has
+made that decision is a problem no matcher fixes. Chasing them trades false
+refusals — which teach people to work around a guard — for protection against
+someone already doing so.
 
 **The boundary is a measurement, not a claim.** `GH=gh; $GH issue create
---label bug` is a table row asserting that it is *allowed*, so the scope is
-re-checked every run rather than documented once and drifting.
+--label bug` and `bash <<< 'gh issue create --label bug'` are table rows
+asserting that they are *allowed*, so the scope is re-checked every run rather
+than documented once and left to drift.
 
 #### What was broken to prove it (SC-825..827)
 
-Run and counted over `test/verify-phase-lock.test.ts` (59 tests). Every row
-was re-measured after round three's ten new tests, so none is carried over
-from an earlier denominator:
+Run and counted over `test/verify-phase-lock.test.ts` (70 tests). **Every row
+was re-measured after each round's new tests**, so none is carried over from
+an earlier denominator:
 
 | Mutation | Red |
 |---|---|
-| the decision reverted to the old hook's two-line substring form — **the mutation the issue specified** | 33 of 59 |
-| `verifyPhaseRefusal` always allows | 26 of 59 |
-| `tokenize` stops honouring quotes | 11 of 59 |
-| operators stop being their own tokens — **review 1's finding** | 9 of 59 |
-| only the label test reverts to a substring, clause splitting kept | 8 of 59 |
-| the command-argument recursion removed entirely | 7 of 59 |
-| `external-audit` removed from the override map | 6 of 59 |
-| clause splitting removed — the whole command is one clause | 3 of 59 |
-| the newline dropped from the operator list | 3 of 59 |
-| `#` comments are no longer stripped — **review 3's finding** | 3 of 59 |
-| `createsIssue` compares the raw token, not the basename — **review 2's finding** | 2 of 59 |
-| the command flag narrowed back to exactly `-c` | 2 of 59 |
-| `labelValues` reads only the spaced long form, not `=` or `-l` | 2 of 59 |
-| the hook stops consulting the library and inlines the old test | 2 of 59 |
-| a backslash-newline goes back to being an escaped character — **review 3's finding** | 2 of 59 |
-| `eval` dropped as a command sink | 1 of 59 |
-| the backtick dropped from the operator list | 1 of 59 |
-| `#` opens a comment anywhere, not only at a word start — **the over-correction** | 1 of 59 |
-| the out-of-scope bullet list deleted | 1 of 59 |
-| the "it is not a sandbox" sentence deleted | 1 of 59 |
-| the recursion depth bound raised from 4 to 400 | **0 of 59** |
+| the decision reverted to the old hook's two-line substring form — **the mutation the issue specified** | 40 of 70 |
+| `verifyPhaseRefusal` always allows | 31 of 70 |
+| `labelValues` stops skipping non-flag tokens | 24 of 70 |
+| only the label test reverts to a substring, clause splitting kept | 14 of 70 |
+| `tokenize` stops honouring quotes | 13 of 70 |
+| operators stop being their own tokens — **review 1's finding** | 9 of 70 |
+| the command-argument recursion removed entirely | 7 of 70 |
+| `external-audit` removed from the override map | 6 of 70 |
+| `labelValues` stops tracking flag arity — a flag-shaped value is a flag again — **review 3's finding** | 6 of 70 |
+| clause splitting removed — the whole command is one clause | 3 of 70 |
+| the newline dropped from the operator list | 3 of 70 |
+| `#` comments are no longer stripped — **review 3's finding** | 3 of 70 |
+| `createsIssue` compares the raw token, not the basename — **review 2's finding** | 2 of 70 |
+| the command flag narrowed back to exactly `-c` | 2 of 70 |
+| the hook stops consulting the library and inlines the old test | 2 of 70 |
+| a backslash-newline goes back to being an escaped character — **review 3's finding** | 2 of 70 |
+| `BOOLEAN_FLAGS` emptied — a boolean flag eats the override after it | 2 of 70 |
+| the attached short-flag value branch removed (`-lfollow-up`) | 2 of 70 |
+| `eval` dropped as a command sink | 1 of 70 |
+| the backtick dropped from the operator list | 1 of 70 |
+| `#` opens a comment anywhere, not only at a word start — **the over-correction** | 1 of 70 |
+| the out-of-scope bullet list deleted | 1 of 70 |
+| the "it is not a sandbox" sentence deleted | 1 of 70 |
+| the recursion depth bound raised from 4 to 400 | **0 of 70** |
 
-Three notes on that table.
+A twenty-fifth was run and is not listed because it is the arity row restated
+(`if (false) i++` rather than deleting the line); it reproduces 6 of 70
+exactly, which is the cross-check that the row measures the branch and not
+the comment attached to it.
+
+Four notes on that table.
 
 **The top row scores higher than "always allows", and that is the finding.**
-A matcher that allows everything fails 26 cases; the original substring form
-fails 33 — *more* than doing nothing. It refuses `echo 'gh issue create …'`
+A matcher that allows everything fails 31 cases; the original substring form
+fails 40 — *more* than doing nothing. It refuses `echo 'gh issue create …'`
 and `python3 -c "print('gh issue create …')"`, neither of which creates
 anything, while allowing the title bypass #365 is about. The same detector was
 wider than a label and narrower than a command at once, which is why replacing
@@ -290,7 +321,14 @@ test covering it asserts only that a twelve-deep wrapper chain does not
 throw. An unverified branch that cannot change an answer is a different thing
 from one that silently can.
 
-None of the twenty-one is left in the tree; all were run and reverted. The
+**Both directions of the arity fix are measured, which is the point of the
+last two 2s.** Emptying `BOOLEAN_FLAGS` and deleting the attached-value
+branch are mutations that make the guard *refuse more*, and each turns two
+cases red. A guard proved only against under-refusing drifts toward refusing
+everything, and this file's whole argument is that false refusals teach
+people to work around it.
+
+None of the twenty-five is left in the tree; all were run and reverted. The
 hook is 84 lines, within SC-371.
 
 ## Implementation
