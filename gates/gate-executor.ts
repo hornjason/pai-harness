@@ -685,7 +685,15 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
       // Not an alarm, and not silence either. An alarm naming zero drifted
       // claims teaches its reader to skip the line, and a line everyone skips
       // is the same as no line on the run where it matters.
-      console.log(`Spec compliance: UNMEASURED — ${v.detail}`);
+      //
+      // But "this project has no suite" and "this project has the suite and
+      // it did not produce a reading" are not the same news. The first is an
+      // ordinary fact about a fixture; the second is a timeout, a crash, or a
+      // suite that ran nothing in a repo that is supposed to run it, and it
+      // needs the same visibility a failure gets. Only the first stays quiet.
+      const noSuiteHere = missing.length >= SPEC_COMPLIANCE_FILES.length;
+      const report = noSuiteHere ? console.log : console.error;
+      report(`Spec compliance: UNMEASURED — ${v.detail}`);
     } else {
       console.log(`Spec compliance: ${v.detail}`);
     }

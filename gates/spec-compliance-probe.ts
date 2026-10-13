@@ -81,13 +81,29 @@ export function missingSpecComplianceFiles(root: string): string[] {
 export function classifySpecComplianceRun(run: SpecComplianceRun): SpecComplianceVerdict {
   const failures = run.output.split("\n").filter(l => l.includes("(fail)"));
 
-  if (run.missing.length > 0) {
+  // A project with NONE of the files is a project without the suite — every
+  // fixture in this repo's own test tree. A project with SOME of them is a
+  // different fact entirely: a file that was deleted, renamed or never
+  // generated, in a repo that is supposed to have it. Collapsing the two
+  // would mean deleting one of the two files silences the gate with the
+  // reassuring words "this project has no spec-compliance suite".
+  if (run.missing.length >= SPEC_COMPLIANCE_FILES.length) {
     return {
       verdict: "UNMEASURED",
       detail:
         `this project has no spec-compliance suite — missing ${run.missing.join(", ")}. ` +
         `Nothing drifted; nothing was checked.`,
       failures: [],
+    };
+  }
+  if (run.missing.length > 0) {
+    return {
+      verdict: "DRIFT",
+      detail:
+        `the spec-compliance suite is incomplete — ${run.missing.join(", ")} ` +
+        `${run.missing.length === 1 ? "is" : "are"} gone, but the rest of the suite is here. ` +
+        `A project that has part of the suite is missing the other part, not exempt from it.`,
+      failures: run.missing.map(f => `(fail) missing spec-compliance file: ${f}`),
     };
   }
 
@@ -108,6 +124,22 @@ export function classifySpecComplianceRun(run: SpecComplianceRun): SpecComplianc
     return {
       verdict: "DRIFT",
       detail: `${failed} spec-compliance check(s) failed — ship.js has diverged from its spec`,
+      failures,
+    };
+  }
+
+  // The command said it failed and the summary says nothing did. Both
+  // readings are real and they disagree, so there is no result here — a
+  // timeout, a crash after the summary printed, a non-zero exit from
+  // something downstream of the tests. `ok` was in this interface and unread
+  // for a while, which meant any of those classified as a clean PASS.
+  if (!run.ok) {
+    return {
+      verdict: "UNMEASURED",
+      detail:
+        `the spec-compliance command exited non-zero but its summary reports no failures — ` +
+        `the two readings disagree, so neither is a result: ` +
+        `${run.output.trim().split("\n").slice(-3).join(" / ").slice(0, 200)}`,
       failures,
     };
   }

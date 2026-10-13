@@ -25,7 +25,7 @@
  * The fix is to classify rather than to silence: the probe reports PASS,
  * DRIFT or UNMEASURED, and UNMEASURED says which files it could not find.
  *
- * Covers SC-769..772 of GATE-CONTRACTS-SPEC.md.
+ * Covers SC-769..776 of GATE-CONTRACTS-SPEC.md.
  */
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
@@ -65,7 +65,7 @@ describe("#197: the spec-compliance probe tells absence from failure", () => {
     const r = classifySpecComplianceRun({
       ok: false,
       output: "error: Module not found",
-      missing: ["test/spec-compliance.test.ts"],
+      missing: [...SPEC_COMPLIANCE_FILES],
     });
     expect(r.verdict).toBe("UNMEASURED");
     expect(r.detail).toContain("test/spec-compliance.test.ts");
@@ -114,6 +114,57 @@ describe("#197: the spec-compliance probe tells absence from failure", () => {
     // The other half of the pair above: this one HAS a summary.
     expect(r.detail).toContain("0 checks");
     expect(r.detail).not.toContain("no pass/fail summary");
+  });
+
+  test("a non-zero exit with a clean summary is UNMEASURED, not PASS", () => {
+    // Found by the background security review of the first commit: `ok` was
+    // in the interface and never read, so a timeout or a crash AFTER the
+    // summary printed classified as a clean pass. Two readings that disagree
+    // are not a result.
+    const r = classifySpecComplianceRun({
+      ok: false,
+      output: " 55 pass\n 0 fail\nRan 55 tests across 2 files.\nsegmentation fault",
+      missing: [],
+    });
+    expect(r.verdict).toBe("UNMEASURED");
+    expect(r.detail).toContain("disagree");
+  });
+
+  test("the same summary with a zero exit is still PASS", () => {
+    // The control for the case above. Without it, pinning the verdict to
+    // UNMEASURED for every run would satisfy that test and switch the gate
+    // off entirely.
+    const r = classifySpecComplianceRun({
+      ok: true,
+      output: " 55 pass\n 0 fail\nRan 55 tests across 2 files.",
+      missing: [],
+    });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  test("some of the files missing is DRIFT, not 'no suite here'", () => {
+    // Also from the review. `missing.length > 0` treated a half-deleted suite
+    // as a project that never had one, so removing a single spec-compliance
+    // file silenced the gate with reassuring words. A project holding part of
+    // the suite is missing the rest of it, not exempt from it.
+    const r = classifySpecComplianceRun({
+      ok: false,
+      output: "error: Module not found",
+      missing: ["test/spec-compliance-auto.test.ts"],
+    });
+    expect(r.verdict).toBe("DRIFT");
+    expect(r.failures.join("\n")).toContain("test/spec-compliance-auto.test.ts");
+  });
+
+  test("all of the files missing is still UNMEASURED", () => {
+    // The boundary on the other side, so the branch above cannot grow to
+    // cover every fixture project and bring #197's original noise back.
+    const r = classifySpecComplianceRun({
+      ok: false,
+      output: "error: Module not found",
+      missing: [...SPEC_COMPLIANCE_FILES],
+    });
+    expect(r.verdict).toBe("UNMEASURED");
   });
 
   test("the file list is read from the probe, not restated by the caller", () => {
@@ -261,6 +312,20 @@ describe("#197: the gate executor routes through the probe", () => {
     expect(log.err).toEqual([]);
     expect(log.out.join("\n")).toContain("55");
     expect(log.commands[0]).toContain("bun test");
+  });
+
+  test("an unreadable run in a repo that HAS the suite is loud, not quiet", () => {
+    // The third review finding. "No suite here" and "the suite is here and
+    // produced no reading" are not the same news: the second is a timeout or
+    // a crash in a repo that is supposed to run these tests, and routing it
+    // to stdout beside the fixture chatter is how it gets missed. Only the
+    // fixture case stays on stdout.
+    const log = runProbeBlock({
+      harnessRoot: REPO,
+      exec: () => { throw Object.assign(new Error("ETIMEDOUT"), { stdout: "" }); },
+    });
+    expect(log.err.join("\n")).toContain("UNMEASURED");
+    expect(log.out).toEqual([]);
   });
 
   test("the block reads the probe's file list rather than restating it", () => {

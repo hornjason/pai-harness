@@ -985,6 +985,60 @@ The twelfth row is the one worth keeping. Both UNMEASURED branches returned
 UNMEASURED for the other's input, so each could be deleted with the suite
 staying green — two checks that looked like two and were one.
 
+### Three more fail-opens in the fix itself (#197, review of the first commit)
+
+A background security review of the first commit found three, and all three
+are this file's own subject reproduced inside the fix for it. That is worth
+stating plainly rather than filing quietly: writing the rule down does not
+stop you writing the bug, and the review is the only reason these were caught
+before they landed.
+
+**The exit code was in the interface and never read.** `SpecComplianceRun.ok`
+was accepted, carried, and ignored — the classifier worked entirely off the
+printed summary. A run that printed ` 55 pass / 0 fail` and *then* died — a
+timeout mid-teardown, a segfault, a non-zero exit from something downstream
+of the tests — classified as a clean PASS. Two readings exist and they
+disagreed, which is not a pass; it is no result. It now reports UNMEASURED,
+with a positive control asserting the same summary and a *zero* exit is still
+PASS, because otherwise pinning every verdict to UNMEASURED would satisfy the
+new case and switch the gate off entirely.
+
+**A half-deleted suite read as a project that never had one.** The branch was
+`missing.length > 0`, so deleting ONE of the two files produced the
+reassuring sentence "this project has no spec-compliance suite" and the gate
+went quiet. A project holding part of the suite is missing the rest of it,
+not exempt from it: a partial is DRIFT, naming the absent files as failures.
+Only a project missing *all* of them is UNMEASURED, and that boundary is
+asserted from both sides so the DRIFT branch cannot later grow to cover every
+fixture and bring #197's original noise back.
+
+**UNMEASURED was uniformly quiet.** "This project has no suite" and "this
+project has the suite and it produced no reading" are not the same news. The
+first is an ordinary fact about a fixture and belongs on stdout; the second
+is a timeout or a crash in a repo that is supposed to run these tests, and
+printing it beside the fixture chatter is how it gets missed. Only the
+no-suite case stays quiet now.
+
+- [x] SC-774: gates/spec-compliance-probe.ts contains [the two readings disagree] — a non-zero exit whose summary reports no failures is UNMEASURED, because a command that says it failed and a summary that says nothing did cannot both be the result
+- [x] SC-775: gates/spec-compliance-probe.ts contains [the spec-compliance suite is incomplete] — a project missing SOME of the suite is DRIFT and a project missing ALL of it is UNMEASURED, because deleting one file should not buy the exemption that having none does
+- [x] SC-776: gates/gate-executor.ts contains [noSuiteHere] — an UNMEASURED in a project that has the files is reported as loudly as a failure, because a timeout printed on stdout beside the fixture chatter is a timeout nobody reads
+
+### What was broken to prove it (SC-774..776)
+
+Over `test/spec-compliance-probe.test.ts` (21 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the exit code goes unread again — the finding verbatim | 1 of 21 |
+| a partial suite reads as no suite again — the finding verbatim | 1 of 21 |
+| a partial suite reads as a complete one | 1 of 21 |
+| every UNMEASURED routed to stdout again — the finding verbatim | 1 of 21 |
+| every UNMEASURED routed to stderr | 1 of 21 |
+
+The last row is the control for the one above it. Without it, making every
+UNMEASURED loud would satisfy the loudness case and reintroduce exactly the
+noise #197 was opened to remove.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
