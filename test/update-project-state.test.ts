@@ -228,14 +228,35 @@ describe("update-project-state", () => {
     expect(json.notes).toContain("1/1 SCs done");
   });
 
-  test("exits cleanly when project-state.json missing", () => {
+  test("refuses when project-state.json is missing but PROJECT-STATE.md is not (#354)", () => {
+    // This used to assert a clean exit and the words "not found", which was
+    // the behaviour #354 changed. A project with no state file and a project
+    // that LOST one exited 0 with the same line — and in this repo, where a
+    // pre-commit hook renders the artifact every commit and AGENTS.md tells
+    // the next session to read it first, the second case meant the hook had
+    // quietly stopped maintaining a file people are told to trust, while
+    // saying "skipping".
+    //
+    // The distinction is the presence of the rendered output, so deleting
+    // the source here — with PROJECT-STATE.md still on disk — is now the
+    // refusing case. The skip case has no markdown either, and is covered in
+    // test/project-state-shape.test.ts against a temp directory rather than
+    // by deleting two tracked files out of the working tree.
     const backup = readFileSync(STATE_JSON, "utf-8");
     rmSync(STATE_JSON);
     try {
-      const output = execSync("bun scripts/update-project-state.ts", {
-        cwd: ROOT, encoding: "utf-8", timeout: 5000
-      });
-      expect(output).toContain("not found");
+      let status = 0;
+      let output = "";
+      try {
+        output = execSync("bun scripts/update-project-state.ts 2>&1", {
+          cwd: ROOT, encoding: "utf-8", timeout: 5000
+        });
+      } catch (e: any) {
+        status = e.status ?? 1;
+        output = e.stdout ?? "";
+      }
+      expect(status).not.toBe(0);
+      expect(output).toContain("outlived its source");
     } finally {
       writeFileSync(STATE_JSON, backup);
     }
