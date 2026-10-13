@@ -9,7 +9,7 @@
  */
 
 import { parseHookInput } from './lib/utils';
-import { deriveWorkerId, evaluateFullSuiteRequest } from '../lib/test-suite-lock';
+import { deriveRunId, deriveWorkerId, evaluateFullSuiteRequest } from '../lib/test-suite-lock';
 
 async function main() {
   const input = await parseHookInput();
@@ -22,10 +22,17 @@ async function main() {
   // keyed on the worker — session plus working directory (#239). The release
   // hook derives the same identity; acquire and release must agree.
   const workerId = deriveWorkerId(sessionId, input.cwd);
+  // ...and the run the worker belongs to, which is the bound #239's fix left
+  // open: every agent in a ship run got its own four. Null outside a run
+  // worktree, and then only the per-worker rate applies (#194).
+  const runId = deriveRunId(input.cwd) ?? undefined;
 
-  // Fails open: a broken guard must never be able to block the suite it guards.
+  // Fails open: a broken guard must never be able to block the suite it
+  // guards. It does NOT fail silently, which is a different thing and was the
+  // defect — a guard whose broken state and whose satisfied state look
+  // identical cannot be known to have ever fired (#194 SC-642).
   try {
-    const decision = evaluateFullSuiteRequest(sessionId, command, { workerId });
+    const decision = evaluateFullSuiteRequest(sessionId, command, { workerId, runId });
     if (!decision.allow) {
       console.log(JSON.stringify({
         decision: 'block',
@@ -37,7 +44,16 @@ async function main() {
       // --debug, so the earlier console.error was itself a silent fail-open.
       console.log(JSON.stringify({ systemMessage: decision.warning }));
     }
-  } catch {
+  } catch (e) {
+    // systemMessage, not stderr: stderr from a hook that exits 0 is only
+    // visible under --debug, so printing there is the same silence with extra
+    // steps.
+    console.log(JSON.stringify({
+      systemMessage:
+        `GUARD-FAILURE-VISIBLE: TestSuiteGuard could not evaluate this full-suite request ` +
+        `and allowed it. DIR-L29 is NOT being enforced right now. ` +
+        `${(e as Error)?.message ?? e}`,
+    }));
     process.exit(0);
   }
 }

@@ -1434,6 +1434,92 @@ None is left in the tree; all were run and reverted.
 
 ---
 
+### The rate was per worker, and nothing was per run (2026-10-12, #194)
+
+The guard above exists, is registered, and could not bite. Across four
+measured ship runs Marcus ran the full suite **7, 11, 13 and 12+** times for
+one issue each — against a cap no single worker ever reached.
+
+Two of the reasons pull in opposite directions, which is why neither is simply
+a bug:
+
+- **Per-worker is correct for fan-out.** #239 keyed the rate on the worker
+  because three disjoint sub-agents sharing a session id serialised on the
+  window; one slept in 580-second increments for twenty minutes while its
+  siblings were already finished. Reverting that recreates #239 exactly, and
+  the issue's AC-4 says so.
+- **Per-worker is the wrong unit for one issue.** A run is Marcus, plus heal
+  iterations, plus Quinn, each with its own worker identity. "At most four"
+  became "at most four, several times over".
+
+So the fix is a SECOND bound, not a different one. `DEFAULT_MAX_RUNS_PER_WORKER`
+still protects against thrash and still lets a fan-out run in parallel;
+`DEFAULT_MAX_RUNS_PER_PIPELINE` bounds what one ship run can spend in total.
+They answer different questions.
+
+**The run ceiling has no window, on purpose.** The four measured runs lasted
+30, 32, 34 and 41 minutes against a 30-minute window, so that window reset
+mid-run every time and could not bound a run by construction. The run id
+bounds this one instead. `RUN_COUNTER_MAX_AGE_MS` is garbage collection for an
+abandoned id, not a rate window, and it is twelve hours — far longer than any
+run observed.
+
+**The run id comes from the path, because that is what a hook can see.** Hooks
+inherit the Claude Code process environment rather than the workflow's, which
+is the same fact that makes `RUNGATE_MAX_FULL_SUITE_RUNS` hard to reach from
+one direction. Agent worktrees are `.claude/worktrees/<runId>-<n>`, so the
+trailing index comes off and every agent in a run agrees. Outside a worktree
+it is null and only the per-worker rate applies — the DA is not part of a
+fan-out, and inventing an id for it would put every session that never ships
+anything into one shared ceiling.
+
+**The fail-open stays; the silence does not.** A broken guard must never block
+the suite it guards, and that is still true. But a guard whose broken state
+and whose satisfied state look identical cannot be known to have ever fired,
+which is this rule's opening sentence. `GUARD-FAILURE-VISIBLE` goes to
+`systemMessage` rather than stderr, because stderr from a hook that exits 0 is
+only visible under `--debug` — the same silence with extra steps.
+
+**One of the issue's premises was already fixed.** It reported
+`lib/test-suite-lock.ts:467` as "corrupt returns a FULL budget". That reader
+now fails CLOSED and says so. The run counter was written to make the same
+choice rather than inherit the old one, and SC-752 asserts it in both
+directions — corrupt refuses, well-formed is read — because a fail-closed that
+never opens is the same defect with the sign flipped.
+
+- [x] SC-759: lib/test-suite-lock.ts contains [DEFAULT_MAX_RUNS_PER_PIPELINE, deriveRunId] — a ship run has a total full-suite budget shared by every agent in it, because a per-worker rate counts how often one agent re-measures and not what shipping one issue cost
+- [x] SC-760: lib/test-suite-lock.ts contains [RUN_COUNTER_MAX_AGE_MS, no window] — the run ceiling is bounded by the run id rather than by elapsed time, because every measured run outlasted the window meant to bound it
+- [x] SC-761: hooks/TestSuiteGuard.hook.ts contains [GUARD-FAILURE-VISIBLE] — a guard that cannot evaluate says so in the transcript and still allows the run; it may fail open, but not invisibly
+- [x] SC-762: test/test-suite-budget.test.ts contains [a corrupt run counter spends the budget rather than granting it, a well-formed counter is read] — the fail-closed choice is executed in both directions, because a reader that rejects everything is a fail-closed that never opens
+- [x] SC-763: test/test-suite-budget.test.ts contains [the hook actually passes the run id] — the hook is driven as a subprocess against a ceiling spent through the library, because every library-level case stays green when the one call site that makes the fix real stops passing the id
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/test-suite-budget.test.ts` + `test/test-suite-lock.test.ts` (153 tests):
+
+| Mutation | Red |
+|---|---|
+| `pipelineBudgetView` never refuses | 6 |
+| the run ceiling never consulted by the gate | 6 |
+| the run counter never written | 5 |
+| `deriveRunId` keeps the trailing agent index, so each agent is its own run | 3 |
+| the run refusal stops naming the run | 3 |
+| `deriveRunId` invents an id outside a worktree | 1 |
+| the run budget given the per-worker window | 1 |
+| a corrupt run counter grants a full budget | 2 |
+| the hook back to a silent catch | 1 |
+| the hook stops passing the run id | 1 — and **0 of 152** before SC-763 was added, with every other case still green |
+
+That last row is the point of SC-763 and the reason it exists: ten library
+cases all passed while the fix was disconnected at its only real call site.
+
+None is left in the tree; all were run and reverted.
+
+**Not yet measured:** the issue's AC-2 asks for a ship run after this change
+reporting Marcus's full-suite count at or below the ceiling. That needs a real
+run and is not satisfied here; the next pipeline run provides it.
+
+---
+
 ### A check that could not PASS (2026-10-10)
 
 `.claude/rules/checks-must-be-able-to-fail.md` is about a check that passes
