@@ -73,6 +73,63 @@ const DEFAULT_BUDGET_WINDOW_MS = 30 * 60_000;
 export const DEFAULT_MAX_RUNS_PER_WORKER = 4;
 
 /**
+ * Full suites ONE SHIP RUN may spend in total, across every agent in it.
+ *
+ * A second bound rather than a different one (#194). The per-worker rate above
+ * is correct and must stay: #239 keyed it on the worker because three disjoint
+ * sub-agents sharing a session id serialised on the window, one of them
+ * sleeping in 580-second increments for twenty minutes while its siblings were
+ * already done. Reverting that recreates #239 exactly.
+ *
+ * But per-worker is the wrong unit for "how much did shipping this issue
+ * cost". A run is Marcus, plus heal iterations, plus Quinn, each with its own
+ * worker identity — so "at most four" became "at most four, several times
+ * over". Measured across four runs: 7, 11, 13 and 12+ full suites for one
+ * issue each, against a cap that was never once reached by any single worker.
+ *
+ * Eight covers what a run legitimately needs — the entry gate, a re-measure
+ * after fixes, the verify pass, a final reconciliation, with slack — and bites
+ * well before thirteen. It must stay <= MAX_TRACKED_RUNS, which bounds what
+ * the counter file retains; a budget larger than what is remembered is a
+ * budget that silently resets.
+ */
+export const DEFAULT_MAX_RUNS_PER_PIPELINE = 8;
+
+/**
+ * How long an abandoned run counter is kept.
+ *
+ * NOT a rate window — the run ceiling deliberately has none, because a
+ * 30-minute window cannot constrain a 41-minute run and all four measured runs
+ * were longer than the window meant to bound them. This is garbage collection:
+ * a run id is unique and its counter would otherwise sit in the lock directory
+ * forever, and a corrupt one would wedge that id permanently. Twelve hours is
+ * far longer than any run observed (30 to 41 minutes).
+ */
+const RUN_COUNTER_MAX_AGE_MS = 12 * 3_600_000;
+
+/**
+ * The ship run a working directory belongs to, or null outside one.
+ *
+ * Derived from the path because that is what a hook can see. Hooks inherit the
+ * Claude Code process environment, not the workflow's, so a run id exported by
+ * `workflows/ship.js` never reaches the guard — the same reason
+ * `RUNGATE_MAX_FULL_SUITE_RUNS` is documented as hard to reach from one
+ * direction and trusted from none.
+ *
+ * Agent worktrees are `.claude/worktrees/<runId>-<n>`, so the trailing index
+ * comes off and everything from one run agrees. Null for the repo root: the DA
+ * is not part of a fan-out, and inventing an id for it would put every session
+ * that never ships anything into one shared ceiling.
+ */
+export function deriveRunId(cwd?: string): string | null {
+  if (!cwd) return null;
+  const m = /[\\/]\.claude[\\/]worktrees[\\/]([^\\/]+)/.exec(cwd);
+  if (!m) return null;
+  const name = m[1].replace(/-\d+$/, "");
+  return name.length > 0 ? filenameSegment(name) : null;
+}
+
+/**
  * Lowers the rate for a session that wants to be stricter. It cannot raise it.
  *
  * The first version of this let the environment set any value up to
@@ -638,6 +695,20 @@ function counterPath(lockDir: string, key: string): string {
 }
 
 /**
+ * Where one ship run's total is kept. A separate file from the per-worker
+ * counter because they answer different questions and have different
+ * lifetimes — merging them would make the run ceiling age out on the worker's
+ * window, which is the defect.
+ *
+ * `filenameSegment` again rather than trusting the caller: `deriveRunId`
+ * already sanitises, and a second caller passing a raw path here would escape
+ * the lock directory.
+ */
+export function runCounterPath(lockDir: string, runId: string): string {
+  return join(lockDir, `rungate-test-suite-runcount-${filenameSegment(runId)}`);
+}
+
+/**
  * Timestamps of the runs this session has spent, newest last.
  *
  * Three file shapes have to be read, and the difference between them matters:
@@ -735,6 +806,16 @@ export interface GateOptions extends LockOptions {
   budgetWindowMs?: number;
   /** Injected clock, so the window is testable without sleeping. */
   now?: number;
+  /**
+   * The ship run this request belongs to (#194). Absent outside a run
+   * worktree, and then only the per-worker rate applies — which is exactly
+   * the pre-#194 behaviour for every caller that does not know about runs.
+   *
+   * Derive it with `deriveRunId`.
+   */
+  runId?: string;
+  /** Overrides the per-run ceiling. Tests only; there is no environment path. */
+  maxRunsPerPipeline?: number;
 }
 
 interface BudgetView {
@@ -783,6 +864,49 @@ function budgetView(sessionId: string, options: GateOptions): BudgetView {
         `${describeWait(windowMs)}. ${when}\n` +
         `Use targeted tests until then:\n  bun test test/specific-file.test.ts\n` +
         `Full suite runs cost ~190s and ~5.4 GB each.`,
+    },
+  };
+}
+
+/**
+ * What this SHIP RUN has spent in total, and whether that is already too much.
+ *
+ * No window on purpose (#194). All four measured runs outlasted the 30-minute
+ * per-worker window — 30, 32, 34 and 41 minutes — so that window reset
+ * mid-run every time and could not bound a run by construction. The run id
+ * bounds this one instead: a new run is a new id and a fresh ceiling.
+ *
+ * `RUN_COUNTER_MAX_AGE_MS` is garbage collection, not a rate window. Without
+ * it an abandoned id's counter would sit in the lock directory forever, and a
+ * corrupt one would wedge that id permanently rather than for one day.
+ */
+function pipelineBudgetView(options: GateOptions): BudgetView {
+  const runId = options.runId;
+  if (!runId) return { recent: [] };
+
+  const lockDir = options.lockDir ?? defaultLockDir();
+  const maxRuns = Math.max(
+    0,
+    Math.min(options.maxRunsPerPipeline ?? DEFAULT_MAX_RUNS_PER_PIPELINE, MAX_TRACKED_RUNS),
+  );
+  const now = options.now ?? Date.now();
+
+  const recent = readRuns(runCounterPath(lockDir, runId), maxRuns)
+    .filter((t) => t > now - RUN_COUNTER_MAX_AGE_MS);
+  if (recent.length < maxRuns) return { recent };
+
+  return {
+    recent,
+    refusal: {
+      allow: false,
+      reason:
+        `DIR-L29: ship run ${runId} has spent its full-suite budget ` +
+        `(${recent.length}/${maxRuns} for the whole run, across every agent in it).\n` +
+        `This is a per-RUN ceiling with no window — it does not age out, because ` +
+        `the per-worker window is shorter than a run and could not bound one (#194).\n` +
+        `Use targeted tests:\n  bun test test/specific-file.test.ts\n` +
+        `If the run genuinely needs another full reading of the tree, say so to the ` +
+        `caller rather than waiting — nothing will free up.`,
     },
   };
 }
@@ -843,6 +967,11 @@ export function wouldAllowFullSuite(
   const budget = budgetView(sessionId, options);
   if (budget.refusal) return budget.refusal;
 
+  // After the per-worker rate, so that check's behaviour is unchanged and a
+  // run refused by it does not also spend the run ceiling (#194).
+  const pipeline = pipelineBudgetView(options);
+  if (pipeline.refusal) return pipeline.refusal;
+
   const lockDir = options.lockDir ?? defaultLockDir();
   const capacity = options.capacity ?? DEFAULT_CAPACITY;
   const ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS;
@@ -896,6 +1025,10 @@ export function evaluateFullSuiteRequest(
       counterPath(lockDir, counterKey(sessionId, options)),
       JSON.stringify({ runs }),
     );
+    if (options.runId) {
+      const runRuns = [...pipelineBudgetView(options).recent, now].slice(-MAX_TRACKED_RUNS);
+      writeFileSync(runCounterPath(lockDir, options.runId), JSON.stringify({ runs: runRuns }));
+    }
   } catch {
     // Budget tracking is best-effort; the concurrency slot is the real guard.
   }
