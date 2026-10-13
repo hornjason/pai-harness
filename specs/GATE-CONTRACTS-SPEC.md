@@ -739,7 +739,28 @@ merge commits — and asserts the restricted one sees strictly fewer landed PRs.
 Empirical rather than a source grep, and the filter string is composed rather
 than written as a literal, so the assertion is not its own evidence.
 
-- [x] SC-751: test/project-state-currency.test.ts contains [every PR landed since the last recorded session is accounted for] — commits on `main` carrying a PR number are compared against the newest session entry and the uncovered ones are named, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
+### What the check demands, after CI said it demanded too much
+
+The first version required every landed PR to be mentioned **by number**
+somewhere in the state file. CI — the first run with enough history to answer
+— produced twenty-four. The premise was wrong: `project-state.json` is a
+narrative of what changed and why, not an index of issue numbers, and
+sessions 36 through 38 are correct without enumerating theirs. A check that
+demanded enumeration would turn the file into a changelog nobody reads, which
+is exactly what it is not.
+
+What actually went wrong on 2026-10-12 was staleness of the **date**. So that
+is what SC-751 measures: no PR may have landed on `main` after the newest
+recorded session's date. One day of granularity, and CLAUDE.md already
+requires the DA to update after every merge.
+
+That comparison then scored **0 red** when neutralised, because nothing had
+landed since the date on the day it was written — the vacuous-assertion
+shape, where the test passes for a reason unrelated to the thing it checks.
+A paired case runs the same comparison against a deliberately old date and
+requires it to report something.
+
+- [x] SC-751: test/project-state-currency.test.ts contains [no PR has landed since the last recorded session] — the newest session's date must not be older than the newest PR on `main`, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
 - [x] SC-754: test/project-state-currency.test.ts contains [the probe sees squashes, which is how PRs actually land here] — the unrestricted probe must find strictly more landed PRs than a merge-commit-only one, because this repo squash-merges and a `--merges` probe is blind to every PR that lands
 - [x] SC-752: scripts/update-project-state.ts contains [This script re-renders; it does not write session content] — the renderer reports which files it changed instead of claiming success unconditionally, because eight commits of staleness each got a green checkmark
 
@@ -786,14 +807,94 @@ output cannot take.
 
 | Mutation | Red |
 |---|---|
-| `project-state.json`'s latest `session.date` rolled back to 2026-09-01 | 2 of 6 in `test/project-state-currency.test.ts` — the uncovered PRs, and the markdown no longer naming the date it was rendered from |
-| the git probe pointed at `origin/no-such-ref` | 1 of 6 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
-| the renderer's honest message replaced with `"ran."` | 1 of 6 |
-| the probe restricted to merge commits again | 1 of 6 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
-| the squash subject form dropped from the parser | 1 of 6 |
+| `project-state.json`'s latest `session.date` rolled back one day | 1 of 7 in `test/project-state-currency.test.ts` |
+| the git probe pointed at `origin/no-such-ref` | 1 of 7 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
+| the renderer's honest message replaced with `"ran."` | 1 of 7 |
+| the probe restricted to merge commits again | 1 of 7 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
+| the squash subject form dropped from the parser | 1 of 7 |
+| the date comparison neutralised to `false` | 1 of 7 — and **0 of 6** before the stale-date control was added |
 | the deleted generator output replanted (`expect(SHIP_JS.toLowerCase()).toContain("gate")`) | caught by the detector's own planted control, which asserts it fires on the two verbatim cases #343 removed |
 
 None is left in the tree; all were run and reverted.
+
+## A check wrong in both directions at once (#287)
+
+COMP-4 grades "update the spec-drift hash after modifying a spec", at weight
+10. `test/compliance-tests.json` declares the contract:
+
+> `transcript scan: Bash with 'shasum' AND Edit with 'SPEC_HASH' or 'bootstrap'`
+
+An **AND across two data sources**. The implementation was an **OR within
+one**:
+
+```js
+const hasHashUpdate = data.bashes.some(b => b.includes("shasum") || b.includes("SPEC_HASH"));
+```
+
+`data.edits` was never consulted after the filter that found the spec edits.
+So COMP-4 was satisfied by running `shasum` on **any file whatsoever**, and
+the thing the rule exists to verify — that the constant was actually updated
+— was the one thing never checked. The house failure shape: a detector
+narrower than what it detects.
+
+The other direction, and it is what made the first survive. The trigger was
+any path containing `specs/` and ending `.md`. Exactly two specs have a drift
+hash: `BOOTSTRAP-DATA-FLOW-SPEC.md` and `BOOTSTRAP-TEST-PLAN.md`. The spec
+nearly every harness run edits is `specs/HARNESS-STANDARD.md`, where SC
+records are written, and it has no hash at all — so the common, correct action
+was graded IGNORED at weight 10, clearable only by running a `shasum` whose
+output nothing read and nothing compared.
+
+A rule satisfiable only by a meaningless ritual trains agents to perform the
+ritual, and the ritual then satisfies the first defect for every genuinely
+skipped hash update. The two compose into a check that is reliably green and
+never right.
+
+### The guarded set is discovered, not written down
+
+A list of the two guarded specs inside `lib/transcript-checker.ts` is the
+hardcoding defect #343 and #344 were about: correct until someone adds a
+third hash, then silently wrong. `discoverSpecHashGuards` reads the guard
+sources instead, and prefers a generated manifest if DEC-011's
+`drift-hashes.json` ever lands. An unreadable tree yields an empty set, which
+exempts rather than accuses — a grader that cannot see the guards must not
+report that an agent skipped one.
+
+### Two self-reference traps, one level apart
+
+The first scan took any `.md` literal in a file declaring a hash constant.
+`test/helpers/scaffold-fixture.ts` mentions `AGENTS.md` and `CLAUDE.md` in
+unrelated setup, so both were reported as hash-guarded specs. Narrowed to a
+`join(…spec…, "NAME.md")` call, which is how a guard actually names its spec.
+
+Then the file documenting the discovery was reported AS a guard, twice: once
+because its docblock names the constant and the specs, and again because the
+planted fixture it writes contains the pattern as a string literal. Comments
+are stripped before scanning, and the fixture is assembled from fragments so
+the pattern does not appear verbatim in the test's own source.
+
+Comment stripping scored **0 red** on its own — nothing in the tree currently
+writes the pattern inside a comment — so the planted prose/code pair exists to
+make the protection measured rather than merely present.
+
+- [x] SC-755: lib/transcript-checker.ts contains [specHashViolations] — COMP-4 requires both a shasum and an edit to a hash constant, because either alone is a guess: an unrecorded measurement, or a number somebody invented
+- [x] SC-756: lib/transcript-checker.ts contains [discoverSpecHashGuards] — the hash-guarded specs are read out of the guard sources rather than listed in the checker, because a list is correct until the third hash is added and then silently wrong
+- [x] SC-757: test/comp4-spec-hash.test.ts contains [editing a spec with no drift hash is not a violation] — COMP-4 only fires for specs a hash actually guards, because HARNESS-STANDARD.md has none and recording SCs there is the action nearly every run performs correctly
+- [x] SC-758: test/comp4-spec-hash.test.ts contains [the implementation actually requires both, one signal at a time] — the declared checkMethod is checked behaviourally by removing each signal in turn, because a grep for the two words is satisfied by the OR this issue is about
+
+### What was broken to prove it (SC-755..758)
+
+Over `test/comp4-spec-hash.test.ts` (14 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `specHashViolations` returns `[]` | 5 of 14 |
+| the edit-side check short-circuited to `true` — #287 defect 1 verbatim | 4 of 14 |
+| the `shasum` requirement short-circuited to `true` | 2 of 14 |
+| the guarded-spec filter removed, so it fires on every spec again | 2 of 14 |
+| discovery replaced with the correct hardcoded list | 2 of 14 |
+| the spec-path anchor loosened back to any `.md` literal | 1 of 14 |
+| comments not stripped before scanning | 1 of 14 — and **0 of 13** before the planted prose/code pair was added |
 
 ## Gate Chain Order (SC-375)
 
