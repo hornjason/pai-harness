@@ -21,7 +21,7 @@
  * satisfy the first, and would be indistinguishable from a working model
  * right up to the point someone trusted it.
  *
- * Covers SC-580..582 of HARNESS-STANDARD.md.
+ * Covers SC-580..582 and SC-777 of HARNESS-STANDARD.md.
  */
 import { describe, expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "child_process";
@@ -31,6 +31,7 @@ import { join } from "path";
 import {
   ciCheckoutPlan,
   executeCheckoutPlan,
+  isSafeRefspec,
   parseCheckoutModel,
   prepareCiCheckout,
   UNMODELLED,
@@ -122,6 +123,53 @@ describe("#168: the checkout model is read from the workflow, not assumed", () =
     const b = parseCheckoutModel("jobs:\n  test:\n    steps:\n      - run: echo hi\n", "test");
     expect(b.model).toBeNull();
     expect(b.why).toContain("checkout");
+  });
+
+  test("a refspec that is secretly a git option is refused, not fetched", () => {
+    // Found by a security review of the first commit. The refspec is read
+    // from a workflow and pushed into an argv, and `git fetch` takes options
+    // anywhere on its line — `--upload-pack=<cmd>` makes git EXECUTE that
+    // command. An argv array stops shell metacharacters and does nothing
+    // about a value that is itself an option.
+    //
+    // rungate scaffolds other projects, so this parses workflow files it
+    // does not own.
+    const hostile = [
+      "jobs:",
+      "  test:",
+      "    steps:",
+      "      - uses: actions/checkout@v4",
+      "      - run: git fetch origin '--upload-pack=refs/heads/x;id'",
+    ].join("\n");
+    const r = parseCheckoutModel(hostile, "test");
+    expect(r.model).toBeNull();
+    expect(r.why).toContain("upload-pack");
+
+    // And the plan builder refuses independently, because it is exported and
+    // a caller can hand it a model this parser never saw.
+    const plan = ciCheckoutPlan({
+      source: "/s",
+      dest: "/d",
+      model: { jobName: "test", depth: 1, fetches: [{ refspec: "--upload-pack=id", depth: null }] },
+    });
+    expect(plan.some(c => c.argv.includes("--upload-pack=id"))).toBe(false);
+  });
+
+  test("ordinary refspecs are still accepted, including the wildcard forms", () => {
+    // The control. An allowlist tight enough to reject every real refspec
+    // would satisfy the case above and break every consumer project.
+    for (const ok of [
+      "+refs/heads/main:refs/remotes/origin/main",
+      "refs/heads/main",
+      "refs/heads/*:refs/remotes/origin/*",
+      "refs/heads/release-1.2",
+      "refs/heads/feature/thing_two",
+    ]) {
+      expect(isSafeRefspec(ok), ok).toBe(true);
+    }
+    for (const bad of ["--upload-pack=id", "-q", "", "--depth=1"]) {
+      expect(isSafeRefspec(bad), bad).toBe(false);
+    }
   });
 
   test("what this does NOT model is written down, not implied", () => {

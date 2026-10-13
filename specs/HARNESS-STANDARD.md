@@ -1571,6 +1571,42 @@ front with `--no-ci-checkout`, where the choice is visible.
 - [x] SC-580: scripts/test-clean-env.ts contains [fetch-depth, shallow, git] — the git checkout is part of what "as CI sees it" means, not only the environment variables, and the depth comes from the workflow rather than from an assumption that was already stale
 - [x] SC-581: test/test-clean-env.test.ts contains [--depth 1, detach, no local main] — a planted ref-dependent test is shown to fail inside the modelled checkout while a planted control passes, because a harness that broke every run would satisfy the first assertion alone
 - [x] SC-582: scripts/test-clean-env.ts contains [CI checkout, what this does NOT model] — the six remaining gaps are named in the file and printed on every run, because the claim being replaced failed by being unqualified
+- [x] SC-777: lib/ci-checkout.ts contains [isSafeRefspec] — a refspec read out of a workflow is checked against an allowlist before it becomes a `git fetch` argument, because `--upload-pack=<cmd>` makes git execute that command and an argv array does nothing about a value that is itself an option
+
+#### A refspec that is secretly a git option (#168, review of the first commit)
+
+A security review of the first commit found it, and it is the kind this
+codebase has not had much of: not a fail-open, an **argument injection**.
+
+The refspec is read out of a workflow file and pushed into an argv. Using an
+argv array rather than a shell string stops shell metacharacters and does
+nothing at all about a value that is itself an option — and `git fetch`
+accepts options anywhere on its command line, including `--upload-pack=<cmd>`,
+which makes git **execute that command**.
+
+The reach is wider than the file being parsed suggests. rungate scaffolds
+other projects, so this parses workflow files it does not own: a repo whose
+CI contains `git fetch origin '--upload-pack=...'` would be cloning arbitrary
+execution into whoever ran the harness against it.
+
+An allowlist rather than a denylist of leading dashes — the characters a real
+refspec needs are a small closed set, and enumerating what is forbidden is how
+the next option syntax gets through. Checked at the parse boundary and again
+in the plan builder, because the builder is exported and a caller can hand it
+a model the parser never saw.
+
+| Mutation | Red |
+|---|---|
+| `isSafeRefspec` rejects everything | 4 of 22 |
+| `isSafeRefspec` accepts everything | 2 of 22 |
+| the parser stops validating | 1 of 22 |
+| the plan builder stops validating | 1 of 22 |
+| the allowlist becomes a leading-dash denylist | 1 of 22 |
+
+The first row is the control working. An allowlist tight enough to reject
+every real refspec would satisfy the hostile case and break every consumer
+project, so the ordinary forms — wildcards, slashes, hyphens, underscores —
+are asserted accepted in the same test.
 
 #### What was broken to prove it (SC-580..582)
 

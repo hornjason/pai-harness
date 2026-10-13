@@ -69,6 +69,29 @@ export const UNMODELLED: readonly string[] = [
 ];
 
 /**
+ * Is this refspec safe to hand to `git fetch` as an argument?
+ *
+ * Found by a security review of the first commit. The refspec is read out of
+ * a workflow file and pushed into an argv, and `git fetch` takes options
+ * anywhere on its command line — so a refspec beginning with `-` is a flag,
+ * and `--upload-pack=<command>` makes git **execute that command**. An argv
+ * array stops shell metacharacters; it does nothing about a value that is
+ * itself an option.
+ *
+ * This matters more here than the file it reads might suggest. rungate
+ * scaffolds other projects, so this parses workflow files it does not own —
+ * a repo whose CI contains `git fetch origin --upload-pack=...` would be
+ * cloning arbitrary execution into whoever ran the harness against it.
+ *
+ * An allowlist, not a denylist of leading dashes: the set of characters a
+ * real refspec needs is small and closed, and enumerating what is forbidden
+ * is how the next option syntax gets through.
+ */
+export function isSafeRefspec(refspec: string): boolean {
+  return /^\+?[A-Za-z0-9_][A-Za-z0-9_.\/*-]*(:[A-Za-z0-9_][A-Za-z0-9_.\/*-]*)?$/.test(refspec);
+}
+
+/**
  * Read the checkout shape out of a workflow file.
  *
  * Hand-parsed rather than YAML-parsed, because adding a YAML dependency to
@@ -121,9 +144,16 @@ export function parseCheckoutModel(workflowYaml: string, jobName: string): Check
     const args = m[1];
     const refspecMatch = /['"]([^'"]*refs\/[^'"]*)['"]|(\+?refs\/\S+)/.exec(args);
     if (!refspecMatch) continue;
+    const refspec = refspecMatch[1] ?? refspecMatch[2];
+    if (!isSafeRefspec(refspec)) {
+      return {
+        model: null,
+        why: `the "${jobName}" job fetches a refspec this will not pass to git: ${JSON.stringify(refspec)}`,
+      };
+    }
     const fetchDepth = /--depth[= ](\d+)/.exec(args);
     fetches.push({
-      refspec: refspecMatch[1] ?? refspecMatch[2],
+      refspec,
       depth: fetchDepth ? parseInt(fetchDepth[1], 10) : null,
     });
   }
@@ -184,6 +214,10 @@ export function ciCheckoutPlan(opts: {
   cmds.push({ kind: "exec", argv: ["git", "remote", "set-url", "origin", `file://${source}`], inClone: true });
 
   for (const f of model.fetches) {
+    // Checked at the parse boundary and again here. The plan is exported and
+    // a caller can build a model by hand, so the one place that turns a
+    // refspec into an argument is also a place that refuses to.
+    if (!isSafeRefspec(f.refspec)) continue;
     const argv = ["git", "fetch", "--no-tags"];
     if (f.depth !== null) argv.push(`--depth=${f.depth}`);
     argv.push("origin", f.refspec);
