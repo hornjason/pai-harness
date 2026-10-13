@@ -34,6 +34,7 @@ import { EvidencePrevalidationSchema } from "./schema";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
 import { livenessPlan, probeTarget } from "../lib/dev-liveness";
+import { livenessEvidenceContradictions } from "../lib/liveness-contradiction";
 import { createGitHubClient, getIssue, addLabels } from "../lib/github";
 import {
   classifySpecComplianceRun,
@@ -470,14 +471,15 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   // which is durable and which later gates read, as well as to
   // `prove-input.json`.
   //
-  // It is RECORDED, not yet CONSUMED — no check refuses on it. That is
-  // deliberate and it is a gap, tracked as #346: the honest refusal is "an
-  // OUTCOME AC claims server-dependent evidence while liveness was never
-  // measured", and adding a new refusal to a live gate needs its blast
-  // radius measured rather than guessed at here. An earlier draft of this
-  // comment claimed the B3 reproducer reads the field. It does not —
-  // `gates/prompts/prove-reproducer.md` never mentions liveness — and the
-  // claim was written without checking.
+  // It is both recorded and consumed since #346: the contradiction check
+  // below refuses when an OUTCOME AC claims server-dependent evidence while
+  // liveness was never measured. Recording it without reading it left the
+  // control #304 relaxed genuinely removed — #213's shape, where a field is
+  // written and nothing is decided on it.
+  //
+  // The reproducer prompt still does not read it, and that was once claimed
+  // here without checking: `gates/prompts/prove-reproducer.md` never
+  // mentions liveness. The refusal below is what reads it.
   const devTarget = probeTarget("dev", { apiBase, healthPath: devHealthPath });
   let devLiveness: { tier: string; status: "UP" | "UNMEASURED"; detail: string } | null = null;
   if (apiBase) {
@@ -541,6 +543,24 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   writeFileSync(stateFile, JSON.stringify(state, null, 2));
   const proveInputPath = join(workDir, "prove-input.json");
   writeFileSync(proveInputPath, JSON.stringify(proveInput, null, 2));
+
+  // #346: the reading is now CONSUMED. Written after the artefacts so the
+  // record survives the refusal — a run that refuses here should still leave
+  // behind the state that explains why.
+  //
+  // Not "refuse when liveness is UNMEASURED", which would reinstate the
+  // false FAIL #304 removed. Only the contradiction: evidence claimed from a
+  // server the run reports it never found.
+  const contradictions = livenessEvidenceContradictions(state.acs || [], state.liveness || []);
+  if (contradictions.length > 0) {
+    console.error(`prove gate: FAIL — evidence claimed from a server whose liveness was never measured`);
+    for (const c of contradictions) console.error(`  - ${c}`);
+    console.error(
+      `Set the tier's \`healthPath\` in .claude/rungate/config.json so liveness can be measured, ` +
+      `or correct the evidence.`,
+    );
+    process.exit(1);
+  }
 
   const proveProjectPrompt = join(__dirname, "prompts", "prove-reproducer.md");
   const proveHomePrompt = join(process.env.HOME || "", ".claude", "gates", "prompts", "prove-reproducer.md");
