@@ -2551,6 +2551,13 @@ export function runPackageValidation(root: string) {
       const pkgPath = join(root, "package.json");
       if (!existsSync(pkgPath)) return;
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      // The harness is not a consumer of itself. npm has no way to express
+      // a self-dependency and would be wrong to: `rungate` IS the thing
+      // this check asks every other project to depend on. Surfaced by #208
+      // — once rungate's own conformity test stopped being frozen by
+      // `safeWrite`, this check ran here for the first time and failed on a
+      // requirement it is not possible to satisfy.
+      if (pkg.name === "rungate") return;
       expect(pkg.devDependencies?.rungate).toBeDefined();
     });
   });
