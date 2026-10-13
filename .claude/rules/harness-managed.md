@@ -5,6 +5,7 @@ paths:
   - ".claude/agents/**"
   - "CODE-MAP.md"
   - "test/scaffold-conformity.test.ts"
+generated-sha: ab989f05ad7271bc
 ---
 
 These files are managed by rungate and regenerated on re-scaffold. **Do not edit them directly.**

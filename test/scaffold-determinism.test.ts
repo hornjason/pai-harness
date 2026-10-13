@@ -146,12 +146,27 @@ describe("SC-364: re-scaffold produces identical output", () => {
     expect(diffKeys(before, after), "re-scaffold rewrote files with different content").toEqual([]);
   }, 300_000);
 
-  test("corrupted generated files are restored to byte-identical content", () => {
+  test("corrupted harness-managed files are restored to byte-identical content", () => {
     // The anti-vacuity step. "Nothing changed" is free if the scaffold skips
     // existing files; requiring the ORIGINAL BYTES BACK after corruption can
     // only pass if the generator ran and was deterministic.
+    //
+    // `.claude/rules/key-files.md` was a third target here until #370, and
+    // removing it is a contract change this test has to state rather than
+    // absorb. A corrupted file and a hand-edited one are byte-identical to
+    // any check, so "restore the original" and "never overwrite a human's
+    // edit" cannot both hold over the same file. On 2026-10-13 the restoring
+    // answer truncated `.claude/rules/checks-must-be-able-to-fail.md` from
+    // 262 lines to 65 and reported success.
+    //
+    // The split is the one the repo already documents: AGENTS.md is
+    // harness-owned (SC-11) and CODE-MAP.md is named in
+    // `.claude/rules/harness-managed.md`, so both are unambiguously the
+    // generator's. `.claude/rules/*.md` is the class where a human legitimately
+    // edits a generated file, and it is governed by lib/rule-provenance.ts
+    // instead — see the case below.
     const before = snapshot(project);
-    const targets = ["AGENTS.md", "CODE-MAP.md", join(".claude", "rules", "key-files.md")];
+    const targets = ["AGENTS.md", "CODE-MAP.md"];
     for (const t of targets) writeFileSync(join(project, t), "CORRUPTED BY TEST\n");
 
     const corrupted = snapshot(project);
@@ -161,6 +176,26 @@ describe("SC-364: re-scaffold produces identical output", () => {
     scaffold(project);
     const restored = snapshot(project);
     expect(diffKeys(before, restored), "re-scaffold did not reproduce the original bytes").toEqual([]);
+  }, 300_000);
+
+  test("an edited rule file is preserved instead, and the run says so", () => {
+    // The other side of the split, asserted here rather than only in
+    // test/rule-provenance.test.ts, because this is the file that used to
+    // require the opposite. Without it the paragraph above is a comment
+    // explaining why a case was deleted, and nothing holds the new contract.
+    const path = join(project, ".claude", "rules", "key-files.md");
+    const edited = readFileSync(path, "utf-8") + "\n<!-- a human wrote this -->\n";
+    writeFileSync(path, edited);
+
+    const report = scaffold(project);
+
+    expect(readFileSync(path, "utf-8"), "the scaffold overwrote a hand-edited rule").toBe(edited);
+    expect(report, "the withheld write was not reported").toContain(
+      "PRESERVED: .claude/rules/key-files.md",
+    );
+
+    // Leave the fixture as the later cases expect to find it.
+    writeFileSync(path, edited.replace("\n<!-- a human wrote this -->\n", ""));
   }, 300_000);
 
   test("a FRESH project's first CODE-MAP.md already describes what scaffold created", () => {

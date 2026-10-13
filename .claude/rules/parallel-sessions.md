@@ -1,5 +1,6 @@
 ---
 description: How multiple concurrent agent sessions claim work and ship it without a human in the loop
+generated-sha: dd4aa69abde57f13
 ---
 
 ## Claim the issue before you write code
