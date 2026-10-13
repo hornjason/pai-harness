@@ -10,7 +10,7 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { projectStateViolations } from "../lib/project-state-shape";
+import { missingStateVerdict, projectStateViolations } from "../lib/project-state-shape";
 
 /**
  * The one exit code every refusal here routes through, per
@@ -148,9 +148,17 @@ function render(state: ProjectState): string {
 }
 
 // --- Main ---
-if (!existsSync(STATE_JSON)) {
-  console.log("project-state.json not found, skipping");
+const missing = missingStateVerdict({
+  jsonExists: existsSync(STATE_JSON),
+  markdownExists: existsSync(STATE_MD),
+});
+if (missing.verdict === "SKIP") {
+  console.log(`project-state: ${missing.detail}`);
   process.exit(0);
+}
+if (missing.verdict === "REFUSE") {
+  console.error(`project-state: ${missing.detail}`);
+  process.exit(PROJECT_STATE_REFUSE_EXIT);
 }
 
 /**

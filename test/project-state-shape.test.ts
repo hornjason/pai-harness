@@ -28,7 +28,7 @@ import { spawnSync } from "child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { projectStateViolations } from "../lib/project-state-shape";
+import { missingStateVerdict, projectStateViolations } from "../lib/project-state-shape";
 
 const REPO = join(import.meta.dir, "..");
 const SCRIPT = join(REPO, "scripts", "update-project-state.ts");
@@ -38,7 +38,7 @@ function good() {
   return {
     updated: "2026-10-12",
     priorities: ["a"],
-    phases: [{ name: "Phase 0", scs: [{ id: "SC-1", done: true }] }],
+    phases: [{ name: "Phase 0", scs: [{ id: "SC-1", done: true, what: "a thing" }] }],
     sessions: [{ date: "2026-10-01", items: ["did a thing"] }],
   };
 }
@@ -95,6 +95,66 @@ describe("#project-state: the shape is checked before the renderer reads it", ()
     expect(projectStateViolations(null)[0]).toContain("object");
     expect(projectStateViolations([])[0]).toContain("array");
     expect(projectStateViolations("{}")[0]).toContain("string");
+  });
+
+  test("the SC elements are checked, not only that scs is an array", () => {
+    // Found by a security review of the first commit. Checking the container
+    // and not its contents leaves `sc.id.toUpperCase()` and `sc.done` to
+    // crash on `[null]` or `[{}]` — the same unreadable TypeError this whole
+    // module replaces, one level deeper. A validator that stops at the
+    // container moves the crash rather than removing it.
+    const nulled = good() as any;
+    nulled.phases[0].scs = [null];
+    expect(projectStateViolations(nulled).join("\n")).toContain("phases[0].scs[0]");
+
+    const empty = good() as any;
+    empty.phases[0].scs = [{}];
+    const v = projectStateViolations(empty).join("\n");
+    expect(v).toContain("phases[0].scs[0].id");
+    expect(v).toContain("phases[0].scs[0].done");
+    expect(v).toContain("phases[0].scs[0].what");
+  });
+
+  test("a present session is checked four fields deep, an absent one is fine", () => {
+    // `session` is optional and the renderer guards it — but a PRESENT one
+    // is dereferenced without a guard, and a half-written session renders
+    // "Session undefined (undefined)" into the file the next session reads.
+    const doc = good() as any;
+    expect(projectStateViolations(doc)).toEqual([]); // absent is fine
+
+    doc.session = { number: "forty", date: "2026-10-12" };
+    const v = projectStateViolations(doc).join("\n");
+    expect(v).toContain("session.number");
+    expect(v).toContain("session.summary");
+    expect(v).toContain("session.suite");
+
+    doc.session = { number: 40, date: "d", summary: "s", suite: "x" };
+    expect(projectStateViolations(doc)).toEqual([]);
+  });
+
+  test("a missing source is told apart from a project that never had one", () => {
+    // Also from the review. The script exited 0 with "not found, skipping"
+    // for both. For a consumer project that does not use the feature that is
+    // right; for this repo, where a pre-commit hook renders the artifact
+    // every commit and AGENTS.md tells the next session to read it first, a
+    // missing source means the hook quietly stopped maintaining a file
+    // people are instructed to trust — and said "skipping" while doing it.
+    expect(missingStateVerdict({ jsonExists: true, markdownExists: true }).verdict).toBe("OK");
+    expect(missingStateVerdict({ jsonExists: true, markdownExists: false }).verdict).toBe("OK");
+    expect(missingStateVerdict({ jsonExists: false, markdownExists: false }).verdict).toBe("SKIP");
+
+    const orphan = missingStateVerdict({ jsonExists: false, markdownExists: true });
+    expect(orphan.verdict).toBe("REFUSE");
+    expect(orphan.detail).toContain("outlived its source");
+  });
+
+  test("a non-string priority is caught", () => {
+    // Unglamorous, and it scored 0 red until it had a case: the renderer
+    // interpolates each priority straight into a numbered list, so a nested
+    // object lands in PROJECT-STATE.md as "[object Object]".
+    const doc = good() as any;
+    doc.priorities = ["fine", { not: "a string" }];
+    expect(projectStateViolations(doc).join("\n")).toContain("priorities[1]");
   });
 
   test("an items array holding a non-string is caught", () => {
@@ -171,6 +231,37 @@ describe("#project-state: the script refuses rather than crashing", () => {
     expect(r.wroteMd).toBe(true);
   });
 
+  test("a PROJECT-STATE.md with no source refuses; neither file present just skips", () => {
+    // The script-level half of the missing-source verdict. Without it, the
+    // script could ignore the verdict entirely — measured, that scored 0 red
+    // with every library case still green. #194's lesson again.
+    function scriptIn(files: Record<string, string>): { status: number; out: string } {
+      const dir = mkdtempSync(join(tmpdir(), "ps-missing-"));
+      try {
+        mkdirSync(join(dir, "scripts"));
+        mkdirSync(join(dir, "specs"));
+        symlinkSync(join(REPO, "lib"), join(dir, "lib"));
+        symlinkSync(join(REPO, "node_modules"), join(dir, "node_modules"));
+        cpSync(SCRIPT, join(dir, "scripts", "update-project-state.ts"));
+        for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body);
+        const r = spawnSync("bun", [join(dir, "scripts", "update-project-state.ts")], { cwd: dir, encoding: "utf-8" });
+        return { status: r.status ?? 1, out: (r.stdout ?? "") + (r.stderr ?? "") };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    const orphan = scriptIn({ "PROJECT-STATE.md": "# stale\n" });
+    expect(orphan.status).not.toBe(0);
+    expect(orphan.out).toContain("outlived its source");
+
+    // A project that simply does not use the feature is not an error, and
+    // saying so is the control: refusing both ways would break every
+    // consumer repo's pre-commit hook.
+    const neither = scriptIn({});
+    expect(neither.status, neither.out).toBe(0);
+  });
+
   test("invalid JSON refuses rather than throwing a parse trace", () => {
     const dir = mkdtempSync(join(tmpdir(), "ps-script-"));
     try {
@@ -195,7 +286,13 @@ describe("#project-state: the script refuses rather than crashing", () => {
     // refusal path would survive a mutation of the constant and the mutant
     // would stay red for a reason unrelated to the mutation working.
     expect(src.match(/export const PROJECT_STATE_REFUSE_EXIT = \d+/g)!.length).toBe(1);
-    expect(src.match(/process\.exit\(PROJECT_STATE_REFUSE_EXIT\)/g)!.length).toBe(2);
-    expect(src).not.toMatch(/process\.exit\(1\)/);
+    // Derived, not pinned: every non-zero exit must be the constant. Pinning
+    // the count means adding a refusal breaks this test for the wrong
+    // reason, and the natural repair is to raise the number — which is how
+    // a bare `process.exit(1)` gets waved through.
+    const allExits = src.match(/process\.exit\([^)]*\)/g) ?? [];
+    const nonZero = allExits.filter(e => e !== "process.exit(0)");
+    expect(nonZero.length).toBeGreaterThan(0);
+    for (const e of nonZero) expect(e).toBe("process.exit(PROJECT_STATE_REFUSE_EXIT)");
   });
 });

@@ -1688,6 +1688,41 @@ the validator still ran first, still found the problem, and the script wrote
 anyway. The script is now copied to a temp directory, pointed at a bad
 document, executed, and the **absence of the output file** is the assertion.
 
+#### Two more the review found in the fix (#354)
+
+**A validator that stopped at the container.** It checked that `phases[i].scs`
+is an array and nothing about its elements, leaving `sc.id.toUpperCase()` and
+`sc.done` to crash on `[null]` or `[{}]` — the same unreadable TypeError the
+module replaces, one level deeper. A validator that stops at the container
+moves the crash rather than removing it. The elements are checked now, and so
+is `session`, which the renderer dereferences four fields deep behind a guard
+that only tests for presence.
+
+**"Not found, skipping" for two different facts.** A project with no
+`project-state.json` and a project that *lost* one exited 0 with the same
+line. For a consumer repo that does not use the feature that is right; for
+this one, where a pre-commit hook renders the artifact every commit and
+`AGENTS.md` tells the next session to read it first, it meant the hook
+quietly stopped maintaining a file people are instructed to trust — and said
+"skipping" while doing it. The tell is in the output: `PROJECT-STATE.md`
+present with its source gone is an artifact that has outlived the thing that
+writes it. Same distinction the spec-compliance probe draws between "no suite
+here" and "half a suite", and reached the same way.
+
+| Mutation | Red |
+|---|---|
+| `missingStateVerdict` always refuses | 4 of 17 |
+| an orphaned `PROJECT-STATE.md` is skipped again | 2 of 17 |
+| the SC elements go unchecked again | 1 of 17 |
+| `sc.done` and `sc.what` unchecked, only `sc.id` | 1 of 17 |
+| the `session` block removed | 1 of 17 |
+| the script ignores the missing-source verdict | 1 of 17 — **0 of 15** before the script-level case |
+| the `priorities` element check removed | 1 of 17 — **0 of 15** before it had a case at all |
+
+The last two rows are the same lesson twice in one sitting: a library the
+script does not consult, and a branch no test exercises, are both green and
+both worth nothing.
+
 #### What a green run here still does not promise
 
 Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
