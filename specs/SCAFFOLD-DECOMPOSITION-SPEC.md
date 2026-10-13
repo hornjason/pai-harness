@@ -311,3 +311,125 @@ Both failures the change produced were this one conflict. The second —
 `a deleted generated file comes back identical` — was a cascade: the
 corruption case left `CORRUPTED BY TEST` preserved on disk, and the next case
 snapshotted it as the baseline.
+
+## Ownership is data, not prose (#208)
+
+`.claude/rules/harness-managed.md` said of five file classes: *"managed by
+rungate and **regenerated on re-scaffold**. Do not edit them directly."* That
+is an ownership claim, and a maintainer who believes it correctly declines to
+hand-edit a brief and waits for a re-scaffold to deliver improvements.
+
+**It was true for four of the five.** Measured on this tree:
+
+| claimed file | what re-scaffold actually did |
+|---|---|
+| `.github/workflows/ci.yml` | regenerated, job-preserving — correct |
+| `.github/workflows/gates.yml` | the same — correct |
+| `.claude/agents/*.md` | rewritten every run — correct |
+| `CODE-MAP.md` | rewritten, with a freshness skip — correct |
+| `test/scaffold-conformity.test.ts` | **skipped forever** |
+
+The last went through `safeWrite`, which returns early on `existsSync`.
+Create-if-absent wearing the word "regenerated". The run reported
+`SKIP: … (already exists)`, which is indistinguishable from "already current"
+to anyone reading the log, and the claim converted a fixable staleness into a
+permanent one.
+
+The issue's framing — *every* `safeWrite` file drifts — is right about the
+mechanism and overcounts the damage. Of the five call sites only one is a file
+the harness claims; two are files it does not claim, and two must NEVER be
+rewritten: `project-state.json` and `PROJECT-STATE.md` are DA-owned (#296),
+and run `wf_0b15a933-b2b` lost 2,565 lines of validated work to four worktrees
+each writing their own copy. So the fix is not a tighter helper. **The defect
+is that ownership was prose** — a table in a doc cannot be iterated, so
+nothing could notice a row describing behaviour the code did not have.
+
+- [x] SC-837: lib/scaffold/owned-files.ts contains [OWNED_FILES] — the declaration is DATA. The table in `.claude/rules/harness-managed.md` is generated from it and reconciled against it in both directions, so a row cannot exist without an entry and an entry cannot exist without a row
+- [x] SC-838: lib/scaffold/steps.ts contains [regenerateOwned] — an owned file is written every run. `safeWrite` keeps the create-only files it was always correct for, and DELEGATES to this, so there is one writer
+- [x] SC-839: lib/scaffold/owned-files.ts contains [regenerated output is byte-identical] — `0 changed` is a measurement. The old report was produced by not looking; this one is produced by looking and finding no difference, and the two are only indistinguishable in the summary line
+- [x] SC-840: lib/scaffold/owned-files.ts contains [decideOwnedWrite] — ONE exported function decides what happens to one owned file, so there is one binding to mutate. The four strategies answer the same question differently and all route through it
+- [x] SC-841: lib/generators/agents-md.ts contains [ownedFilesTable()] — the doc's Strategy column is generated. "Managed" was doing too much work as one word, and the column is the part that would have caught this
+- [x] SC-842: lib/scaffold/steps.ts contains [isSelfHosted] — the generator knows when the project it is writing is the harness, because rungate's own conformity test was hand-adapted and the skip was the only thing preserving it
+
+### The hand-edit policy, chosen rather than implicit (AC-5)
+
+**Preserve and report.** #370 already answered this for `.claude/rules/*.md`
+and chose the same, for the same reason: silently overwriting a human's work
+is the opposite failure from silently skipping, and it is the worse one,
+because the skipped file is still on disk and the overwritten one is gone. A
+second answer here would mean the harness destroyed work in one directory and
+refused to in another, with nothing stating which was which.
+
+### What regenerating actually exposed
+
+Making the file regenerate is one line. What it uncovered is the issue:
+
+**rungate's own conformity test had always been hand-adapted.** It imported
+`../lib/conformity`; the template emitted `rungate/lib/conformity`
+unconditionally. A package cannot import itself by name without an `exports`
+map. So regenerating without `isSelfHosted` would have replaced a working
+self-hosted suite with one that cannot resolve its own import — the skip was
+load-bearing, and nothing said so.
+
+**The template passed an argument no entry point takes.** Every call was
+`runDocHygiene(ROOT, findings)`. No conformity entry point has ever accepted a
+findings array — they accumulate in a module-level collector that
+`writeFindingsReport(root)` reads. It typechecked nowhere and did nothing
+anywhere, and survived because the only tree that typechecks this file is
+rungate's, whose copy was the hand-adapted one. Seven typecheck errors
+appeared the moment the file regenerated.
+
+**The template had dropped `runDirectoryValidation`.** rungate's copy ran it;
+the generated one did not. Regenerating would have deleted a live check — the
+same silent coverage loss as #208, pointed the other way. The generated suite
+is now the union, which moved the file from 516 tests to 527.
+
+### What was broken to prove it (SC-837..842)
+
+Run and counted over `test/scaffold-ownership.test.ts` (29 tests):
+
+| Mutation | Red |
+|---|---|
+| `regenerateOwned` reverted to create-if-absent — the original defect, verbatim | 8 of 29 |
+| the `create-only` branch deleted from `decideOwnedWrite` — #296 undone | 2 of 29, and **0 of 22** before the fix below |
+| `provenance` never preserves — a hand-edited rule is overwritten (#370 undone) | 3 of 29 |
+| `bytesIdentical` always false — every run reports CHANGED, idempotence gone | 3 of 29 |
+| the Strategy column dropped from `ownedFilesTable()` | 2 of 29 |
+| the `test/scaffold-conformity.test.ts` row deleted from `OWNED_FILES` | 3 of 29 |
+| `isSelfHosted` always false — rungate emits a self-import it cannot resolve | 3 of 29, and **0 of 23** before the case below was written |
+| `ownedStrategy` stops matching the `*` class — `.claude/rules/*.md` loses provenance | 1 of 29 |
+| the `PRESERVED` report dropped — a withheld write becomes silent | 1 of 29 |
+| `runDirectoryValidation` removed from the template again | 2 of 29 |
+| the import specifier hardcoded back to `rungate/lib/conformity` | 2 of 29 |
+
+**Two rows are findings, not footnotes**, and both are the same shape.
+
+`safeWrite` originally read the decision and then branched on
+`action !== "create"`. That is equivalent to honouring the decision for every
+input `create-only` can produce today — and exactly because it is equivalent,
+it ABSORBED the second mutation: with the `create-only` branch gone, every
+seeded file fell through to the regenerate path, and `safeWrite` reported
+`UNCHANGED` and declined to write anyway. **Nothing went red.** The #296
+protection was asserted in the declaration and enforced in a second place, so
+mutating the declaration proved nothing. `safeWrite` now delegates to
+`regenerateOwned`, and the DA-owned files are asserted behaviourally — driven
+through `ownedStrategy` with no strategy argument, so the declaration is in
+the path rather than bypassed by the test.
+
+The seventh scored 0 for the plainer reason: the self-hosting detection was
+the whole discovery of the fix and nothing asserted it. Six cases now do,
+including the one that makes "regenerated" an honest word — the shipped
+`test/scaffold-conformity.test.ts` must be byte-identical to
+`generateConformityTest(ROOT)`. Without that reconciliation the generator can
+emit anything and the file on disk stays whatever it was, which is the state
+this issue found.
+
+None of the eleven mutations is left in the tree; all were run and reverted,
+and the eleven counts above were re-measured against the final 29-test file so
+they come from one tree.
+
+**Out of scope, filed rather than fixed:** `refreshAgentsMd`'s broken-link
+check reads `` `bun test test/scaffold-conformity.test.ts` `` out of the
+Commands table and reports the whole command string as a missing file. A
+false positive in a different detector, pre-existing, and a different class
+from ownership.

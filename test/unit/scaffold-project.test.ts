@@ -238,15 +238,38 @@ describe("scaffold-project: no-overwrite guarantee", () => {
     expect(content).toBe(existing);
   });
 
-  test("never overwrites existing test files", () => {
+  test("regenerates a drifted scaffold-conformity.test.ts (#208)", () => {
+    // INVERTED, deliberately. This test used to assert
+    // `expect(content).toBe(existing)` — never overwrites — and it passed
+    // for four months. `.claude/rules/harness-managed.md` says the file is
+    // "regenerated on re-scaffold", so the test and the doc had been
+    // contradicting each other in writing, and the test won silently. #208
+    // is that contradiction. Deleting the case would lose the strongest
+    // evidence for the fix: this one SPAWNS the real scaffold.
+    //
+    // Note the directory is `tests/`, not `test/`, so the declaration in
+    // OWNED_FILES does not match by path — the call site names the strategy.
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "tests"), { recursive: true });
-    const existing = "// my custom test\n";
-    writeFileSync(join(tmpDir, "tests", "scaffold-conformity.test.ts"), existing);
+    const stale = "// my custom test\n";
+    writeFileSync(join(tmpDir, "tests", "scaffold-conformity.test.ts"), stale);
     runScaffold(tmpDir, { fix: true });
 
     const content = readFileSync(join(tmpDir, "tests", "scaffold-conformity.test.ts"), "utf-8");
-    expect(content).toBe(existing);
+    expect(content, "the drifted conformity test was skipped, which is #208").not.toBe(stale);
+    expect(content).toContain("runScaffoldConformity(ROOT);");
+  });
+
+  test("a test file the harness does not own is left alone", () => {
+    // AC-1's positive control at the spawn level. A scaffold that rewrites
+    // every file in `tests/` satisfies the case above for free.
+    tmpDir = createTempDir();
+    mkdirSync(join(tmpDir, "tests"), { recursive: true });
+    const mine = "// a human wrote this\n";
+    writeFileSync(join(tmpDir, "tests", "my-own.test.ts"), mine);
+    runScaffold(tmpDir, { fix: true });
+
+    expect(readFileSync(join(tmpDir, "tests", "my-own.test.ts"), "utf-8")).toBe(mine);
   });
 });
 

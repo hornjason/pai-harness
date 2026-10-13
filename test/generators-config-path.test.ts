@@ -38,31 +38,44 @@ async function harnessManagedRule() {
   return rule!;
 }
 
+/**
+ * The TABLE row for one file, not the first line that mentions it.
+ *
+ * `.find(l => l.includes("ci.yml"))` used to be enough. #208 made the rule's
+ * frontmatter list the owned paths, so `  - ".github/workflows/ci.yml"` now
+ * comes first and these three tests failed against a correct file. A
+ * selector that picks "the first line containing a string" is the same
+ * defect as an assertion that matches a string rather than a position —
+ * `.claude/rules/claiming-sc-coverage.md`. Anchor on the table's own shape.
+ */
+async function managedRow(path: string): Promise<string> {
+  const rule = await harnessManagedRule();
+  const rows = rule.content
+    .split("\n")
+    .filter(l => l.startsWith(`| \`${path}\` |`));
+  expect(rows, `no table row declares \`${path}\``).toHaveLength(1);
+  return rows[0];
+}
+
 // ── AC-1: harness-owned table names the rungate directory ──────────────
 
 describe("AC-1: generated AGENTS.md harness-owned table", () => {
   test("ci.yml row names the rungate directory, not the monolith", async () => {
-    const rule = await harnessManagedRule();
-    const row = rule.content.split("\n").find(l => l.includes("ci.yml"));
-    expect(row).toBeDefined();
-    expect(row!).toContain(CONFIG_DIR);
-    expect(row!).not.toMatch(MONOLITH_RE);
+    const row = await managedRow(".github/workflows/ci.yml");
+    expect(row).toContain(CONFIG_DIR);
+    expect(row).not.toMatch(MONOLITH_RE);
   });
 
   test("gates.yml row names the rungate directory, not the monolith", async () => {
-    const rule = await harnessManagedRule();
-    const row = rule.content.split("\n").find(l => l.includes("gates.yml"));
-    expect(row).toBeDefined();
-    expect(row!).toContain(CONFIG_DIR);
-    expect(row!).not.toMatch(MONOLITH_RE);
+    const row = await managedRow(".github/workflows/gates.yml");
+    expect(row).toContain(CONFIG_DIR);
+    expect(row).not.toMatch(MONOLITH_RE);
   });
 
   test("agent briefs row names the rungate directory, not the monolith", async () => {
-    const rule = await harnessManagedRule();
-    const row = rule.content.split("\n").find(l => l.includes(".claude/agents/*.md"));
-    expect(row).toBeDefined();
-    expect(row!).toContain(CONFIG_DIR);
-    expect(row!).not.toMatch(MONOLITH_RE);
+    const row = await managedRow(".claude/agents/*.md");
+    expect(row).toContain(CONFIG_DIR);
+    expect(row).not.toMatch(MONOLITH_RE);
   });
 });
 
