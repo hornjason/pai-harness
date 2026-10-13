@@ -158,3 +158,156 @@ release behind. Publishing is an outward-facing action with its own
 authorization, and #364 — no release workflow, npm on 0.2.1 against a repo
 735 commits in — is where that belongs. This change is what makes a publish
 worth doing; it does not perform one.
+
+### The re-scaffold command destroyed the rule it was told to preserve (#370)
+
+`bun bin/rungate.ts scaffold . --fix`, on a clean checkout of this repo, with
+nothing else in the tree:
+
+```
+ .claude/rules/checks-must-be-able-to-fail.md | 197 ---------------------
+ .claude/rules/docs-routing.md                |   2 +-
+ .claude/rules/key-files.md                   |   6 +-
+```
+
+The loop was eight unconditional `writeFileSync` calls reporting `GENERATED:`
+each. `checks-must-be-able-to-fail.md` went from 262 lines to 65 — the
+generator's canonical opening survives and every worked example and mutation
+table the repo added after it does not. Three specs cite that file by path.
+`key-files.md` lost the `#296` annotation added *after* run
+`wf_0b15a933-b2b` lost four worktrees and 2,565 lines of validated work.
+
+Exit 0, and `git status` reported `M`, not `D`, so it did not even read as a
+deletion. The damage sat in a working tree through a full green `bun test`.
+
+**Neither obvious answer works, and that is why this went unresolved.** It is
+the other half of #208's question — *who owns a generated file after a human
+edits it*:
+
+| mode | behaviour | failure |
+|---|---|---|
+| plain `scaffold .` | writes nothing | a generator fix never reaches a tree that has the file — #363's AGENTS.md change could not be adopted at all |
+| `scaffold . --fix` | writes everything | the above |
+
+`key-files.md` is genuinely generated — its table comes from a scan — *and*
+genuinely hand-annotated, so no list of owned filenames can be right either.
+
+The mechanism is provenance carried by the file itself: the generator stamps
+the sha of the body it wrote into the file's own frontmatter, so on the next
+run the file answers the only question that matters — *has anyone touched
+this since the harness wrote it?* — with no manifest that can desync from the
+tree it describes.
+
+| existing file | action |
+|---|---|
+| absent | create |
+| body identical to what would be generated | update |
+| carries a marker matching its own body | update |
+| anything else | **preserve, and report** |
+
+Row two is what makes adoption possible without a migration: a file the
+harness wrote before provenance existed is byte-identical to the generator's
+output, so the first run recognises and stamps it. Measured on this repo —
+five of eight rules adopted on the first `--fix`, two preserved
+(`checks-must-be-able-to-fail.md`, `key-files.md`), and `docs-routing.md`
+accepted by hand because its divergence was real drift the generator had
+right: `ADRs — architecture decisions (1 files)` against a `docs/adr/`
+holding two.
+
+Row four is the fallback rather than an enumerated case, and it is allowed to
+be wrong in one direction only. Preserving a file the harness could have
+regenerated costs a line in a report that names the remedy. The other
+direction cost 197 lines nobody noticed were gone.
+
+- [x] SC-818: lib/rule-provenance.ts contains [decideRuleWrite] — ONE exported predicate decides whether a generated rule file may be written, so there is one binding to mutate. A second decider would survive any mutation of the first and the guard would go green for a reason unrelated to it working
+- [x] SC-819: lib/scaffold/steps.ts contains [PRESERVED: .claude/rules/] — a withheld write is REPORTED, never silently resolved. A run that quietly declined to write is indistinguishable from one that had nothing to do
+- [x] SC-820: test/rule-provenance.test.ts contains [scaffold(dir)] — the preserve cases SPAWN the real scaffold over a file carrying hand-written content. Asserting that the scaffold "preserves files" without running it is the vacuous version the issue named by name
+- [x] SC-821: test/rule-provenance.test.ts contains [a rule file the repo routes agents to is gone] — CI notices a rule file disappearing, which nothing did before: the #370 deletion survived a full green suite
+
+### What was broken to prove it (SC-818..821)
+
+Run and counted over `test/rule-provenance.test.ts` (17 tests):
+
+| Mutation | Red |
+|---|---|
+| the write loop restored to unconditional `writeFileSync` — the original defect | 4 of 17 |
+| `decideRuleWrite` always returns `preserve` — "never overwrite", #208's half | 9 of 17 |
+| `stampProvenance` returns its input unchanged — markers never written | 8 of 17 |
+| `ruleBody` stops stripping leading newlines after the frontmatter | 2 of 17 |
+| the `identical to generator output` row removed — no bootstrap | 1 of 17 |
+| the citation scan narrowed to `specs/` alone | 1 of 17, and **0 of 16** before the case below it was written |
+
+**The last row is a finding, not a footnote.** `SCOPE` lists eight
+directories and cutting it to `specs/` alone changed nothing any test
+asserted: the vacuity guard needs five cited rules and three citers of
+`checks-must-be-able-to-fail.md`, and `specs/` supplies both on its own. So
+`lib/`, `scripts/`, `gates/`, `hooks/`, `workflows/`, `bin/` and the rules
+directory were along for the ride, and a dangling citation added in source
+would not have been checked. `the scan reaches source, not only specs`
+asserts the citing directories by name, which is the same
+"predicate nobody consults" shape #360 found one layer down.
+
+Two more findings came out of writing the tests rather than out of the
+mutations.
+
+**The citation check reported two missing files, and both were the check's
+fault.** `docs/adr/ADR-002` discusses a `config-access.md` rule that ADR-001
+drafted, recording in a table that it was "**Never created.**" A document
+accurately reporting a file's absence is not a dangling pointer, and flagging
+it would make the only fix deleting the sentence. The other was `a.md`, a
+literal inside a `post-scaffold-commit.test.ts` fixture. ADRs and test
+fixtures are out of scope; specs, source and the rules themselves are in.
+Walking `.claude/worktrees/` as well had inflated the counts to 126 and 130
+citing files and the scan to twelve seconds.
+
+Then the check caught **this spec**, which had quoted that ADR sentence in
+full, path and all — the fourth self-reference trap of the day. The fix is to
+name the file without its directory, not to widen the detector:
+`.claude/rules/claiming-sc-coverage.md` makes the same call for the same
+reason, and a detector narrowed to buy green is shape two of
+`.claude/rules/checks-must-be-able-to-fail.md`.
+
+**The sha covered one newline too many.** `stampProvenance` on content with
+no frontmatter prepended a block followed by a blank line, so the body it
+hashed and the body the next run read differed by a `\n`, and the very first
+stamped file would have read as hand-edited one run later — the mechanism
+silently degrading into "never overwrite", which is the failure mode this
+design exists to avoid, reached by accident.
+
+None of the six mutations is left in the tree; all were run and reverted.
+
+**Deliberately not done:** `docs-routing.md` was accepted by deleting it and
+re-running, which is the remedy the report names. There is no
+`--accept-generated` flag, because a flag that resolves divergence is one
+`--fix` away from being the behaviour that caused this.
+
+#### This changes SC-364's contract, and says so rather than absorbing it
+
+SC-364's `corrupted generated files are restored to byte-identical content`
+listed three targets, one of them `.claude/rules/key-files.md`. **A corrupted
+file and a hand-edited one are byte-identical to any check**, so "restore the
+original bytes" and "never overwrite a human's edit" cannot both hold over
+the same file. SC-364 shipped first and was right for the files it was
+written about; it was also the behaviour that truncated
+`checks-must-be-able-to-fail.md`.
+
+The resolution is a split the repo already documents, not a new judgement:
+
+| class | owner | on divergence |
+|---|---|---|
+| `AGENTS.md` | harness (SC-11, "always regenerates") | restored |
+| `CODE-MAP.md` | harness (named in `harness-managed.md`) | restored |
+| `.claude/rules/*.md` | shared — generated table, hand annotations | preserved and reported |
+
+SC-364 keeps its anti-vacuity force over the first two: the corruption case
+still demands the original bytes back from a generator that actually ran. The
+rules class moves to `an edited rule file is preserved instead, and the run
+says so`, asserted in the same file, because a deleted case with a comment
+explaining its absence holds nothing. Restoring the unconditional
+`writeFileSync` turns it red — 1 of 9 over
+`test/scaffold-determinism.test.ts`, run and reverted.
+
+Both failures the change produced were this one conflict. The second —
+`a deleted generated file comes back identical` — was a cascade: the
+corruption case left `CORRUPTED BY TEST` preserved on disk, and the next case
+snapshotted it as the baseline.

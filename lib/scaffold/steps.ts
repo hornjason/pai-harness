@@ -20,6 +20,7 @@ import { tryLoadRungateConfig } from "../config-loader";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
+import { decideRuleWrite } from "../rule-provenance";
 
 /**
  * Look for a declared health route in the places a server declares one.
@@ -461,13 +462,31 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
     promptPrefix: "",
   };
 
-  // Write scoped rules to .claude/rules/
+  // Write scoped rules to .claude/rules/ — but only the ones the harness is
+  // still the author of. This loop used to be an unconditional writeFileSync,
+  // which truncated .claude/rules/checks-must-be-able-to-fail.md from 262
+  // lines to 65 and reported GENERATED (#370). See lib/rule-provenance.ts for
+  // why neither "never overwrite" nor "always overwrite" is the answer.
   const rulesDir = join(projectPath, ".claude", "rules");
   if (!existsSync(rulesDir)) mkdirSync(rulesDir, { recursive: true });
   const scopedRules = generateScopedRules(scan);
   for (const rule of scopedRules) {
-    writeFileSync(join(rulesDir, rule.filename), rule.content);
-    actions.push(`GENERATED: .claude/rules/${rule.filename}`);
+    const rulePath = join(rulesDir, rule.filename);
+    const existing = existsSync(rulePath) ? readFileSync(rulePath, "utf-8") : null;
+    const decision = decideRuleWrite(existing, rule.content);
+    if (decision.action === "preserve") {
+      // Reported, never resolved. A divergence the run silently fixed is the
+      // defect; a divergence named in the report is a decision for a human.
+      actions.push(
+        `PRESERVED: .claude/rules/${rule.filename} (${decision.reason}) — ` +
+          `generator output withheld; delete the file and re-run to accept it`,
+      );
+      continue;
+    }
+    writeFileSync(rulePath, decision.content!);
+    actions.push(
+      `${decision.action === "create" ? "GENERATED" : "UPDATED"}: .claude/rules/${rule.filename}`,
+    );
   }
 
   return buildAgentsMdContent(scan);
@@ -498,12 +517,14 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
 export function refreshScopedRulesStep(root: string, type: ProjectType, actions: string[]): void {
   const sink: string[] = [];
   generateAgentsMdContent(root, type, sink);
-  // Forward everything except the per-rule GENERATED lines already reported by
-  // the Phase 0.5 pass. Swallowing the rest would hide a warning raised only on
+  // Forward everything except the per-rule lines already reported by the
+  // Phase 0.5 pass. Swallowing the rest would hide a warning raised only on
   // the second scan — the fail-open shape .claude/rules/checks-must-be-able-to-fail.md
-  // exists to prevent.
+  // exists to prevent. PRESERVED is in the list because both passes reach the
+  // same decision over the same file, so the second is a duplicate and not a
+  // new finding; dropping the whole prefix is what keeps it that way.
   for (const a of sink) {
-    if (!a.startsWith("GENERATED: .claude/rules/")) actions.push(a);
+    if (!/^(GENERATED|UPDATED|PRESERVED): \.claude\/rules\//.test(a)) actions.push(a);
   }
   actions.push(`REFRESHED: .claude/rules/ (rescanned after harness config and specs/ existed)`);
 }
