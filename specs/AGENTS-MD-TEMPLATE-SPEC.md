@@ -160,3 +160,99 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
 - [x] SC-308: scripts/update-project-state.ts contains [✅, ⬜]
+
+---
+
+### The command table published commands nobody could run (#363)
+
+Every project rungate scaffolds got this table, and three of its rows had
+never worked for anyone:
+
+```
+| Create spec | `bunx rungate create-spec "title"` |
+| Create SC   | `bunx rungate create-sc --pattern <name> --params '<json>'` |
+| Re-scaffold | `bun ~/Projects/rungate/scripts/scaffold-project.ts .` |
+```
+
+`package.json` declared **no `bin`**, so neither `bunx` form could run from
+source or from the registry. The third row was one laptop's absolute path,
+written into every consumer's AGENTS.md. The generator already had the "only
+advertise a command that exists" discipline — applied to `convert-spec`, the
+type check (#65/#76) and the clean-env row, one row at a time. These three
+predate it.
+
+**Three defects, each hiding behind the next.** With no `bin`, nobody got far
+enough to notice that `scripts/create-spec.ts` and `scripts/create-sc.ts` were
+not in `package.json`'s `files` either — so even a correct `bin` would have
+shipped a dispatcher pointing at scripts the consumer never received.
+
+The cost was not hypothetical. An agent reading AGENTS.md ran the command and
+it failed. An agent reading package.json saw no `bin`, concluded rungate had
+no CLI and was not distributable, and recommended hand-scaffolding a project.
+Both readings of the repo were wrong, which is the state a single source
+fixes: `lib/cli-commands.ts` is now the one place that says what dispatches,
+and the manifest and the generator are checked against it.
+
+Nothing in the repo stated that rungate is published to npm at all — the
+`Repo:` line points at GitHub. For a consumer, distribution is the most
+load-bearing fact there is, and it was the one fact nowhere in the tree. A
+consumer's AGENTS.md now opens with an Install / Consume section; the
+harness's own does not, because inside this repo `bunx rungate` resolves to
+the PUBLISHED package and every command in rungate's own docs would silently
+run a different version of itself. That branch asks `package.json`'s `name`
+rather than comparing a path, because a worktree, a clone under another
+directory name, and a plain `cd` all defeat a path comparison.
+
+- [x] SC-808: package.json contains [bin, rungate] — the documented consumer interface exists at all. Two of three published commands were `bunx rungate <cmd>` against a package with no bin
+- [x] SC-809: lib/cli-commands.ts contains [CLI_COMMANDS] — ONE table says what dispatches, what the manifest must ship, and what the generator may publish. Three sources disagreed and the disagreement was invisible from every direction
+- [x] SC-810: test/cli-contract.test.ts contains [the script RUNS, not merely resolves] — every command is spawned for real. The issue named the vacuous version by name: asserting the table CONTAINS the text passes straight over this defect
+- [x] SC-812: bin/rungate.ts contains [--project-root, process.cwd()] — a command that writes files writes into the CALLER's project. create-spec defaults its root to the package it lives in, so `bunx rungate create-spec "Title"` wrote `node_modules/rungate/specs/TITLE-SPEC.md`, printed `Created specs/TITLE-SPEC.md` and exited 0 — the documented interface existing and doing the wrong thing, which is #363 one layer in
+- [x] SC-811: lib/generators/agents-md.ts contains [isHarnessItself] — the harness documents the source form and a consumer the bunx form, so neither is told to run a command that cannot work where they are
+
+### What was broken to prove it (SC-808..811)
+
+Run and counted over `test/cli-contract.test.ts` + `test/gen-agents-md.test.ts`
++ `test/generators.test.ts` + `test/scaffold-generators.test.ts`
++ `test/unit/agents-md-frontmatter.test.ts` (94 tests):
+
+| Mutation | Red |
+|---|---|
+| `bin` removed from package.json — the original defect, reintroduced | 2 of 94 |
+| `scripts/create-spec.ts` and `create-sc.ts` dropped from `files` — the second defect | 2 of 94 |
+| the dispatcher stops stripping the subcommand from `process.argv` | 1 of 94 |
+| the harness documents `bunx rungate` like a consumer | 1 of 94 |
+| the Install / Consume section dropped | 1 of 94 |
+| a registered command points at a script that does not exist | 1 of 94 |
+| `bun ~/Projects/rungate/scripts/scaffold-project.ts .` restored verbatim | 1 of 94 |
+| `bunxInvocations` returns `[]` — the detector blinded | 1 of 94 |
+| the dispatcher stops passing `--project-root` | 1 of 21 in `test/cli-contract.test.ts` |
+
+None is left in the tree; all were run and reverted.
+
+Mutation 3 is the one that left evidence outside the suite. With the argv
+rewrite broken, `create-spec` receives its own subcommand name as a title and
+WRITES `specs/CREATE-SPEC-SPEC.md` into the directory it was run from — which
+is how it was found, four doc-hygiene checks red over a spec file nobody
+authored. `runCli` now spawns into a scratch directory: a test for a
+dispatcher must not be able to edit the repository it is testing.
+
+Two things were deliberately NOT changed, and both would have been free
+riders. The Convert-spec row is still omitted for a consumer with no local
+script, even though `bunx rungate convert-spec` would now work for one —
+#63 shipped that criterion and flipping it needs its own before/after. And
+the Install section is sized to fit SC-139's 200-word cap on AGENTS.md prose
+rather than the cap being raised to fit it; the first draft came to 210 words
+and the detail it lost now lives in `rungate --help`.
+
+**A separate defect found while landing this, filed as #370 rather than
+fixed here.** Applying a generator fix means re-scaffolding, and the only
+mode that writes anything, `--fix`, **deleted
+`.claude/rules/checks-must-be-able-to-fail.md`** — 197 lines, the rule every
+mutation table in this repo exists because of — and reverted `key-files.md`'s
+hand-written `#296` DA-ownership warning. It reported success. Plain
+`scaffold .` writes nothing at all (0 created, 0 replaced), so there is no
+mode that adopts a generator fix without a destructive diff. Only `AGENTS.md`
+was kept from that run; everything else was reverted by hand. It is the
+inverse of #208 and the same unresolved question — who owns a generated file
+after a human edits it — so it gets its own before/after rather than riding
+along here.

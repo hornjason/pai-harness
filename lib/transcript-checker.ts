@@ -452,7 +452,19 @@ export interface TDDResult {
  * so the next directory to appear cannot go silently ungraded the way these
  * three did.
  */
-export const SOURCE_DIRS = ["lib", "scripts", "src", "gates", "workflows", "hooks"] as const;
+export const SOURCE_DIRS = [
+  "lib",
+  "scripts",
+  "src",
+  "gates",
+  "workflows",
+  "hooks",
+  // #363 added bin/ and the derived test caught it on the first CI run,
+  // which is the check working rather than the check being in the way: an
+  // unlisted directory is not a test failure, it is TDD going ungraded for
+  // everything written there.
+  "bin",
+] as const;
 
 /** Whether a written path is implementation rather than test or docs. */
 export function isSourcePath(path: string): boolean {

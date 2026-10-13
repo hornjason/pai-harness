@@ -1,0 +1,70 @@
+#!/usr/bin/env bun
+/**
+ * The `rungate` command (#363).
+ *
+ * `AGENTS.md` published `bunx rungate create-spec` to every scaffolded
+ * project and `package.json` declared no `bin`, so the documented consumer
+ * interface did not exist. This is it.
+ *
+ * Deliberately thin: the command table is `lib/cli-commands.ts`, so the three
+ * things that must agree — what dispatches, what ships, what the generator
+ * publishes — read from one place instead of three.
+ */
+import { existsSync } from "fs";
+import { dirname, join, resolve } from "path";
+import { fileURLToPath } from "url";
+import { CLI_COMMANDS, helpText } from "../lib/cli-commands";
+
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+const [name, ...rest] = process.argv.slice(2);
+
+if (!name || name === "--help" || name === "-h" || name === "help") {
+  console.log(helpText());
+  process.exit(name ? 0 : 1);
+}
+
+if (name === "--version" || name === "-v") {
+  const pkg = await import(join(PACKAGE_ROOT, "package.json"), { with: { type: "json" } });
+  console.log((pkg.default ?? pkg).version);
+  process.exit(0);
+}
+
+const command = CLI_COMMANDS[name];
+if (!command) {
+  console.error(`rungate: unknown command "${name}"\n`);
+  console.error(helpText());
+  process.exit(1);
+}
+
+const script = join(PACKAGE_ROOT, command.script);
+if (!existsSync(script)) {
+  // Reachable only from an installed package whose `files` lost the script.
+  // Named rather than swallowed: "command does nothing" is the failure #363
+  // is about, and a missing file must not look like a successful run.
+  console.error(
+    `rungate: "${name}" is registered but ${command.script} is not in this ` +
+      `installation. The package's "files" field and lib/cli-commands.ts ` +
+      `disagree — see test/cli-contract.test.ts, which exists to stop this.`,
+  );
+  process.exit(1);
+}
+
+// Default the project root to where the USER is, not to where the package
+// is. `scripts/create-spec.ts` ends with
+// `const root = projectRoot ?? join(import.meta.dir, "..")` — right for
+// `bun scripts/create-spec.ts` in this repo, and wrong for every consumer:
+// `bunx rungate create-spec "Title"` would write into
+// `node_modules/rungate/specs/` and print `Created specs/TITLE-SPEC.md`, so
+// the command reports success and the consumer's project is untouched.
+// Only added when the caller did not say otherwise, and only for commands
+// that accept the flag — a script that does not would read it as a
+// positional argument.
+const needsRoot = command.projectRootFlag && !rest.includes("--project-root");
+const args = needsRoot ? [...rest, "--project-root", process.cwd()] : rest;
+
+// Each script reads process.argv at the top level and none guards on
+// import.meta.main, so the import IS the invocation. Rewrite argv first so
+// the script sees its own arguments and not the subcommand name.
+process.argv = [process.argv[0], script, ...args];
+await import(script);
