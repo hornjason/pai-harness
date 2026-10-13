@@ -1704,6 +1704,180 @@ authorization**, (3) done by #366. The issue should stay open on step 2.
 
 ---
 
+### Stop predicting the command; read the outcome (#144)
+
+`IssueCloseGuard` is a `PreToolUse` hook that receives the TEXT of a Bash
+command and must decide whether that command will close a protected issue.
+**Five consecutive security-review rounds on 2026-10-06** each found a real
+differential between what it believes and what the shell plus `gh` actually
+do. Each was fixed. Each fix was followed by another round.
+
+To be correct it would have to reimplement shell word-splitting, quoting,
+expansion and aliasing, plus `gh`'s own flag parser and its config. The class
+is "every way to close a GitHub issue from a shell", and that is not
+enumerable from a regex over a string: `gh api -X PATCH repos/o/n/issues/23
+-f state=closed` mentions neither word the hook looks for, and neither does a
+wrapper script, an alias, `xargs`, curl, or the web UI.
+
+**Jason's decision, 2026-10-08: Option C.** The hook stays as fast feedback
+and *stops being a security control*. The control moves to an outcome check,
+because the outcome is enumerable and the command string is not.
+
+#### The reclassification is the important half
+
+As long as the hook is *described* as a boundary, every security review is
+correct to keep finding bypasses, and each round is cheap to generate and
+expensive to answer. Writing the scope into the source is what ends that loop
+— not another round of pattern tightening. The hook's docblock now says it is
+a speed bump and not an authorization boundary, names the forms it will never
+catch, and points here. **AC-5 makes that falsifiable: a new review round
+opened against the parser means the reclassification did not take, and *that*
+is the defect rather than the bypass.**
+
+Fitting it in cost real estate. SC-371 caps a hook at 150 lines and counts
+prose, so the historical narratives for #143 and #140 were compressed to
+their operative warnings and their detail left here, where the rest of this
+history already lives. Nothing was deleted that a reader needs at the call
+site.
+
+#### What counts as a record, and why it is not workflow-state.json
+
+The issue says "closed with no `workflow-state.json` record". That file is
+the right idea in the wrong place: it lives under `~/.rungate/{slug}/run/`,
+is never committed, and is invisible to the scheduled CI job doing the
+checking. A control that can only run on one laptop is the same fail-open as
+#140.
+
+So the record is the pipeline's own outcome, which the API does hold.
+GraphQL's `ClosedEvent.closer` resolves to the Commit or the PullRequest
+responsible, and to `null` when GitHub has nothing to attribute the close to
+— which is every hand-typed close, whatever tool typed it. One query, no
+per-issue timeline call, and a binary discriminator that does not care how
+the close was phrased.
+
+**A `## Completion Report` comment was considered and rejected on evidence.**
+`hooks/lib/comment-template.ts` already defines that template, so it looked
+like the natural record. Checked against thirteen shipped issues — #296,
+#307, #224, #235, #239, #194, #252, #273 and the five below — **not one
+carries such a comment.** The template validates the format of a comment
+nobody posts. Building the control on it would have been a check that could
+not fail.
+
+#### The ratchet, and the number it banks
+
+Run read-only against this repo on 2026-10-13 with no epoch, the audit
+reported **19 of the last 100 closed issues**. Spot-checking #344, #343,
+#152, #274 and #141 found no merge commit, no closing PR and no Completion
+Report on any of them, so these are **true positives, not a broken
+detector** — nothing in this repo has ever written a durable record of a
+hand-typed close, which is #144's point restated as a measurement.
+
+Flagging all nineteen on day one is the behaviour AC-4 warns about: a check
+that arrives with a backlog nobody asked for gets switched off. So
+`AUDIT_EPOCH` is `2026-10-13`, the number is banked here rather than applied
+to the tracker, and the control ratchets forward. With the epoch in force the
+live run is **0 of 100** — and the same run before the epoch was 19, which is
+what makes the zero a reading rather than a silence.
+
+Lowering the epoch is how someone audits history on purpose. Raising it is
+how someone hides a finding, so it is a constant in version control and not a
+flag with a default. An absent or unparseable close date is **not** treated as
+old, because a malformed reading would otherwise be the cheapest way past the
+audit.
+
+#### Label, do not reopen (AC-3)
+
+The action is to apply `closed-without-ship` and report; `--reopen` exists but
+is off, and even when on is scoped to the issues the hook itself protects.
+Three reasons:
+
+1. The audit is new and its false-positive rate is unmeasured. A control that
+   overrules people before it has earned trust gets switched off.
+2. A label is queryable, so the control's own hit rate is measurable over
+   time. Reopening changes the state that makes the finding findable.
+3. Reopening does not restore the gate. It restores the issue. What is
+   actually wanted is a human looking.
+
+`closed-by-hand` (the exemption) and `closed-without-ship` (the finding) are
+deliberately different words. Collapsing them would let the audit silence
+itself on its second run — apply the mark, then read its own mark as an
+exemption.
+
+The script is **read-only by default**; `--apply` is required to write
+anything. But `--apply` does not govern whether the run is RED: findings exit
+non-zero either way, because the scheduled job runs read-only and letting
+that exit 0 would leave it green in exactly the case it exists for. That was
+the first version of this file, and the test caught it.
+
+#### What this deliberately does not catch
+
+A close attributable to the *wrong* commit. On 2026-10-08 a commit body
+reading "not yet fixed: #178" auto-closed #178; that close has a `commit_id`,
+so this audit passes it. Attribution is not authorization, and pretending
+otherwise would be a detector wider than what it detects. That is #178's own
+defect; this control is about closes with no attribution at all.
+
+#### These SCs were renumbered
+
+The issue specifies SC-610..613. All four ids were already taken in this file
+by unrelated criteria when it was written on 2026-10-08, so the content is
+kept verbatim and the ids are SC-833..836.
+
+- [x] SC-833: lib/issue-closure-audit.ts contains [closedWithoutRecord] — ONE exported function lists issues closed with no record, reading the *outcome* from the API rather than predicting it from a command string. A second comparison of the same facts elsewhere would survive any mutation of this one
+- [x] SC-834: lib/issue-closure-audit.ts contains [AUDIT_EPOCH] — the ratchet's start date is a constant in version control, so a finding cannot be hidden by forgetting a flag, and an unparseable close date is not treated as old
+- [x] SC-835: hooks/IssueCloseGuard.hook.ts contains [not an authorization boundary, speed bump] — the hook's own source states its scope, so the next review grades it as fast feedback and stops generating bypass rounds (#144 AC-5)
+- [x] SC-836: test/audit-issue-closures.test.ts contains [a close the hook cannot see is caught by the audit, a close the pipeline made is left alone] — the audit executed against both shapes, with the positive control proving it does not simply flag everything
+
+#### What was broken to prove it (SC-833..836)
+
+Run and counted over `test/audit-issue-closures.test.ts` (34 tests):
+
+| Mutation | Red |
+|---|---|
+| `closedWithoutRecord` returns nothing — the audit finds no closes | 9 of 34 |
+| `REFUSE_EXIT` zeroed in the real source | 5 of 34 |
+| `closedWithoutRecord` flags EVERY closed issue — **the AC-1 failure** | 4 of 34 |
+| the exit constant renamed | 4 of 34 — every mutant-building case throws "could not build the mutant" |
+| the `not_planned` exemption removed | 3 of 34 |
+| `toClosedIssue` stops reading the PullRequest closer | 3 of 34 |
+| the `closed-by-hand` exemption removed | 2 of 34 |
+| the epoch cutoff removed — day one reports nineteen | 2 of 34 |
+| the empty report prints nothing | 2 of 34 |
+| `toClosedIssue` stops lowercasing `stateReason` | 2 of 34 |
+| the already-reported guard removed — the audit re-flags its own findings | 1 of 34 |
+| an unparseable close date treated as old — **the cheapest bypass** | 1 of 34 |
+| `EXEMPT_LABEL` and `FINDING_LABEL` collapsed into one word | 1 of 34 |
+| `shouldReopen` ignores the flag and always reopens | 1 of 34 |
+| `shouldReopen` reopens every finding, not just protected ones | 1 of 34 |
+| `toClosedIssue` stops reading the Commit closer | 1 of 34 |
+| `toClosedIssue` stops reading `closedAt` | 1 of 34 |
+| findings no longer make the run red | 1 of 34 |
+| the script writes labels without `--apply` | 1 of 34 |
+| the fixture read stops refusing on error | 1 of 34 |
+| WORKFLOW: the schedule removed | 1 of 34 |
+| WORKFLOW: `issues: write` dropped | 1 of 34 |
+| WORKFLOW: the job renamed away from `audit-issue-closures` | 1 of 34 |
+| WORKFLOW: the run line stops invoking the script | 1 of 34 |
+| WORKFLOW: `setup-bun` unpinned | 1 of 34 |
+| WORKFLOW: the input interpolated into the run script | 1 of 34 |
+| HOOK: the reclassification deleted | 1 of 34 |
+
+**The job-name row scored 0 on the first attempt, and the detector was at
+fault.** `toContain("audit-issue-closures")` was satisfied by the script's
+own path on the `run:` line, so renaming the job changed nothing. It is now
+anchored to the job key — a declaring position, the same principle
+`.claude/rules/claiming-sc-coverage.md` applies to SC claims — and the run
+line is asserted separately, which split one weak row into two real ones.
+
+That is the third 0-that-was-the-mutation's-fault in two days, and all three
+were the same mistake: **asserting a string rather than a position.** Worth
+naming as a pattern rather than three coincidences.
+
+Twenty-seven mutations, no survivors. None is left in the tree; all were run
+and reverted.
+
+---
+
 ### The rate was per worker, and nothing was per run (2026-10-12, #194)
 
 The guard above exists, is registered, and could not bite. Across four

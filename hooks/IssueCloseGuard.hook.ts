@@ -5,8 +5,26 @@
  * SC-370 (HOOK-ARCHITECTURE-SPEC): Hook SC traceability
  * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
  *
- * Blocks gh issue close if ship-gate hasn't passed. Validates HMAC
- * provenance on PASS results, and comment templates on gh issue comment.
+ * Blocks a close if ship-gate hasn't passed. Validates HMAC provenance on
+ * PASS results, and comment templates on gh issue comment.
+ *
+ * ## This is a speed bump. It is not an authorization boundary. (#144)
+ *
+ * Read this before opening a security review against the parser below.
+ * Deciding, from the TEXT of a Bash command, whether it will close an issue
+ * means reimplementing shell quoting and expansion plus gh's flag parser.
+ * Five review rounds on 2026-10-06 each found a real differential; a sixth
+ * would too. `gh api -X PATCH repos/o/n/issues/23 -f state=closed` mentions
+ * neither word it looks for, and neither does a wrapper script, an alias,
+ * `xargs`, curl, or the web UI.
+ *
+ * **Jason's decision, 2026-10-08: Option C.** Kept, because it is fast and
+ * has caught real mistakes — and reclassified to fast feedback. The control
+ * is `scripts/audit-issue-closures.ts`, scheduled by
+ * `.github/workflows/issue-audit.yml`, which reads the OUTCOME and so cannot
+ * be bypassed by phrasing. A bypass found here is NOT a defect to file;
+ * tightening the pattern is the loop #144 exists to end. See
+ * specs/HARNESS-STANDARD.md § SC-833..836.
  */
 
 import { createHmac } from 'crypto';
@@ -22,8 +40,7 @@ function block(reason: string): never {
   throw new Error('unreachable');
 }
 
-// Rules live in hooks/lib/comment-template.ts — HOOK-ARCHITECTURE-SPEC wants
-// the trigger thin, and SC-371 caps this file at 150 lines.
+// Rules live in hooks/lib/comment-template.ts — SC-371 caps this file at 150.
 function validateCommentTemplate(command: string) {
   const violation = commentTemplateViolation(command);
   if (violation) block(violation);
@@ -54,10 +71,9 @@ async function main() {
     process.exit(0);
   }
 
-  // The parse reports whether the command is simple enough to vet, not what
-  // to vet — see parseCloseTarget. Anything it cannot read unambiguously is
-  // refused rather than guessed at, because a guess here checks one issue's
-  // labels and closes another's.
+  // parseCloseTarget reports whether the command is simple enough to vet.
+  // Anything unreadable is refused, not guessed: a guess here checks one
+  // issue's labels and closes another's.
   const target = parseCloseTarget(command);
   if (target.kind === 'none') process.exit(0);
   if (target.kind === 'ambiguous') {
@@ -66,22 +82,14 @@ async function main() {
 
   const issueNum = target.issue;
 
-  // #143: this fell back to a literal slug naming a DIFFERENT repository, so
-  // a close that named none was decided by whatever issue shared that number
-  // over there. The repo must come from the same parse result as the issue
-  // number — and only from the closing segment, since a `--repo` elsewhere in
-  // a compound command belongs to another invocation. It is not inferred from
-  // the machine either: PR #154 derived it from the git remote and review
-  // found two bypasses, because that is a second parser surface on a boundary
-  // that already has one too many (#144). A bare `gh issue close 23` now
-  // blocks; the guard either knows which issue it is vetting or says so.
+  // #143: the repo must come from the same parse result as the issue number,
+  // and only from the closing segment. Do NOT infer it from the git remote —
+  // PR #154 did and review found two bypasses. See HOOK-ARCHITECTURE-SPEC.
   if (!target.repo) {
     block(
       `Cannot close #${issueNum} — the command names no repository, so the guard cannot tell ` +
-      // Deliberately no GH_REPO suggestion. The parser matches --repo/-R
-      // only, so a
-      // GH_REPO set in the command is honoured by gh and invisible here —
-      // this message was telling operators how to create the bypass.
+      // Deliberately no GH_REPO suggestion: the parser matches --repo/-R only,
+      // so naming it here taught operators how to create the bypass.
       `which issue #${issueNum} is. Re-run it naming one: --repo owner/name.`,
     );
   }
@@ -89,17 +97,10 @@ async function main() {
 
   const wf = findWorkflowState(issueNum);
   if (!wf) {
-    // #140: `block()` used to sit inside a `try` whose `catch {}` was empty,
-    // so every way of failing to READ the labels — no credential (#139), a
-    // rate limit, a malformed repo, a network blip — fell through to the
-    // warning below and exited 0. The close went ahead. Measured: the same
-    // close of the same p1-labelled issue blocked with a token present and
-    // was waved through without one.
-    //
-    // There is no workflow-state.json here, so the labels are the only
-    // evidence available. Not being able to read them is not the same as
-    // reading them and finding nothing, and only one of those is safe to
-    // treat as permission.
+    // #140: the labels are the only evidence left here, and FAILING to read
+    // them is not the same as reading them and finding nothing. Only one of
+    // those is safe to treat as permission, so the catch below blocks rather
+    // than warning. Do not reintroduce an empty catch.
     let labelNames: string;
     try {
       const github = createGitHubClient();
@@ -110,9 +111,8 @@ async function main() {
       // block reason is echoed into transcripts and issue comments.
       const detail = redactSecrets(String(e?.message || e)).slice(0, 200);
       block(
-        // Naming the repo is not decoration: it is the only way an operator —
-        // or a test — can see WHICH repository the guard decided to vet, and
-        // vetting the wrong one is exactly the defect #143 reports.
+        // Naming the repo is not decoration: it is how anyone sees WHICH
+        // repository the guard vetted, which is the defect #143 reports.
         `Cannot close #${issueNum} — no workflow-state.json, and its labels in ${repo} could ` +
         `not be read to check whether it is protected: ${detail}\n` +
         `Fix the GitHub access (GITHUB_TOKEN or GH_TOKEN) and retry, or close it on GitHub ` +
