@@ -1491,6 +1491,59 @@ None is left in the tree; all were run and reverted.
 
 ---
 
+### The evidence base and the installable artifact were different software (#366)
+
+Every mutation count, gate measurement and standing verdict in `SUCCESS.md`
+was taken against the working tree at `main`. What a consumer can install is
+`rungate@0.2.1`. The tree has said `0.2.2` since 2026-09-19 — 697 commits
+back — and there is no release workflow to close the gap (#364).
+
+It bites hardest at the file's weakest row. The consumer survey of 2026-10-08
+returned *not ready*, measuring code no consumer can obtain, which makes the
+one deliberate attempt to assess claim 5 unattributable to any shippable
+version. The claim-5 row argues that *"a path nothing has executed is not a
+path anyone understands"*; the distribution path was in exactly that category
+and was not counted as one. And because `SUCCESS.md` is the measure for
+filing issues, reviewing PRs and running audits, a standing table that
+silently describes unpublished code hands that gap to every decision routed
+through it.
+
+**Two numbers, not one, and the issue said why.** It named the vacuous form —
+*"an assertion that merely finds a version string in the file"* — and the
+mutation that has to turn it red: *"bumping `package.json` without publishing
+must turn it red."* Checking only the recorded published version against the
+registry stays green through a bump, because a bump moves neither of those
+two values. So the line records the tree version and the published version,
+and each is compared to its own source of truth.
+
+- [x] SC-822: SUCCESS.md contains [Distribution standing] — the file states which software its numbers describe, in a declaring position rather than in prose. Every measurement in it was taken against the tree; none of it describes what a consumer can install
+- [x] SC-823: lib/distribution-standing.ts contains [distributionViolations] — ONE exported function turns the three readings into violations, so there is one binding to mutate. A second comparison of the same facts would survive any mutation of this one
+- [x] SC-824: test/distribution-standing.test.ts contains [registry returned] — the npm registry is REACHED, from the endpoint `bun add` resolves against, and an unreachable one THROWS. A read that fell back to the recorded value would make the file agree with itself whenever the network was down
+
+#### What was broken to prove it (SC-822..824)
+
+Run and counted over `test/distribution-standing.test.ts` (12 tests):
+
+| Mutation | Red |
+|---|---|
+| `distributionViolations` always returns `[]` | 4 of 12 |
+| the tree-version comparison removed — **the bump the issue named** | 2 of 12 |
+| the published-version comparison removed | 2 of 12 |
+| `publishedVersion` falls back to a constant instead of throwing | 1 of 12 |
+| `STANDING_LINE` loosened to any version pair in prose — the vacuous form | 4 of 12 |
+| the absent-standing branch returns `[]` rather than a finding | 1 of 12 |
+| the standing line deleted from `SUCCESS.md` | 4 of 12 |
+
+None is left in the tree; all were run and reverted.
+
+**Deliberately not done.** The issue's second step — re-run the consumer
+survey against the *installed* package — is blocked on #364, since there is
+nothing newer to install. This change makes the gap visible and keeps it
+visible; it does not close it, and publishing is an outward-facing action
+with its own authorization.
+
+---
+
 ### The rate was per worker, and nothing was per run (2026-10-12, #194)
 
 The guard above exists, is registered, and could not bite. Across four
