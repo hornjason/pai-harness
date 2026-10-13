@@ -1217,6 +1217,107 @@ target compiling measures nothing. Rows six and seven cover the same
 property — config is consulted, and "none" is a real answer — by editing
 single expressions instead.
 
+## A check with no assertion, and the measurement that renamed it (#338)
+
+`evidence-target-valid` asserted nothing:
+
+```ts
+const paths = harness?.codeCommittedPaths || [];
+if (paths.length === 0) return;      // nothing authors this key (#315)
+const outside = fileRefs.filter(…);  // computed and DISCARDED
+// Informational — outside refs are common (test fixtures, config)
+```
+
+Two independent reasons it could not fail. #315 removed it rather than leave
+a name in `config/ceremony-profiles.json` reporting coverage it did not
+provide, and #338 asked for a threshold with evidence behind it before any
+code was written.
+
+### The measurement killed the original premise
+
+Over the 82 completed runs in `~/.rungate` — 456 ACs, 452 with an evidence
+command, 593 file references between them:
+
+| kind | refs | share |
+|---|---|---|
+| test | 309 | 52.1% |
+| source | 156 | 26.3% |
+| other | 74 | 12.5% |
+| spec | 17 | 2.9% |
+| config | 17 | 2.9% |
+| docs | 11 | 1.9% |
+| runtime artifact | 9 | 1.5% |
+
+Checked against each AC's own declared `contextFiles`: **264 inside, 278
+outside**, 51 with no context declared. The largest outside category is
+`test` — 158 of the 278 — and that is not a defect. It is the normal shape of
+an AC: the evidence command runs the test that proves it, and the test file
+is not among the source files the AC is *about*.
+
+So **"evidence commands target files within scope" is not a property real
+runs have.** Any threshold near zero would be red on every run and switched
+off within a week, which is exactly what #338 predicted would happen if the
+rule were invented rather than measured. The check does not come back under
+its old name, and this says so instead of shipping a weaker version of it.
+
+### What the same measurement did find
+
+50 of 452 evidence commands — **11.1%, across 11 of 82 runs** — hardcode a
+path into a developer's home directory:
+
+```
+/Users/jhorn/Projects/rungate               55 references
+/Users/jhorn/Projects/DailyBriefDashboard    1 reference
+```
+
+Those commands cannot run in CI or on anyone else's machine. Evidence that
+reproduces only where it was written is not evidence, and the rate is what
+makes it the right threshold: ~1 run in 7. A check that fires on everything
+gets disabled; a check that fires on nothing is the one being replaced.
+
+Zero tolerance is safe here precisely because it was not safe above: the
+correct form already exists and costs one token. Evidence commands run with
+`cwd: projectRoot` (`lib/evidence-prevalidator.ts:208`), so the project's own
+files need no prefix, and the harness root has had `$HARNESS_ROOT` since
+`gates/run-gate.ts` — which is what all 55 of those references spell out
+longhand.
+
+The detector is narrow on purpose. `/tmp`, `/usr` and `/var` are not
+machine-specific and 9 commands use them legitimately; a detector that
+argued with correct commands would be switched off, which is how the check
+being replaced died.
+
+- [x] SC-792: lib/evidence-portability.ts contains [evidencePortabilityViolations] — one exported violations-returning function, so the mutation is a measurement rather than a claim in a PR
+- [x] SC-793: lib/evidence-portability.ts contains [MACHINE_PATH] — only `/Users/<name>` and `/home/<name>` count, because `/tmp` is reproducible by construction and a detector that argues with correct commands gets switched off
+- [x] SC-794: test/evidence-portability.test.ts contains [the gate REFUSES a planted unportable command] — the gate check is SPAWNED against a planted state rather than grepped for, because a source-text assertion scored 0 red against a mutation that left the call in place and threw its result away
+- [x] SC-795: test/evidence-portability.test.ts contains [driven against the corpus the threshold came from] — the rule is run over the real run history it was measured on, so the 11.1% stays something the suite can see rather than a number in a commit message
+
+### What was broken to prove it (SC-792..795)
+
+Over `test/evidence-portability.test.ts` (15 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `evidencePortabilityViolations` returns `[]` | 7 of 15 |
+| the regex keeps `lastIndex` between calls | 5 of 15 |
+| the pattern widens to every absolute path | 3 of 15 |
+| only the first offending AC is reported | 2 of 15 |
+| `/home` is no longer recognised | 1 of 15 |
+| the dedup removed | 1 of 15 |
+| the refusal stops naming the portable form | 1 of 15 |
+| the gate records the violations and ships anyway | 1 of 15 — and **0 of 14** against a source-text assertion |
+| the gate check deleted outright | 1 of 15 |
+| the profiles drop the check again | 1 of 15 |
+| the check runs at every phase instead of verify+ | **0 of 15** — see below |
+
+Two rows are the point.
+
+**The gate wiring scored 0 red against a grep.** `expect(src).toContain('evidencePortabilityViolations(sf("acs"))')` passed while the gate was inert, because the mutation kept the call and discarded its result. The same defect class, reintroduced inside the test written to catch it. The check is now spawned against a planted `workflow-state.json` — once unportable, once portable — with `ran === 1` asserted first, since a `-t` filter matching nothing reports zero failures and reads exactly like the check passing.
+
+**Removing the `isVerifyPlus()` phase guard scores 0, and that is recorded rather than patched.** The mutation cannot make the check weaker — running it earlier would refuse sooner. A mutation that can only tighten a guard is not measuring one, so inventing a test to turn this row red would be measuring the convention rather than the behaviour. The guard stays because the ceremony profiles list the check under `verify` and the profile and the test must not disagree.
+
+One branch was **deleted** on the strength of a 0: `command.trim() === ""` could not be distinguished by any input, since an empty command yields no paths either way. A branch no test can cover is one line permanently unverifiable, so it is gone rather than excused.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
