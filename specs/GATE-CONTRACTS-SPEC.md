@@ -1039,6 +1039,91 @@ The last row is the control for the one above it. Without it, making every
 UNMEASURED loud would satisfy the loudness case and reintroduce exactly the
 noise #197 was opened to remove.
 
+## A control replaced by an unread field (#346)
+
+#304 relaxed a refusal, correctly. The prove gate used to `process.exit(1)`
+when `dev.apiBase` was set and the server did not answer — but the health
+route is read from config since #304, and no consumer sets `dev.healthPath`,
+so reporting DOWN for a server whose route cannot be looked up is a false
+FAIL on a healthy server. #345 then made the reading durable: `UP` / `DOWN` /
+`UNMEASURED` per tier, written to `workflow-state.json` and
+`prove-input.json`.
+
+**And nothing read it.** A control replaced by an unread field is still a
+control removed. That is #213's shape — recorded, never consumed — and it is
+worth naming as its own failure mode, because it looks like progress: the
+artefact gained a field, the diff was green, and the gate got weaker.
+
+### The refusal has to be the right one
+
+Not "FAIL if liveness is UNMEASURED". That reinstates the false FAIL and
+fires on every consumer on their next run, which is how a new gate check
+gets switched off within a week.
+
+The honest refusal is a **contradiction**: a run must not claim it collected
+server-dependent OUTCOME evidence while reporting that liveness was never
+measured. If the evidence really came from a running server then the server
+was reachable and the path can be configured; if liveness is UNMEASURED and
+the evidence is nonetheless marked collected, one of the two statements is
+untrue — and the check does not need to know which to know the run should
+not pass. It cannot false-FAIL a healthy server, because it only fires when
+evidence is *claimed* without measurement.
+
+Deliberately narrow, and asserted so the narrowness is a decision rather than
+an oversight: `DOWN` does not fire it (that is a measurement), a tier that
+came back `UP` excuses an `UNMEASURED` on the other (a server *was* found),
+an AC that merely declares a server method without collecting anything does
+not fire it (a plan is not a claim), and a run with no liveness entries at
+all does not fire it (a project that declares no server is a different
+situation from one that looked and could not find one).
+
+### Detected, never defaulted — a disagreement with the issue
+
+#346 also asked that `scripts/scaffold-project.ts` write `dev.healthPath` so
+the UNMEASURED population shrinks to projects that genuinely have no health
+endpoint. The goal is right and the naive form is not: `DevSchema.healthPath`
+says in so many words *"No default. A probe that guesses a path reports DOWN
+for a server that is up"*, and a guess the scaffold writes into the
+consumer's config is still a guess — one the harness can then point at the
+consumer and blame. It would re-create #304's bug through a different door.
+
+So the route is **detected** from a bounded list of conventional server entry
+points, and `null` when it is not found. Bounded on purpose: a recursive scan
+would find more and would also find the word "health" in a test fixture, and
+a detector that reports a fixture's route as the server's is worse than one
+that reports nothing. Null is honest; a wrong path is a DOWN verdict on a
+healthy server.
+
+- [x] SC-780: lib/liveness-contradiction.ts contains [livenessEvidenceContradictions] — the gate refuses when an OUTCOME AC claims server-dependent evidence while liveness is UNMEASURED, because a reading nothing decides on is a control that was removed rather than replaced
+- [x] SC-781: test/liveness-contradiction.test.ts contains [the control] — every refusing case is paired with a passing one, because #304's relaxation must survive and a check that refuses on everything satisfies the refusing case alone
+- [x] SC-782: lib/liveness-contradiction.ts contains [healthPathIn] — the scaffold detects a health route rather than defaulting one, because `DevSchema.healthPath` says a guessed path reports DOWN for a server that is up and a guess written into the consumer's config is still a guess
+
+### What was broken to prove it (SC-780..782)
+
+Over `test/liveness-contradiction.test.ts` (17 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `livenessEvidenceContradictions` returns `[]` | 3 of 17 |
+| it refuses on every UNMEASURED, evidence claimed or not | 3 of 17 |
+| `healthPathIn` always returns a conventional default | 3 of 17 |
+| the gate stops consulting the check | 4 of 17 |
+| the gate records the contradiction and ships anyway | 3 of 17 — and **0 of 14** while the test only checked that the check ran before the write |
+| `healthPathIn` never finds anything | 2 of 17 |
+| the UP escape removed, so a found server still refuses | 1 of 17 |
+| `DOWN` fires it too | 1 of 17 |
+| a declared-but-uncollected method counts as a claim | 1 of 17 |
+| CODE ACs count too | 1 of 17 |
+| only the first contradiction reported | 1 of 17 |
+| the scaffold writes a literal default path | 1 of 17 |
+
+The fifth row is #354's lesson arriving again one gate over, within the same
+session. "The check is consulted before the write" and "the check prevents
+the run" are different claims; making the refusal branch unreachable left the
+check running, finding the problem, and the gate carrying on. The block is
+now sliced out of `gates/gate-executor.ts` and executed with `process.exit`
+injected, and the **exit code** is the assertion.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

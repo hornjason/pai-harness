@@ -19,6 +19,31 @@ import { mergeManagedWorkflow } from "./managed-workflow";
 import { tryLoadRungateConfig } from "../config-loader";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
+import { healthPathIn } from "../liveness-contradiction";
+
+/**
+ * Look for a declared health route in the places a server declares one.
+ *
+ * Bounded deliberately: a handful of conventional entry points, read once
+ * each. A recursive scan of the whole tree would find more and would also
+ * find the word "health" in a test fixture, and a detector that reports a
+ * fixture's route as the server's is worse than one that reports null —
+ * null is honest, a wrong path is a DOWN verdict on a healthy server.
+ */
+function detectHealthPath(root: string): string | null {
+  const candidates = [
+    "src/server.ts", "src/server.js", "src/index.ts", "src/index.js",
+    "src/app.ts", "src/app.js", "src/api.ts", "src/routes.ts",
+    "server.ts", "server.js", "index.ts", "app.ts",
+  ];
+  for (const rel of candidates) {
+    const abs = join(root, rel);
+    if (!existsSync(abs)) continue;
+    const found = healthPathIn(readFileSync(abs, "utf-8"));
+    if (found) return found;
+  }
+  return null;
+}
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -708,6 +733,8 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
 export function generateOrAuditProjectHarness(root: string, actions: string[]): void {
   const harnessPath = join(root, ".claude", "rungate.json");
 
+  const detectedHealthPath = detectHealthPath(root);
+
   // Scan pages from route files
   const scannedPages: Record<string, string> = {};
   const routeFiles = ["src/App.tsx", "src/routes.tsx", "src/index.tsx", "src/app.tsx"]
@@ -881,6 +908,20 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
       dev: {
         start: makeTarget("dev-all") ? "make dev-all" : "bun run dev",
         apiBase: detectedPort ? `http://localhost:${detectedPort}` : null,
+        // Detected, never defaulted (#346).
+        //
+        // #346 suggested scaffolding a conventional value so the UNMEASURED
+        // population shrinks. A plain default would re-create #304's bug
+        // through a different door: `DevSchema.healthPath` says in so many
+        // words "No default. A probe that guesses a path reports DOWN for a
+        // server that is up", and a guess the scaffold writes into the
+        // consumer's config is still a guess — it is just one the harness can
+        // point at the consumer afterwards.
+        //
+        // So the route is looked for, and `null` when it is not found. That
+        // keeps UNMEASURED meaning what it should: this project has no health
+        // endpoint we could locate, rather than this probe did not try.
+        healthPath: detectedHealthPath,
         uiBase: null as string | null,
         testCmd,
         typeCheck: typeCheckCmd,

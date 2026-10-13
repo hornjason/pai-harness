@@ -20,8 +20,16 @@ export const DevSchema = z.object({
    *
    * No default. A probe that guesses a path reports DOWN for a server that is
    * up, and "could not check" must never become "it is down".
+   *
+   * **Nullable as well as optional (#346.)** The scaffold detects a health
+   * route rather than defaulting one, and writes `null` when it looked and
+   * found nothing. Absent and null are different facts — "nobody configured
+   * this" versus "we scanned the conventional entry points and there is no
+   * health endpoint there" — and collapsing them loses exactly the
+   * distinction the liveness record exists to carry. `probeTarget` treats
+   * both as UNMEASURED, which is correct for both.
    */
-  healthPath: z.string().optional(),
+  healthPath: z.string().nullable().optional(),
 });
 
 /**
