@@ -89,6 +89,10 @@ export function generateAgentsMd(scan: ProjectScan): string {
   // every re-scaffold because the table did not know about it at all.
   const convertSpecRow = existsSync(join(scan.root, "scripts", "convert-spec.ts"))
     ? `\n| Convert spec | \`bun scripts/convert-spec.ts <file> [--dry-run] [--title "..."] [--governs "..."]\` |`
+    // Still omitted for a consumer, even though `bunx rungate convert-spec`
+    // would now work for one. #63 shipped the criterion that this row is
+    // absent without the local script, and flipping it is a change to that
+    // issue's contract with its own before/after — not a free rider on #363.
     : "";
 
   // Same reasoning as convert-spec, but this row was actively harmful rather
@@ -108,6 +112,45 @@ export function generateAgentsMd(scan: ProjectScan): string {
   const cleanEnvRow = existsSync(join(scan.root, "scripts", "test-clean-env.ts"))
     ? `\n| Test as CI sees it | \`bun scripts/test-clean-env.ts\` |`
     : "";
+
+  // #363. Three rows in this table had never been runnable by anybody.
+  //
+  // Two published `bunx rungate <cmd>` while package.json declared no `bin`,
+  // and the third hardcoded `bun ~/Projects/rungate/scripts/scaffold-project.ts`
+  // — one laptop's absolute path, written into every consumer's AGENTS.md.
+  // The rows had the "only advertise what exists" discipline applied to them
+  // one row at a time (convert-spec, typecheck, clean-env above) and these
+  // three predate it.
+  //
+  // The harness scaffolds itself, and inside this repo `bunx rungate` would
+  // resolve to the published package rather than to the working tree — so
+  // the source form is emitted here and the consumer form everywhere else.
+  // Asked of package.json rather than of the path, because a worktree, a
+  // clone under another name and a `cd` all defeat a path comparison.
+  const cli = (cmd: string, args: string) =>
+    isHarnessItself(scan.root)
+      ? `bun bin/rungate.ts ${cmd}${args}`
+      : `bunx rungate ${cmd}${args}`;
+
+  // #363. The one fact a consumer needs most was the one fact nowhere in the
+  // repo: that rungate is distributed at all. `Repo:` points at GitHub, so a
+  // reader's best guess was "clone it" — and the session that produced #363
+  // guessed "it is not distributable" and recommended hand-scaffolding.
+  const installSection = isHarnessItself(scan.root)
+    ? ""
+    : `
+
+## Install / Consume
+
+Published to npm as \`rungate\`.
+
+\`\`\`bash
+bun add -d rungate
+bunx rungate scaffold .
+bunx rungate --help
+\`\`\`
+
+Pin the version: re-scaffolding on a newer rungate rewrites generated files.`;
 
   return `${frontmatter}# ${name}
 
@@ -132,15 +175,37 @@ ${repoLine}
 |--------|---------|
 | Test | \`${testCmd}\` |${typecheckRow}${cleanEnvRow}
 | Conformity | \`bun test test/scaffold-conformity.test.ts\` |
-| Create spec | \`bunx rungate create-spec "title"\` |
-| Create SC | \`bunx rungate create-sc --pattern <name> --params '<json>'\` |
-| Re-scaffold | \`bun ~/Projects/rungate/scripts/scaffold-project.ts .\` |${convertSpecRow}
+| Create spec | \`${cli("create-spec", ' "title"')}\` |
+| Create SC | \`${cli("create-sc", " --pattern <name> --params '<json>'")}\` |
+| Re-scaffold | \`${cli("scaffold", " .")}\` |${convertSpecRow}${installSection}
 ${consumerSection}
 
 ## Workflow
 ${repoLine}${makeTargets}
 - **Test:** \`${testCmd}\`
 `;
+}
+
+/**
+ * Is this project the harness itself (#363)?
+ *
+ * Read from package.json's `name`, not from the path. A worktree under
+ * `.claude/worktrees/`, a clone under another directory name and a plain
+ * `cd` all defeat a path comparison, and getting it wrong is not cosmetic:
+ * the harness would document `bunx rungate`, which inside this repo resolves
+ * to the PUBLISHED package rather than to the working tree, so every command
+ * in its own AGENTS.md would silently run a different version of itself.
+ */
+export function isHarnessItself(root: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
+    return pkg?.name === "rungate";
+  } catch {
+    // No package.json, or unreadable. A consumer, as far as this is
+    // concerned — which is the safe answer: the consumer form works in a
+    // scaffolded project, and the source form works nowhere but here.
+    return false;
+  }
 }
 
 export function generateScopedRules(scan: ProjectScan): GeneratedRule[] {
