@@ -896,6 +896,95 @@ Over `test/comp4-spec-hash.test.ts` (14 tests). None left in the tree.
 | the spec-path anchor loosened back to any `.md` literal | 1 of 14 |
 | comments not stripped before scanning | 1 of 14 — and **0 of 13** before the planted prose/code pair was added |
 
+## An alarm that fired for "there is nothing to check" (#197)
+
+Found while measuring #197's own clean-env criterion, which is the only reason
+it was found at all: `bun scripts/test-clean-env.ts` printed
+
+    SPEC DRIFT DETECTED: spec-compliance tests failed
+
+four times, each followed by an empty list of failures.
+
+Nothing had drifted. The scope gate shelled out to `bun test
+test/spec-compliance.test.ts test/spec-compliance-auto.test.ts` inside a
+`try`/`catch`, and `execSync` throws on any non-zero exit. Bun exits non-zero
+both when a test fails and when the files do not exist. Every fixture project
+in the suite is not this repo and has no spec-compliance suite, so each one
+tripped the catch arm and reported drift.
+
+Two defects, and both are shapes
+`.claude/rules/checks-must-be-able-to-fail.md` already names:
+
+- **A reading that could not be absent.** "The suite failed" and "there is no
+  suite" are different facts that shared one output. The catch arm had no way
+  to tell them apart and did not try.
+- **An alarm nobody can act on.** A DRIFT report naming zero drifted claims
+  teaches its reader to skip the line, and a line everyone skips is the same
+  as no line — on the run where it matters.
+
+The fix is to classify rather than to silence. `gates/spec-compliance-probe.ts`
+returns PASS, DRIFT or UNMEASURED, and UNMEASURED says which files it could
+not find. Order matters inside it: a non-zero exit **with** a parsed failure
+count is DRIFT, never UNMEASURED, because misclassifying the ordinary failing
+run turns the real alarm off, which is the more expensive mistake.
+
+### Both UNMEASURED branches say which kind
+
+Two different runs produce no reading — a command that printed no summary at
+all, and a suite that ran zero checks — and for a while the verdict alone
+could not distinguish them, so deleting either branch scored **0 red**. They
+send a reader to different places, so the detail text is now what is asserted,
+not just the verdict.
+
+The zero-checks branch is reachable rather than theoretical:
+`test/spec-compliance-auto.test.ts` has been legitimately empty since #343, so
+a pair of files that between them run nothing is a live possibility, and it has
+not shown that ship.js matches its spec.
+
+### The wiring is executed, not grepped
+
+A classifier nothing calls is worth nothing — #194 paid for that lesson when a
+correct library never received the run id the hook was supposed to pass it. So
+the gate's own block is sliced out of `gates/gate-executor.ts` by anchor and
+run under `new Function` with `execSync` and `console` injected, and the three
+branches are driven through the real call site. The anchor must appear exactly
+once; two call sites, or a renamed one, aborts every wiring case rather than
+letting it pass quietly.
+
+`execErrorOutput` exists for that slice as much as for its own sake. Reading
+`e.message` before `e.stdout` throws away the only summary in the box, and a
+classifier handed a message instead of a summary returns UNMEASURED for every
+ordinary failing run — alarm off again, by one reordered line.
+
+- [x] SC-769: gates/spec-compliance-probe.ts contains [classifySpecComplianceRun] — the probe reports three outcomes, because "the suite failed" and "there is no suite" are different facts and sharing one output made the gate cry drift at every fixture project
+- [x] SC-770: test/spec-compliance-probe.test.ts contains [the gate executor routes through the probe] — the gate's own block is sliced and executed against planted outcomes, because a classifier nothing calls is worth nothing and a grep cannot tell the difference
+- [x] SC-771: gates/spec-compliance-probe.ts contains [execErrorOutput] — the thrown error's stdout is read before its message, because the summary is in stdout and a classifier given the message instead reports UNMEASURED for every real failure
+- [x] SC-772: test/spec-compliance-probe.test.ts contains [no pass/fail summary] — the two UNMEASURED kinds are told apart by their detail text, because the verdict alone made each branch's deletion invisible
+
+### What was broken to prove it (SC-769..772)
+
+Over `test/spec-compliance-probe.test.ts` (16 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the call site renamed, so the slicer finds the anchor 0 times | 4 of 16 — every wiring case aborts, which is the property being asserted |
+| `classifySpecComplianceRun` no longer consulted by the gate (verdict pinned to PASS) | 4 of 16 |
+| `execErrorOutput` returns `""` | 4 of 16 |
+| a failing run classified UNMEASURED instead of DRIFT | 4 of 16 |
+| `execErrorOutput` reads `message` before `stdout` | 3 of 16 |
+| `missingSpecComplianceFiles` returns its whole input list | 5 of 16 |
+| `missingSpecComplianceFiles` returns `[]` | 2 of 16 |
+| the missing-files branch reports DRIFT again — #197's defect verbatim | 2 of 16 |
+| the missing-files branch removed entirely | 1 of 16 |
+| the gate shells out even when the files are absent | 1 of 16 |
+| the gate reports UNMEASURED through the DRIFT arm | 1 of 16 |
+| the no-summary branch removed | 1 of 16 — and **0 of 9** before the detail text was asserted |
+| zero checks counted as a clean pass | 1 of 16 |
+
+The twelfth row is the one worth keeping. Both UNMEASURED branches returned
+UNMEASURED for the other's input, so each could be deleted with the suite
+staying green — two checks that looked like two and were one.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:
