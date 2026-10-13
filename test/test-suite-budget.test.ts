@@ -43,8 +43,22 @@ import {
 
 let dir: string;
 const FULL = "bun test";
-/** Capacity high enough that the concurrency cap never answers for the budget. */
-const base = () => ({ lockDir: dir, capacity: 8 });
+/**
+ * Capacity high enough that the concurrency cap never answers for the budget.
+ *
+ * DERIVED, after a literal `8` went stale (2026-10-13). Nothing in here
+ * releases its slot, so a test that gets N requests past the budget is holding
+ * N slots — and the literal had been sized against a per-worker rate of 4, so
+ * when the rate rose to 8 the loops started filling the slots instead and two
+ * tests failed with the concurrency refusal while asserting about budgets.
+ * That is the same failure in both directions: a knob whose correctness
+ * depends on a constant somewhere else has to be written in terms of it.
+ *
+ * The widest test holds two workers' full rates at once; double the sum of
+ * both budgets clears that with room.
+ */
+const SLOTS = 2 * (DEFAULT_MAX_RUNS_PER_WORKER + DEFAULT_MAX_RUNS_PER_PIPELINE);
+const base = () => ({ lockDir: dir, capacity: SLOTS });
 
 /**
  * A fresh worker per call, so the PER-WORKER rate never answers a question
