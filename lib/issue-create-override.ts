@@ -44,10 +44,10 @@
  *
  * So the parser is held to ordinary shapes: operators with or without
  * surrounding whitespace, newlines, subshells, command substitution
- * including backticks, a path-qualified binary, quoted arguments, and
- * `-c` / `-lc` / `eval` wrappers. **Every one of those was a measured bypass
- * of an earlier version of this file**, and each has a row in
- * `test/verify-phase-lock.test.ts`.
+ * including backticks, a path-qualified binary, quoted arguments, trailing
+ * `#` comments, backslash line continuations, and `-c` / `-lc` / `eval`
+ * wrappers. **Every one of those was a measured bypass of an earlier version
+ * of this file**, and each has a row in `test/verify-phase-lock.test.ts`.
  *
  * Out of scope ON PURPOSE, and not a gap to file:
  *
@@ -56,6 +56,9 @@
  * - `ssh host "gh issue create …"` — that runs on another machine against
  *   whatever repo it is configured for, and descending into every remote
  *   command mentioning `gh` buys false refusals, not safety.
+ * - Variable indirection — `GH=gh; $GH issue create`. Resolving it means
+ *   tracking assignments across clauses, which is the shell interpreter this
+ *   file is explicitly not, and nobody reaches for `$GH` by reflex.
  * - A caller who writes a script and runs it.
  *
  * Each of those takes a decision to get around the lock, and an agent that
@@ -117,8 +120,25 @@ export function tokenize(cmd: string): string[] {
   for (let i = 0; i < cmd.length; i++) {
     const c = cmd[i];
     if (c === "\\" && quote !== "'" && i + 1 < cmd.length) {
+      // A backslash-newline is a line continuation: it joins, and adds
+      // nothing. Treating it as an escaped character put a literal newline
+      // inside the token, so `gh issue \⏎ create` produced `\ncreate` and
+      // the lock allowed it — and wrapping a long command across lines is
+      // something people do on purpose.
+      if (cmd[i + 1] === "\n") {
+        i++;
+        continue;
+      }
       cur += cmd[++i];
       started = true;
+      continue;
+    }
+    // `#` starts a comment only at the start of a word, which is the shell's
+    // own rule. Without it, `--label bug # --label follow-up` read the
+    // commented-out override as a real one.
+    if (!quote && !started && c === "#") {
+      while (i < cmd.length && cmd[i] !== "\n") i++;
+      i--;
       continue;
     }
     if (quote) {

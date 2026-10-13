@@ -109,6 +109,26 @@ const TABLE: Array<[string, boolean, string]> = [
   ["eval 'gh issue create --label bug'", false, "eval's argument is a command"],
   ["`gh issue create --label follow-up`", true, "and the override survives all of it"],
   ["/usr/bin/gh issue create --label external-audit", true, "...both of them"],
+
+  // Found by the THIRD commit security review. Both were allowed, and both
+  // are shapes someone types on purpose rather than to evade: a long command
+  // wrapped across lines, and a note after one.
+  ["gh issue \\\n  create --label bug", false,
+    "a backslash-newline joins; it was landing a literal newline inside the token"],
+  ["gh issue \\\n  create --label follow-up", true, "...and the override still works through one"],
+  ["gh issue create --label bug # --label follow-up", false,
+    "a commented-out override is not an override"],
+  ["gh issue create --label follow-up # a note", true, "a real override with a note after it"],
+  ["echo hi # gh issue create --label bug", true, "a create inside a comment creates nothing"],
+  ["gh issue create --label bug --title '#5 regression'", false,
+    "`#` inside a quoted argument is not a comment"],
+  ["gh issue create --label follow-up --body 'a#b'", true,
+    "`#` mid-word is not a comment either — the shell's rule is word-start"],
+
+  // Documented as out of scope, asserted so the boundary is a measurement
+  // rather than a claim. See the module docblock.
+  ["GH=gh; $GH issue create --label bug", true,
+    "variable indirection — resolving it is the shell interpreter this is not"],
 ];
 
 describe("#365 SC-825: the override is a label argument, not a word in the command", () => {
@@ -168,6 +188,22 @@ describe("#365 SC-826: the parts the decision is built from", () => {
     expect(clauses(`echo "gh issue create"`).some(createsIssue)).toBe(false);
   });
 
+  test("a backslash-newline joins rather than landing a newline in the token", () => {
+    // It was producing `\ncreate`, so `createsIssue` never saw three
+    // adjacent words. Mid-token too: the shell joins there as well.
+    expect(tokenize("gh issue \\\n  create")).toEqual(["gh", "issue", "create"]);
+    expect(tokenize("gh is\\\nsue create")).toEqual(["gh", "issue", "create"]);
+  });
+
+  test("`#` starts a comment only at the start of a word", () => {
+    expect(tokenize("gh issue create # --label follow-up")).toEqual(["gh", "issue", "create"]);
+    expect(tokenize("--title a#b"), "mid-word is not a comment").toEqual(["--title", "a#b"]);
+    expect(tokenize(`--title "#5"`), "nor is one inside quotes").toEqual(["--title", "#5"]);
+    expect(tokenize("a # b\nc"), "a comment ends at the newline, which still separates").toEqual([
+      "a", "\n", "c",
+    ]);
+  });
+
   test("the out-of-scope boundary is written down where the next reviewer reads it", () => {
     // Two rounds of security review walked this parser inward and a third
     // would too. The answer to "what about `curl`?" is a documented scope,
@@ -176,7 +212,9 @@ describe("#365 SC-826: the parts the decision is built from", () => {
     // someone deleted the paragraph, not the boundary.
     const src = readFileSync(join(ROOT, "lib", "issue-create-override.ts"), "utf-8");
     expect(src, "the scope boundary is undocumented").toContain("It is not a sandbox");
-    for (const outOfScope of ["curl", "ssh host", "MCP"]) expect(src).toContain(outOfScope);
+    for (const outOfScope of ["curl", "ssh host", "MCP", "Variable indirection"]) {
+      expect(src).toContain(outOfScope);
+    }
   });
 
   test("the recursion is bounded", () => {

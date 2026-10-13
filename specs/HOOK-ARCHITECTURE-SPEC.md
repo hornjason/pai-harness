@@ -160,13 +160,15 @@ second override and the refusal text is generated from the same map the
 decision reads, so a third one cannot be accepted while the message still
 names two.
 
-#### Each fix was the same defect, narrower — twice
+#### Each fix was the same defect, narrower — three times
 
-Two rounds of commit security review found bypasses in the replacement, and
-both rounds were right. **Round one:** the new tokenizer split on *whitespace
-alone*, so a shell operator glued to a word never became an operator and
-`gh` never started a token. **Round two:** with that fixed, the parser still
-disagreed with the shell about what names a command.
+Three rounds of commit security review found bypasses in the replacement, and
+all three rounds were right. **Round one:** the new tokenizer split on
+*whitespace alone*, so a shell operator glued to a word never became an
+operator and `gh` never started a token. **Round two:** with that fixed, the
+parser still disagreed with the shell about what names a command. **Round
+three:** with both fixed, it still disagreed about which characters are
+syntax — a backslash-newline and a `#` comment.
 
 | command | allowed by | because |
 |---|---|---|
@@ -180,13 +182,24 @@ disagreed with the shell about what names a command.
 | `./gh issue create --label bug` | fix 2 | the same |
 | `sh -lc 'gh issue create --label bug'` | fix 2 | short flags combine; only the last letter takes the argument |
 | `eval 'gh issue create --label bug'` | fix 2 | `eval`'s argument is a command |
+| a create wrapped across two lines with a trailing backslash | fix 3 | a backslash-newline was read as an escaped character, so the token was a newline glued to `create` |
+| `gh issue create --label bug # --label follow-up` | fix 3 | `#` was not a comment, so a commented-out override counted as one |
 
 That is the substring matcher's defect wearing the opposite sign. The
-original was *wider* than a label and matched a word in a title; both
-replacements were *narrower* than a command and missed the command. All
-three are shape two of `.claude/rules/checks-must-be-able-to-fail.md`, and
-having just written the fix for one was no protection against writing the
-next.
+original was *wider* than a label and matched a word in a title; all three
+replacements were *narrower* than a command and missed the command. Every one
+is shape two of `.claude/rules/checks-must-be-able-to-fail.md`, and having
+just written the fix for one was no protection against writing the next.
+
+Round three's two are worth separating from rounds one and two, because they
+are not evasion. A long command wrapped across lines and a note after a
+command are things people type for their own reasons, which puts them inside
+the boundary below rather than outside it: the lock exists to catch a reflex,
+and both of these are reflexes. The fixes are the shell's own rules — a
+backslash-newline joins and contributes nothing, and `#` opens a comment only
+at the start of a word. Both directions of the second are asserted, because
+treating every `#` as a comment would silently truncate
+`--title '#5 regression'`.
 
 **The shell allowlist was removed because nothing could distinguish it.**
 Fix one's recursion descended only into `sh`, `bash`, `zsh`, `dash`, `ksh`
@@ -209,42 +222,66 @@ and a reflex is defeated by refusing the shapes someone actually types.
 Out of scope on purpose, and not a gap to file: `curl` against the REST API
 and the GitHub MCP tools, because neither is Bash and the hook never sees
 them; `ssh host "gh issue create …"`, because that runs on another machine
-against whatever repo it is configured for; and a caller who writes a script
-and runs it. Each takes a decision to get around the lock, and an agent that
-has made that decision is a problem no matcher fixes. Chasing them trades
-false refusals — which teach people to work around a guard — for protection
-against someone already doing so.
+against whatever repo it is configured for; variable indirection
+(`GH=gh; $GH issue create`), because resolving it means tracking assignments
+across clauses and nobody reaches for `$GH` by reflex; and a caller who writes
+a script and runs it. Each takes a decision to get around the lock, and an
+agent that has made that decision is a problem no matcher fixes. Chasing them
+trades false refusals — which teach people to work around a guard — for
+protection against someone already doing so.
+
+**The boundary is a measurement, not a claim.** `GH=gh; $GH issue create
+--label bug` is a table row asserting that it is *allowed*, so the scope is
+re-checked every run rather than documented once and drifting.
 
 #### What was broken to prove it (SC-825..827)
 
-Run and counted over `test/verify-phase-lock.test.ts` (49 tests):
+Run and counted over `test/verify-phase-lock.test.ts` (59 tests). Every row
+was re-measured after round three's ten new tests, so none is carried over
+from an earlier denominator:
 
 | Mutation | Red |
 |---|---|
-| `verifyPhaseRefusal` always allows | 23 of 49 |
-| the matcher reverted to `cmd.includes('follow-up')` — **the mutation the issue specified** | 15 of 49 |
-| `tokenize` stops honouring quotes | 10 of 49 |
-| operators stop being their own tokens — **review 1's finding** | 8 of 49 |
-| the command-argument recursion removed entirely | 7 of 49 |
-| `external-audit` removed from the override map | 6 of 49 |
-| clause splitting removed — the whole command is one clause | 3 of 49 |
-| `createsIssue` compares the raw token, not the basename — **review 2's finding** | 2 of 49 |
-| the command flag narrowed back to exactly `-c` | 2 of 49 |
-| the newline dropped from the operator list | 2 of 49 |
-| `labelValues` reads only the spaced long form, not `=` or `-l` | 2 of 49 |
-| the hook stops consulting the library and inlines the old test | 2 of 49 |
-| `eval` dropped as a command sink | 1 of 49 |
-| the backtick dropped from the operator list | 1 of 49 |
-| the documented out-of-scope paragraph deleted | 1 of 49 |
-| the recursion depth bound raised from 4 to 400 | **0 of 49** |
+| the decision reverted to the old hook's two-line substring form — **the mutation the issue specified** | 33 of 59 |
+| `verifyPhaseRefusal` always allows | 26 of 59 |
+| `tokenize` stops honouring quotes | 11 of 59 |
+| operators stop being their own tokens — **review 1's finding** | 9 of 59 |
+| only the label test reverts to a substring, clause splitting kept | 8 of 59 |
+| the command-argument recursion removed entirely | 7 of 59 |
+| `external-audit` removed from the override map | 6 of 59 |
+| clause splitting removed — the whole command is one clause | 3 of 59 |
+| the newline dropped from the operator list | 3 of 59 |
+| `#` comments are no longer stripped — **review 3's finding** | 3 of 59 |
+| `createsIssue` compares the raw token, not the basename — **review 2's finding** | 2 of 59 |
+| the command flag narrowed back to exactly `-c` | 2 of 59 |
+| `labelValues` reads only the spaced long form, not `=` or `-l` | 2 of 59 |
+| the hook stops consulting the library and inlines the old test | 2 of 59 |
+| a backslash-newline goes back to being an escaped character — **review 3's finding** | 2 of 59 |
+| `eval` dropped as a command sink | 1 of 59 |
+| the backtick dropped from the operator list | 1 of 59 |
+| `#` opens a comment anywhere, not only at a word start — **the over-correction** | 1 of 59 |
+| the out-of-scope bullet list deleted | 1 of 59 |
+| the "it is not a sandbox" sentence deleted | 1 of 59 |
+| the recursion depth bound raised from 4 to 400 | **0 of 59** |
 
-Two notes on the tail of that table.
+Three notes on that table.
 
-The boundary-paragraph row **scored 0 on the first attempt, and the mutation
-was at fault rather than the test.** The mutant replaced the paragraph with a
-note that itself contained the phrase the assertion looks for, so
-`toContain` found its own epitaph. Fifth self-reference trap of the day, this
-one inside a mutation. Removing the paragraph outright turns it red.
+**The top row scores higher than "always allows", and that is the finding.**
+A matcher that allows everything fails 26 cases; the original substring form
+fails 33 — *more* than doing nothing. It refuses `echo 'gh issue create …'`
+and `python3 -c "print('gh issue create …')"`, neither of which creates
+anything, while allowing the title bypass #365 is about. The same detector was
+wider than a label and narrower than a command at once, which is why replacing
+it with a stricter substring test was never the fix.
+
+**Two rows scored 0 on their first attempt, both times because the MUTATION
+was at fault rather than the test.** The first attempt replaced the boundary
+paragraph with a note that itself contained the phrase the assertion looks
+for, so `toContain` found its own epitaph — the fifth self-reference trap of
+the day, this one inside a mutation. The second deleted the section *heading*
+and left every asserted sentence in place. Both are recorded because a 0 that
+turns out to be the mutation's fault is the same reading as a 0 that is the
+test's fault, and only re-running tells them apart.
 
 The depth-bound row is recorded rather than hidden, and unlike the allowlist
 it is kept. The bound is a resource property and not a decision property: a
@@ -253,8 +290,8 @@ test covering it asserts only that a twelve-deep wrapper chain does not
 throw. An unverified branch that cannot change an answer is a different thing
 from one that silently can.
 
-None of the sixteen is left in the tree; all were run and reverted. The hook
-is 84 lines, within SC-371.
+None of the twenty-one is left in the tree; all were run and reverted. The
+hook is 84 lines, within SC-371.
 
 ## Implementation
 
