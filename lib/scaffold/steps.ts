@@ -2211,6 +2211,56 @@ exit 0
     : "UPDATED: .git/hooks/pre-push (conformity check)");
 }
 
+/**
+ * The version range a scaffolded project should depend on (#362).
+ *
+ * This used to be `file:${relative(root, harnessRoot)}` — a path to a
+ * sibling directory on whichever machine ran the scaffold, then pinned into
+ * the consumer's `bun.lock`. On CI, or on any second machine, that path does
+ * not exist and `bun install` exits 1, so a consumer cannot install its
+ * dependencies on a clean clone. That is a failure at step zero, before any
+ * gate or tier question, and it is what broke DailyBriefDashboard's CI on
+ * every run from 2026-10-03.
+ *
+ * `--no-optional` does not help, which is worth recording because it was the
+ * attempted fix: `--frozen-lockfile` resolves the `file:` entries pinned in
+ * the lock whether or not they are optional.
+ *
+ * ## Why the MINOR floor and not the current patch
+ *
+ * A caret on the exact current version — `^0.2.2` from a tree at 0.2.2 —
+ * cannot resolve until that version is published, and this repo runs ahead
+ * of npm (0.2.1 published against 0.2.2 in the tree when this was written;
+ * #364 is about there being no release workflow at all). A consumer
+ * scaffolded in that window would get an unresolvable dependency, which is
+ * the same defect in a new costume.
+ *
+ * `^0.2.0` is satisfied by every published 0.2.x, so it resolves to the
+ * newest one available today AND picks up the next release with no
+ * re-scaffold. The floor moves when the harness's own minor moves, which is
+ * when a consumer genuinely needs a newer line.
+ */
+export function harnessDevDepRange(version?: string): string {
+  const v = version ?? harnessVersion();
+  const m = /^(\d+)\.(\d+)\./.exec(v);
+  // An unparseable version falls back to the widest range that is still a
+  // range rather than to `file:` or to `*`. `*` would let a consumer install
+  // a major they were never scaffolded against; `file:` is the bug.
+  if (!m) return "^0.2.0";
+  return `^${m[1]}.${m[2]}.0`;
+}
+
+function harnessVersion(): string {
+  try {
+    const pkg = JSON.parse(
+      readFileSync(join(dirname(dirname(__dirname)), "package.json"), "utf-8"),
+    );
+    return typeof pkg?.version === "string" ? pkg.version : "";
+  } catch {
+    return "";
+  }
+}
+
 export function addPaiHarnessDevDep(root: string, actions: string[]): void {
   const pkgPath = join(root, "package.json");
   if (!existsSync(pkgPath)) return;
@@ -2225,8 +2275,7 @@ export function addPaiHarnessDevDep(root: string, actions: string[]): void {
     return;
   }
 
-  const harnessRelative = require("path").relative(root, dirname(dirname(__dirname)));
-  pkg.devDependencies["rungate"] = `file:${harnessRelative}`;
+  pkg.devDependencies["rungate"] = harnessDevDepRange();
 
   if (!pkg.scripts) {
     pkg.scripts = {};
