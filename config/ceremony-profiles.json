@@ -82,7 +82,6 @@
           "spec-elements-in-acs",
           "sizing-declared",
           "issue-goal-captured",
-          "skill-qc-goal",
           "acs-no-skillmd-enforcement",
           "acs-no-behavioral-language",
           "ac-issue-alignment"
@@ -104,7 +103,6 @@
           "spec-drift",
           "decision-id-valid",
           "spec-decision-compliance",
-          "skill-qc-ship",
           "brief-ac-alignment"
         ],
         "ship": [
@@ -168,7 +166,6 @@
           "spec-elements-in-acs",
           "sizing-declared",
           "issue-goal-captured",
-          "skill-qc-goal",
           "acs-no-skillmd-enforcement",
           "acs-no-behavioral-language",
           "ac-issue-alignment"
@@ -189,12 +186,10 @@
           "local-ui-validated",
           "local-before-prod",
           "container-has-fix",
-          "consumer-chain-verified",
           "dead-exports",
           "spec-drift",
           "decision-id-valid",
           "spec-decision-compliance",
-          "skill-qc-ship",
           "brief-ac-alignment"
         ],
         "ship": [

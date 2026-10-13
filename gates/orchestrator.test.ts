@@ -33,6 +33,11 @@ function makeState(overrides: Record<string, any> = {}): any {
     acs: [
       {
         id: "SC-1",
+        // #339: `type` is required now — `acs-have-type` is named by every
+        // ceremony profile and the schema had the field optional, so the
+        // check could not fail. Every one of the 456 ACs in the recorded run
+        // history already carried one; this fixture did not.
+        type: "CODE",
         statement: "orchestrator.ts file exists on disk and is valid",
         threshold: { op: "==", value: "true" },
         evidenceMethod: { type: "FILE_EXISTS" },

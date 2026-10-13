@@ -104,7 +104,11 @@ const CASES: Array<{ name: string; ac: Record<string, unknown>; reject: boolean 
   { name: "a lowercase evidenceMethod type is allowed", ac: ok({ evidenceMethod: { type: "grep", command: "grep -c x f" } }), reject: false },
   { name: "no evidenceMethod at all is allowed", ac: ok({ evidenceMethod: undefined }), reject: false },
   { name: "a type outside CODE|OUTCOME", ac: ok({ type: "VIBES" }), reject: true },
-  { name: "no type at all is allowed", ac: ok({ type: undefined }), reject: false },
+  // Flipped by #339. `acs-have-type` is named by all three ceremony profiles
+  // and the field was optional, so the check could not fail for the thing it
+  // is named after. 0 of the 456 ACs across 82 recorded runs lacked a type,
+  // so this starts a named check being true rather than starting it failing.
+  { name: "no type at all is rejected", ac: ok({ type: undefined }), reject: true },
   { name: "a non-string id", ac: ok({ id: 6 }), reject: true },
   // The schema's `z.string()` accepts "". The copy must too, however much an
   // empty id deserves refusing: a copy stricter than the schema refuses runs

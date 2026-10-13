@@ -728,7 +728,15 @@ function acDiscoveryViolations(acs) {
     if (typeof ac.id !== 'string') {
       out.push(`${id}: id is not a string — a criterion a refusal cannot name`)
     }
-    if (ac.type !== undefined && ac.type !== 'CODE' && ac.type !== 'OUTCOME') {
+    // #339: a missing type is now a violation, not an allowed absence.
+    // `acs-have-type` is named by all three ceremony profiles and the schema
+    // had the field optional, so the check could not fail. Kept in step with
+    // gates/schema.ts by the parity matrix in
+    // test/discovery-ac-validation.test.ts — a disagreement in either
+    // direction is red.
+    if (ac.type === undefined) {
+      out.push(`${id}: missing type (CODE or OUTCOME)`)
+    } else if (ac.type !== 'CODE' && ac.type !== 'OUTCOME') {
       out.push(`${id}: type "${ac.type}" is not CODE or OUTCOME`)
     }
     const statement = typeof ac.statement === 'string' ? ac.statement : ''
