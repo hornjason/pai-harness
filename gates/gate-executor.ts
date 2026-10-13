@@ -35,6 +35,12 @@ import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
 import { livenessPlan, probeTarget } from "../lib/dev-liveness";
 import { createGitHubClient, getIssue, addLabels } from "../lib/github";
+import {
+  classifySpecComplianceRun,
+  execErrorOutput,
+  missingSpecComplianceFiles,
+  SPEC_COMPLIANCE_FILES,
+} from "./spec-compliance-probe";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
 export function parseTestResults(output: string): GateResult[] {
@@ -650,24 +656,39 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
     execSync(`bun scripts/sync-spec-tests.ts 2>&1`, { encoding: "utf-8", timeout: 10000, cwd: harnessRoot });
   } catch { /* sync script failure is non-blocking */ }
 
-  try {
-    const complianceOutput = execSync(
-      `bun test test/spec-compliance.test.ts test/spec-compliance-auto.test.ts 2>&1`,
-      { encoding: "utf-8", timeout: 30000, cwd: harnessRoot }
-    );
-    const complianceFails = complianceOutput.match(/(\d+)\s+fail/);
-    if (complianceFails && parseInt(complianceFails[1]) > 0) {
-      console.error(`SPEC DRIFT DETECTED: ship.js has diverged from HARNESS-SKILL-CHAIN.md`);
-      console.error(`Run: bun test test/spec-compliance.test.ts — to see which claims drifted`);
-      console.error(complianceOutput.split("\n").filter(l => l.includes("(fail)")).join("\n"));
-    } else {
-      const compliancePasses = complianceOutput.match(/(\d+)\s+pass/);
-      console.log(`Spec compliance: ${compliancePasses ? compliancePasses[1] : '?'} checks PASS — ship.js matches spec`);
+  // Three outcomes, because there are three facts (#197). This used to print
+  // `SPEC DRIFT DETECTED: spec-compliance tests failed` with an empty failure
+  // list for every fixture project in the suite, because fixtures are not
+  // this repo and have no spec-compliance suite — and `execSync` throws the
+  // same way whether a test failed or the file was absent.
+  {
+    const missing = missingSpecComplianceFiles(harnessRoot);
+    let ok = true;
+    let output = "";
+    if (missing.length === 0) {
+      try {
+        output = execSync(
+          `bun test ${SPEC_COMPLIANCE_FILES.join(" ")} 2>&1`,
+          { encoding: "utf-8", timeout: 30000, cwd: harnessRoot }
+        );
+      } catch (e) {
+        ok = false;
+        output = execErrorOutput(e);
+      }
     }
-  } catch (e: any) {
-    const out = e.stdout || "";
-    console.error(`SPEC DRIFT DETECTED: spec-compliance tests failed`);
-    console.error(out.split("\n").filter((l: string) => l.includes("(fail)")).join("\n"));
+    const v = classifySpecComplianceRun({ ok, output, missing });
+    if (v.verdict === "DRIFT") {
+      console.error(`SPEC DRIFT DETECTED: ${v.detail}`);
+      console.error(`Run: bun test test/spec-compliance.test.ts — to see which claims drifted`);
+      if (v.failures.length) console.error(v.failures.join("\n"));
+    } else if (v.verdict === "UNMEASURED") {
+      // Not an alarm, and not silence either. An alarm naming zero drifted
+      // claims teaches its reader to skip the line, and a line everyone skips
+      // is the same as no line on the run where it matters.
+      console.log(`Spec compliance: UNMEASURED — ${v.detail}`);
+    } else {
+      console.log(`Spec compliance: ${v.detail}`);
+    }
   }
 
   // Capture test baseline — pre-existing failures (#599)
