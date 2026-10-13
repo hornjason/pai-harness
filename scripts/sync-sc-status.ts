@@ -21,6 +21,19 @@ import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
 import { readFreshCache } from "../lib/behavioral-cache";
 import { detectDrift } from "./detect-sc-drift";
+import {
+  ambiguityOf,
+  buildScRegistry,
+  isQualifiedBy,
+  isTemplateSpec,
+  oneScMentionPattern,
+  requiresQualification,
+  scDeclarationPattern,
+  scMentionPattern as scIdMentionPattern,
+  type ScRegistry,
+} from "../lib/sc-ids";
+
+export { isTemplateSpec };
 
 const ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(ROOT, "specs");
@@ -35,15 +48,20 @@ export interface UncheckedSC {
 }
 
 /**
- * The template's SCs are placeholders, not criteria (#148).
+ * The registry every credit decision is made against (#330).
  *
- * `findDuplicateSCIds` already skipped it; the scan the flipper reads from did
- * not, so `- [ ] SC-1: [first criterion]` was eligible to be ticked — and was.
- * Every spec created from a ticked template inherits a criterion that is done
- * before anyone writes it.
+ * Built from the same spec scan `findUncheckedSCs` walks, so the ids a test
+ * can be credited for and the ids a spec declares are the same set by
+ * construction rather than by two regexes agreeing.
  */
-export function isTemplateSpec(specFile: string): boolean {
-  return specFile.includes("SPEC-TEMPLATE");
+export function readScRegistry(specsDir?: string): ScRegistry {
+  const dir = specsDir || SPECS_DIR;
+  if (!existsSync(dir)) return buildScRegistry([]);
+  const specs: Array<{ file: string; content: string }> = [];
+  for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
+    specs.push({ file, content: readFileSync(join(dir, file), "utf-8") });
+  }
+  return buildScRegistry(specs);
 }
 
 export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
@@ -54,8 +72,11 @@ export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
   for (const file of new Bun.Glob("**/*.md").scanSync({ cwd: dir, absolute: false })) {
     if (isTemplateSpec(file)) continue;
     const content = readFileSync(join(dir, file), "utf-8");
-    for (const match of content.matchAll(/^- \[ \] (SC-\d+):\s*(.+)$/gm)) {
-      unchecked.push({ id: match[1], statement: match[2].trim(), specFile: file });
+    // #330: was `/^- \[ \] (SC-\d+):/`, the fourth copy of this pattern in the
+    // tree and the second that could not see an anti-criterion. One owner now.
+    for (const match of content.matchAll(scDeclarationPattern())) {
+      if (match[1].toLowerCase() === "x") continue;
+      unchecked.push({ id: match[2], statement: match[3].trim(), specFile: file });
     }
   }
   return unchecked;
@@ -70,10 +91,13 @@ export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
  * than `\b`, because `SC-1` is followed by `:`, `,`, `)` or end-of-line in
  * every real reference and `\b` would accept `SC-1` inside `SC-1A` — but a
  * digit is the only character that makes it a different ID.
+ *
+ * #330 moved the definition to `lib/sc-ids.ts` and widened the boundary to
+ * "not a word character and not a hyphen", so `SC-1` also stops matching
+ * inside `SC-1-draft`. Re-exported here because callers import it from this
+ * module; the body lives in one place.
  */
-export function scMentionPattern(id: string): RegExp {
-  return new RegExp(`\\b${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?!\\d)`);
-}
+export const scMentionPattern = oneScMentionPattern;
 
 /** Opens a `describe`/`test`/`it` title, allowing `.each(...)`, `.only`, `.skip`. */
 const TITLE_CALL = /\b(?:describe|test|it)\s*(?:\.\w+\s*(?:\([^)]*\))?\s*)*\(\s*$/;
@@ -146,18 +170,41 @@ const TITLE_CALL = /\b(?:describe|test|it)\s*(?:\.\w+\s*(?:\([^)]*\))?\s*)*\(\s*
  * classify every character by subtraction, with no second lexer to drift.
  */
 export function coverageClaimIds(source: string): Set<string> {
+  return new Set(coverageClaimSites(source).map(c => c.id));
+}
+
+/**
+ * The same scan, keeping WHERE each claim was written (#330).
+ *
+ * An ambiguous id — an anti-criterion, a collision, or a number an issue's
+ * own criteria also use — is creditable only when the surrounding text names
+ * the spec, and "surrounding" needs the offset.
+ */
+export interface ClaimSite {
+  id: string;
+  at: number;
+  /**
+   * Where it was written. A comment is a claim for an unambiguous id and is
+   * NOT enough for an ambiguous one — see `findTestFilesForSCs`.
+   */
+  kind: "comment" | "title" | "bare";
+}
+
+export function coverageClaimSites(source: string): ClaimSite[] {
   const noComments = stripJsComments(source);
   const codeOnly = stripJsComments(source, { blankLiterals: true });
-  const claims = new Set<string>();
+  const claims: ClaimSite[] = [];
+  const add = (id: string, at: number, kind: ClaimSite["kind"]) =>
+    claims.push({ id, at, kind });
 
-  for (const m of source.matchAll(/\bSC-\d+(?!\d)/g)) {
+  for (const m of source.matchAll(scIdMentionPattern())) {
     const id = m[0];
     const at = m.index!;
 
     // Blanked by the first pass => the id sits in a comment. Offsets are
     // preserved, so this is an exact answer rather than a heuristic.
     if (noComments[at] !== source[at]) {
-      claims.add(id);
+      add(id, at, "comment");
       continue;
     }
 
@@ -165,7 +212,7 @@ export function coverageClaimIds(source: string): Set<string> {
     // context is neither (and `SC-7` is not a legal identifier anyway), so it
     // can only be something like a stray token; count it rather than guess.
     if (codeOnly[at] === source[at]) {
-      claims.add(id);
+      add(id, at, "bare");
       continue;
     }
 
@@ -178,25 +225,120 @@ export function coverageClaimIds(source: string): Set<string> {
     while (open > 0 && !/['"`]/.test(codeOnly[open])) open--;
     if (!/['"`]/.test(codeOnly[open] ?? "")) continue;
 
-    if (TITLE_CALL.test(codeOnly.slice(Math.max(0, open - 120), open))) claims.add(id);
+    if (TITLE_CALL.test(codeOnly.slice(Math.max(0, open - 120), open))) add(id, at, "title");
   }
 
   return claims;
 }
 
-export function findTestFilesForSCs(scIds: Set<string>, testDir?: string): Map<string, string[]> {
+/** A credit, scoped to the criterion it actually names. */
+export interface ScCredit {
+  id: string;
+  specFile: string;
+}
+
+/**
+ * Which test file covers which criterion — spec-scoped (#330, #352, #358).
+ *
+ * This used to return bare ids, and the flipper then ticked that id in EVERY
+ * spec declaring it (`unchecked.filter(u => u.id === scId)`). With one id per
+ * spec that was harmless. With `SC-A1` declared by three specs it is not: one
+ * passing test about doc hygiene would tick an unrelated anti-criterion in
+ * the GitHub API migration spec. The narrow `SC-\d+` pattern was the only
+ * thing hiding it, which is why #330 said widening the regex without fixing
+ * scoping makes the measurement worse.
+ *
+ * An id whose bare mention does not identify a criterion is credited only
+ * when the text around it names the spec. That is the whole of the fix for
+ * three issues:
+ *
+ * - `SC-A1` in `ceremony-overrides.test.ts` names no spec, and no spec
+ *   declares those criteria — they are an issue's own. Not credited.
+ * - `SC-6` in `context-preload-parity.test.ts` is #71's sixth criterion, not
+ *   `bootstrap-data-flow`'s. Not credited.
+ * - `SC-640` in `harness-standard-security.test.ts` is unique in the
+ *   registry, so it needs no qualifier and keeps its credit.
+ *
+ * ## Why a qualified COMMENT is still not enough
+ *
+ * The first version of this accepted any mention with the spec's name
+ * nearby, and gained two credits it should not have. `behavioral-sc-ratchet
+ * .test.ts` opens with prose about a past bug:
+ *
+ *     used `SC-[0-9]+` and SC ids are not always numeric — `SC-A1` and `SC-A2`
+ *     in GITHUB-API-MIGRATION-SPEC.md were missed.
+ *
+ * Every ingredient of a qualified claim, and it is a citation. A window says
+ * WHICH criterion a mention means; it cannot say WHETHER the mention is a
+ * claim, and #149 already decided that a bare comment counts as one — which
+ * is fine for an id only this file would write and wrong for an id prose
+ * cites constantly.
+ *
+ * So an ambiguous id must be claimed from a `describe`/`test`/`it` title AND
+ * name its spec. That is the strongest position the convention has, it is
+ * where a real anti-criterion test would put it anyway, and prose cannot
+ * reach it by accident. The cost is that six anti-criteria stay uncredited
+ * until someone writes such a title — under-crediting, which is the
+ * direction this is allowed to fail in.
+ */
+export function findTestFilesForSCs(
+  scs: Array<{ id: string; specFile: string }>,
+  reg: ScRegistry,
+  testDir?: string,
+): Map<string, ScCredit[]> {
   const dir = testDir || TEST_DIR;
-  const testFileToSCs = new Map<string, string[]>();
-  if (!existsSync(dir)) return testFileToSCs;
+  const out = new Map<string, ScCredit[]>();
+  if (!existsSync(dir)) return out;
+
+  const wanted = new Map<string, string[]>();
+  for (const sc of scs) {
+    const specs = wanted.get(sc.id) ?? [];
+    if (!specs.includes(sc.specFile)) specs.push(sc.specFile);
+    wanted.set(sc.id, specs);
+  }
 
   for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
-    const claimed = coverageClaimIds(readFileSync(join(dir, file), "utf-8"));
-    const foundSCs = [...scIds].filter(id => claimed.has(id));
-    if (foundSCs.length > 0) {
-      testFileToSCs.set(file, foundSCs);
+    const source = readFileSync(join(dir, file), "utf-8");
+    const credits: ScCredit[] = [];
+    for (const { id, at, kind } of coverageClaimSites(source)) {
+      for (const specFile of wanted.get(id) ?? []) {
+        if (requiresQualification(id, reg) && !(kind === "title" && isQualifiedBy(source, at, specFile))) continue;
+        if (!credits.some(c => c.id === id && c.specFile === specFile)) {
+          credits.push({ id, specFile });
+        }
+      }
     }
+    if (credits.length > 0) out.set(file, credits);
   }
-  return testFileToSCs;
+  return out;
+}
+
+/**
+ * Mentions that look like claims and are not credited, with why (#330).
+ *
+ * Reported rather than silently dropped. Under-crediting is the safe
+ * direction and it is still a measurement error, so the number has to be
+ * visible or nobody will ever qualify a mention.
+ */
+export function unqualifiedClaims(
+  source: string,
+  reg: ScRegistry,
+): Array<{ id: string; reason: string }> {
+  const out: Array<{ id: string; reason: string }> = [];
+  for (const { id, at, kind } of coverageClaimSites(source)) {
+    if (!requiresQualification(id, reg)) continue;
+    const specs = reg.byId.get(id) ?? [];
+    if (kind === "title" && specs.some(s => isQualifiedBy(source, at, s))) continue;
+    if (out.some(o => o.id === id)) continue;
+    out.push({
+      id,
+      reason:
+        `${ambiguityOf(id, reg)} — declared by ${specs.join(", ")}. To claim it, name the ` +
+        `spec in a describe/test/it title beside the id. If this is an issue's own ` +
+        `criterion, write it as "criterion N of #NNN" — SC- is the spec registry's.`,
+    });
+  }
+  return out;
 }
 
 function runTestFile(file: string): boolean {
@@ -359,7 +501,6 @@ if (isDirectExecution) {
     process.exit(0);
   }
 
-  const scIds = new Set(unchecked.map(s => s.id));
   console.log(`Found ${unchecked.length} unchecked SCs across specs`);
 
   // Step 0: Check for drift and staleness
@@ -397,33 +538,43 @@ if (isDirectExecution) {
     console.log(`  Fix: renumber duplicates so each SC ID is unique across all specs.\n`);
   }
 
-  // Step 2: Find SCs covered by hand-written test files
-  const testFileMap = findTestFilesForSCs(scIds);
-  const testedSCs = new Set(Array.from(testFileMap.values()).flat());
-  const untestedSCs = unchecked.filter(s => !testedSCs.has(s.id));
+  // Step 2: Find SCs covered by hand-written test files.
+  // Scoped to (spec, id) since #330 — see findTestFilesForSCs. The old bare-id
+  // credit ticked the id in every spec declaring it.
+  const registry = readScRegistry();
+  const testFileMap = findTestFilesForSCs(unchecked, registry);
+  const testedKeys = new Set(
+    [...testFileMap.values()].flat().map(c => scopedKey(c.specFile, c.id)),
+  );
+  const untestedSCs = unchecked.filter(s => !testedKeys.has(scopedKey(s.specFile, s.id)));
+
+  // Mentions that look like claims and are not credited. Visible on purpose:
+  // under-crediting is the safe direction and still a measurement error.
+  const unqualified = new Map<string, string>();
+  for (const file of readdirSync(TEST_DIR).filter(f => f.endsWith(".test.ts"))) {
+    for (const u of unqualifiedClaims(readFileSync(join(TEST_DIR, file), "utf-8"), registry)) {
+      unqualified.set(`${file} ${u.id}`, `  ${file}: ${u.id} — ${u.reason}`);
+    }
+  }
+  if (unqualified.size > 0) {
+    console.log(`\n⚠️  ${unqualified.size} ambiguous SC mention(s) credited to nothing:`);
+    for (const line of [...unqualified.values()].sort()) console.log(line);
+  }
 
   // Step 3: Run hand-written tests — scope by spec file
   const passingSCs = new Set<string>();
   const failingSCs = new Set<string>();
 
-  for (const [testFile, scs] of testFileMap) {
+  for (const [testFile, credits] of testFileMap) {
     process.stdout.write(`  Running ${testFile}...`);
     const passed = runTestFile(testFile);
-    if (passed) {
-      console.log(` (${scs.length} SCs)`);
-      for (const scId of scs) {
-        for (const sc of unchecked.filter(u => u.id === scId)) {
-          passingSCs.add(scopedKey(sc.specFile, sc.id));
-        }
-      }
-    } else {
-      console.log(` (${scs.join(", ")})`);
-      for (const scId of scs) {
-        for (const sc of unchecked.filter(u => u.id === scId)) {
-          failingSCs.add(scopedKey(sc.specFile, sc.id));
-        }
-      }
-    }
+    const target = passed ? passingSCs : failingSCs;
+    console.log(
+      passed
+        ? ` (${credits.length} SCs)`
+        : ` (${credits.map(c => `${c.id} in ${c.specFile}`).join(", ")})`,
+    );
+    for (const c of credits) target.add(scopedKey(c.specFile, c.id));
   }
 
   // Remove any SCs that failed from passing set
@@ -466,7 +617,9 @@ if (isDirectExecution) {
         const coverage = specCoverage.get(sc.specFile)!;
         const key = scopedKey(sc.specFile, sc.id);
 
-        if (testedSCs.has(sc.id)) {
+        // Scoped since #330: a bare id matched a criterion in every spec
+        // declaring it, so one spec's report borrowed another's test result.
+        if (testedKeys.has(key)) {
           if (passingSCs.has(key)) coverage.testedPassing.push(sc.id);
           else if (failingSCs.has(key)) coverage.testedFailing.push(sc.id);
         } else if (conformityResult.passing.has(key)) {
