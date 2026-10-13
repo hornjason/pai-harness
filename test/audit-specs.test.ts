@@ -79,7 +79,8 @@ describe("audit-specs", () => {
       expect(specResult.unmatched).toBeGreaterThanOrEqual(0);
       expect(specResult.behavioral).toBeGreaterThanOrEqual(0);
 
-      // SC-100 (AGENTS.md exists) and SC-102 (specs/ directory exists) should be matched
+      // Covers SC-100, SC-102 — AGENTS.md exists, and specs/ directory
+      // exists. Both should be matched.
       expect(specResult.matched).toBe(2);
       // SC-101 and SC-104 should be unmatched
       expect(specResult.unmatched).toBe(2);
