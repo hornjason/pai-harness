@@ -148,7 +148,7 @@ export type ProbeTarget =
 
 export function probeTarget(
   tier: string,
-  cfg: { apiBase?: string; healthPath?: string } | undefined,
+  cfg: { apiBase?: string | null; healthPath?: string | null } | undefined,
 ): ProbeTarget {
   const apiBase = cfg?.apiBase;
   const healthPath = cfg?.healthPath;
