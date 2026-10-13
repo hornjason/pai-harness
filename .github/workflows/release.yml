@@ -16,6 +16,13 @@
 # Do not add `continue-on-error` to any step here, and do not guard `npm publish`
 # behind a condition. test/release-guard.test.ts asserts both, because either one
 # turns this whole file back into a job that reports a release it never made.
+#
+# EVERY `uses:` IS PINNED TO A COMMIT SHA, and a test asserts it. This job holds
+# NPM_TOKEN and `id-token: write`, so a third-party action referenced by a
+# movable tag is a path to both. The tag is the publisher's to repoint at any
+# time; the SHA is not. Scoping the token to the publish step is not enough —
+# an earlier step runs in the same workspace and can poison what the later one
+# executes. Found by the commit security review, not by me.
 name: Release
 
 on:
@@ -31,11 +38,11 @@ jobs:
   release:
     runs-on: "ubuntu-latest"
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.0.2
         with:
           bun-version: "latest"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"

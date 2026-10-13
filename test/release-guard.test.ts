@@ -381,6 +381,20 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     expect(wf(), "the release guard was redirected away from npm").not.toContain("--registry");
   });
 
+  test("every action is pinned to a commit SHA, not a movable tag", () => {
+    // This job holds NPM_TOKEN and `id-token: write`. A tag is the action
+    // publisher's to repoint at any time, so `@v2` in a credential-bearing
+    // job is a supply-chain path to both. Scoping the token to the publish
+    // step does not help — an earlier step shares the workspace and can
+    // poison what the later one runs.
+    const uses = wf().split("\n").filter(l => /^\s*-?\s*uses:/.test(l));
+    expect(uses.length, "the workflow uses no actions at all").toBeGreaterThan(0);
+    for (const line of uses) {
+      const ref = line.split("uses:")[1].trim();
+      expect(ref, `not pinned to a SHA: ${ref}`).toMatch(/@[0-9a-f]{40}$/);
+    }
+  });
+
   test("provenance is actually requested, and permitted", () => {
     expect(wf()).toContain("--provenance");
     expect(wf(), "npm provenance needs id-token: write or the publish fails")

@@ -1626,50 +1626,70 @@ buying green with blindness.
 
 #### What was broken to prove it (SC-828..832)
 
-Run and counted over `test/release-guard.test.ts` (33 tests):
+Run and counted over `test/release-guard.test.ts` (34 tests):
 
 | Mutation | Red |
 |---|---|
-| `preflightRefusal` always allows | 6 of 33 |
-| `REFUSE_EXIT` zeroed in the real source | 6 of 33 |
-| the comment stripper drops everything | 6 of 33 |
-| the exit constant renamed | 5 of 33 — every mutant-building case throws "could not build the mutant" |
-| `postflightRefusal` always allows | 4 of 33 |
-| the duplicate-version check removed — **the no-op the issue named** | 4 of 33 |
-| the comment stripper stops stripping — **the original false positive, restored** | 4 of 33 |
-| postflight stops comparing `latest` to the tree version | 3 of 33 |
-| `registryState` reads only dist-tags, not the version list | 3 of 33 |
-| the tag comparison removed | 1 of 33 |
-| the semver shape check removed | 1 of 33 |
-| postflight accepts a registry with no `latest` | 1 of 33 |
-| `registryState` reports an empty registry instead of throwing | 1 of 33 |
-| the script stops refusing on a registry error | 1 of 33 |
-| the script stops calling `preflightRefusal` | 1 of 33 |
-| the script stops calling `postflightRefusal` | 1 of 33 |
-| WORKFLOW: `continue-on-error` added to the publish step | 1 of 33 |
-| WORKFLOW: the publish step put behind `if: false` | 1 of 33 |
-| WORKFLOW: the postflight step deleted | 1 of 33 |
-| WORKFLOW: the preflight step deleted | 1 of 33 |
-| WORKFLOW: the suite moved after the publish | 1 of 33 |
-| WORKFLOW: the tag interpolated straight into the run script | 1 of 33 |
-| WORKFLOW: the guard pointed at another registry | 1 of 33 |
-| WORKFLOW: provenance dropped | 1 of 33 |
-| WORKFLOW: the `id-token` permission dropped | 1 of 33 |
-| WORKFLOW: the tag trigger loosened to every push to main | 1 of 33 |
-| the scaffold starts writing `release.yml` | 1 of 33 |
+| the comment stripper drops everything | 7 of 34 |
+| `preflightRefusal` always allows | 6 of 34 |
+| `REFUSE_EXIT` zeroed in the real source | 6 of 34 |
+| the exit constant renamed | 5 of 34 — every mutant-building case throws "could not build the mutant" |
+| the comment stripper stops stripping — **the original false positive, restored** | 5 of 34 |
+| `postflightRefusal` always allows | 4 of 34 |
+| the duplicate-version check removed — **the no-op the issue named** | 4 of 34 |
+| postflight stops comparing `latest` to the tree version | 3 of 34 |
+| `registryState` reads only dist-tags, not the version list | 3 of 34 |
+| the tag comparison removed | 1 of 34 |
+| the semver shape check removed | 1 of 34 |
+| postflight accepts a registry with no `latest` | 1 of 34 |
+| `registryState` reports an empty registry instead of throwing | 1 of 34 |
+| the script stops refusing on a registry error | 1 of 34 |
+| the script stops calling `preflightRefusal` | 1 of 34 |
+| the script stops calling `postflightRefusal` | 1 of 34 |
+| WORKFLOW: `continue-on-error` added to the publish step | 1 of 34 |
+| WORKFLOW: the publish step put behind `if: false` | 1 of 34 |
+| WORKFLOW: the postflight step deleted | 1 of 34 |
+| WORKFLOW: the preflight step deleted | 1 of 34 |
+| WORKFLOW: the suite moved after the publish | 1 of 34 |
+| WORKFLOW: the tag interpolated straight into the run script | 1 of 34 |
+| WORKFLOW: the guard pointed at another registry | 1 of 34 |
+| WORKFLOW: provenance dropped | 1 of 34 |
+| WORKFLOW: the `id-token` permission dropped | 1 of 34 |
+| WORKFLOW: the tag trigger loosened to every push to main | 1 of 34 |
+| WORKFLOW: `setup-bun` unpinned back to a movable tag | 1 of 34 |
+| WORKFLOW: `checkout` unpinned back to a movable tag | 1 of 34 |
+| the scaffold starts writing `release.yml` | 1 of 34 |
 
-**Twenty-seven mutations, no zeros.** That is worth stating because the two
+**Twenty-nine mutations, no zeros.** That is worth stating because the two
 preceding issues each produced one: #365's depth bound and #370's SCOPE list.
 Nothing here is a branch no input can distinguish.
 
-The fourteen 1s are not weak rows — each is a distinct way for the pipeline to
+The sixteen 1s are not weak rows — each is a distinct way for the pipeline to
 report a release it did not make, and one case is exactly the right number of
 cases to be watching for it. The rows that matter most are the two stripper
-mutations: dropping everything turns 6 red, and *not* stripping turns 4 red.
+mutations: dropping everything turns 7 red, and *not* stripping turns 5 red.
 A detector that shrinks its own view has to be pinned from both sides or it
 is indistinguishable from blindness.
 
 None is left in the tree; all were run and reverted.
+
+#### Pinned actions, because this job holds the credentials (security review)
+
+The commit security review found the publish job using `oven-sh/setup-bun@v2`
+— a third-party action referenced by a **movable tag** in a job carrying
+`NPM_TOKEN` and `id-token: write`. The tag is the action publisher's to
+repoint at any time, so that is a path to both the token and to provenance
+signing. The finding was correct and is fixed here rather than filed.
+
+Scoping the token to the publish step is **not** a mitigation: an earlier step
+runs in the same workspace and can poison what the later one executes. Every
+`uses:` is now a 40-character commit SHA with the human-readable version in a
+trailing comment, and a test asserts the property rather than the three lines,
+so a fourth action cannot arrive unpinned.
+
+`ci.yml` and `gates.yml` are also unpinned. They are a **different** case —
+no secrets, and both are harness-generated, so the fix is a generator change
+affecting every consumer. Filed separately rather than absorbed here.
 
 #### What this does NOT do
 
