@@ -15,6 +15,7 @@ import { deriveDirectoryName } from "../scripts/split-spec";
 import { readFreshCache } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
+import { parseScDeclarations } from "./sc-ids";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -326,20 +327,15 @@ export function behavioralPattern(sc: ParsedSC, cachePath: string): ((root: stri
  * none asserted, and the suite reported 0 fail because it never looked.
  * Narrowing this pattern again is caught by the floor test in
  * test/phase-1-5.test.ts.
+ *
+ * The pattern itself moved to `lib/sc-ids.ts` (#330). It was one of four
+ * copies in the tree, each with a different idea of what an id looks like:
+ * this one admitted `SC-\w+`, the coverage lookup and the uniqueness guard
+ * only `SC-\d+`, so an anti-criterion was a declaration to this reader and
+ * invisible to the other two.
  */
 export function extractSCs(content: string, specFile: string): ExtractedSC[] {
-  const scs: ExtractedSC[] = [];
-  const pattern = /^- \[([ xX])\] (SC-\w+):\s*(.+)$/gm;
-  let match;
-  while ((match = pattern.exec(content)) !== null) {
-    scs.push({
-      id: match[2],
-      statement: match[3].trim(),
-      specFile,
-      checked: match[1].toLowerCase() === "x",
-    });
-  }
-  return scs;
+  return parseScDeclarations(content, specFile);
 }
 
 export interface SpecMetadata {

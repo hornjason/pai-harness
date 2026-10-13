@@ -26,10 +26,34 @@ import { join } from "path";
 import {
   findTestFilesForSCs,
   findUncheckedSCs,
+  readScRegistry,
 } from "../scripts/sync-sc-status";
+import { buildScRegistry } from "../lib/sc-ids";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const SPECS_DIR = join(REPO_ROOT, "specs");
+
+/**
+ * A one-spec registry over fixture ids (#330).
+ *
+ * The credit decision is made against the registry now, so a fixture has to
+ * declare its ids somewhere or nothing is creditable. Declaring them in a
+ * named fixture spec also keeps these cases out of the real namespace: none
+ * of the ids below exist in `specs/`, so a regression here cannot tick a
+ * real criterion.
+ */
+const FIXTURE_SPEC = "FIXTURE-SPEC.md";
+function fixtureReg(ids: string[]) {
+  return buildScRegistry([
+    { file: FIXTURE_SPEC, content: ids.map(i => `- [ ] ${i}: a fixture criterion\n`).join("") },
+  ]);
+}
+function wanted(ids: string[]) {
+  return ids.map(id => ({ id, specFile: FIXTURE_SPEC }));
+}
+function creditedIds(found: Map<string, { id: string }[]>): string[] {
+  return [...found.values()].flat().map(c => c.id);
+}
 
 /**
  * The shortest ID in the repo — the one the substring bug ticked — assembled
@@ -59,16 +83,16 @@ describe("#148: an SC ID matches as a whole token", () => {
     // not use so the file does not claim them. Before the fix this returned
     // the fixture file.
     const dir = fixtureTestDir("longer-id", 'test("SC-9144: something else", () => {});');
-    const found = findTestFilesForSCs(new Set(["SC-9"]), dir);
+    const found = findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir);
     expect([...found.keys()]).toEqual([]);
   });
 
   test("a test naming the ID exactly still counts", () => {
     // Positive control. A fix that returns nothing for everything would pass
     // the assertion above and break the tool; this is what stops that.
-    const dir = fixtureTestDir("exact-id", 'test("SC-9: the real one", () => {});');
-    const found = findTestFilesForSCs(new Set(["SC-9"]), dir);
-    expect([...found.values()].flat()).toEqual(["SC-9"]);
+    const dir = fixtureTestDir("exact-id", 'test("SC-91: the real one", () => {});');
+    const found = findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir);
+    expect(creditedIds(found)).toEqual(["SC-91"]);
   });
 
   test("the boundary is the trailing digit, not the punctuation around it", () => {
@@ -76,8 +100,9 @@ describe("#148: an SC ID matches as a whole token", () => {
     // colon. All of those are the ID. The only thing that makes a mention a
     // different criterion is another digit after it.
     const dir = fixtureTestDir("punctuation", "// covers SC-910: and SC-92, and (SC-93)\n");
-    const found = findTestFilesForSCs(new Set(["SC-9", "SC-92", "SC-93", "SC-910"]), dir);
-    expect([...found.values()].flat().sort()).toEqual(["SC-910", "SC-92", "SC-93"]);
+    const ids = ["SC-91", "SC-92", "SC-93", "SC-910"];
+    const found = findTestFilesForSCs(wanted(ids), fixtureReg(ids), dir);
+    expect(creditedIds(found).sort()).toEqual(["SC-910", "SC-92", "SC-93"]);
   });
 
   test("against the real test directory, every credited file names the ID", () => {
@@ -86,36 +111,54 @@ describe("#148: an SC ID matches as a whole token", () => {
     // a digit. Before the fix, 18 files were credited for the shortest ID and
     // 9 of them contained no such token at all.
     const target = SHORTEST_ID;
-    const found = findTestFilesForSCs(new Set([target]));
+    const found = findTestFilesForSCs(findUncheckedSCs(), readScRegistry());
     // Checked against the RAW file. The oracle used to be the fixture-stripped
     // copy, which after #149 is the same view the credit decision is made on —
     // and a test whose oracle is the thing under test asserts nothing. The raw
     // text is the independent statement #148 actually meant: whatever else is
     // true, a credited file contains the token.
-    const liars = [...found.keys()].filter(file => {
-      const text = readFileSync(join(REPO_ROOT, "test", file), "utf-8");
-      return !new RegExp(`\\b${target}(?!\\d)`).test(text);
-    });
+    const liars = [...found.entries()]
+      .filter(([, credits]) => credits.some(c => c.id === target))
+      .map(([file]) => file)
+      .filter(file => {
+        const text = readFileSync(join(REPO_ROOT, "test", file), "utf-8");
+        return !new RegExp(`\\b${target}(?![\\w-])`).test(text);
+      });
     expect(liars).toEqual([]);
+  });
+
+  test("the whole-repo credit is non-empty, so the case above is not vacuous", () => {
+    // Every id could stop being credited and the liar filter would still be
+    // empty — the assertion holds over nothing. Measured over the whole
+    // registry rather than the unchecked slice, which is 111 criteria with
+    // one credit between them: a floor set there could not detect anything.
+    // 244 ids were credited when #330 shipped.
+    const reg = readScRegistry();
+    const all = [...reg.byId.entries()].flatMap(([id, specs]) =>
+      specs.map(specFile => ({ id, specFile })),
+    );
+    const credited = new Set([...findTestFilesForSCs(all, reg).values()].flat().map(c => c.id));
+    expect(credited.size).toBeGreaterThan(200);
   });
 });
 
 describe("#149: fixture data is not a coverage claim", () => {
   test("a spec checkbox line embedded in a test is stripped", () => {
-    const dir = fixtureTestDir("checkbox", 'const spec = "- [ ] SC-9: API responds";\n');
-    expect([...findTestFilesForSCs(new Set(["SC-9"]), dir).keys()]).toEqual([]);
+    const dir = fixtureTestDir("checkbox", 'const spec = "- [ ] SC-91: API responds";\n');
+    expect([...findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir).keys()]).toEqual([]);
   });
 
   test("an SC record in an object literal is stripped", () => {
-    const dir = fixtureTestDir("record", 'const scs = [{ id: "SC-9", done: true }];\n');
-    expect([...findTestFilesForSCs(new Set(["SC-9"]), dir).keys()]).toEqual([]);
+    const dir = fixtureTestDir("record", 'const scs = [{ id: "SC-91", done: true }];\n');
+    expect([...findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir).keys()]).toEqual([]);
   });
 
   test("a test title is still a claim — the stripping is narrow", () => {
     // Positive control for the stripper. Deleting every mention would make
     // both assertions above pass and the tool useless.
-    const dir = fixtureTestDir("claim", 'test("SC-9: the criterion itself", () => {});\n');
-    expect([...findTestFilesForSCs(new Set(["SC-9"]), dir).keys()]).toEqual(["fixture.test.ts"]);
+    const dir = fixtureTestDir("claim", 'test("SC-91: the criterion itself", () => {});\n');
+    expect([...findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir).keys()])
+      .toEqual(["fixture.test.ts"]);
   });
 
   test("the real bootstrap criterion is claimed by nothing", () => {
@@ -124,7 +167,11 @@ describe("#149: fixture data is not a coverage claim", () => {
     // behavioural and unimplemented. Seven files carried it as fixture text
     // and one more used its number as a local label; between them they
     // certified it done, twice.
-    expect([...findTestFilesForSCs(new Set([SHORTEST_ID])).keys()]).toEqual([]);
+    const found = findTestFilesForSCs(findUncheckedSCs(), readScRegistry());
+    const claimants = [...found.entries()]
+      .filter(([, credits]) => credits.some(c => c.id === SHORTEST_ID))
+      .map(([file]) => file);
+    expect(claimants).toEqual([]);
   });
 });
 
