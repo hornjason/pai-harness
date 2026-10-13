@@ -10,6 +10,14 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
+import { projectStateViolations } from "../lib/project-state-shape";
+
+/**
+ * The one exit code every refusal here routes through, per
+ * `.claude/rules/checks-must-be-able-to-fail.md`. Declared once so a test can
+ * build a mutant with it set to 0 and watch the refusals stop refusing.
+ */
+export const PROJECT_STATE_REFUSE_EXIT = 1;
 
 const ROOT = join(import.meta.dir, "..");
 const STATE_JSON = join(ROOT, "project-state.json");
@@ -145,7 +153,32 @@ if (!existsSync(STATE_JSON)) {
   process.exit(0);
 }
 
-const state: ProjectState = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
+/**
+ * The interfaces above are erased at runtime, so the parse below believes
+ * whatever is in the file. An archived session carrying `summary` instead of
+ * `items` used to reach the renderer and die with
+ * `TypeError: undefined is not an object (evaluating 'session.items.forEach')`
+ * and a line number into this script — from a pre-commit hook, to a committer
+ * who did not open it. Checked here instead, with every problem named at
+ * once and the path into the document said out loud.
+ */
+let parsed: unknown;
+try {
+  parsed = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
+} catch (e) {
+  console.error(`project-state: ${STATE_JSON} is not valid JSON — ${(e as Error).message}`);
+  process.exit(PROJECT_STATE_REFUSE_EXIT);
+}
+
+const shapeProblems = projectStateViolations(parsed);
+if (shapeProblems.length > 0) {
+  console.error(`project-state: ${STATE_JSON} does not have the shape the renderer reads:`);
+  for (const p of shapeProblems) console.error(`  - ${p}`);
+  console.error(`project-state: nothing was written. Fix the entries above and re-run.`);
+  process.exit(PROJECT_STATE_REFUSE_EXIT);
+}
+
+const state: ProjectState = parsed as ProjectState;
 state.updated = new Date().toISOString().split("T")[0];
 
 // Sync SC status from spec files (promote-only: specs can mark done, never undo)

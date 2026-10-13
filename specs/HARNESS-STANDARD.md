@@ -1636,6 +1636,58 @@ added. Thirteen tests covered the library and the script's behaviour, and the
 one decision that could silently undo the entire issue was reachable without
 any of them noticing.
 
+### A crash where a refusal belonged (project-state renderer)
+
+Found by hand-editing `project-state.json` to archive a session and writing
+`summary` where the renderer wanted `items`. `scripts/update-project-state.ts`
+declares `interface Session { date: string; items: string[] }`, and that
+interface is erased at runtime: the file is `JSON.parse`d into it and nothing
+checks. The result was
+
+    TypeError: undefined is not an object (evaluating 'session.items.forEach')
+      at render (scripts/update-project-state.ts:134:15)
+
+and nothing else. No path into the document, no index, no statement of what
+should have been there. The renderer runs from a pre-commit hook, so that
+trace reaches a committer who has not opened the script and has no reason to.
+
+This is the mirror of the class the rest of this spec is about. A fail-open
+reports success it did not earn; this reported a failure nobody could act on.
+Both end with a reader who cannot tell what happened, and the second is the
+one that teaches people to re-run the command and hope.
+
+Every problem is reported at once, each naming its path into the document.
+Stopping at the first turns one bad edit into four round-trips, which is how
+a validator becomes something people route around.
+
+- [x] SC-778: lib/project-state-shape.ts contains [projectStateViolations] — the shape is checked before the renderer reads it and every violation is named with its path into the document, because an erased TypeScript interface checks nothing at runtime and a stack trace from a pre-commit hook is not a message
+- [x] SC-779: test/project-state-shape.test.ts contains [writes no markdown at all] — the script is copied, pointed at a bad document and run, because asserting the validator is consulted BEFORE the write does not assert that the refusal prevents one
+
+#### What was broken to prove it (SC-778..779)
+
+Over `test/project-state-shape.test.ts` (12 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `projectStateViolations` returns `[]` | 6 of 12 |
+| the script stops consulting the validator | 2 of 12 |
+| the refusal exit constant set to 0 | 2 of 12 |
+| the `items` check removed | 2 of 12 |
+| the refusal stops short-circuiting the write | 1 of 12 — and **0 of 9** while the wiring test only checked ordering |
+| the validator stops at the first violation | 1 of 12 |
+| the missing-key check removed | 1 of 12 |
+| a non-object document indexed into anyway | 1 of 12 |
+| the `"summary" instead` hint dropped from the message | 1 of 12 |
+| the invalid-JSON refusal removed | 1 of 12 |
+| a second bare `process.exit(1)` added | 1 of 12 |
+
+The fifth row is the one that changed the test. "The check is consulted
+before the write" and "the check prevents the write" are different claims,
+and only the first was being made: with the refusal branch made unreachable,
+the validator still ran first, still found the problem, and the script wrote
+anyway. The script is now copied to a temp directory, pointed at a bad
+document, executed, and the **absence of the output file** is the assertion.
+
 #### What a green run here still does not promise
 
 Six things, listed as `UNMODELLED` in `lib/ci-checkout.ts` and printed on
