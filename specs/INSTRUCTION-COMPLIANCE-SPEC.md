@@ -423,6 +423,52 @@ load-bearing in production, and unmeasured.
 
 **Not done here:** AC-6 moved to #197 (Phase 2) by the issue's own rescope.
 
+### Phase 2: the opt-out is traced to the caller, not injected (#197)
+
+#197's last criterion asks that `skipGrade` be exercised **end to end** after
+the Phase 1 refusals land, and shown to still ship with its "no blocking-grade
+check ran" line intact. The existing case set `SKIP_GRADE: true` into the
+block's scope and asserted the outcome, which proves the decision honours the
+flag and proves nothing about where the flag comes from.
+
+One line of `workflows/ship.js` carries the caller's argument to that
+decision, and it is the line that matters most in the wrong direction: a
+default flipped to `true` there switches off every refusal Phase 1 added, on
+every run, with the whole block still present and the entire test file still
+green. So the real line is extracted and evaluated against planted arguments,
+then its output is fed into the real decision block — the skill's argument,
+through ship.js's own binding, into ship.js's own refusal.
+
+- [x] SC-773: test/blocking-grades-trust.test.ts contains [the binding feeds the block it is read by] — `skipGrade` is traced from the caller's argument through ship.js's real binding into its real decision block, because injecting the constant proves the block honours a flag without proving any caller can set it
+
+**The limit, stated rather than counted as met.** This is the real source of
+both links, executed. It is not a live pipeline run with real agents — #69
+bars a workflow from loading `ship.js` as a module, and a grading run costs
+four agents to re-observe a decision already driven here from its own source.
+SC-653 is met at the binding-and-block level; a pipeline-level exercise of
+`skipGrade` remains unperformed.
+
+### What was broken to prove it (SC-773)
+
+Over `test/blocking-grades-trust.test.ts` + `test/blocking-grades.test.ts`
+(47 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the binding reads `parsedArgs.skipGrading`, a key no caller sends | 3 of 47 |
+| grading off by default (`const SKIP_GRADE = true`) | 2 of 47 |
+| the caller's flag ignored, grading always on (`= false`) | 2 of 47 |
+| the binding split across two lines | aborts the file — 24 of 47 cases do not run |
+| a second binding added elsewhere in the file | aborts the file |
+
+The last two rows are the property, not a side effect. The first attempt put
+the extractor inside its `describe`, and splitting the binding across two
+lines **deleted** four tests rather than failing them: the suite reported 43
+pass, 0 fail. A mutation harness that silently no-ops when its target moves is
+exactly the decorative check `.claude/rules/checks-must-be-able-to-fail.md`
+exists to prevent, so the extractor moved to module scope beside the file's
+other two slicers, where a miss takes the whole file down loudly.
+
 ## Baseline (2026-09-20)
 
 31 files scanned. 15 HIGH findings across 6 files:

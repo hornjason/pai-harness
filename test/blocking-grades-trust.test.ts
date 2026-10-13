@@ -34,7 +34,7 @@
  * to hide a violation must now alter two fields consistently rather than
  * omit one.
  *
- * Covers SC-764..768 of INSTRUCTION-COMPLIANCE-SPEC.md.
+ * Covers SC-764..768 and SC-773 of INSTRUCTION-COMPLIANCE-SPEC.md.
  */
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
@@ -69,6 +69,32 @@ const REFUSAL_HELPER: string = (() => {
   }
   return block;
 })();
+
+/**
+ * ship.js's own line binding the caller's argument to the decision (#197,
+ * SC-653). Every case below that injects `SKIP_GRADE` directly says nothing
+ * about how that constant gets its value, and this is the line that matters
+ * most in the wrong direction: a default flipped to `true` here would switch
+ * off every refusal #195 added, on every run, with the whole block still
+ * present and every other test in this file still green.
+ *
+ * Module scope, like the two slicers above it, and for the reason the rules
+ * file gives: an extractor that throws from inside a `describe` does not fail
+ * its cases, it deletes them — splitting the binding across two lines dropped
+ * four tests and the suite reported green over 43.
+ */
+const SKIP_GRADE_BINDING: string = (() => {
+  const pattern = /^const SKIP_GRADE = .*$/gm;
+  const found = shipSource.match(pattern);
+  if (!found) throw new Error("workflows/ship.js no longer binds SKIP_GRADE on one line");
+  if (found.length > 1) throw new Error("workflows/ship.js binds SKIP_GRADE more than once");
+  return found[0];
+})();
+
+/** Evaluate that one real line against planted caller arguments. */
+function bindSkipGrade(parsedArgs: Record<string, unknown>): unknown {
+  return new Function("parsedArgs", `${SKIP_GRADE_BINDING}; return SKIP_GRADE`)(parsedArgs);
+}
 
 interface Outcome { result: Record<string, any> | undefined; logs: string[] }
 
@@ -389,5 +415,39 @@ describe("#195 AC-3: skipGrade still ships, and still says nothing was checked",
     const o = await runBlock({ SKIP_GRADE: true, gradeResult: null, SPAWNED_ROLES: new Set(["marcus"]) });
     expect(shipped(o), why(o)).toBe(true);
     expect(o.logs.join("\n")).toContain("NO blocking-grade check ran");
+  });
+
+  test("the caller's skipGrade argument is what reaches the decision", () => {
+    expect(bindSkipGrade({ skipGrade: true })).toBe(true);
+  });
+
+  test("grading is on unless the caller asks for it off", () => {
+    // Both the absent key and an explicit false, because a binding that read
+    // the wrong key name would pass the first on its own.
+    expect(bindSkipGrade({})).toBe(false);
+    expect(bindSkipGrade({ skipGrade: false })).toBe(false);
+    expect(bindSkipGrade({ skipGrading: true })).toBe(false);
+  });
+
+  test("the binding feeds the block it is read by", async () => {
+    // The two halves joined: the argument the skill passes, carried through
+    // ship.js's own line into ship.js's own decision block.
+    const skipped = await runBlock({
+      SKIP_GRADE: bindSkipGrade({ skipGrade: true }),
+      gradeResult: null,
+      SPAWNED_ROLES: new Set(["marcus"]),
+    });
+    expect(shipped(skipped), why(skipped)).toBe(true);
+    expect(skipped.logs.join("\n")).toContain("NO blocking-grade check ran");
+
+    // ...and the same path with the flag absent must still refuse, or the
+    // case above is proving nothing about skipGrade.
+    const graded = await runBlock({
+      SKIP_GRADE: bindSkipGrade({}),
+      gradeResult: null,
+      SPAWNED_ROLES: new Set(["marcus"]),
+    });
+    expect(shipped(graded), why(graded)).toBe(false);
+    expect(graded.logs.join("\n")).not.toContain("NO blocking-grade check ran");
   });
 });
