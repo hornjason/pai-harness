@@ -403,6 +403,120 @@ general lesson is the one `.claude/rules/checks-must-be-able-to-fail.md`
 already records for mutation harnesses: a mutation that stops the target
 resolving is not a mutation.
 
+---
+
+### A comment is where coverage is declared AND where it is discussed (#360)
+
+#149 credits a test file with covering `SC-N` when the file mentions the id in
+a comment, and the position is right: prose is where a project declares
+intent. What the position cannot do is tell these apart —
+
+```ts
+// covers SC-640                                     ← a claim
+// SC-640 was the criterion the collision broke      ← a citation
+```
+
+— and the two it missed in the wild were both a file about coverage
+attribution certifying the criterion it was discussing.
+
+**Measured before designing, and the measurement chose the design.** Of 220
+comment-position credits: 67 carried a coverage verb, 34 a label, 40 a
+line-leading id, and 79 nothing a scanner could see. A systematic sample of 16
+of the 79, read in full, split 11 claims to 5 citations — and not subtly.
+*Every* citation sat mid-sentence inside running prose; *every* claim sat in a
+structural position, in forms the first three rules missed (`#178 / SC-413:`,
+`SPEC-REF: … (SC-369)`, `… turns it red (SC-4).`).
+
+So the rule is NOT a new `covers:` marker. A new marker means migrating ~70
+files to re-state what they already say. The rule is: **a declaration occupies
+a structural position; a bare id inside a running sentence is a citation.**
+`lib/sc-claim-forms.ts` owns the five forms, and
+`.claude/rules/claiming-sc-coverage.md` states them where an author reads them
+before writing the comment rather than after.
+
+- [x] SC-804: lib/sc-claim-forms.ts contains [commentClaimForm] — ONE exported predicate decides what a comment claims, so there is one binding to mutate; a second decider would survive any mutation of the first and the guard would go green for the wrong reason
+- [x] SC-805: test/sc-claim-forms.test.ts contains [a citation is not credited] — the citation cases are REAL, lifted from the tree, each one a credit this change took away. A synthetic citation proves only that the regex rejects what it was written to reject
+- [x] SC-806: scripts/sync-sc-status.ts contains [form: ClaimForm | null] — the scanner REPORTS the form and the credit rule decides. Filtering inside the scanner re-created the silent drop #358 had just fixed, one layer down, and turned its test red
+- [x] SC-807: lib/strip-js-comments.ts contains [commentMask, enclosingComment] — the enclosing comment is recovered from the offset-preserving stripper, not re-lexed, so the census cannot disagree with the thing it measures
+
+**The before/after, by the same script both times**
+(`scripts/census-comment-claims.ts`, committed for exactly that reason):
+
+| | before | after |
+|---|---|---|
+| credits (file, spec, id) | 266 | 255 |
+| criteria with at least one credit | 247 | 245 |
+
+(259 and 249 once this change's own four criteria are declared and credited by
+`test/sc-claim-forms.test.ts`. The 255/245 column is the comparable one — the
+same registry, measured either side of the rule.)
+
+Thirteen credits lost, every one enumerated and classified by hand rather than
+sampled — eleven citations, and two genuine claims **migrated in the same
+commit** so the net loss is only the citations. One criterion *gained*
+coverage: `SC-359` had been written `SC-358/359`, so only the first id carried
+a prefix and nothing had ever credited the second.
+
+Three criteria drop to zero file-credits — SC-300, SC-301, SC-478 — and the
+honest reading is the opposite of "revealed as untested". All three are
+conformity-pattern criteria (`contains [...]`, `under [200] lines`), checked
+against `matchPattern` rather than assumed: each generates a mechanical test
+from its own statement. The comment credit was decorative noise on top of real
+coverage, which is its own argument for this change.
+
+**Two near-misses, both caught by reading the diff of lost credits rather than
+by the rule:**
+
+- The first `attribution` rule credited any parenthetical, including
+  `("see SC-621")` — inside a comment whose next clause reads "Counting
+  citations would make". A rule that credits the sentence explaining why
+  citations must not be credited. Narrowed to parentheticals holding only ids.
+- The first fix for line-leading citations was an allowlist of what may follow
+  a heading. It rejected ` * SC-722 of GATE-CONTRACTS-SPEC.md.` and
+  ` * #173 — SC-587, SC-588, SC-589, SC-590.` and took **30** criteria to zero
+  coverage in one step — 44 lost credits against the loose rule's 13. Replaced
+  with a small closed stop-list of copulas, which is the one place a stop-list
+  beats an allowlist: the set of words that turn a heading into a sentence is
+  closed, the set of ways to write a heading is not, and a missing stop-word
+  costs one bounded false credit while a missing heading form costs every
+  credit written that way.
+
+### What was broken to prove it (SC-804..807)
+
+Run and counted over `test/sc-claim-forms.test.ts` + `test/sc-id-namespace.test.ts`
++ `test/spec-sc-ids-unique.test.ts` + `test/ac-coverage.test.ts` (134 tests):
+
+| Mutation | Red |
+|---|---|
+| `commentClaimForm` returns `"covers"` for everything — every citation credited again | 25 of 134 |
+| `commentClaimForm` returns `null` for everything — every comment credit gone | 20 of 134 |
+| `commentMask` stops bridging whitespace — the truncated-comment bug | 4 of 134 |
+| the scanner DROPS formless sites instead of reporting them — #358's silent drop, re-created | 2 of 134 |
+| `SENTENCE_TAIL` emptied — a line-leading citation is a heading again | 2 of 134 |
+| `attribution` widened back to any parenthetical | 1 of 134 |
+| the credit rule stops reading `form` — **the whole of #360 reverted in place** | 1 of 134, and **0 of 131** before the case below it was written |
+
+**That last row is the finding, not a footnote.** Deleting one line from
+`findTestFilesForSCs` switches this entire change off, and the suite stayed
+green: 131 tests asserted what `commentClaimForm` ANSWERS and not one asserted
+that anything ASKS it. A predicate nobody consults is the decorative check
+`.claude/rules/checks-must-be-able-to-fail.md` exists for, and it is worse
+than usual here — the suite would have certified a rule that had been turned
+off. `#360 SC-806: the credit rule is the thing that consults the form` drives
+`findTestFilesForSCs` over a planted fixture directory, with a positive
+control, because a mutation refusing EVERYTHING also satisfies a
+citation-earns-nothing case on its own.
+
+Plus the end-to-end pair criterion 6 asks for, run against the real tree
+rather than a fixture, from a baseline of 259 credits:
+
+| Reintroduced verbatim | Credits |
+|---|---|
+| the citation `// is the same defect as SC-91/SC-92`, rewritten as `// covers SC-91, SC-92` | 261 — the two credits come back |
+| the claim `Covers SC-358, SC-359`, reverted to `verifies … per SCAFFOLD-DECOMPOSITION-SPEC SC-358/359` | 257 — both credits go |
+
+None is left in the tree; all were run and reverted.
+
 ## Implementation
 
 ### Phase A: SC Classification

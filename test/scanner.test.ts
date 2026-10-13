@@ -1,5 +1,13 @@
 /**
- * Scanner unit tests — verifies lib/scanner.ts extraction per SCAFFOLD-DECOMPOSITION-SPEC SC-358/359.
+ * Scanner unit tests — lib/scanner.ts extraction.
+ *
+ * Covers SC-358, SC-359 (SCAFFOLD-DECOMPOSITION-SPEC.md).
+ *
+ * Restated from "verifies … per SCAFFOLD-DECOMPOSITION-SPEC SC-358/359" when
+ * #360 stopped crediting a bare id inside a running sentence. The claim was
+ * real; the sentence it was buried in could not be told from a citation.
+ * `SC-358/359` also hid the second id entirely — only `SC-358` carries the
+ * prefix, so nothing had ever credited SC-359 from this line.
  *
  * AC-1: lib/scanner.ts exports scanProject returning ProjectScan
  * AC-2: Scanner detects tech stack, specs, consumers, source directories
