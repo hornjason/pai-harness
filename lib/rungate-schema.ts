@@ -74,7 +74,25 @@ export const ProdSchema = z.object({
   uiBase: z.string().url().optional(),
   smokeTest: z.string().optional(),
   /** See `DevSchema.healthPath` — the prove gate probes this tier too (#304). */
-  healthPath: z.string().optional(),
+  healthPath: z.string().nullable().optional(),
+  /**
+   * The promoted container `container-has-fix` inspects, and which runtime to
+   * ask (#341).
+   *
+   * All three were read by `gates/workflow.test.ts` and declared by none of
+   * them. That check loads `rungate.json` with a bare `JSON.parse`, so they
+   * reached it — but a key no schema mentions is a key nothing validates, and
+   * `ProdSchema` is not `passthrough()`, so any caller that *does* go through
+   * zod silently drops them.
+   *
+   * `containerRuntime` is new. The old code chose by probe —
+   * `podman` if present, otherwise `docker` whether docker existed or not —
+   * and with neither installed the inspect failed and the check passed. Config
+   * first, probe as a fallback, and "neither" is now its own outcome.
+   */
+  containerName: z.string().optional(),
+  imageName: z.string().optional(),
+  containerRuntime: z.string().optional(),
 });
 
 const McpServerSchema = z.object({

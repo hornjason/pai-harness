@@ -99,13 +99,22 @@ const OPTIONAL_HARNESS_KEYS: Record<string, { absent: "early-return" | "derived-
     absent: "early-return",
     why: "container-has-fix needs a container to inspect. It falls back to prod.imageName, " +
       "and the check is already gated on prod.rebuild above it, so a project with no " +
-      "promotion step never reaches this read. Note that the check ALSO passes on four " +
-      "distinct unmeasurable states once it is past this point — #341, deliberately not " +
-      "fixed here because refusing would change behaviour on a live consumer.",
+      "promotion step never reaches this read. The four unmeasurable states this check " +
+      "used to share a PASS with are now eight named outcomes (#341); only a measured " +
+      "BEHIND blocks, pending #341 criterion 1.",
   },
   "prod.imageName": {
     absent: "early-return",
     why: "the fallback for prod.containerName — see that entry.",
+  },
+  "prod.containerRuntime": {
+    absent: "derived-default",
+    why: "#341. The old line was `exec(\"command -v podman\").ok ? \"podman\" : \"docker\"` — " +
+      "docker whether docker existed or not, so a consumer with neither installed got a " +
+      "failing inspect and a silent PASS for ever. Absence now means the KNOWN_RUNTIMES " +
+      "probe order is tried, and finding nothing is NO_RUNTIME, a recorded outcome rather " +
+      "than a fall-through. Derived rather than early-return precisely because the " +
+      "early-return was the bug.",
   },
 };
 

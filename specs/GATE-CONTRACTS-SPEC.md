@@ -1124,6 +1124,99 @@ check running, finding the problem, and the gate carrying on. The block is
 now sliced out of `gates/gate-executor.ts` and executed with `process.exit`
 injected, and the **exit code** is the assertion.
 
+## Four ways of not knowing, all spelled PASS (#341)
+
+`container-has-fix` asks whether the promoted container is built from the
+commit under test. Every way of failing to find that out returned a pass:
+
+```ts
+const runtime = exec("command -v podman").ok ? "podman" : "docker";
+const inspect = execArgvOf(runtime, ["inspect", "--format=…revision", "--", name]);
+if (!inspect.ok || !inspect.output) return;    // container absent, daemon down,
+const head = exec("git rev-parse HEAD", root); //   no revision label,
+if (!head.ok) return;                          //   neither runtime installed
+```
+
+Four distinct facts, one observable outcome. Two of them are *more likely
+exactly when the check matters*: an image that was never rebuilt does not
+exist under the expected name, and a stopped runtime is the normal state on a
+machine where promotion did not happen. The check was quietest in precisely
+the situation it exists to catch — shape one in
+`.claude/rules/checks-must-be-able-to-fail.md`.
+
+The runtime choice carried its own version of the same bug. `podman` if
+present, otherwise `docker` *whether docker existed or not*, so a consumer
+with neither installed got a failing inspect, a silent return, and a green
+`container-has-fix` on every run, for ever. "Neither" is now a result
+(`NO_RUNTIME`) rather than a fall-through, and config is consulted before the
+probe: a project that configures `nerdctl` and does not have it hears that,
+instead of a docker error it never asked for.
+
+`prod.containerName`, `prod.imageName` and `prod.containerRuntime` are
+declared in `ProdSchema` for the first time here. The first two were read by
+the gate and declared by nothing; the check reaches them only because it
+parses `rungate.json` with a bare `JSON.parse`, and `ProdSchema` is not
+`passthrough()`, so any caller going through zod dropped them silently.
+
+### What this deliberately does not decide
+
+Whether an unmeasurable outcome should FAIL is #341 criterion 1's question, and criterion 1
+asks for each state's frequency across real runs on a real consumer *before*
+the decision. Turning runs red on a machine whose runtime happens to be down
+is a behaviour change with its own blast radius, and guessing it here is how a
+new refusal gets switched off within a week. So only a measured `BEHIND` with
+no recorded `prod.rebuild` blocks — which is exactly what blocked before — and
+every unmeasurable outcome carries `blocking: false`.
+
+That pin is a test, not a comment, so answering criterion 1 is a deliberate edit with
+a red test behind it. **Criterion 1 is not met by this work and is not claimed below.**
+
+Recording without deciding is normally the failure #346 was about one section
+up. The difference is that here the recording *is* the deliverable: every
+outcome reaches the log, so criterion 1's frequencies are collectable from ordinary
+runs rather than needing instrumentation added later, and criterion 1 cannot be
+answered without them.
+
+- [x] SC-783: lib/container-provenance.ts contains [classifyContainerProvenance] — every reading yields one of eight named outcomes and no path returns nothing, because four distinct unmeasurable states sharing a silent `return` is indistinguishable from a container that matches
+- [x] SC-784: lib/container-provenance.ts contains [resolveContainerRuntime] — the runtime comes from `prod.containerRuntime` with the probe as a fallback and "neither" as a real result, because `podman ?: docker` had no way to say neither and a consumer with no runtime passed for ever
+- [x] SC-785: lib/container-provenance.ts contains [classifyInspectFailure] — an unrecognised inspect failure stays INSPECT_FAILED and keeps its stderr, because a narrow detector that guesses is worse than one that says it does not know
+- [x] SC-786: test/container-provenance.test.ts contains [DRIVEN, not described] — the absent-container case runs a real inspect against a name that does not exist, because a hand-written reading proves the classifier can read a string and not that the real path reaches it
+
+### What was broken to prove it (SC-783..786)
+
+Over `test/container-provenance.test.ts` (23 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| every unmeasurable outcome collapses to `MATCH` again | 11 of 23 |
+| absent and daemon-down share one outcome | 2 of 23 |
+| unrecognised failures filed as `CONTAINER_ABSENT` | 2 of 23 |
+| the no-revision-label branch removed | 2 of 23 |
+| an unreadable HEAD reads as a match | 2 of 23 |
+| the config runtime ignored, probe only | 2 of 23 |
+| no runtime available resolves to `docker` anyway | 2 of 23 |
+| an unmeasurable outcome starts blocking | 1 of 23 |
+| `BEHIND` stops blocking | 1 of 23 |
+| `prod.rebuild` PASS no longer excuses `BEHIND` | 1 of 23 |
+| `containerProvenanceViolations` returns `[]` | 1 of 23 |
+| the gate stops consulting the classifier | 1 of 23 |
+| `ProdSchema` loses `containerRuntime` | 1 of 23 |
+
+The first row is the defect itself, reintroduced: collapsing the outcomes
+turns nearly half the file red, which is the measure of how much the old
+single `return` was hiding. The eighth and ninth rows are the criterion 1 pin from
+both sides — making an unmeasurable state block, and stopping the one state
+that already blocked — so the decision cannot drift in either direction
+without a test going red.
+
+One further mutation is recorded as **unusable rather than as a result**:
+splicing an early `return` in front of `resolveContainerRuntime`'s
+multi-line "no runtime configured" literal broke the module's parse, so the
+file failed to load and reported `1 red of 1`. A mutation that stops the
+target compiling measures nothing. Rows six and seven cover the same
+property — config is consulted, and "none" is a real answer — by editing
+single expressions instead.
+
 ## Gate Chain Order (SC-375)
 
 The gate chain flows as a typed pipeline. Each gate's output feeds the next gate's input through workflow-state.json:

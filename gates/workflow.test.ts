@@ -10,6 +10,11 @@ import {
   missingEvidenceViolations,
   thresholdCrosscheckViolations,
 } from "../lib/evidence-required";
+import {
+  classifyContainerProvenance,
+  containerProvenanceViolations,
+  resolveContainerRuntime,
+} from "../lib/container-provenance";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -608,24 +613,53 @@ describe("verify checks", () => {
     if (!root) return;
     const containerName = harness?.prod?.containerName || harness?.prod?.imageName;
     if (!containerName) return;
-    const runtime = exec("command -v podman") .ok ? "podman" : "docker";
+
+    // #341: four early returns used to share one observable outcome — PASS.
+    // Container absent, daemon down, no revision label, no runtime installed.
+    // Two of them are MORE likely exactly when the check matters, so it was
+    // quietest in the situation it exists to catch.
+    //
+    // Each is now a named outcome, recorded. Which of them should BLOCK is
+    // #341 criterion 1's question — it needs the frequency of each measured on a
+    // real consumer first, because refusing on a runtime that happens to be
+    // down turns real runs red. Only a measured BEHIND blocks today, which
+    // is what blocked before.
+    const runtime = resolveContainerRuntime(
+      harness?.prod?.containerRuntime,
+      name => exec(`command -v ${name}`).ok,
+    );
     // Argv form: containerName comes out of the consumer's rungate.json and
     // the old line interpolated it into a shell command (#315 security review).
-    const inspect = execArgvOf(runtime, [
-      "inspect",
-      "--format={{index .Config.Labels \"org.opencontainers.image.revision\"}}",
-      "--",
-      containerName,
-    ]);
-    if (!inspect.ok || !inspect.output) return;
-    const containerSha = inspect.output.replace(/'/g, "").trim();
+    const inspect =
+      runtime.kind === "resolved"
+        ? execArgvOf(runtime.runtime, [
+            "inspect",
+            "--format={{index .Config.Labels \"org.opencontainers.image.revision\"}}",
+            "--",
+            containerName,
+          ])
+        : undefined;
     const head = exec("git rev-parse HEAD", root);
-    if (!head.ok) return;
-    if (containerSha !== head.output) {
-      if (prodRebuild !== "PASS") {
-        expect(`container SHA ${containerSha.slice(0,8)} behind HEAD ${head.output.slice(0,8)} and rebuild not PASS`).toBe("container SHA matches HEAD or rebuild PASS");
-      }
-    }
+
+    const verdict = classifyContainerProvenance({
+      runtime,
+      containerName,
+      // execArgvOf folds stderr into `output` on failure, which is the text
+      // classifyInspectFailure needs to tell absence from a dead daemon.
+      inspect: inspect ? { ok: inspect.ok, output: inspect.ok ? inspect.output : "", stderr: inspect.ok ? "" : inspect.output } : undefined,
+      head: { ok: head.ok, output: head.output },
+      prodRebuild,
+    });
+
+    // criterion 3: surfaced, not swallowed. One line per run naming which of the
+    // outcomes was reached, so criterion 1's frequencies are collectable from the
+    // logs of real runs rather than needing new instrumentation later.
+    console.log(
+      `container-has-fix: ${verdict.outcome} (${verdict.measured ? "measured" : "UNMEASURED"}) — ${verdict.detail}`,
+    );
+
+    const violations = containerProvenanceViolations(verdict);
+    expect(violations, violations.join("\n")).toEqual([]);
   });
 
   // 14. all-acs-have-evidence (GAP → PORTED)
