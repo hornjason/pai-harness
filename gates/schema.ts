@@ -64,6 +64,17 @@ export const ACSchema = z.object({
   if (!ac.threshold) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${ac.id}: missing threshold`, path: ["threshold"] });
   }
+  // #339. `acs-have-type` is named by all three ceremony profiles and the
+  // field was `.optional()`, so an AC with no type passed the check named
+  // after requiring one. Refined rather than made non-optional, to match how
+  // `threshold` above states the same kind of rule.
+  //
+  // Safe to require: 0 of the 456 ACs across the 82 completed runs in
+  // ~/.rungate lack a type. This makes a check that could not fail start
+  // being true, not start failing.
+  if (!ac.type) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${ac.id}: missing type (CODE or OUTCOME)`, path: ["type"] });
+  }
   if (BEHAVIORAL_PATTERN.test(ac.statement)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: `${ac.id}: behavioral language "${ac.statement.match(BEHAVIORAL_PATTERN)?.[0]}"`, path: ["statement"] });
   }

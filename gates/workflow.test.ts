@@ -699,7 +699,11 @@ describe("verify checks", () => {
     }
   });
 
-  test("no FAIL verdicts in DONE", () => {
+  // #339: renamed from the prose title "no FAIL verdicts in DONE". A gate
+  // check with a prose name cannot be referenced from a ceremony profile at
+  // all, so it was structurally undocumentable rather than merely
+  // undocumented. Referenced by nothing else; the rename is local.
+  test("no-fail-verdicts-in-done: no AC is FAIL once the run is DONE", () => {
     if (!isDone()) return;
     const fails = (sf("acs") || []).filter((ac: any) => ac.verdict === "FAIL");
     expect(fails.map((ac: any) => ac.id)).toEqual([]);
