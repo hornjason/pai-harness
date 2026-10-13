@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Ship harness — conformity tests, scaffold, and agent briefs for AI-first development",
   "files": [
+    "bin/",
     "lib/",
     "prompts/",
     "scripts/scaffold-project.ts",
@@ -12,6 +13,8 @@
     "scripts/sync-spec-tests.ts",
     "scripts/generate-code-map.ts",
     "scripts/audit-specs.ts",
+    "scripts/create-spec.ts",
+    "scripts/create-sc.ts",
     "package.json"
   ],
   "exports": {
@@ -35,5 +38,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest"
+  },
+  "bin": {
+    "rungate": "bin/rungate.ts"
   }
 }
