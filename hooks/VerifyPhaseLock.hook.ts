@@ -6,8 +6,12 @@
  * SC-371 (HOOK-ARCHITECTURE-SPEC): No hook exceeds 150 lines
  *
  * Blocks `gh issue create` during VERIFY phase.
- * Use verifyBlockers[] instead. Allows `gh issue comment`
- * and `gh issue create` with --label follow-up.
+ * Use verifyBlockers[] instead. Allows `gh issue create` carrying one of the
+ * override labels in lib/issue-create-override.ts.
+ *
+ * The decision lives in lib/ and not here (#365, HOOK-ARCHITECTURE-SPEC:
+ * hooks are thin triggers). It used to be a substring test on the whole
+ * command, which a `follow-up` in an issue TITLE satisfied.
  *
  * Issue: #443
  */
@@ -15,6 +19,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import { join } from 'path';
 import { parseHookInput } from './lib/parseStdin';
+import { verifyPhaseRefusal } from '../lib/issue-create-override';
 
 const WORK_DIR = process.env.RUNGATE_WORK_DIR || process.env.PAI_WORK_DIR || join(process.env.HOME!, '.rungate');
 
@@ -63,21 +68,16 @@ async function main() {
   if (payload.tool_name !== 'Bash') process.exit(0);
 
   const cmd = payload.tool_input?.command || '';
-  if (!cmd.includes('gh issue create')) process.exit(0);
+
+  // Ask the owner BEFORE reading the workflow state. Cheap, and it keeps the
+  // whole decision in one place rather than half here and half in lib/.
+  const refusal = verifyPhaseRefusal(cmd);
+  if (refusal === null) process.exit(0);
 
   const wf = findActiveWorkflow();
   if (!wf || wf.data.phase !== 'VERIFY') process.exit(0);
 
-  // Allow follow-up issues
-  if (cmd.includes('--label') && cmd.includes('follow-up')) process.exit(0);
-
-  // Allow gh issue comment
-  if (cmd.includes('gh issue comment')) process.exit(0);
-
-  console.log(JSON.stringify({
-    decision: "block",
-    reason: "[VerifyPhaseLock] During VERIFY phase, use verifyBlockers[] in workflow-state.json instead of creating new issues. Add --label follow-up to override."
-  }));
+  console.log(JSON.stringify({ decision: "block", reason: refusal }));
   process.exit(0);
 }
 
