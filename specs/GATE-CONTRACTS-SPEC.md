@@ -739,7 +739,28 @@ merge commits — and asserts the restricted one sees strictly fewer landed PRs.
 Empirical rather than a source grep, and the filter string is composed rather
 than written as a literal, so the assertion is not its own evidence.
 
-- [x] SC-751: test/project-state-currency.test.ts contains [every PR landed since the last recorded session is accounted for] — commits on `main` carrying a PR number are compared against the newest session entry and the uncovered ones are named, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
+### What the check demands, after CI said it demanded too much
+
+The first version required every landed PR to be mentioned **by number**
+somewhere in the state file. CI — the first run with enough history to answer
+— produced twenty-four. The premise was wrong: `project-state.json` is a
+narrative of what changed and why, not an index of issue numbers, and
+sessions 36 through 38 are correct without enumerating theirs. A check that
+demanded enumeration would turn the file into a changelog nobody reads, which
+is exactly what it is not.
+
+What actually went wrong on 2026-10-12 was staleness of the **date**. So that
+is what SC-751 measures: no PR may have landed on `main` after the newest
+recorded session's date. One day of granularity, and CLAUDE.md already
+requires the DA to update after every merge.
+
+That comparison then scored **0 red** when neutralised, because nothing had
+landed since the date on the day it was written — the vacuous-assertion
+shape, where the test passes for a reason unrelated to the thing it checks.
+A paired case runs the same comparison against a deliberately old date and
+requires it to report something.
+
+- [x] SC-751: test/project-state-currency.test.ts contains [no PR has landed since the last recorded session] — the newest session's date must not be older than the newest PR on `main`, because the only thing standing between PROJECT-STATE.md and being false was somebody remembering
 - [x] SC-754: test/project-state-currency.test.ts contains [the probe sees squashes, which is how PRs actually land here] — the unrestricted probe must find strictly more landed PRs than a merge-commit-only one, because this repo squash-merges and a `--merges` probe is blind to every PR that lands
 - [x] SC-752: scripts/update-project-state.ts contains [This script re-renders; it does not write session content] — the renderer reports which files it changed instead of claiming success unconditionally, because eight commits of staleness each got a green checkmark
 
@@ -786,11 +807,12 @@ output cannot take.
 
 | Mutation | Red |
 |---|---|
-| `project-state.json`'s latest `session.date` rolled back to 2026-09-01 | 2 of 6 in `test/project-state-currency.test.ts` — the uncovered PRs, and the markdown no longer naming the date it was rendered from |
-| the git probe pointed at `origin/no-such-ref` | 1 of 6 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
-| the renderer's honest message replaced with `"ran."` | 1 of 6 |
-| the probe restricted to merge commits again | 1 of 6 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
-| the squash subject form dropped from the parser | 1 of 6 |
+| `project-state.json`'s latest `session.date` rolled back one day | 1 of 7 in `test/project-state-currency.test.ts` |
+| the git probe pointed at `origin/no-such-ref` | 1 of 7 — the readability case alone, which is the point: the currency comparison returns early and stays silent rather than reporting clean |
+| the renderer's honest message replaced with `"ran."` | 1 of 7 |
+| the probe restricted to merge commits again | 1 of 7 — and **0 of 5** before SC-754 was added, which is the only reason the blindness was found |
+| the squash subject form dropped from the parser | 1 of 7 |
+| the date comparison neutralised to `false` | 1 of 7 — and **0 of 6** before the stale-date control was added |
 | the deleted generator output replanted (`expect(SHIP_JS.toLowerCase()).toContain("gate")`) | caught by the detector's own planted control, which asserts it fires on the two verbatim cases #343 removed |
 
 None is left in the tree; all were run and reverted.

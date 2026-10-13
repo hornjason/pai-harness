@@ -91,8 +91,18 @@ function isShallow(): boolean {
 
 const state = JSON.parse(readFileSync(STATE, "utf-8"));
 const latestDate: string = state.session?.date ?? "";
-/** Everything the newest session entry says, as one searchable blob. */
-const latestText = JSON.stringify([state.session, (state.sessions || []).slice(-1)]);
+
+/**
+ * PRs that landed on `main` after `dateStr`, as one-line descriptions.
+ * `null` means the log could not be read.
+ */
+function prsLandedAfter(dateStr: string): string[] | null {
+  const r = mergesOnMain(dateStr);
+  if (!r.ok) return null;
+  return r.merges
+    .filter(m => m.pr !== null && m.date.slice(0, 10) > dateStr)
+    .map(m => `${m.date.slice(0, 10)} ${m.sha.slice(0, 8)} ${m.subject.slice(0, 70)}`);
+}
 
 describe("project-state currency", () => {
   test("the file names a latest session with a date", () => {
@@ -152,28 +162,45 @@ describe("project-state currency", () => {
       .not.toContain(MERGES_ONLY);
   });
 
-  test("every PR landed since the last recorded session is accounted for", () => {
-    // The whole point. A PR landing on main that the state file does not
-    // mention means PROJECT-STATE.md is telling its reader something false.
-    const r = mergesOnMain(latestDate);
-    if (!r.ok) return; // reported by the case above
-    const unaccounted = r.merges.filter(m => {
-      if (!m.pr) return false; // a direct push carries no PR number to match on
-      // Any number in the subject counts. A squash subject is
-      // `fix(#304): ... (#345)` — the narrative names the ISSUE, because that
-      // is what the work was about, so demanding the PR number would make the
-      // check fail on correctly-written entries.
-      const refs = [...m.subject.matchAll(/#(\d+)/g)].map(x => x[1]);
-      return !refs.some(n => latestText.includes(`#${n}`));
-    });
+  test("no PR has landed since the last recorded session", () => {
+    // The whole point, and narrower than the first version of it.
+    //
+    // That version demanded every landed PR be mentioned BY NUMBER somewhere
+    // in the state file, and CI — the first run that could see any history —
+    // produced twenty-four. The premise was wrong: project-state.json is a
+    // narrative of what changed and why, not an index of issue numbers, and
+    // sessions 36 through 38 are correct without enumerating theirs. A check
+    // that demands enumeration would turn the file into a changelog nobody
+    // reads, which is what it is explicitly not.
+    //
+    // What actually went wrong on 2026-10-12 was staleness of the DATE:
+    // eight commits and four merges landed while the newest entry still read
+    // session 38, dated the day before. So that is what this measures. One
+    // day of granularity, and CLAUDE.md already requires the DA to update
+    // after every merge.
+    const after = prsLandedAfter(latestDate);
+    if (after === null) return; // reported by the readability case
     expect(
-      unaccounted.map(m => `${m.date.slice(0, 10)} ${m.sha.slice(0, 8)} ${m.subject.slice(0, 70)}`),
-      `project-state.json's latest session (${latestDate}) does not mention these merges. ` +
+      after,
+      `project-state.json's newest session is dated ${latestDate} and these PRs landed after it. ` +
         `PROJECT-STATE.md is generated from this file and is what a human reads to find out ` +
-        `where the project is, so a merge missing from it is the file lying. Add them to ` +
-        `\`session\` and \`sessions\` — the narrative is the point, so write what the change ` +
-        `WAS, not that it happened.`,
+        `where the project is, so a date behind the tree is the file lying. Add a session entry ` +
+        `— the narrative is the point, so write what the change WAS, not that it happened.`,
     ).toEqual([]);
+  });
+
+  test("the staleness comparison fires on a date that IS stale", () => {
+    // The case above passes when nothing has landed today, which is also what
+    // it looks like when the comparison stops comparing. Neutralising the
+    // date test scored 0 red without this.
+    const stale = prsLandedAfter("2026-10-01");
+    if (stale === null) return; // reported by the readability case
+    if (isShallow() && stale.length === 0) return; // no history to compare against
+    expect(
+      stale.length,
+      "no PR has landed since 2026-10-01 — either the probe stopped reading or this " +
+        "repo has been quiet for the whole window, and the first is far likelier.",
+    ).toBeGreaterThan(0);
   });
 
   test("the generated markdown matches the json it is generated from", () => {
