@@ -1,0 +1,69 @@
+# Not managed by rungate. The scaffold regenerates the `test` job in ci.yml and
+# the `gates` job in gates.yml by name; this file is caller-owned and is carried
+# forward untouched on re-scaffold.
+#
+# #364 — rungate had no publish step at all. npm served 0.2.1 while main was 741
+# commits past it, so every measurement in SUCCESS.md described software nobody
+# could install.
+#
+# The two guard steps are the point of this file, not the publish step. A release
+# pipeline has a quiet way of doing nothing: a skipped `if:`, a swallowed error,
+# or a duplicate version npm rejects — all of which leave a green job and a real
+# tag. So the registry is read BEFORE (the version must not exist yet) and AFTER
+# (latest must now be this version). Neither reading is sufficient alone; see
+# lib/release-preflight.ts.
+#
+# Do not add `continue-on-error` to any step here, and do not guard `npm publish`
+# behind a condition. test/release-guard.test.ts asserts both, because either one
+# turns this whole file back into a job that reports a release it never made.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write # npm provenance
+
+jobs:
+  release:
+    runs-on: "ubuntu-latest"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - run: bun install
+
+      # Before anything irreversible: the tag must name the version in
+      # package.json, and that version must not already be on the registry.
+      # RELEASE_TAG goes through `env:`, not `${{ }}` inside the run script. A
+      # tag name is attacker-shaped text — git permits quotes and semicolons in
+      # one — and interpolating it into a shell command is the workflow
+      # injection GitHub's own guidance opens with. The guard reads it from the
+      # environment, so the shell never parses it.
+      - name: Preflight — this release has not already been cut
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: bun scripts/release-guard.ts --phase preflight --tag "$RELEASE_TAG"
+
+      # The published artifact is the thing claim 5 is about, so it is tested
+      # before it ships and not only on main.
+      - run: bun test
+      - run: bun scripts/typecheck.ts
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # The half that cannot be satisfied by doing nothing.
+      - name: Postflight — the registry actually serves this version
+        run: bun scripts/release-guard.ts --phase postflight

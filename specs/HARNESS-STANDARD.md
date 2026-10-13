@@ -1544,6 +1544,146 @@ with its own authorization.
 
 ---
 
+### A release pipeline has a quiet way of doing nothing (#364)
+
+`rungate` has been published twice, ever: `0.2.0` and `0.2.1`. There was no
+publish step in `.github/workflows/` at all, and `main` is **741 commits**
+past the published artifact. Every mutation count and gate measurement in
+`SUCCESS.md` describes software a consumer cannot obtain, which is what #366
+made the file say and what this makes fixable.
+
+**The guard is the deliverable here; the publish step is the easy part.** The
+issue named the way this ships broken, and it is the shape
+`.claude/rules/checks-must-be-able-to-fail.md` opens with:
+
+> A publish job that exits 0 because npm rejected a duplicate version is
+> exactly the "could not measure reads as nothing wrong" shape, and it is the
+> most likely way this fix ships broken.
+
+A release pipeline can do nothing in at least four ways that all leave a green
+job and a real tag: a duplicate version npm rejects, a step skipped by an
+`if:` that stopped matching, a failure swallowed by `continue-on-error`, or a
+registry that could not be reached. Nothing downstream distinguishes "we
+shipped 0.2.3" from "we tagged 0.2.3 and shipped nothing".
+
+#### Two readings, before and after — neither sufficient alone
+
+- **Preflight** — the tree's version must NOT be on the registry. This makes a
+  duplicate publish a red run rather than a no-op.
+- **Postflight** — after the publish step, the registry's `latest` must BE the
+  tree's version. This makes a *skipped* publish a red run.
+
+Preflight alone passes a pipeline whose publish step never ran. Postflight
+alone passes a pipeline that republished nothing because the version was
+already there from last month. It is the same "two numbers, not one" argument
+SC-822..824 makes about the record, applied to the act.
+
+The preflight reads the **packument**, not `/latest`: a dist-tag moves on and
+leaves earlier versions installable behind it, so `latest` cannot answer "has
+`0.2.1` ever shipped". `distributionViolations` asks a different question and
+is right to use `/latest`.
+
+#### The workflow file is checked as evidence, not trusted as intent
+
+A guard the pipeline never calls is the decorative check this repo keeps
+finding, so `release.yml` is itself asserted: both phases are invoked, the
+preflight precedes the publish and the postflight follows it, the suite runs
+before the artifact ships, no step carries `continue-on-error`, the publish
+step is not behind a condition, provenance is requested and permitted, and
+the guard is not pointed at a registry nobody installs from.
+
+`release.yml` is **caller-owned**. `createCiWorkflows` regenerates `ci.yml`
+and `gates.yml` by name, so a re-scaffold carries this file forward untouched
+— and a test asserts the scaffold has not started writing it, because the day
+it does, the release pipeline disappears with it.
+
+#### The tag is attacker-shaped text
+
+Git permits quotes and semicolons in a tag name, so `${{ github.ref_name }}`
+inside a `run:` script is the workflow injection GitHub's own guidance opens
+with. The tag arrives through `env:` and the guard reads it from the
+environment. The test asserts the general property rather than the one line:
+every `${{ github.* }}` in the file must be an `env:` assignment.
+
+#### Four of these checks shipped red, all for the same reason
+
+The header comment says *"do not add `continue-on-error`"* and *"do not guard
+`npm publish` behind a condition"* — and the detectors found their own
+documentation and reported the thing it warns against. A comment is not a
+step, so the checks now read the workflow's executable content.
+
+That is a detector whose view of the input deliberately shrinks, which this
+repo is right to be wary of, so the stripping is asserted in **both**
+directions: a `continue-on-error` in a real step is still seen, and one in a
+comment is not. Without that pair the fix would be indistinguishable from
+buying green with blindness.
+
+- [x] SC-828: lib/release-preflight.ts contains [preflightRefusal] — ONE exported function decides whether a release may be cut, so there is one binding to mutate. A duplicate version is refused BEFORE anything irreversible, rather than left for npm to reject into a green job
+- [x] SC-829: lib/release-preflight.ts contains [postflightRefusal] — the half that cannot be satisfied by doing nothing. A skipped, swallowed or silently-failed publish leaves `latest` where it was, and only a reading taken AFTER the publish step can tell
+- [x] SC-830: scripts/release-guard.ts contains [export const REFUSE_EXIT] — every refusal travels through one exit code, declared once, so the test can build a mutant copy with it zeroed and run every negative case twice
+- [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
+- [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
+
+#### What was broken to prove it (SC-828..832)
+
+Run and counted over `test/release-guard.test.ts` (33 tests):
+
+| Mutation | Red |
+|---|---|
+| `preflightRefusal` always allows | 6 of 33 |
+| `REFUSE_EXIT` zeroed in the real source | 6 of 33 |
+| the comment stripper drops everything | 6 of 33 |
+| the exit constant renamed | 5 of 33 — every mutant-building case throws "could not build the mutant" |
+| `postflightRefusal` always allows | 4 of 33 |
+| the duplicate-version check removed — **the no-op the issue named** | 4 of 33 |
+| the comment stripper stops stripping — **the original false positive, restored** | 4 of 33 |
+| postflight stops comparing `latest` to the tree version | 3 of 33 |
+| `registryState` reads only dist-tags, not the version list | 3 of 33 |
+| the tag comparison removed | 1 of 33 |
+| the semver shape check removed | 1 of 33 |
+| postflight accepts a registry with no `latest` | 1 of 33 |
+| `registryState` reports an empty registry instead of throwing | 1 of 33 |
+| the script stops refusing on a registry error | 1 of 33 |
+| the script stops calling `preflightRefusal` | 1 of 33 |
+| the script stops calling `postflightRefusal` | 1 of 33 |
+| WORKFLOW: `continue-on-error` added to the publish step | 1 of 33 |
+| WORKFLOW: the publish step put behind `if: false` | 1 of 33 |
+| WORKFLOW: the postflight step deleted | 1 of 33 |
+| WORKFLOW: the preflight step deleted | 1 of 33 |
+| WORKFLOW: the suite moved after the publish | 1 of 33 |
+| WORKFLOW: the tag interpolated straight into the run script | 1 of 33 |
+| WORKFLOW: the guard pointed at another registry | 1 of 33 |
+| WORKFLOW: provenance dropped | 1 of 33 |
+| WORKFLOW: the `id-token` permission dropped | 1 of 33 |
+| WORKFLOW: the tag trigger loosened to every push to main | 1 of 33 |
+| the scaffold starts writing `release.yml` | 1 of 33 |
+
+**Twenty-seven mutations, no zeros.** That is worth stating because the two
+preceding issues each produced one: #365's depth bound and #370's SCOPE list.
+Nothing here is a branch no input can distinguish.
+
+The fourteen 1s are not weak rows — each is a distinct way for the pipeline to
+report a release it did not make, and one case is exactly the right number of
+cases to be watching for it. The rows that matter most are the two stripper
+mutations: dropping everything turns 6 red, and *not* stripping turns 4 red.
+A detector that shrinks its own view has to be pinned from both sides or it
+is indistinguishable from blindness.
+
+None is left in the tree; all were run and reverted.
+
+#### What this does NOT do
+
+**No release has been cut.** This builds the pipeline and the guard; running
+it is an outward-facing, irreversible action that needs Jason's authorization
+and an `NPM_TOKEN` secret that does not exist yet. Until a tag is pushed, npm
+still serves `0.2.1` and `SUCCESS.md`'s distribution standing is still
+accurate in saying so.
+
+So #364's three suggested fixes land as: (1) done, (2) **not done — needs
+authorization**, (3) done by #366. The issue should stay open on step 2.
+
+---
+
 ### The rate was per worker, and nothing was per run (2026-10-12, #194)
 
 The guard above exists, is registered, and could not bite. Across four
