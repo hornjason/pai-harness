@@ -127,7 +127,7 @@ The mistake conceals itself. Once an SC reads `[x]` it leaves
 from did not. The intent existed and was applied in one place out of two.
 
 - [x] SC-548: scripts/sync-sc-status.ts contains [scMentionPattern] and not contains [content.includes(id)] — an SC ID matches as a whole token, so a longer ID's test cannot certify a shorter one
-- [x] SC-549: scripts/sync-sc-status.ts contains [isTemplateSpec, SPEC-TEMPLATE] — the template placeholder is never a candidate for flipping
+- [x] SC-549: lib/sc-ids.ts contains [isTemplateSpec, SPEC-TEMPLATE] — the template placeholder is never a candidate for flipping, and never a registry id either (#330 moved the predicate here so both readers share it)
 - [x] SC-550: test/sync-sc-status-matching.test.ts contains [SHORTEST_ID, SPEC-TEMPLATE, first criterion] — the substring collision and the template exclusion are each pinned by a case that fails without the fix
 
 ### Fixture data was read as a coverage claim (#149, partial)
@@ -288,6 +288,120 @@ IS readable, because here an unreadable base is a fault rather than a setup.
 - [x] SC-711: lib/conformity.ts contains [DRIFT-3: the exemption lists did not GROW] — growth is refused in the same suite as staleness, so every source is covered rather than only the one an agent happens to use
 - [x] SC-712: test/allowlist-growth.test.ts contains [a REMOVED entry is not growth] — the legitimate direction is asserted alongside the refusal, because a growth check that also refuses removals would block the fix it exists to encourage
 - [x] SC-713: test/allowlist-growth.test.ts contains [an unreadable base is reported as unreadable] — the UNMEASURED branch is driven against a ref that cannot exist, rather than left as a branch that never runs in a healthy checkout
+
+### Four regexes for one notation (#330, #352, #358)
+
+An SC id is the join key binding a spec line to the test that proves it. Four
+files decided independently what one looks like:
+
+| file | function | pattern |
+|---|---|---|
+| `lib/conformity.ts` | `extractSCs` | `SC-\w+` |
+| `scripts/sync-sc-status.ts` | `coverageClaimIds` | `SC-\d+(?!\d)` |
+| `scripts/sync-sc-status.ts` | `findUncheckedSCs` | `SC-\d+` |
+| `test/spec-sc-ids-unique.test.ts` | `DECLARATION` | `SC-\d+` |
+
+#330 named the divergence as the root cause and found two of the four. The
+consequences, measured before the change:
+
+- **251** registry ids were credited to at least one test file, over **282**
+  `(file, id, spec)` credits — more credits than ids because the flipper
+  ticked a bare id in *every* spec declaring it.
+- **7** of those ids were credited only by prose about a different issue's
+  criteria: every single digit is a real entry in
+  `specs/bootstrap-data-flow/success-criteria.md`, and the harness numbers an
+  issue's own criteria from 1.
+- **6** anti-criteria (`SC-A1`..`SC-A6`) were invisible to the lookup.
+- **4** ids were declared by more than one spec. `test/spec-sc-ids-unique.test.ts`
+  checks each spec against itself, so two specs each declaring `SC-2` once are
+  each internally consistent and nothing looked across them.
+
+After: **244** ids, **263** credits, 0 false single-digit credits, 0 false
+gains. Lost: `SC-1`..`SC-7`, all of them citations. Gained: none.
+
+#### The notation, stated rather than assumed
+
+`SC-<n>` is **global** — one spec owns the number. `SC-A<n>` is an
+**anti-criterion** and **per-spec by design**: `specs/SPEC-TEMPLATE.md` ships
+`- [ ] SC-A1: [anti-criterion — must NOT happen]`, so every spec numbers its
+own from A1 and three specs declaring `SC-A1` is the notation working, not a
+collision. They are disambiguated by requiring the spec's name beside the
+mention, never by renumbering.
+
+An issue's own criteria are **not SC ids**. Written as `SC-n` they are
+indistinguishable from registry references, and that is the whole of #352 and
+#358. Write them as "criterion N of #NNN".
+
+#### Two corrections to #330's premises, measured
+
+- #330 held up `test/ceremony-overrides.test.ts`'s `SC-A1`..`SC-A5` as
+  "genuine coverage that the detector cannot see". **No spec declares those
+  criteria** — they are an issue's own, and crediting them would have ticked
+  DOC-HYGIENE's and GITHUB-API-MIGRATION's real anti-criteria with a passing
+  test about ceremony profile loading. The harm #330 feared was right; which
+  side was genuine was not.
+- Widening the pattern is made safe by the **registry**, not by the regex.
+  `SC-guard`, `SC-to` and `SC-NNN` are never declared by a spec, so they can
+  never be credited however wide the scan gets. A regex narrow enough to
+  exclude prose is also narrow enough to exclude `SC-A1`.
+
+#### Why a qualified comment is still not a claim
+
+The first version accepted any mention with the spec's name nearby and gained
+two credits it should not have. `test/behavioral-sc-ratchet.test.ts` opens
+with prose naming `SC-A1`, `SC-A2` and `GITHUB-API-MIGRATION-SPEC.md` in one
+sentence — describing this very bug. Every ingredient of a qualified claim,
+and a citation.
+
+A window says *which* criterion a mention means; it cannot say *whether* the
+mention is a claim. So an ambiguous id must be claimed from a
+`describe`/`test`/`it` title **and** name its spec. The cost is six
+anti-criteria staying uncredited until someone writes such a title —
+under-crediting, the direction this is allowed to fail in.
+
+- [x] SC-787: lib/sc-ids.ts contains [SC_ID_SOURCE] — every reader builds its pattern from one definition, because four files each deciding what an id looks like is how an anti-criterion became a declaration to one reader and invisible to three
+- [x] SC-788: lib/sc-ids.ts contains [crossSpecCollisions] — a global id declared by two specs is refused, because the per-file guard sees two internally consistent specs and the flipper ticks both checkboxes
+- [x] SC-789: scripts/sync-sc-status.ts contains [ScCredit] — a credit names the spec as well as the id, because `unchecked.filter(u => u.id === scId)` ticked the id wherever it appeared and only the narrow regex was hiding it
+- [x] SC-790: lib/sc-ids.ts contains [requiresQualification] — an id a bare mention cannot identify is credited only from a titled, spec-naming claim, because the registry declares every single-digit id and issues number their own criteria from 1
+- [x] SC-791: test/sc-id-namespace.test.ts contains [a qualified COMMENT is a citation, not a claim] — the citation case is asserted alongside the claim case, because the first version of the rule credited prose describing the bug it fixes
+
+### What was broken to prove it (SC-787..791)
+
+Over `test/sc-id-namespace.test.ts`, `test/sync-sc-status-matching.test.ts`,
+`test/spec-sc-ids-unique.test.ts`, `test/sc-coverage-claims.test.ts` and
+`test/sync-sc-status.test.ts` (88 tests). None left in the tree.
+
+| Mutation | Red |
+|---|---|
+| `findTestFilesForSCs` returns nothing | 9 of 88 |
+| nothing requires qualification | 7 of 88 |
+| anti-criteria stop being per-spec | 5 of 88 |
+| single-digit ids stop being issue-shaped | 5 of 88 |
+| every id reads as qualified | 5 of 88 |
+| the id pattern narrows back to `SC-\d+` | 4 of 88 |
+| the template's placeholders enter the registry | 4 of 88 |
+| anti-criteria counted as collisions | 2 of 88 |
+| the containing directory stops qualifying | 2 of 88 |
+| claim sites stop recording their position | 2 of 88 |
+| cross-spec collisions report nothing | 1 of 88 |
+| the qualifier window spans the whole file | 1 of 88 |
+| a qualified comment counts as a claim again | 1 of 88 |
+| unqualified mentions stop being reported | 1 of 88 |
+| `extractSCs` goes back to its own regex | 1 of 88 |
+| the duplicate-credit guard removed | 1 of 88 — and **0 of 87** before the case below it was written |
+
+The last row is the mutation that earned a test. Removing the dedup changed
+nothing any assertion could see, and a duplicate credit is not cosmetic: the
+run prints `${credits.length} SCs` and the per-spec report counts entries
+rather than distinct criteria.
+
+Two mutations are recorded as **unusable rather than as results**. Renaming
+`findTestFilesForSCs` drops the suite from 88 tests to 56 — the importing
+files fail to load, so 32 cases are *deleted* rather than failed, and "2 red"
+measures nothing. Short-circuiting the body instead is the row above. The
+general lesson is the one `.claude/rules/checks-must-be-able-to-fail.md`
+already records for mutation harnesses: a mutation that stops the target
+resolving is not a mutation.
 
 ## Implementation
 
