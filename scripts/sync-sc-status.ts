@@ -15,7 +15,8 @@
  */
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
-import { stripJsComments } from "../lib/strip-js-comments";
+import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";
+import { commentClaimForm, type ClaimForm } from "../lib/sc-claim-forms";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
@@ -188,14 +189,24 @@ export interface ClaimSite {
    * NOT enough for an ambiguous one — see `findTestFilesForSCs`.
    */
   kind: "comment" | "title" | "bare";
+  /**
+   * For a comment, WHICH structural declaring form it occupies, or `null` for
+   * a bare mention inside running prose (#360). Always `null` for the other
+   * two kinds, which are declaring positions by construction.
+   *
+   * Reported rather than filtered: the credit rule reads this, and
+   * `unqualifiedClaims` reports what the credit rule refused.
+   */
+  form: ClaimForm | null;
 }
 
 export function coverageClaimSites(source: string): ClaimSite[] {
   const noComments = stripJsComments(source);
   const codeOnly = stripJsComments(source, { blankLiterals: true });
+  const mask = commentMask(source);
   const claims: ClaimSite[] = [];
-  const add = (id: string, at: number, kind: ClaimSite["kind"]) =>
-    claims.push({ id, at, kind });
+  const add = (id: string, at: number, kind: ClaimSite["kind"], form: ClaimForm | null = null) =>
+    claims.push({ id, at, kind, form });
 
   for (const m of source.matchAll(scIdMentionPattern())) {
     const id = m[0];
@@ -204,7 +215,13 @@ export function coverageClaimSites(source: string): ClaimSite[] {
     // Blanked by the first pass => the id sits in a comment. Offsets are
     // preserved, so this is an exact answer rather than a heuristic.
     if (noComments[at] !== source[at]) {
-      add(id, at, "comment");
+      // #360 records the FORM here and credits on it downstream, rather than
+      // dropping the site. `unqualifiedClaims` exists so an ambiguous mention
+      // that failed to earn a credit is reported instead of vanishing (#358);
+      // filtering here would have re-created that silent drop one layer down,
+      // and did — it turned "an uncredited ambiguous mention is reported" red.
+      const { text, offset } = enclosingComment(source, mask, at);
+      add(id, at, "comment", commentClaimForm(text, offset, id));
       continue;
     }
 
@@ -300,7 +317,12 @@ export function findTestFilesForSCs(
   for (const file of readdirSync(dir).filter(f => f.endsWith(".test.ts"))) {
     const source = readFileSync(join(dir, file), "utf-8");
     const credits: ScCredit[] = [];
-    for (const { id, at, kind } of coverageClaimSites(source)) {
+    for (const { id, at, kind, form } of coverageClaimSites(source)) {
+      // #360. A comment earns a credit only in a structural declaring form.
+      // The position was never the question — a comment is equally where this
+      // project declares coverage and where it explains itself, and a bare id
+      // inside a running sentence is a citation.
+      if (kind === "comment" && !form) continue;
       for (const specFile of wanted.get(id) ?? []) {
         if (requiresQualification(id, reg) && !(kind === "title" && isQualifiedBy(source, at, specFile))) continue;
         if (!credits.some(c => c.id === id && c.specFile === specFile)) {
