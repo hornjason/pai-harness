@@ -349,7 +349,7 @@ nothing could notice a row describing behaviour the code did not have.
 - [x] SC-839: lib/scaffold/owned-files.ts contains [regenerated output is byte-identical] — `0 changed` is a measurement. The old report was produced by not looking; this one is produced by looking and finding no difference, and the two are only indistinguishable in the summary line
 - [x] SC-840: lib/scaffold/owned-files.ts contains [decideOwnedWrite] — ONE exported function decides what happens to one owned file, so there is one binding to mutate. The four strategies answer the same question differently and all route through it
 - [x] SC-841: lib/generators/agents-md.ts contains [ownedFilesTable()] — the doc's Strategy column is generated. "Managed" was doing too much work as one word, and the column is the part that would have caught this
-- [x] SC-842: lib/scaffold/steps.ts contains [isSelfHosted] — the generator knows when the project it is writing is the harness, because rungate's own conformity test was hand-adapted and the skip was the only thing preserving it
+- [x] SC-842: lib/scaffold/steps.ts contains [isHarnessItself] — the generator knows when the project it is writing is the harness, because rungate's own conformity test was hand-adapted and the skip was the only thing preserving it. ONE predicate decides it, imported from `lib/generators/agents-md.ts` where SC-811 already named it: #208 shipped a second copy, and two deciders of the same fact survive any mutation of either
 
 ### The hand-edit policy, chosen rather than implicit (AC-5)
 
@@ -367,7 +367,7 @@ Making the file regenerate is one line. What it uncovered is the issue:
 **rungate's own conformity test had always been hand-adapted.** It imported
 `../lib/conformity`; the template emitted `rungate/lib/conformity`
 unconditionally. A package cannot import itself by name without an `exports`
-map. So regenerating without `isSelfHosted` would have replaced a working
+map. So regenerating without `isHarnessItself` would have replaced a working
 self-hosted suite with one that cannot resolve its own import — the skip was
 load-bearing, and nothing said so.
 
@@ -396,7 +396,7 @@ Run and counted over `test/scaffold-ownership.test.ts` (29 tests):
 | `bytesIdentical` always false — every run reports CHANGED, idempotence gone | 3 of 29 |
 | the Strategy column dropped from `ownedFilesTable()` | 2 of 29 |
 | the `test/scaffold-conformity.test.ts` row deleted from `OWNED_FILES` | 3 of 29 |
-| `isSelfHosted` always false — rungate emits a self-import it cannot resolve | 3 of 29, and **0 of 23** before the case below was written |
+| `isHarnessItself` always false — rungate emits a self-import it cannot resolve | 3 of 29, and **0 of 23** before the case below was written |
 | `ownedStrategy` stops matching the `*` class — `.claude/rules/*.md` loses provenance | 1 of 29 |
 | the `PRESERVED` report dropped — a withheld write becomes silent | 1 of 29 |
 | `runDirectoryValidation` removed from the template again | 2 of 29 |
@@ -433,3 +433,76 @@ check reads `` `bun test test/scaffold-conformity.test.ts` `` out of the
 Commands table and reports the whole command string as a missing file. A
 false positive in a different detector, pre-existing, and a different class
 from ownership.
+
+## One fact, one decider: "is this project the harness?" (#380)
+
+#208's commit message argued — about `safeWrite` — that two deciders of the
+same fact survive any mutation of either. **The change it shipped then did
+exactly that**, adding a fourth inline answer to a question already answered
+three times. Found immediately afterwards, and the copies had already
+drifted, which is the concrete harm rather than the tidiness argument:
+
+| site | unreadable `package.json` |
+|---|---|
+| `isHarnessItself` in `lib/generators/agents-md.ts` | caught — reads as a consumer |
+| `generateAgentBriefsStep`'s `isSelf` | **threw**, killing the scaffold run |
+| `lib/scanner.ts`'s `detectPromptPrefix` | caught |
+| `lib/conformity.ts`'s PKG-3 exemption | caught |
+
+Three of four agreed. Nothing could notice the fourth, because there was
+nothing to compare it against.
+
+Two further sites — brief-type detection and the devDep self-reference —
+contain the comparison but ask a **different** question (`… || keywords
+includes "harness"`, `… || devDependencies.rungate`). They keep their own
+branch and borrow only the identity half. A consolidation that swallowed
+them would be the opposite error.
+
+### Why a leaf module rather than the owner it already had
+
+`lib/generators/agents-md.ts` declared it first and SC-811 names it there.
+It cannot stay: `lib/scanner.ts` needs the same answer, and SC-365 / AC-3
+forbids the scanner from importing any generator — correctly, since the
+scanner is the module other scripts pull in precisely because it drags
+nothing behind it. So the implementation moves to a leaf importing nothing
+but `fs` and `path`, and `agents-md.ts` re-exports it. A re-export is one
+binding under two names, which is the opposite of two deciders, and the test
+asserts the two names resolve to the same function object rather than
+assuming it.
+
+- [x] SC-843: lib/harness-identity.ts contains [isHarnessItself] — ONE predicate answers "is this project the harness", and it is a leaf so every caller can reach it, including the one SC-365 forbids from importing a generator
+- [x] SC-844: test/harness-identity.test.ts contains [IDENTITY_COMPARISON] — the singleton is MECHANICAL, not a convention. It scans lib/ for the comparison in both the literal and the constant form, and proves the scan sees a planted site rather than passing over an empty result
+- [x] SC-845: lib/scanner.ts contains [isHarnessItself] — the scanner shares the one answer without importing a generator, which is what the leaf exists for
+
+### What was broken to prove it (SC-843..845)
+
+Run and counted over `test/harness-identity.test.ts` (7 tests):
+
+| Mutation | Red |
+|---|---|
+| the `try`/`catch` removed — the drift that made one copy throw | 1 of 7 |
+| equality relaxed to `includes` — `rungate-plugin` becomes the harness | 2 of 7 |
+| the predicate always answers "consumer" | 1 of 7 |
+| a second decider planted back into `lib/scaffold/steps.ts` | 1 of 7 |
+| the re-export dropped from `agents-md.ts` — SC-811's name stops resolving | the file ABORTS on import, which is the correct shape: 6 cases cannot run rather than quietly passing |
+| the leaf grows a non-leaf import | 1 of 7 |
+| `agents-md.ts` declares its own copy alongside the re-export | 1 of 7 |
+
+**One mutation scored 0 and the guard it hit is gone rather than
+documented.** The first draft had `if (!existsSync(pkgPath)) return false;`
+in front of the `try`. Removing it changed no answer — a missing file throws
+into the same `catch` — so it was a branch that could not change an answer,
+and a branch like that reads to the next person as if it can.
+
+**A second zero was caught before it could be recorded**, and it is the
+sharper one. The owner compares against a `HARNESS_PACKAGE` constant rather
+than the literal `"rungate"`. The first `IDENTITY_COMPARISON` knew only the
+literal, so it found **zero** sites — and `toEqual([...])` against zero
+passes exactly as happily as against one. The constant indirection would
+have bought green by blindness in the one check written to prevent that. The
+detector now reads both forms, and the positive control asserts both are
+seen while the bare word is not.
+
+None of the seven mutations is left in the tree; all were run and reverted,
+and the counts were re-measured after the dead guard was removed so they
+come from one tree.

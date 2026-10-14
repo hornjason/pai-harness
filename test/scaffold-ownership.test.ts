@@ -21,7 +21,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { dirname, join } from "path";
 import {
   OWNED_FILES,
   SCAFFOLD_REFUSE,
@@ -34,11 +34,14 @@ import {
 } from "../lib/scaffold/owned-files";
 import {
   generateConformityTest,
-  isSelfHosted,
   ownedStrategy,
   regenerateOwned,
   safeWrite,
 } from "../lib/scaffold/steps";
+// From its owner, not re-exported. #208 shipped a second copy of this
+// predicate in steps.ts; importing from the one place SC-811 names means a
+// mutation of it reaches both callers.
+import { isHarnessItself } from "../lib/generators/agents-md";
 
 const ROOT = join(import.meta.dir, "..");
 const scratch: string[] = [];
@@ -138,9 +141,9 @@ describe("#208 SC-842: the generator knows when the project it is writing is the
   };
 
   test("the harness is recognised, a consumer is not, and neither is a dir with no package.json", () => {
-    expect(isSelfHosted(ROOT), "rungate does not recognise itself").toBe(true);
-    expect(isSelfHosted(pkgDir("some-consumer"))).toBe(false);
-    expect(isSelfHosted(pkgDir(null)), "an absent package.json must not read as the harness")
+    expect(isHarnessItself(ROOT), "rungate does not recognise itself").toBe(true);
+    expect(isHarnessItself(pkgDir("some-consumer"))).toBe(false);
+    expect(isHarnessItself(pkgDir(null)), "an absent package.json must not read as the harness")
       .toBe(false);
   });
 
@@ -151,7 +154,7 @@ describe("#208 SC-842: the generator knows when the project it is writing is the
     // The direction this is allowed to be wrong in: a consumer emitting a
     // bare-specifier import fails loudly at resolution. The harness emitting
     // one fails the same way, but only after the file was overwritten.
-    expect(isSelfHosted(d)).toBe(false);
+    expect(isHarnessItself(d)).toBe(false);
   });
 
   test("the import specifier follows, in both directions", () => {
@@ -369,13 +372,35 @@ describe("#208 AC-2: measured on this repo", () => {
     // git clone only carries committed refs, so working-tree changes have
     // to be copied in or the run measures the old behaviour and passes for
     // the wrong reason. Learned the hard way on #370.
-    for (const rel of [
-      "lib/scaffold/owned-files.ts",
-      "lib/scaffold/steps.ts",
-      "lib/generators/agents-md.ts",
-      "scripts/scaffold-project.ts",
-    ]) {
-      writeFileSync(join(clone, rel), readFileSync(join(ROOT, rel), "utf-8"));
+    //
+    // ASKED FOR, not listed. The first version named four files, and the
+    // next change added a fifth — `lib/harness-identity.ts`, untracked —
+    // so the clone could not resolve an import and the case failed for a
+    // reason that had nothing to do with what it measures. A hand-kept list
+    // of "files that matter" is a detector narrower than what it detects;
+    // git already knows the answer.
+    const dirty = execSync(`git -C "${ROOT}" status --porcelain --untracked-files=all`, {
+      encoding: "utf-8",
+    })
+      .split("\n")
+      .map(l => l.slice(3).trim())
+      .filter(rel => rel && !rel.startsWith(".claude/worktrees/") && existsSync(join(ROOT, rel)));
+    for (const rel of dirty) {
+      mkdirSync(dirname(join(clone, rel)), { recursive: true });
+      writeFileSync(join(clone, rel), readFileSync(join(ROOT, rel)));
+    }
+
+    // The invariant, asserted rather than the copy. A first draft demanded
+    // `dirty.length > 0` and failed on CI for a correct reason: there the
+    // tree is clean, the clone of HEAD already carries the change, and
+    // copying nothing is right. "Something was dirty" is a fact about one
+    // machine. "The clone's sources are the ones under test" is the fact
+    // the case actually depends on, and it holds in both places.
+    for (const rel of ["lib/scaffold/steps.ts", "scripts/scaffold-project.ts"]) {
+      expect(
+        readFileSync(join(clone, rel), "utf-8"),
+        `${rel} in the clone is not the one being tested — the fixture would measure HEAD`,
+      ).toBe(readFileSync(join(ROOT, rel), "utf-8"));
     }
 
     // Dependencies too. A clone has no `node_modules`, so the scaffold's
