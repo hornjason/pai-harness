@@ -1,6 +1,12 @@
 /**
  * Covers SC-818, SC-819, SC-820 (SCAFFOLD-DECOMPOSITION-SPEC.md).
  *
+ * Also covers SC-202 of bootstrap-data-flow/success-criteria.md — "new rules
+ * include provenance comment: source incident and date". `lib/rule-provenance.ts`
+ * has implemented that since #370 and this file has driven it since, but the
+ * criterion's tick rested on a mention nothing credited (#327). Declared here
+ * because this is where the behaviour is actually exercised.
+ *
  * #370 — `bun bin/rungate.ts scaffold . --fix` on a clean checkout rewrote
  * eight `.claude/rules/*.md` files unconditionally and reported `GENERATED:`
  * for each. Measured on 2026-10-13, on this repo, with nothing else in the

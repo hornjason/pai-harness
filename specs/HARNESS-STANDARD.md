@@ -4027,3 +4027,105 @@ None of the five is left in the tree; all were run and reverted.
   one lists `harnessRoot`, the other `projectRoot, issueRepo, testOutput`.
   That is a merge artefact and resolving it means choosing which contract is
   current, which is not a call to make while fixing a credit bug.
+
+## #327 — a tick is a claim that something was proven
+
+#149 replaced "a test file mentions the id" with "a test file DECLARES the
+id", and eight criteria lost their only coverage claim without losing their
+tick. That PR deliberately left them ticked — `CHECKED_SC_BASELINE` exists to
+stop a suite being made green by unchecking, and doing it silently is the same
+defect from the other side — and deferred the ruling. This is the ruling.
+
+Each of the eight was checked against the tree rather than against the
+judgement that produced the tick. **Five were false and are unticked:** SC-9
+(`TestSchema` has neither `test.rebuild` nor `test.stop`), SC-200 (there is no
+generate-score loop anywhere), SC-201 (there is no review queue anywhere),
+SC-93 (not falsifiable as written — "global dependencies" is undefined and the
+tree holds both the benign `~/.rungate` state directory and a real
+`$HOME/.claude/.gate-salt` read), and SC-502. Three stand: SC-123's conformity
+assertion passes, SC-202 is implemented and driven and merely needed its claim
+written in a declaring position, and SC-501 is explicitly superseded.
+
+The full classification table, with what was found for each, is in
+`specs/bootstrap-data-flow/success-criteria.md`.
+
+### SC-502 was classified satisfied off a grep, and the grep was wrong
+
+"No `execSync.*gh` or `Bun.spawnSync.*gh` in lib/, hooks/, gates/" is a
+mechanical absence check wearing a `(behavioral)` tag, and the tag exempted it
+from every check — #328's complaint, met as an instance. A line-oriented
+search found nothing, so it was classified *satisfied, needs a test*.
+
+Writing the test found the violation on the first run.
+`gates/workflow.test.ts:1570` calls ``execSync(`gh issue view ...`)`` with
+`execSync(` on one line and the command on the **next**, which is exactly what
+a line-oriented search cannot see. The criterion had been ticked over a live
+violation for its whole life.
+
+That is this issue's own defect class caught inside the fix for it, and it is
+the third time in two PRs that an assertion about source TEXT has been wrong
+where executing the thing was right. SC-502 is unticked, the violation is
+banked by name so a second one fails, and removing it is filed as #395 —
+migrating a `gh` call is the GitHub-API-migration class, not the false-tick
+class.
+
+### The eight were the visible edge
+
+Measured while classifying them: **748 ticked criteria, 161 with no cover of
+any kind** — no declaring claim, no passing conformity assertion, no
+behavioural exemption, no supersession. 125 of them in
+`bootstrap-data-flow/success-criteria.md`, the rest spread over six specs.
+
+SC-5 asks for a test asserting that count is zero. It cannot be zero today
+without writing 157 tests or withdrawing 157 ticks, and a guard written to
+pass over a backlog it cannot see is the defect this issue is about. So it
+ships as a per-spec ratchet at the measured numbers, ratcheting **both** ways:
+a spec over its number fails, and a spec *under* it fails too, because an
+entry that has stopped being a violation is an entry nobody will ever remove.
+
+### Supersession is cover, and that is a decision
+
+`GITHUB-API-MIGRATION-SPEC.md` ticks SC-499, SC-500 and SC-501 with lines
+opening `SUPERSEDED by ...`, recording what each criterion used to say and why
+it was wrong. Demanding a test for a criterion that explicitly no longer
+applies would push the spec to delete its own history, so `isSuperseded` is a
+recognised cover state — anchored at the start of the statement, because a
+criterion *about* supersession is still a criterion.
+
+- [x] SC-891: lib/sc-cover.ts contains [export function uncoveredTickedScs] — one binding decides what cover is so a mutation of it is measurable rather than absorbed by a second implementation of the same question
+- [x] SC-892: lib/sc-cover.ts contains [export function ratchetViolations] — the backlog of uncovered ticked criteria is banked per spec and ratchets both ways so neither a new one nor a resolved one can pass unnoticed
+- [x] SC-893: lib/sc-cover.ts contains [export function isSuperseded] — a tick whose statement opens SUPERSEDED is a pointer rather than a proof and is anchored at the start so a criterion merely discussing supersession is not exempted
+- [x] SC-894: test/ticked-sc-cover.test.ts contains [const KNOWN_GH_SUBPROCESS] — the one live gh subprocess is named rather than tolerated so a second one fails while the first is outstanding
+- [x] SC-895: test/ticked-sc-cover.test.ts contains [the walk found files but read nothing out of them] — the absence scan asserts it read a substantial corpus before concluding that it found nothing because an empty corpus and a clean one are the same answer
+
+### What was broken to prove it (SC-891..895)
+
+Run and counted over `test/ticked-sc-cover.test.ts` +
+`test/conformity-sc-binding.test.ts` + `test/rule-provenance.test.ts`
+(48 tests):
+
+| Mutation | Red |
+|---|---|
+| `uncoveredTickedScs` short-circuited to `[]` | 4 of 48 |
+| `ratchetViolations` short-circuited to `[]` | 3 of 48 |
+| the under-bank arm removed, so it ratchets one way only | 1 of 48 |
+| a matcher that FAILS is read as cover | 2 of 48 |
+| `isSuperseded` stops anchoring, so a mention exempts | 1 of 48 |
+| the gh scan reads nothing — empty corpus | 2 of 48 |
+| `GH_SPAWN` loses its word boundary | 1 of 48 |
+
+**The last row scored ZERO first**, and the reason is the positive controls
+were the wrong ones. They were `ghost`, `git push` and `high-throughput`, and
+none of the three ever reaches the boundary: each fails on the character
+AFTER `gh`, so the pattern rejects them with or without `\b`. The leading
+boundary only decides a command ENDING in `gh` before a space or the closing
+quote — `dough `, `sigh"`, `plough ` — which the controls now cover. A
+positive control that cannot distinguish the two readings is not a control,
+it is a third copy of the negative case.
+
+None of the seven is left in the tree; all were run and reverted.
+
+`CHECKED_SC_BASELINE` is 261 and the tree carries 743 ticked criteria after
+the five withdrawals, so the floor is not reached and nothing needed
+lowering. Recorded rather than adjusted, because a baseline silently left
+alone is indistinguishable from one nobody checked.

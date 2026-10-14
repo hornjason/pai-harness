@@ -7,6 +7,17 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs";
 import { join } from "path";
+import { extractSCs, isBehavioralSC } from "../lib/conformity";
+import { collectSpecFiles } from "../lib/spec-files";
+
+const SPECS_DIR = join(import.meta.dir, "..", "specs");
+
+/** Every SC declared in specs/, parsed rather than grepped (#327). */
+function allSpecScs() {
+  return collectSpecFiles(SPECS_DIR).flatMap(rel =>
+    extractSCs(readFileSync(join(SPECS_DIR, rel), "utf-8"), rel),
+  );
+}
 
 const FIXTURE_ROOT = join(import.meta.dir, "fixtures", "behavioral-cache-fixture");
 const CACHE_PATH = join(FIXTURE_ROOT, "behavioral-results.json");
@@ -208,20 +219,26 @@ describe("behavioral-cache: lookup table structure", () => {
     expect(verifiable).toBeGreaterThanOrEqual(30);
   });
 
-  test("AC-8: between 10 and 15 behavioral SCs are untestable", () => {
-    const { execSync } = require("child_process");
-    const allBehavioral = execSync(
-      'grep -c "(behavioral)" specs/*.md 2>/dev/null || true',
-      { encoding: "utf8", cwd: join(import.meta.dir, "..") }
-    );
-    const total = allBehavioral.trim().split("\n").reduce(
-      (s: number, l: string) => s + parseInt(l.split(":")[1] || "0"), 0
-    );
+  test("AC-8: the unmapped behavioral population stays within its band", () => {
+    // Counted through `extractSCs`/`isBehavioralSC`, the same owner
+    // `test/behavioral-sc-ratchet.test.ts` uses (#327).
+    //
+    // This shelled out to `grep -c "(behavioral)" specs/*.md` and summed the
+    // per-file counts, which counts LINES CONTAINING THE STRING — not
+    // criteria. Any prose that mentions the marker inflates the total, and
+    // on 2026-10-14 a spec section explaining why a `(behavioral)` tag had
+    // hidden a false tick did exactly that and turned this red. A detector
+    // that cannot tell a criterion from a sentence about criteria is the
+    // defect in `.claude/rules/checks-must-be-able-to-fail.md`, and it is
+    // also the top-level flaw in only the string being searched: `grep -c`
+    // counts matching lines, so two markers on one line were always one.
+    const total = allSpecScs().filter(sc => isBehavioralSC(sc)).length;
     const map = JSON.parse(
       readFileSync(join(import.meta.dir, "..", "config", "behavioral-sc-map.json"), "utf-8")
     );
-    const mappable = Object.keys(map).length;
-    const untestable = total - mappable;
+    const untestable = total - Object.keys(map).length;
+    expect(total, "no behavioral SCs were found at all — the count is vacuous")
+      .toBeGreaterThan(20);
     expect(untestable).toBeGreaterThanOrEqual(10);
     expect(untestable).toBeLessThanOrEqual(20);
   });

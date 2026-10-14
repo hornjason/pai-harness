@@ -56,7 +56,7 @@ testable: true
 - [x] SC-90: Brief-assembler embeds relevant Layer 1 methodology templates into per-agent briefs at ship time
 - [x] SC-91: scripts/git-hooks/pre-commit exists (the tracked source the scaffold installs into .git/hooks; secret scan HYGIENE-12, in-repo not global). Asserts the template, not the installed copy: .git/ is not version-controlled, so an SC naming .git/hooks/pre-commit passes in a working tree that happens to have it installed and fails in every fresh clone and in CI (#225)
 - [x] SC-92: scripts/git-hooks/pre-push exists (the tracked source the scaffold installs into .git/hooks; conformity test, in-repo not global). Asserts the template, not the installed copy, for the reason given on SC-91 (#225)
-- [x] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
+- [ ] SC-93: All project hooks, scripts, and workflows are self-contained in repo — no global dependencies
 - [ ] SC-94: AGENTS.md has section [Where to Create Things] listing correct location for every file type agents create
 - [ ] SC-95: AGENTS.md has section [Available MCP Servers] listing MCP servers configured for the project with tool names
 - [x] SC-97: Pre-flight checks git repo (git init if not), package.json (bun init if not), .gitignore (create if not)
@@ -166,9 +166,9 @@ testable: true
 - [ ] SC-197: Post-generation quality check errors trigger regeneration — max 5 iterations
 - [ ] SC-198: Composite quality threshold configurable in rungate.json — weights budget over coverage (agentsmd coverage excluded per SC-A6)
 - [ ] SC-199: Final scores written to .rungate/scaffold-score.json
-- [x] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
+- [ ] SC-200: Generate-score loop logs iteration findings count — monotonically decreasing proves convergence
 
-- [x] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
+- [ ] SC-201: Hard Constraints contains only human-reviewed rules — auto-extracted go to review queue per SC-13 confirmation flow
 - [x] SC-202: New rules include provenance comment: source incident and date recurred
 - [ ] SC-232: Constraint extraction enforces second-occurrence rule — rules promoted to Hard Constraints only after recurring in 2+ incidents (Anthropic best practice)
 
@@ -184,7 +184,7 @@ testable: true
 ### Phase 2 — Gate Enforcement + Ship Behavior
 
 - [x] SC-7: Container-rebuild agent NOT spawned when prod.rebuild is null
-- [x] SC-9: rungate-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
+- [ ] SC-9: rungate-schema.ts includes test.rebuild, test.start, test.stop, test.apiBase fields
 - [x] SC-10: Schema fields dev.typeCheck, prod.smokeTest, contextDocs read by at least one workflow
 - [x] SC-28: Scope gate runs project conformity tests — FAIL blocks scope
 - [x] SC-29: Verify gate runs project conformity tests — FAIL blocks verify
@@ -428,3 +428,53 @@ Research informing design decisions D-12 through D-23 and SCs 48-145:
 | Multi-agent production survival | 73% Fortune 500 run multi-agent; 62% of early deployments fail to reach prod | Multi-agent production survey 2026 |
 | Compact at 60-75% capacity | Not 95%; primary lever for long-horizon agents | Anthropic effective harnesses blog |
 | Google ADK context layers | Static/Turn/User/Cache — most structured production context architecture | Google ADK docs |
+
+## Four ticks withdrawn, and why (#327)
+
+#149 replaced "a test file mentions the id" with "a test file DECLARES the
+id", and eight criteria lost their only coverage claim without losing their
+tick. That PR deliberately did not untick them: `CHECKED_SC_BASELINE` exists
+to stop a suite being made green by unchecking, and doing it silently is the
+same defect from the other side. #327 is the ruling that was deferred.
+
+Each of the eight was checked against the tree rather than against the
+judgement that produced the tick.
+
+| SC | verdict | what was actually found |
+|---|---|---|
+| SC-9 | **false — unticked** | `TestSchema` (`lib/rungate-schema.ts:41`) declares `start`, `apiBase`, `command`, `timeout`, `note`. Two of the four fields the criterion names — `test.rebuild` and `test.stop` — do not exist. |
+| SC-93 | **not falsifiable — unticked** | "No global dependencies" is undefined, and the tree holds both kinds: `homedir()` in `lib/paths.ts` and `hooks/lib/paths.ts` resolves the `~/.rungate` STATE directory, which is the design, while `scripts/test-clean-env.ts` records a real one — a `$HOME/.claude/hooks/lib/.gate-salt` only this machine has. A criterion that cannot be failed cannot be passed either. Rewriting it to name what counts is its own issue. |
+| SC-200 | **false — unticked** | There is no generate-score loop. Searched `lib/`, `gates/`, `scripts/` for the loop, for `generateScore`, and for any iteration-findings count; the only hit anywhere is an unrelated field list in `gates/schema-parity.test.ts`. |
+| SC-201 | **false — unticked** | `scripts/extract-constraints.ts` reads a `## Hard Constraints` section but there is no review queue. No `reviewQueue`, `review-queue` or `review_queue` exists in any `.ts`, `.json` or `.jsonl` in the repo, so the half of the criterion that routes auto-extracted rules somewhere has nothing to route them to. |
+| SC-123 | **tick is sound** | Its conformity assertion PASSES. The coverage lookup was simply the wrong instrument — `.github/copilot-instructions.md` exists, which is all the criterion asks. |
+| SC-202 | **tick is sound** | `lib/rule-provenance.ts` implements it and `test/rule-provenance.test.ts` drives it. The claim was never declared in a position the scanner credits; it is now. |
+| SC-501 | **superseded** | Its line already opens `SUPERSEDED by SC-531/SC-534`, exactly as SC-499 and SC-500 do beside it. The convention is deliberate — the line records what the criterion used to say and why it was wrong — and demanding a test for a criterion that explicitly no longer applies would push the spec to delete its own history. Supersession is now a recognised cover state (`lib/sc-cover.ts`). |
+| SC-502 | **false — unticked** | "No `execSync.*gh` or `Bun.spawnSync.*gh` in `lib/`, `hooks/`, `gates/`" is a mechanical absence check wearing a `(behavioral)` tag, which exempted it from every check (#328's complaint, instance-wise). It was first classified *satisfied* off a grep — and the grep was wrong. `gates/workflow.test.ts:1570` calls ``execSync(`gh issue view ...`)`` with the command on the NEXT LINE, so a line-oriented search sees nothing and an executed test sees it immediately. The criterion had been ticked over a live violation for its whole life. Migrating that call is the GitHub-API-migration class rather than this one, so it is banked by name in `test/ticked-sc-cover.test.ts` and filed. |
+
+`CHECKED_SC_BASELINE` is 261 and the tree carries 744 ticked criteria after
+these four, so the floor is not reached and nothing needed lowering. Recorded
+rather than adjusted, because a baseline silently left alone is
+indistinguishable from one nobody checked.
+
+### The eight were the visible edge
+
+Measured across the whole tree while classifying them: **748 ticked criteria,
+161 with no cover of any kind** — no declaring claim, no passing conformity
+assertion, no behavioural exemption, no supersession.
+
+| spec | uncovered |
+|---|---|
+| `bootstrap-data-flow/success-criteria.md` | 125 (121 after the four above) |
+| `INSTRUCTION-COMPLIANCE-SPEC.md` | 12 |
+| `AGENTS-MD-TEMPLATE-SPEC.md` | 11 |
+| `CONFIG-DRIVEN-TESTING-SPEC.md` | 8 |
+| `AGENT-BRIEF-TEMPLATE-SPEC.md` | 2 |
+| `DA-COMPLIANCE-SPEC.md` | 2 |
+| `HOOK-ARCHITECTURE-SPEC.md` | 1 |
+
+#327's SC-5 asks for a test asserting that count is zero. It cannot be zero
+today without writing 157 tests or withdrawing 157 ticks, and a guard written
+to pass over a backlog it cannot see is the defect this issue is about. So it
+ships as a per-spec ratchet at the measured numbers, ratcheting both ways —
+a spec over its number fails, and so does a spec under it, because an entry
+that has stopped being a violation is an entry nobody will ever remove.
