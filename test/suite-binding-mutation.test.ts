@@ -50,7 +50,8 @@ const BINDING_SIGNATURE = "export function suiteVerdictViolations(val: unknown):
  * AC evidence commands were broken and printed it; nothing turned that reading
  * into a refusal. `prevalidationViolations` is now the one site that does.
  */
-const PREVALIDATION_SIGNATURE = "export function prevalidationViolations(val: unknown): string[] {";
+const PREVALIDATION_SIGNATURE =
+  "export function prevalidationViolations(val: unknown, gatePhase?: unknown): string[] {";
 
 let SCRATCH = "";
 let WORK = "";
