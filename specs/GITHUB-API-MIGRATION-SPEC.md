@@ -114,7 +114,24 @@ that a tool NAME is present in a prompt, which is true whether or not the tool e
 ### Phase 4 — Handle remaining ship.js gaps
 
 - [x] SC-501: SUPERSEDED by SC-531/SC-534 (#137) — was "workflows/ship.js names the MCP create- and update-pull-request tools". It named both, and opened no PR on any run
-- [ ] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
+- [x] SC-502: No GitHub-CLI subprocess in lib/, hooks/ or gates/ — the scan in `test/ticked-sc-cover.test.ts` reads every source file in those three directories, asserts it read a substantial corpus before concluding anything, and holds an empty known-violations list that ratchets both ways
+
+<!--
+SC-502 lost its `(behavioral)` tag in #395, and the tag is why it needed one.
+
+This is a mechanical absence check and always was. Marked behavioural, it was
+exempt from every mechanical check in the repo — so nothing ran it, while its
+tick read as proof that something had. The worst of both.
+
+It was ticked over a live violation for its entire life. `gates/workflow.test.ts`
+reached the GitHub CLI for an issue's labels with the exec call on one line and
+the command on the next, and every search for the pattern was line-oriented.
+#327 found it by writing the test the tick implied, and unticked the criterion;
+#395 removed the call. The statement above also drops the regex spellings it
+used to name, because naming two spellings is what invited a search narrow
+enough to miss a third.
+-->
+
 
 ### Phase 5 — Auth actually resolves (#139, #140)
 

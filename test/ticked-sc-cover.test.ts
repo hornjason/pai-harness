@@ -202,19 +202,24 @@ describe("SC-893 of GITHUB-API-MIGRATION-SPEC.md: gh never reaches a subprocess"
   });
 
   /**
-   * One known violation, banked (#327).
+   * Empty, as of #395.
    *
-   * SC-502 was classified "satisfied, needs a test" off a grep. The grep was
-   * wrong and this test is why: `gates/workflow.test.ts:1570` calls
-   * `execSync(\`gh issue view ...\`)` with the command on the NEXT LINE, so
-   * a line-oriented search sees nothing. The criterion has been ticked over
-   * a live violation, and SC-502 is unticked in this change.
+   * It was banked at one. SC-502 had been classified "satisfied, needs a
+   * test" off a grep, and the grep was wrong: `gates/workflow.test.ts`
+   * reached the GitHub CLI with the exec on one line and the command on the
+   * next, so a line-oriented search saw nothing. The criterion had been
+   * ticked over a live violation for its whole life, and #327 unticked it.
    *
-   * Listed rather than fixed: migrating that call to `scripts/github-op.ts`
-   * is the GitHub-API-migration class, not the false-tick class this issue
-   * is about. Filed separately. The list ratchets both ways.
+   * #395 removed the call — the gate reads labels through `getIssueLabels`
+   * in `lib/github.ts` now, with the issue number and repo slug as
+   * arguments rather than interpolated into a command string — so the list
+   * goes empty and SC-502 is ticked again, with its `(behavioral)` tag
+   * removed because the criterion is mechanically checkable and that tag is
+   * what exempted it from every check.
+   *
+   * The list ratchets both ways, so this cannot quietly refill.
    */
-  const KNOWN_GH_SUBPROCESS = ["gates/workflow.test.ts"];
+  const KNOWN_GH_SUBPROCESS: string[] = [];
 
   test("no gh subprocess in lib/, hooks/ or gates/ beyond the one known", () => {
     const offenders = sourceFiles()

@@ -238,6 +238,50 @@ export async function getIssue(client: GitHubClient, repoSlug: string, issueNumb
 }
 
 /**
+ * An issue's label names (#395).
+ *
+ * Exists because `gates/workflow.test.ts` read labels by shelling out to the
+ * GitHub CLI — a synchronous exec of `issue view --json labels`, with the
+ * issue number and repo slug interpolated into the command string.
+ *
+ * That call is NOT reproduced here, and the omission is deliberate rather
+ * than stylistic. `test/ticked-sc-cover.test.ts` scans `lib/`, `hooks/` and
+ * `gates/` for exactly that spelling, and a docblock quoting it verbatim
+ * would be a violation sitting inside the module written to remove one.
+ * Today the scan's pattern happens not to match across a ` * ` comment
+ * prefix, which is luck and not design — the same kind of luck that let the
+ * original survive. Describe it; do not spell it.
+ *
+ * Two things were wrong with it beyond the architecture GITHUB-API-
+ * MIGRATION-SPEC.md lays down. It needed `gh` installed and authenticated in
+ * whatever environment the gate ran in — often CI or a worktree. And it
+ * interpolated two values out of workflow state into a SHELL STRING; this
+ * takes arguments, and Octokit puts them in a URL path and a query, so there
+ * is no command line for them to be part of.
+ *
+ * Worth recording how it survived: SC-502 forbids exactly this and was
+ * ticked over it for the criterion's whole life, because the call puts
+ * `execSync(` on one line and the command on the next and every grep for it
+ * was line-oriented. A text search cannot see across a line break, which is
+ * the "detector narrower than what it detects" shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * The shape is defensive because the API's is: `labels` is a list whose
+ * entries are either a string or an object carrying `name`.
+ */
+export async function getIssueLabels(
+  client: GitHubClient,
+  repoSlug: string,
+  issueNumber: number,
+): Promise<string[]> {
+  const issue = await getIssue(client, repoSlug, issueNumber);
+  const raw = Array.isArray(issue?.labels) ? issue.labels : [];
+  return raw
+    .map((l: unknown) => (typeof l === "string" ? l : (l as { name?: unknown })?.name))
+    .filter((n: unknown): n is string => typeof n === "string" && n.length > 0);
+}
+
+/**
  * Add a comment to an issue.
  */
 export async function addComment(client: GitHubClient, repoSlug: string, issueNumber: number, body: string): Promise<any> {
