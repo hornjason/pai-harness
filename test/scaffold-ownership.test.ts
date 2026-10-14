@@ -385,11 +385,22 @@ describe("#208 AC-2: measured on this repo", () => {
       .split("\n")
       .map(l => l.slice(3).trim())
       .filter(rel => rel && !rel.startsWith(".claude/worktrees/") && existsSync(join(ROOT, rel)));
-    expect(dirty.length, "nothing to copy — the fixture would measure HEAD, not this change")
-      .toBeGreaterThan(0);
     for (const rel of dirty) {
       mkdirSync(dirname(join(clone, rel)), { recursive: true });
       writeFileSync(join(clone, rel), readFileSync(join(ROOT, rel)));
+    }
+
+    // The invariant, asserted rather than the copy. A first draft demanded
+    // `dirty.length > 0` and failed on CI for a correct reason: there the
+    // tree is clean, the clone of HEAD already carries the change, and
+    // copying nothing is right. "Something was dirty" is a fact about one
+    // machine. "The clone's sources are the ones under test" is the fact
+    // the case actually depends on, and it holds in both places.
+    for (const rel of ["lib/scaffold/steps.ts", "scripts/scaffold-project.ts"]) {
+      expect(
+        readFileSync(join(clone, rel), "utf-8"),
+        `${rel} in the clone is not the one being tested — the fixture would measure HEAD`,
+      ).toBe(readFileSync(join(ROOT, rel), "utf-8"));
     }
 
     // Dependencies too. A clone has no `node_modules`, so the scaffold's
