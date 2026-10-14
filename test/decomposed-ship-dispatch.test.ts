@@ -20,6 +20,8 @@ import { join } from "path";
 // SPEC-REF: PARALLEL-AGENT-COORDINATION-SPEC.md § Success Criteria
 
 const REPO_ROOT = join(import.meta.dir, "..");
+/** The run repo, and the remote every fixture worktree reports (#218). */
+const RUN_REPO = "owner/project";
 const SHIP_PATH = join(REPO_ROOT, "workflows", "ship.js");
 const shipSource = readFileSync(SHIP_PATH, "utf-8");
 
@@ -65,6 +67,18 @@ function loadRunDecomposedShip(deps: {
     `${shipSource.slice(guardStart, guardEnd)}\nreturn implementRefusal;`,
   )();
 
+  // #218's guard, injected for the same reason as the one above: a stub
+  // would let this block and the real one disagree about which repository a
+  // worktree belongs to, and nothing would notice.
+  const identityStart = shipSource.indexOf("// ──── WORKTREE-IDENTITY-START ────");
+  const identityEnd = shipSource.indexOf("// ──── WORKTREE-IDENTITY-END ────");
+  if (identityStart === -1 || identityEnd === -1) {
+    throw new Error("ship.js is missing the WORKTREE-IDENTITY-START/END markers");
+  }
+  const worktreeIdentity = new Function(
+    `${shipSource.slice(identityStart, identityEnd)}\nreturn worktreeIdentity;`,
+  )();
+
   const factory = new Function(
     "log",
     "briefedAgent",
@@ -75,6 +89,8 @@ function loadRunDecomposedShip(deps: {
     "BUILD_RESULT_SCHEMA",
     "runImplement",
     "implementRefusal",
+    "worktreeIdentity",
+    "REPO",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -88,6 +104,8 @@ function loadRunDecomposedShip(deps: {
     {},
     deps.runImplement ?? (async () => ({ success: true, buildResult: {} })),
     implementRefusal,
+    worktreeIdentity,
+    RUN_REPO,
   );
 
   return { runDecomposedShip, logs };
@@ -107,7 +125,7 @@ function makeTimingAgent(opts: {
     if (opts.failOn && label.includes(opts.failOn)) {
       return { success: false, findings: ["injected failure"] };
     }
-    return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt" };
+    return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git` };
   };
 }
 

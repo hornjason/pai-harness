@@ -111,6 +111,12 @@ const BUILD_RESULT_SCHEMA = {
     testOutput: { type: 'string' },
     findings: { type: 'array', items: { type: 'string' } },
     worktreePath: { type: 'string' },
+    // The worktree's `origin` URL, beside the pwd it is a property of (#218).
+    // ship.js runs in the Workflow sandbox and cannot spawn git, so the only
+    // channel for a fact about the checkout is the agent that is standing in
+    // it — the same channel `worktreePath` already uses. Absent is a refusal,
+    // not a pass: see worktreeIdentity.
+    worktreeRepo: { type: 'string' },
   },
   required: ['success'],
 }
@@ -645,6 +651,147 @@ Only return the rule TEXT — strip leading dashes, numbers, and whitespace.
   REINFORCEMENT_CACHE[role] = (result && result.rules) || []
   return REINFORCEMENT_CACHE[role]
 }
+
+// ──── WORKTREE-IDENTITY-START ────
+/**
+ * Which repository did an isolated agent actually end up in? (#218)
+ *
+ * INLINED, not imported. lib/worktree-repo.ts is the source of truth; the
+ * sandbox has no module loading (#69). test/worktree-repo.test.ts runs both
+ * copies over one shared matrix and fails on any divergence.
+ *
+ * On run wf_5e3ed885-98c the first Marcus got a worktree under
+ * `…/rungate/.claude/worktrees/` and the remediation Marcus got one under
+ * `…/DailyBriefDashboard/.claude/worktrees/` — a checkout of
+ * hornjason/asaCommandCenter, for an issue targeting hornjason/pai-harness.
+ * The operator had changed directory mid-run and `isolation: 'worktree'` is
+ * resolved by the agent runtime against the session's cwd.
+ *
+ * `opts.cwd = PROJECT_ROOT` below has pinned every isolated spawn since
+ * 2026-09-23, three weeks BEFORE that run. It did not hold. So the guard
+ * cannot be another way of DERIVING the path — it has to be a reading of
+ * where the agent actually is, which is why the agent reports its origin
+ * remote beside its pwd and this compares the two slugs rather than two
+ * paths. A path prefix check answers the question whose answer already
+ * drifted.
+ *
+ * Fail-closed, with the no-answer cases kept apart: an unreadable remote and
+ * an unreported one are different refusals, because collapsing them lets a
+ * reading that never ran read as a checkout with no remote.
+ */
+function repoSlug(remote) {
+  if (typeof remote !== 'string') return null
+  let s = remote.trim()
+  if (!s) return null
+  s = s.replace(/\/+$/, '').replace(/\.git$/i, '').replace(/\/+$/, '')
+  const scp = s.match(/^[^/]*@[^/:]+:(.+)$/)
+  if (scp) return normaliseSlug(scp[1])
+  const url = s.match(/^[a-z][a-z0-9+.-]*:\/\/[^/]*\/(.+)$/i)
+  if (url) return normaliseSlug(url[1])
+  if (/^[^/\s]+\/[^/\s]+$/.test(s)) return normaliseSlug(s)
+  return null
+}
+
+/**
+ * EXACTLY two segments, lowercased — not "the last two".
+ *
+ * Taking the tail of a longer path is a parser differential:
+ * `https://host/evil/repo/owner/name` is a path git reads as the repository
+ * `evil/repo/owner/name`, and a tail-taking parser reads it as `owner/name`
+ * and reports a MATCH. The string being compared comes from an agent reply,
+ * so a parser that can be talked into agreeing is the whole guard.
+ */
+function normaliseSlug(path) {
+  const parts = String(path).split('/').filter(Boolean)
+  if (parts.length !== 2) return null
+  return parts.join('/').toLowerCase()
+}
+
+/**
+ * A remote with every credential-bearing part blanked.
+ *
+ * Refusals are logged, and a CI checkout's origin carries a live token.
+ * Quoting the raw string writes it into a run log that gets read, copied
+ * into an issue, and kept.
+ *
+ * Three places, not one. Redacting only the authority is incomplete, and
+ * these strings reach the redactor precisely BECAUSE they could not be
+ * parsed: userinfo, a `?access_token=` query, and anything left that is
+ * shaped like a key. A deny-list of parameter names is a list someone has to
+ * keep; the shape rule covers the form nobody listed. It stays narrow on
+ * purpose — a redactor that mangled every URL would make every refusal
+ * unreadable, which is worse than the leak for the refusals that quote an
+ * ordinary string.
+ */
+const KEY_SHAPED = /\b(?:gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{12,})\b/g
+
+function redactRemote(remote) {
+  return String(remote)
+    .replace(/(^[a-z][a-z0-9+.-]*:\/\/)[^/@]*@/i, '$1<redacted>@')
+    .replace(/^([^/\s]*):[^/\s@]*@/, '$1:<redacted>@')
+    .replace(/([?&][^=&\s]*(?:token|auth|key|secret|password|pat)[^=&\s]*=)[^&\s]+/gi, '$1<redacted>')
+    .replace(KEY_SHAPED, '<redacted>')
+}
+
+function worktreeIdentity(worktreePath, expectedRepo, reported) {
+  const expected = repoSlug(expectedRepo)
+  const where = worktreePath || '(no path reported)'
+
+  if (!expected) {
+    return {
+      verdict: 'unreported', actual: null, expected: null,
+      // `repo` redacted too: this branch fires precisely when it was NOT a
+      // bare slug, and "whatever was passed instead" is exactly the value
+      // that might be a URL with a token in it.
+      refusal: `${where} could not be checked — the run did not state a repository to compare against (repo was ${JSON.stringify(expectedRepo === undefined || expectedRepo === null ? null : redactRemote(String(expectedRepo)))}), so a worktree in any repository would pass (#218)`,
+    }
+  }
+  if (reported === null || reported === undefined || String(reported).trim() === '') {
+    return {
+      verdict: 'unreported', actual: null, expected,
+      refusal: `${where} reported no origin remote, so there is nothing to compare against ${expected} — a reading that never happened is not a checkout that matched (#218)`,
+    }
+  }
+  const actual = repoSlug(reported)
+  if (!actual) {
+    return {
+      verdict: 'unreadable', actual: null, expected,
+      refusal: `${where} reported an origin this run cannot read as owner/name (${JSON.stringify(redactRemote(String(reported).trim()))}), so it cannot be compared against ${expected} (#218)`,
+    }
+  }
+  if (actual === expected) return { verdict: 'match', actual, expected, refusal: null }
+  return {
+    verdict: 'mismatch', actual, expected,
+    refusal: `${where} is a worktree of ${actual}, but this run targets ${expected} — an isolated agent resolved its worktree from ambient cwd rather than the run's projectRoot. Work done there would be written into the wrong repository (#218).`,
+  }
+}
+
+/**
+ * Every refusal across a set of agent reports, in reported order.
+ *
+ * By DEFAULT a row with no `worktreePath` is SKIPPED, not refused: a spawn
+ * that ran without isolation has no worktree to check, and refusing those
+ * would fire the guard on every non-isolated agent in the run. A row that has
+ * a path and no remote is the `unreported` refusal — the agent was asked and
+ * did not answer, which is a different thing from never having been asked.
+ *
+ * `requirePath` closes that default where it is a BYPASS. At a collection
+ * boundary every row will be committed from, so "no path" is not "nothing to
+ * check" — it is a row claiming files with no checkable origin, and omitting
+ * one field would otherwise skip the guard entirely.
+ */
+function worktreeIdentityViolations(reports, expectedRepo, opts = {}) {
+  if (!Array.isArray(reports)) return []
+  const out = []
+  for (const r of reports) {
+    const path = r && typeof r.worktreePath === 'string' ? r.worktreePath.trim() : ''
+    if (!path && !opts.requirePath) continue
+    const got = worktreeIdentity(path, expectedRepo, r && r.worktreeRepo)
+    if (got.refusal) out.push(got.refusal)
+  }
+  return out
+}
+// ──── WORKTREE-IDENTITY-END ────
 
 // ──── BRIEFED-AGENT-START ────
 async function briefedAgent(prompt, opts = {}) {
@@ -2727,12 +2874,44 @@ If tests fail, fix them before reporting.
 
 Report: success, branch name, files changed, test output, evidence per AC.
 Also report worktreePath: your current working directory (run pwd and include the result).
+Also report worktreeRepo: run \`git remote get-url origin\` in that directory and
+include exactly what it printed. Do NOT substitute the repo named in your brief —
+this run compares the two, and on wf_5e3ed885-98c they disagreed: the worktree was
+a checkout of a different project entirely (#218). If the command fails, report
+what it said rather than omitting the field.
   `, {
     label: 'marcus', phase: 'Implement', role: 'marcus',
     contextExcerpts: useExcerpts ? contextExcerpts : null,
     contextFiles: !useExcerpts && acContextFiles.length > 0 ? acContextFiles : null,
     schema: BUILD_RESULT_SCHEMA
   })
+
+  // Before the success check, deliberately (#218). On wf_5e3ed885-98c the
+  // agent DID refuse — correctly, naming the wrong repository — and all the
+  // run recorded was `success: false` with an unknown reason. Checking
+  // identity first means the run names the cause itself rather than relaying
+  // a findings array, and it also catches the far worse case: an agent that
+  // did NOT notice and reported success over work written into another
+  // project's checkout.
+  //
+  // `worktreeIdentity` directly rather than the list helper: this spawn is
+  // isolated by construction (role `marcus` has no `isolation` override, so
+  // briefedAgent gives it a worktree), so an agent that reports NEITHER a
+  // path nor a remote has not answered a question it was asked — and the
+  // list helper skips pathless rows on purpose, because the non-isolated
+  // spawns elsewhere in the run have no worktree to check. A guard that can
+  // be switched off by omitting one field is the shape this file is full of
+  // fixes for.
+  if (buildResult) {
+    const identity = worktreeIdentity(buildResult.worktreePath || '', REPO, buildResult.worktreeRepo)
+    if (identity.refusal) {
+      log(`IMPLEMENT FAILED: ${identity.refusal}`)
+      return {
+        success: false,
+        buildResult: { ...buildResult, success: false, findings: [identity.refusal] },
+      }
+    }
+  }
 
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
@@ -2768,6 +2947,7 @@ Also report worktreePath: your current working directory (run pwd and include th
       // see auditWorktreeClaims — so an ordinary run collects as before.
       agentResults: [{
         worktreePath: buildResult.worktreePath || '',
+        worktreeRepo: buildResult.worktreeRepo || '',
         filesChanged: buildResult.filesChanged || [],
       }],
     },
@@ -2815,10 +2995,27 @@ ${subIssue.filesToModify.map(f => `- ${f}`).join('\n')}
 Do NOT commit or push yet — Quinn will validate first.
 Report: success, files changed, test output.
 Also report worktreePath: your current working directory.
+Also report worktreeRepo: what \`git remote get-url origin\` printed in that
+directory (#218) — not the repo named in your brief, the one your checkout has.
       `, {
         label: `marcus-sub-${subIssue.number}`, phase: 'Implement', role: 'marcus',
         schema: BUILD_RESULT_SCHEMA
       })
+
+      // Before the success check, for the same reason runImplement does it
+      // (#218): a sub-issue agent in the wrong repository reports either a
+      // refusal with no machine-readable cause, or — worse — success.
+      if (buildResult) {
+        const identity = worktreeIdentity(buildResult.worktreePath || '', REPO, buildResult.worktreeRepo)
+        if (identity.refusal) {
+          log(`Sub-issue FAILED: ${subIssue.title} — ${identity.refusal}`)
+          return {
+            subIssue,
+            buildResult: { ...buildResult, success: false, findings: [identity.refusal] },
+            ok: false,
+          }
+        }
+      }
 
       if (!buildResult || !buildResult.success) {
         log(`Sub-issue FAILED: ${subIssue.title}`)
@@ -2862,6 +3059,10 @@ Also report worktreePath: your current working directory.
           // agents' paths — 37 minutes of valid work that would not commit (#81).
           agentResults: completed.map(r => ({
             worktreePath: r.buildResult?.worktreePath || '',
+            // The remote travels with the worktree it is a property of
+            // (#218), so the batch check at the collection boundary reads the
+            // same reading this spawn was already judged on.
+            worktreeRepo: r.buildResult?.worktreeRepo || '',
             filesChanged: r.buildResult?.filesChanged || [],
             // The claim travels with the result (#178, SC-413). Sent to the
             // agent as prose it is advice; carried back alongside what the
@@ -2885,6 +3086,7 @@ Also report worktreePath: your current working directory.
         // the claim is what #178 lost.
         agentResults: completed.map(r => ({
           worktreePath: r.buildResult?.worktreePath || '',
+          worktreeRepo: r.buildResult?.worktreeRepo || '',
           filesChanged: r.buildResult?.filesChanged || [],
           claimedFiles: r.subIssue?.filesToModify || [],
         })),
@@ -2920,6 +3122,39 @@ if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.lengt
     return await terminalFailure('IMPLEMENT_FAILED', implementResult)
   }
 }
+
+// ──── COLLECT-IDENTITY-START ────
+// The collection boundary, where BOTH implement paths have converged and
+// every worktree this run will commit from is known (#218).
+//
+// Each spawn was already judged on its own reading, so this is deliberately a
+// second reading of the same facts at a different place. It is not redundant
+// for the reason that matters: the per-spawn checks live inside the two
+// implement functions, and a THIRD path added later — or a result that
+// reached `agentResults` by any other route — would be committed from without
+// passing either of them. This is the last statement before anything is
+// staged, so it is where "may this worktree contribute to the repository" is
+// the question being asked.
+// `requirePath` because every row here WILL be committed from: a row with no
+// path is not "nothing to check", it is a row claiming files with no
+// checkable origin, and the default skip would let one omitted field switch
+// the guard off at the only place it is load-bearing.
+const preCollectIdentity = worktreeIdentityViolations(
+  implementResult.buildResult?.agentResults, REPO, { requirePath: true })
+if (preCollectIdentity.length > 0) {
+  for (const r of preCollectIdentity) log(`COLLECT REFUSED: ${r}`)
+  return await terminalFailure('WORKTREE_REPO_MISMATCH', {
+    reason: preCollectIdentity.join('; '),
+    // Redacted, because this is the payload that becomes the run's result
+    // and is printed, stored and pasted into an issue. `worktreeRepo` is a
+    // remote URL an agent reported, and a CI checkout's carries a token.
+    agentResults: (implementResult.buildResult?.agentResults || []).map(r => ({
+      ...r,
+      ...(r && r.worktreeRepo ? { worktreeRepo: redactRemote(r.worktreeRepo) } : {}),
+    })),
+  })
+}
+// ──── COLLECT-IDENTITY-END ────
 
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code
 const marcusWorktreePath = implementResult.buildResult?.worktreePath || PROJECT_ROOT
@@ -3984,6 +4219,28 @@ and do NOT report true if the command failed (#166, #169).
         log('Verify passed after BUILD regression fix')
       }
       }
+    } else {
+      // #218: this `if` had no else, so a remediation that did nothing was
+      // indistinguishable from one that was never attempted — no log line, no
+      // status, and the run walked on to rook-scope and rook. On
+      // wf_5e3ed885-98c the remediation Marcus refused because it had been
+      // placed in another project's worktree, and the run advanced anyway.
+      //
+      // Terminal rather than logged. The existing "logged, not returned"
+      // reasoning above is about a round whose WORK could not be collected —
+      // there the round still ran and the downstream gates still have a
+      // verdict to refuse on. A round that produced nothing leaves the verify
+      // failure exactly as it was and spends a security review and a
+      // container rebuild finding that out.
+      const why = (reimpl?.buildResult?.findings || []).join('; ')
+        || (reimpl?.buildResult?.testOutput && String(reimpl.buildResult.testOutput).trim())
+        || 'the remediation agent reported failure with no detail'
+      log(`VERIFY BUILD regression produced no work — ${why}`)
+      return await terminalFailure('VERIFY_FAILED', {
+        reason: `BUILD regression round ${regressionCount} did not implement anything: ${why}`,
+        verifyResult,
+        reimplResult: reimpl?.buildResult,
+      })
     }
   }
 }
@@ -5720,7 +5977,16 @@ workflow-state.json by hand, and do NOT report true if the command failed.
         return shipFailed('Ship', 'the ship gate still failed after a BUILD regression fix')
       }
     } else {
-      return shipFailed('Ship', 'BUILD regression failed')
+      // The reason travels with the refusal (#218). This branch already
+      // existed and said only "BUILD regression failed", which is the status
+      // restated — the agent's own findings were where the cause lived, and
+      // on wf_5e3ed885-98c that was "the assigned worktree belongs to a
+      // different repository than the issue targets". Dropping it makes a
+      // recoverable incident a transcript dig.
+      const shipWhy = (reimpl?.buildResult?.findings || []).join('; ')
+        || (reimpl?.buildResult?.testOutput && String(reimpl.buildResult.testOutput).trim())
+        || 'the remediation agent reported failure with no detail'
+      return shipFailed('Ship', `BUILD regression failed: ${shipWhy}`)
     }
   } else {
     return shipFailed('Ship', 'the ship gate did not pass and no BUILD regression path was available')
