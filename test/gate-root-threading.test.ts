@@ -1,7 +1,12 @@
 /**
  * The gate's root comes from the run, not from whoever imported the module (#190)
  *
- * SC-388 (GATE-CONTRACTS-SPEC.md), AC-1/AC-4/AC-6 of #190.
+ * SC-1401 (GATE-CONTRACTS-SPEC.md), AC-1/AC-4/AC-6 of #190.
+ *
+ * That subsection was numbered SC-388 until the GATE-CONTRACTS headings were
+ * renumbered out of the range four other specs had reissued. The old number
+ * is still a live criterion in SCAFFOLD-DECOMPOSITION-SPEC.md, and an
+ * unticked one, so this reference must not keep naming it.
  *
  * `gates/gate-executor.ts` called `harnessRoot()` at seven separate `cwd:`
  * sites. Each call re-resolved a root from the environment and from the

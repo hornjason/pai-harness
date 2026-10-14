@@ -48,6 +48,23 @@
  * that GATE-CONTRACTS-SPEC.md owns as `### SC-N:` headings read as unique
  * while a second spec tracked each one. Covers SC-882..887 of
  * HARNESS-STANDARD.md.
+ *
+ * ## The renumbering #392 deferred, and what it changed here
+ *
+ * Those ten headings now live in a block no other spec holds, which empties
+ * the `crossFormCollisions` bank and retires the qualification the credits
+ * depended on. Two cases change shape as a result, and both changes are the
+ * same point: a guard whose input has been fixed cannot keep proving itself
+ * on that input. The end-to-end credit path moved onto a planted collision,
+ * and the real tree now asserts the collision is absent — paired, in both
+ * places, with a positive control, because an empty expectation passes just
+ * as well when the detector has stopped detecting.
+ *
+ * The renumbering also created a hazard in the opposite direction. An
+ * ambiguous number cannot be credited from a bare mention, so prose about
+ * the collision was safe while the collision existed; making it unambiguous
+ * means a declaring mention now ticks a live criterion that is false. Covers
+ * SC-1410 and SC-1411 of HARNESS-STANDARD.md.
  */
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "fs";
@@ -333,16 +350,16 @@ describe("#358: an issue's own criterion is not the registry's", () => {
     // from the eleven below them, and under a count they would have been
     // indistinguishable from someone writing `SC-5` for an issue's criterion.
     //
-    // SC-379 and SC-388 became ambiguous when the registry started reading
-    // `### SC-N:` headings: GATE-CONTRACTS-SPEC.md owns both numbers for
-    // subsections and another spec tracks each as a checkbox. The mentions
-    // here are prose ABOUT that collision, which is exactly what should not
-    // be credited, so they are correctly listed and the right way to remove
-    // them is to renumber one side rather than to qualify the prose.
+    // Two ids left this list when GATE-CONTRACTS-SPEC.md's ten subsection
+    // headings were renumbered into a block no other spec holds. They were
+    // here because the registry had started reading `### SC-N:` headings and
+    // two specs then declared each number, so prose ABOUT the collision read
+    // as a claim on whichever criterion the reader guessed. #392 banked them
+    // and said the fix was to renumber one side rather than qualify the
+    // prose; that is now done, and the entries come out in the same change.
     const CENSUS = [
       "SC-1", "SC-2", "SC-3", "SC-4", "SC-5", "SC-6", "SC-7",
       "SC-A1", "SC-A2", "SC-A3", "SC-A4", "SC-A5", "SC-A6",
-      "SC-379", "SC-388",
     ].sort();
     const reg = readScRegistry();
     const dir = join(REPO, "test");
@@ -556,83 +573,183 @@ describe("SC-883: an id two specs declare in any form needs a qualifier", () => 
   });
 });
 
-describe("SC-884: the reported false credit, on the real tree", () => {
-  // No test title in this file pairs the colliding id with a spec name, and
-  // that is not stylistic. A qualified title claim is exactly what credits a
-  // multi-spec id, so a title reading "...SCAFFOLD-DECOMPOSITION's SC-388"
-  // ticks the criterion this file exists to stop being ticked. The first
-  // draft did, and the suite caught it — the same self-reference trap
-  // `.claude/rules/claiming-sc-coverage.md` records catching itself three
-  // times. The id lives in comments and string literals here, neither of
-  // which is a declaring position for an ambiguous id.
-  const COLLIDING = "SC-388";
+describe("SC-884: the reported false credit, and the renumbering that removed it", () => {
+  /**
+   * #392 banked the collision and said the fix was to renumber one side. That
+   * is now done: GATE-CONTRACTS-SPEC.md's ten subsection headings moved to a
+   * block no other spec holds, so the two specs that each declared SC-388 are
+   * one spec again.
+   *
+   * Which changes what these cases have to prove. A real-tree assertion that
+   * the collision EXISTS cannot survive its own fix, and rewriting it to
+   * assert the collision is gone would leave the end-to-end credit path —
+   * the actual bug — untested, because there is no longer a real input that
+   * exercises it. So the path is driven over a PLANTED collision in a temp
+   * tree, and the real tree gets the opposite assertion.
+   *
+   * No test title in this file pairs a real id with a spec name, and that is
+   * not stylistic. A qualified title claim is exactly what credits a
+   * multi-spec id, so a title naming SCAFFOLD-DECOMPOSITION beside its number
+   * ticks the criterion this file exists to stop being ticked. The first
+   * draft did, and the suite caught it — the same self-reference trap
+   * `.claude/rules/claiming-sc-coverage.md` records catching itself.
+   *
+   * The trap is sharper now than it was, and in the opposite direction.
+   * While the number was ambiguous, a bare comment mention credited nothing,
+   * so prose about it was safe by accident. Renumbering made it unambiguous,
+   * which means a mention in a declaring position now credits it for real —
+   * over a criterion that is still false. The last case below is the guard.
+   */
+  const FORMERLY_COLLIDING = "SC-388";
 
-  test("the reported id is declared by two specs once headings are read", () => {
+  test("the renumbering landed — one spec declares the number again", () => {
     const reg = buildScRegistry(specsOnDisk392());
-    const declarers = reg.declaredById.get(COLLIDING) ?? [];
-    expect(declarers.length, "the collision stopped being visible").toBe(2);
-    expect(declarers.some(f => f.includes("GATE-CONTRACTS-SPEC"))).toBe(true);
-    expect(declarers.some(f => f.includes("SCAFFOLD-DECOMPOSITION-SPEC"))).toBe(true);
+    const declarers = reg.declaredById.get(FORMERLY_COLLIDING) ?? [];
+    expect(
+      declarers,
+      "two specs declare this number again. Renumber one side rather than " +
+        "qualifying every mention of it.",
+    ).toEqual(["SCAFFOLD-DECOMPOSITION-SPEC.md"]);
+    expect(ambiguityOf(FORMERLY_COLLIDING, reg)).toBe("none");
   });
 
-  test("the comment claim in gate-root-threading no longer credits the other spec", () => {
-    // The bug, end to end through the real matcher over the real tree. The
-    // claim is a COMMENT, and a multi-spec id can only be claimed from a
-    // title that names its spec, so it credits nothing — which is right:
-    // GATE-CONTRACTS-SPEC.md has no checkbox for SC-388 to tick.
-    const credited = findTestFilesForSCs(
-      [{ id: COLLIDING, specFile: "SCAFFOLD-DECOMPOSITION-SPEC.md" }],
-      readScRegistry(),
-      TEST_392,
-    );
-    const everywhere = [...credited.entries()].flatMap(([file, cs]) =>
-      cs.map(c => `${file} -> ${c.specFile}::${c.id}`),
-    );
-    expect(everywhere, "a claim naming one spec ticked a criterion in another").toEqual([]);
+  test("a comment claim naming one spec credits nothing in another", () => {
+    // The bug, end to end through the real matcher, over a planted tree.
+    // The claim is a COMMENT, and a multi-spec id can only be claimed from a
+    // title that names its spec, so it credits nothing.
+    const dir = mkdtempSync(join(tmpdir(), "sc-884-"));
+    try {
+      writeFileSync(
+        join(dir, "fixture.test.ts"),
+        "// SC-9120 (GATE-SPEC.md)\nexport const x = 1;\n",
+      );
+      const reg = buildScRegistry([
+        { file: "GATE-SPEC.md", content: "### SC-9120: a gate's pass/fail criteria\n" },
+        { file: "OTHER-SPEC.md", content: "- [ ] SC-9120: something else entirely\n" },
+      ]);
+      const credited = findTestFilesForSCs(
+        [{ id: "SC-9120", specFile: "OTHER-SPEC.md" }],
+        reg,
+        dir,
+      );
+      const everywhere = [...credited.entries()].flatMap(([file, cs]) =>
+        cs.map(c => `${file} -> ${c.specFile}::${c.id}`),
+      );
+      expect(everywhere, "a claim naming one spec ticked a criterion in another").toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  test("the criterion it falsely certified is in fact unsatisfied", () => {
+  test("the same claim DOES credit once the collision is renumbered away", () => {
+    // The positive control, and the thing the renumbering actually buys. A
+    // matcher that refused every comment would satisfy the case above and
+    // break the 800-odd ordinary credits; this is the same fixture with the
+    // heading moved to a number nobody else holds.
+    const dir = mkdtempSync(join(tmpdir(), "sc-884-ok-"));
+    try {
+      writeFileSync(
+        join(dir, "fixture.test.ts"),
+        "// SC-9120 (GATE-SPEC.md)\nexport const x = 1;\n",
+      );
+      const reg = buildScRegistry([
+        { file: "GATE-SPEC.md", content: "### SC-9121: a gate's pass/fail criteria\n" },
+        { file: "OTHER-SPEC.md", content: "- [ ] SC-9120: something else entirely\n" },
+      ]);
+      const credited = findTestFilesForSCs(
+        [{ id: "SC-9120", specFile: "OTHER-SPEC.md" }],
+        reg,
+        dir,
+      );
+      expect((credited.get("fixture.test.ts") ?? []).map(c => c.id)).toEqual(["SC-9120"]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("the criterion it falsely certified is still unsatisfied", () => {
     // The regression, stated as the fact rather than as the checkbox: if
     // `.claude/rungate.json` ever grows a `keyFiles` field this test is the
     // one that says so, and the tick becomes legitimate.
     const cfg = JSON.parse(readFileSync(join(REPO, ".claude", "rungate.json"), "utf-8"));
     const spec = readFileSync(join(SPECS_392, "SCAFFOLD-DECOMPOSITION-SPEC.md"), "utf-8");
-    const ticked = spec.includes("- [x] SC-388:");
+    const ticked = spec.includes(`- [x] ${FORMERLY_COLLIDING}:`);
     expect(
       ticked,
-      "SC-388 is ticked but .claude/rungate.json has no keyFiles field",
+      "the criterion is ticked but .claude/rungate.json has no keyFiles field",
     ).toBe("keyFiles" in cfg);
+  });
+
+  test("no file in test/ credits that criterion from a declaring position", () => {
+    // What renumbering newly made possible, guarded rather than remembered.
+    // The number is unambiguous now, so a mention of it on its own line, in
+    // a label, or in a parenthetical credits a criterion that is FALSE — and
+    // this file is the one most likely to write it, because the number is
+    // its subject. Prose must keep it mid-sentence.
+    const offenders: string[] = [];
+    for (const f of readdirSync(TEST_392).filter(f => f.endsWith(".test.ts"))) {
+      const sites = coverageClaimSites(readFileSync(join(TEST_392, f), "utf-8"));
+      for (const s of sites) {
+        if (s.id !== FORMERLY_COLLIDING) continue;
+        if (s.kind === "title" || s.form) offenders.push(`${f} (${s.kind}/${s.form ?? "title"})`);
+      }
+    }
+    expect(
+      offenders,
+      "a declaring mention credits an unticked criterion whose fact is false. " +
+        "Move the id into the middle of a sentence.",
+    ).toEqual([]);
   });
 });
 
-describe("SC-885: the collisions already in the tree are counted, and cannot grow", () => {
+describe("SC-885: the tree holds no cross-form collisions, and cannot grow one", () => {
   /**
-   * A counted ratchet, per `.claude/rules/checks-must-be-able-to-fail.md`:
-   * the guard ships red, so the number is banked and what it means is
-   * written down.
+   * This shipped as a counted ratchet banked at ten, per
+   * `.claude/rules/checks-must-be-able-to-fail.md`: the guard shipped red,
+   * so the number was written down along with what it meant.
    *
-   * GATE-CONTRACTS-SPEC.md heads ten subsections SC-379..SC-388, and all ten
-   * numbers were later reissued as tracked checkboxes by four other specs.
-   * Renumbering is a spec-content decision — which side moves, and what
-   * happens to the DUPLICATE SC-388 heading inside GATE-CONTRACTS itself —
-   * and it is not being taken here. Qualification already stops them doing
-   * harm; this stops an eleventh appearing unnoticed.
+   * GATE-CONTRACTS-SPEC.md headed ten subsections whose numbers four other
+   * specs had each reissued as a tracked checkbox. #392 recorded that
+   * renumbering was a spec-content decision — which side moves, and what
+   * happens to the DUPLICATE heading GATE-CONTRACTS carried for its own
+   * gate-executor contract — and deferred it. Both questions are now
+   * answered: the headings moved to a block nobody else holds, and the
+   * duplicate turned out to be a stale pre-#190 contract contradicting the
+   * one above it, so it was removed rather than renumbered.
+   *
+   * The bank is therefore zero, and an empty expectation is the weakest kind
+   * of assertion there is — it passes just as well if the detector stops
+   * detecting. The two planted cases below are what keep it honest, and they
+   * are the reason this reads as a ratchet rather than as a wish.
    */
-  const KNOWN = [
-    "SC-379", "SC-380", "SC-381", "SC-382", "SC-383",
-    "SC-384", "SC-385", "SC-386", "SC-387", "SC-388",
-  ];
+  const KNOWN: string[] = [];
 
-  test("exactly the ten known cross-form collisions exist, and no more", () => {
+  test("no cross-form collision exists in the tree", () => {
     const found = crossFormCollisions(buildScRegistry(specsOnDisk392()))
       .map(c => c.split(" ")[0])
       .sort();
     expect(
       found,
-      "a new cross-form SC id collision appeared. The id is declared as a heading " +
+      "a cross-form SC id collision appeared. The id is declared as a heading " +
         "in one spec and a checkbox in another, so a bare mention names two criteria. " +
         "Renumber it rather than adding it to this list.",
     ).toEqual([...KNOWN].sort());
+  });
+
+  test("the scan reads the real specs, so finding none means something", () => {
+    // Without this the case above passes over an empty spec list, a changed
+    // directory, or a reader that returns nothing — the assertion that holds
+    // vacuously, shape 3 of checks-must-be-able-to-fail.md. It became load
+    // bearing the moment the banked number reached zero.
+    const reg = buildScRegistry(specsOnDisk392());
+    expect(reg.declaredById.size, "no declarations were read at all").toBeGreaterThan(500);
+    const headed = [...reg.declaredById.keys()].filter(
+      id => !(reg.byId.get(id) ?? []).length,
+    );
+    expect(
+      headed.length,
+      "no heading-form declaration was read, so a cross-form collision could not be seen",
+    ).toBeGreaterThan(5);
   });
 
   test("the checkbox-only collision guard still reports nothing, and still can", () => {
@@ -660,6 +777,83 @@ describe("SC-885: the collisions already in the tree are counted, and cannot gro
       { file: "TWO.md", content: "- [ ] SC-A94: a checkbox\n" },
     ]);
     expect(crossFormCollisions(anti)).toEqual([]);
+  });
+});
+
+/** Ids a single spec heads more than once. One declaration per number. */
+function duplicateHeadingIds(content: string, specFile: string): string[] {
+  const seen = new Map<string, number>();
+  for (const d of parseScHeadingDeclarations(content, specFile)) {
+    seen.set(d.id, (seen.get(d.id) ?? 0) + 1);
+  }
+  return [...seen.entries()].filter(([, n]) => n > 1).map(([id]) => id).sort();
+}
+
+describe("SC-1411: no spec heads two subsections with the same id", () => {
+  /**
+   * The collision that forced the renumbering was not only cross-spec.
+   * GATE-CONTRACTS-SPEC.md headed its own gate-executor contract TWICE under
+   * one number, and the two blocks disagreed about the input and output
+   * types — one of them describing a shape `gates/gate-executor.ts` does not
+   * have and never had an entry point for.
+   *
+   * Nothing could see it. `crossFormCollisions` compares specs to each other,
+   * and one file declaring a number twice is one declarer, which is correct
+   * for the cross-spec question and blind to this one. So a stale contract
+   * sat beside the live one from #190 until a renumbering read the headings
+   * in order and found ten where there should have been nine.
+   *
+   * A duplicate heading is worse than a duplicate checkbox, which
+   * `test/spec-sc-ids-unique.test.ts` already refuses: a checkbox at least
+   * gets ticked or does not, whereas two contract blocks under one number
+   * both read as authoritative and a reader cites whichever they scroll to.
+   */
+  test("no spec in the tree declares a heading id twice", () => {
+    const offenders: string[] = [];
+    for (const { file, content } of specsOnDisk392()) {
+      for (const id of duplicateHeadingIds(content, file)) offenders.push(`${file}: ${id}`);
+    }
+    expect(
+      offenders,
+      "a spec heads two subsections with one id. Both read as the contract and " +
+        "a reader cites whichever comes first — give one of them its own number, " +
+        "or delete the stale one.",
+    ).toEqual([]);
+  });
+
+  test("the detector reads a duplicate heading when there is one", () => {
+    // Proven able to fail on every run. The real-tree case above is an empty
+    // expectation now that the pair is resolved, and an empty expectation
+    // passes just as well if the parser stops parsing.
+    expect(
+      duplicateHeadingIds(
+        "### SC-9130: one contract\n\n### SC-9130: a contradicting contract\n",
+        "A-SPEC.md",
+      ),
+    ).toEqual(["SC-9130"]);
+  });
+
+  test("a heading and a checkbox under one id in one spec is not a duplicate", () => {
+    // The positive control, and the shape GATE-CONTRACTS legitimately uses: a
+    // spec may head the section that explains a criterion it also tracks. A
+    // detector that counted those would report every such spec and be
+    // switched off within a week.
+    expect(
+      duplicateHeadingIds("- [ ] SC-9131: tracked\n\n### SC-9131: and explained\n", "A-SPEC.md"),
+    ).toEqual([]);
+  });
+
+  test("the scan reaches the specs that actually use headings", () => {
+    // Without this the real-tree case passes over a spec list that no longer
+    // contains any heading declarations at all.
+    const headed = specsOnDisk392().filter(
+      s => parseScHeadingDeclarations(s.content, s.file).length > 0,
+    );
+    expect(headed.length, "no spec declares a heading, so nothing was examined").toBeGreaterThan(0);
+    expect(
+      headed.some(s => s.file.includes("GATE-CONTRACTS-SPEC")),
+      "the spec this guard was written for declares no headings any more",
+    ).toBe(true);
   });
 });
 

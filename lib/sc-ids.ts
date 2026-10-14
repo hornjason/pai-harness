@@ -60,8 +60,11 @@
  *
  * `heading` is `### SC-N: ...`, a documentation subsection. It tracks nothing,
  * but it OWNS the number just as firmly, and ignoring that is what produced
- * ten collisions: GATE-CONTRACTS-SPEC.md heads SC-379..SC-388, every one of
- * which four other specs later reissued as a tracked checkbox.
+ * ten collisions: GATE-CONTRACTS-SPEC.md headed ten consecutive subsections
+ * whose numbers four other specs later reissued as tracked checkboxes. Those
+ * headings have since been renumbered into a block nobody else holds, so the
+ * example is history rather than live — but the rule it bought is not, and
+ * `crossFormCollisions` is what keeps the bank at zero.
  */
 export type ScDeclarationForm = "checkbox" | "heading";
 
@@ -168,10 +171,10 @@ export function isTemplateSpec(specFile: string): boolean {
  *
  * Headings are deliberately NOT here, and the first version of #392 put them
  * here and was wrong: the conformity engine runs an assertion against every
- * declaration it is handed, so `### SC-388: gate-executor pass/fail criteria`
- * became a criterion to satisfy, and ten section titles joined the corpus of
- * things that can fail a gate. A heading owns a NUMBER; it does not state a
- * checkable claim. Two questions, two parsers — see
+ * declaration it is handed, so a `### SC-N: gate-executor pass/fail criteria`
+ * section title became a criterion to satisfy, and ten of them joined the
+ * corpus of things that can fail a gate. A heading owns a NUMBER; it does not
+ * state a checkable claim. Two questions, two parsers — see
  * `parseScHeadingDeclarations`.
  */
 export function parseScDeclarations(content: string, specFile: string): ScDeclaration[] {
@@ -285,10 +288,12 @@ export type Ambiguity = "none" | "per-spec" | "multi-spec" | "issue-shaped" | "n
 
 /**
  * `declaredById`, not `byId` (#392). An id is ambiguous when two specs
- * DECLARE it, and a `### SC-N:` heading declares one — SC-388 named a
- * GATE-CONTRACTS subsection and a SCAFFOLD-DECOMPOSITION criterion, read as
- * unambiguous because only the second form was being counted, and a comment
- * that said "GATE-CONTRACTS-SPEC.md" in as many words ticked the other one.
+ * DECLARE it, and a `### SC-N:` heading declares one — the reported case was
+ * a number naming both a GATE-CONTRACTS subsection and a
+ * SCAFFOLD-DECOMPOSITION criterion, read as unambiguous because only the
+ * second form was being counted, so a comment that said
+ * "GATE-CONTRACTS-SPEC.md" in as many words ticked the other one. That pair
+ * has since been renumbered apart; the rule outlives the example.
  */
 export function ambiguityOf(id: string, reg: ScRegistry): Ambiguity {
   const specs = reg.declaredById.get(id);
