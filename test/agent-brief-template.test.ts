@@ -194,7 +194,10 @@ describe("Agent Brief Template Tests", () => {
     });
   });
 
-  describe("SC-386: promptKeywords override in rungate.json", () => {
+  // The spec is named because SC-386 is ambiguous: GATE-CONTRACTS-SPEC.md
+  // heads a subsection with the same number (#392). A bare title no longer
+  // credits it, and this claim is the genuine one.
+  describe("SC-386 of AGENT-BRIEF-TEMPLATE-SPEC.md: promptKeywords override in rungate.json", () => {
     const OUTPUT_KW = "/tmp/rungate-agent-brief-keyword-test";
 
     test("default keywords produce routing table entries without config override", () => {

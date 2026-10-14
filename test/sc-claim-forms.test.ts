@@ -18,6 +18,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { commentClaimForm, type ClaimForm } from "../lib/sc-claim-forms";
 import { commentMask, enclosingComment } from "../lib/strip-js-comments";
+import { buildScRegistry } from "../lib/sc-ids";
 import { coverageClaimSites, findTestFilesForSCs } from "../scripts/sync-sc-status";
 
 /** Ask the owner about the first id in a comment, the way the scanner does. */
@@ -125,7 +126,12 @@ describe("#360 SC-806: the credit rule is the thing that consults the form", () 
     const dir = mkdtempSync(join(tmpdir(), "sc-claim-forms-"));
     try {
       writeFileSync(join(dir, "fixture.test.ts"), source);
-      const reg = { byId: new Map([["SC-9901", ["SOME-SPEC.md"]]]) };
+      // Built rather than hand-written. A registry literal drifts from the
+      // real shape the moment the shape grows a field — #392 added
+      // `declaredById` and this fixture silently stopped being a registry.
+      const reg = buildScRegistry([
+        { file: "SOME-SPEC.md", content: "- [ ] SC-9901: a criterion\n" },
+      ]);
       const found = findTestFilesForSCs([{ id: "SC-9901", specFile: "SOME-SPEC.md" }], reg, dir);
       return (found.get("fixture.test.ts") ?? []).map(c => c.id);
     } finally {

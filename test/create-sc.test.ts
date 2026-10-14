@@ -1,11 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { matchPattern, type ParsedSC } from "../lib/conformity";
+import { buildScRegistry } from "../lib/sc-ids";
 
 const ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(ROOT, "scripts", "create-sc.ts");
+const SPECS_DIR = join(ROOT, "specs");
 
 function runCreateSC(args: string[]): { stdout: string; stderr: string; exitCode: number } {
   const result = spawnSync("bun", [SCRIPT, ...args], {
@@ -124,7 +126,16 @@ testable: true
       }
     });
 
-    test("appends SC line with auto-incremented number", () => {
+    test("appends SC line with a number free across the whole namespace", () => {
+      // This asserted `SC-101` — the number that follows the fixture's own
+      // SC-100 — which encoded the per-file allocation that produced ten
+      // cross-spec collisions (#392). The CLI now allocates above every id
+      // `specs/` declares in any form, so the number is whatever is next
+      // globally and pinning it would make this test a release blocker every
+      // time an SC lands.
+      //
+      // What the test is actually for survives intact: an id was allocated,
+      // it is not one the file already uses, and it is above it.
       const result = runCreateSC([
         "--pattern", "file-exists",
         "--params", JSON.stringify({ file: "README.md" }),
@@ -132,11 +143,23 @@ testable: true
       ]);
       expect(result.exitCode).toBe(0);
       const content = readFileSync(tmpSpec, "utf-8");
-      // Should contain both the original SC-100 and a new SC-101
       expect(content).toContain("SC-100");
-      expect(content).toContain("SC-101");
       expect(content).toContain("README.md");
       expect(content).toContain("exists");
+
+      const ids = [...content.matchAll(/- \[ \] SC-(\d+):/g)].map(m => Number(m[1]));
+      expect(ids, "no SC line was appended").toHaveLength(2);
+      expect(new Set(ids).size, "the existing id was reissued").toBe(2);
+      expect(Math.max(...ids)).toBeGreaterThan(100);
+
+      // And it is free in the real namespace, which is the property the
+      // hardcoded 101 could not express — 101 is taken by a live spec.
+      const taken = buildScRegistry(
+        readdirSync(SPECS_DIR, { recursive: true, encoding: "utf-8" })
+          .filter(f => f.endsWith(".md"))
+          .map(f => ({ file: f, content: readFileSync(join(SPECS_DIR, f), "utf-8") })),
+      ).declaredById;
+      expect(taken.has(`SC-${Math.max(...ids)}`), "the CLI issued an id a spec already owns").toBe(false);
     });
   });
 
