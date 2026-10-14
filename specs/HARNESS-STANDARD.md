@@ -3836,3 +3836,194 @@ absolute" and "the boundary still refuses it" are different claims and only the
 second one matters.
 
 None of the four is left in the tree; all were run and reverted.
+
+## #392 — the SC id namespace is global, and nothing read it that way
+
+`sync-sc-status` ticked `SC-388` in `SCAFFOLD-DECOMPOSITION-SPEC.md` —
+`.claude/rungate.json has field keyFiles`, which is false — on the strength of
+a comment in `test/gate-root-threading.test.ts` reading
+`SC-388 (GATE-CONTRACTS-SPEC.md)`. The claim named its spec in as many words.
+The matcher threw that away, because SC-388 looked unambiguous: exactly one
+spec declares a *checkbox* for it.
+
+Two independent defects produced that, and only fixing both closes it.
+
+### The registry could not see half the namespace
+
+`buildScRegistry` parsed `- [ ] SC-N:` lines and nothing else.
+`GATE-CONTRACTS-SPEC.md` declares ten per-gate subsections as `### SC-N:`
+headings, so ten ids read as unique while two specs declared each one. A
+heading tracks nothing, but it OWNS the number just as firmly, and ambiguity
+has to be computed over the namespace as it is rather than over the part of it
+that happens to be tickable.
+
+The registry now carries two maps, because "may this be ticked" and "does this
+id name one criterion" are different questions and having one map is what
+conflated them. `byId` keeps its exact prior meaning — checkbox declarations,
+the flipper's view and `crossSpecCollisions`'s — and `declaredById` is every
+form. `ambiguityOf` reads the second; nothing else moved.
+
+### The allocator was per-file in a global namespace
+
+`nextSCNumber` read ONE spec's content and returned its maximum plus one. In a
+namespace `lib/sc-ids.ts` documents as global and
+`test/spec-sc-ids-unique.test.ts` enforces as global, that is not an allocator
+but a collision generator — and it generated all ten.
+`GATE-CONTRACTS-SPEC.md` counted up to 378 in its own file and took 379..388
+for its subsections; `CONFIG-DRIVEN-TESTING-SPEC.md` independently counted up
+to 378 in *its* own file and took 379 next. Both were locally correct and
+neither could see the other.
+
+The registry is now passed in, so a number owned by a heading is as taken as a
+tracked one. The one-argument form is unchanged for callers with no registry to
+hand; silently changing that answer would be a different bug.
+
+### The existing ten are counted, not renumbered
+
+Widening `crossSpecCollisions` itself would turn
+`test/spec-sc-ids-unique.test.ts`'s real-tree assertion red over ten ids, and
+the remedy it prescribes — "renumber the later claimant" — is a spec-content
+call about which side moves. **That decision is not taken here and needs
+Jason's ruling**, along with a second thing found while measuring:
+`GATE-CONTRACTS-SPEC.md` declares `### SC-388: gate-executor pass/fail
+criteria` **twice**, at lines 61 and 143, with contradicting input contracts.
+
+So the tracked-criterion guard stays at zero and `crossFormCollisions` ships as
+a counted ratchet at ten with the ids named. Qualification already stops the
+known ten doing harm; the ratchet stops an eleventh arriving unnoticed.
+
+### The self-reference trap, caught for the fourth time
+
+The first draft of `test/sc-id-namespace.test.ts` titled a case
+`"gate-root-threading.test.ts no longer credits SCAFFOLD-DECOMPOSITION's
+SC-388"`. A qualified title claim is exactly what credits a multi-spec id, so
+that title ticked the criterion the file exists to stop being ticked — and the
+suite caught it, failing with the file's own name in the credit list. The id
+now lives only in comments and string literals here, neither of which is a
+declaring position for an ambiguous id.
+
+- [x] SC-882: lib/sc-ids.ts contains [scHeadingDeclarationPattern] — a `### SC-N:` heading declares an id as firmly as a checklist line does and enters the registry as one, anchored on the id opening the heading so a heading that merely mentions a criterion stays prose
+- [x] SC-883: lib/sc-ids.ts contains [reg.declaredById.get(id)] — ambiguity is computed over every declaration form rather than over the tickable ones alone, so an id two specs declare requires a qualifier whichever forms they used
+- [x] SC-884: test/sc-id-namespace.test.ts contains [a claim naming one spec ticked a criterion in another] — the reported false credit is driven end to end through the real matcher over the real tree rather than over a planted pair alone
+- [x] SC-885: lib/sc-ids.ts contains [export function crossFormCollisions] — cross-form collisions are reported by their own exported function and ratcheted at the ten already in the tree so an eleventh fails a named test while the renumbering decision stays open
+- [x] SC-886: lib/create-sc.ts contains [reg?.declaredById.keys()] — an SC number is allocated above every id any spec declares in any form rather than above the maximum in one file which is what produced every one of the ten collisions
+- [x] SC-887: test/sc-id-namespace.test.ts contains [the spec whose heading caused the ambiguity is unnamed] — an uncredited mention reports the spec whose declaration made it ambiguous because naming only the checkbox holder sends the developer to qualify against the one spec that was never the problem
+
+### What was broken to prove it (SC-882..887)
+
+Run and counted over `test/sc-id-namespace.test.ts` +
+`test/spec-sc-ids-unique.test.ts` + `test/sc-claim-forms.test.ts` +
+`test/sync-sc-status.test.ts` + `test/create-sc.test.ts` (120 tests):
+
+| Mutation | Red |
+|---|---|
+| headings stop being parsed as declarations | 8 of 120 |
+| `ambiguityOf` reads the checkbox map again — the fix, reverted | 2 of 120 |
+| a heading becomes tickable — recorded into `byId` too | 3 of 120 |
+| the heading pattern stops anchoring on the id, so prose headings count | 1 of 120 |
+| `crossFormCollisions` short-circuited to `[]` | 2 of 120 |
+| the per-file declarer dedup removed, so a spec collides with itself | 2 of 120 |
+| `nextSCNumber` ignores the registry again — per-file allocation | 4 of 120 |
+| `unqualifiedClaims` names only the checkbox holders | 1 of 120 |
+
+Row two is the headline: reverting the one-word fix in place turns the
+reported instance red.
+
+**The last row scored ZERO on the first pass**, and the reason is worth
+recording because it is not the usual one. Every case asserted that an
+ambiguous id stops being CREDITED; none asserted that the developer is told
+why. The reason string is the only route from "my claim was ignored" to
+"qualify it", and naming only the checkbox holder is worse than naming
+nothing — it reads "declared by SCAFFOLD-DECOMPOSITION-SPEC.md, name the spec
+in a title", so the developer names the one spec that was never the problem
+and the message repeats itself. SC-887 is that case; the mutation now scores 1.
+
+Two of the eight also found pre-existing fixtures that had stopped being what
+they claimed:
+
+- `test/sc-claim-forms.test.ts` built a registry as an object literal
+  (`{ byId: new Map(...) }`). The moment the shape grew a field the fixture
+  stopped being a registry, and the positive control — the one case that
+  stops "refuse everything" reading as the rule working — threw. It now calls
+  `buildScRegistry`.
+- `test/create-sc.test.ts` asserted the CLI appends `SC-101` after a fixture's
+  `SC-100`. That hardcoded the per-file allocation this issue is about, and
+  101 is taken by a live spec. It now asserts the properties — an id was
+  allocated, it is above the file's own, and the real namespace does not
+  already own it.
+
+None of the eight is left in the tree; all were run and reverted.
+
+### Two things the implementation found, both the same shape as the bug
+
+**A heading must not reach the conformity engine.** The first version widened
+`parseScDeclarations` to return both forms, which looked like the obvious
+place — it is #330's single owner for what a declaration is. But
+`lib/conformity.ts:339` returns that function verbatim as `extractSCs`, and
+the conformity engine runs an assertion against every declaration it is
+handed. Ten `### SC-N: ... pass/fail criteria` section titles became criteria
+the gate tried to satisfy, and this file's own #330 case — "extractSCs and the
+registry agree on what a declaration is" — caught it by naming all ten. A
+heading owns a NUMBER; it does not state a checkable claim. Two questions, two
+parsers, and only the registry reads the second.
+
+**The reporter did not agree with the crediter.** `findTestFilesForSCs` has
+always credited a file that cites an id in one place and declares it in
+another. `unqualifiedClaims` did not: the first non-title mention won, so a
+correctly qualified `describe` title was reported as unqualified because a
+comment two lines above it named the same id — and the same comment BELOW the
+title reported nothing. Site order decided the answer. The qualified set is
+now settled across the whole file before anything is reported, which is what
+let `test/agent-brief-template.test.ts` keep its SC-386 claim after naming its
+spec.
+
+Neither was in the issue. Both are the defect class the repo keeps finding:
+a reading narrower than the question being asked.
+
+- [x] SC-888: lib/sc-ids.ts contains [export function parseScHeadingDeclarations] — heading declarations are parsed by their own function and reach the registry alone so `extractSCs` keeps returning only tracked criteria and the conformity engine never asserts against a section title
+- [x] SC-889: scripts/sync-sc-status.ts contains [const qualified = new Set(] — an id this file claims properly somewhere is not reported as unqualified elsewhere in it so the report agrees with the crediter instead of depending on which mention comes first
+- [x] SC-890: test/sc-id-namespace.test.ts contains [function unexpectedCensusIds] — the census of ambiguous mentions names its ids through one comparison both the real tree and a planted swap drive because a length cannot say which id arrived or why
+
+### What was broken to prove it (SC-888..890)
+
+Run and counted over `test/sc-id-namespace.test.ts` +
+`test/sc-claim-forms.test.ts` + `test/sync-sc-status.test.ts` +
+`test/create-sc.test.ts` + `test/spec-sc-ids-unique.test.ts` +
+`test/agent-brief-template.test.ts` (164 tests; the #392 cases were merged
+into the file that already owned SC-787..791, which is the same subject):
+
+| Mutation | Red |
+|---|---|
+| headings returned from `parseScDeclarations` again — the first draft | 4 of 164 |
+| `parseScHeadingDeclarations` short-circuited to `[]` | 10 of 164 |
+| a heading reported as `checked: true` | 2 of 164 |
+| the qualified-set pre-pass removed from `unqualifiedClaims` | 1 of 164 |
+| the census compares lengths rather than ids | 1 of 164 |
+
+**The last row scored ZERO twice before it scored one**, and the reason is a
+shape worth naming. The comparison was inline in the real-tree case, and on
+today's data a length check and an id check agree exactly — the census is as
+long as it is allowed to be, so the two readings only diverge when one id
+leaves as another arrives. Adding a planted swap case did not help, because
+the planted case had its own inline comparison and the mutation could not
+reach it. Only extracting `unexpectedCensusIds` as one binding both call
+sites drive made the mutation measurable. **An assertion that cannot be made
+to fail on the data it runs against is not yet a check**, and a second
+assertion of the same property somewhere else does not fix that — it has to
+be the same binding.
+
+None of the five is left in the tree; all were run and reverted.
+
+### Still open, and needing a ruling rather than a fix
+
+- **Who renumbers.** `GATE-CONTRACTS-SPEC.md` owns SC-379..SC-388 as headings
+  and four other specs track those ten numbers as checkboxes. The heading side
+  is untracked and has one external reference, which argues for moving it; the
+  checkbox side is later, which argues the other way under
+  `test/spec-sc-ids-unique.test.ts`'s own prescription. `crossFormCollisions`
+  holds the line at ten until someone decides.
+- **`GATE-CONTRACTS-SPEC.md` declares `### SC-388: gate-executor pass/fail
+  criteria` twice**, at lines 61 and 143, with contradicting input contracts —
+  one lists `harnessRoot`, the other `projectRoot, issueRepo, testOutput`.
+  That is a merge artefact and resolving it means choosing which contract is
+  current, which is not a call to make while fixing a credit bug.

@@ -8,6 +8,8 @@ import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
+import type { ScRegistry } from "./sc-ids";
+
 // ── Types ─────────────────────────────────────────────────────
 
 export interface RegistryEntry {
@@ -228,14 +230,35 @@ export function listPatterns(): string {
 }
 
 /**
- * Find the next SC number in a spec file by scanning existing SC-NNN IDs.
+ * The next free SC number.
+ *
+ * `SC-<n>` is a GLOBAL id — `lib/sc-ids.ts` says so, and
+ * `test/spec-sc-ids-unique.test.ts` enforces it. This function read ONE
+ * spec's content, which in a global namespace is not an allocator but a
+ * collision generator, and it generated ten (#392): GATE-CONTRACTS-SPEC.md
+ * counted up to 378 in its own file and took 379..388 for its per-gate
+ * subsections, while CONFIG-DRIVEN-TESTING-SPEC.md independently counted up
+ * to 378 in ITS own file and took 379 next. Both were locally correct and
+ * neither could see the other.
+ *
+ * Pass the registry and the whole namespace is consulted, headings included —
+ * a number owned by a `### SC-N:` section is just as taken as a tracked one.
+ *
+ * `reg` is optional so the one-argument answer is unchanged for any caller
+ * that has no registry to hand; silently changing that would be a different
+ * bug. It is the wrong answer in a shared namespace, which is why
+ * `scripts/create-sc.ts` passes one.
  */
-export function nextSCNumber(specContent: string): number {
+export function nextSCNumber(specContent: string, reg?: ScRegistry): number {
   const ids: number[] = [];
   const pattern = /SC-(\d+)/g;
   let match;
   while ((match = pattern.exec(specContent)) !== null) {
     ids.push(parseInt(match[1]));
+  }
+  for (const id of reg?.declaredById.keys() ?? []) {
+    const n = Number(id.replace(/^SC-[A-Z]?/, ""));
+    if (Number.isFinite(n)) ids.push(n);
   }
   if (ids.length === 0) return 1;
   return Math.max(...ids) + 1;

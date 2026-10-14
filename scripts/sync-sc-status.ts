@@ -347,9 +347,31 @@ export function unqualifiedClaims(
   reg: ScRegistry,
 ): Array<{ id: string; reason: string }> {
   const out: Array<{ id: string; reason: string }> = [];
-  for (const { id, at, kind } of coverageClaimSites(source)) {
+  const sites = coverageClaimSites(source);
+
+  // Which ids this file DOES claim properly, settled before anything is
+  // reported (#392). `findTestFilesForSCs` has always credited a file that
+  // cites an id in one place and declares it in another — "one file doing
+  // both is credited once, by the claim" — and this reporter did not: the
+  // first non-title mention won, so a correctly qualified `describe` title
+  // was reported as unqualified because a comment two lines above it named
+  // the same id. Site order decided the answer, which means a comment ABOVE
+  // the title reported and the same comment BELOW it did not.
+  const qualified = new Set(
+    sites
+      .filter(s => s.kind === "title")
+      .filter(s => (reg.declaredById.get(s.id) ?? []).some(f => isQualifiedBy(source, s.at, f)))
+      .map(s => s.id),
+  );
+
+  for (const { id, at, kind } of sites) {
     if (!requiresQualification(id, reg)) continue;
-    const specs = reg.byId.get(id) ?? [];
+    if (qualified.has(id)) continue;
+    // Every declarer, so the reason names the spec whose HEADING made the id
+    // ambiguous (#392). Listing only the checkbox holders would report
+    // "declared by SCAFFOLD-DECOMPOSITION-SPEC.md" as the reason a mention
+    // needs qualifying against it, which reads as nonsense.
+    const specs = reg.declaredById.get(id) ?? [];
     if (kind === "title" && specs.some(s => isQualifiedBy(source, at, s))) continue;
     if (out.some(o => o.id === id)) continue;
     out.push({

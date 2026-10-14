@@ -52,11 +52,25 @@
  * to exclude prose is also narrow enough to exclude `SC-A1`.
  */
 
+/**
+ * How a spec declared an id. Two forms, two different questions (#392).
+ *
+ * `checkbox` is a TRACKED criterion — `- [ ] SC-N: ...` — and the only form
+ * the status flipper can tick.
+ *
+ * `heading` is `### SC-N: ...`, a documentation subsection. It tracks nothing,
+ * but it OWNS the number just as firmly, and ignoring that is what produced
+ * ten collisions: GATE-CONTRACTS-SPEC.md heads SC-379..SC-388, every one of
+ * which four other specs later reissued as a tracked checkbox.
+ */
+export type ScDeclarationForm = "checkbox" | "heading";
+
 export interface ScDeclaration {
   id: string;
   specFile: string;
   checked: boolean;
   statement: string;
+  form: ScDeclarationForm;
 }
 
 /**
@@ -72,6 +86,18 @@ export const SC_ID_SOURCE = "SC-[A-Z]?\\d+";
 /** A declared id: a checklist line opening with one. Not a mention. */
 export function scDeclarationPattern(): RegExp {
   return new RegExp(`^- \\[([ xX])\\] (${SC_ID_SOURCE}):\\s*(.+)$`, "gm");
+}
+
+/**
+ * A declared id in heading form: `### SC-N: what this section is about`.
+ *
+ * Same anchoring discipline as the checklist pattern — the id must OPEN the
+ * heading. A heading that merely mentions one ("### Why SC-640 was wrong") is
+ * prose, and crediting it would be the citation-vs-claim trap that
+ * `.claude/rules/claiming-sc-coverage.md` exists about.
+ */
+export function scHeadingDeclarationPattern(): RegExp {
+  return new RegExp(`^#{1,6}[ \\t]+(${SC_ID_SOURCE}):\\s*(.+)$`, "gm");
 }
 
 /**
@@ -111,9 +137,22 @@ export function isIssueShaped(id: string): boolean {
   return /^SC-\d$/.test(id);
 }
 
-/** The registry: which spec files declare each id. */
+/**
+ * The registry: which spec files declare each id.
+ *
+ * TWO maps, because "may this be ticked" and "does this id name one
+ * criterion" are different questions and conflating them is #392 (#330 only
+ * ever needed the first, so there was only ever one map).
+ *
+ *   byId          CHECKBOX declarations only. The flipper's view, and
+ *                 `crossSpecCollisions`'s. Unchanged semantics — a heading
+ *                 must never become tickable.
+ *   declaredById  EVERY form. The namespace as it actually is, which is what
+ *                 ambiguity and allocation have to be computed over.
+ */
 export interface ScRegistry {
   byId: Map<string, string[]>;
+  declaredById: Map<string, string[]>;
 }
 
 /** The template's ids are placeholders — `isTemplateSpec` already skips it. */
@@ -121,6 +160,20 @@ export function isTemplateSpec(specFile: string): boolean {
   return specFile.includes("SPEC-TEMPLATE");
 }
 
+/**
+ * The TRACKED criteria a spec declares. Checkbox form only.
+ *
+ * This is `extractSCs` — `lib/conformity.ts:339` returns it verbatim, which
+ * is #330's "one owner for what a declaration is" and must stay that way.
+ *
+ * Headings are deliberately NOT here, and the first version of #392 put them
+ * here and was wrong: the conformity engine runs an assertion against every
+ * declaration it is handed, so `### SC-388: gate-executor pass/fail criteria`
+ * became a criterion to satisfy, and ten section titles joined the corpus of
+ * things that can fail a gate. A heading owns a NUMBER; it does not state a
+ * checkable claim. Two questions, two parsers — see
+ * `parseScHeadingDeclarations`.
+ */
 export function parseScDeclarations(content: string, specFile: string): ScDeclaration[] {
   const out: ScDeclaration[] = [];
   for (const m of content.matchAll(scDeclarationPattern())) {
@@ -129,6 +182,29 @@ export function parseScDeclarations(content: string, specFile: string): ScDeclar
       specFile,
       checked: m[1].toLowerCase() === "x",
       statement: m[3].trim(),
+      form: "checkbox",
+    });
+  }
+  return out;
+}
+
+/**
+ * The ids a spec OWNS without tracking — `### SC-N: ...` subsection titles.
+ *
+ * Only the registry wants these, and only for the namespace question: is this
+ * id ambiguous, and is this number free. Nothing may tick one and nothing may
+ * assert against one.
+ */
+export function parseScHeadingDeclarations(content: string, specFile: string): ScDeclaration[] {
+  const out: ScDeclaration[] = [];
+  for (const m of content.matchAll(scHeadingDeclarationPattern())) {
+    out.push({
+      id: m[1],
+      specFile,
+      // A heading tracks nothing, so it is never "done".
+      checked: false,
+      statement: m[2].trim(),
+      form: "heading",
     });
   }
   return out;
@@ -136,15 +212,28 @@ export function parseScDeclarations(content: string, specFile: string): ScDeclar
 
 export function buildScRegistry(specs: Array<{ file: string; content: string }>): ScRegistry {
   const byId = new Map<string, string[]>();
+  const declaredById = new Map<string, string[]>();
+  const record = (map: Map<string, string[]>, id: string, file: string) => {
+    const seen = map.get(id) ?? [];
+    // By FILE, not by declaration: a spec that heads a section with the id it
+    // also tracks is one declarer, and counting it twice would make every
+    // such spec collide with itself.
+    if (!seen.includes(file)) seen.push(file);
+    map.set(id, seen);
+  };
   for (const { file, content } of specs) {
     if (isTemplateSpec(file)) continue;
     for (const d of parseScDeclarations(content, file)) {
-      const specs = byId.get(d.id) ?? [];
-      if (!specs.includes(file)) specs.push(file);
-      byId.set(d.id, specs);
+      record(byId, d.id, file);
+      record(declaredById, d.id, file);
+    }
+    // Headings reach `declaredById` ONLY. A heading that became tickable
+    // would let the status flipper tick a section title.
+    for (const d of parseScHeadingDeclarations(content, file)) {
+      record(declaredById, d.id, file);
     }
   }
-  return { byId };
+  return { byId, declaredById };
 }
 
 /**
@@ -163,6 +252,28 @@ export function crossSpecCollisions(reg: ScRegistry): string[] {
 }
 
 /**
+ * The same collision, counted over EVERY declaration form (#392).
+ *
+ * Separate from `crossSpecCollisions` rather than folded into it, and the
+ * separation is the decision: widening that function would turn
+ * `test/spec-sc-ids-unique.test.ts`'s real-tree assertion red over ten ids,
+ * and the remedy it prescribes — "renumber the later claimant" — is a
+ * spec-content call about who moves, not something to take while fixing a
+ * credit bug.
+ *
+ * So the tracked-criterion guard stays at zero and this one ships as a
+ * counted ratchet, per `.claude/rules/checks-must-be-able-to-fail.md`.
+ * Qualification (`ambiguityOf` reads `declaredById`) already stops the known
+ * ten doing harm; this stops an eleventh arriving unnoticed.
+ */
+export function crossFormCollisions(reg: ScRegistry): string[] {
+  return [...reg.declaredById.entries()]
+    .filter(([id, specs]) => !isAntiCriterion(id) && specs.length > 1)
+    .map(([id, specs]) => `${id} declared by ${specs.join(" and ")}`)
+    .sort();
+}
+
+/**
  * Does a bare mention of this id say which criterion it means?
  *
  * Three ways it does not, and they are different facts:
@@ -172,8 +283,15 @@ export function crossSpecCollisions(reg: ScRegistry): string[] {
  */
 export type Ambiguity = "none" | "per-spec" | "multi-spec" | "issue-shaped" | "not-a-criterion";
 
+/**
+ * `declaredById`, not `byId` (#392). An id is ambiguous when two specs
+ * DECLARE it, and a `### SC-N:` heading declares one — SC-388 named a
+ * GATE-CONTRACTS subsection and a SCAFFOLD-DECOMPOSITION criterion, read as
+ * unambiguous because only the second form was being counted, and a comment
+ * that said "GATE-CONTRACTS-SPEC.md" in as many words ticked the other one.
+ */
 export function ambiguityOf(id: string, reg: ScRegistry): Ambiguity {
-  const specs = reg.byId.get(id);
+  const specs = reg.declaredById.get(id);
   if (!specs || specs.length === 0) return "not-a-criterion";
   if (isAntiCriterion(id)) return "per-spec";
   if (specs.length > 1) return "multi-spec";

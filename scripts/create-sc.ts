@@ -16,6 +16,7 @@ import {
   nextSCNumber,
   formatSCLine,
 } from "../lib/create-sc";
+import { readScRegistry } from "./sync-sc-status";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -69,7 +70,10 @@ try {
       process.exit(1);
     }
     const content = readFileSync(specPath, "utf-8");
-    const scNumber = nextSCNumber(content);
+    // The whole namespace, not just this file: SC ids are global, and
+    // allocating from one spec's content is what produced ten collisions
+    // (#392). A spec outside specs/ still gets the local answer.
+    const scNumber = nextSCNumber(content, readScRegistry());
     const scLine = formatSCLine(scNumber, statement);
 
     // Append SC line to the end of the file

@@ -5,6 +5,7 @@
   "_untestedSpecs_299": "DOC-HYGIENE-ARCHITECTURE-SPEC.md is DELISTED as of #299: test/rules-frontmatter.test.ts references it and drives the frontmatter stamping it now governs, including executing the real DocHygiene hook. Same as #310, the delisting was not a choice - DRIFT-2 ratchets both ways and the build failed on the stale entry the moment a test started naming the spec. That is the list working.",
   "_untestedSpecs_195": "INSTRUCTION-COMPLIANCE-SPEC.md is DELISTED as of #195: test/blocking-grades-trust.test.ts names it and drives the blocking-grade refusals it governs, including executing ship.js's own decision block and its AGENT-TIMING block. Same as #310 and #299, the delisting was not a choice - DRIFT-2 ratchets both ways and the build failed on the stale entry the moment a test started naming the spec.",
  "_untestedSpecs_225": "The five bootstrap-data-flow entries are NEW to this list and are not new violations: #225 made the spec collectors recursive, so DRIFT-2 can see specs/ subdirectories for the first time. They had been untested since the directory was created and the check was structurally unable to say so. Listing them here banks the visibility; it does not excuse them. Note they are safe to name here precisely because this is not a test file - DRIFT-2 searches test/*.test.ts for a spec's name, so an allowlist living under test/ would have made every listed spec read as referenced.",
+  "_untestedSpecs_392": "AGENT-BRIEF-TEMPLATE-SPEC.md is DELISTED as of #392: test/agent-brief-template.test.ts now names it, because SC-386 became ambiguous once the registry started reading GATE-CONTRACTS-SPEC.md's heading-form declarations and an ambiguous id can only be claimed from a title that names its spec. Same as #310, #299 and #195 - the delisting was not a choice, DRIFT-2 ratchets both ways and the build failed on the stale entry the moment a test started naming the spec. Worth recording that the trigger was a QUALIFIER rather than a new test: the spec's behaviour was already being driven by that file and only the name was missing, which is the gap the entry had been standing in for.",
   "untestedSpecs": [
     "bootstrap-data-flow/cli-commands-for-file-creation.md",
     "bootstrap-data-flow/consumer-requirements.md",
@@ -13,8 +14,7 @@
     "bootstrap-data-flow/template-architecture.md",
     "SESSION-LIFECYCLE-SPEC.md",
     "harness-automation-matrix.md",
-      "HARNESS-SKILL-CONTRACT.md",
-    "AGENT-BRIEF-TEMPLATE-SPEC.md"
+    "HARNESS-SKILL-CONTRACT.md"
   ],
   "_orphanFiles": "HYGIENE-3 - files with zero references anywhere. The two shell scripts may be dead or may be invoked in a way the reference scanner cannot see; that judgement was deliberately not made under a red gate. Resolve each by deleting, archiving to reference/, or referencing it - then delist.",
   "orphanFiles": [
