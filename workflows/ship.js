@@ -3615,6 +3615,113 @@ function reReviewDecision(currency, roundsSpent, maxRounds) {
       `${cap} round(s), so this run ends holding code nobody reviewed`,
   }
 }
+
+/**
+ * A stale FAIL needs a different review than a stale PASS (#244).
+ *
+ * #171's re-review is diff-scoped: it reads `reviewedCommit..tip`, which is
+ * right for a stale PASS because the base was read and found clean. It is
+ * WRONG for a stale FAIL — `base..tip` does not contain the flagged code, so
+ * a clean diff says nothing about the finding. The first attempt at #244
+ * (46034035, reverted by 44ac641d) did exactly that and was flagged within
+ * minutes as fail-open-security-gate.
+ *
+ * Inlined copy of lib/security-verdict.ts, driven over the same input matrix
+ * by test/security-verdict-blocks.test.ts. FAILS CLOSED TOWARD READING MORE:
+ * anything not positively readable as a PASS gets the full review.
+ */
+const REVIEW_SCOPE_FULL = 'full'
+const REVIEW_SCOPE_DIFF = 'diff'
+const SECURITY_FINDINGS_OUTLIVED_REREVIEW = 'SECURITY_FINDINGS_OUTLIVED_REREVIEW'
+
+function heldIsPass(held) {
+  return typeof held === 'object' && held !== null && !Array.isArray(held) && held.verdict === 'PASS'
+}
+
+function reReviewScope(held) {
+  return heldIsPass(held) ? REVIEW_SCOPE_DIFF : REVIEW_SCOPE_FULL
+}
+
+function reReviewBaseFor(held, testedSha) {
+  if (reReviewScope(held) === REVIEW_SCOPE_FULL) return null
+  return rookReviewSha(testedSha)
+}
+
+function readFailureList(v) {
+  return Array.isArray(v) ? v.map(f => String(f)).filter(f => f.trim() !== '') : []
+}
+
+function resolveReReview(held, reReviewed, scope, round, priorSha, reviewedSha) {
+  const isRec = v => typeof v === 'object' && v !== null && !Array.isArray(v)
+  const fresh = isRec(reReviewed) ? reReviewed : null
+  const spawned = fresh ? fresh.spawned === true : false
+  const failures = readFailureList(fresh && fresh.failures)
+
+  if (!fresh || (fresh.verdict !== 'PASS' && fresh.verdict !== 'FAIL')) {
+    return {
+      spawned, verdict: 'FAIL',
+      failures: [`the re-review returned ${describeShaValue(isRec(reReviewed) ? reReviewed.verdict : reReviewed)}, not a verdict — round ${round} cleared nothing`],
+    }
+  }
+  if (fresh.verdict === 'FAIL') {
+    return {
+      spawned, verdict: 'FAIL',
+      failures: failures.length > 0 ? failures
+        : [`the re-review returned FAIL with no findings attached — round ${round}`],
+    }
+  }
+  if (heldIsPass(held)) return { spawned, verdict: 'PASS', failures: [] }
+
+  const priorFailures = readFailureList(isRec(held) && held.failures)
+
+  // Checked even though reReviewBaseFor already forces a full review for a
+  // FAIL. The two decisions are made in different places, and a security
+  // clearing is not somewhere to rely on an invariant holding one call site
+  // away — a later change to the base selection would otherwise reopen
+  // 46034035 with nothing in the way.
+  if (scope !== REVIEW_SCOPE_FULL) {
+    return {
+      spawned, verdict: 'FAIL',
+      failures: [
+        `a ${describeShaValue(scope)}-scoped re-review passed, but the verdict it would clear is a FAIL — ` +
+        `a diff against the flagged commit does not contain the flagged code, so this PASS says ` +
+        `nothing about it (#244). Original findings stand: ${priorFailures.join('; ') || 'none were recorded'}`,
+        ...priorFailures,
+      ],
+    }
+  }
+
+  const clearedBySha = rookReviewSha(fresh.testedSha) || rookReviewSha(reviewedSha)
+  if (!clearedBySha) {
+    return {
+      spawned, verdict: 'FAIL',
+      failures: [
+        `a full re-review passed but did not say which commit it read, so there is nothing to ` +
+        `record the clearing against (#244). Original findings stand: ${priorFailures.join('; ') || 'none were recorded'}`,
+        ...priorFailures,
+      ],
+    }
+  }
+
+  return {
+    spawned, verdict: 'PASS', failures: [],
+    cleared: {
+      priorVerdict: 'FAIL',
+      priorFailures,
+      priorSha: rookReviewSha(priorSha),
+      clearedBySha,
+      clearedByRound: round,
+      scope: REVIEW_SCOPE_FULL,
+    },
+  }
+}
+
+function securityRefusalName(held, roundsSpent) {
+  const spent = readRoundCount(roundsSpent) === null ? 0 : readRoundCount(roundsSpent)
+  return !heldIsPass(held) && spent > 0
+    ? SECURITY_FINDINGS_OUTLIVED_REREVIEW
+    : 'SECURITY_REVIEW_DID_NOT_PASS'
+}
 // ──── REVIEW-CURRENCY-END ────
 
 // ──── SUITE-CURRENCY-START ────
@@ -4264,13 +4371,6 @@ if (verifyResult?.result === 'FAIL') {
 // `!== 'PASS'`, not `=== 'FAIL'`: the initialiser above is FAIL and anything
 // unrecognised must refuse too. A security decision is the last place to let
 // an unexpected value mean "carry on".
-if (securityVerdict.verdict !== 'PASS') {
-  for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
-  log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
-  return shipFailed('Security', `security review did not pass: ${securityVerdict.failures.join('; ')}`,
-    { security: securityVerdict })
-}
-
 // #169: a PASS is a statement about a commit, and this run has to still be at
 // that commit for it to mean anything.
 //
@@ -4319,30 +4419,92 @@ while (!reviewCurrency.current) {
   // could turn back into a ship, so it is caught as "no round can be spent"
   // and falls through to the refusal below with nothing spent.
   const reReviewTarget = rookReviewSha(headSha)
-  const reviewedBase = rookReviewSha(testedSha)
-  if (!reReviewTarget || !reviewedBase) break
+  if (!reReviewTarget) break
+
+  // #244: the scope depends on the verdict being carried. A stale PASS gets
+  // the diff since the commit that was read and found clean; a stale FAIL
+  // gets a FULL review of the tip, because `base..tip` does not contain the
+  // flagged code. `null` means full — rookScopeCommand omits `--base` and
+  // the scope script reads the whole branch.
+  const reReviewScopeKind = reReviewScope(securityVerdict)
+  const reviewedBase = reReviewBaseFor(securityVerdict, testedSha)
+  // A diff-scoped round still needs a readable base. A full one does not,
+  // which is the point: a stale FAIL whose own tested commit is unreadable
+  // can still be re-reviewed, and before #244 it could not be reviewed at all.
+  if (reReviewScopeKind === REVIEW_SCOPE_DIFF && !reviewedBase) break
 
   reReviewRounds++
+  const heldBefore = securityVerdict
+  const priorSha = testedSha
   log(`SECURITY: ${reReviewOutcome.reason}`)
-  log(`SECURITY: re-reviewing ${reReviewTarget} against the reviewed commit ${reviewedBase} — round ${reReviewRounds} of ${MAX_SECURITY_REREVIEWS}`)
+  log(
+    reviewedBase
+      ? `SECURITY: re-reviewing ${reReviewTarget} against the reviewed commit ${reviewedBase} — round ${reReviewRounds} of ${MAX_SECURITY_REREVIEWS}`
+      : `SECURITY: the held verdict is not a PASS, so round ${reReviewRounds} of ${MAX_SECURITY_REREVIEWS} is a FULL review of ${reReviewTarget} — a diff since the flagged commit would not contain the flagged code (#244)`,
+  )
 
   const reReviewed = await runRookReview({ sha: reReviewTarget, base: reviewedBase, round: reReviewRounds })
-  securityVerdict = (reReviewed && reReviewed.verdict) || {
-    spawned: false, verdict: 'FAIL',
-    failures: [`the re-review of ${reReviewTarget} returned no verdict`],
-  }
+
+  // Never a wholesale overwrite (#244, SC-4). `resolveReReview` refuses to
+  // let a diff-scoped pass clear a FAIL, and records what was cleared when a
+  // full one does.
+  securityVerdict = resolveReReview(
+    heldBefore,
+    reReviewed && reReviewed.verdict,
+    reReviewScopeKind,
+    reReviewRounds,
+    priorSha,
+    reReviewed && reReviewed.testedSha,
+  )
   if (securityVerdict.verdict !== 'PASS') {
     for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
     log(`SECURITY: the re-review did not pass — the run is blocked and no PR will be opened (round ${reReviewRounds})`)
-    return shipFailed('Security', `security review did not pass: ${securityVerdict.failures.join('; ')}`,
+    return shipFailed('Security', `${securityRefusalName(securityVerdict, reReviewRounds)}: ${securityVerdict.failures.join('; ')}`,
       { security: securityVerdict })
+  }
+  if (securityVerdict.cleared) {
+    log(`SECURITY: round ${reReviewRounds} read all of ${securityVerdict.cleared.clearedBySha} and cleared ${securityVerdict.cleared.priorFailures.length} earlier finding(s) about ${securityVerdict.cleared.priorSha || 'an unrecorded commit'}`)
   }
   // The verdict in hand is now about the commit that round reviewed, and the
   // Ship-round check further down reads this same variable (#171).
-  testedSha = reReviewed.testedSha
+  testedSha = (reReviewed && reReviewed.testedSha) || reReviewTarget
   reviewCurrency = reviewIsCurrent(testedSha, headSha)
 }
 // ──── REREVIEW-LOOP-END ────
+
+// ──── SECURITY-REFUSAL-START ────
+// #129: a review that cannot stop anything is not a gate, it is a decoration.
+// On the run that produced that issue, rook reported a reproduced HIGH guard
+// bypass and ship.js returned SHIPPED and opened a PR — the verdict reached
+// the run summary only as a compliance grade.
+//
+// `!== 'PASS'`, not `=== 'FAIL'`: the initialiser above is FAIL and anything
+// unrecognised must refuse too. A security decision is the last place to let
+// an unexpected value mean "carry on".
+//
+// UNCONDITIONAL, and #244 did not change that. It moved BELOW the re-review
+// loop rather than above it, so a stale FAIL gets its full review before the
+// run is judged — but what is judged is still "is the verdict in hand a
+// PASS", with no currency term. Conditioning this on currency was the second
+// finding against 46034035: a run whose currency could not be established
+// would have skipped an immediate refusal. That case still arrives here
+// holding a FAIL, because `reReviewDecision` returns exhaustion for an
+// unreadable currency and the loop breaks without spending a round.
+//
+// The NAME of the refusal is chosen (#244, SC-3) — exhaustion holding
+// findings is a different fact from exhaustion holding a clean review — but
+// the name never decides whether a refusal happens.
+if (securityVerdict.verdict !== 'PASS') {
+  for (const f of securityVerdict.failures) log(`SECURITY BLOCK: ${f}`)
+  log(`SECURITY: the run is blocked and no PR will be opened (spawned=${securityVerdict.spawned})`)
+  // `reReviewRounds` is 0 on every path that reaches here today — the loop
+  // returns on its own non-PASS — so this resolves to the plain name. It is
+  // computed rather than hardcoded because the alternative is a second place
+  // that decides what a refusal is called, and the two would drift.
+  return shipFailed('Security', `${securityRefusalName(securityVerdict, reReviewRounds)}: ${securityVerdict.failures.join('; ')}`,
+    { security: securityVerdict })
+}
+// ──── SECURITY-REFUSAL-END ────
 
 // ──── STALE-OR-EXHAUSTED-START ────
 if (!reviewCurrency.current) {

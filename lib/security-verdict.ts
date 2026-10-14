@@ -31,6 +31,34 @@ export interface SecurityVerdict {
   verdict: "PASS" | "FAIL";
   /** One entry per blocking problem. Non-empty whenever verdict is FAIL. */
   failures: string[];
+  /**
+   * Present only when this PASS replaced an earlier FAIL (#244). What the
+   * findings were, which commit they were about, and which review cleared
+   * them.
+   *
+   * A verdict is never overwritten wholesale. The first attempt at #244
+   * (`46034035`, reverted by `44ac641d`) assigned the re-review's result over
+   * `securityVerdict` and the original findings stopped existing — so a
+   * reader of the run could not tell a branch that had never been flagged
+   * from one whose findings were erased by a review that never read them.
+   */
+  cleared?: ClearedFindings;
+}
+
+/** The record a cleared stale FAIL leaves behind (#244, SC-4). */
+export interface ClearedFindings {
+  /** Always FAIL — there is nothing else a clearing can undo. */
+  priorVerdict: "FAIL";
+  /** The findings the earlier review raised, verbatim. */
+  priorFailures: string[];
+  /** The commit they were about. Null when it was never readable. */
+  priorSha: string | null;
+  /** The commit the clearing review read. */
+  clearedBySha: string;
+  /** Which re-review round cleared it. */
+  clearedByRound: number;
+  /** Always `full`. A diff-scoped review may not clear a FAIL — see resolveReReview. */
+  scope: typeof REVIEW_SCOPE_FULL;
 }
 
 /**
@@ -307,6 +335,202 @@ export function rookScopeCommand(
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+// ── A stale FAIL needs a different review than a stale PASS (#244) ───────
+
+/** The re-review read the whole tip. Only this can clear a FAIL. */
+export const REVIEW_SCOPE_FULL = "full";
+/** The re-review read `base..tip` — what #171 ships for a stale PASS. */
+export const REVIEW_SCOPE_DIFF = "diff";
+
+export type ReviewScope = typeof REVIEW_SCOPE_FULL | typeof REVIEW_SCOPE_DIFF;
+
+/**
+ * Was this verdict positively readable as a PASS?
+ *
+ * Deliberately narrow and deliberately one function: every decision below
+ * turns on it, and "not a PASS" has to include the unreadable cases rather
+ * than only the literal FAIL.
+ */
+function heldIsPass(held: unknown): boolean {
+  return isRecord(held) && held.verdict === "PASS";
+}
+
+/**
+ * Which scope must the re-review use, given the verdict being carried?
+ *
+ * **This is the whole of #244.** #171's re-review is diff-scoped: it reads
+ * the diff between the commit the previous review read and the tip the
+ * remediation just pushed. That is correct for a stale PASS — the base was
+ * read and found clean, so only what came after needs reading.
+ *
+ * It is WRONG for a stale FAIL, and the first attempt at this issue
+ * (`46034035`, reverted by `44ac641d`) shipped exactly that. A background
+ * security review flagged it within minutes as `fail-open-security-gate`.
+ * The sequence:
+ *
+ *   1. Rook FAILs commit A on a finding in A.
+ *   2. A remediation commits B, touching something else.
+ *   3. The verdict is stale, so it enters the re-review loop.
+ *   4. Rook reads `A..B`, sees nothing wrong, returns PASS.
+ *   5. The run ships. The original finding was never looked at.
+ *
+ * `base..tip` does not contain the code the finding was about. So a FAIL
+ * gets a FULL review of the tip.
+ *
+ * FAILS CLOSED TOWARD READING MORE. Anything not positively readable as a
+ * PASS gets the full review — an unreadable verdict, a missing one, a string
+ * nobody recognises. The failure mode of being wrong here is one extra review
+ * of a whole tip; the failure mode of the other default is the revert above.
+ */
+export function reReviewScope(held: unknown): ReviewScope {
+  return heldIsPass(held) ? REVIEW_SCOPE_DIFF : REVIEW_SCOPE_FULL;
+}
+
+/**
+ * The `base` argument the re-review should be pinned to, or null for a full
+ * review of the tip.
+ *
+ * Null is not a fallback here, it is the answer: `rookScopeCommand` omits
+ * `--base` when it gets one, and `scripts/rook-review-scope.ts` then reads
+ * the whole branch against its own `origin/main` default. That is the review
+ * a stale FAIL requires.
+ */
+export function reReviewBaseFor(held: unknown, testedSha: unknown): string | null {
+  if (reReviewScope(held) === REVIEW_SCOPE_FULL) return null;
+  return rookReviewSha(testedSha);
+}
+
+/**
+ * The verdict a run holds after one re-review round. Never a wholesale
+ * overwrite (#244, SC-4).
+ *
+ * Four cases, and the third is the one the revert exists to prevent:
+ *
+ *  - the re-review returned nothing        → FAIL, naming that
+ *  - the re-review returned FAIL           → that FAIL, with its own findings
+ *  - a FAIL cleared by a DIFF-scoped pass  → **FAIL**, refusing the clearing
+ *  - a FAIL cleared by a FULL pass         → PASS carrying `cleared`
+ *
+ * The third case cannot be reached through `reReviewBaseFor`, which already
+ * returns null for a FAIL. It is checked anyway, because the two decisions
+ * are made in different places and a later change to the base selection would
+ * otherwise reopen `46034035` with nothing in the way. A security clearing is
+ * not somewhere to rely on an invariant holding one call site away.
+ */
+export function resolveReReview(
+  held: unknown,
+  reReviewed: unknown,
+  scope: unknown,
+  round: number,
+  priorSha?: unknown,
+  reviewedSha?: unknown,
+): SecurityVerdict {
+  const fresh = isRecord(reReviewed) ? reReviewed : null;
+  const spawned = fresh?.spawned === true;
+  const failures = Array.isArray(fresh?.failures)
+    ? fresh.failures.map(f => String(f)).filter(f => f.trim() !== "")
+    : [];
+
+  if (!fresh || (fresh.verdict !== "PASS" && fresh.verdict !== "FAIL")) {
+    return {
+      spawned,
+      verdict: "FAIL",
+      failures: [
+        `the re-review returned ${describe(isRecord(reReviewed) ? reReviewed.verdict : reReviewed)}, ` +
+          `not a verdict — round ${round} cleared nothing`,
+      ],
+    };
+  }
+
+  if (fresh.verdict === "FAIL") {
+    return {
+      spawned,
+      verdict: "FAIL",
+      failures: failures.length > 0
+        ? failures
+        : [`the re-review returned FAIL with no findings attached — round ${round}`],
+    };
+  }
+
+  // A PASS replacing a PASS is #171's case and carries nothing extra.
+  if (heldIsPass(held)) return { spawned, verdict: "PASS", failures: [] };
+
+  const priorFailures = isRecord(held) && Array.isArray(held.failures)
+    ? held.failures.map(f => String(f)).filter(f => f.trim() !== "")
+    : [];
+
+  if (scope !== REVIEW_SCOPE_FULL) {
+    return {
+      spawned,
+      verdict: "FAIL",
+      failures: [
+        `a ${describe(scope)}-scoped re-review passed, but the verdict it would clear is a ` +
+          `FAIL — a diff against the flagged commit does not contain the flagged code, so ` +
+          `this PASS says nothing about it (#244). Original findings stand: ` +
+          (priorFailures.join("; ") || "none were recorded"),
+        ...priorFailures,
+      ],
+    };
+  }
+
+  const clearedBySha = rookReviewSha(isRecord(fresh) ? fresh.testedSha : null)
+    ?? rookReviewSha(reviewedSha);
+  if (!clearedBySha) {
+    return {
+      spawned,
+      verdict: "FAIL",
+      failures: [
+        "a full re-review passed but did not say which commit it read, so there is nothing " +
+          "to record the clearing against (#244). Original findings stand: " +
+          (priorFailures.join("; ") || "none were recorded"),
+        ...priorFailures,
+      ],
+    };
+  }
+
+  return {
+    spawned,
+    verdict: "PASS",
+    failures: [],
+    cleared: {
+      priorVerdict: "FAIL",
+      priorFailures,
+      priorSha: rookReviewSha(priorSha),
+      clearedBySha,
+      clearedByRound: round,
+      scope: REVIEW_SCOPE_FULL,
+    },
+  };
+}
+
+/**
+ * Exhaustion holding findings is a different fact from exhaustion holding a
+ * clean review (#244, SC-3).
+ *
+ * "We ran out of rounds and the last thing we knew was a finding" and "…and
+ * the last thing we knew was clean" refuse for different reasons and want
+ * different next steps, so they refuse under different names. Spelled without
+ * reusing the other constant's text, because a test asserts that one appears
+ * exactly once as a string literal and a name containing it would be a second
+ * spelling the assertion cannot tell from a second declaration.
+ */
+export const SECURITY_FINDINGS_OUTLIVED_REREVIEW = "SECURITY_FINDINGS_OUTLIVED_REREVIEW";
+
+/**
+ * The name a non-PASS verdict refuses under.
+ *
+ * This decides the WORDING of a refusal, never whether one happens. The
+ * caller's `verdict !== 'PASS'` check stays unconditional — conditioning that
+ * on currency was the second finding against `46034035`, because a run whose
+ * currency could not be established would have skipped an immediate refusal.
+ */
+export function securityRefusalName(held: unknown, roundsSpent: unknown): string {
+  const spent = readCount(roundsSpent) ?? 0;
+  return !heldIsPass(held) && spent > 0
+    ? SECURITY_FINDINGS_OUTLIVED_REREVIEW
+    : "SECURITY_REVIEW_DID_NOT_PASS";
 }
 
 /**
