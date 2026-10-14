@@ -3258,3 +3258,123 @@ above and silently restores #264's bug at verify.
 None of the fourteen mutations is left in the tree; all were run and
 reverted, and the counts were re-measured after both zero-closing cases were
 added so they come from one tree.
+
+## A stale FAIL gets a review that reads the flagged code (#244)
+
+Split out of #171. The verdict refusal sat 49 lines ABOVE the currency
+check, so #171's re-review handled exactly one of the two stale cases:
+
+| verdict | stale | what happened |
+|---|---|---|
+| PASS | yes | re-reviewed the new tip — what #171 added |
+| PASS | no | shipped |
+| FAIL | no | refused, correctly (#129) |
+| **FAIL** | **yes** | **refused on findings about code no longer there** |
+
+The stale-FAIL cell is not the rare one. A FAIL is a reason to remediate,
+and the verify gate's self-heal loop is what produces the commit that makes
+the review stale — so the case most likely to need a re-review was the one
+case that could not get one. On run `wf_edc73e78-275` rook's two findings
+were both real about `82c4c6a1` and both resolved in `f2487030`, and the run
+refused anyway.
+
+### The first attempt was a fail-open, and the shape of it is the point
+
+`46034035`, reverted by `44ac641d`, flagged within minutes as
+`fail-open-security-gate`. A re-review is DIFF-SCOPED: it reads
+`reviewedCommit..tip`. That is right for a stale PASS — the base was read
+and found clean, so only what came after needs reading. It is wrong for a
+stale FAIL:
+
+1. Rook FAILs commit `A` on a finding in `A`.
+2. A remediation commits `B`, touching something else.
+3. The verdict is stale, so it enters the re-review loop.
+4. Rook reads `A..B`, sees nothing wrong, returns PASS.
+5. The verdict is overwritten wholesale. The run ships. The finding is
+   erased.
+
+`base..tip` does not contain the code the finding was about. So the two
+stale cases need different re-review MODES, and a stale FAIL gets a **full
+review of the tip**.
+
+### Two guards, in different places, on purpose
+
+`reReviewBaseFor` returns null for anything not readable as a PASS, so the
+loop never pins a FAIL's re-review to the flagged commit. `resolveReReview`
+then refuses to let a non-full review clear a FAIL even if it is handed one.
+The second is unreachable through the first, and it is there anyway: the two
+decisions are made in different places, and a security clearing is not
+somewhere to rely on an invariant holding one call site away.
+
+Both fail closed **toward reading more**. An unreadable held verdict gets
+the full review; the cost of being wrong that way is one extra review of a
+whole tip.
+
+### The #129 refusal is not conditioned on currency
+
+That was the second finding against `46034035`: a run whose currency cannot
+be established would skip an immediate refusal. #244 MOVES the refusal below
+the re-review loop rather than adding a currency term to it. What is judged
+is still "is the verdict in hand a PASS". The unreadable-currency case still
+arrives there holding a FAIL, because `reReviewDecision` returns exhaustion
+for an unreadable currency and the loop breaks without spending a round.
+
+### The clearing is recorded, never a wholesale overwrite
+
+A cleared FAIL carries `cleared: { priorVerdict, priorFailures, priorSha,
+clearedBySha, clearedByRound, scope }`. Without it a reader of the run
+cannot tell a branch that was never flagged from one whose findings were
+erased by a review that never read them — which is what the revert was
+about.
+
+- [x] SC-864: lib/security-verdict.ts contains [export function reReviewBaseFor, does not contain the code the finding was about] — a stale PASS is re-reviewed against the commit that was read and found clean; a stale FAIL gets a FULL review of the tip, and so does any verdict not positively readable as a PASS
+- [x] SC-865: lib/security-verdict.ts contains [export function resolveReReview, a diff against the flagged commit does not contain the flagged code] — a diff-scoped pass may never clear a FAIL, checked at a second site that the first one already makes unreachable, and a full pass that cannot name the commit it read clears nothing either
+- [x] SC-866: lib/security-verdict.ts contains [export interface ClearedFindings, clearedBySha] — a cleared FAIL records which findings were resolved, about which commit, by which review and in which round, so a verdict is never overwritten wholesale
+- [x] SC-867: workflows/ship.js contains [SECURITY-REFUSAL-START, SECURITY_FINDINGS_OUTLIVED_REREVIEW] — the refusal moved below the loop rather than gaining a currency term, and exhaustion holding findings refuses under a different name from exhaustion holding a clean review
+
+### What was broken to prove it (SC-864..867)
+
+Run and counted over `test/security-verdict-blocks.test.ts` +
+`test/stale-fail-rereview.test.ts` + `test/record-security-verdict.test.ts` +
+`test/harness-standard-security.test.ts` (558 tests):
+
+| Mutation | Red |
+|---|---|
+| the stale-FAIL path falls through to a ship — the refusal removed | 6 of 558 |
+| the refusal is conditioned on currency — `46034035`'s second finding | 1 of 558 |
+| the stale-FAIL path takes the DIFF-scoped loop — `46034035` verbatim | 10 of 558 |
+| …and the second guard removed with it | 49 of 558 |
+| `reReviewBaseFor` pins a FAIL to the flagged commit | 9 of 558 |
+| `resolveReReview` assigns the re-review wholesale | 75 of 558 |
+| a full pass with no reviewed commit clears anyway | 1 of 558, and **0** before the parity case below |
+| the refusal name stops distinguishing findings from a clean exhaustion | 17 of 558 |
+| an unreadable held verdict is read as a PASS | 84 of 558 |
+| the loop stops re-reviewing a FAIL at all — #244 undone | 4 of 558 |
+| library: `reReviewScope` always diff | 10 of 558 |
+| library: the diff-scoped clearing guard removed | 51 of 558 |
+| library: a re-review FAIL is read as a pass | 56 of 558 |
+| library: a full pass with no reviewed commit clears anyway | 2 of 558 |
+| library: `heldIsPass` reads anything not FAIL as a pass | 85 of 558 |
+
+Rows one and three are the two the issue asked for by name. Row one makes
+the stale-FAIL path fall through to a ship and the run must refuse; row
+three gives it the diff-scoped loop and the run must STILL refuse, because
+the second guard catches what the first one no longer prevents.
+
+**The library/ship.js pairs are why the parity matrix exists.** Before it,
+two mutations of the INLINED copies scored ZERO: the new tests drove the
+library, and the end-to-end cases exercised only the paths a happy
+re-review takes. A security clearing with two implementations and a test
+for one of them is the house defect with a second address. The matrix drives
+both copies over one input set — and found a real divergence on its first
+run, in the refusal text for a re-review that returned nothing.
+
+**Row seven is the finding inside the finding.** The matrix always supplied
+a fallback commit, so the branch that fires when NEITHER the re-review nor
+the caller names one was unreachable through it: a parity matrix comparing
+two copies on inputs that never reach the code being compared. The library
+scored 1 and ship.js scored 0 on the same mutation, which is the signature.
+
+None of the fifteen is left in the tree; all were run and reverted, and the
+counts were re-measured after the parity case was added so they come from
+one tree.
