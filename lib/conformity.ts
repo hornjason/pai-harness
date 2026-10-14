@@ -16,6 +16,7 @@ import { readFreshCache } from "./behavioral-cache";
 import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
+import { isHarnessItself } from "./harness-identity";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -2557,7 +2558,7 @@ export function runPackageValidation(root: string) {
       // — once rungate's own conformity test stopped being frozen by
       // `safeWrite`, this check ran here for the first time and failed on a
       // requirement it is not possible to satisfy.
-      if (pkg.name === "rungate") return;
+      if (isHarnessItself(root)) return;
       expect(pkg.devDependencies?.rungate).toBeDefined();
     });
   });

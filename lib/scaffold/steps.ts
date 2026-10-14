@@ -11,6 +11,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSy
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
+import { isHarnessItself } from "../harness-identity";
 import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/agent-briefs";
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
@@ -672,30 +673,6 @@ export function refreshAgentsMd(root: string, type: ProjectType, actions: string
 // ── Conformity test generation ─────────────────────────────────
 
 /**
- * Whether the project being scaffolded IS the harness.
- *
- * Surfaced by #208. The generator emitted `from "rungate/lib/conformity"`
- * unconditionally, but rungate's own copy on disk imported
- * `"../lib/conformity"` — so that file had been hand-adapted, and
- * `safeWrite`'s skip was the only thing preserving the adaptation. Making
- * the file regenerate without teaching the generator this distinction would
- * have replaced a working self-hosted test with a consumer-shaped one.
- *
- * Read from `package.json`'s name rather than from the path, because a
- * clone, a worktree or a temp fixture all have different directory names
- * and the same identity.
- */
-export function isSelfHosted(root: string): boolean {
-  const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath)) return false;
-  try {
-    return JSON.parse(readFileSync(pkgPath, "utf-8")).name === "rungate";
-  } catch {
-    return false;
-  }
-}
-
-/**
  * The conformity suite every scaffolded project runs.
  *
  * Two things here were only ever wrong because nothing regenerated this file
@@ -716,7 +693,12 @@ export function generateConformityTest(root?: string): string {
   // A package cannot import itself by name without an `exports` map, and
   // adding one to make a generated string uniform would be the tail wagging
   // the dog.
-  const from = root && isSelfHosted(root) ? "../lib/conformity" : "rungate/lib/conformity";
+  //
+  // `isHarnessItself` rather than a second predicate of my own. #208 shipped
+  // one — identical in intent and in implementation to this, which already
+  // existed and which SC-811 names by name. Two deciders of the same fact
+  // survive any mutation of either, which is the defect #208 was about.
+  const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
 import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, writeFindingsReport } from "${from}";
@@ -743,9 +725,10 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
   const agentsDir = join(root, ".claude", "agents");
   safeDir(agentsDir, ".claude/agents", actions);
 
-  const pkgPath = join(root, "package.json");
-  const isSelf = existsSync(pkgPath) && JSON.parse(readFileSync(pkgPath, "utf-8")).name === "rungate";
-  const promptPrefix = isSelf ? "prompts" : "node_modules/rungate/prompts";
+  // This copy had no try/catch, so an unreadable package.json threw here and
+  // killed the scaffold run, while the other three sites answering the same
+  // question shrugged and said "consumer" (#380).
+  const promptPrefix = isHarnessItself(root) ? "prompts" : "node_modules/rungate/prompts";
 
   const harness = loadHarnessConfig(root);
 
@@ -822,12 +805,15 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
     agentMeta[name] = { ...DEFAULT_AGENT_META[name], ...configMeta[name] };
   }
 
-  // Detect project type for accurate briefs
+  // Detect project type for accurate briefs. A DIFFERENT question from
+  // "is this the harness" — it also admits any project keyworded `harness` —
+  // so it keeps its own branch and borrows only the identity half (#380).
+  const pkgPath = join(root, "package.json");
   let detectedType: ProjectType = "code";
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.name === "rungate" || pkg.keywords?.includes("harness")) detectedType = "infra";
+      if (isHarnessItself(root) || pkg.keywords?.includes("harness")) detectedType = "infra";
     } catch {}
   } else if (!existsSync(join(root, "src")) && !existsSync(join(root, "lib"))) {
     detectedType = "infra";
@@ -2414,7 +2400,10 @@ export function addPaiHarnessDevDep(root: string, actions: string[]): void {
     pkg.devDependencies = {};
   }
 
-  if (pkg.devDependencies["rungate"] || pkg.name === "rungate") {
+  // Also a different question — "is rungate already available here" — but
+  // the self-reference half is the same fact, so it routes through the one
+  // predicate (#380).
+  if (pkg.devDependencies["rungate"] || isHarnessItself(root)) {
     actions.push("SKIP: rungate devDep (already present or self-reference)");
     return;
   }

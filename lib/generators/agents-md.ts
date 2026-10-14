@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import type { ProjectScan } from "./types";
 import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
+import { isHarnessItself } from "../harness-identity";
 
 /**
  * Build the AGENTS.md frontmatter block.
@@ -196,18 +197,13 @@ ${repoLine}${makeTargets}
  * the harness would document `bunx rungate`, which inside this repo resolves
  * to the PUBLISHED package rather than to the working tree, so every command
  * in its own AGENTS.md would silently run a different version of itself.
+ *
+ * Re-exported from `lib/harness-identity.ts` (#380). It lived here and SC-811
+ * names it here, but `lib/scanner.ts` needs the same answer and SC-365 / AC-3
+ * forbids the scanner from importing a generator — so the implementation sits
+ * in a leaf and this stays the name callers know. One binding, two names.
  */
-export function isHarnessItself(root: string): boolean {
-  try {
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf-8"));
-    return pkg?.name === "rungate";
-  } catch {
-    // No package.json, or unreadable. A consumer, as far as this is
-    // concerned — which is the safe answer: the consumer form works in a
-    // scaffolded project, and the source form works nowhere but here.
-    return false;
-  }
-}
+export { isHarnessItself };
 
 export function generateScopedRules(scan: ProjectScan): GeneratedRule[] {
   const {

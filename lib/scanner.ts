@@ -11,6 +11,11 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, basename } from "path";
 import { resolveConfig } from "./config-loader";
+// A leaf, not a generator. SC-365 / AC-3 keeps generation logic out of the
+// scanner; `lib/harness-identity.ts` imports nothing but fs and path, and
+// exists precisely so this module and the generators can share one answer
+// instead of drifting apart (#380).
+import { isHarnessItself } from "./harness-identity";
 import type {
   ProjectScan,
   ProjectType,
@@ -631,15 +636,7 @@ function buildCategories(): Category[] {
 // ── Prompt prefix detection ────────────────────────────────────
 
 function detectPromptPrefix(root: string): string {
-  const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath)) return "node_modules/rungate/prompts";
-
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    if (pkg.name === "rungate") return "prompts";
-  } catch {}
-
-  return "node_modules/rungate/prompts";
+  return isHarnessItself(root) ? "prompts" : "node_modules/rungate/prompts";
 }
 
 // ── Main scanner ───────────────────────────────────────────────
