@@ -309,7 +309,7 @@ describe("#306 security review: the comparison cannot be stepped around", () => 
   });
 
   test("the workflow reports the contradiction rather than proceeding quietly", () => {
-    expect(shipSource).toContain("scopeContradiction(beforeStrip, scopeDenied)");
+    expect(shipSource).toContain("scopeContradiction(beforeStrip, denied)");
     expect(shipSource).toContain("CONTRADICTION");
   });
 
@@ -319,10 +319,8 @@ describe("#306 security review: the comparison cannot be stepped around", () => 
     // interpolated into it) and the implementer's context excerpts
     // (`acContextFiles` reads them off disk). Filtering only `filesToModify`
     // struck a file off the list and then handed the agent its contents.
-    expect(shipSource, "contextFiles are not filtered by the deny-list").toContain(
-      "ac.contextFiles = ac.contextFiles.filter(cf => {",
-    );
     const strip = shipSource.indexOf("ac.contextFiles = ac.contextFiles.filter(cf => {");
+    expect(strip, "contextFiles are not filtered by the deny-list").toBeGreaterThan(-1);
     const prompt = shipSource.indexOf("You are the to-issues decomposition skill");
     const excerpts = shipSource.indexOf("const acContextFiles");
     expect(strip, "the strip runs after the decomposer prompt reads contextFiles")
@@ -441,17 +439,39 @@ describe("SC-1426: ship.js's inlined copy and the library agree", () => {
 describe("#306: the workflow actually consults the deny-list", () => {
   // A library nothing calls is the same defect one step removed. These greps
   // are deliberately on the CALL, not on the block's presence.
-  test("discovery's file list is filtered before the decomposer sees it", () => {
-    const i = shipSource.indexOf("discovery.filesToModify = withoutDenied(");
-    const j = shipSource.indexOf("You are the to-issues decomposition skill");
-    expect(i, "nothing strips denied files from discovery").toBeGreaterThan(-1);
-    expect(j).toBeGreaterThan(-1);
-    expect(i, "the strip runs AFTER the decomposer is prompted, so it sees the dirty list")
-      .toBeLessThan(j);
+  test("the filter runs at the END of runDiscovery, so re-discovery is covered", () => {
+    // guard-not-reapplied-on-rediscovery. The verify gate calls
+    // `runDiscovery('Verify gate found ACs were wrong: …')`, which replaces
+    // filesToModify and acs wholesale. Applying the deny-list once after the
+    // first call held for one pass and lapsed on the second — and the re-run
+    // is the path a FAILING run takes, which is the worst one to leave open.
+    const decl = shipSource.indexOf("async function runDiscovery(context) {");
+    const call = shipSource.indexOf("applyScopeDenylist(discovery, log)");
+    const ret = shipSource.indexOf("return true\n}", decl);
+    expect(decl, "runDiscovery is gone").toBeGreaterThan(-1);
+    expect(call, "nothing applies the deny-list").toBeGreaterThan(-1);
+    expect(call, "the filter is outside runDiscovery, so a re-run bypasses it")
+      .toBeGreaterThan(decl);
+    expect(call, "the filter runs after runDiscovery returns").toBeLessThan(ret);
+
+    // And the re-discovery call site exists, so the case above is not about
+    // a path nothing takes.
+    expect(shipSource).toContain("runDiscovery('Verify gate found ACs were wrong: ");
+  });
+
+  test("the deny-list is applied exactly once, in one place", () => {
+    // Two application sites would survive a mutation of either, and the
+    // parity matrix would still pass. The LIST is computed twice — once in
+    // the helper, once for the prompt — but that is pure and cannot drift.
+    expect((shipSource.match(/applyScopeDenylist\(/g) || []).length).toBe(2); // decl + call
+    expect(
+      (shipSource.match(/discovery\.filesToModify = withoutDenied/g) || []).length,
+      "filesToModify is stripped outside the one helper",
+    ).toBe(0);
   });
 
   test("the decomposer's own output is checked, not just its input", () => {
-    // Stripping discovery is not enough: a decomposer can name a file
+    // Filtering discovery is not enough: a decomposer can name a file
     // discovery never listed, which is the half an input filter cannot see.
     expect(shipSource).toContain("denylistViolations(decompResult.subIssues, scopeDenied)");
     expect(shipSource, "a violating plan is used anyway").toContain(

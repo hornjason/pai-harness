@@ -1467,6 +1467,184 @@ let setupResult = null
 let regressionCount = 0
 let CACHED_CEREMONY = null
 
+// ──── SCOPE-DENYLIST-START ────
+/**
+ * Files the goal put out of bounds, kept out of every plan (#306).
+ *
+ * #274 attempt 4 (`wf_b3714a40-bb7`): the goal said "ALSO DO NOT FIX, ALREADY
+ * FILED: #295 … leave it there", and the decomposer emitted a sub-issue whose
+ * filesToModify was the three files you would touch to fix #295. The agent did
+ * what its file list permitted — an agent handed `gates/schema.ts` has been
+ * told, by the strongest signal in the system, that the file is in scope — and
+ * the run refused on its own contradiction.
+ *
+ * The attribution is the plan's, not the agent's: the collection guard (#178,
+ * SC-413) refuses any file no sub-issue claimed, and it did not refuse these.
+ *
+ * ONE THING #306 GETS WRONG, and it changes the fix. The issue says "the goal
+ * already names them". It did not: the prohibition names an ISSUE and three
+ * code symbols, no paths. The paths came from `discovery.filesToModify`, which
+ * line ~1952 below hands the decomposer verbatim. So a deny-list built on the
+ * issue's premise would have returned nothing for the run that motivated it and
+ * passed — the decorative check .claude/rules/checks-must-be-able-to-fail.md is
+ * about, shipped as its own remedy.
+ *
+ * Hence two outputs. `deniedFiles` is enforced. `unresolvedProhibitions` is the
+ * prohibitions that named an issue and no file, which CANNOT be enforced and are
+ * logged loudly, because "nothing was denied" and "nothing could be denied" are
+ * the same empty list and only the first is a clean run.
+ *
+ * Mirrors lib/scope-denylist.ts. ship.js cannot import, so the copy is marked
+ * and test/scope-denylist.test.ts compares the two on a shared matrix — the
+ * #169/#244/#171 pattern. Change one, change both, or the matrix goes red.
+ */
+const DENYLIST_MARKERS = [
+  /\bdo\s+not\s+fix\b/i,
+  /\bdo\s+not\s+touch\b/i,
+  /\bdo\s+not\s+modify\b/i,
+  /\bout\s+of\s+scope\b/i,
+  /\bnot\s+in\s+scope\b/i,
+  /\balready\s+filed\b/i,
+]
+// The EXTENSION discriminates, not the separator. `reading.broken` and
+// `acs[].status` — both in #274's prohibition, both code — are excluded
+// because `.broken` and `.status` are not extensions. The first draft claimed
+// the `/` did this work; mutating it from required to optional scored ZERO
+// red, which is how the claim was caught. It is optional now, so a goal can
+// name `package.json`; `matchesDenied` decides how a bare name matches.
+const DENYLIST_PATH = /\b([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:ts|tsx|js|jsx|md|json|ya?ml|sh))\b/g
+
+function pathsNamedIn(text) {
+  return [...new Set([...String(text ?? '').matchAll(DENYLIST_PATH)].map(m => m[1]))]
+}
+
+function prohibitions(goalText) {
+  const out = []
+  for (const para of String(goalText ?? '').split(/\n\s*\n/)) {
+    if (!DENYLIST_MARKERS.some(m => m.test(para))) continue
+    out.push({
+      text: para.trim(),
+      files: pathsNamedIn(para),
+      issues: [...new Set([...para.matchAll(/#(\d+)\b/g)].map(m => `#${m[1]}`))],
+    })
+  }
+  return out
+}
+
+function deniedFiles(goalText, scopeOut = []) {
+  const fromGoal = prohibitions(goalText).flatMap(p => p.files)
+  const fromScopeOut = (scopeOut || []).flatMap(s => pathsNamedIn(s))
+  return [...new Set([...fromGoal, ...fromScopeOut])]
+}
+
+function unresolvedProhibitions(goalText) {
+  return prohibitions(goalText).filter(p => p.files.length === 0 && p.issues.length > 0)
+}
+
+// One spelling per path. `./a/b.ts`, `a//b.ts`, `a/./b.ts` and `a/c/../b.ts`
+// are four spellings of one file that `===` reads as four, which is a
+// documented bypass of a guard whose whole value is a comparison. A leading
+// `..` is KEPT: it escapes the repo root, so collapsing it would make
+// `../secrets.ts` normalise to `secrets.ts`. (Commit security review.)
+function normalisePath(p) {
+  const raw = String(p ?? '').trim().replace(/\\/g, '/')
+  const out = []
+  for (const seg of raw.split('/')) {
+    if (seg === '' || seg === '.') continue
+    if (seg === '..' && out.length > 0 && out.at(-1) !== '..') out.pop()
+    else out.push(seg)
+  }
+  return out.join('/')
+}
+
+// A denied entry WITH a separator matches exactly — a suffix match would read
+// `test/gates/schema.ts` as `gates/schema.ts`. A bare filename matches by
+// basename, so "do not touch package.json" reaches the file and
+// "HARNESS-STANDARD.md" reaches specs/HARNESS-STANDARD.md.
+function matchesDenied(planFile, deniedEntry) {
+  const plan = normalisePath(planFile)
+  const denied = normalisePath(deniedEntry)
+  if (denied === '' || plan === '') return false
+  if (denied.includes('/')) return plan === denied
+  return plan === denied || plan.split('/').at(-1) === denied
+}
+
+// A hostile or careless goal can deny progress but cannot grant access — a
+// deny-list only narrows. The one unsafe outcome is SILENCE: if every planned
+// file is denied, stripping leaves an empty plan, and an empty plan looks
+// exactly like a run with nothing to do.
+function scopeContradiction(files, denied) {
+  if (!files?.length || !denied?.length) return null
+  if (withoutDenied(files, denied).length > 0) return null
+  return `every file the run planned to touch is out of scope (${files.join(', ')} vs ` +
+    `denied ${denied.join(', ')}). An empty plan looks exactly like a run with ` +
+    `nothing to do, so this is reported rather than stripped in silence (#306).`
+}
+
+function denylistViolations(claimants, denied) {
+  const out = []
+  for (const [i, c] of (claimants || []).entries()) {
+    for (const f of (c.filesToModify || [])) {
+      if (!(denied || []).some(d => matchesDenied(f, d))) continue
+      out.push(
+        `${c.title ? `"${c.title}"` : `plan item ${i + 1}`} claims ${f}, which the goal ` +
+        `put out of scope. An agent handed a file is an agent told the file is in ` +
+        `scope (#306).`,
+      )
+    }
+  }
+  return out
+}
+
+/**
+ * Strip every denied path out of a discovery result, in place.
+ *
+ * Called at the END of runDiscovery rather than once after it, because the
+ * verify gate re-runs discovery and a one-time filter lapses on the re-run.
+ *
+ * BOTH path-carrying fields, not just `filesToModify`. Each AC's
+ * `contextFiles` is interpolated into the to-issues prompt and read off disk
+ * into the implementer's excerpts, so filtering one field struck a file off
+ * the list and then handed the agent its contents — which is what made the
+ * prompt's OUT OF BOUNDS paragraph decorative. The field holds either a bare
+ * string or {path, reason} and both live readers normalise it themselves, so
+ * this handles both shapes.
+ */
+function applyScopeDenylist(disc, say) {
+  const denied = deniedFiles(disc?.issueGoal || '', disc?.scopeOut || [])
+  if (denied.length === 0) return denied
+
+  const beforeStrip = [...(disc.filesToModify || [])]
+  const contradiction = scopeContradiction(beforeStrip, denied)
+  if (contradiction) say(`SCOPE DENY-LIST: CONTRADICTION — ${contradiction}`)
+  disc.filesToModify = withoutDenied(beforeStrip, denied)
+  const stripped = beforeStrip.filter(f => !disc.filesToModify.includes(f))
+  say(`SCOPE DENY-LIST: the goal puts ${denied.length} file(s) out of bounds — ${denied.join(', ')}`)
+  if (stripped.length > 0) {
+    say(`SCOPE DENY-LIST: removed ${stripped.length} of them from filesToModify — ${stripped.join(', ')}`)
+  }
+
+  let contextStripped = 0
+  for (const ac of (disc.acs || [])) {
+    if (!ac.contextFiles?.length) continue
+    const before = ac.contextFiles.length
+    ac.contextFiles = ac.contextFiles.filter(cf => {
+      const p = typeof cf === 'string' ? cf : cf?.path
+      return !p || !denied.some(d => matchesDenied(p, d))
+    })
+    contextStripped += before - ac.contextFiles.length
+  }
+  if (contextStripped > 0) {
+    say(`SCOPE DENY-LIST: removed ${contextStripped} out-of-scope entr${contextStripped === 1 ? 'y' : 'ies'} from AC contextFiles`)
+  }
+  return denied
+}
+
+function withoutDenied(files, denied) {
+  return (files || []).filter(f => !(denied || []).some(d => matchesDenied(f, d)))
+}
+// ──── SCOPE-DENYLIST-END ────
+
 /**
  * The coverage decision, carried out of discovery (#251).
  *
@@ -1827,6 +2005,20 @@ console.log('ACs written: ' + s.acs.length);
     `, { label: 'fix-acs', phase: 'Discovery' })
   }
 
+  // Last thing runDiscovery does, so EVERY discovery is filtered — including
+  // the verify gate's re-run at `runDiscovery('Verify gate found ACs were
+  // wrong: …')`, which replaces filesToModify and acs wholesale. Applying it
+  // once after the first call held for one pass and silently lapsed on the
+  // second, and the re-run is the path a failing run takes (#306; raised by
+  // the commit security review as guard-not-reapplied-on-rediscovery).
+  applyScopeDenylist(discovery, log)
+  for (const p of unresolvedProhibitions(discovery.issueGoal || '')) {
+    // Not a refusal. The goal is well-formed English and the run can proceed;
+    // what it cannot do is enforce this one. Saying so is the difference
+    // between an empty deny-list and an unenforceable one.
+    log(`SCOPE DENY-LIST: UNENFORCEABLE — "${p.text.slice(0, 160)}" names ${p.issues.join(', ')} but no file path, so nothing can be denied. Name the files to make it mechanical.`)
+  }
+
   log(`Sized: ${discovery.sizing}/${discovery.ceremonyTier} — ${discovery.acs.length} ACs`)
   return true
 }
@@ -1937,185 +2129,11 @@ if (PHASE_TARGET === 'discovery') {
   return { status: 'DISCOVERY_COMPLETE', issue: ISSUE, slug: SLUG, sizing: discovery.sizing, acs: discovery.acs, workDir: WORK_DIR }
 }
 
-// ──── SCOPE-DENYLIST-START ────
-/**
- * Files the goal put out of bounds, kept out of every plan (#306).
- *
- * #274 attempt 4 (`wf_b3714a40-bb7`): the goal said "ALSO DO NOT FIX, ALREADY
- * FILED: #295 … leave it there", and the decomposer emitted a sub-issue whose
- * filesToModify was the three files you would touch to fix #295. The agent did
- * what its file list permitted — an agent handed `gates/schema.ts` has been
- * told, by the strongest signal in the system, that the file is in scope — and
- * the run refused on its own contradiction.
- *
- * The attribution is the plan's, not the agent's: the collection guard (#178,
- * SC-413) refuses any file no sub-issue claimed, and it did not refuse these.
- *
- * ONE THING #306 GETS WRONG, and it changes the fix. The issue says "the goal
- * already names them". It did not: the prohibition names an ISSUE and three
- * code symbols, no paths. The paths came from `discovery.filesToModify`, which
- * line ~1952 below hands the decomposer verbatim. So a deny-list built on the
- * issue's premise would have returned nothing for the run that motivated it and
- * passed — the decorative check .claude/rules/checks-must-be-able-to-fail.md is
- * about, shipped as its own remedy.
- *
- * Hence two outputs. `deniedFiles` is enforced. `unresolvedProhibitions` is the
- * prohibitions that named an issue and no file, which CANNOT be enforced and are
- * logged loudly, because "nothing was denied" and "nothing could be denied" are
- * the same empty list and only the first is a clean run.
- *
- * Mirrors lib/scope-denylist.ts. ship.js cannot import, so the copy is marked
- * and test/scope-denylist.test.ts compares the two on a shared matrix — the
- * #169/#244/#171 pattern. Change one, change both, or the matrix goes red.
- */
-const DENYLIST_MARKERS = [
-  /\bdo\s+not\s+fix\b/i,
-  /\bdo\s+not\s+touch\b/i,
-  /\bdo\s+not\s+modify\b/i,
-  /\bout\s+of\s+scope\b/i,
-  /\bnot\s+in\s+scope\b/i,
-  /\balready\s+filed\b/i,
-]
-// The EXTENSION discriminates, not the separator. `reading.broken` and
-// `acs[].status` — both in #274's prohibition, both code — are excluded
-// because `.broken` and `.status` are not extensions. The first draft claimed
-// the `/` did this work; mutating it from required to optional scored ZERO
-// red, which is how the claim was caught. It is optional now, so a goal can
-// name `package.json`; `matchesDenied` decides how a bare name matches.
-const DENYLIST_PATH = /\b([A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\.(?:ts|tsx|js|jsx|md|json|ya?ml|sh))\b/g
-
-function pathsNamedIn(text) {
-  return [...new Set([...String(text ?? '').matchAll(DENYLIST_PATH)].map(m => m[1]))]
-}
-
-function prohibitions(goalText) {
-  const out = []
-  for (const para of String(goalText ?? '').split(/\n\s*\n/)) {
-    if (!DENYLIST_MARKERS.some(m => m.test(para))) continue
-    out.push({
-      text: para.trim(),
-      files: pathsNamedIn(para),
-      issues: [...new Set([...para.matchAll(/#(\d+)\b/g)].map(m => `#${m[1]}`))],
-    })
-  }
-  return out
-}
-
-function deniedFiles(goalText, scopeOut = []) {
-  const fromGoal = prohibitions(goalText).flatMap(p => p.files)
-  const fromScopeOut = (scopeOut || []).flatMap(s => pathsNamedIn(s))
-  return [...new Set([...fromGoal, ...fromScopeOut])]
-}
-
-function unresolvedProhibitions(goalText) {
-  return prohibitions(goalText).filter(p => p.files.length === 0 && p.issues.length > 0)
-}
-
-// One spelling per path. `./a/b.ts`, `a//b.ts`, `a/./b.ts` and `a/c/../b.ts`
-// are four spellings of one file that `===` reads as four, which is a
-// documented bypass of a guard whose whole value is a comparison. A leading
-// `..` is KEPT: it escapes the repo root, so collapsing it would make
-// `../secrets.ts` normalise to `secrets.ts`. (Commit security review.)
-function normalisePath(p) {
-  const raw = String(p ?? '').trim().replace(/\\/g, '/')
-  const out = []
-  for (const seg of raw.split('/')) {
-    if (seg === '' || seg === '.') continue
-    if (seg === '..' && out.length > 0 && out.at(-1) !== '..') out.pop()
-    else out.push(seg)
-  }
-  return out.join('/')
-}
-
-// A denied entry WITH a separator matches exactly — a suffix match would read
-// `test/gates/schema.ts` as `gates/schema.ts`. A bare filename matches by
-// basename, so "do not touch package.json" reaches the file and
-// "HARNESS-STANDARD.md" reaches specs/HARNESS-STANDARD.md.
-function matchesDenied(planFile, deniedEntry) {
-  const plan = normalisePath(planFile)
-  const denied = normalisePath(deniedEntry)
-  if (denied === '' || plan === '') return false
-  if (denied.includes('/')) return plan === denied
-  return plan === denied || plan.split('/').at(-1) === denied
-}
-
-// A hostile or careless goal can deny progress but cannot grant access — a
-// deny-list only narrows. The one unsafe outcome is SILENCE: if every planned
-// file is denied, stripping leaves an empty plan, and an empty plan looks
-// exactly like a run with nothing to do.
-function scopeContradiction(files, denied) {
-  if (!files?.length || !denied?.length) return null
-  if (withoutDenied(files, denied).length > 0) return null
-  return `every file the run planned to touch is out of scope (${files.join(', ')} vs ` +
-    `denied ${denied.join(', ')}). An empty plan looks exactly like a run with ` +
-    `nothing to do, so this is reported rather than stripped in silence (#306).`
-}
-
-function denylistViolations(claimants, denied) {
-  const out = []
-  for (const [i, c] of (claimants || []).entries()) {
-    for (const f of (c.filesToModify || [])) {
-      if (!(denied || []).some(d => matchesDenied(f, d))) continue
-      out.push(
-        `${c.title ? `"${c.title}"` : `plan item ${i + 1}`} claims ${f}, which the goal ` +
-        `put out of scope. An agent handed a file is an agent told the file is in ` +
-        `scope (#306).`,
-      )
-    }
-  }
-  return out
-}
-
-function withoutDenied(files, denied) {
-  return (files || []).filter(f => !(denied || []).some(d => matchesDenied(f, d)))
-}
-// ──── SCOPE-DENYLIST-END ────
-
-// Applied to DISCOVERY first, because that is where #274's contamination
-// entered: the decomposer is handed `discovery.filesToModify` as "Files to
-// modify" and distributed what it was given. Stripping here cleans every
-// downstream consumer at once; the sub-issue check below still runs, because a
-// decomposer can name a file discovery never listed.
+// The deny-list itself, recomputed here for the two call sites below: the
+// to-issues prompt's OUT OF BOUNDS paragraph and the plan check after it. The
+// APPLICATION lives at the end of runDiscovery so it survives re-discovery;
+// this is just the list, and it is pure, so computing it twice cannot drift.
 const scopeDenied = deniedFiles(discovery.issueGoal || '', discovery.scopeOut || [])
-if (scopeDenied.length > 0) {
-  const beforeStrip = [...(discovery.filesToModify || [])]
-  const contradiction = scopeContradiction(beforeStrip, scopeDenied)
-  if (contradiction) log(`SCOPE DENY-LIST: CONTRADICTION — ${contradiction}`)
-  discovery.filesToModify = withoutDenied(beforeStrip, scopeDenied)
-  const stripped = beforeStrip.filter(f => !discovery.filesToModify.includes(f))
-  log(`SCOPE DENY-LIST: the goal puts ${scopeDenied.length} file(s) out of bounds — ${scopeDenied.join(', ')}`)
-  if (stripped.length > 0) {
-    log(`SCOPE DENY-LIST: removed ${stripped.length} of them from discovery.filesToModify — ${stripped.join(', ')}`)
-  }
-
-  // `contextFiles` is the SECOND field that carries paths, and filtering only
-  // `filesToModify` left it as a complete bypass of this guard — raised by the
-  // commit security review as incomplete-guard-field-mismatch, and confirmed
-  // at two live sites: the to-issues prompt interpolates every AC's
-  // contextFiles, and `acContextFiles` reads them off disk into the
-  // implementer's excerpts. A denied file would have been re-advertised to the
-  // planner and handed to the agent after being struck off the file list,
-  // which is what made the prompt's OUT OF BOUNDS paragraph decorative.
-  let contextStripped = 0
-  for (const ac of (discovery.acs || [])) {
-    if (!ac.contextFiles?.length) continue
-    const before = ac.contextFiles.length
-    ac.contextFiles = ac.contextFiles.filter(cf => {
-      const p = typeof cf === 'string' ? cf : cf?.path
-      return !p || !scopeDenied.some(d => matchesDenied(p, d))
-    })
-    contextStripped += before - ac.contextFiles.length
-  }
-  if (contextStripped > 0) {
-    log(`SCOPE DENY-LIST: removed ${contextStripped} out-of-scope entr${contextStripped === 1 ? 'y' : 'ies'} from AC contextFiles`)
-  }
-}
-for (const p of unresolvedProhibitions(discovery.issueGoal || '')) {
-  // Not a refusal. The goal is well-formed English and the run can proceed;
-  // what it cannot do is enforce this one. Saying so is the difference between
-  // an empty deny-list and an unenforceable one (#306).
-  log(`SCOPE DENY-LIST: UNENFORCEABLE — "${p.text.slice(0, 160)}" names ${p.issues.join(', ')} but no file path, so nothing can be denied. Name the files to make it mechanical.`)
-}
 
 // ── M-size decomposition: invoke to-issues to create XS/S sub-issues ──
 let mDecomposition = null

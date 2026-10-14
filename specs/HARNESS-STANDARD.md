@@ -1746,6 +1746,27 @@ takes (a bare string and `{path, reason}`), and the position of the strip
 relative to the two readers is asserted rather than assumed. Mutation:
 disabling the `contextFiles` filter turns 1 of 52 red.
 
+A third review, on the pushed commits, found the one that mattered most:
+**guard-not-reapplied-on-rediscovery**. The verify gate calls
+`runDiscovery('Verify gate found ACs were wrong: …')`, which replaces
+`filesToModify` and `acs` wholesale. The deny-list was applied once after the
+first discovery, so it held for one pass and **silently lapsed on the
+second** — and the re-run is the path a FAILING run takes, which is the worst
+one to leave open. The application moved inside `runDiscovery` as
+`applyScopeDenylist`, declared once, so every discovery is filtered. The list
+is still computed separately for the prompt, which is pure and cannot drift.
+
+| Mutation | Red |
+|---|---|
+| `applyScopeDenylist` never called | 2 of 53 |
+| the call moved back outside `runDiscovery` | 1 of 53 — the exact defect the review found, reintroduced verbatim |
+
+Three review rounds on one change, each finding a real reachable bypass of
+the previous fix. Worth recording as a count: a guard built field-by-field
+from the one example that motivated it keeps missing the next field, and
+what finally closed it was applying it at a single choke point rather than
+at each site that reads.
+
 ### The release job went red over a release that worked (#407, 2026-10-14)
 
 `v0.3.0` published cleanly — `dist-tags.latest` is `0.3.0`, `npm install
