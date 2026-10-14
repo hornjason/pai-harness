@@ -8,11 +8,18 @@ import {
   RE_REVIEW,
   REVIEW_CURRENT,
   SECURITY_REREVIEW_EXHAUSTED,
+  REVIEW_SCOPE_DIFF,
+  REVIEW_SCOPE_FULL,
+  SECURITY_FINDINGS_OUTLIVED_REREVIEW,
+  reReviewBaseFor,
   reReviewDecision,
+  reReviewScope,
+  resolveReReview,
   reviewIsCurrent,
   rookGateVerdict,
   rookReviewSha,
   rookScopeCommand,
+  securityRefusalName,
 } from "../lib/security-verdict";
 
 /**
@@ -239,7 +246,14 @@ const inlinedReviewIsCurrent: typeof reviewIsCurrent = (() => {
 const inlinedReReview = (() => {
   const securityBlock = sliceBlock(SECURITY_START, SECURITY_END);
   const currencyBlock = sliceBlock(CURRENCY_START, CURRENCY_END);
-  const names = "{ reReviewDecision, REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED }";
+  // #244 added four more names to the same block. They are pulled from the
+  // REAL source for the same reason the three above are: a stub would let the
+  // decision block and the library disagree about what may clear a FAIL, and
+  // nothing would notice.
+  const names =
+    "{ reReviewDecision, REVIEW_CURRENT, RE_REVIEW, SECURITY_REREVIEW_EXHAUSTED, " +
+    "reReviewScope, reReviewBaseFor, resolveReReview, securityRefusalName, " +
+    "REVIEW_SCOPE_FULL, REVIEW_SCOPE_DIFF, SECURITY_FINDINGS_OUTLIVED_REREVIEW }";
   const body = securityBlock.includes(currencyBlock)
     ? `${securityBlock}\nreturn ${names}`
     : `${securityBlock}\nreturn (function () {${currencyBlock}\nreturn ${names}})()`;
@@ -248,15 +262,28 @@ const inlinedReReview = (() => {
     REVIEW_CURRENT: string;
     RE_REVIEW: string;
     SECURITY_REREVIEW_EXHAUSTED: string;
+    reReviewScope: typeof reReviewScope;
+    reReviewBaseFor: typeof reReviewBaseFor;
+    resolveReReview: typeof resolveReReview;
+    securityRefusalName: typeof securityRefusalName;
+    REVIEW_SCOPE_FULL: string;
+    REVIEW_SCOPE_DIFF: string;
+    SECURITY_FINDINGS_OUTLIVED_REREVIEW: string;
   };
-  if (typeof out.reReviewDecision !== "function") {
-    throw new Error(
-      "ship.js's REVIEW-CURRENCY block does not define reReviewDecision — " +
-        "the re-review path below would be testing nothing",
-    );
+  const FUNCTIONS = [
+    "reReviewDecision", "reReviewScope", "reReviewBaseFor", "resolveReReview",
+    "securityRefusalName",
+  ];
+  for (const name of FUNCTIONS) {
+    if (typeof (out as Record<string, unknown>)[name] !== "function") {
+      throw new Error(
+        `ship.js's REVIEW-CURRENCY block does not define ${name} — ` +
+          "the re-review path below would be testing nothing",
+      );
+    }
   }
   for (const [name, value] of Object.entries(out)) {
-    if (name === "reReviewDecision") continue;
+    if (FUNCTIONS.includes(name)) continue;
     if (typeof value !== "string" || value === "") {
       throw new Error(`ship.js's inlined ${name} is not a verdict constant`);
     }
@@ -1195,6 +1222,116 @@ describe("#171 reReviewDecision: the stale review is re-run while a round remain
   });
 });
 
+/**
+ * #244 parity: the library and ship.js's inlined copy must answer the same
+ * way about what may clear a FAIL.
+ *
+ * Measured, not assumed: before this existed, two mutations of the INLINED
+ * copies scored ZERO red — `test/stale-fail-rereview.test.ts` drives the
+ * library, and the end-to-end cases above exercise only the paths a happy
+ * re-review takes. A security clearing with two implementations and a test
+ * for one of them is the house defect with a second address.
+ *
+ * Driven over one matrix, so "the two agree" cannot be satisfied by the two
+ * being asked different questions.
+ */
+describe("#244 parity: the inlined clearing rules match lib/security-verdict.ts", () => {
+  const FAILED = { spawned: true, verdict: "FAIL", failures: ["injection in x.ts:40"] };
+  const PASSED = { spawned: true, verdict: "PASS", failures: [] as string[] };
+
+  const HELD: Array<[string, unknown]> = [
+    ["a PASS", PASSED],
+    ["a FAIL", FAILED],
+    ["nothing", undefined],
+    ["null", null],
+    ["a string", "PASS"],
+    ["an array", []],
+    ["a record with no verdict", {}],
+    ["a lowercase pass", { verdict: "pass" }],
+    ["an unrecognised verdict", { verdict: "UNKNOWN" }],
+  ];
+
+  for (const [label, held] of HELD) {
+    test(`reReviewScope and reReviewBaseFor agree on ${label}`, () => {
+      expect(inlinedReReview.reReviewScope(held)).toBe(reReviewScope(held));
+      expect(inlinedReReview.reReviewBaseFor(held, SHA)).toBe(reReviewBaseFor(held, SHA));
+      expect(inlinedReReview.reReviewBaseFor(held, "origin/main"))
+        .toBe(reReviewBaseFor(held, "origin/main"));
+    });
+  }
+
+  const FRESH: Array<[string, unknown]> = [
+    ["a clean pass naming its commit", { ...PASSED, testedSha: OTHER_SHA }],
+    ["a pass naming no commit", PASSED],
+    ["a pass naming a ref", { ...PASSED, testedSha: "origin/main" }],
+    ["a fail with findings", { spawned: true, verdict: "FAIL", failures: ["still injectable"] }],
+    ["a fail with none", { spawned: true, verdict: "FAIL", failures: [] }],
+    ["no verdict at all", undefined],
+    ["an unrecognised verdict", { spawned: true, verdict: "MAYBE" }],
+  ];
+
+  for (const [heldLabel, held] of HELD) {
+    for (const [freshLabel, fresh] of FRESH) {
+      for (const scope of [REVIEW_SCOPE_FULL, REVIEW_SCOPE_DIFF, undefined]) {
+        test(`resolveReReview agrees: held ${heldLabel}, re-review ${freshLabel}, scope ${scope}`, () => {
+          const lib = resolveReReview(held, fresh, scope, 1, SHA, OTHER_SHA);
+          const ship = inlinedReReview.resolveReReview(held, fresh, scope, 1, SHA, OTHER_SHA);
+          // The verdict first and on its own: a divergence there is a
+          // divergence about whether a run may ship.
+          expect(ship.verdict, "the two copies disagree about the VERDICT").toBe(lib.verdict);
+          expect(ship.cleared, "the two copies disagree about what was cleared").toEqual(lib.cleared);
+          expect(ship.failures, "the two copies disagree about the findings").toEqual(lib.failures);
+          expect(ship.spawned).toBe(lib.spawned);
+        });
+      }
+    }
+  }
+
+  for (const [label, held] of HELD) {
+    for (const spent of [0, 1, 2, undefined, "1", -1, 1.5, null]) {
+      test(`securityRefusalName agrees: ${label}, ${String(spent)} spent`, () => {
+        expect(inlinedReReview.securityRefusalName(held, spent))
+          .toBe(securityRefusalName(held, spent));
+      });
+    }
+  }
+
+  test("both copies refuse a clearing nobody can attribute to a commit", () => {
+    // The matrix above always supplies `reviewedSha` as a fallback, so the
+    // branch that fires when NEITHER the re-review nor the caller names a
+    // commit is unreachable through it. Measured: removing that branch from
+    // ship.js scored 0 red while removing it from the library scored 1 — the
+    // parity matrix was comparing two copies on inputs that never reached the
+    // code being compared.
+    for (const reviewed of [undefined, "origin/main", ""]) {
+      const args = [FAILED, { ...PASSED, testedSha: "origin/main" }, REVIEW_SCOPE_FULL, 1, SHA, reviewed] as const;
+      const lib = resolveReReview(...args);
+      const ship = inlinedReReview.resolveReReview(...args);
+      expect(lib.verdict, `reviewedSha=${String(reviewed)}`).toBe("FAIL");
+      expect(ship.verdict).toBe(lib.verdict);
+      expect(ship.failures).toEqual(lib.failures);
+      expect(ship.cleared).toBeUndefined();
+    }
+  });
+
+  test("the constants are spelled the same in both copies", () => {
+    expect(inlinedReReview.REVIEW_SCOPE_FULL).toBe(REVIEW_SCOPE_FULL);
+    expect(inlinedReReview.REVIEW_SCOPE_DIFF).toBe(REVIEW_SCOPE_DIFF);
+    expect(inlinedReReview.SECURITY_FINDINGS_OUTLIVED_REREVIEW)
+      .toBe(SECURITY_FINDINGS_OUTLIVED_REREVIEW);
+  });
+
+  test("each new helper is exported once from the library", () => {
+    const lib = readFileSync(join(REPO_ROOT, "lib", "security-verdict.ts"), "utf-8");
+    for (const name of ["reReviewScope", "reReviewBaseFor", "resolveReReview", "securityRefusalName"]) {
+      expect(
+        (lib.match(new RegExp(`export function ${name}\\b`, "g")) ?? []).length,
+        `${name} has more than one definition, so there is no single binding to mutate`,
+      ).toBe(1);
+    }
+  });
+});
+
 describe("#171 the re-review's scope is the remediation diff", () => {
   test("the reviewed commit becomes --base and the new tip becomes --sha", () => {
     // AC-2. Without the base the second review re-reads the whole branch,
@@ -1674,10 +1811,20 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
     expect(String(out?.immediateReason)).toStartWith("SECURITY_REVIEW_STALE");
   });
 
-  test("a rook FAIL is still read before any of this", async () => {
-    // The re-review loop must not run ahead of the verdict refusal: a FAIL
-    // that got re-reviewed into a PASS would be #129 with extra steps.
+  test("a CURRENT rook FAIL refuses immediately and spawns nothing", async () => {
+    // #171 asserted this of EVERY rook FAIL, with the reasoning that "a FAIL
+    // re-reviewed into a PASS would be #129 with extra steps". That was right
+    // while the only re-review was diff-scoped: `base..tip` does not contain
+    // the flagged code, so such a PASS says nothing about the finding.
+    //
+    // #244 overturns it for the STALE case ONLY, and only by changing what
+    // the re-review reads — a full review of the tip does read the flagged
+    // code. The invariant that survives, and the one this now pins, is the
+    // one #171 was really protecting: a FAIL about the code being shipped is
+    // never re-reviewed into anything. It refuses, here, with nothing spawned.
     const run = reReviewRun({
+      tested: SHA,
+      head: SHA,
       overrides: {
         securityVerdict: { spawned: true, verdict: "FAIL", failures: ["guard bypass"] },
       },
@@ -1685,7 +1832,113 @@ describe("#171 AC-4: the #169 detection half is preserved, not relaxed", () => {
     const out = await run.result;
     expect(out?.status).toBe("SHIP_FAILED");
     expect(String(out?.reason)).toContain("guard bypass");
-    expect(run.calls, "a failing review was re-reviewed instead of refused").toEqual([]);
+    expect(run.calls, "a current failing review was re-reviewed instead of refused").toEqual([]);
+  });
+
+  test("a FAIL whose currency cannot be established refuses, it does not fall through", async () => {
+    // The second finding against 46034035: conditioning the #129 refusal on
+    // currency means a run that cannot establish currency skips an immediate
+    // refusal. An unreadable pair makes `reReviewDecision` return exhaustion,
+    // the loop breaks without spending a round, and the refusal below fires.
+    const run = reReviewRun({
+      tested: "not-a-sha",
+      head: undefined,
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["guard bypass"] },
+      },
+    });
+    const out = await run.result;
+    expect(out?.status, "an unreadable currency let a FAIL through").toBe("SHIP_FAILED");
+    expect(run.calls, "a round was spent on a pair nothing could be aimed at").toEqual([]);
+  });
+
+  test("a STALE rook FAIL is re-reviewed, and the review reads the whole tip", async () => {
+    // #244. The stale-FAIL cell is the one #171 could not reach, and it is
+    // not the rare one: a FAIL is a reason to remediate, and the verify
+    // gate's self-heal loop is what produces the commit that makes the
+    // review stale. On wf_edc73e78-275 rook's two findings were both real
+    // about 82c4c6a1 and both resolved in f2487030, and the run refused.
+    const run = reReviewRun({
+      tested: SHA,
+      head: OTHER_SHA,
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["injection in x.ts:40"] },
+      },
+    });
+    expect(await run.result, "a stale FAIL still refused instead of being re-reviewed")
+      .toBeUndefined();
+    expect(run.calls.length).toBe(1);
+    // The whole of #244: `base..tip` does not contain the flagged code, so
+    // the clearing review must not be given a base. A test that only checked
+    // "a round was spawned" would pass against 46034035 verbatim.
+    expect(
+      run.calls[0].base,
+      "the stale FAIL was re-reviewed against the flagged commit — that diff cannot contain the finding",
+    ).toBeNull();
+  });
+
+  test("a stale PASS is still re-reviewed against the reviewed commit", async () => {
+    // The control. A change that made every re-review full-scope would pass
+    // the case above and throw away #171's whole reason for being diff-scoped.
+    const run = reReviewRun({ tested: SHA, head: OTHER_SHA });
+    expect(await run.result).toBeUndefined();
+    expect(run.calls[0].base, "a stale PASS stopped being diff-scoped").toBe(SHA.toLowerCase());
+  });
+
+  test("the cleared findings travel into the verdict the rest of the run reads", async () => {
+    const run = reReviewRun({
+      tested: SHA,
+      head: OTHER_SHA,
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["injection in x.ts:40"] },
+      },
+    });
+    await run.result;
+    const held = run.scope.securityVerdict as { verdict: string; cleared?: Record<string, unknown> };
+    expect(held.verdict).toBe("PASS");
+    expect(held.cleared, "the verdict was overwritten wholesale — 46034035's first finding")
+      .toBeTruthy();
+    expect(held.cleared!.priorFailures).toEqual(["injection in x.ts:40"]);
+    expect(held.cleared!.clearedBySha).toBe(OTHER_SHA.toLowerCase());
+  });
+
+  test("a stale FAIL whose re-review also fails refuses under its own name", async () => {
+    const run = reReviewRun({
+      tested: SHA,
+      head: OTHER_SHA,
+      spawn: () => ({
+        verdict: { spawned: true, verdict: "FAIL", failures: ["still injectable"] },
+        testedSha: OTHER_SHA,
+      }),
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["injection in x.ts:40"] },
+      },
+    });
+    const out = await run.result;
+    expect(out?.status).toBe("SHIP_FAILED");
+    expect(String(out?.immediateReason)).toStartWith("SECURITY_FINDINGS_OUTLIVED_REREVIEW");
+    expect(String(out?.immediateReason)).toContain("still injectable");
+  });
+
+  test("a diff-scoped pass cannot clear a FAIL even if the base selection is subverted", async () => {
+    // The mutation the revert exists to prevent, driven through the real
+    // block: the loop is forced to pick the diff scope for a FAIL. The second
+    // guard — inside resolveReReview — must still refuse, because a PASS over
+    // `A..B` says nothing about a finding in A.
+    const run = reReviewRun({
+      tested: SHA,
+      head: OTHER_SHA,
+      overrides: {
+        securityVerdict: { spawned: true, verdict: "FAIL", failures: ["injection in x.ts:40"] },
+        reReviewScope: () => "diff",
+        reReviewBaseFor: (_held: unknown, tested: unknown) => inlined.rookReviewSha(tested),
+      },
+    });
+    const out = await run.result;
+    expect(out?.status, "a diff-scoped PASS cleared a FAIL and the run shipped").toBe("SHIP_FAILED");
+    expect(String(out?.reason)).toContain("does not contain the flagged code");
+    expect(String(out?.reason), "the original finding was erased").toContain("injection in x.ts:40");
+    expect(run.calls[0].base, "the subverted selection was not actually used").toBe(SHA.toLowerCase());
   });
 
   test("both refusal names are in the file, and the exhaustion one is spelled once", () => {
