@@ -1624,6 +1624,70 @@ buying green with blindness.
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
 
+### The first release attempt could not have succeeded (#364, 2026-10-14)
+
+The guard worked. The suite in front of it did not, and the two together
+made every minor and major bump **un-releasable** — which nothing noticed,
+because the only version ever tried was a patch.
+
+`addPaiHarnessDevDep` pins a consumer to `^<major>.<minor>.0` of the
+harness, read from `package.json`. `test/scaffold-installable.test.ts` then
+really runs `bun install` in a temp dir to prove the scaffold emits a
+resolvable range rather than the `file:` path of #362. Both are correct in
+isolation. Composed, the install case asserts that the TREE's version is
+already on npm — and the release workflow runs the suite BEFORE the publish
+step, with no `continue-on-error` and no conditional, deliberately, because
+SC-831 and SC-832 assert there is no bypass.
+
+So the check could not pass until the step it gated had already run.
+Measured directly, on the registry:
+
+| Tree version | Range emitted | Resolves |
+|---|---|---|
+| `0.2.2` | `^0.2.0` | yes — `0.2.1` satisfies it |
+| `0.2.9` | `^0.2.0` | yes |
+| `0.3.0` | `^0.3.0` | **no — nothing published in that range** |
+| `1.0.0` | `^1.0.0` | **no** |
+
+`0.2.2` would have published, by accident: zeroing the patch happens to land
+on an already-published floor as long as the minor never moves. The tree had
+carried `0.2.2` since 2026-09-19, so the defect was invisible for 719
+commits and surfaced only when the version was corrected to `0.3.0` — a
+minor, because 86 of the 90 `lib/` files in the tarball are new since
+`0.2.1` and 613 exported symbols were added, which is not a patch.
+
+This is the inverse of the rule this repo is organised around, and the same
+shape as #397: **a check that cannot pass does the damage a check that
+cannot fail does**, because the message is wrong either way. It is also a
+phase error rather than a logic error — the ordering class #261 and #273 are
+instances of — so the fix is to split it by phase rather than to weaken it.
+
+The resolvability half now runs against a version that IS published, so it
+keeps catching the `file:` regression it was written for. Whether the tree's
+own range will resolve once shipped is a pure question with a pure answer: a
+caret floored at a version's own minor is satisfied by that version.
+
+- [x] SC-1412: lib/release-preflight.ts contains [export function satisfiesCaret] — one exported predicate answers whether a version satisfies a caret range and the 0.x rule lives only there because below 1.0.0 a caret is pinned to the minor rather than the major
+- [x] SC-1413: test/scaffold-installable.test.ts contains [the range the scaffold emits is satisfied by the version that emits it] — the tree's own installability is proven without a registry so a release is never gated on the publish it is gating
+- [x] SC-1414: lib/scaffold/steps.ts contains [export function addPaiHarnessDevDep] — the dependency range accepts an explicit version so the cases that really install can be driven over a published one while still going through the writer that produced the `file:` bug
+
+#### What was broken to prove it (SC-1412..1414)
+
+Run and counted over `test/scaffold-installable.test.ts` +
+`test/release-guard.test.ts` (50 tests), not asserted. **Two of the four
+scored zero on the first pass and both are closed rather than explained
+away** — including the one the function's own docblock calls the whole point,
+which is the self-reference this area keeps producing.
+
+| Mutation | Red |
+|---|---|
+| `satisfiesCaret` short-circuited to `return true` | 3 of 50 |
+| the 0.x upper bound replaced by `return vMaj === rMaj` | **0 → 1 of 50.** Every case compared versions differing in the MAJOR or below the floor, and the lower-bound check answers all of those before the 0.x branch is reached. The readings diverge only for a version at or above the floor whose minor has moved with a major of zero — `^0.3.0` against `0.4.0` — and nothing produced that pair |
+| the caret pinned to the minor for ALL majors | 1 of 50 — the other side of the same branch, so "fix" it by pinning everything and `^1.2.0` stops admitting `1.5.0` |
+| the lower-bound check deleted | **0 → 1 of 50.** Same cause from the other end: every case differed in the major or the minor, so the upper bound caught them alone. A version sharing the floor's minor and sitting below its patch — `^0.3.5` against `0.3.0` — is the only shape that isolates it |
+
+None is left in the tree; all were run and reverted.
+
 #### What was broken to prove it (SC-828..832)
 
 Run and counted over `test/release-guard.test.ts` (34 tests):
