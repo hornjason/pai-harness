@@ -1624,6 +1624,203 @@ buying green with blindness.
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
 
+### A prohibition became a work plan (#306, 2026-10-14)
+
+#274 attempt 4 (`wf_b3714a40-bb7`). The goal said, under a heading in
+capitals, "ALSO DO NOT FIX, ALREADY FILED: #295 … leave it there". The
+`to-issues` decomposer emitted a sub-issue whose `filesToModify` was
+`gates/schema.ts`, `lib/evidence-prevalidator.ts`, `gates/SCHEMA-GUIDE.md` —
+the three files you would touch to fix #295, and nothing to do with #274. The
+agent did what its file list permitted: it wrote the test slot it was given,
+asserting the field is absent and commenting *"That absence is #295"*, and it
+also added the field. One sub-issue documented the defect and removed it, and
+the run refused on its own contradiction.
+
+The attribution is the plan's. The collection guard (#178, SC-413) refuses
+any file no sub-issue claimed and did not refuse these, so they were in the
+plan. An agent handed `gates/schema.ts` has been told, by the strongest
+signal the system sends, that the file is in scope.
+
+**#306's own diagnosis was wrong in a way that would have shipped the defect
+as its remedy.** The issue proposes a deny-list because "the goal already
+names them". It does not: the prohibition names an ISSUE and three code
+symbols — `prevalidationViolations`, `reading.broken`, `acs[].status` — and
+no path. The paths came from `discovery.filesToModify`, which `ship.js` hands
+the decomposer verbatim as "Files to modify". A deny-list built on that
+premise returns `[]` for the exact run that motivated it, and passes.
+
+So the guard has two outputs. `deniedFiles` is enforced;
+`unresolvedProhibitions` is the prohibitions that named an issue and no file,
+which cannot be enforced and are logged. "Nothing was denied" and "nothing
+could be denied" are the same empty list, and only the first is a clean run.
+
+Enforced at two points, because they fail differently:
+`discovery.filesToModify` is filtered before the decomposer is prompted,
+which is where #274's contamination entered, and the decomposer's own
+sub-issues are checked after, because a decomposer can name a file discovery
+never listed.
+
+- [x] SC-1423: test/scope-denylist.test.ts contains [#274's real goal denies nothing - and says so] — a prohibition naming an issue and no file is reported as unenforceable rather than returning an empty deny-list that reads as a clean run because those two are the same empty list and only one of them is fine
+- [x] SC-1424: lib/scope-denylist.ts contains [export function prohibitions] — the marked region is the paragraph so a bolded lead-in still covers the sentences under it and a marker near the top does not put the whole goal out of bounds
+- [x] SC-1425: lib/scope-denylist.ts contains [export function denylistViolations] — a plan claiming a denied file is refused by name and the in-scope sub-issue in the same plan keeps every file it asked for so the refusal cannot be satisfied by emitting nothing
+- [x] SC-1426: test/scope-denylist.test.ts contains [SC-1426: ship.js's inlined copy and the library agree] — the workflow cannot import so the decision exists twice and both copies are run over one shared matrix because an extracted function that never matched its inlined copy is how computeACHash drifted
+
+#### What was broken to prove it (SC-1423..1426)
+
+Run and counted over `test/scope-denylist.test.ts` (43 tests). Each mutation
+was applied to BOTH copies, since changing one alone is caught by the parity
+matrix for the wrong reason:
+
+| Mutation | Red |
+|---|---|
+| `deniedFiles` short-circuited to `return []` | 6 of 43 |
+| `unresolvedProhibitions` short-circuited to `return []` | 2 of 43 — the unenforceable case stops being distinguishable from a clean goal |
+| the path detector's separator made required again | 1 of 43 |
+| the extension list widened to any `.[a-z]+` | 4 of 43 — `reading.broken` and `acs[].status` start reading as files |
+| the paragraph bound removed, so one marker covers the whole goal | 4 of 43 |
+| basename matching removed from `matchesDenied` | 1 of 43 |
+| `ship.js` stops checking the decomposer's output (`planViolations = []`) | 1 of 43 |
+| `normalisePath` short-circuited to `return String(p)` | 1 of 50 |
+| the `..` segment never collapsing | 1 of 50 |
+| `scopeContradiction` short-circuited to `return null` | 1 of 50 |
+| the empty-entry guard in `matchesDenied` removed | 1 of 50 |
+
+(The last four are over 50 tests; the first seven over 43, before the
+security-review cases below were added.)
+
+**A zero, and it was the guard's rather than the suite's.** The separator
+mutation first scored **0 of 35**. The code said the `/` was what separated
+`gates/schema.ts` from `reading.broken`, and the three negative cases written
+to defend that claim were all excluded by the EXTENSION instead — they never
+reached the separator. Chasing the zero showed the rule was not merely
+unproven but wrong: requiring `/` silently missed every root-level file a
+goal might name, so "do not touch `package.json`" parsed to nothing. The
+detector now accepts a bare filename, `matchesDenied` gives it basename
+semantics while a full path still matches only itself, and both directions
+are cases.
+
+**Two more zeros, from the commit security review's fixes, and both were
+mine.** `matchesDenied`'s empty-entry guard scored 0: with `denied === ""`
+the basename arm already answers false, so the four cases written for it
+never reached the guard at all. The input that does is `matchesDenied("",
+"")` — without the guard both sides normalise to `""` and match. And the
+`..` mutation scored 0 on its first run because the **mutation harness**
+failed to apply to the `.ts` file (single-vs-double quotes) and reported a
+result anyway, which is the silently-no-opping mutation harness
+`.claude/rules/checks-must-be-able-to-fail.md` warns about, met in my own
+tooling. Re-applied with an assertion that the text changed: 1 red.
+
+None of the eleven mutations is left in the tree.
+
+#### What the commit security review found (#306)
+
+Three findings, all on `lib/scope-denylist.ts`, all the same hazard from
+different angles: a guard whose entire value is a string comparison is only
+as good as its normalisation and only as safe as its direction.
+
+- **guard-bypass-path-normalization.** `./gates/schema.ts`, `gates//schema.ts`,
+  `gates/./schema.ts` and `gates/sub/../schema.ts` are four spellings of one
+  file that `===` read as four. Three walked past the deny-list.
+  `normalisePath` now collapses them, and a leading `..` is deliberately kept
+  because there is nothing above the root to collapse into.
+- **untrusted-input-control-manipulation.** Goal text comes from an issue
+  body and nothing validates it. What limits the damage is DIRECTION: a
+  deny-list only ever narrows what an agent may write, so a hostile goal can
+  deny progress but cannot grant access. Recorded rather than fixed, because
+  it is the safe direction and a refusal here would be worse.
+- **fail-open-detection.** The unsafe half of the above is silence. A goal
+  that denies every planned file leaves an empty `filesToModify`, and an
+  empty plan is indistinguishable from a run with nothing to do — work
+  refused, reported as work completed. `scopeContradiction` says so.
+
+A second review, on the committed change, found three more. The one that
+mattered is **incomplete-guard-field-mismatch, and it was a complete
+bypass**: `filesToModify` is not the only field carrying paths. Every AC's
+`contextFiles` is interpolated into the to-issues prompt, and `acContextFiles`
+reads those same entries off disk into the implementer's context excerpts. So
+a denied file was struck off the file list and then re-advertised to the
+planner and handed to the agent — which is also what made the prompt's OUT OF
+BOUNDS paragraph **decorative-control**, the review's other finding. Both are
+fixed by filtering `contextFiles` in the same block, on both shapes the field
+takes (a bare string and `{path, reason}`), and the position of the strip
+relative to the two readers is asserted rather than assumed. Mutation:
+disabling the `contextFiles` filter turns 1 of 52 red.
+
+A third review, on the pushed commits, found the one that mattered most:
+**guard-not-reapplied-on-rediscovery**. The verify gate calls
+`runDiscovery('Verify gate found ACs were wrong: …')`, which replaces
+`filesToModify` and `acs` wholesale. The deny-list was applied once after the
+first discovery, so it held for one pass and **silently lapsed on the
+second** — and the re-run is the path a FAILING run takes, which is the worst
+one to leave open. The application moved inside `runDiscovery` as
+`applyScopeDenylist`, declared once, so every discovery is filtered. The list
+is still computed separately for the prompt, which is pure and cannot drift.
+
+| Mutation | Red |
+|---|---|
+| `applyScopeDenylist` never called | 2 of 53 |
+| the call moved back outside `runDiscovery` | 1 of 53 — the exact defect the review found, reintroduced verbatim |
+
+A fourth review found the one that made all the others moot: **the guard was
+reading a field that does not exist.**
+
+`applyScopeDenylist` read `disc.issueGoal`. `DISCOVERY_SCHEMA` has no
+`issueGoal` key — the field is on `goalData`, a different object — so
+`deniedFiles('')` returned `[]` on every run and **nothing was ever denied.**
+A completely dead control, shipped as the fix for a class of dead controls,
+and the mistake was copied from `ship.js`'s own pre-existing line
+`Parent issue #${ISSUE}: ${discovery.issueGoal || 'see ACs below'}`, which
+had the same bug and had been silently falling back to 'see ACs below' for
+its whole life. Both are fixed.
+
+The test for it is asserted against the **schema**, not by grepping for the
+right spelling, because the wrong spelling is also a valid-looking string: it
+reads `DISCOVERY_SCHEMA`'s text, asserts `issueGoal` is absent from it, and
+asserts nothing in the file reads `discovery.issueGoal`.
+
+Two more from the same round, both real:
+
+- **The guard ran after the data was persisted.** `writeACs` serialises
+  `discovery.acs` into `workflow-state.json`, which is the copy every gate
+  reads. Applying the filter at the end of `runDiscovery` cleaned the
+  in-memory object and left the persisted one carrying denied
+  `contextFiles`. Moved ahead of the write.
+- **The contradiction warned instead of refusing.** Every planned file being
+  out of scope means the goal is unshippable as written, and carrying on
+  produces an empty implementation that reads downstream as a run with
+  nothing to do. It now returns `false` through `runDiscovery`'s existing
+  refusal channel.
+
+| Mutation | Red |
+|---|---|
+| the goal text read off `discovery` again | 3 of 56 |
+| the contradiction downgraded back to a warning | 1 of 56 |
+| the filter moved back after `writeACs` | 1 of 56 |
+
+**Four review rounds on one change, each finding a real reachable bypass of
+the previous fix, and the last one finding the guard had never run at all.**
+That is the finding worth keeping. Three properties separate the version that
+works from the four that did not, and none of them is about the deny-list
+logic, which was correct throughout:
+
+1. It reads from the object that carries the data, proven against the schema
+   rather than by eye.
+2. It is applied at **one choke point** — inside `runDiscovery`, before the
+   state is written — rather than at each site that reads.
+3. Its failure mode is a refusal, not a log line.
+
+A guard assembled field-by-field from the one example that motivated it keeps
+missing the next field. The field list was never the problem.
+
+A fifth round re-reported `dead-security-control / wrong-source-field`, which
+on inspection was the reviewer reading the diff that fixes and documents it
+rather than a new instance. Checked rather than assumed: every `discovery.x`
+read in `ship.js` was reconciled against `DISCOVERY_SCHEMA`'s declared keys
+and none is undeclared. That reconciliation is now a test rather than a
+one-off command, because it is the general form of the defect and the next
+instance will have a different field name — `issueGoal` was one. Mutation:
+reintroducing a read of an undeclared field turns 2 of 57 red.
+
 ### The release job went red over a release that worked (#407, 2026-10-14)
 
 `v0.3.0` published cleanly — `dist-tags.latest` is `0.3.0`, `npm install
