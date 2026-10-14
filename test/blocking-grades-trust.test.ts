@@ -107,6 +107,9 @@ async function runBlock(scope: Record<string, unknown> = {}): Promise<Outcome> {
     SLUG: "pai-harness-195",
     WORK_DIR: "/tmp/pai-harness-195",
     SPAWNED_ROLES: new Set<string>(),
+    // #232: shipFailed preserves before it returns. Stubbed — see
+    // test/preserve-every-exit.test.ts for the claim that it does.
+    preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
     gradeResult: cleanResult(),
     ...scope,
   };
@@ -368,6 +371,9 @@ describe("#195 SC-768: ship.js actually records the roles it spawns", () => {
       TIMING_SCRIPT: "/bin/true",
       TIMING_ARTIFACT: "/tmp/timing.json",
       shellQuote: (s: string) => s,
+      // #232: timedAgent records any worktree an agent reports. Stubbed —
+      // test/preserve-every-exit.test.ts owns the claim that it does.
+      noteWorktrees: () => {},
       // In the scope, not a parameter: the Proxy's `has` returns true for
       // every name, so `with` captures any identifier the factory takes and
       // resolves it through the Proxy to undefined.

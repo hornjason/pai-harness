@@ -370,6 +370,7 @@ describe("AC-1: the bracket the wrapper actually emits", () => {
       "HARNESS_ROOT",
       "agent",
       "log",
+      "noteWorktrees",
       `${quote[0]}\n${shipSource.slice(from, to)}\nreturn { timedAgent, timingInstruction, TIMING_ARTIFACT, TIMING_SCRIPT }`,
     );
     const api = factory(
@@ -380,6 +381,9 @@ describe("AC-1: the bracket the wrapper actually emits", () => {
         return { ok: true };
       },
       (m: string) => logs.push(m),
+      // #232: timedAgent records any worktree an agent reports. Stubbed —
+      // test/preserve-every-exit.test.ts owns the claim that it does.
+      () => {},
     ) as {
       timedAgent: (p: string, o?: Record<string, unknown>) => Promise<unknown>;
       timingInstruction: (label: string) => string;

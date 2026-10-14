@@ -78,7 +78,10 @@ const SITES = {
   declResult: /^let scopeResult = .+$/m,
   gateRan: /^ {2}scopeRan = true$/m,
   verdict: /^const scopeVerdict = scopeVerdictFor\(scopeRan, scopeResult\)$/m,
-  refusal: /^if \(scopeVerdict === 'FAIL'\) return \{ status: 'SCOPE_FAILED'.*$/m,
+  // #232 routed the refusal through terminalFailure, which preserves the
+  // run's worktrees before returning. The claim is unchanged; the anchor
+  // follows the call.
+  refusal: /^if \(scopeVerdict === 'FAIL'\) return await terminalFailure\('SCOPE_FAILED'.*$/m,
   log: /^log\(`Scope: .+`\)$/m,
   payload: /^ {4}scopeResult: .+,$/m,
 };
@@ -118,7 +121,7 @@ type ScopeOutcome = { logged: string | null } & (
  * `logged` is captured outside the early return, so a refusal that happened
  * AFTER something was logged is distinguishable from one that happened before.
  */
-function runScopeBlock(source: string, opts: { gateRan: boolean; gateResult?: unknown }): ScopeOutcome {
+async function runScopeBlock(source: string, opts: { gateRan: boolean; gateResult?: unknown }): Promise<ScopeOutcome> {
   const parts: Array<{ index: number; code: string }> = [
     { index: source.indexOf(START), code: verdictBlock(source) },
   ];
@@ -150,10 +153,14 @@ function runScopeBlock(source: string, opts: { gateRan: boolean; gateResult?: un
     "const trace = { logged: null }",
     "const log = (m) => { trace.logged = m }",
     "const WORK_DIR = '/tmp/scope-verdict-test'",
-    "const inner = () => {",
+    // #232 routed the refusal through terminalFailure, which preserves the
+    // run's worktrees before returning. Stubbed to the shape it returns —
+    // test/preserve-every-exit.test.ts owns the claim that it preserves.
+    "const terminalFailure = async (status, extra = {}) => ({ status, ...extra, workDir: WORK_DIR })",
+    "const inner = async () => {",
     ...parts.map((p) => p.code),
     "}",
-    "return { ...inner(), logged: trace.logged }",
+    "return inner().then((r) => ({ ...r, logged: trace.logged }))",
   ].join("\n");
   return new Function("gateRan", "gateResult", body)(opts.gateRan, opts.gateResult);
 }
@@ -177,7 +184,7 @@ const ROWS = [
 ] as const;
 
 describe("#276 AC-2: the verdict function, extracted and executed", () => {
-  test("the four reachable states are SKIPPED, PASS, FAIL, FAIL", () => {
+  test("the four reachable states are SKIPPED, PASS, FAIL, FAIL", async () => {
     const scopeVerdictFor = loadScopeVerdict();
     expect(ROWS.map((r) => scopeVerdictFor(r.gateRan, r.gateResult))).toEqual([
       "SKIPPED",
@@ -187,7 +194,7 @@ describe("#276 AC-2: the verdict function, extracted and executed", () => {
     ]);
   });
 
-  test("a gate that never ran is SKIPPED whatever is sitting in the result slot", () => {
+  test("a gate that never ran is SKIPPED whatever is sitting in the result slot", async () => {
     // The precise bug: a value nobody measured must not be reportable. This is
     // the assertion that makes the `ran` argument load-bearing rather than
     // decorative — a function ignoring it and reading the result would pass
@@ -200,7 +207,7 @@ describe("#276 AC-2: the verdict function, extracted and executed", () => {
     }
   });
 
-  test("a gate that ran but said nothing usable is not a pass", () => {
+  test("a gate that ran but said nothing usable is not a pass", async () => {
     // The positive control for the table: returning 'PASS' for everything
     // satisfies one of its four rows, and an unrecognised reply is the state
     // the old code called SKIPPED.
@@ -212,55 +219,55 @@ describe("#276 AC-2: the verdict function, extracted and executed", () => {
 });
 
 describe("#276 AC-1: what the run reports, executed from ship.js's own lines", () => {
-  test("a scope gate that never ran reports SKIPPED at the operator log", () => {
-    const { logged } = reported(runScopeBlock(shipSource, { gateRan: false }));
+  test("a scope gate that never ran reports SKIPPED at the operator log", async () => {
+    const { logged } = reported(await runScopeBlock(shipSource, { gateRan: false }));
     expect(logged).toBe("Scope: SKIPPED");
   });
 
-  test("a scope gate that never ran reports SKIPPED in the dry-run payload", () => {
-    const { payload } = reported(runScopeBlock(shipSource, { gateRan: false }));
+  test("a scope gate that never ran reports SKIPPED in the dry-run payload", async () => {
+    const { payload } = reported(await runScopeBlock(shipSource, { gateRan: false }));
     expect(payload).toBe("SKIPPED");
   });
 
-  test("neither reporting site says PASS for a gate that never ran", () => {
-    const { logged, payload } = reported(runScopeBlock(shipSource, { gateRan: false }));
+  test("neither reporting site says PASS for a gate that never ran", async () => {
+    const { logged, payload } = reported(await runScopeBlock(shipSource, { gateRan: false }));
     expect(logged).not.toContain("PASS");
     expect(payload).not.toBe("PASS");
   });
 
-  test("a scope gate that never ran leaves no result behind", () => {
+  test("a scope gate that never ran leaves no result behind", async () => {
     // The initialiser must not be a verdict. Restoring `{ result: 'PASS' }`
     // turns this red on its own, which is what makes the mutation below a
     // mutation of something load-bearing rather than of dead weight.
-    const out = runScopeBlock(shipSource, { gateRan: false });
+    const out = await runScopeBlock(shipSource, { gateRan: false });
     if ("status" in out) throw new Error("the scope block refused on a skipped gate");
     expect(out.scopeResult).toBeNull();
   });
 
-  test("a scope gate that ran and passed reports PASS at both sites", () => {
-    const { logged, payload } = reported(runScopeBlock(shipSource, { gateRan: true, gateResult: { result: "PASS" } }));
+  test("a scope gate that ran and passed reports PASS at both sites", async () => {
+    const { logged, payload } = reported(await runScopeBlock(shipSource, { gateRan: true, gateResult: { result: "PASS" } }));
     expect(logged).toBe("Scope: PASS");
     expect(payload).toBe("PASS");
   });
 });
 
 describe("#276 AC-4: the refusal reads the computed verdict and runs first", () => {
-  test("a genuine scope FAIL refuses the run before anything is logged", () => {
-    const out = runScopeBlock(shipSource, { gateRan: true, gateResult: { result: "FAIL" } });
+  test("a genuine scope FAIL refuses the run before anything is logged", async () => {
+    const out = await runScopeBlock(shipSource, { gateRan: true, gateResult: { result: "FAIL" } });
     expect(out).toMatchObject({ status: "SCOPE_FAILED" });
     expect(out.logged, "the operator log ran before the refusal").toBeNull();
   });
 
-  test("a gate that ran and reported nothing reaches the refusal as FAIL", () => {
+  test("a gate that ran and reported nothing reaches the refusal as FAIL", async () => {
     // Under the old initialiser this state inherited nothing to refuse and
     // fell through to `Scope: SKIPPED`.
-    const out = runScopeBlock(shipSource, { gateRan: true, gateResult: undefined });
+    const out = await runScopeBlock(shipSource, { gateRan: true, gateResult: undefined });
     expect(out).toMatchObject({ status: "SCOPE_FAILED" });
     expect(out.logged).toBeNull();
   });
 
-  test("exactly one call site gates SCOPE_FAILED on the computed verdict", () => {
-    const sites = [...shipSource.matchAll(/if \(scopeVerdict === 'FAIL'\) return \{ status: 'SCOPE_FAILED'/g)];
+  test("exactly one call site gates SCOPE_FAILED on the computed verdict", async () => {
+    const sites = [...shipSource.matchAll(/if \(scopeVerdict === 'FAIL'\) return await terminalFailure\('SCOPE_FAILED'/g)];
     expect(sites).toHaveLength(1);
     // A second refusal reading the raw result would reintroduce the fall-through.
     expect(shipSource).not.toMatch(/scopeResult\?\.result === 'FAIL'/);
@@ -309,35 +316,35 @@ function preFixMutant(source = shipSource): string {
 }
 
 describe("#276 AC-3: the mutation, built and observed here", () => {
-  test("the pre-#276 mutant prints PASS for a gate that never ran, and the real source does not", () => {
-    const mutant = reported(runScopeBlock(preFixMutant(), { gateRan: false }));
-    const real = reported(runScopeBlock(shipSource, { gateRan: false }));
+  test("the pre-#276 mutant prints PASS for a gate that never ran, and the real source does not", async () => {
+    const mutant = reported(await runScopeBlock(preFixMutant(), { gateRan: false }));
+    const real = reported(await runScopeBlock(shipSource, { gateRan: false }));
     expect(mutant.logged, "the mutation no longer reintroduces the defect").toBe("Scope: PASS");
     expect(real.logged).toBe("Scope: SKIPPED");
   });
 
-  test("the pre-#276 mutant's dry-run payload reports PASS, and the real source does not", () => {
-    const mutant = reported(runScopeBlock(preFixMutant(), { gateRan: false }));
-    const real = reported(runScopeBlock(shipSource, { gateRan: false }));
+  test("the pre-#276 mutant's dry-run payload reports PASS, and the real source does not", async () => {
+    const mutant = reported(await runScopeBlock(preFixMutant(), { gateRan: false }));
+    const real = reported(await runScopeBlock(shipSource, { gateRan: false }));
     expect(mutant.payload).toBe("PASS");
     expect(real.payload).toBe("SKIPPED");
   });
 
-  test("the mutant differs from the real source on the skipped row and nowhere else", () => {
+  test("the mutant differs from the real source on the skipped row and nowhere else", async () => {
     // Without this the mutation could be satisfied by a copy that reports PASS
     // for everything, which is a different bug and would not prove this one.
     // The mutant must still refuse a genuine FAIL and still report a genuine
     // PASS — the ONE row it gets wrong is the gate that never ran.
     const mutant = preFixMutant();
-    expect(runScopeBlock(mutant, { gateRan: true, gateResult: { result: "FAIL" } })).toMatchObject({
+    expect(await runScopeBlock(mutant, { gateRan: true, gateResult: { result: "FAIL" } })).toMatchObject({
       status: "SCOPE_FAILED",
     });
-    expect(reported(runScopeBlock(mutant, { gateRan: true, gateResult: { result: "PASS" } })).logged).toBe(
+    expect(reported(await runScopeBlock(mutant, { gateRan: true, gateResult: { result: "PASS" } })).logged).toBe(
       "Scope: PASS",
     );
   });
 
-  test("the mutant builder refuses when a site it needs is gone", () => {
+  test("the mutant builder refuses when a site it needs is gone", async () => {
     expect(() => preFixMutant(shipSource.replace("let scopeResult = null", "let scopeResult = undefined"))).toThrow(
       /could not build the mutant: the PASS initialiser/,
     );
@@ -363,27 +370,27 @@ function unpairedPassInitialisers(source: string): string[] {
 }
 
 describe("#276 AC-5: a did-not-run-means-PASS initialiser is never left unpaired", () => {
-  test("the enumeration has something to look at", () => {
+  test("the enumeration has something to look at", async () => {
     // Vacuity guard. An empty match list satisfies "zero unpaired" forever,
     // and would also be what a renamed initialiser looks like.
     expect(passInitialisers(shipSource).length).toBeGreaterThanOrEqual(1);
   });
 
-  test("ship.js has no unpaired did-not-run-means-PASS initialiser", () => {
+  test("ship.js has no unpaired did-not-run-means-PASS initialiser", async () => {
     expect(unpairedPassInitialisers(shipSource)).toEqual([]);
   });
 
-  test("the enumeration catches one that is planted", () => {
+  test("the enumeration catches one that is planted", async () => {
     const planted = `${shipSource}\nlet verifyResult = { result: 'PASS' }\n`;
     expect(unpairedPassInitialisers(planted)).toEqual(["verify"]);
   });
 
-  test("the enumeration accepts a planted one that brings its own observed boolean", () => {
+  test("the enumeration accepts a planted one that brings its own observed boolean", async () => {
     const planted = `${shipSource}\nlet verifyRan = false\nlet verifyResult = { result: 'PASS' }\n`;
     expect(unpairedPassInitialisers(planted)).toEqual([]);
   });
 
-  test("the enumeration reads code, not prose about code", () => {
+  test("the enumeration reads code, not prose about code", async () => {
     // The self-reference trap, met from the other direction. An unanchored
     // probe counted `let scopeResult = { result: 'PASS' }` inside the docblock
     // that explains why it is gone — a detector wide enough to read a comment
@@ -392,7 +399,7 @@ describe("#276 AC-5: a did-not-run-means-PASS initialiser is never left unpaired
     expect(passInitialisers(planted)).toEqual(passInitialisers(shipSource));
   });
 
-  test("ship.js's own docblock does not read as a declaration", () => {
+  test("ship.js's own docblock does not read as a declaration", async () => {
     expect(passInitialisers(shipSource)).toEqual(["quinnLocal"]);
   });
 });
@@ -400,23 +407,23 @@ describe("#276 AC-5: a did-not-run-means-PASS initialiser is never left unpaired
 // ── the markers ──────────────────────────────────────────────
 
 describe("#276 AC-6: the verdict logic is a marked, reachable block", () => {
-  test("each marker appears exactly once", () => {
+  test("each marker appears exactly once", async () => {
     expect(shipSource.split("SCOPE-VERDICT-START").length - 1).toBe(1);
     expect(shipSource.split("SCOPE-VERDICT-END").length - 1).toBe(1);
     expect(shipSource.indexOf(END)).toBeGreaterThan(shipSource.indexOf(START));
   });
 
-  test("the block sits somewhere that runs on every run", () => {
+  test("the block sits somewhere that runs on every run", async () => {
     const chain = assertMarkedBlockReachable(shipSource, "SCOPE-VERDICT");
     expect(chain[0]).toBe("Program");
   });
 
-  test("a duplicated marker is refused rather than silently sliced", () => {
+  test("a duplicated marker is refused rather than silently sliced", async () => {
     const doubled = shipSource.replace(END, `${END}\n${START}\n${END}`);
     expect(() => assertMarkedBlockReachable(doubled, "SCOPE-VERDICT")).toThrow(/must be unique/);
   });
 
-  test("the block defines the chooser and nothing calls it before it exists", () => {
+  test("the block defines the chooser and nothing calls it before it exists", async () => {
     expect(verdictBlock(shipSource)).toContain("function scopeVerdictFor(ran, result)");
     expect(shipSource.indexOf(START)).toBeLessThan(
       shipSource.indexOf("const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)"),

@@ -2632,7 +2632,7 @@ the absent-result state reaches `SCOPE_FAILED` instead of falling through.
 - [x] SC-673: workflows/ship.js contains [SCOPE-VERDICT-START, function scopeVerdictFor(ran, result)] — the chooser is a marked block rather than an inline ternary, so the four reachable states are extracted and RUN; every source-text assertion in this repo has survived its first mutation
 - [x] SC-674: workflows/ship.js contains [let scopeRan = false] — the did-not-run fact is observed where the gate runs, not inferred from the ceremony tier or from whatever value is sitting in the result slot, which is what made the old initialiser reportable
 - [x] SC-675: workflows/ship.js contains [let scopeResult = null] — the result starts as no verdict at all; a run that skipped the gate must not be carrying something a reader could mistake for a measurement
-- [x] SC-676: workflows/ship.js contains [if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED'] — one refusal, reading the computed verdict, above the operator log, so a gate that answered with nothing stops the run rather than being logged as skipped
+- [x] SC-676: workflows/ship.js contains [if (scopeVerdict === 'FAIL') return await terminalFailure('SCOPE_FAILED'] — one refusal, reading the computed verdict, above the operator log, so a gate that answered with nothing stops the run rather than being logged as skipped. The refusal now goes through the preserving funnel (#232); the claim is unchanged and the token follows the call
 - [x] SC-677: test/ship-scope-verdict.test.ts contains [parts.sort((a, b) => a.index - b.index)] — ship.js's own statements are executed IN SOURCE ORDER, because a fixed assembly order runs the refusal first wherever the file puts it, and that mutation was run and came back green before the sort existed
 - [x] SC-678: test/ship-scope-verdict.test.ts contains [the enumeration reads code, not prose about code] — every `let xResult = { result: 'PASS' }` in ship.js must be paired with an observed `let xRan = false`, and the probe is line-anchored: an unanchored one counted the docblock explaining why the initialiser is gone
 
@@ -3659,3 +3659,107 @@ and using it is a whole run.
 | a supplied runId is accepted unchecked | 1 of 47 |
 
 None is left in the tree; all were run and reverted.
+
+## No exit path discards an uncommitted worktree (#232)
+
+#228 routed every COLLECT refusal through `preserveRefusedWork`. That was
+correct, and it was scoped to the symptom that had been observed.
+
+Measured: run `wf_89689f50-2e4` on #227 returned `IMPLEMENT_FAILED`, not a
+collect refusal. Both worktrees were left entirely uncommitted at `73c056ab`
+— 13 files in one, 3 in the other. Both agents had reported `success: true`,
+with five mutation proofs between them and a green suite, and the work
+included the complete instrumentation that became PR #231.
+`preserveRefusedWork` never ran, because the run never reached a collect
+refusal. Both were recovered by hand.
+
+### "Add preservation to IMPLEMENT_FAILED too" is the wrong fix
+
+That is the same mistake a third time. The property wanted is not "these
+particular exits preserve" but **no exit path discards an uncommitted
+worktree** — and only the second is testable as a class. `IMPLEMENT_FAILED`
+is simply the exit that fired that day; nothing structurally prevented the
+next one from being added without preservation, which is exactly how it came
+to exist.
+
+So there are two funnels and no third way out: `shipFailed` for SHIP_FAILED,
+which carries the refusal ledger, and `terminalFailure` for every other
+terminal status. Both preserve. `test/preserve-every-exit.test.ts`
+ENUMERATES the terminal statuses out of ship.js and requires each to come
+from one of them, so a status added later is named by a failing test rather
+than by the next person to lose a day's work.
+
+Only `ARGS_ERROR` is exempt, and the exemption is measured rather than
+asserted: the test checks that every ARGS_ERROR site sits before the first
+`await timedAgent(` in the file, so no worktree can exist yet.
+
+### The registry sits where every agent reply passes
+
+Recording a worktree at each site that builds a `buildResult` would be the
+instance fix again — four sites today, and the fifth is the one that strands
+the work. Every agent call goes through `timedAgent`, so `noteWorktrees`
+runs there, on both its paths. It walks the reply rather than reading two
+known fields, depth-bounded and cycle-safe, because it runs on every reply
+in the run and a throw or a hang there is inherited by the whole workflow.
+
+### Merged into LOCAL main is not safe to delete
+
+`cleanupWorktrees` removed any worktree whose branch was an ancestor of
+`main`. A branch merged into a main that was never pushed exists in exactly
+one place on earth, and this function runs unattended from a SessionStart
+hook. #228 and #232 are both about work that was correct and became
+unreachable; removing a worktree whose commits are not on origin is the same
+loss with a tidier name.
+
+A repo with no `origin` returns 0 rather than the branch's whole length —
+there is nowhere the work could have been pushed to, and answering literally
+would stop cleanup dead in every local-only checkout, which is the
+regression that gets a safety check reverted.
+
+- [x] SC-878: workflows/ship.js contains [async function terminalFailure] — every terminal failure status is produced by shipFailed or terminalFailure, both of which preserve, enumerated out of the source so a status added later without one fails a named test rather than stranding the work
+- [x] SC-879: workflows/ship.js contains [function noteWorktrees] — worktrees are recorded inside timedAgent, the one place every agent reply passes, by walking the reply depth-bounded and cycle-safe rather than reading the fields that happen to carry one today
+- [x] SC-880: lib/worktree-cleanup.ts contains [export function unpushedKeepReason] — cleanup keeps any worktree whose branch holds commits no origin ref contains, and keeps one whose origin status could not be determined, while a repo with no origin still cleans up
+
+### What was broken to prove it (SC-878..880)
+
+Run and counted over `test/preserve-every-exit.test.ts` +
+`test/unit/worktree-cleanup-merge.test.ts` (34 tests):
+
+| Mutation | Red |
+|---|---|
+| preservation removed from ONE exit — IMPLEMENT_FAILED, the measured one | 1 of 34 |
+| a NEW terminal status added without the funnel | 1 of 34 |
+| `terminalFailure` stops preserving | 1 of 34 |
+| `shipFailed` stops preserving | 1 of 34 |
+| `timedAgent`'s labelled path stops recording | 1 of 34 |
+| `timedAgent`'s unlabelled path stops recording | 1 of 34 |
+| `timedAgent` returns something other than the reply | 1 of 34 |
+| `noteWorktrees` reads only the top level | 2 of 34 |
+| `noteWorktrees` stops excluding the project root | 1 of 34 |
+| the depth bound removed | 1 of 34 |
+| `preserveSeenWorktrees` passes an empty list | 1 of 34 |
+| cleanup stops checking whether the work is on origin | 1 of 34 |
+| an unanswerable origin check is read as "all pushed" | 1 of 34 |
+| an unanswerable check removes the worktree anyway | 1 of 34 |
+| the keep-reason is never consulted | 1 of 34 |
+| a repo with no origin keeps everything instead of cleaning up | 4 of 34 |
+
+Row one is the one the issue asks for by name.
+
+**Four of these scored ZERO on the first pass, and all four for the same
+reason: the test asserted on SOURCE TEXT where it needed to execute.**
+
+- `timedAgent` was checked for containing `noteWorktrees(`. Deleting the
+  labelled path's call left the unlabelled path's, so the text was still
+  there. A text check cannot tell two call sites apart; the test now runs
+  both paths against a stub agent.
+- `preserveSeenWorktrees` was never executed at all, so "it passes an empty
+  list" changed nothing observable.
+- the cycle guard scored zero because the DEPTH BOUND is what makes the walk
+  terminate — the guard is belt-and-braces over it. The bound is now what is
+  asserted, which is the thing that is actually load-bearing.
+- the unanswerable-origin arm needed git to fail between the branch read and
+  the rev-list: real, but not stageable from a fixture. It moved into
+  `unpushedKeepReason`, one exported binding the test drives directly.
+
+None of the sixteen is left in the tree; all were run and reverted.
