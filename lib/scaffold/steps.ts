@@ -22,6 +22,7 @@ import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, 
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
+import { referencedPaths } from "../agents-md-refs";
 import {
   OWNED_FILES,
   SCAFFOLD_REFUSE,
@@ -613,22 +614,27 @@ export function refreshAgentsMd(root: string, type: ProjectType, actions: string
   const content = readFileSync(agentsPath, "utf-8");
   const issues: string[] = [];
 
-  // Check all file references resolve
-  const linkPattern = /`([^`]+\.(md|json|ts|js|tsx|yml|yaml))`/g;
-  let match;
-  while ((match = linkPattern.exec(content)) !== null) {
-    const ref = match[1];
-    if (ref.startsWith("http") || ref.includes("*")) continue;
+  // Check all file references resolve.
+  //
+  // `referencedPaths` rather than an inline backtick pattern (#380). The old
+  // one treated any backtick span ending in a known extension as a path, so
+  // the Commands table's `bun test test/scaffold-conformity.test.ts` was
+  // handed to existsSync whole. Three reports on this repo, three false
+  // positives, zero true positives.
+  const refs = referencedPaths(content);
+  for (const ref of refs) {
     if (!existsSync(join(root, ref))) {
       issues.push(`BROKEN: ${ref} (referenced in AGENTS.md but doesn't exist)`);
     }
   }
 
-  // Check staleness
+  // Check staleness. The SAME predicate: this scan had its own copy of the
+  // pattern, and two scans with two ideas of what a reference is means the
+  // second silently stops covering spans the first rejects, with nothing
+  // able to notice because they never compare answers.
   const staleFiles: string[] = [];
-  const linkPattern2 = /`([^`]+\.md)`/g;
-  while ((match = linkPattern2.exec(content)) !== null) {
-    const ref = match[1];
+  for (const ref of refs) {
+    if (!ref.endsWith(".md")) continue;
     if (!existsSync(join(root, ref))) continue;
     try {
       const result = Bun.spawnSync(["git", "-C", root, "log", "-1", "--format=%ci", "--", ref], { timeout: 5_000 });

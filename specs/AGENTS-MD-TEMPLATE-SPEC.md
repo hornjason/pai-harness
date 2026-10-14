@@ -256,3 +256,107 @@ was kept from that run; everything else was reverted by hand. It is the
 inverse of #208 and the same unresolved question — who owns a generated file
 after a human edits it — so it gets its own before/after rather than riding
 along here.
+
+## A backtick span is not a path (#380)
+
+`refreshAgentsMd` checked that every path mentioned in AGENTS.md resolves.
+Its pattern was ``/`([^`]+\.(md|json|ts|js|tsx|yml|yaml))`/g`` — any backtick
+span ending in a known extension. AGENTS.md has a **Commands** table, and
+commands end in filenames, so the whole command string went to `existsSync`.
+
+Measured on this repo before the fix:
+
+| span | verdict | correct? |
+|---|---|---|
+| `bun scripts/typecheck.ts` | BROKEN | no |
+| `bun scripts/test-clean-env.ts` | BROKEN | no |
+| `bun test test/scaffold-conformity.test.ts` | BROKEN | no |
+
+**Three reports, three false positives, and zero true positives.** The check
+had never once validated a real reference here, and it shipped that way long
+enough that every scaffold run printed the same three warnings.
+
+That is worse than noise. A standing false positive trains readers past the
+whole class, so the day it finds a real dangling pointer nobody looks. It is
+also unfixable from the document's side: the span is not a path, so no edit
+to AGENTS.md makes it green except deleting the Commands row — the detector
+dictating the document.
+
+### Why the true-positive count was zero, which is the uncomfortable half
+
+D-15 capped AGENTS.md at 100 lines and moved the routing and key-file tables
+into `.claude/rules/`. Every real path reference went with them. What stayed
+was a Commands table of command strings. So the check was pointed at a file
+that no longer names files, and the only thing it could find was the thing
+it was wrong about. `referencedPaths` over the shipped AGENTS.md returns
+`[]`, and the test asserts that rather than hiding it — if it stops being
+zero, the file names files again and the assertion should be updated, not
+deleted.
+
+### The predicate is positive, not a blacklist
+
+A reference is a span that is *nothing but* a path: path characters only,
+ending in a known extension. A blacklist of "things that look like commands"
+is the detector-narrower-than-what-it-detects shape, one unanticipated
+command away from being wrong again.
+
+**The direction this is allowed to be wrong in is toward NOT reporting.** A
+real path it declines to check costs a dangling link nobody is told about —
+recoverable, and the same call `.claude/rules/claiming-sc-coverage.md` makes
+for the same reason.
+
+**Deliberately not done:** extracting the path out of a command and checking
+that. It would catch more — `bun scripts/typecheck.ts` really does name a
+file — but a Commands table also holds `<file>` placeholders, generated
+outputs and paths relative to elsewhere, and guessing which is which
+reintroduces the false positives from the other end.
+
+- [x] SC-846: lib/agents-md-refs.ts contains [isPathReference] — ONE predicate decides whether a backtick span is a file reference. `refreshAgentsMd` has two scans and they had separate patterns, so the second silently stopped covering spans the first rejected with nothing able to notice
+- [x] SC-847: test/agents-md-refs.test.ts contains [a genuinely dangling path is still reported] — the positive control runs through the REAL function. "Zero broken references" is produced just as readily by a predicate narrowed to `return false`, which is the cheapest way to pass the regression case
+- [x] SC-848: lib/scaffold/steps.ts contains [referencedPaths] — the audit routes both its scans through the owner rather than matching backticks inline
+
+### What was broken to prove it (SC-846..848)
+
+Run and counted over `test/agents-md-refs.test.ts` (10 tests):
+
+| Mutation | Red |
+|---|---|
+| the character class widened to `.` — the original defect, verbatim | 6 of 10 |
+| `isPathReference` narrowed to `return false` — the cheap way to pass the regression | 4 of 10 |
+| the end anchor dropped | 1 of 10, and **0** before the case below was written |
+| whitespace admitted into the character class | 6 of 10 |
+| the staleness scan given its own pattern back — two deciders | 1 of 10 |
+| the broken-link scan stops calling the predicate | 1 of 10, and **0** before the assertion was made executable |
+| the extension list cut to `md` alone | 2 of 10 |
+
+**Three findings, two of them about the tests rather than the code.**
+
+The sixth row is the self-reference trap, caught in the first draft of this
+very change. SC-848 was asserted by grepping `refreshAgentsMd`'s source for
+`referencedPaths` — and replacing the call with `const refs: string[] = []`
+left it **green**, because the comment above the call says the word too. A
+detector satisfied by the prose warning against the thing. The assertion now
+EXECUTES `refreshAgentsMd` over a temp project and counts what it reports.
+
+The third row scored 0 because `^` plus a character class with no space in
+it already rejects every command, so the end anchor had nothing left to do
+that the tests noticed. It is not redundant: without `$`, `config.json.example`
+matches on its `.json` prefix and is then resolved whole. That case now
+exists, in both directions.
+
+**One mutation scored 0 and its guard is gone rather than documented.** The
+first draft had `if (span.includes("*")) return false;` — but `*` is not in
+the character class, so a glob never reached it.
+
+None of the seven is left in the tree; all were run and reverted, and the
+counts were re-measured after the dead guard was removed and the two cases
+added, so they come from one tree.
+
+**A sibling defect, filed as #382 rather than fixed here.** Two more checks
+in the same function look for content D-15 moved out of AGENTS.md —
+`UNLISTED specs` wants 22 spec filenames that live in
+`.claude/rules/specs-routing.md`, and the CODE-MAP check wants a routing
+table that lives in `.claude/rules/docs-routing.md`. Both warn falsely on
+every run, for the same underlying reason as this issue. They are a
+different detector, and one of them needs a decision about whether
+`SPEC-TEMPLATE.md` is a spec, so they get their own change.
