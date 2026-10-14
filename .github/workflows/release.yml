@@ -39,6 +39,23 @@ jobs:
     runs-on: "ubuntu-latest"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.3.1
+
+      # This job checks out a TAG, and a tag checkout is shallow and carries
+      # no branches, so `origin/main` does not exist in it. Two guards in the
+      # suite compare against that ref — the conformity allowlist ratchet
+      # (#302) and the project-state currency check — and both correctly
+      # refuse an unreadable base rather than reading it as clean. That made
+      # the v0.3.0 release job fail at `bun test` with two UNMEASURED
+      # refusals, which is the guards working and the checkout being wrong.
+      #
+      # ci.yml fetches the same ref for the same reason. It tolerates a
+      # failed fetch with a warning; this does NOT, and the difference is
+      # deliberate: a release is irreversible, so "could not measure" has to
+      # stop the pipeline where it happened rather than surface three steps
+      # later as a test failure nobody reads as an environment fault.
+      - name: Fetch the comparison base the ratchets measure against
+        run: git fetch --no-tags --depth=200 origin '+refs/heads/main:refs/remotes/origin/main'
+
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.0.2
         with:
           bun-version: "latest"
