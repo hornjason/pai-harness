@@ -56,8 +56,19 @@ const SPECS = join(ROOT, "specs");
  * The honest ways down: bind it to a matcher, rewrite it in a form that binds,
  * or untick it because the verification does not exist. Not: leave it and
  * raise the number.
+ *
+ * 40 -> 39 on 2026-10-14 (#327), by the third honest way. SC-502 of
+ * GITHUB-API-MIGRATION-SPEC.md — "No `execSync.*gh` or `Bun.spawnSync.*gh`
+ * patterns in lib/, hooks/, gates/" — is a mechanical absence check that
+ * carried a `(behavioral)` tag, and the tag is precisely what this ratchet
+ * is about: it exempted the criterion from every check, and the criterion
+ * turned out to be FALSE. `gates/workflow.test.ts:1570` shells out to `gh`
+ * with the command on the line after `execSync(`, which is why no grep had
+ * ever seen it and why the tick survived. Unticked, banked here, and the
+ * removal filed as #395. This is the ratchet doing the thing it was built
+ * for, from the other end.
  */
-const BEHAVIORAL_TICKED_RATCHET = 40;
+const BEHAVIORAL_TICKED_RATCHET = 39;
 
 function allSCs(): { id: string; statement: string; checked: boolean; specFile: string }[] {
   const out: { id: string; statement: string; checked: boolean; specFile: string }[] = [];

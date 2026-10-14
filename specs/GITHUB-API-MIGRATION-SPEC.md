@@ -114,7 +114,7 @@ that a tool NAME is present in a prompt, which is true whether or not the tool e
 ### Phase 4 — Handle remaining ship.js gaps
 
 - [x] SC-501: SUPERSEDED by SC-531/SC-534 (#137) — was "workflows/ship.js names the MCP create- and update-pull-request tools". It named both, and opened no PR on any run
-- [x] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
+- [ ] SC-502: No `execSync.*gh ` or `Bun.spawnSync.*gh` patterns in lib/, hooks/, gates/ (behavioral)
 
 ### Phase 5 — Auth actually resolves (#139, #140)
 
