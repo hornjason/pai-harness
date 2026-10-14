@@ -86,6 +86,43 @@ Two things the test had to get right, both of which it got wrong first:
 - [x] SC-709: test/config-reaches-ceremony-tier.test.ts contains [an unresolvable config refuses instead of becoming] — a config that cannot be read exits non-zero and writes nothing, and is distinguished from a config that reads fine and has no pages, because collapsing those two makes every CLI project fail setup
 - [x] SC-710: test/config-reaches-ceremony-tier.test.ts contains [the prose explaining the absent fallback is NOT read as the fallback] — the prompt names the token it forbids, so the boundary between its commands and its explanation is asserted rather than assumed
 
+## The single-loader ratchet, measured (#309, 2026-10-14)
+
+ADR-002 D4 requires the count be recorded here with its date, and measured on
+the branch rather than quoted from the ADR. Measured 2026-10-14 by
+`scanConfigAccess` / `scanPromptConfigAccess`, which strip comments before
+counting — prose that discusses the config is not an access:
+
+| Check | Scans | Files | Sites |
+|---|---|---|---|
+| CONFIG-1 | `lib/ gates/ scripts/ hooks/ generators/`, excluding `*.test.ts` and `test/` | 17 | 47 |
+| CONFIG-2 | `workflows/*.js`, prompt bodies included | 3 | 14 |
+
+ADR-001 proposed ~24 and ADR-002 measured ~89; both counted comment
+mentions. 61 is the code figure.
+
+`lib/config-loader.ts` is CONFIG-1's only allowlist entry. CONFIG-2's is
+empty — no workflow has any business reading the config directly; it reads
+the resolved artefact instead (ADR-002 D1).
+
+**The numbers live in `.claude/config-access-ratchet.json`, not in source.**
+`lib/conformity.ts` travels into every scaffolded project, and a consumer
+with no ratchet file gets `{}` — zero tolerance, which is the right default
+for a tree that never had the defect. The ratchet refuses in both
+directions, and a file absent from it is allowed nothing, so a new reader
+fails the suite even while the total is above zero.
+
+**Decrementing it is the work, and it belongs to the migration.** Each entry
+goes to zero as its reads move to `loadRungateConfig` / `tryLoadRungateConfig`
+/ `resolveConfig`, and the entry is deleted in the same commit — the
+both-ways ratchet refuses if you lower the count without removing a finished
+entry, or remove reads without lowering the count.
+
+`lib/conformity.ts` is deliberately absent from the table. It hosts the
+checks and carried three reads of its own; those were migrated in #309 rather
+than allowlisted, because an allowlist naming the exempt files becomes
+evidence those files are referenced.
+
 ## A fix for new projects is not a fix (#121)
 
 #75 stopped NEW projects being scaffolded with `roles: {}` / `hooks: []`. It
