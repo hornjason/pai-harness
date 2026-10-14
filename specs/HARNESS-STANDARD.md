@@ -1688,6 +1688,52 @@ which is the self-reference this area keeps producing.
 
 None is left in the tree; all were run and reverted.
 
+#### And then the release failed anyway, for a third instance of the class
+
+With the above merged, `v0.3.0` was tagged and the job **failed at `bun test`
+with two refusals** — and both guards were right.
+
+This workflow checks out a TAG. A tag checkout is shallow and carries no
+branches, so `origin/main` does not exist in it. Two checks measure against
+that ref — the conformity allowlist ratchet (#302) and the project-state
+currency check — and both refuse an unreadable base rather than reading it
+as clean:
+
+> the allowlist growth check could not read its base (`git show
+> origin/main:.claude/conformity-allowlists.json` exited 128). This is
+> UNMEASURED, not PASS: without a base, growth is invisible and the ratchet
+> is decorative.
+
+That is the rule working. The release stopped rather than shipping on a
+ratchet that had measured nothing — the outcome #302 was written for,
+arriving in the one pipeline nobody had run it in.
+
+`ci.yml` has fetched that ref since it was written. `release.yml` never did,
+because it was authored against the publish question and not against the
+suite it runs. **Two pipelines, one property, and only one of them knew** —
+the same divergence #400 records between the two path validators, and the
+reason "the published artifact is tested before it ships" was not the
+guarantee it read as: the suite could not complete in that environment at
+all.
+
+The release's fetch deliberately does NOT carry CI's `|| echo WARN`. A PR
+that cannot reach main should report UNMEASURED and carry on; a release is
+irreversible, so "could not measure" has to stop the pipeline where it
+happened rather than three steps later as a test failure that reads like a
+code defect.
+
+- [x] SC-1415: test/release-guard.test.ts contains [nothing fetches origin/main so the ratchets cannot read their base] — the release workflow fetches the comparison base before the suite runs and does so without a fallback because the one pipeline that cannot be undone is the one that must not tolerate an unmeasured ratchet
+
+What was broken to prove it, over `test/release-guard.test.ts` (36 tests):
+
+| Mutation | Red |
+|---|---|
+| the fetch step deleted | 2 of 36 |
+| the fetch moved after `bun test` | 1 of 36 — presence alone is not the property; order is |
+| CI's `\|\| echo WARN` appended to it | 1 of 36 — copying the other pipeline's line verbatim is the likeliest regression, and it reintroduces a fail-open into the one place that cannot have one |
+
+None of the three is left in the tree; all were run and reverted.
+
 #### What was broken to prove it (SC-828..832)
 
 Run and counted over `test/release-guard.test.ts` (34 tests):

@@ -359,6 +359,47 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     expect(stepIndex(src, "\n      - run: bun test")).toBeLessThan(stepIndex(src, "npm publish"));
   });
 
+  test("the comparison base the ratchets need is fetched before the suite runs", () => {
+    /**
+     * The v0.3.0 release job failed here, and the guards were right.
+     *
+     * This workflow checks out a TAG. A tag checkout is shallow and carries
+     * no branches, so `origin/main` does not exist in it — and two checks in
+     * the suite measure against that ref: the conformity allowlist ratchet
+     * (#302) and the project-state currency check. Both refuse an unreadable
+     * base rather than reading it as clean, which is exactly right and is
+     * why the release stopped instead of shipping on an unmeasured ratchet.
+     *
+     * Asserted rather than left to the comment that explains it, because the
+     * failure mode is silent in the direction that matters: delete the fetch
+     * and the next release fails at `bun test` with two refusals that read
+     * as a code defect rather than a missing ref, which is how half an hour
+     * goes into the wrong file.
+     */
+    const src = wf();
+    const fetch = stepIndex(src, "refs/heads/main:refs/remotes/origin/main");
+    // No comma in this message on purpose: it is SC-1415's assertion token,
+    // and the conformity parser splits a token list on commas.
+    expect(fetch, "nothing fetches origin/main so the ratchets cannot read their base")
+      .toBeGreaterThan(-1);
+    expect(fetch, "the base is fetched after the suite that needs it")
+      .toBeLessThan(stepIndex(src, "\n      - run: bun test"));
+  });
+
+  test("the release does not tolerate a failed fetch the way CI does", () => {
+    // ci.yml appends `|| echo WARN` to the same fetch, and that is right
+    // there: a PR that cannot reach main should report UNMEASURED and move
+    // on. A release is irreversible, so "could not measure" has to stop the
+    // pipeline where it happened rather than three steps later. Without
+    // this, copying CI's line over would reintroduce a fail-open into the
+    // one pipeline that cannot afford one.
+    const line = wf()
+      .split("\n")
+      .find(l => l.includes("refs/remotes/origin/main"));
+    expect(line, "the fetch step vanished").toBeDefined();
+    expect(line, "the release tolerates an unfetchable base").not.toContain("||");
+  });
+
   test("no step may swallow its own failure", () => {
     // The named failure mode, as a check. `continue-on-error` on the publish
     // step or on either guard turns this file back into a job that reports a
