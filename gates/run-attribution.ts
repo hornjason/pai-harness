@@ -80,6 +80,23 @@ export interface Disposition {
 }
 
 /**
+ * The only shape a run id may have.
+ *
+ * It is interpolated into a directory name, and it arrives from a JSON file
+ * sitting in a directory this module's entire premise is that it cannot
+ * trust. A `runId` of `../../../etc` would make `beginRun` rename the
+ * previous run's artefacts outside the work directory — the sweep is a
+ * `renameSync`, so a traversal there does not read a file, it MOVES one.
+ * Flagged by security review of `2559c8fa`.
+ */
+const RUN_ID_SHAPE = /^run_[A-Za-z0-9_-]{1,64}$/;
+
+/** Whether a value is usable as a run id, and therefore as a path segment. */
+export function isRunId(value: unknown): value is string {
+  return typeof value === "string" && RUN_ID_SHAPE.test(value);
+}
+
+/**
  * A run id that cannot collide with the run before it.
  *
  * Not a timestamp. The two runs this has to tell apart are a failed run and
@@ -106,10 +123,18 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
-/** The marker, or null when there is none and when there is an unreadable one. */
+/**
+ * The marker, or null when there is none, when there is an unreadable one,
+ * and when the id in it is not one this module would have minted.
+ *
+ * A malformed id lands on the same `null` as a malformed file, which is the
+ * right place for it: the only use of a previous run's id is to name the
+ * directory its artefacts are moved into, and `beginRun` already mints a
+ * fresh one when it has no name to use.
+ */
 export function readRunMarker(dir: string): RunMarker | null {
   const raw = readJson(markerPath(dir));
-  if (!isRecord(raw) || typeof raw.runId !== "string" || !raw.runId) return null;
+  if (!isRecord(raw) || !isRunId(raw.runId)) return null;
   return {
     runId: raw.runId,
     issue: typeof raw.issue === "number" ? raw.issue : -1,
@@ -141,6 +166,16 @@ export function staleArtefacts(dir: string, runId: string): string[] {
  * would nest a tenth run's directory nine deep and bury the first.
  */
 export function beginRun(dir: string, opts: BeginRunOptions): RunMarker {
+  // A supplied id becomes this directory's name in the NEXT run's archive, so
+  // it is checked here rather than at the point it is joined — refusing a bad
+  // one now is the difference between a loud error and a rename somewhere
+  // else on the filesystem a run later.
+  if (opts.runId !== undefined && !isRunId(opts.runId)) {
+    throw new TypeError(
+      `beginRun was given a runId that is not one: ${JSON.stringify(opts.runId)}. ` +
+        `It becomes a directory name, so it must match ${RUN_ID_SHAPE}.`,
+    );
+  }
   mkdirSync(dir, { recursive: true });
 
   const previous = readRunMarker(dir);

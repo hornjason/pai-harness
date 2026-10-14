@@ -3632,3 +3632,30 @@ Run and counted over `test/run-attribution.test.ts` +
 | ship.js stops passing `priorWork` to `initWorkflow` | 1 of 42 |
 
 None of the nineteen is left in the tree; all were run and reverted.
+
+### The sweep is a rename, so a traversal MOVES a file
+
+Security review of `2559c8fa` found the one thing nineteen mutations had
+not: `runId` is read out of a JSON file sitting in the directory whose
+contents this module's entire premise is that it cannot trust, and then
+joined into a path. A `runId` of `../../../etc` would have had
+`beginRun` rename the previous run's artefacts out of the work directory
+— a sweep is `renameSync`, so a traversal there does not read a file, it
+moves one.
+
+`isRunId` is the one shape check. A malformed id read from disk lands on
+the same `null` an unparseable marker does, which is already the path that
+mints a fresh name and archives anyway. A malformed id SUPPLIED by a caller
+throws at `beginRun` rather than at the join, because it becomes this
+directory's name in the next run's archive and the gap between accepting it
+and using it is a whole run.
+
+- [x] SC-877: gates/run-attribution.ts contains [export function isRunId, RUN_ID_SHAPE] — a run id becomes a directory name, so one shape check gates it at every boundary it crosses: minted, read from the marker on disk, or supplied by a caller
+
+| Mutation | Red |
+|---|---|
+| the run-id shape admits a path separator | 4 of 47 |
+| `readRunMarker` stops validating the id it read | 2 of 47 |
+| a supplied runId is accepted unchecked | 1 of 47 |
+
+None is left in the tree; all were run and reverted.

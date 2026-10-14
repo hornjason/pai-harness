@@ -1,5 +1,5 @@
 /**
- * Covers SC-873, SC-874, SC-875, SC-876 (HARNESS-STANDARD.md).
+ * Covers SC-873, SC-874, SC-875, SC-876, SC-877 (HARNESS-STANDARD.md).
  *
  * #288 — a run's artefacts are not attributable to it.
  *
@@ -36,6 +36,7 @@ import {
   ARCHIVE_PREFIX,
   RUN_MARKER_FILE,
   beginRun,
+  isRunId,
   newRunId,
   readRunMarker,
   runDisposition,
@@ -77,6 +78,74 @@ describe("#288 SC-873: a run id exists and is unique", () => {
 
   test("it is filesystem-safe — it becomes a directory name", () => {
     for (let i = 0; i < 50; i++) expect(newRunId()).toMatch(/^run_[A-Za-z0-9_-]+$/);
+    for (let i = 0; i < 50; i++) expect(isRunId(newRunId())).toBe(true);
+  });
+});
+
+/**
+ * Raised by security review of `2559c8fa`, and real: `runId` is read out of a
+ * JSON file sitting in the directory whose contents this module's entire
+ * premise is that it cannot trust, and then joined into a path. The sweep is
+ * a `renameSync`, so a traversal there does not read a file — it MOVES one,
+ * out of the work directory.
+ */
+describe("#288 SC-877: a run id from disk is not trusted as a path segment", () => {
+  const TRAVERSALS = [
+    "../../../etc",
+    "run_../../escape",
+    "run_a/b",
+    "..",
+    "/absolute",
+    "run_\u0000null",
+    "run_" + "x".repeat(200),
+    "",
+    "notarun",
+  ];
+
+  test("isRunId rejects every one of them", () => {
+    for (const bad of TRAVERSALS) expect(isRunId(bad), bad).toBe(false);
+    for (const bad of [null, undefined, 7, {}, []]) expect(isRunId(bad), String(bad)).toBe(false);
+  });
+
+  test("a marker carrying a traversal reads as no marker", () => {
+    for (const bad of TRAVERSALS) {
+      const d = dir();
+      writeFileSync(join(d, RUN_MARKER_FILE), JSON.stringify({ runId: bad, issue: 1, slug: "s" }));
+      expect(readRunMarker(d), bad).toBeNull();
+    }
+  });
+
+  test("the sweep does not move artefacts outside the work directory", () => {
+    const parent = dir();
+    const d = join(parent, "work");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(parent, "sentinel.txt"), "must not be touched");
+    writeFileSync(join(d, RUN_MARKER_FILE), JSON.stringify({ runId: "../../escape", issue: 1, slug: "s" }));
+    writeFileSync(join(d, "rook-findings.json"), "{}");
+
+    beginRun(d, { issue: 1, slug: "s" });
+
+    expect(existsSync(join(parent, "sentinel.txt"))).toBe(true);
+    // Everything swept stayed inside, under a freshly minted name.
+    const archives = readdirSync(d).filter(n => n.startsWith(ARCHIVE_PREFIX));
+    expect(archives.length).toBe(1);
+    expect(isRunId(archives[0].slice(ARCHIVE_PREFIX.length))).toBe(true);
+    expect(existsSync(join(d, archives[0], "rook-findings.json"))).toBe(true);
+    expect(readdirSync(parent).sort()).toEqual(["sentinel.txt", "work"]);
+  });
+
+  test("a supplied runId that is not one throws rather than being used", () => {
+    // Checked at the point it is ACCEPTED, not where it is joined: it becomes
+    // this directory's name in the next run's archive, so the gap between the
+    // two is a whole run.
+    for (const bad of TRAVERSALS) {
+      expect(() => beginRun(dir(), { issue: 1, slug: "s", runId: bad }), bad).toThrow(TypeError);
+    }
+  });
+
+  test("a well-formed supplied runId is still accepted", () => {
+    // The control: a validator that rejects everything breaks every caller.
+    expect(beginRun(dir(), { issue: 1, slug: "s", runId: "run_x" }).runId).toBe("run_x");
   });
 });
 
