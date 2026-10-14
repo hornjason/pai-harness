@@ -3904,8 +3904,8 @@ declaring position for an ambiguous id.
 
 - [x] SC-882: lib/sc-ids.ts contains [scHeadingDeclarationPattern] — a `### SC-N:` heading declares an id as firmly as a checklist line does and enters the registry as one, anchored on the id opening the heading so a heading that merely mentions a criterion stays prose
 - [x] SC-883: lib/sc-ids.ts contains [reg.declaredById.get(id)] — ambiguity is computed over every declaration form rather than over the tickable ones alone, so an id two specs declare requires a qualifier whichever forms they used
-- [x] SC-884: test/sc-id-namespace.test.ts contains [a claim naming one spec ticked a criterion in another] — the reported false credit is driven end to end through the real matcher over the real tree rather than over a planted pair alone
-- [x] SC-885: lib/sc-ids.ts contains [export function crossFormCollisions] — cross-form collisions are reported by their own exported function and ratcheted at the ten already in the tree so an eleventh fails a named test while the renumbering decision stays open
+- [x] SC-884: test/sc-id-namespace.test.ts contains [a claim naming one spec ticked a criterion in another] — the reported false credit is driven end to end through the real matcher and paired with the same fixture renumbered apart so the refusal is distinguished from a matcher that credits nothing
+- [x] SC-885: lib/sc-ids.ts contains [export function crossFormCollisions] — cross-form collisions are reported by their own exported function and the tree holds none so a new one fails a named test while a planted pair proves the detector still reads
 - [x] SC-886: lib/create-sc.ts contains [reg?.declaredById.keys()] — an SC number is allocated above every id any spec declares in any form rather than above the maximum in one file which is what produced every one of the ten collisions
 - [x] SC-887: test/sc-id-namespace.test.ts contains [the spec whose heading caused the ambiguity is unnamed] — an uncredited mention reports the spec whose declaration made it ambiguous because naming only the checkbox holder sends the developer to qualify against the one spec that was never the problem
 
@@ -4014,19 +4014,64 @@ be the same binding.
 
 None of the five is left in the tree; all were run and reverted.
 
-### Still open, and needing a ruling rather than a fix
+### Both open questions, now answered
 
-- **Who renumbers.** `GATE-CONTRACTS-SPEC.md` owns SC-379..SC-388 as headings
-  and four other specs track those ten numbers as checkboxes. The heading side
-  is untracked and has one external reference, which argues for moving it; the
-  checkbox side is later, which argues the other way under
-  `test/spec-sc-ids-unique.test.ts`'s own prescription. `crossFormCollisions`
-  holds the line at ten until someone decides.
-- **`GATE-CONTRACTS-SPEC.md` declares `### SC-388: gate-executor pass/fail
-  criteria` twice**, at lines 61 and 143, with contradicting input contracts —
-  one lists `harnessRoot`, the other `projectRoot, issueRepo, testOutput`.
-  That is a merge artefact and resolving it means choosing which contract is
-  current, which is not a call to make while fixing a credit bug.
+#392 left two decisions open because they were spec-content calls rather than
+parts of a credit bug. Both are resolved, and the second turned out not to be
+a question of preference at all.
+
+- **Who renumbers: the heading side.** `GATE-CONTRACTS-SPEC.md`'s ten
+  subsection headings moved to `SC-1400..SC-1409`; the four specs tracking
+  those numbers as checkboxes did not move. The heading side is untracked, so
+  no tick anywhere changed state, and it had exactly one external reference
+  (`test/gate-root-threading.test.ts`) against the checkbox side's many.
+  `crossFormCollisions` is now banked at zero.
+
+  The block is 1400 rather than the 896 that "next free number" suggests, and
+  the reason is worth recording because it is the same defect one layer out:
+  `SC-899` through `SC-902`, `SC-910` through `SC-912` and a run up to
+  `SC-1301` are already spelled inside test files as planted fixtures, several
+  of them as `- [ ] SC-900: AGENTS.md exists` — a checkbox declaration in a
+  string literal. Allocating a spec into that range would have made live
+  criteria out of numbers the suite uses as scratch, which is precisely the
+  collision this issue closed, recreated by the fix for it. `nextSCNumber`
+  reads the spec registry and cannot see those, so it would have proposed 896
+  and been wrong. Filed separately — fixture ids belong in the 9900 range the
+  rest of the suite uses.
+
+- **The duplicate was not a merge artefact and not a choice.**
+  `GATE-CONTRACTS-SPEC.md` declared `### SC-388: gate-executor pass/fail
+  criteria` twice with contradicting input contracts. Checked against
+  `gates/gate-executor.ts` rather than reasoned about: `GateExecutorInput` is
+  `gate`, `slug`, `issue`, `workDir`, `stateFilePath`, `harnessRoot` and
+  nothing more, and `GateExecutorResult` carries `resultVal`/`attempt`/
+  `exitCode` and no `testOutput`. The first block states exactly that. The
+  second names two inputs the executor reads off `state` instead of receiving
+  and an output field that does not exist, and `executeGate` is the only entry
+  point, so there was no second function for it to be describing. It is a
+  pre-#190 contract the `harnessRoot` work superseded, and it was removed
+  rather than renumbered.
+
+  A spec that contradicts itself is the documentation form of
+  `.claude/rules/checks-must-be-able-to-fail.md`: either block could be cited
+  as the contract, so citing the spec proved nothing, and the half that was
+  wrong had been wrong since #190 without anything being able to notice.
+
+### The renumbering made a safe mention dangerous (SC-1410, SC-1411)
+
+Worth stating because it is the opposite of the direction this work usually
+runs in. While `SC-388` was ambiguous, a bare comment mention of it credited
+nothing — qualification was required, so prose about the collision was safe
+by accident. Renumbering made the number unambiguous, which means a mention
+in a declaring position now credits `SCAFFOLD-DECOMPOSITION-SPEC.md`'s
+criterion for real, and that criterion is false: `.claude/rungate.json` has
+no `keyFiles` field. The fix removed one hazard and created a smaller one.
+
+So the prose convention is now a test rather than a note, and it is pointed at
+the file most likely to break it — the one whose subject is that number.
+
+- [x] SC-1410: test/sc-id-namespace.test.ts contains [a declaring mention credits an unticked criterion whose fact is false] — every test file is scanned for the renumbered-away id in a title or a credited comment form so prose about the collision cannot tick the live criterion that kept the number
+- [x] SC-1411: test/sc-id-namespace.test.ts contains [function duplicateHeadingIds] — no spec heads two subsections with one id because a duplicate heading is still a declaration and the pair that produced this renumbering stated contradicting contracts under the same number for four months
 
 ## #327 — a tick is a claim that something was proven
 

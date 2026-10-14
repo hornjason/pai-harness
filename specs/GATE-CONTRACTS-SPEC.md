@@ -30,8 +30,8 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 | Gate | Lines | Test Lines | Contract Defined? |
 |------|-------|-----------|------------------|
-| run-gate.ts | <400 | — | Yes (SC-379) |
-| gate-executor.ts | ~600 | — | Yes (SC-388) |
+| run-gate.ts | <400 | — | Yes (SC-1400) |
+| gate-executor.ts | ~600 | — | Yes (SC-1401) |
 | orchestrator.ts | 569 | 950 | Partially (HARNESS-STANDARD.md) |
 | ship-orchestrator.ts | 363 | 379 | Partially (HARNESS-SKILL-CHAIN.md) |
 | brief-assembler.ts | 338 | 429 | No |
@@ -52,13 +52,13 @@ Without contracts, gate behavior is defined by implementation, not spec. Changes
 
 ## Per-Gate Pass/Fail Criteria
 
-### SC-379: run-gate pass/fail criteria
+### SC-1400: run-gate pass/fail criteria
 - **Input:** `RunGateInput` — gate name, slug, issue number
 - **Output:** `ParseTestOutput` (alias for `GateResult[]`)
 - **PASS:** All AC evidence commands succeed, all AC verdicts are PASS or SKIP, zero FAIL results
 - **FAIL:** Any AC evidence command fails, any AC verdict is FAIL, or any gate check returns FAIL
 
-### SC-388: gate-executor pass/fail criteria
+### SC-1401: gate-executor pass/fail criteria
 - **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, harnessRoot
 - **Output:** `GateExecutorResult` — resultVal, passes, fails, warns, results, attempt, exitCode
 - **PASS:** All gate checks pass, all AC verdicts are PASS or SKIP, exitCode is 0
@@ -91,60 +91,76 @@ rather than the harness: the type check, the dev-server liveness curl,
 `git rev-parse HEAD` for prove evidence, and `writeGateResult` all use
 `state.projectRoot`. Those are a different tree on purpose.
 
-### SC-380: orchestrator pass/fail criteria
+### SC-1402: orchestrator pass/fail criteria
 - **Input:** `WriteGateResultInput` — state file path, gate name, pass/fail/warn counts, results array
 - **Output:** `GateResult` — check name, result (PASS/FAIL/WARN), detail string
 - **PASS:** `fails === 0` and no non-OUTCOME ACs have FAIL verdicts
 - **FAIL:** `fails > 0` or any non-OUTCOME AC has FAIL verdict
 
-### SC-381: ship-orchestrator pass/fail criteria
+### SC-1403: ship-orchestrator pass/fail criteria
 - **Input:** `ShipGateInput` — slug, gate name
 - **Output:** `AdvanceResult` — phase, gateResult, failures, iteration, circuitBreaker
 - **PASS:** Gate executor completes without error and gate result in state is PASS
 - **FAIL:** Gate executor throws or gate result in state is FAIL; circuit breaks after MAX_ITERATIONS
 
-### SC-382: brief-assembler pass/fail criteria
+### SC-1404: brief-assembler pass/fail criteria
 - **Input:** `AssembleBriefInput` — slug, workDir, projectRoot
 - **Output:** `AssembleResult` — briefPath, acCount, contextFileCount, validated
 - **PASS:** workflow-state.json exists, brief file written, `validated === true` (all required sections present)
 - **FAIL:** workflow-state.json missing (throws), or required sections missing (`validated === false`)
 
-### SC-383: schema pass/fail criteria
+### SC-1405: schema pass/fail criteria
 - **Input:** `SchemaValidateInput` — raw state object to validate
 - **Output:** `SchemaValidateResult` — valid boolean, issues array
 - **PASS:** Zod parse succeeds with zero issues — no behavioral language, no garbage statements, no weak thresholds
 - **FAIL:** Zod parse fails — behavioral pattern detected, garbage statement, weak threshold, or missing required fields
 
-### SC-384: witness pass/fail criteria
+### SC-1406: witness pass/fail criteria
 - **Input:** `WriteWitnessInput` — slug, gate, result, testOutput, issue, projectRoot
 - **Output:** `VerifyWitnessResult` — valid boolean, record, error
 - **PASS (write):** Witness file written with valid HMAC signature
 - **PASS (verify):** HMAC recomputed matches stored HMAC, all required fields present
 - **FAIL:** HMAC mismatch, missing fields, or witness file not found
 
-### SC-385: self-heal pass/fail criteria
+### SC-1407: self-heal pass/fail criteria
 - **Input:** `HealInput` — gate, slug, issue, projectRoot, workDir, maxAttempts, dryRun
 - **Output:** `HealResult` — result (PASS/FAIL), attempts, failures, circuitBroken
 - **PASS:** Gate execution result is PASS within maxAttempts
 - **FAIL:** Gate result is FAIL; circuit breaks when `attempt >= maxAttempts`
 
-### SC-386: error-classifier pass/fail criteria
+### SC-1408: error-classifier pass/fail criteria
 - **Input:** `ClassifyInput` — failures array
 - **Output:** `ClassifyResult` (alias for `Classification`) — category, regressionTarget, retryable, failures
 - **PASS:** N/A (always produces a classification). Empty failures array returns NON_RETRYABLE
 - **FAIL:** N/A — classification is deterministic, never fails; consumer decides action based on category
 
-### SC-387: preload pass/fail criteria
+### SC-1409: preload pass/fail criteria
 - **Input:** `RecordTestInput` — test name, passed boolean
 - **Output:** `TestRecordResult` — testName, result string
 - **PASS:** Test result recorded to gate-results.jsonl and recurring failures logged
 - **FAIL:** N/A — recording is best-effort; missing state dir silently skips
 
-### SC-388: gate-executor pass/fail criteria
-- **Input:** `GateExecutorInput` — gate name, slug, issue number, workDir, stateFilePath, harnessRoot, projectRoot, issueRepo
-- **Output:** `GateExecutorResult` — passes, fails, warns, results array, testOutput
-- **PASS:** All delegated gate functions complete without error, aggregated fails === 0
-- **FAIL:** Any delegated function reports failures; consumer (run-gate.ts) aggregates and writes gate result
+### The gate-executor contract was stated twice, and the two disagreed (#392)
+
+This section used to carry a SECOND `### SC-388: gate-executor pass/fail
+criteria` block, contradicting the one above it. Both claimed to describe
+`executeGate`. Checked against `gates/gate-executor.ts` while renumbering:
+
+| The removed block said | What the code has |
+|---|---|
+| Input also carries `projectRoot`, `issueRepo` | `GateExecutorInput` is `gate, slug, issue, workDir, stateFilePath, harnessRoot` and nothing else. Both names are read off `state` inside the executor, not passed in. |
+| Output carries `testOutput`, and no `resultVal`/`attempt`/`exitCode` | `GateExecutorResult` is `resultVal, passes, fails, warns, results, attempt, exitCode`. There is no `testOutput` field. |
+
+`executeGate` at `gates/gate-executor.ts:1725` is the only entry point, so
+there was no second function for the second block to be describing. It was a
+pre-#190 design that the `harnessRoot` work superseded and nobody deleted —
+and because a duplicate heading is still a heading, the registry read it as a
+declaration and it was one of the ten collisions #392 is about.
+
+Worth stating plainly: a spec that contradicts itself is the documentation
+form of the defect `.claude/rules/checks-must-be-able-to-fail.md` describes.
+Either block could be cited as the contract, so citing the spec proved
+nothing, and the one that happened to be wrong had sat there since #190.
 
 ## Post-verdict steps must record their own outcome (#213)
 

@@ -194,9 +194,12 @@ describe("Agent Brief Template Tests", () => {
     });
   });
 
-  // The spec is named because SC-386 is ambiguous: GATE-CONTRACTS-SPEC.md
-  // heads a subsection with the same number (#392). A bare title no longer
-  // credits it, and this claim is the genuine one.
+  // The spec was named here because the number was ambiguous: #392 made the
+  // registry read heading-form declarations, and GATE-CONTRACTS-SPEC.md
+  // headed a subsection with the same one. Those headings have since been
+  // renumbered, so the qualifier is no longer required to earn the credit.
+  // It is kept because naming the spec a claim belongs to costs nothing and
+  // is what stopped the collision being silent in the first place.
   describe("SC-386 of AGENT-BRIEF-TEMPLATE-SPEC.md: promptKeywords override in rungate.json", () => {
     const OUTPUT_KW = "/tmp/rungate-agent-brief-keyword-test";
 
