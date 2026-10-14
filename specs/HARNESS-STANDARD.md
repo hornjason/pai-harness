@@ -2264,7 +2264,7 @@ them cannot see the divergence.
 
 - [x] SC-660: gates/gate-executor.ts contains [process.env.EVIDENCE_CWD || state.projectRoot] — the dry run looks where the evidence will be collected; a pre-validator reading a different directory than the collector calls the branch's own new files missing, and reports it as the branch's defect
 - [x] SC-661: gates/schema.ts contains [PREVALIDATION_SOURCES, takenAt] — the reading records WHICH gate took it, because "a reading exists" cannot separate the two cases that want opposite treatment on the next attempt; optional, so a reading written before the field still validates and keeps the behaviour it had
-- [x] SC-662: gates/gate-executor.ts contains [existing.takenAt !== "verify"] — a scope reading is preserved and a verify reading is re-taken, because the premise of a second attempt is that the branch moved
+- [x] SC-662: gates/gate-executor.ts contains [takenAt === "verify"] — a scope reading is preserved and a verify reading is re-taken, because the premise of a second attempt is that the branch moved. The expression moved into `shouldRetakePrevalidation` in #280 when ship became a third source; the claim is unchanged and `test/unit/prevalidation-at-ship.test.ts` now executes both directions of it
 - [x] SC-663: test/evidence-prevalidation-at-verify.test.ts contains [pretend-worktree, healing-worktree] — the two directories are DIFFERENT in the fixture and the file the command needs is in only one of them; the heal case runs the real gate twice and changes nothing but the world the command looks at
 
 What was broken to prove it, run and counted rather than asserted, over
@@ -3163,3 +3163,98 @@ green under row seven by design: it is the positive control.
 None of the ten mutations is left in the tree; all were run and reverted,
 and the counts were re-measured after the `-e` case was added so they come
 from one tree.
+
+## Every gate measures its own tree (#280)
+
+`gates/gate-executor.ts` had `if (gate === "verify")` and nothing for ship,
+so the ship gate consumed whatever evidence-pre-validation block the verify
+gate had left behind.
+
+Measured on run `wf_ea3e428f-64f`: re-running the pre-validator against
+`projectRoot` reported 5 of 6 ACs broken; the persisted block said one, was
+stamped `takenAt: "verify"`, and carried a `checkedAt` an hour old. The ship
+gate filed a description of a tree it was not gating.
+
+**Nothing was let through**, and that is the point worth being precise
+about. The gate still refused, via `all-gates-pass` and the witness check,
+and it named the real cause. What it got wrong was recording a **stale
+artefact as current** — which is exactly what `takenAt` was added in #264 to
+make impossible to misread.
+
+Third instance in one family: #261 (producer in a phase the consumer does
+not share), #264 (reading taken in the wrong directory and never re-taken on
+heal), #280 (reading not re-taken at the next phase). Each fix moved the
+boundary one phase and stopped, so the policy is now one predicate rather
+than a condition inlined per call site.
+
+### What survives, decided rather than inherited (SC-5)
+
+| Gate | What survives | Why |
+|---|---|---|
+| verify | a `scope` reading | It measured the run's starting conditions; re-measuring those after Marcus has run answers a different question (#264) |
+| verify | nothing else | The premise of another verify attempt is that the branch moved |
+| ship | **nothing** | Between verify and ship the run commits, pushes, and may move the branch |
+
+The old condition, `takenAt !== "verify"`, would have carried a *scope*
+reading all the way to ship. Defensible one phase later, indefensible three:
+on the measured run the implementation never reached `projectRoot` at all.
+Re-measuring is a dry-run of commands that already ran once; that cost sits
+far below a ship gate recording an hour-old reading as its own.
+
+### The consumer enforces it too
+
+`prevalidationViolations` refuses a reading at ship whose `takenAt` is
+anything but `ship`, so a producer that stops re-measuring turns the gate
+RED rather than quietly going stale again. #280 was not caught by a check —
+it was caught by a human reading a timestamp.
+
+Scoped to ship deliberately. There is no general "an earlier phase is stale"
+rule available: a `scope` reading surviving to verify is correct, and
+inventing the general rule restores #261 and turns every LIGHT run red.
+
+- [x] SC-860: gates/gate-executor.ts contains [export async function prevalidationForGate] — the gate→reading mapping is ONE executed function, not a branch per gate inside a dispatch that spawns bun. With the branch inline, deleting it scored zero red across 52 tests
+- [x] SC-861: gates/gate-executor.ts contains [export function shouldRetakePrevalidation, nothing survives] — the retake policy is one predicate with one binding to mutate, and it preserves a scope reading at verify while preserving nothing at ship
+- [x] SC-862: gates/workflow.test.ts contains [not at ship — the ship gate must measure its own tree] — the consumer refuses a reading taken before its own phase, so a producer that stops re-measuring goes red instead of stale
+- [x] SC-863: test/unit/prevalidation-at-ship.test.ts contains [every source is documented and every documented source exists] — PREVALIDATION_SOURCES and the guide's `takenAt` row are checked against each other in both directions, which the field-name parity test cannot do: `takenAt` is one field whatever its values are
+
+### What was broken to prove it (SC-860..863)
+
+Run and counted over `test/unit/prevalidation-at-ship.test.ts` +
+`test/unit/evidence-prevalidation-gate.test.ts` +
+`test/prevalidation-broken-ids.test.ts` (57 tests):
+
+| Mutation | Red |
+|---|---|
+| the ship gate stops taking a reading — the defect, verbatim | 1 of 57, and **0** before the mapping became a function |
+| `runGate` stops consulting the mapping | 1 of 57 |
+| `runGate` passes a literal instead of the live gate | 1 of 57 |
+| the mapping fires for every gate, putting scope's write out of order | 1 of 57 |
+| `shouldRetakePrevalidation` stops re-taking at ship | 2 of 57 |
+| `shouldRetakePrevalidation` re-takes unconditionally — #264 undone | 2 of 57 |
+| `stampEvidencePrevalidation` becomes a no-op | 7 of 57 |
+| the reading stops recording which gate took it | 4 of 57 |
+| the consumer stops checking `takenAt` at ship | 2 of 57 |
+| the consumer checks `takenAt` at every phase — #261 restored | 4 of 57 |
+| the consumer's phase check swallows the refusals beneath it | 1 of 57 |
+| the gate's check site stops passing the phase | 1 of 57, and **0** before that case was written |
+| `ship` dropped from `PREVALIDATION_SOURCES` | 2 of 57 |
+| the guide's `takenAt` row left at the old two values | 1 of 57 |
+
+**Two zeros, and they are the same finding twice.** The first draft called
+`ensurePrevalidationPersisted(state, sf, "ship")` directly and
+`prevalidationViolations(reading, "SHIP")` directly, so both the gate
+dispatch and the gate's check site were invisible. A per-gate `if` inside a
+300-line function that spawns bun cannot be executed by a unit test, and a
+phase-aware refusal whose caller never tells it the phase is a refusal that
+can never fire. The first was fixed by extracting the mapping into a
+function and running it; the second by asserting the single call site, which
+is the weaker link and is held beside the executed cases rather than
+instead of them.
+
+**Row six is the control that keeps this fix from undoing the last one.**
+A predicate that re-takes unconditionally everywhere passes every ship case
+above and silently restores #264's bug at verify.
+
+None of the fourteen mutations is left in the tree; all were run and
+reverted, and the counts were re-measured after both zero-closing cases were
+added so they come from one tree.
