@@ -163,7 +163,11 @@ describe('detectExistingPR', () => {
     expect(result?.branch).toBe('515-deep-modules')
   })
 
-  test('returns null when API call fails', async () => {
+  test('reports an API failure as unreadable, NOT as "no PR" (#223)', async () => {
+    // This test used to assert `toBeNull()`, which pinned the fail-open in
+    // place: "nothing found" and "could not look" were the same answer, on
+    // the path that decides whether to re-implement work that may already
+    // exist. See test/prior-work-detection.test.ts for what that cost.
     const client = {
       rest: {
         issues: { get: async () => ({ data: {} }), createComment: async () => ({ data: {} }), addLabels: async () => ({ data: [] }), update: async () => ({ data: {} }) },
@@ -175,7 +179,10 @@ describe('detectExistingPR', () => {
       },
     } as any;
     const result = await detectExistingPR({ issueNumber: 515, repo: 'owner/repo', client })
-    expect(result).toBeNull()
+    expect(result).not.toBeNull()
+    expect(result!.unreadable).toBe(true)
+    expect(result!.reason).toContain('API error')
+    expect(result!.prNumber).toBeUndefined()
   })
 
   test('returns first matching PR when multiple exist', async () => {

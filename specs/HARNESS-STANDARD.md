@@ -3378,3 +3378,143 @@ scored 1 and ship.js scored 0 on the same mutation, which is the signature.
 None of the fifteen is left in the tree; all were run and reverted, and the
 counts were re-measured after the parity case was added so they come from
 one tree.
+
+## Prior work is found by what it says, not by what it is called (#223)
+
+Issue #209 was shipped TWICE:
+
+| run | branch | result |
+|---|---|---|
+| `wf_5e3ed885-98c` | `worktree-wf_5e3ed885-98c-9` | SHIP_FAILED, PR #219 |
+| `wf_7ac5f614-d21` | `worktree-wf_7ac5f614-d21-9` | SHIPPED, PR #221 |
+
+`git merge-base --is-ancestor 96fde39f origin/worktree-wf_7ac5f614-d21-9` →
+NO. Run 2 did not contain run 1's work at all. It branched from `main` and
+re-implemented from scratch: 45 minutes, 20 agents, 911k tokens, and two
+divergent open PRs for one issue, where merging either silently discards the
+other's work.
+
+### The cause is narrower than "nothing checks"
+
+Both detectors existed. Three things were wrong, and all three had to be
+fixed for either to have helped.
+
+1. **`detectExistingPR` had no caller.** Grepping the tree found it imported
+   only by its own test. A detector nothing calls is indistinguishable from
+   one that never matches.
+2. **Both looked for the issue number in a BRANCH NAME**, and the harness's
+   own branches are called `worktree-wf_5e3ed885-98c-9`. The number appears
+   in nothing but the PR body — `Fixes #209`, which ship.js writes — and the
+   commit subject, `fix(#209): …`, which ship.js also writes. Neither was
+   read.
+3. **`detectExistingPR` matched the PR's OWN number** — `issuePattern.test(
+   String(pr.number))` — so PR #209 was the prior work for issue #209
+   whatever it was about. A false-positive generator sitting where a detector
+   was supposed to be, on the one path where a false positive stops a correct
+   run from ever starting.
+
+It also read only the ten most recent open PRs, and swallowed every API error
+as "no existing PR" — the fail-open shape
+`.claude/rules/checks-must-be-able-to-fail.md` names: "none found" and "could
+not look" were the same value.
+
+### What the refusal must NOT do
+
+An unmerged prior branch on its own is not a reason to stop. That is RESUME,
+and it already works: ship.js merges the prior ref into the worktree and
+pushes back onto the same branch. Refusing there would break the only thing
+that makes a second run cheap, which is a worse failure than the duplicate.
+
+So the condition is narrower: **an open PR exists for this issue that this
+run is not standing on.** When the prior branch picked up IS the PR's head,
+this run is that PR's next commit and there is nothing to collide with.
+
+### Widening a match must not readmit what was excluded
+
+`detectPriorBranch` now matches a ref whose tip subject references the issue.
+`isHarnessScratchRef` still excludes `worktree-`, `run/` and
+`rungate-preserved/` refs (#185) — those name work a run REFUSED to collect,
+and the branch this repo carries for issue 254 says "NOT reviewed, do not
+merge" in its own tip message. Reading subjects widens which REAL branches
+are found; the scratch exclusion is asserted separately so the widening
+cannot quietly undo it.
+
+- [x] SC-868: lib/prior-branch.ts contains [export function issueReference] — one binding decides whether a text references an issue, bounded on digits rather than on a `#` so it matches a PR body, a commit subject and a branch name alike, and total over the `null` body GitHub returns for an empty PR
+- [x] SC-869: lib/prior-branch.ts contains [refs(pr?.title) || refs(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
+- [x] SC-870: lib/prior-branch.ts contains [refs(c.branch) || refs(c.subject)] — a prior branch is found by its tip commit subject as well as its name, and harness scratch refs stay excluded either way
+- [x] SC-871: workflows/ship.js contains [PRIOR-WORK-REFUSAL-START, PRIOR_WORK_OPEN_PR] — a run refuses before IMPLEMENT when the issue has an open PR this run is not standing on, and resuming that PR's own branch is not refused
+- [x] SC-872: workflows/ship.js contains [function lookupTargets, function normalizeExistingPr] — the issue number and repo slug are validated before they are interpolated into the lookup command, and only a positive outcome of "none" is read as "no open PR"
+
+### The step added to close a fail-open rebuilt it one layer up
+
+Security review of `93ff36a8` raised five findings; three were real and two
+of those were introduced by the fix itself.
+
+**The reply schema had every field optional**, so an agent that reported `{}`
+reported "no open PR" — the exact value-collapse the step exists to close,
+arriving by a new route one layer above the library. The schema now requires
+an `outcome` of `none`/`found`/`unreadable`, and `normalizeExistingPr` reads
+everything that is not a positive `none` — or a `found` carrying an actual
+number — as unreadable, which refuses. A schema can require the
+discriminator; it cannot require that `prNumber` accompanies `found`, so the
+normaliser does.
+
+**The lookup command interpolates two args into three nesting levels** — a
+double-quoted shell string wrapping TypeScript wrapping a single-quoted
+literal — and `ISSUE`/`ISSUE_REPO` come straight off `parsedArgs`. The number
+is also what `issueReference` builds a RegExp from, so a `".*"` arriving
+there matches every PR in the repo and the run collides with whichever came
+back first. `lookupTargets` checks both and reports that it could not look,
+rather than repairing them into a different question. `issueReference`
+THROWS on a number that is not one: a predicate that silently matches
+nothing reads exactly like an issue with no prior work.
+
+**`priorWorkRefusal` read a malformed PR record as "no PR".** `null` is how
+"no open PR" is said; a record with no number is a broken reading, and the
+direction to be wrong in on this path is toward refusing.
+
+| Mutation | Red |
+|---|---|
+| `issueReference` stops validating its number | 2 of 67 |
+| …and returns a never-matching predicate instead of throwing | 2 of 67 |
+| the library reads a malformed PR record as "no PR" again | 5 of 67 |
+| ship.js stops validating the issue number | 1 of 67 |
+| ship.js stops validating the repo slug | 1 of 67 |
+| ship.js reads `Number(issue)` directly — `null` becomes issue 0 | 1 of 67 |
+| an empty reply means "no open PR" again — the fail-open rebuilt | 1 of 67 |
+| anything not "found" means "no open PR" | 1 of 67 |
+| "found" with no PR number falls through as no PR | 1 of 67 |
+| a rejected input is skipped rather than refused | 1 of 67 |
+| the `outcome` discriminator stops being required | 1 of 67 |
+
+None is left in the tree; all were run and reverted.
+
+### What was broken to prove it (SC-868..871)
+
+Run and counted over `test/prior-work-detection.test.ts` +
+`test/prior-branch.test.ts` (55 tests):
+
+| Mutation | Red |
+|---|---|
+| `detectExistingPR` reads only the head ref again | 2 of 55 |
+| the PR's own number is matched again | 1 of 55 |
+| the lookup fails open again — `catch { return null }` | 2 of 55 |
+| `detectPriorBranch` stops reading commit subjects | 2 of 55 |
+| the scratch-ref exclusion removed — #185 undone by the widening | 1 of 55 |
+| the subject taken as `rest[0]` instead of rejoined | 1 of 55 |
+| the library refusal never fires | 10 of 55 |
+| ship.js logs the refusal instead of returning — the issue's own mutation | 1 of 55 |
+| ship.js's inlined copy drops the resume short-circuit | 1 of 55 (parity) |
+| ship.js stops looking for an existing PR | 1 of 55, and **0** before the assertion below |
+| the refusal is fed `null` instead of the lookup | 1 of 55 |
+
+**The last two rows are the finding inside the finding.** The first draft
+asserted that the text `detectExistingPR` appeared in ship.js before the
+refusal. Replacing the agent call with `= null` left the name sitting inside
+the now-dead template literal, so the assertion stayed green over a run that
+had stopped looking — a detector narrower than what it detects, in the test
+for a detector narrower than what it detects. The assertion now pins the
+ASSIGNMENT (`const existingPrResult = await timedAgent(\`…detectExistingPR`)
+and the argument the refusal is handed.
+
+None of the eleven is left in the tree; all were run and reverted.
