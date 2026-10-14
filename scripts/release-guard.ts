@@ -29,8 +29,8 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import {
+  awaitRegistryServes,
   NPM_REGISTRY,
-  postflightRefusal,
   preflightRefusal,
   registryState,
 } from "../lib/release-preflight";
@@ -74,14 +74,15 @@ async function main(): Promise<void> {
   // environment variable on purpose: a knob that redirects where a release
   // gate looks belongs somewhere a reader of the workflow file can see it.
   // test/release-guard.test.ts asserts the workflow passes no `--registry`.
-  let state;
-  try {
-    state = await registryState(PKG, fetch, arg("registry") ?? NPM_REGISTRY);
-  } catch (e) {
-    refuse(`could not read the registry: ${(e as Error).message}`);
-  }
+  const base = arg("registry") ?? NPM_REGISTRY;
 
   if (phase === "preflight") {
+    let state;
+    try {
+      state = await registryState(PKG, fetch, base);
+    } catch (e) {
+      refuse(`could not read the registry: ${(e as Error).message}`);
+    }
     const tag = (arg("tag") ?? "").replace(/^refs\/tags\//, "") || null;
     const no = preflightRefusal(treeVersion!, tag, state!);
     if (no) refuse(no);
@@ -92,9 +93,32 @@ async function main(): Promise<void> {
     return;
   }
 
-  const no = postflightRefusal(treeVersion!, state!.latest);
-  if (no) refuse(no);
-  console.log(`postflight OK: the registry now serves ${PKG}@${treeVersion!}`);
+  // Postflight POLLS rather than reading once (#407). v0.3.0 published
+  // cleanly and this step still refused, because it read the registry about a
+  // second after the publish and the packument was still serving 0.2.1.
+  // `--attempts` and `--delay-ms` exist so the test suite can drive the
+  // exhaustion branch without 30 seconds of real sleep; the workflow passes
+  // neither, which test/release-guard.test.ts asserts.
+  const num = (name: string): number | undefined => {
+    const raw = arg(name);
+    return raw === null ? undefined : Number(raw);
+  };
+  let reading;
+  try {
+    reading = await awaitRegistryServes(PKG, treeVersion!, {
+      base,
+      attempts: num("attempts"),
+      delayMs: num("delay-ms"),
+    });
+  } catch (e) {
+    refuse(`could not read the registry: ${(e as Error).message}`);
+  }
+  if (reading!.refusal) refuse(reading!.refusal);
+  console.log(
+    `postflight OK: the registry serves ${PKG}@${treeVersion!} ` +
+      `(read ${reading!.attempts} time${reading!.attempts === 1 ? "" : "s"}, ` +
+      `waited ${Math.round(reading!.waitedMs / 1000)}s)`,
+  );
 }
 
 await main();
