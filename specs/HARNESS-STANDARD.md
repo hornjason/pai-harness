@@ -3041,3 +3041,125 @@ empty implement result means with nothing able to notice.
 None of the eight mutations is left in the tree; all were run and reverted,
 and the counts were re-measured after the executed case was added so they
 come from one tree.
+
+## An AC's evidence must be able to satisfy its own threshold (#217)
+
+The discovery agent writes the statement, the threshold and the evidence
+command in one pass, and nothing then checks the three against each other.
+Measured on `wf_5e3ed885-98c`, in a single AC, two independent ways:
+
+```
+grep -n 'SC-\w+' lib/conformity.ts | grep 'x]'       threshold: >= 1
+```
+
+`+` is an ordinary character in a BASIC regular expression, so the pattern
+reads "SC-, one word character, a plus sign" and selects nothing in any
+file. With `grep -E` it returns lines 199 and 318. The same AC also carried
+`contains 'checked: boolean'` against a field legitimately declared
+`checked?: boolean` at `lib/conformity.ts:269` — satisfied by the code,
+unmatchable by the grep.
+
+### This is the house defect, inverted
+
+`.claude/rules/checks-must-be-able-to-fail.md` is about **a check that
+passed because of what it never looked at.** This is **a check that failed
+because of what it could never match.** In both, the verdict is independent
+of the code under test — and that, not the direction, is the defect. A check
+must be able to fail *and* able to pass.
+
+### Refuse rather than repair
+
+`workflows/ship.js` already repaired one shape of this, in silence:
+
+```
+Fixed ${ac.id} threshold: grep -c returns count, changed 'contains' → '>= 1'
+```
+
+A silently repaired AC is a changed acceptance criterion that nobody
+reviewed — the harness deciding what the run is allowed to be judged on. The
+repair is gone. The generalisation lives in one predicate and the run is
+refused instead, at the scope gate, before Marcus is spawned.
+
+The same edit narrowed P1-4's evidence-type upgrade: it rewrites a
+`contains` threshold only on the branch that actually appends `| wc -l`.
+Its `grep -c` branch leaves the command untouched, so rewriting that
+threshold was the same unreviewed edit wearing the upgrade's hat, and it
+made the measured AC unreachable by the refuser.
+
+### Unsatisfied is the normal state of an AC; unsatisfiable is the defect
+
+The refuser does not consult the dry-run's output, and must not. Before the
+work is done, `grep -c newThing src/` returning 0 against a `>= 1` threshold
+is what a CORRECT acceptance criterion looks like. Every refusal has to hold
+for all possible code, which is a hard bar and is why there are three:
+
+| Shape | Why the verdict is a constant |
+|---|---|
+| a quantifier a BRE reads as a literal | `\w+`, `[0-9]+`, `)?` — selects nothing in any file |
+| a count compared as text | `grep -c` emits a number; `contains` can never hold over it |
+| a count of counts | `grep -c … \| wc -l` prints one line per file whatever the matches were |
+
+The first is positional, not a ban on the characters. `grep 'checked?: boolean'`
+and `grep 'function foo('` are correct BREs whose author meant those
+characters literally, and refusing them would break far more runs than it
+saves. Only a `+` or `?` directly after a class or a group is refused.
+
+`null` from the predicate means "not provably unsatisfiable", not "verified
+satisfiable". The weaker claim is the honest one, and it is the direction
+this is allowed to be wrong in: missing a bad AC costs one failed run that a
+human reads, while a false refusal blocks a correct run and nobody trusts
+the refuser again.
+
+- [x] SC-856: lib/evidence-satisfiability.ts contains [LITERAL_QUANTIFIER, is a literal character rather than a quantifier] — a `+` or `?` directly after a character class or a group in a non-`-E` grep is refused as a literal, and a `+` or `?` anywhere else is NOT, because an author who wrote `checked?: boolean` meant it
+- [x] SC-857: lib/evidence-satisfiability.ts contains [emitsCount, threshold can never hold over] — a command whose producing stage is `grep -c` or `wc -l` emits a number, so a text operator over it is incoherent regardless of the code, and the same command with a numeric operator is accepted
+- [x] SC-858: lib/evidence-satisfiability.ts contains [countOfCountsRefusal, already prints a count] — `grep -c … | wc -l` is refused even with a numeric threshold, because its answer is a constant; a plain `grep … | wc -l` is the correct idiom and is accepted
+- [x] SC-859: lib/evidence-prevalidator.ts contains [The evidence cannot satisfy its own threshold] — the refusal is consulted BEFORE the dry-run and classified `broken`, so it moves the verdict the scope gate refuses on. `empty` would not: it is a warning, and it is the same reading a correct AC produces before the work is done
+
+### What was broken to prove it (SC-856..859)
+
+Run and counted over `test/evidence-satisfiability.test.ts` +
+`test/unit/evidence-prevalidation-gate.test.ts` (39 tests):
+
+| Mutation | Red |
+|---|---|
+| `breRefusal` short-circuited to `null` | 5 of 39 |
+| `thresholdRefusal` short-circuited to `null` | 2 of 39 |
+| `countOfCountsRefusal` short-circuited to `null` | 3 of 39 |
+| `LITERAL_QUANTIFIER` widened to a bare ban on `+` and `?` | 1 of 39 |
+| `emitsCount` stops looking past a trailing `tr` | 1 of 39 |
+| `readGrep` stops honouring `-e`, so a dash-leading pattern reads as a flag | 1 of 39, and **0** before the case below was written |
+| the pre-validator stops consulting the refuser | 2 of 39 |
+| the refusal is judged on the written command, not the repaired one | 1 of 39 |
+| ship.js's silent repair restored | 1 of 39 |
+| the P1-4 `grep -c` branch rewrites a threshold it did not earn | 1 of 39 |
+
+**Row four is the one worth reading.** It restores the rule this fix was
+first drafted with — refuse any `+` or `?` in a non-`-E` grep — and the test
+that catches it is a NEGATIVE control, not a positive one. A detector
+widened until it cannot miss is the mirror of one narrowed until it cannot
+see, and #217's own reproduction, `checked?: boolean`, is among the patterns
+the wider rule would have refused.
+
+**Row six is the finding.** Deleting `-e` handling scored zero, because for
+an ordinary pattern `-e` changes nothing — the pattern is the next token
+either way. The branch is only load-bearing for a pattern that BEGINS with a
+dash, which is the entire reason `grep -e` exists. Without a case that
+distinguishes them, the branch could have been deleted and every other
+assertion would have stayed green. The distinguishing case is now in the
+file, in both directions.
+
+**Row eight is why the refusal is judged on the repaired command.** The
+bun-test-pipe auto-fix rewrites `bun test … | grep -c pass` to the direct
+form, which deletes the `grep -c` and makes a `contains` threshold coherent.
+Refusing the written form would refuse a command the pre-validator was about
+to repair — found by #235's own fixture going red, not by a mutation.
+
+**Rows seven and eight are also why the wiring is executed rather than
+grepped.** Both commands in those cases run CLEANLY — `grep -c 'export'
+package.json | wc -l` prints `1` and exits 0 — so a dry-run reports `ok` and
+nothing downstream has a reason to look again. The third wiring case stays
+green under row seven by design: it is the positive control.
+
+None of the ten mutations is left in the tree; all were run and reverted,
+and the counts were re-measured after the `-e` case was added so they come
+from one tree.

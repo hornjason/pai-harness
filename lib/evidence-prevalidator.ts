@@ -9,6 +9,7 @@
 import { execSync } from "child_process";
 
 import { normalizeGitRefs } from "./git-ref-normalizer";
+import { satisfiabilityRefusal } from "./evidence-satisfiability";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -191,6 +192,42 @@ export async function prevalidateEvidence(
 
     // Check for bun test pipe pattern BEFORE running — always auto-fix
     const pipeFix = tryFixBunTestPipe(command);
+
+    /**
+     * Refuse an AC whose command could not satisfy its threshold under ANY
+     * implementation, BEFORE dry-running it (#217).
+     *
+     * Before the dry-run because the dry-run cannot see this. Measured on
+     * `wf_5e3ed885-98c`: `grep -n 'SC-\w+' …` is a basic regular expression
+     * whose `+` is a literal, so it selects nothing and dry-runs as `empty` —
+     * a WARNING, and the same reading a correct AC produces before the work
+     * is done. `grep -c … | wc -l` is worse: it prints `1`, dry-runs `ok`,
+     * and the threshold it satisfies is then a constant.
+     *
+     * This is the inverse of the defect `.claude/rules/checks-must-be-able-to-fail.md`
+     * is about, and it is the same defect: a verdict independent of the code.
+     *
+     * Judged on the command that will actually RUN, not the one as written —
+     * after the ref rewrite and after the bun-test-pipe fix. Both change the
+     * text, and the pipe fix changes whether the threshold is coherent at
+     * all: `bun test … | grep -c pass` with `contains` is an incoherent pair
+     * that the fix resolves by deleting the `grep -c`. Refusing the written
+     * form would refuse a command the pre-validator was about to repair.
+     */
+    const unsatisfiable = satisfiabilityRefusal({
+      ...ac,
+      evidenceMethod: { ...ac.evidenceMethod, command: pipeFix ?? command },
+    });
+    if (unsatisfiable) {
+      record(withRefFix({
+        id: ac.id,
+        status: "broken",
+        needsRewrite: true,
+        diagnostic: `The evidence cannot satisfy its own threshold: ${unsatisfiable}`,
+      }));
+      continue;
+    }
+
     if (pipeFix) {
       record({
         id: ac.id,
