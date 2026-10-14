@@ -256,6 +256,19 @@ function collectorWithAgent(reply: unknown) {
 
 /** The real `runImplement`, with every dependency it reaches for injected. */
 function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
+  // #181 added a guard that lives outside this function, so the slice now
+  // has a free reference. The REAL one is injected, sliced from its own
+  // markers — a stub would let this suite and the guard disagree about what
+  // an empty implement result means, with nothing able to notice.
+  const gStart = shipSource.indexOf("// ──── IMPLEMENT-RESULT-START ────");
+  const gEnd = shipSource.indexOf("// ──── IMPLEMENT-RESULT-END ────");
+  if (gStart === -1 || gEnd === -1) {
+    throw new Error("ship.js is missing the IMPLEMENT-RESULT-START/END markers");
+  }
+  const implementRefusal = new Function(
+    `${shipSource.slice(gStart, gEnd)}\nreturn implementRefusal;`,
+  )();
+
   return new Function(
     "runCeremonyOnce",
     "briefedAgent",
@@ -263,6 +276,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     "WORK_DIR",
     "testTimeout",
     "BUILD_RESULT_SCHEMA",
+    "implementRefusal",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => opts.ceremony ?? { contextExcerpts: [], acContextFiles: [] },
@@ -271,6 +285,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     WORK,
     300000,
     {},
+    implementRefusal,
   ) as () => Promise<{ success?: boolean; status?: string; buildResult?: any }>;
 }
 
@@ -311,13 +326,33 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
     ]);
   });
 
-  test("a build that reported no files still yields an array, not undefined", async () => {
+  test("a build that reported no files is now a FAILURE, not an empty array (#181)", async () => {
+    // INVERTED, deliberately. This asserted that
+    // `{success: true, worktreePath, filesChanged: undefined}` produced
+    // `agentResults[0].filesChanged === []` and carried on — which is
+    // exactly the state #181 is about: `success: true` serving both
+    // "implemented it" and "declined to".
+    //
+    // #162's concern was that the field is never `undefined`, and that
+    // still holds for every result that now reaches it. The "no files"
+    // variant is unreachable by construction, so asserting its shape would
+    // be asserting the shape of a state the pipeline no longer has.
     const runImplement = loadRunImplement({
       buildResult: { success: true, worktreePath: WORKTREE_B },
     });
     const result = await runImplement();
+    expect(result.success, "an implement that changed nothing was accepted").toBe(false);
+    expect(result.buildResult.findings?.join(" ")).toMatch(/changed no files/);
+  });
+
+  test("agentResults is an array for every result that reaches it (#162)", async () => {
+    // #162's actual invariant, kept, on a result that gets that far.
+    const runImplement = loadRunImplement({
+      buildResult: { success: true, worktreePath: WORKTREE_B, filesChanged: ["lib/a.ts"] },
+    });
+    const result = await runImplement();
     expect(Array.isArray(result.buildResult.agentResults)).toBe(true);
-    expect(result.buildResult.agentResults[0].filesChanged).toEqual([]);
+    expect(result.buildResult.agentResults[0].filesChanged).toEqual(["lib/a.ts"]);
   });
 
   test("a failed build is still a failure and is not dressed up", async () => {
