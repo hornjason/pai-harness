@@ -312,6 +312,36 @@ describe("#306 security review: the comparison cannot be stepped around", () => 
     expect(shipSource).toContain("scopeContradiction(beforeStrip, scopeDenied)");
     expect(shipSource).toContain("CONTRADICTION");
   });
+
+  test("contextFiles is filtered too, not just filesToModify", () => {
+    // incomplete-guard-field-mismatch, and it was a complete bypass: an AC's
+    // contextFiles reach the to-issues prompt (every AC's list is
+    // interpolated into it) and the implementer's context excerpts
+    // (`acContextFiles` reads them off disk). Filtering only `filesToModify`
+    // struck a file off the list and then handed the agent its contents.
+    expect(shipSource, "contextFiles are not filtered by the deny-list").toContain(
+      "ac.contextFiles = ac.contextFiles.filter(cf => {",
+    );
+    const strip = shipSource.indexOf("ac.contextFiles = ac.contextFiles.filter(cf => {");
+    const prompt = shipSource.indexOf("You are the to-issues decomposition skill");
+    const excerpts = shipSource.indexOf("const acContextFiles");
+    expect(strip, "the strip runs after the decomposer prompt reads contextFiles")
+      .toBeLessThan(prompt);
+    expect(strip, "the strip runs after the excerpt reader").toBeLessThan(excerpts);
+  });
+
+  test("the contextFiles filter handles both shapes the field takes", () => {
+    // The field holds either a bare string or {path, reason}; the two live
+    // readers above each normalise it themselves, so a filter that understood
+    // only one shape would silently pass the other straight through.
+    const shaped = [{ path: "gates/schema.ts", reason: "x" }, "lib/ok.ts", { reason: "no path" }];
+    const denied = ["gates/schema.ts"];
+    const kept = shaped.filter(cf => {
+      const p = typeof cf === "string" ? cf : (cf as { path?: string })?.path;
+      return !p || !denied.some(d => matchesDenied(p, d));
+    });
+    expect(kept).toEqual(["lib/ok.ts", { reason: "no path" }]);
+  });
 });
 
 describe("SC-1426: ship.js's inlined copy and the library agree", () => {

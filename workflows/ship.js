@@ -2087,6 +2087,28 @@ if (scopeDenied.length > 0) {
   if (stripped.length > 0) {
     log(`SCOPE DENY-LIST: removed ${stripped.length} of them from discovery.filesToModify — ${stripped.join(', ')}`)
   }
+
+  // `contextFiles` is the SECOND field that carries paths, and filtering only
+  // `filesToModify` left it as a complete bypass of this guard — raised by the
+  // commit security review as incomplete-guard-field-mismatch, and confirmed
+  // at two live sites: the to-issues prompt interpolates every AC's
+  // contextFiles, and `acContextFiles` reads them off disk into the
+  // implementer's excerpts. A denied file would have been re-advertised to the
+  // planner and handed to the agent after being struck off the file list,
+  // which is what made the prompt's OUT OF BOUNDS paragraph decorative.
+  let contextStripped = 0
+  for (const ac of (discovery.acs || [])) {
+    if (!ac.contextFiles?.length) continue
+    const before = ac.contextFiles.length
+    ac.contextFiles = ac.contextFiles.filter(cf => {
+      const p = typeof cf === 'string' ? cf : cf?.path
+      return !p || !scopeDenied.some(d => matchesDenied(p, d))
+    })
+    contextStripped += before - ac.contextFiles.length
+  }
+  if (contextStripped > 0) {
+    log(`SCOPE DENY-LIST: removed ${contextStripped} out-of-scope entr${contextStripped === 1 ? 'y' : 'ies'} from AC contextFiles`)
+  }
 }
 for (const p of unresolvedProhibitions(discovery.issueGoal || '')) {
   // Not a refusal. The goal is well-formed English and the run can proceed;

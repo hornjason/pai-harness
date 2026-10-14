@@ -1733,6 +1733,19 @@ as good as its normalisation and only as safe as its direction.
   empty plan is indistinguishable from a run with nothing to do — work
   refused, reported as work completed. `scopeContradiction` says so.
 
+A second review, on the committed change, found three more. The one that
+mattered is **incomplete-guard-field-mismatch, and it was a complete
+bypass**: `filesToModify` is not the only field carrying paths. Every AC's
+`contextFiles` is interpolated into the to-issues prompt, and `acContextFiles`
+reads those same entries off disk into the implementer's context excerpts. So
+a denied file was struck off the file list and then re-advertised to the
+planner and handed to the agent — which is also what made the prompt's OUT OF
+BOUNDS paragraph **decorative-control**, the review's other finding. Both are
+fixed by filtering `contextFiles` in the same block, on both shapes the field
+takes (a bare string and `{path, reason}`), and the position of the strip
+relative to the two readers is asserted rather than assumed. Mutation:
+disabling the `contextFiles` filter turns 1 of 52 red.
+
 ### The release job went red over a release that worked (#407, 2026-10-14)
 
 `v0.3.0` published cleanly — `dist-tags.latest` is `0.3.0`, `npm install
