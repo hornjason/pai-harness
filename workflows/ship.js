@@ -3015,7 +3015,29 @@ function claimKey(worktreePath, p) {
   if (!s) return ''
   const wt = String(worktreePath == null ? '' : worktreePath).trim().replace(/\/+$/, '')
   if (wt && s.startsWith(`${wt}/`)) s = s.slice(wt.length + 1)
-  return s.replace(/^(?:\.\/)+/, '').replace(/\/{2,}/g, '/').replace(/\/+$/, '')
+
+  // One rule over segments, rather than four chained regexes (#229).
+  //
+  // The regex version stripped a LEADING `./` only — `^(?:\.\/)+` — so
+  // `a/./b.ts` survived as a key distinct from `a/b.ts`, and that is the
+  // whole bypass: worktree A claims `a/b.ts`, worktree B claims and reports
+  // `a/./b.ts`, the audit finds no owner for B's key and raises nothing, and
+  // the collector resolves it with `realpathSync` onto A's file and writes
+  // over it. Duplicate slashes and a trailing slash had the same shape and
+  // were each a separate regex; dropping empty and `.` segments is the one
+  // rule all three were approximating.
+  //
+  // `..` is deliberately NOT dropped. It is REFUSED, by `escapesWorktree`.
+  // Collapsing it textually would reintroduce the very differential this
+  // closes: where a component is a symlink, `a/../b` collapses textually to
+  // `b` while the collector's `realpathSync` resolves it somewhere else — a
+  // key that looks canonical and is not. Refusal has no such failure mode.
+  // A segment that is exactly `.` cannot be a symlink, so collapsing it is
+  // the same path on every filesystem.
+  const absolute = s.startsWith('/')
+  const segments = s.split('/').filter(seg => seg !== '' && seg !== '.')
+  // An absolute path stays absolute so `escapesWorktree` still refuses it.
+  return (absolute ? '/' : '') + segments.join('/')
 }
 
 /**
