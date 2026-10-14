@@ -1761,11 +1761,56 @@ is still computed separately for the prompt, which is pure and cannot drift.
 | `applyScopeDenylist` never called | 2 of 53 |
 | the call moved back outside `runDiscovery` | 1 of 53 — the exact defect the review found, reintroduced verbatim |
 
-Three review rounds on one change, each finding a real reachable bypass of
-the previous fix. Worth recording as a count: a guard built field-by-field
-from the one example that motivated it keeps missing the next field, and
-what finally closed it was applying it at a single choke point rather than
-at each site that reads.
+A fourth review found the one that made all the others moot: **the guard was
+reading a field that does not exist.**
+
+`applyScopeDenylist` read `disc.issueGoal`. `DISCOVERY_SCHEMA` has no
+`issueGoal` key — the field is on `goalData`, a different object — so
+`deniedFiles('')` returned `[]` on every run and **nothing was ever denied.**
+A completely dead control, shipped as the fix for a class of dead controls,
+and the mistake was copied from `ship.js`'s own pre-existing line
+`Parent issue #${ISSUE}: ${discovery.issueGoal || 'see ACs below'}`, which
+had the same bug and had been silently falling back to 'see ACs below' for
+its whole life. Both are fixed.
+
+The test for it is asserted against the **schema**, not by grepping for the
+right spelling, because the wrong spelling is also a valid-looking string: it
+reads `DISCOVERY_SCHEMA`'s text, asserts `issueGoal` is absent from it, and
+asserts nothing in the file reads `discovery.issueGoal`.
+
+Two more from the same round, both real:
+
+- **The guard ran after the data was persisted.** `writeACs` serialises
+  `discovery.acs` into `workflow-state.json`, which is the copy every gate
+  reads. Applying the filter at the end of `runDiscovery` cleaned the
+  in-memory object and left the persisted one carrying denied
+  `contextFiles`. Moved ahead of the write.
+- **The contradiction warned instead of refusing.** Every planned file being
+  out of scope means the goal is unshippable as written, and carrying on
+  produces an empty implementation that reads downstream as a run with
+  nothing to do. It now returns `false` through `runDiscovery`'s existing
+  refusal channel.
+
+| Mutation | Red |
+|---|---|
+| the goal text read off `discovery` again | 3 of 56 |
+| the contradiction downgraded back to a warning | 1 of 56 |
+| the filter moved back after `writeACs` | 1 of 56 |
+
+**Four review rounds on one change, each finding a real reachable bypass of
+the previous fix, and the last one finding the guard had never run at all.**
+That is the finding worth keeping. Three properties separate the version that
+works from the four that did not, and none of them is about the deny-list
+logic, which was correct throughout:
+
+1. It reads from the object that carries the data, proven against the schema
+   rather than by eye.
+2. It is applied at **one choke point** — inside `runDiscovery`, before the
+   state is written — rather than at each site that reads.
+3. Its failure mode is a refusal, not a log line.
+
+A guard assembled field-by-field from the one example that motivated it keeps
+missing the next field. The field list was never the problem.
 
 ### The release job went red over a release that worked (#407, 2026-10-14)
 

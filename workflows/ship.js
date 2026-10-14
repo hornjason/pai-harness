@@ -1610,13 +1610,25 @@ function denylistViolations(claimants, denied) {
  * string or {path, reason} and both live readers normalise it themselves, so
  * this handles both shapes.
  */
-function applyScopeDenylist(disc, say) {
-  const denied = deniedFiles(disc?.issueGoal || '', disc?.scopeOut || [])
-  if (denied.length === 0) return denied
+function applyScopeDenylist(disc, say, goalText) {
+  // goalText is a PARAMETER, not `disc.issueGoal`. The first version read the
+  // latter, and DISCOVERY_SCHEMA has no `issueGoal` key — the field lives on
+  // `goalData`. So the deny-list read '' on every run and denied nothing: a
+  // dead control, in the fix for a class of dead controls. Caught by the
+  // commit security review as "wrong source field", and ship.js:2145 had the
+  // same bug already, silently falling back to 'see ACs below' forever.
+  const denied = deniedFiles(goalText || '', disc?.scopeOut || [])
+  if (denied.length === 0) return { denied, refusal: null }
 
   const beforeStrip = [...(disc.filesToModify || [])]
   const contradiction = scopeContradiction(beforeStrip, denied)
-  if (contradiction) say(`SCOPE DENY-LIST: CONTRADICTION — ${contradiction}`)
+  if (contradiction) {
+    // REFUSES rather than warns. Every planned file being out of scope means
+    // the goal is unshippable as written; proceeding produces an empty
+    // implementation that reads downstream as a run with nothing to do.
+    say(`SCOPE DENY-LIST: CONTRADICTION — ${contradiction}`)
+    return { denied, refusal: contradiction }
+  }
   disc.filesToModify = withoutDenied(beforeStrip, denied)
   const stripped = beforeStrip.filter(f => !disc.filesToModify.includes(f))
   say(`SCOPE DENY-LIST: the goal puts ${denied.length} file(s) out of bounds — ${denied.join(', ')}`)
@@ -1637,7 +1649,7 @@ function applyScopeDenylist(disc, say) {
   if (contextStripped > 0) {
     say(`SCOPE DENY-LIST: removed ${contextStripped} out-of-scope entr${contextStripped === 1 ? 'y' : 'ies'} from AC contextFiles`)
   }
-  return denied
+  return { denied, refusal: null }
 }
 
 function withoutDenied(files, denied) {
@@ -1763,6 +1775,28 @@ Project root: ${PROJECT_ROOT}
         }
       })
     }
+  }
+
+  // Inside runDiscovery so the verify gate's re-run at
+  // `runDiscovery('Verify gate found ACs were wrong: …')` is filtered too —
+  // applying it once after the first call held for one pass and lapsed on the
+  // second (guard-not-reapplied-on-rediscovery).
+  //
+  // And HERE rather than at the end, because `writeACs` below serialises
+  // discovery.acs into workflow-state.json: a filter after that point cleaned
+  // the in-memory copy and left the persisted one carrying denied
+  // contextFiles, which is the copy every gate reads
+  // (guard-runs-after-the-data-is-persisted).
+  const scopeGuard = applyScopeDenylist(discovery, log, goalData?.issueGoal)
+  if (scopeGuard.refusal) {
+    log(`DISCOVERY REFUSED: ${scopeGuard.refusal}`)
+    return false
+  }
+  for (const p of unresolvedProhibitions(goalData?.issueGoal || '')) {
+    // Not a refusal. The goal is well-formed English and the run can proceed;
+    // what it cannot do is enforce this one. Saying so is the difference
+    // between an empty deny-list and an unenforceable one.
+    log(`SCOPE DENY-LIST: UNENFORCEABLE — "${p.text.slice(0, 160)}" names ${p.issues.join(', ')} but no file path, so nothing can be denied. Name the files to make it mechanical.`)
   }
 
   // P1-4: Enforce evidence-type-ratio mechanically — gate requires ≤50% pattern-only (GREP_CHECK/grep)
@@ -2005,20 +2039,6 @@ console.log('ACs written: ' + s.acs.length);
     `, { label: 'fix-acs', phase: 'Discovery' })
   }
 
-  // Last thing runDiscovery does, so EVERY discovery is filtered — including
-  // the verify gate's re-run at `runDiscovery('Verify gate found ACs were
-  // wrong: …')`, which replaces filesToModify and acs wholesale. Applying it
-  // once after the first call held for one pass and silently lapsed on the
-  // second, and the re-run is the path a failing run takes (#306; raised by
-  // the commit security review as guard-not-reapplied-on-rediscovery).
-  applyScopeDenylist(discovery, log)
-  for (const p of unresolvedProhibitions(discovery.issueGoal || '')) {
-    // Not a refusal. The goal is well-formed English and the run can proceed;
-    // what it cannot do is enforce this one. Saying so is the difference
-    // between an empty deny-list and an unenforceable one.
-    log(`SCOPE DENY-LIST: UNENFORCEABLE — "${p.text.slice(0, 160)}" names ${p.issues.join(', ')} but no file path, so nothing can be denied. Name the files to make it mechanical.`)
-  }
-
   log(`Sized: ${discovery.sizing}/${discovery.ceremonyTier} — ${discovery.acs.length} ACs`)
   return true
 }
@@ -2133,7 +2153,7 @@ if (PHASE_TARGET === 'discovery') {
 // to-issues prompt's OUT OF BOUNDS paragraph and the plan check after it. The
 // APPLICATION lives at the end of runDiscovery so it survives re-discovery;
 // this is just the list, and it is pure, so computing it twice cannot drift.
-const scopeDenied = deniedFiles(discovery.issueGoal || '', discovery.scopeOut || [])
+const scopeDenied = deniedFiles(goalData?.issueGoal || '', discovery.scopeOut || [])
 
 // ── M-size decomposition: invoke to-issues to create XS/S sub-issues ──
 let mDecomposition = null
@@ -2142,7 +2162,7 @@ if (discovery.sizing === 'M' && (discovery.filesToModify || []).length >= 3) {
   const decompResult = await timedAgent(`
 You are the to-issues decomposition skill. Decompose this M-size issue into 2-4 smaller sub-issues.
 
-Parent issue #${ISSUE}: ${discovery.issueGoal || 'see ACs below'}
+Parent issue #${ISSUE}: ${goalData?.issueGoal || 'see ACs below'}
 
 ACs:
 ${discovery.acs.map(ac => `${ac.id}: ${ac.statement} [files: ${(ac.contextFiles || []).map(f => typeof f === 'string' ? f : f.path).join(', ')}]`).join('\n')}

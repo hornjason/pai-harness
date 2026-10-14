@@ -439,14 +439,73 @@ describe("SC-1426: ship.js's inlined copy and the library agree", () => {
 describe("#306: the workflow actually consults the deny-list", () => {
   // A library nothing calls is the same defect one step removed. These greps
   // are deliberately on the CALL, not on the block's presence.
-  test("the filter runs at the END of runDiscovery, so re-discovery is covered", () => {
+  test("the goal text is read off an object that actually carries it", () => {
+    // THE ONE THAT MADE THE WHOLE GUARD DEAD. The first version read
+    // `discovery.issueGoal`. DISCOVERY_SCHEMA has no such key — `issueGoal`
+    // is on `goalData` — so `deniedFiles('')` returned [] on every run and
+    // nothing was ever denied. A dead control, shipped as the fix for a class
+    // of dead controls, and copied from ship.js:2145 which had the same bug
+    // already and had been falling back to 'see ACs below' forever.
+    //
+    // Asserted against the SCHEMA rather than by grepping for the right
+    // spelling, because the wrong spelling is also a valid-looking string.
+    const schema = shipSource.slice(
+      shipSource.indexOf("const DISCOVERY_SCHEMA"),
+      shipSource.indexOf("const GATE_RESULT_SCHEMA"),
+    );
+    expect(schema.length, "DISCOVERY_SCHEMA could not be located").toBeGreaterThan(200);
+    expect(schema, "the schema gained issueGoal — this case is now moot and should be deleted")
+      .not.toContain("issueGoal");
+    expect(
+      shipSource,
+      "something still reads issueGoal off `discovery`, where the schema says it is not",
+    ).not.toContain("discovery.issueGoal");
+
+    // And the positive control: the goal text reaches the helper from the
+    // object that does carry it. A guard reading nothing passes every case
+    // above.
+    expect(shipSource).toContain("applyScopeDenylist(discovery, log, goalData?.issueGoal)");
+    const goalSchema = shipSource.slice(
+      shipSource.indexOf("const GOAL_SCHEMA"),
+      shipSource.indexOf("const DISCOVERY_SCHEMA"),
+    );
+    expect(goalSchema, "goalData does not carry issueGoal either").toContain("issueGoal");
+  });
+
+  test("the filter runs BEFORE the ACs are persisted", () => {
+    // guard-runs-after-the-data-is-persisted. `writeACs` serialises
+    // discovery.acs into workflow-state.json, which is the copy every gate
+    // reads. A filter after that point cleaned the in-memory object and left
+    // the persisted one carrying denied contextFiles.
+    const apply = shipSource.indexOf("applyScopeDenylist(discovery, log, goalData?.issueGoal)");
+    const persist = shipSource.indexOf("writeACs(sf, ${JSON.stringify(discovery.acs");
+    expect(apply, "nothing applies the deny-list").toBeGreaterThan(-1);
+    expect(persist, "the writeACs call this orders against is gone").toBeGreaterThan(-1);
+    expect(apply, "the deny-list runs after workflow-state.json is written")
+      .toBeLessThan(persist);
+  });
+
+  test("a goal that denies every planned file REFUSES the discovery", () => {
+    // fail-open-on-contradiction. Logging it and carrying on produces an
+    // empty implementation, which reads downstream as a run with nothing to
+    // do. The refusal travels through runDiscovery's existing `return false`.
+    expect(shipSource).toContain("if (scopeGuard.refusal) {");
+    expect(shipSource).toContain("DISCOVERY REFUSED:");
+    const refusal = shipSource.indexOf("if (scopeGuard.refusal) {");
+    expect(
+      shipSource.slice(refusal, refusal + 220),
+      "the contradiction is logged but the run continues",
+    ).toContain("return false");
+  });
+
+  test("the filter runs inside runDiscovery, so re-discovery is covered", () => {
     // guard-not-reapplied-on-rediscovery. The verify gate calls
     // `runDiscovery('Verify gate found ACs were wrong: …')`, which replaces
     // filesToModify and acs wholesale. Applying the deny-list once after the
     // first call held for one pass and lapsed on the second — and the re-run
     // is the path a FAILING run takes, which is the worst one to leave open.
     const decl = shipSource.indexOf("async function runDiscovery(context) {");
-    const call = shipSource.indexOf("applyScopeDenylist(discovery, log)");
+    const call = shipSource.indexOf("applyScopeDenylist(discovery, log, goalData?.issueGoal)");
     const ret = shipSource.indexOf("return true\n}", decl);
     expect(decl, "runDiscovery is gone").toBeGreaterThan(-1);
     expect(call, "nothing applies the deny-list").toBeGreaterThan(-1);
@@ -480,7 +539,7 @@ describe("#306: the workflow actually consults the deny-list", () => {
   });
 
   test("the unenforceable case is logged rather than swallowed", () => {
-    expect(shipSource).toContain("unresolvedProhibitions(discovery.issueGoal");
+    expect(shipSource).toContain("unresolvedProhibitions(goalData?.issueGoal");
     expect(shipSource).toContain("UNENFORCEABLE");
   });
 });
