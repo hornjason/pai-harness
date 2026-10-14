@@ -16,6 +16,7 @@ import {
   resolveContainerRuntime,
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
+import { proveLabelViolation } from "../lib/prove-label-gate";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -1559,31 +1560,44 @@ describe("ship checks", () => {
   });
 
   // prove-label-enforcement: needs-prove label must have matching proven label (#1390)
-  test("prove-label-enforcement: needs-prove requires proven label", () => {
+  //
+  // The labels come from Octokit, not from a GitHub CLI subprocess (#395).
+  // The old call interpolated `issue` and `issueRepo` — both out of workflow
+  // state — into a shell command string, and needed `gh` installed and
+  // authenticated in whatever tree the gate ran in. `getIssueLabels` takes
+  // them as arguments, so no shell parses them.
+  //
+  // The decision is `proveLabelViolation` and lives in lib/, because it was
+  // entangled with the transport and therefore untestable: nothing could
+  // exercise the rule without a network and a `gh` binary, so nothing did,
+  // and SC-502 was ticked over the subprocess for its whole life.
+  test("prove-label-enforcement: needs-prove requires proven label", async () => {
     if (!isShipPlus()) return;
     const issueNumber = sf("issue");
     const issueRepo = sf("issueRepo") || sf("repo");
     if (!issueNumber || !issueRepo) return;
-    // Check GitHub labels on the issue
-    let labels: string[] = [];
+
+    let labels: string[];
     try {
-      const ghOut = execSync(
-        `gh issue view ${issueNumber} --repo ${issueRepo} --json labels -q '.labels[].name'`,
-        { encoding: "utf-8", timeout: 15000 }
-      );
-      labels = ghOut.trim().split("\n").filter(Boolean);
+      const { createGitHubClient, getIssueLabels } = require("../lib/github");
+      labels = await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber));
     } catch {
-      // If we can't read labels, skip — don't block on GitHub API failure
+      // UNCHANGED FAIL-OPEN, and flagged rather than quietly carried over.
+      //
+      // An unreadable label set skips the check, so a gate that cannot reach
+      // GitHub passes rather than refusing — which is the shape
+      // `.claude/rules/checks-must-be-able-to-fail.md` is about, and the
+      // reason an outage here is indistinguishable from a clean issue.
+      //
+      // #395 is the transport, and swapping a subprocess for Octokit must
+      // not also change which runs this gate blocks. Making it refuse is a
+      // behaviour change to the ship pipeline and belongs in its own issue
+      // with its own reproducer. Filed as #405.
       return;
     }
-    const hasNeedsProve = labels.includes("needs-prove");
-    const hasProven = labels.includes("proven");
-    if (hasNeedsProve && !hasProven) {
-      expect(
-        "needs-prove label present without proven label",
-        "Close gate blocked: run /prove to add proven label before closing (#1390)"
-      ).toBe("proven label required when needs-prove is set");
-    }
+
+    const refusal = proveLabelViolation(labels);
+    expect(refusal ?? "allowed", refusal ?? undefined).toBe("allowed");
   });
 });
 

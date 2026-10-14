@@ -1624,6 +1624,65 @@ buying green with blindness.
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
 
+### A criterion forbidding a call, ticked over that call (#395)
+
+`gates/workflow.test.ts` read an issue's labels by shelling out to the
+GitHub CLI. `GITHUB-API-MIGRATION-SPEC.md`'s SC-502 forbids exactly that,
+and SC-502 was ticked over it for the criterion's whole life.
+
+Two things kept it there, and both are shapes this file already names.
+
+**The call spans a line break.** The exec is on one line and the command on
+the next, so every search for the pattern — including the one in #327 that
+classified SC-502 "satisfied, needs a test" — found nothing. A text
+assertion cannot see across a newline. That is "a detector narrower than
+what it detects", and it is the second time this month the same blindness
+has cost a wrong classification.
+
+**It was tagged `(behavioral)`.** A mechanical absence check wearing a
+behavioural tag is exempt from every mechanical check in the repo, so
+nothing ran it while its tick read as proof that something had. The
+instance-level version of #328. The tag is removed here because the
+criterion is mechanically checkable and always was.
+
+Beyond the tick, the call interpolated the issue number and repo slug —
+both out of workflow state — into a **shell command string**, and needed
+`gh` installed and authenticated in whatever tree the gate ran in, which
+for a gate is usually CI or a worktree. `getIssueLabels` takes them as
+arguments. Writing the test turned up that `parseOwnerRepo` *validates* the
+slug rather than merely passing it along, so a malformed one is refused
+before it reaches the API — stronger than the issue asked for.
+
+The decision moved out with the transport. `proveLabelViolation` is a
+predicate over a list of names, because entangling it with a subprocess is
+what made it untestable: nothing could exercise the rule without a network
+and a `gh` binary, so nothing did.
+
+**One thing deliberately NOT changed.** The gate still skips when the label
+read fails, so an unreachable GitHub passes rather than refusing — a
+fail-open, and the shape this whole rule is about. #395 is the transport,
+and swapping a subprocess for Octokit must not also change which runs the
+ship pipeline blocks. Filed as #405 rather than folded in.
+
+- [x] SC-1416: lib/github.ts contains [export async function getIssueLabels] — an issue's label names are read through Octokit with the issue number and repo slug as arguments so neither is ever interpolated into a command string and the read can be driven against a stub
+- [x] SC-1417: lib/prove-label-gate.ts contains [export function proveLabelViolation] — the close gate's label rule is one predicate over a list of names rather than four lines entangled with the subprocess that fetched them because a decision tangled with its transport is a decision nobody tests
+- [x] SC-1418: test/prove-label-gate.test.ts contains [a blocked issue - end to end from the API payload] — the read and the decision are exercised together against a stubbed client rather than asserted by source text because a source-text search is precisely what could not see the call this removes
+
+#### What was broken to prove it (SC-1416..1418)
+
+Run and counted over `test/prove-label-gate.test.ts` +
+`test/ticked-sc-cover.test.ts` (25 tests):
+
+| Mutation | Red |
+|---|---|
+| the GitHub-CLI call reinstated in `gates/workflow.test.ts`, exec on one line and the command on the next | 1 of 25 — the shape that defeated every earlier grep, caught now because `GH_SPAWN`'s `\s*\(\s*` crosses the newline |
+| `proveLabelViolation` short-circuited to `return null` | 3 of 25 — the refusal case, the substring boundary, and the end-to-end blocked issue |
+| `getIssueLabels` returning `[]` for every payload | 6 of 25 — and the end-to-end case is among them, which is why it exists: an empty list is indistinguishable from a clean issue, so the predicate alone stays green |
+| the exact match relaxed to `labels.some(l => l.includes(name))` | 1 of 25 — `needs-proven` read as both set and satisfied at once |
+
+None is left in the tree; all four were run and reverted, and the file is back
+to 25 pass.
+
 ### The first release attempt could not have succeeded (#364, 2026-10-14)
 
 The guard worked. The suite in front of it did not, and the two together
