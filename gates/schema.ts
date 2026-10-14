@@ -342,8 +342,19 @@ export const PrevalidatedACSchema = z.object({
   }
 });
 
-/** Which gate took the reading. Optional: a reading written before #264 has no answer. */
-export const PREVALIDATION_SOURCES = ["scope", "verify"] as const;
+/**
+ * Which gate took the reading. Optional: a reading written before #264 has no
+ * answer.
+ *
+ * In phase order, which is what `shouldRetakePrevalidation` and
+ * `prevalidationViolations` both read. `ship` joined the list in #280, where
+ * the ship gate was found consuming whatever block the verify gate left
+ * behind — on run `wf_ea3e428f-64f` a reading an hour old that disagreed with
+ * the tree by four ACs.
+ */
+export const PREVALIDATION_SOURCES = ["scope", "verify", "ship"] as const;
+
+export type PrevalidationSource = (typeof PREVALIDATION_SOURCES)[number];
 
 const EvidencePrevalidationShape = {
   verdict: z.enum(PREVALIDATION_VERDICTS),

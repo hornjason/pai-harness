@@ -186,7 +186,7 @@ tests read the file (#235). Top-level, optional, and **absent means UNMEASURED**
 | `checkedAt` | string | ISO timestamp of the dry-run |
 | `acs` | array | One entry per AC: `id`, `status`, and the auto-fix fields below. Empty — and only empty — when UNMEASURED |
 | `reason` | string \| null | Why the reading is UNMEASURED. Null, and only null, when it is not |
-| `takenAt` | `scope` \| `verify`, optional | Which gate measured it (#264). Absent means a run older than the field |
+| `takenAt` | `scope` \| `verify` \| `ship`, optional | Which gate measured it (#264, #280). Absent means a run older than the field |
 
 **The three verdicts:**
 
@@ -235,18 +235,33 @@ Verify, so the rewrite is the only record that anything happened.
 } }
 ```
 
-Either gate writes it — `gates/gate-executor.ts`, `runScopePreflightsAndPersist`
-at scope and `ensurePrevalidationPersisted` at verify — after the dry-run
-resolves and before the gate tests run. Not by hand.
+Three gates write it — `gates/gate-executor.ts`, `runScopePreflightsAndPersist`
+at scope and `ensurePrevalidationPersisted` at verify and at ship — after the
+dry-run resolves and before the gate tests run. Not by hand.
 
-**`takenAt` decides what happens on the next verify attempt, and the two cases
-want opposite treatment (#264).** A `scope` reading measured the run's starting
-conditions and is preserved: re-measuring it after Marcus has run answers a
-different question than the one the scope gate refuses on. A `verify` reading
-is RE-TAKEN on every subsequent verify attempt, because the whole premise of an
-attempt is that the branch moved — freezing it means no heal round can clear a
-refusal. Run `wf_c71f950f-c88` made four verify attempts with all six ACs PASS,
-every one judged against a single frozen reading, and reported SHIP_FAILED.
+**`takenAt` decides whether the gate now running needs its own reading, and
+the policy lives in one predicate: `shouldRetakePrevalidation`.**
+
+| Gate | What survives | Why |
+|---|---|---|
+| verify | a `scope` reading | It measured the run's starting conditions. Re-measuring those after Marcus has run answers a different question than the one the scope gate refuses on (#264) |
+| verify | nothing else | The premise of another verify attempt is that the branch moved. Freezing the reading means no heal round can clear a refusal. Run `wf_c71f950f-c88` made four verify attempts with all six ACs PASS, every one judged against a single frozen reading, and reported SHIP_FAILED |
+| ship | **nothing** | Between verify and ship the run commits, pushes, and may move the branch. Defensible one phase later, indefensible three (#280) |
+
+Before #280 there was no ship branch at all, so the ship gate consumed
+whatever block verify had left behind. On run `wf_ea3e428f-64f` that was a
+reading an hour old, stamped `takenAt: "verify"`, that disagreed with the tree
+by four of six ACs — the ship gate recorded a description of a tree it was not
+gating. It still refused, and for the right reason; what it got wrong was
+filing a stale artefact as current, which is precisely what `takenAt` was
+added to make impossible to misread.
+
+**The consumer enforces it too.** `prevalidationViolations` in
+`gates/workflow.test.ts` refuses a reading at ship whose `takenAt` is anything
+but `ship`, so a producer that stops re-measuring turns the gate RED rather
+than quietly going stale again. There is no general "an earlier phase is
+stale" rule — a `scope` reading surviving to verify is correct — so the check
+is scoped to ship on purpose.
 
 **The dry-run uses `EVIDENCE_CWD` when it is set**, which is the directory the
 evidence collector uses, and which `workflows/ship.js` sets under worktree

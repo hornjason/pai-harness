@@ -332,7 +332,7 @@ export function verifyFanoutViolations(label: string, val: unknown, tier: unknow
  * about the evidence commands, and "nothing" has already been read as "clean"
  * once in this harness (#224).
  */
-export function prevalidationViolations(val: unknown): string[] {
+export function prevalidationViolations(val: unknown, gatePhase?: unknown): string[] {
   const unmeasured = [
     "evidencePrevalidation not recorded — a PASS reading is required once any AC " +
       "carries an evidence command. An unmeasured pre-validation is not a clean one (#235).",
@@ -341,6 +341,32 @@ export function prevalidationViolations(val: unknown): string[] {
   if (val === undefined || val === null || val === "") return unmeasured;
   if (typeof val !== "object") {
     return [`evidencePrevalidation is ${typeof val}, expected a record with a verdict (#235)`];
+  }
+
+  // #280 — a reading whose own `takenAt` says it describes an earlier tree is
+  // not evidence about this one.
+  //
+  // The producer is supposed to re-measure at ship, and this is what makes a
+  // producer that stops doing so a REFUSAL rather than a stale artefact
+  // recorded as current. That distinction is the whole of #280: the ship gate
+  // still refused, correctly and for the right reason, while filing a block
+  // stamped `takenAt: "verify"` and an hour old as its own reading.
+  //
+  // Only at ship, and deliberately only there. A SCOPE reading survives to
+  // verify by design (#264) — re-measuring the run's starting conditions
+  // after Marcus has run answers a different question — so there is no
+  // general "earlier phase is stale" rule to apply here, and inventing one
+  // would turn every LIGHT run red.
+  const ACCEPTED_AT_SHIP = "ship";
+  if (gatePhase === "SHIP" || gatePhase === "DONE") {
+    const source = (val as { takenAt?: unknown }).takenAt;
+    if (source !== ACCEPTED_AT_SHIP) {
+      return [
+        `evidence pre-validation was taken at ${source ? `\`${String(source)}\`` : "an unrecorded phase"}, ` +
+          "not at ship — the ship gate must measure its own tree. Between verify and ship the " +
+          "run commits, pushes, and may move the branch (#280).",
+      ];
+    }
   }
 
   const reading = val as { verdict?: unknown; acs?: unknown };
@@ -785,7 +811,7 @@ describe("verify checks", () => {
     // pre-validator classifies exactly those ACs `skipped` itself.
     const acs = sf("acs") || [];
     if (!acs.some((ac: any) => ac?.evidenceMethod?.command)) return;
-    const violations = prevalidationViolations(sf("evidencePrevalidation"));
+    const violations = prevalidationViolations(sf("evidencePrevalidation"), sf("phase"));
     expect(violations, violations.join("\n")).toEqual([]);
   });
 

@@ -30,7 +30,7 @@ import {
   measureEvidencePrevalidation,
   type EvidencePrevalidationReading,
 } from "../lib/evidence-prevalidator";
-import { EvidencePrevalidationSchema } from "./schema";
+import { EvidencePrevalidationSchema, type PrevalidationSource } from "./schema";
 import { scanGaps, type GapScanResult } from "../lib/gap-scanner";
 import { deepMerge } from "../lib/deep-merge";
 import { livenessPlan, probeTarget } from "../lib/dev-liveness";
@@ -765,7 +765,7 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
  */
 export async function stampEvidencePrevalidation(
   state: Record<string, any>,
-  takenAt: "scope" | "verify",
+  takenAt: PrevalidationSource,
 ): Promise<void> {
   if (!(state.acs?.length > 0)) return;
 
@@ -850,12 +850,78 @@ export async function stampEvidencePrevalidation(
 export async function ensurePrevalidationPersisted(
   state: Record<string, any>,
   sf: string,
+  takenAt: "verify" | "ship" = "verify",
 ): Promise<boolean> {
-  const existing = state.evidencePrevalidation;
-  if (existing && existing.takenAt !== "verify") return false;
-  await stampEvidencePrevalidation(state, "verify");
+  if (!shouldRetakePrevalidation(state.evidencePrevalidation, takenAt)) return false;
+  await stampEvidencePrevalidation(state, takenAt);
   writeFileSync(sf, JSON.stringify(state, null, 2));
   return true;
+}
+
+/**
+ * Which gates take their own pre-validation reading, as one executable
+ * function rather than a branch per gate in `runGate` (#280).
+ *
+ * `runGate` had `if (gate === "verify")` and nothing for ship, so the ship
+ * gate consumed whatever block verify had left behind. The shape of that bug
+ * is why this is a function: a per-gate branch inside a 300-line dispatch is
+ * invisible to every test that does not spawn the whole gate, and the gate
+ * spawns bun. Adding the ship branch there would have left the mapping
+ * unprovable — measured, not assumed: with the branch inline, deleting it
+ * scored ZERO red across 52 tests.
+ *
+ * The scope gate is absent on purpose. It takes its reading through
+ * `runScopePreflightsAndPersist`, which has an ordering constraint of its own
+ * (measure, then persist, before `runGateTests` spawns bun against the file),
+ * and folding it in here would put one of the two writes out of that order.
+ */
+export async function prevalidationForGate(
+  gate: string,
+  state: Record<string, any>,
+  sf: string,
+): Promise<boolean> {
+  if (gate !== "verify" && gate !== "ship") return false;
+  return ensurePrevalidationPersisted(state, sf, gate);
+}
+
+/**
+ * Does the gate now running need its OWN reading, or does the one on the state
+ * still answer its question?
+ *
+ * One exported predicate, so there is one binding to mutate and one place the
+ * policy is written down. Every previous fix in this family moved the boundary
+ * one phase and stopped — #261 (producer in a phase the consumer did not
+ * share), #264 (reading taken in the wrong directory and never re-taken on
+ * heal), #280 (reading not re-taken at the next phase). The condition used to
+ * be inline and phase-blind, which is how each of them got through.
+ *
+ * **At verify, a SCOPE reading survives.** It measured the run's starting
+ * conditions, and re-measuring those after Marcus has run answers a different
+ * question than the one the scope gate refuses on. A VERIFY reading does not
+ * survive: the whole premise of another verify attempt is that the branch
+ * moved, and freezing the reading means no heal round can clear a refusal.
+ *
+ * **At ship, nothing survives — this is #280's decision, taken explicitly
+ * rather than inherited (SC-5).** The old condition, `takenAt !== "verify"`,
+ * would have preserved a scope reading all the way to ship. That is defensible
+ * one phase later and indefensible three: between verify and ship the run
+ * commits, pushes, and may move the branch, and on run `wf_ea3e428f-64f` the
+ * implementation never reached `projectRoot` at all, so the two readings
+ * differed by four ACs. A reading whose own `takenAt` says it describes an
+ * earlier tree is not evidence about the tree being shipped. Re-measuring is a
+ * dry-run of commands that already ran once; the cost of taking it again is
+ * far below the cost of a ship gate recording a stale artefact as current.
+ *
+ * An ABSENT reading is always re-taken, on both — that is the #261 case, and
+ * it is the behaviour this already had.
+ */
+export function shouldRetakePrevalidation(
+  existing: unknown,
+  takenAt: "verify" | "ship",
+): boolean {
+  if (!existing || typeof existing !== "object") return true;
+  if (takenAt === "ship") return true;
+  return (existing as { takenAt?: unknown }).takenAt === "verify";
 }
 
 /**
@@ -1739,9 +1805,7 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   // The reading the verify gate is about to check for, if nothing took it
   // (#261). Before the gate suite is spawned, which is the whole ordering
   // constraint — see ensurePrevalidationPersisted.
-  if (gate === "verify") {
-    await ensurePrevalidationPersisted(state, sf);
-  }
+  await prevalidationForGate(gate, state, sf);
 
   // Type check (scope or verify)
   if (gate === "scope" || gate === "verify") {
