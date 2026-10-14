@@ -2011,6 +2011,101 @@ whether this run may push onto the branch at all.
     `behind ${priorBranchResult.behindCount ?? 'unknown'}, merged ${priorBranchResult.isMerged ?? 'unknown'}`)
 }
 
+// ──── PRIOR-WORK-REFUSAL-START ────
+/**
+ * Whether this run may implement, given the prior branch above and whatever
+ * open PR the issue already has (#223).
+ *
+ * Inlined from lib/prior-branch.ts because this file runs in a sandbox with
+ * no module loading; test/prior-work-detection.test.ts drives both copies
+ * over one input set rather than trusting them to stay in step.
+ *
+ * What this deliberately does NOT refuse is RESUME. An unmerged prior branch
+ * is handled directly above — merged into the worktree and pushed back onto —
+ * and a refusal there would break the only thing that makes a second run
+ * cheap. The condition is narrower: an open PR for this issue that this run
+ * is not standing on.
+ *
+ * Issue #209 was shipped twice because run 2 saw neither. PR #219's head was
+ * `worktree-wf_5e3ed885-98c-9`: excluded from branch detection as harness
+ * scratch (#185), and carrying the issue number in nothing but its body,
+ * which the PR lookup did not read. So the run branched from main and
+ * re-implemented — 45 minutes, 20 agents, 911k tokens, and two divergent PRs
+ * where merging either silently discards the other's work.
+ */
+function priorWorkRefusal(issueNumber, priorBranch, existingPR) {
+  if (!existingPR || typeof existingPR !== 'object') return null
+  const pr = existingPR
+
+  if (pr.unreadable) {
+    return (
+      `Could not determine whether issue #${issueNumber} already has an open PR: ` +
+      `${pr.reason || 'the lookup failed with no detail'}. Refusing rather than ` +
+      `re-implementing: "no PR" and "could not look" are different facts, and ` +
+      `acting on the wrong one is how #209 was shipped twice.`
+    )
+  }
+  if (typeof pr.prNumber !== 'number') return null
+
+  const prBranch = typeof pr.branch === 'string' ? pr.branch : ''
+  const working =
+    priorBranch && typeof priorBranch === 'object' ? priorBranch.branch : ''
+
+  if (working && prBranch && working === prBranch) return null
+
+  const where = working
+    ? `this run picked up the branch "${working}" instead`
+    : `this run found no prior branch and would start from the base branch`
+  return (
+    `Issue #${issueNumber} already has open PR #${pr.prNumber} on branch ` +
+    `"${prBranch || '(unnamed)'}", and ${where}. Implementing now would open a ` +
+    `second PR for one issue, and merging either would silently discard the ` +
+    `other's work. Resume that branch or close that PR, then re-run.`
+  )
+}
+
+// The lookup. `detectExistingPR` sat in lib/ with no caller for its whole
+// life, which is why the duplicate was possible with the detector present.
+const existingPrResult = await timedAgent(`
+Run this command and report its output verbatim:
+
+bun -e "import {detectExistingPR} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectExistingPR({issueNumber:${ISSUE},repo:'${ISSUE_REPO}'}); console.log(JSON.stringify(r))"
+
+It prints one of three things, and they are three different facts:
+  null                              — this issue has no open PR
+  {"prNumber":N,"branch":"..."}     — it has this one
+  {"unreadable":true,"reason":"..."} — the lookup could not be performed
+
+Report them as: prNumber (omit if there is none), branch (omit if there is
+none), unreadable (true ONLY if the output said so), reason (the text, if any).
+
+Do NOT report unreadable:false to mean "no PR" and do NOT invent a prNumber.
+If the command itself fails to run, that IS unreadable — set it true and put
+the error in reason. "Nothing found" and "could not look" being the same
+answer is the defect this step exists to close (#223).
+`, { label: 'existing-pr', phase: 'Scope', schema: {
+  type: 'object',
+  properties: {
+    prNumber: { type: 'number' },
+    branch: { type: 'string' },
+    unreadable: { type: 'boolean' },
+    reason: { type: 'string' },
+  },
+} })
+
+const priorWorkStop = priorWorkRefusal(ISSUE, priorBranchResult, existingPrResult)
+if (priorWorkStop) {
+  log(`PRIOR_WORK_OPEN_PR: ${priorWorkStop}`)
+  return {
+    status: 'PRIOR_WORK_OPEN_PR',
+    reason: priorWorkStop,
+    existingPr: existingPrResult?.prNumber,
+    priorBranch: priorBranchResult?.branch,
+    workDir: WORK_DIR,
+  }
+}
+// ──── PRIOR-WORK-REFUSAL-END ────
+
 // The scope gate owns AC evidence checking end to end (#235) — see
 // lib/evidence-prevalidator.ts, invoked from gates/gate-executor.ts.
 // A second copy of it used to sit here as an agent prompt: it only ran when a
