@@ -1003,9 +1003,11 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
   const hasDirectory = existsSync(join(rungateDir, "config.json"));
 
   if (hasDirectory) {
-    // Directory structure already exists — audit it
+    // Directory structure already exists — audit it, and repair the two
+    // files #75 only ever fixed for greenfield projects (#121).
     const existing = JSON.parse(readFileSync(join(rungateDir, "config.json"), "utf-8"));
-    auditExistingConfig(existing, scannedPages, scannedConsumers, actions);
+    repairEmptySidecars(rungateDir, actions);
+    auditExistingConfig(existing, scannedPages, scannedConsumers, actions, rungateDir);
   } else if (existsSync(harnessPath)) {
     // Monolith exists — split into directory structure
     const existing = JSON.parse(readFileSync(harnessPath, "utf-8"));
@@ -1094,13 +1096,108 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
   }
 }
 
+/**
+ * The two config files that are useless when empty, and what fills them.
+ *
+ * ONE table, read by both the repair and the audit, so they cannot disagree
+ * about what "empty" means. Two deciders here would let the audit call a
+ * project aligned that the repair had just declined to touch.
+ */
+const SIDECARS = [
+  { file: "roles.json", empty: "{}", fill: () => buildDefaultRoles() },
+  { file: "hooks.json", empty: "[]", fill: () => buildDefaultHooks() },
+] as const;
+
+export type SidecarState = "missing" | "empty" | "unreadable" | "populated";
+
+/**
+ * What state one sidecar is in. FOUR answers, not two.
+ *
+ * The first draft returned a boolean, and the boolean hid a case: an
+ * unreadable `roles.json` is neither empty nor populated. Repair must not
+ * touch it — overwriting a file we failed to parse is how a repair destroys
+ * work, and #370 and #208 already settled that for every other owned file —
+ * but the audit must not call it aligned either. A boolean forced those two
+ * needs onto one answer, and whichever way it fell, one of them was wrong.
+ *
+ * `{}` and `[]` are `empty`: the states #70 produced and #75 stopped
+ * producing. They parse, they are valid, and they mean "a configured
+ * project with nothing to dispatch".
+ */
+export function sidecarState(dir: string, file: string): SidecarState {
+  const p = join(dir, file);
+  if (!existsSync(p)) return "missing";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(p, "utf-8"));
+  } catch {
+    return "unreadable";
+  }
+  if (Array.isArray(parsed)) return parsed.length === 0 ? "empty" : "populated";
+  if (parsed !== null && typeof parsed === "object") {
+    return Object.keys(parsed).length === 0 ? "empty" : "populated";
+  }
+  // A number, a string, `null` — parses, but is not a config.
+  return "unreadable";
+}
+
+/**
+ * Fill an empty `roles.json` / `hooks.json` from the greenfield defaults.
+ *
+ * #121. #75 fixed the greenfield branch; a project scaffolded before it has
+ * `config.json`, so every re-scaffold takes the audit branch and the empty
+ * files were never touched. There was no path that repaired them.
+ *
+ * **A populated file is left alone, byte for byte.** Repair that overwrites
+ * is not repair, and "some roles appeared" is satisfied by a `--fix` that
+ * rewrites the whole directory — the opposite failure and the worse one,
+ * because the overwritten file is gone and the skipped one is still there.
+ */
+function repairEmptySidecars(rungateDir: string, actions: string[]): void {
+  for (const { file, fill } of SIDECARS) {
+    const state = sidecarState(rungateDir, file);
+    if (state === "populated") continue;
+    if (state === "unreadable") {
+      // Reported, never resolved. A run that quietly declined to write is
+      // indistinguishable from one that had nothing to do (#208, SC-819).
+      actions.push(
+        `PRESERVED: .claude/rungate/${file} (unreadable — not overwritten; ` +
+          `fix the JSON or delete the file and re-run to reseed it)`,
+      );
+      continue;
+    }
+    const content = fill();
+    writeFileSync(join(rungateDir, file), JSON.stringify(content, null, 2) + "\n");
+    const n = Array.isArray(content) ? content.length : Object.keys(content).length;
+    actions.push(`REPAIRED: .claude/rungate/${file} (was ${state} — seeded ${n} from defaults)`);
+  }
+}
+
 function auditExistingConfig(
   existing: any,
   scannedPages: Record<string, string>,
   scannedConsumers: string[],
-  actions: string[]
+  actions: string[],
+  rungateDir?: string
 ): void {
   const issues: string[] = [];
+
+  // #121. The audit used to not even be PASSED the directory, so it could
+  // not have read these if it wanted to — and it said "aligned with code"
+  // over zero roles and zero hooks. A check that passes because of what it
+  // never looked at, asserting health rather than staying silent.
+  //
+  // This runs AFTER `repairEmptySidecars`, so reaching it means the repair
+  // declined: the file was unparseable, or not writable. Either way the
+  // project is not aligned and the run must say so.
+  if (rungateDir) {
+    for (const { file } of SIDECARS) {
+      const state = sidecarState(rungateDir, file);
+      if (state !== "populated") {
+        issues.push(`CONFIG: .claude/rungate/${file} is ${state} — nothing to dispatch`);
+      }
+    }
+  }
 
   const declaredPages = Object.keys(existing.pages || {});
   const scannedPaths = Object.keys(scannedPages);
@@ -1115,13 +1212,18 @@ function auditExistingConfig(
     const staleConsumers = declaredConsumers.filter((c: string) => !scannedConsumers.includes(c));
     if (staleConsumers.length > 0) {
       issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
-      actions.push(`AUDIT: CONSUMERS — ${staleConsumers.length} stale consumers not in source: ${staleConsumers.slice(0, 5).join(", ")}`);
     }
   }
 
   if (issues.length > 0) {
     console.log("\n  rungate.json audit:");
     for (const issue of issues) console.log(`    ⚠ ${issue}`);
+    // Every gap goes into the actions, not just its count (#121). The
+    // detail used to reach `console.log` alone — so the returned report
+    // said `1 gaps` and nothing about WHICH, and anything reading actions
+    // rather than stdout could not tell one gap from another. CONSUMERS
+    // was the single exception, pushed by hand; it is now the rule.
+    for (const issue of issues) actions.push(`AUDIT: ${issue}`);
     actions.push(`AUDITED: rungate.json (${issues.length} gaps)`);
   } else {
     actions.push("AUDITED: rungate.json (aligned with code)");
