@@ -171,10 +171,19 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const gEnd = shipSource.indexOf(BLOCK_END);
     if (bStart === -1 || bEnd === -1) throw new Error("missing DECOMPOSED-SHIP markers");
     const guard = new Function(`${shipSource.slice(gStart, gEnd)}\nreturn implementRefusal;`)();
+    // #218's guard, injected the same way and for the same reason: a stub
+    // would let this suite and the real block disagree about which
+    // repository a worktree belongs to.
+    const iStart = shipSource.indexOf("// ──── WORKTREE-IDENTITY-START ────");
+    const iEnd = shipSource.indexOf("// ──── WORKTREE-IDENTITY-END ────");
+    if (iStart === -1 || iEnd === -1) throw new Error("missing WORKTREE-IDENTITY markers");
+    const identity = new Function(`${shipSource.slice(iStart, iEnd)}\nreturn worktreeIdentity;`)();
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal",
+    "worktreeIdentity",
+    "REPO",
       `${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
@@ -184,6 +193,8 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       "/tmp/work", 181, REPO_ROOT, {},
       async () => ({ success: true, buildResult: {} }),
       guard,
+      identity,
+      "owner/project",
     );
     return { run, logs };
   }
@@ -202,6 +213,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const { run, logs } = loadRunDecomposedShip(async (p: string) => ({
       success: true,
       worktreePath: "/tmp/wt",
+      worktreeRepo: "git@github.com:owner/project.git",
       // `beta` declines. Its file list is empty; `alpha`'s is not, so the
       // union is non-empty and the merged result looks healthy.
       filesChanged: declines(p) ? [] : ["lib/alpha.ts"],
@@ -227,6 +239,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const { run } = loadRunDecomposedShip(async (_p, { label }) => ({
       success: true,
       worktreePath: "/tmp/wt",
+      worktreeRepo: "git@github.com:owner/project.git",
       filesChanged: [`${label}.ts`],
       testOutput: "2 pass",
     }));

@@ -1717,6 +1717,165 @@ count. Both now assert that the text changed, or that a count was produced,
 before reporting. A mutation harness that silently no-ops when its target
 moves is the decorative check this whole rule is about.
 
+### A worktree in the wrong repository (#218, 2026-10-14)
+
+Run `wf_5e3ed885-98c`, `projectRoot: …/rungate`, `repo: hornjason/pai-harness`:
+
+| spawn | worktree | repo |
+|---|---|---|
+| Marcus #1 | `…/rungate/.claude/worktrees/wf_5e3ed885-98c-9` | pai-harness |
+| Marcus #2 (remediation) | `…/DailyBriefDashboard/.claude/worktrees/wf_5e3ed885-98c-12` | **asaCommandCenter** |
+
+The operator had changed directory mid-run — a normal thing to do during a
+long run — and `isolation: "worktree"` is resolved by the agent runtime
+against the session's cwd rather than the workflow's `projectRoot`. The agent
+refused and named the reason, which is the only thing that kept this a near
+miss rather than rungate's changes being committed into a consumer repository.
+
+**The harness did nothing with that refusal.** The Verify BUILD-regression
+branch read `if (reimpl.success) { … }` with no `else`: no log line, no
+status, and the run advanced to rook-scope and rook. A remediation that
+performed no work was indistinguishable from one that was never attempted.
+That is the more serious half, and it is the shape
+`.claude/rules/checks-must-be-able-to-fail.md` names — not silence, but a run
+that goes on as though the step had succeeded.
+
+**The fix cannot be another way of deriving the path.**
+`workflows/ship.js` has pinned `opts.cwd = PROJECT_ROOT` for every isolated
+spawn since 2026-09-23 (`804b9a43`), three weeks BEFORE this run. The pin did
+not hold. A path-prefix check answers "is this under the directory I
+expected", which is the question whose answer already drifted. So the guard
+reads the checkout's `origin` remote and compares slugs — a fact about the
+checkout, against the identity the run was handed. A path that merely looks
+right cannot satisfy it.
+
+Four no-answer states, kept apart rather than collapsed into "not a match":
+
+| state | why it is its own refusal |
+|---|---|
+| mismatch | the incident. Names both slugs and the path |
+| unreported | the agent was asked for a remote and did not answer |
+| unreadable | a remote that is not `owner/name` — a bare name, a typo |
+| no expected repo | the RUN does not know its own repo, so everything would pass |
+
+The last is the fail-open that would matter most: returning "match" when
+there is nothing to compare makes the guard silently inert for exactly the
+misconfigured run most likely to need it.
+
+Slug parsing takes **exactly** two path segments, lowercased. Lowercased
+because GitHub slugs are case-insensitive and a case-sensitive compare would
+refuse the run that is doing the right thing — a refusal aimed at the run
+behaving correctly is the worst kind.
+
+**Exactly two rather than the last two, and the commit security review is
+why.** The first draft took the tail so a self-hosted group prefix would
+still resolve. That is a parser differential:
+`https://github.com/evil/repo/owner/name` is a path git reads as the
+repository `evil/repo/owner/name`, and a tail-taking parser reads it as
+`owner/name` and reports a MATCH. The string being compared arrives in an
+agent reply, so a parser that can be talked into agreeing is the whole guard.
+The cost is that a self-hosted layout with a group prefix returns null and
+lands in the `unreadable` refusal — loud and naming the string, which is the
+direction a check should be wrong in.
+
+**A refusal must not log the credential it is quoting.** Also from the
+security review. A CI checkout's origin is
+`https://x-access-token:TOKEN@host/owner/name`, the `unreadable` refusal
+quotes what it could not parse, and refusals are logged — into a run log that
+gets read, pasted into an issue, and kept. `redactRemote` blanks the
+credential and leaves everything the refusal exists to show. The control arm
+matters as much as the redaction: a redactor that mangled every URL would
+satisfy the token cases and make every refusal unreadable, so a remote with
+no credential must come back byte-identical.
+
+**Three more from the PUSH review, all real, all in the same class.** A
+credential leak and a guard bypass are what this issue is about, so they were
+fixed here rather than filed:
+
+| finding | why it was right |
+|---|---|
+| incomplete sanitisation | redacting only the authority misses `?access_token=` and a bare key-shaped string. These reach the redactor *because* they could not be parsed, so they are exactly the strings not in the well-formed shape the first rule assumes. Three rules now: userinfo, credential-ish query parameters, and a narrow key shape — narrow because the control arm still has to hold |
+| authorization bypass | `worktreeIdentityViolations` skips a row with no `worktreePath`, which is correct for a survey and a bypass at a collection boundary: there every row WILL be committed from, so "no path" is a row claiming files with no checkable origin, and omitting one field switched the guard off. `requirePath` is opted into by the caller that is about to act |
+| sensitive data in logs | the terminal payload carries `agentResults`, which now carries `worktreeRepo`. That object becomes the run's result — printed, stored, pasted into an issue — so the remote is redacted there too. `readWorktreeRemote` likewise redacts git's own stderr, which quotes the URL back at you |
+
+ship.js cannot spawn a subprocess (#69), so the remote arrives in the agent's
+reply beside the `pwd` it is a property of — the same channel, and absent is
+a refusal rather than a pass. `readWorktreeRemote` is the in-process reader
+for every caller that *can* run git, and it is executed against real
+`git init` fixtures rather than stubs.
+
+- [x] SC-1441: lib/worktree-repo.ts contains [export function repoSlug] — a remote URL becomes owner/name or nothing across the scp https and credential-bearing forms with the LAST two segments taken so a group prefix or an embedded token is never read as the owner
+- [x] SC-1442: test/worktree-repo.test.ts contains [wf_5e3ed885-98c replayed - the other project's worktree is refused] — the incident is driven through both copies of the decision and the refusal names the worktree the repo it belongs to and the repo the run targets because an operator who has to open the transcript has lost the incident
+- [x] SC-1443: lib/worktree-repo.ts contains [export function worktreeIdentityViolations] — a row with no worktree path is skipped because a non-isolated spawn has none while a row WITH a path and no remote is refused so "never asked" and "asked and did not answer" stay different states
+- [x] SC-1444: test/worktree-repo.test.ts contains [a checkout with no origin is an error] — the reader runs against real git init fixtures including a directory that is not a checkout at all because a reader asserted only against stubs is a reader nobody has watched read anything
+- [x] SC-1445: test/worktree-repo.test.ts contains [the same spawn resolves to the same root from two different cwds] — the cwd-independence property is executed by running the real briefedAgent block from two working directories rather than argued from the presence of the pin
+- [x] SC-1446: workflows/ship.js contains [VERIFY BUILD regression produced no work] — a remediation round that implemented nothing ends the run and carries the agent's own findings because the branch it replaces had no else at all and spent a security review and a container rebuild discovering that
+- [x] SC-1447: test/worktree-repo.test.ts contains [a remote with no credential is left exactly as it was] — the refusal quotes the remote it could not parse and refusals are logged so the authority's credential is blanked first while an ordinary URL comes back byte-identical because a redactor that mangled every URL would make every refusal unreadable
+- [x] SC-1448: workflows/ship.js contains [COLLECT REFUSED] — the check runs again where both implement paths have converged and every worktree the run will commit from is known because the per-spawn checks live inside the two implement functions and a third path added later would be committed from without passing either
+
+#### What was broken to prove it (SC-1441..1448)
+
+Run and counted over `test/worktree-repo.test.ts` (90 tests). Every mutation
+that touches the decision was applied to BOTH copies, since changing one
+alone is caught by the parity matrix for the wrong reason. None is left in
+the tree:
+
+| Mutation | Red |
+|---|---|
+| `worktreeIdentity` short-circuited to `match` | 23 of 90 |
+| the no-expected-repo branch disabled — the widest fail-open | 2 of 90 |
+| an unreported remote treated as a match | 4 of 90 |
+| the slug comparison made case-sensitive | 8 of 90 |
+| the slug taking the LAST two segments instead of exactly two | 8 of 90 |
+| the refusal quoting the remote unredacted | 2 of 90 |
+| redaction narrowed back to the authority alone | 3 of 90 |
+| the redactor blanking every URL rather than the credential | 7 of 90 |
+| the reader returning git's stderr unredacted | 1 of 90 |
+| `requirePath` ignored inside the collector | 3 of 90 |
+| the collection boundary dropping `requirePath` | 1 of 90 |
+| the terminal payload carrying the remote unredacted | 1 of 90 |
+| the mismatch refusal stops naming either slug | 5 of 90 |
+| `opts.cwd = PROJECT_ROOT` deleted from ship.js | 4 of 90 |
+| the call site in `runImplement` short-circuited | 1 of 90 |
+| the collection boundary's collector short-circuited to `[]` | 6 of 90 |
+| the collection boundary refusing every run — the opposite failure | 2 of 90 |
+| the Verify regression `else` removed — the defect verbatim | 1 of 90 |
+
+**One zero, and it was mine.** `drop-collect-boundary` first scored **0 of
+74**. SC-1448 was declared with source-text assertions only, and the
+mutation deleted the log line those assertions did not read while the
+refusal itself went unobserved — a criterion certifying a guard nobody had
+watched run. The block now carries `COLLECT-IDENTITY` markers, is extracted
+and EXECUTED against planted agent results, and is asserted reachable at
+`Program` level so a wrapper outside the markers cannot switch it off
+(#266's lesson, applied one PR later). With the collector short-circuited
+the mutation scores 6.
+
+The single-red rows are one apiece because each is a single named wiring
+property; a mutation that turned several red would mean the rows were not
+independent.
+
+**What this does NOT fix, stated plainly.**
+
+The agent runtime still resolves isolation against the session cwd — rungate
+cannot change that from inside a workflow. What changes is that a run which
+lands in the wrong repository now stops, names both repositories, and
+preserves its worktrees, instead of refusing silently and proceeding to ship.
+
+**And the reading inside the ship path is self-reported.** ship.js has no
+subprocess (#69), so the remote it compares is the one the agent said it
+read. An agent that is wrong about where it is, or that reports the repo
+from its brief rather than from `git`, passes. The incident this fixes had
+exactly the shape the self-report catches — the agent noticed and said so —
+but a guard whose input the subject supplies is weaker than one that looks
+for itself.
+
+`readWorktreeRemote` is the unforgeable half and **nothing in the ship path
+calls it**, because nothing in the ship path can. The place that can is a
+gate, which runs as a real subprocess with the worktree on disk. That is
+filed as **#414** rather than built here: it needs a gate contract and a
+schema field, which is a different change from this one.
+
 ### No PR at all when a container is configured (#254/#266, 2026-10-14)
 
 `workflows/ship.js` had exactly one `pr-upsert` call site and it lived inside
