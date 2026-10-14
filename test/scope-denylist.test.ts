@@ -472,6 +472,33 @@ describe("#306: the workflow actually consults the deny-list", () => {
     expect(goalSchema, "goalData does not carry issueGoal either").toContain("issueGoal");
   });
 
+  test("no field is read off `discovery` that DISCOVERY_SCHEMA does not declare", () => {
+    // The general form of the case above, and a better guard than it: rather
+    // than naming `issueGoal`, reconcile every `discovery.x` read in the file
+    // against the schema's declared keys. `issueGoal` was one instance; the
+    // next one will have a different name and this is what catches it.
+    //
+    // The schema is what the structured-output layer validates against, so a
+    // key absent from it is `undefined` at run time — always, silently, and
+    // indistinguishable from an empty value.
+    const ds = shipSource.slice(
+      shipSource.indexOf("const DISCOVERY_SCHEMA"),
+      shipSource.indexOf("const GATE_RESULT_SCHEMA"),
+    );
+    const declared = new Set([...ds.matchAll(/^ {4}(\w+):/gm)].map(m => m[1]));
+    expect(declared.size, "no keys were parsed out, so this compares nothing")
+      .toBeGreaterThan(5);
+    expect(declared, "the parse missed a key it should have found").toContain("filesToModify");
+
+    const read = [...new Set([...shipSource.matchAll(/\bdiscovery\??\.(\w+)/g)].map(m => m[1]))];
+    expect(read.length, "no reads were found, so this compares nothing").toBeGreaterThan(3);
+    const undeclared = read.filter(k => !declared.has(k)).sort();
+    expect(
+      undeclared,
+      "read off `discovery` but absent from DISCOVERY_SCHEMA, so always undefined",
+    ).toEqual([]);
+  });
+
   test("the filter runs BEFORE the ACs are persisted", () => {
     // guard-runs-after-the-data-is-persisted. `writeACs` serialises
     // discovery.acs into workflow-state.json, which is the copy every gate

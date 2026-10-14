@@ -1812,6 +1812,15 @@ logic, which was correct throughout:
 A guard assembled field-by-field from the one example that motivated it keeps
 missing the next field. The field list was never the problem.
 
+A fifth round re-reported `dead-security-control / wrong-source-field`, which
+on inspection was the reviewer reading the diff that fixes and documents it
+rather than a new instance. Checked rather than assumed: every `discovery.x`
+read in `ship.js` was reconciled against `DISCOVERY_SCHEMA`'s declared keys
+and none is undeclared. That reconciliation is now a test rather than a
+one-off command, because it is the general form of the defect and the next
+instance will have a different field name — `issueGoal` was one. Mutation:
+reintroducing a read of an undeclared field turns 2 of 57 red.
+
 ### The release job went red over a release that worked (#407, 2026-10-14)
 
 `v0.3.0` published cleanly — `dist-tags.latest` is `0.3.0`, `npm install
