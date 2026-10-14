@@ -2148,6 +2148,51 @@ console.log(JSON.stringify({ excerpts }));
   return CACHED_CEREMONY
 }
 
+// ──── IMPLEMENT-RESULT-START ────
+/**
+ * Why a successful implement result is not one (#181).
+ *
+ * `runImplement` accepted `{success: true, filesChanged: []}` and the run
+ * proceeded to commit. The only thing that read the field was a log line
+ * printing the count, so `0` was narrated and the run carried on.
+ *
+ * "The agent implemented the issue and changed nothing" is not a state this
+ * pipeline has. Every issue it ships is a code change, and the three ways
+ * an empty list happens are all failures worth naming:
+ *
+ *   - the agent substituted a different task
+ *   - it decided the work was already done, without the run having checked
+ *   - it errored and reported success anyway
+ *
+ * Measured on wf_17267830-401, where the run was stopped by
+ * COMMIT_STATE_NOT_RECORDED — an UNRELATED guard that fired only because
+ * the worktree had gone. With the worktree intact the empty implementation
+ * would have travelled further.
+ *
+ * Returns a refusal string, or null to proceed. One function, so there is
+ * one binding to mutate; both implement paths call it.
+ *
+ * It deliberately says nothing about a result that already failed. That one
+ * is refused by the caller's own branch carrying its own findings, and
+ * reporting it twice under a different reason misattributes the failure.
+ */
+function implementRefusal(buildResult, label) {
+  if (!buildResult || !buildResult.success) return null
+  const files = Array.isArray(buildResult.filesChanged) ? buildResult.filesChanged : []
+  if (files.length > 0) return null
+  // AC-2: the reason travels with the failure. On the measured run
+  // `testOutput` explained the whole thing — "No code was changed." — and
+  // none of it reached the run's result, so the next reader had to go back
+  // to the transcript to learn anything.
+  const said = (buildResult.testOutput && String(buildResult.testOutput).trim())
+    || (Array.isArray(buildResult.findings) && buildResult.findings.length
+      ? buildResult.findings.join('; ')
+      : '')
+    || 'no explanation reported'
+  return `${label} reported success and changed no files — ${said}`
+}
+// ──── IMPLEMENT-RESULT-END ────
+
 async function runImplement() {
   const ceremony = await runCeremonyOnce()
   if (!ceremony) {
@@ -2175,6 +2220,14 @@ Also report worktreePath: your current working directory (run pwd and include th
   if (!buildResult || !buildResult.success) {
     log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
     return { success: false, buildResult }
+  }
+  // #181 — acted on, not narrated. This log line used to be the only
+  // reader of `filesChanged`, so an empty implementation printed `0` and
+  // the run continued to commit.
+  const emptyRefusal = implementRefusal(buildResult, 'marcus')
+  if (emptyRefusal) {
+    log(`IMPLEMENT FAILED: ${emptyRefusal}`)
+    return { success: false, buildResult: { ...buildResult, success: false, findings: [emptyRefusal] } }
   }
   log(`IMPLEMENT SUCCESS — ${(buildResult.filesChanged || []).length} files changed`)
   // One shape for both of runImplement's paths (#162). runDecomposedShip
@@ -2253,6 +2306,18 @@ Also report worktreePath: your current working directory.
       if (!buildResult || !buildResult.success) {
         log(`Sub-issue FAILED: ${subIssue.title}`)
         return { subIssue, buildResult, ok: false }
+      }
+      // #181 AC-3 — per sub-issue, BEFORE the union below. `allFilesChanged`
+      // flattens every sub-issue's list together, so one sub-issue that
+      // changed nothing is invisible the moment the lists are merged.
+      const subRefusal = implementRefusal(buildResult, `marcus-sub-${subIssue.number}`)
+      if (subRefusal) {
+        log(`Sub-issue FAILED: ${subIssue.title} — ${subRefusal}`)
+        return {
+          subIssue,
+          buildResult: { ...buildResult, success: false, findings: [subRefusal] },
+          ok: false,
+        }
       }
       log(`Sub-issue SUCCESS: ${subIssue.title} — ${(buildResult.filesChanged || []).length} files changed`)
       return { subIssue, buildResult, ok: true }

@@ -52,6 +52,19 @@ function loadRunDecomposedShip(deps: {
   const parallel = (thunks: Array<() => Promise<unknown>>) =>
     Promise.all(thunks.map((t) => t()));
 
+  // #181 added a per-sub-issue guard that lives outside these markers, so
+  // the block now has a free reference. The REAL one is injected, sliced
+  // from its own markers — a stub here would let the two blocks disagree
+  // about what an empty implement result means, and nothing would notice.
+  const guardStart = shipSource.indexOf("// ──── IMPLEMENT-RESULT-START ────");
+  const guardEnd = shipSource.indexOf("// ──── IMPLEMENT-RESULT-END ────");
+  if (guardStart === -1 || guardEnd === -1) {
+    throw new Error("ship.js is missing the IMPLEMENT-RESULT-START/END markers");
+  }
+  const implementRefusal = new Function(
+    `${shipSource.slice(guardStart, guardEnd)}\nreturn implementRefusal;`,
+  )();
+
   const factory = new Function(
     "log",
     "briefedAgent",
@@ -61,6 +74,7 @@ function loadRunDecomposedShip(deps: {
     "PROJECT_ROOT",
     "BUILD_RESULT_SCHEMA",
     "runImplement",
+    "implementRefusal",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -73,6 +87,7 @@ function loadRunDecomposedShip(deps: {
     REPO_ROOT,
     {},
     deps.runImplement ?? (async () => ({ success: true, buildResult: {} })),
+    implementRefusal,
   );
 
   return { runDecomposedShip, logs };

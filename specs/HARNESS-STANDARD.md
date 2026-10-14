@@ -2957,3 +2957,87 @@ FEEDBACK    → ratings.jsonl + memories + docs + closed issue
 | ITERATION | (built into this standard) | When verification fails |
 | FEEDBACK | `Skill("doc-hygiene")` | Always — docs must match what shipped |
 | FEEDBACK | (automatic — hooks) | Always |
+
+## `success: true` was serving two answers, and only one is a success (#181)
+
+`runImplement` accepted `{success: true, filesChanged: []}` and the run
+proceeded to commit. The only thing that read the field was a log line:
+
+```js
+log(`IMPLEMENT SUCCESS — ${(buildResult.filesChanged || []).length} files changed`)
+```
+
+It printed `0` and carried on.
+
+Measured on `wf_17267830-401`. Marcus returned `filesChanged: []` with
+`testOutput: "No tests run — … No code was changed."` — a clear explanation
+that reached nothing. **An unrelated guard stopped the run:**
+`COMMIT_STATE_NOT_RECORDED` (#166) fired only because the worktree had
+gone. With the worktree intact, the commit step would have produced
+`RUNGATE_NO_CHANGES` and the run would have travelled further on an empty
+implementation.
+
+"The agent implemented the issue and changed nothing" is not a state this
+pipeline has. Every issue it ships is a code change, and the three ways an
+empty list happens are all failures worth naming: the agent substituted a
+different task, or decided the work was already done without the run having
+checked, or errored and reported success anyway.
+
+Same shape as #162's `{ok: true, collected: 0}` serving both "nothing to
+collect" and "never told what to collect", and #166's effect the schema does
+not mention.
+
+- [x] SC-853: workflows/ship.js contains [IMPLEMENT-RESULT-START] — a marked guard treats an empty `filesChanged` from a SUCCESSFUL implement as a failure and stops the run. It says nothing about an already-failed result, which the caller's own branch refuses with its own findings — reporting that twice under a different reason misattributes the failure
+- [x] SC-854: workflows/ship.js contains [reported success and changed no files — ${said}] — the refusal NAMES what the agent said it did. On the measured run `testOutput` explained the whole thing and none of it reached the run's result
+- [x] SC-855: test/implement-empty-result.test.ts contains [the decomposed path ACTS on the refusal] — the guard is extracted by marker and EXECUTED, through the real `runDecomposedShip` block, with a positive control
+
+### The decomposed path is the same defect, hidden by a union
+
+`runDecomposedShip` merges per-sub-issue results into `allFilesChanged`, a
+flattened set. One sub-issue that changed nothing is invisible the moment
+the lists are merged — `alpha`'s one file makes the union non-empty and the
+merged result looks healthy. So the guard runs **per sub-issue, before the
+flatMap**, and the test asserts that ordering rather than merely asserting
+the call exists.
+
+### What was broken to prove it (SC-853..855)
+
+Run and counted over `test/implement-empty-result.test.ts` +
+`test/decomposed-ship-dispatch.test.ts` (22 tests):
+
+| Mutation | Red |
+|---|---|
+| `runImplement` stops consulting the guard — the defect, verbatim | 1 of 22 |
+| the decomposed path stops consulting it | 2 of 22 |
+| the guard never refuses | 7 of 22 |
+| a malformed `filesChanged` is assumed full rather than empty | 1 of 22 |
+| the reason stops travelling with the failure (AC-2 undone) | 4 of 22 |
+| the already-failed early return removed — a real failure misattributed | 1 of 22 |
+| the label stops identifying which agent | 1 of 22 |
+| the decomposed path reports the refusal and ships anyway | 1 of 22, and **0** before the case below was written |
+
+**The last row is the finding.** SC-855's first draft GREPPED the decomposed
+block for `implementRefusal(` and checked it appeared before the union.
+Flipping the refusing branch's `ok: false` to `ok: true` left that green:
+the guard still ran, in the right place, and its answer was discarded. A
+guard whose result is computed and dropped is the same defect one layer up,
+and it is exactly the shape of the bug being fixed — a value produced,
+narrated, and not acted on. The test now runs the real block and asserts
+the batch fails.
+
+**A second finding came out of writing that test rather than out of a
+mutation.** The fake agent keyed its empty response off `label.endsWith("-2")`,
+because the dispatch reads `marcus-sub-${subIssue.number}`. The labels the
+run actually produces are `marcus-sub-181001` and `marcus-sub-181002` —
+synthesised from the issue number and an index, not from the sub-issue. So
+both arms returned the same thing and the fixture tested nothing. Measured
+by printing the labels, then keyed on the prompt instead.
+
+**`test/decomposed-ship-dispatch.test.ts` injects the REAL guard**, sliced
+from its own markers, rather than a stub. The block has a free reference to
+it now, and a stub there would let the two blocks disagree about what an
+empty implement result means with nothing able to notice.
+
+None of the eight mutations is left in the tree; all were run and reverted,
+and the counts were re-measured after the executed case was added so they
+come from one tree.
