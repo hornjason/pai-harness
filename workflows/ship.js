@@ -1489,24 +1489,27 @@ Project root: ${PROJECT_ROOT}
         ac.evidenceMethod.command = cmd
       } else {
         ac.evidenceMethod.command = `${cmd} | wc -l | tr -d ' '`
-      }
-      if (ac.threshold?.op === 'contains') {
-        ac.threshold.op = '>='
-        ac.threshold.value = 1
+        // The threshold follows a command this branch actually rewrote: the
+        // output is now a count, so `contains` could not hold over it. The
+        // `grep -c` branch above deliberately does NOT do this (#217) — it
+        // leaves the command alone, so changing its threshold would be
+        // editing an acceptance criterion nobody reviewed, and it would hide
+        // the exact AC shape the pre-validator now refuses.
+        if (ac.threshold?.op === 'contains') {
+          ac.threshold.op = '>='
+          ac.threshold.value = 1
+        }
       }
       log(`Upgraded ${ac.id} evidence from GREP_CHECK to COMMAND (evidence-type-ratio enforcement)`)
     }
   }
 
-  // Fix grep -c + contains mismatch: grep -c returns a count, not text
-  for (const ac of discovery.acs) {
-    const cmd = (ac.evidenceMethod?.command || '')
-    if (cmd.includes('grep -c') && ac.threshold?.op === 'contains') {
-      ac.threshold.op = '>='
-      ac.threshold.value = 1
-      log(`Fixed ${ac.id} threshold: grep -c returns count, changed 'contains' → '>= 1'`)
-    }
-  }
+  // #217: the `grep -c` + `contains` mismatch used to be repaired here, in
+  // silence — `Fixed ${ac.id} threshold: … changed 'contains' → '>= 1'`. A
+  // silently repaired AC is a changed acceptance criterion that nobody
+  // reviewed, and the repair only covered one shape of the problem. The
+  // generalisation lives in lib/evidence-satisfiability.ts and is consulted
+  // by the pre-validator at the scope gate, which REFUSES the run instead.
 
   // DECOMPOSE_REQUIRED gate: if >6 ACs, issue must be split into sub-issues
   const MAX_ACS_PER_ISSUE = 6
