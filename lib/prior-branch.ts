@@ -104,8 +104,22 @@ export interface DetectExistingPROptions {
  * Total over non-strings. It runs over `pr.body`, which GitHub returns as
  * `null` for a PR opened with an empty body, and a throw on that path is a
  * refusal the caller's error handling turns into a ship.
+ *
+ * The NUMBER is validated, and that is a different judgement from the text.
+ * It is interpolated into a regular expression, so a caller that reaches here
+ * with `".*"` — a workflow arg, a parsed CLI flag, a field off a JSON reply —
+ * builds a pattern matching every PR in the repo, and this predicate decides
+ * which prior work a run is about to collide with. Throwing is right where
+ * returning a never-matching predicate is not: a matcher that silently never
+ * fires is the vacuous assertion `.claude/rules/checks-must-be-able-to-fail.md`
+ * is about, and it would read exactly like an issue with no prior work.
  */
 export function issueReference(issueNumber: number): (text: unknown) => boolean {
+  if (!Number.isSafeInteger(issueNumber) || issueNumber < 0) {
+    throw new TypeError(
+      `issueReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
+    )
+  }
   const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
   return (text: unknown) => typeof text === 'string' && pattern.test(text)
 }
@@ -442,7 +456,17 @@ export function priorWorkRefusal(
       `acting on the wrong one is how #209 was shipped twice.`
     )
   }
-  if (typeof pr.prNumber !== 'number') return null
+  // A record that is neither `unreadable` nor a PR is a malformed reading,
+  // and a malformed reading is not "no PR" — `null` is how that is said. The
+  // only outcome left is the one this whole function exists to prevent, so
+  // the direction to be wrong in here is toward refusing.
+  if (typeof pr.prNumber !== 'number' || !Number.isFinite(pr.prNumber)) {
+    return (
+      `The existing-PR lookup for issue #${issueNumber} returned a record with ` +
+      `no PR number: ${JSON.stringify(existingPR)}. Refusing rather than ` +
+      `reading a malformed answer as "no open PR" — pass null for that.`
+    )
+  }
 
   const prBranch = typeof pr.branch === 'string' ? pr.branch : ''
   const working =

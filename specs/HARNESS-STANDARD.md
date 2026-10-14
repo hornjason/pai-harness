@@ -3443,6 +3443,51 @@ cannot quietly undo it.
 - [x] SC-869: lib/prior-branch.ts contains [refs(pr?.title) || refs(pr?.body)] — an open PR is matched by what it SAYS, never by its own number; an API failure returns unreadable rather than null, so "no PR" and "could not look" stop being the same answer
 - [x] SC-870: lib/prior-branch.ts contains [refs(c.branch) || refs(c.subject)] — a prior branch is found by its tip commit subject as well as its name, and harness scratch refs stay excluded either way
 - [x] SC-871: workflows/ship.js contains [PRIOR-WORK-REFUSAL-START, PRIOR_WORK_OPEN_PR] — a run refuses before IMPLEMENT when the issue has an open PR this run is not standing on, and resuming that PR's own branch is not refused
+- [x] SC-872: workflows/ship.js contains [function lookupTargets, function normalizeExistingPr] — the issue number and repo slug are validated before they are interpolated into the lookup command, and only a positive outcome of "none" is read as "no open PR"
+
+### The step added to close a fail-open rebuilt it one layer up
+
+Security review of `93ff36a8` raised five findings; three were real and two
+of those were introduced by the fix itself.
+
+**The reply schema had every field optional**, so an agent that reported `{}`
+reported "no open PR" — the exact value-collapse the step exists to close,
+arriving by a new route one layer above the library. The schema now requires
+an `outcome` of `none`/`found`/`unreadable`, and `normalizeExistingPr` reads
+everything that is not a positive `none` — or a `found` carrying an actual
+number — as unreadable, which refuses. A schema can require the
+discriminator; it cannot require that `prNumber` accompanies `found`, so the
+normaliser does.
+
+**The lookup command interpolates two args into three nesting levels** — a
+double-quoted shell string wrapping TypeScript wrapping a single-quoted
+literal — and `ISSUE`/`ISSUE_REPO` come straight off `parsedArgs`. The number
+is also what `issueReference` builds a RegExp from, so a `".*"` arriving
+there matches every PR in the repo and the run collides with whichever came
+back first. `lookupTargets` checks both and reports that it could not look,
+rather than repairing them into a different question. `issueReference`
+THROWS on a number that is not one: a predicate that silently matches
+nothing reads exactly like an issue with no prior work.
+
+**`priorWorkRefusal` read a malformed PR record as "no PR".** `null` is how
+"no open PR" is said; a record with no number is a broken reading, and the
+direction to be wrong in on this path is toward refusing.
+
+| Mutation | Red |
+|---|---|
+| `issueReference` stops validating its number | 2 of 67 |
+| …and returns a never-matching predicate instead of throwing | 2 of 67 |
+| the library reads a malformed PR record as "no PR" again | 5 of 67 |
+| ship.js stops validating the issue number | 1 of 67 |
+| ship.js stops validating the repo slug | 1 of 67 |
+| ship.js reads `Number(issue)` directly — `null` becomes issue 0 | 1 of 67 |
+| an empty reply means "no open PR" again — the fail-open rebuilt | 1 of 67 |
+| anything not "found" means "no open PR" | 1 of 67 |
+| "found" with no PR number falls through as no PR | 1 of 67 |
+| a rejected input is skipped rather than refused | 1 of 67 |
+| the `outcome` discriminator stops being required | 1 of 67 |
+
+None is left in the tree; all were run and reverted.
 
 ### What was broken to prove it (SC-868..871)
 

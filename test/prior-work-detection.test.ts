@@ -1,5 +1,5 @@
 /**
- * Covers SC-868, SC-869, SC-870, SC-871 (HARNESS-STANDARD.md).
+ * Covers SC-868, SC-869, SC-870, SC-871, SC-872 (HARNESS-STANDARD.md).
  *
  * #223 — issue #209 was shipped TWICE. Measured cost of the one occurrence:
  * 45 minutes, 20 agents, 911k tokens, and two divergent open PRs for one
@@ -94,12 +94,31 @@ describe("#223 SC-868: a text references an issue, decided in one place", () => 
     }
   });
 
-  test("it is total over junk rather than throwing", () => {
+  test("it is total over junk TEXT rather than throwing", () => {
     const refs1 = issueReference(1);
     for (const text of [undefined, null, 1, {}, []]) {
       expect(() => refs1(text as never)).not.toThrow();
       expect(refs1(text as never), String(text)).toBe(false);
     }
+  });
+
+  test("a NUMBER that is not an issue number throws rather than matching", () => {
+    // The number is interpolated into a RegExp. A caller reaching here with
+    // `".*"` — a workflow arg, a parsed flag, a field off a JSON reply —
+    // would build a pattern matching every PR in the repo, and this
+    // predicate decides which prior work a run collides with.
+    for (const bad of [".*", "209", 1.5, -1, NaN, Infinity, null, undefined, {}, "209|.*"]) {
+      expect(() => issueReference(bad as never), JSON.stringify(bad)).toThrow(TypeError);
+    }
+  });
+
+  test("…and it throws rather than returning a predicate that never fires", () => {
+    // A matcher that silently matches nothing reads exactly like an issue
+    // with no prior work, which is the vacuous assertion this repo's own
+    // rule is about. Loud is the only safe direction here.
+    let built: unknown = "not built";
+    try { built = issueReference(".*" as never); } catch { /* expected */ }
+    expect(built, "a bad issue number produced a usable predicate").toBe("not built");
   });
 });
 
@@ -297,12 +316,18 @@ describe("#223 SC-871: an open PR this run is not on stops it before implementin
     expect(priorWorkRefusal(209, null, null)).toBeNull();
   });
 
-  test("a PR record with no number is not a PR", () => {
-    // Half a reading is not a reading. It is also not a refusal: `unreadable`
-    // is how "could not look" is said, and anything else malformed is a bug
-    // in the caller, not evidence of prior work.
-    expect(priorWorkRefusal(209, null, {})).toBeNull();
-    expect(priorWorkRefusal(209, null, { branch: "x" })).toBeNull();
+  test("a PR record with no number REFUSES — it is not 'no PR'", () => {
+    // Half a reading is not a reading, and `null` is how "no open PR" is
+    // said. Reading a malformed record as a clean issue is the original
+    // defect arriving by a new route, so the direction to be wrong in is
+    // toward refusing. Flagged by security review of 93ff36a8, which was
+    // right: this returned null.
+    for (const malformed of [{}, { branch: "x" }, { prNumber: "219" }, { prNumber: NaN }]) {
+      expect(
+        priorWorkRefusal(209, null, malformed as never),
+        `${JSON.stringify(malformed)} was read as "no open PR"`,
+      ).not.toBeNull();
+    }
   });
 
   test("the refusal is total over junk rather than throwing", () => {
@@ -349,8 +374,12 @@ describe("#223 SC-871: ship.js consults it before it implements", () => {
     // detects.
     expect(
       shipSource,
-      "existingPrResult is not the awaited result of an agent that runs detectExistingPR",
-    ).toMatch(/const existingPrResult = await timedAgent\(`[\s\S]*?detectExistingPR/);
+      "existingPrReply is not the awaited result of an agent that runs detectExistingPR",
+    ).toMatch(/const existingPrReply = [^\n]*await timedAgent\(`[\s\S]*?detectExistingPR/);
+    expect(
+      shipSource,
+      "the normalised result is not derived from the reply",
+    ).toContain("const existingPrResult = normalizeExistingPr(existingPrReply, prLookup.reason)");
     expect(
       shipSource,
       "the refusal is not fed what the lookup returned",
@@ -362,6 +391,103 @@ describe("#223 SC-871: ship.js consults it before it implements", () => {
       (shipSource.match(/function priorWorkRefusal\b/g) ?? []).length,
       "there is no single binding to mutate",
     ).toBe(1);
+  });
+});
+
+/**
+ * Raised by security review of `93ff36a8`, and both were real.
+ *
+ * The lookup command is a double-quoted shell string wrapping TypeScript
+ * wrapping a single-quoted literal, and `ISSUE`/`ISSUE_REPO` come straight
+ * off `parsedArgs` — three nesting levels where a quote in either value
+ * stops being data. The number is also what `issueReference` builds a RegExp
+ * from, so `".*"` would match every PR in the repo.
+ *
+ * And the reply schema had every field optional, so an agent reporting `{}`
+ * meant "no open PR" — the original fail-open, rebuilt one layer up in the
+ * step added to close it.
+ */
+describe("#223 SC-872: the lookup's inputs and its reply are both checked", () => {
+  const shipSource = readFileSync(join(import.meta.dir, "..", "workflows", "ship.js"), "utf-8");
+
+  function slice(name: string): Function {
+    const m = shipSource.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`));
+    if (!m) throw new Error(`could not slice ${name} out of ship.js`);
+    return new Function(`${m[0]}; return ${name};`)();
+  }
+
+  test("a non-integer issue number is not interpolated into the command", () => {
+    const targets = slice("lookupTargets");
+    for (const bad of ['209"; rm -rf /; echo "', ".*", "209 OR 1", 1.5, -1, null, undefined, {}]) {
+      const out = targets(bad, "owner/repo");
+      expect(out.issue, JSON.stringify(bad)).toBeUndefined();
+      expect(out.reason, JSON.stringify(bad)).toContain("not a non-negative integer");
+    }
+  });
+
+  test("a repo that is not an owner/name slug is not interpolated either", () => {
+    const targets = slice("lookupTargets");
+    for (const bad of ["owner/repo'; cat /etc/passwd; '", "owner repo", "owner", "", null, "a/b/c"]) {
+      const out = targets(209, bad);
+      expect(out.repo, JSON.stringify(bad)).toBeUndefined();
+      expect(out.reason, JSON.stringify(bad)).toContain("owner/name slug");
+    }
+  });
+
+  test("the real values pass through unchanged", () => {
+    // The control: a validator that rejects everything blocks every run.
+    const targets = slice("lookupTargets");
+    expect(targets(223, "hornjason/pai-harness")).toEqual({ issue: 223, repo: "hornjason/pai-harness" });
+    expect(targets("223", "a.b-c/d_e")).toEqual({ issue: 223, repo: "a.b-c/d_e" });
+  });
+
+  test("a rejected input becomes unreadable, which refuses — it is not skipped", () => {
+    const normalize = slice("normalizeExistingPr");
+    const out = normalize(null, "the issue number is null, not a non-negative integer");
+    expect(out.unreadable).toBe(true);
+    expect(priorWorkRefusal(209, null, out)).not.toBeNull();
+  });
+
+  test("only a positive 'none' means no open PR", () => {
+    const normalize = slice("normalizeExistingPr");
+    expect(normalize({ outcome: "none" }, undefined)).toBeNull();
+
+    // Everything else lands on unreadable. `{}` is the one that matters:
+    // under the first schema every field was optional, so an agent that
+    // reported nothing reported "no open PR".
+    for (const reply of [{}, null, undefined, "none", { outcome: "" }, { outcome: "NONE" }, { prNumber: 219 }]) {
+      const out = normalize(reply, undefined);
+      expect(out, JSON.stringify(reply)).not.toBeNull();
+      expect(out.unreadable, JSON.stringify(reply)).toBe(true);
+      expect(priorWorkRefusal(209, null, out), JSON.stringify(reply)).not.toBeNull();
+    }
+  });
+
+  test("'found' without a PR number is unreadable, not a clean issue", () => {
+    // The schema can require `outcome`; it cannot require that prNumber
+    // comes with it. So the normaliser does.
+    const normalize = slice("normalizeExistingPr");
+    expect(normalize({ outcome: "found" }, undefined).unreadable).toBe(true);
+    expect(normalize({ outcome: "found", prNumber: "219" }, undefined).unreadable).toBe(true);
+  });
+
+  test("a well-formed 'found' becomes the PR, and refuses", () => {
+    const normalize = slice("normalizeExistingPr");
+    const out = normalize({ outcome: "found", prNumber: 219, branch: "worktree-wf_5e3ed885-98c-9" }, undefined);
+    expect(out).toEqual({ prNumber: 219, branch: "worktree-wf_5e3ed885-98c-9" });
+    expect(priorWorkRefusal(209, null, out)).toContain("#219");
+  });
+
+  test("the schema requires the discriminator", () => {
+    // Without `required`, an agent omitting outcome is schema-valid, and the
+    // normaliser's unreadable branch is the only thing left standing.
+    const block = shipSource.slice(
+      shipSource.indexOf("label: 'existing-pr'"),
+      shipSource.indexOf("function normalizeExistingPr"),
+    );
+    expect(block).toContain("enum: ['none', 'found', 'unreadable']");
+    expect(block, "outcome is optional, so an empty reply is schema-valid")
+      .toContain("required: ['outcome']");
   });
 });
 
@@ -394,6 +520,8 @@ describe("#223 SC-871: ship.js's inlined copy agrees with the library", () => {
     ["branch but no PR", { branch: "a" }, null],
     ["PR with no number", null, { branch: "b" }],
     ["empty PR record", null, {}],
+    ["PR number as a string", null, { prNumber: "219" }],
+    ["PR number NaN", null, { prNumber: NaN }],
     ["junk branch", 7, { prNumber: 7, branch: "b" }],
     ["junk PR", null, "nope"],
     ["both junk", "x", 0],

@@ -2045,7 +2045,13 @@ function priorWorkRefusal(issueNumber, priorBranch, existingPR) {
       `acting on the wrong one is how #209 was shipped twice.`
     )
   }
-  if (typeof pr.prNumber !== 'number') return null
+  if (typeof pr.prNumber !== 'number' || !Number.isFinite(pr.prNumber)) {
+    return (
+      `The existing-PR lookup for issue #${issueNumber} returned a record with ` +
+      `no PR number: ${JSON.stringify(existingPR)}. Refusing rather than ` +
+      `reading a malformed answer as "no open PR" — pass null for that.`
+    )
+  }
 
   const prBranch = typeof pr.branch === 'string' ? pr.branch : ''
   const working =
@@ -2064,34 +2070,94 @@ function priorWorkRefusal(issueNumber, priorBranch, existingPR) {
   )
 }
 
+/**
+ * The two values that go into the lookup command, checked before they are
+ * interpolated into a shell word.
+ *
+ * `ISSUE` and `ISSUE_REPO` arrive from `parsedArgs`, and the command below is
+ * a double-quoted shell string wrapping TypeScript wrapping a single-quoted
+ * literal — three nesting levels where a quote in either value stops being
+ * data. The number is also what `issueReference` builds a RegExp from.
+ * Neither is repaired: a value that is not an issue number or an `owner/name`
+ * is not something this step can ask about, so it reports that it could not
+ * look rather than quietly asking a different question.
+ */
+function lookupTargets(issue, issueRepo) {
+  // Not a bare `Number(issue)`: that reads null and "" as 0, so the step
+  // would go and ask confidently about issue zero.
+  const digits = typeof issue === 'string' && /^\d+$/.test(issue.trim())
+  const n = typeof issue === 'number' ? issue : digits ? Number(issue.trim()) : NaN
+  if (!Number.isSafeInteger(n) || n < 0) {
+    return { reason: `the issue number is ${JSON.stringify(issue)}, not a non-negative integer` }
+  }
+  const repo = String(issueRepo ?? '')
+  if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repo)) {
+    return { reason: `the issue repo is ${JSON.stringify(issueRepo)}, not an owner/name slug` }
+  }
+  return { issue: n, repo }
+}
+
 // The lookup. `detectExistingPR` sat in lib/ with no caller for its whole
 // life, which is why the duplicate was possible with the detector present.
-const existingPrResult = await timedAgent(`
+const prLookup = lookupTargets(ISSUE, ISSUE_REPO)
+const existingPrReply = prLookup.reason ? null : await timedAgent(`
 Run this command and report its output verbatim:
 
-bun -e "import {detectExistingPR} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectExistingPR({issueNumber:${ISSUE},repo:'${ISSUE_REPO}'}); console.log(JSON.stringify(r))"
+bun -e "import {detectExistingPR} from '${HARNESS_ROOT}/lib/prior-branch.ts'; const r = await detectExistingPR({issueNumber:${prLookup.issue},repo:'${prLookup.repo}'}); console.log(JSON.stringify(r))"
 
 It prints one of three things, and they are three different facts:
-  null                              — this issue has no open PR
-  {"prNumber":N,"branch":"..."}     — it has this one
+  null                               — this issue has no open PR
+  {"prNumber":N,"branch":"..."}      — it has this one
   {"unreadable":true,"reason":"..."} — the lookup could not be performed
 
-Report them as: prNumber (omit if there is none), branch (omit if there is
-none), unreadable (true ONLY if the output said so), reason (the text, if any).
+Report outcome as exactly one of "none", "found" or "unreadable", matching
+which of the three you saw. With "found", also report prNumber and branch.
+With "unreadable", also report reason.
 
-Do NOT report unreadable:false to mean "no PR" and do NOT invent a prNumber.
-If the command itself fails to run, that IS unreadable — set it true and put
-the error in reason. "Nothing found" and "could not look" being the same
-answer is the defect this step exists to close (#223).
+outcome is required and there is no default. A reply that omits it is read as
+"unreadable", never as "none": "nothing found" and "could not look" being the
+same answer is the entire defect this step exists to close (#223), and an
+empty reply is the quietest way to reintroduce it. If the command itself
+fails to run, that IS unreadable — say so and put the error in reason.
 `, { label: 'existing-pr', phase: 'Scope', schema: {
   type: 'object',
   properties: {
+    outcome: { type: 'string', enum: ['none', 'found', 'unreadable'] },
     prNumber: { type: 'number' },
     branch: { type: 'string' },
-    unreadable: { type: 'boolean' },
     reason: { type: 'string' },
   },
+  required: ['outcome'],
 } })
+
+/**
+ * The agent's reply as one of the three facts, with everything else read as
+ * "could not look".
+ *
+ * The schema cannot enforce that prNumber accompanies `outcome: "found"`, so
+ * this does — otherwise a reply naming an open PR without saying which one
+ * would fall through as no PR at all, which is the original defect arriving
+ * by a new route.
+ */
+function normalizeExistingPr(reply, preflightReason) {
+  if (preflightReason) return { unreadable: true, reason: preflightReason }
+  if (!reply || typeof reply !== 'object') {
+    return { unreadable: true, reason: 'the existing-PR step reported nothing' }
+  }
+  if (reply.outcome === 'none') return null
+  if (reply.outcome === 'found' && typeof reply.prNumber === 'number') {
+    return { prNumber: reply.prNumber, branch: typeof reply.branch === 'string' ? reply.branch : '' }
+  }
+  if (reply.outcome === 'found') {
+    return { unreadable: true, reason: 'the step reported an open PR but no PR number' }
+  }
+  return {
+    unreadable: true,
+    reason: reply.reason || `the step reported outcome ${JSON.stringify(reply.outcome)}`,
+  }
+}
+
+const existingPrResult = normalizeExistingPr(existingPrReply, prLookup.reason)
 
 const priorWorkStop = priorWorkRefusal(ISSUE, priorBranchResult, existingPrResult)
 if (priorWorkStop) {
