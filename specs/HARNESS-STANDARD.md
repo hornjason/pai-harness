@@ -1624,6 +1624,99 @@ buying green with blindness.
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
 
+### The enforcement ADR-001 specified and nobody built (#309, 2026-10-14)
+
+ADR-001 decided the single-loader policy on **2026-10-05**. It named the
+enforcement explicitly — a conformity check that **fails** the suite, not a
+lint rule and not convention — and explained why convention would not work,
+citing the 24 violations that had accumulated after the same policy was
+stated in prose on 2026-10-02.
+
+`runConfigAccessValidation` was never built.
+
+| | ADR-001 (2026-10-05) | measured 2026-10-11 |
+|---|---|---|
+| direct `rungate.json` access | ~24 sites | ~89 across 25 files |
+| `runConfigAccessValidation` | proposed | never built |
+
+The count roughly tripled in six days, with the policy written down the whole
+time. That is what makes *"a rule nothing executes is not a rule"* a number
+rather than a slogan, and it makes ADR-001 an instance of the defect class it
+describes.
+
+**Two checks, not one.** ADR-001 proposed one, and the survey shows it would
+have caught only part: eleven sites are prompt text inside `workflows/*.js`,
+which a TypeScript-source scan does not look at. A check that would have let
+`ship.js:1637` through is not sufficient.
+
+**Measured on this branch, not quoted from the ADR.** The ADR's ~89 counted
+comments; prose that *discusses* the config is not an access, and counting it
+buries the real sites until the ratchet becomes a number nobody reads. The
+stripping is `stripJsComments` — offset-preserving, with its own suite —
+rather than a line rule invented here. Measured:
+
+| | files | sites |
+|---|---|---|
+| CHECK-1, TypeScript sources (`lib/ gates/ scripts/ hooks/ generators/`) | 17 | 47 |
+| CHECK-2, `workflows/*.js` including prompt bodies | 3 | 14 |
+
+The ratchet is **data**, in `.claude/config-access-ratchet.json`, not a
+constant. `lib/conformity.ts` travels into every scaffolded project and
+rungate's numbers have no business there; a consumer with no ratchet file
+gets zero tolerance, which is right for a tree that never had the defect.
+It refuses **both ways**, and a file absent from it is allowed nothing — the
+migration window is exactly when the next reader is most likely to be
+written.
+
+**The self-reference trap, handled rather than allowlisted.** This file is in
+the scanned set and now contains the literals it searches for. The pattern is
+assembled from fragments that never appear adjacent in the source, and the
+three real violations the file carried were migrated to the loader in the
+same change — so "zero against its own file" is a fact, not an exemption. An
+allowlist naming the exempt files becomes evidence those files are
+referenced, and this repo has hit that three times.
+
+One of those three migrations was a live defect in its own right: `rungate
+config has required fields` read the monolith directly, so on a project using
+the directory layout `existsSync` was false, the test returned, and a config
+missing `project` or `repo` passed **by never being looked at**.
+
+- [x] SC-1427: lib/conformity.ts contains [export function configAccessViolations] — one exported collector turns a scan into refusals so the mutation harness has a single site and the ratchet refuses over its number and under it because an entry that stopped being a violation is one nobody removes
+- [x] SC-1428: test/config-access-conformity.test.ts contains [zero files scanned is a refusal] — a scan that read nothing refuses instead of reporting clean because a check that silently scans zero files is indistinguishable from compliance
+- [x] SC-1429: lib/conformity.ts contains [export function scanPromptConfigAccess] — workflow prompt bodies are scanned as well as TypeScript sources because eleven sites live inside template literals handed to agents and a source-only scan is blind to every one of them
+- [x] SC-1430: test/config-access-conformity.test.ts contains [lib/conformity.ts reports zero against itself] — the file hosting the check is in the scanned set so its patterns are assembled from fragments that never appear adjacent and its own three reads were migrated rather than allowlisted
+- [x] SC-1431: test/config-access-conformity.test.ts contains [both checks are registered by the GENERATOR - not hand-added] — the conformity suite is harness-managed so the registration lives in the generator or the check silently stops running in every consumer project at the next re-scaffold
+
+#### What was broken to prove it (SC-1427..1431)
+
+ADR-002 D4's five mutations, run by hand on the branch and counted over
+`test/scaffold-conformity.test.ts` + `test/config-access-conformity.test.ts`
+(553 tests):
+
+| Mutation | Red |
+|---|---|
+| `join(root, ".claude", "rungate.json")` added to a clean file not on the ratchet | 2 of 553 |
+| `read ${PROJECT_ROOT}/.claude/rungate.json` added to a prompt in `ship.js` | 2 of 553 |
+| the violation collector short-circuited to `return []` | 5 of 553 |
+| `lib/config-loader.ts` removed from the allowlist | 2 of 553 |
+| the scanner pointed at a directory that does not exist | 3 of 553 |
+
+**The third scored ZERO against the conformity suite alone, and that is why
+`test/config-access-conformity.test.ts` exists.** The tree sits AT its
+ratchet, so the real collector returns `[]` too — on a green tree a
+short-circuited check and a satisfied one are the same answer. Every refusal
+case now drives a PLANTED scan. ADR-002 D4 says the fourth and fifth matter
+most; measured, the third was the one with no teeth.
+
+**And the mutation harness misfired twice, both times in my own tooling.**
+Once because a replacement targeted the `.ts` quoting style and silently did
+not apply; once because zsh does not word-split an unquoted variable, so
+`bun test $FILES` passed one bogus path and bun reported "Tests need .test in
+the filename" — which the harness printed as an empty result rather than a
+count. Both now assert that the text changed, or that a count was produced,
+before reporting. A mutation harness that silently no-ops when its target
+moves is the decorative check this whole rule is about.
+
 ### A prohibition became a work plan (#306, 2026-10-14)
 
 #274 attempt 4 (`wf_b3714a40-bb7`). The goal said, under a heading in

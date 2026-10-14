@@ -707,7 +707,7 @@ export function generateConformityTest(root?: string): string {
   const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, writeFindingsReport } from "${from}";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -720,6 +720,8 @@ runAgentFileValidation(ROOT);
 runDirectoryValidation(ROOT);
 runPackageValidation(ROOT);
 runTsconfigValidation(ROOT);
+runConfigAccessValidation(ROOT);
+runPromptConfigAccessValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
 `;

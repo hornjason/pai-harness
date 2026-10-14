@@ -1,0 +1,22 @@
+{
+  "gates/brief-assembler.ts": 1,
+  "gates/gate-executor.ts": 6,
+  "gates/ship-orchestrator.ts": 1,
+  "lib/create-sc.ts": 1,
+  "lib/generators/agent-briefs.ts": 2,
+  "lib/scaffold/owned-files.ts": 3,
+  "lib/scaffold/steps.ts": 19,
+  "lib/scanner.ts": 1,
+  "lib/task-completion-checks.ts": 1,
+  "scripts/create-brief.ts": 1,
+  "scripts/fresh-eyes-test.ts": 1,
+  "scripts/grade-deterministic.ts": 3,
+  "scripts/parallel-ship.ts": 1,
+  "scripts/precompute-goal.ts": 1,
+  "scripts/resolve-config.ts": 2,
+  "scripts/scaffold-rungate-config.ts": 2,
+  "scripts/test-brief.ts": 1,
+  "workflows/prove.js": 5,
+  "workflows/ship-and-heal.js": 1,
+  "workflows/ship.js": 8
+}

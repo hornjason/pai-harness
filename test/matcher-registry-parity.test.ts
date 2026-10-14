@@ -140,7 +140,7 @@ describe("#212 third criterion — a malformed consumer config is not a silent f
     console.warn = realWarn;
   });
 
-  test("unparseable JSON warns, naming the file, and still falls back to the built-ins", () => {
+  test("unparseable JSON warns, naming the project, and still falls back to the built-ins", () => {
     const root = projectWithConfig("{ this is not json");
     console.warn = (...args: unknown[]) => {
       warnings.push(args.join(" "));
@@ -152,8 +152,13 @@ describe("#212 third criterion — a malformed consumer config is not a silent f
     // take the built-in matchers down with it. What was wrong is that it
     // happened in silence.
     expect(outcome.kind).toBe("assert");
-    const named = warnings.filter((w) => w.includes("rungate.json"));
-    expect(named.length).toBeGreaterThan(0);
+    // Names the PROJECT, not a filename. #309 routed this read through the
+    // loader, which resolves either the directory layout or the monolith —
+    // so there is no single file to point at, and the root is what tells a
+    // reader whose config failed. Constructing a path here would also be the
+    // very access CONFIG-1 forbids, in the file that hosts CONFIG-1.
+    const named = warnings.filter((w) => w.includes(root));
+    expect(named.length, warnings.join("\n")).toBeGreaterThan(0);
     expect(named.join(" ")).toContain("built-in");
   });
 
@@ -165,7 +170,9 @@ describe("#212 third criterion — a malformed consumer config is not a silent f
     };
     resolveMatcher(sc("AGENTS.md contains [Project Identity]"), root);
     console.warn = realWarn;
-    expect(seen.filter((w) => w.includes("rungate.json"))).toEqual([]);
+    // Filtered on the same token the positive case asserts, or this control
+    // would pass by matching a string nothing emits any more.
+    expect(seen.filter((w) => w.includes(root))).toEqual([]);
   });
 });
 

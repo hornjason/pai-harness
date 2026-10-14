@@ -539,17 +539,23 @@ function loadRegistry(
     return builtIn;
   }
 
-  // Look for consumer custom matchers in .claude/rungate.json
-  const configPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(configPath)) {
-    _registryCache.set(cacheKey, builtIn);
-    return builtIn;
-  }
-
+  // Consumer custom matchers, via the loader (ADR-002 D1, #309). Reading the
+  // monolith directly saw nothing on a project that had migrated to the
+  // directory layout, so a consumer's custom matchers silently stopped
+  // existing the moment they ran the scaffold that migrates them.
+  // Named without constructing the path — the loader resolves either layout,
+  // so there is no single file to point at, and spelling one out here would
+  // be the very access CONFIG-1 forbids in the file that hosts CONFIG-1.
+  const configDesc = `the rungate config under ${projectRoot}`;
   let customMatchers: Array<{ name: string; regex: string }>;
   try {
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    customMatchers = config.customMatchers ?? [];
+    const config = tryLoadRungateConfig(projectRoot);
+    if (!config) {
+      _registryCache.set(cacheKey, builtIn);
+      return builtIn;
+    }
+    customMatchers = (config as { customMatchers?: Array<{ name: string; regex: string }> })
+      .customMatchers ?? [];
   } catch (err) {
     // Falling back to the built-ins is right — one consumer's broken config
     // must not take the engine's own matchers down with it. Doing it in
@@ -563,7 +569,7 @@ function loadRegistry(
     // logs is how a secret in a misplaced field reaches somewhere it was
     // never meant to go.
     console.warn(
-      `WARN: ${configPath} could not be read as JSON (${err instanceof Error ? err.name : "error"}; ` +
+      `WARN: ${configDesc} could not be read as JSON (${err instanceof Error ? err.name : "error"}; ` +
         `message withheld — it can quote file contents). ` +
         `Falling back to the built-in matcher registry — any customMatchers in that file are NOT loaded, ` +
         `so SCs written against them will be reported as having no matcher.`,
@@ -582,7 +588,7 @@ function loadRegistry(
   for (const candidate of customMatchers) {
     if (!allowOverride && builtInNames.has(candidate.name)) {
       console.warn(
-        `WARN: ${configPath} defines a custom matcher named "${candidate.name}", which is a built-in. ` +
+        `WARN: ${configDesc} defines a custom matcher named "${candidate.name}", which is a built-in. ` +
           `A project cannot replace a built-in matcher while being verified by it — the entry is IGNORED. ` +
           `Rename it to extend the vocabulary instead.`,
       );
@@ -595,7 +601,7 @@ function loadRegistry(
       new RegExp(candidate.regex, "i");
     } catch {
       console.warn(
-        `WARN: ${configPath} custom matcher "${candidate.name}" has a regex that does not compile — the entry is IGNORED.`,
+        `WARN: ${configDesc} custom matcher "${candidate.name}" has a regex that does not compile — the entry is IGNORED.`,
       );
       continue;
     }
@@ -1389,10 +1395,15 @@ export function runScaffoldConformity(root: string, opts?: { extraSpecDirs?: str
       expect(missing).toEqual([]);
     });
 
-    test("rungate.json has required fields (if exists)", () => {
-      const p = join(root, ".claude", "rungate.json");
-      if (!existsSync(p)) return;
-      const config = JSON.parse(readFileSync(p, "utf-8"));
+    test("rungate config has required fields (if configured)", () => {
+      // Through the loader (ADR-002 D1, #309). Reading the monolith directly
+      // meant a project on the directory layout skipped this check entirely —
+      // `existsSync` was false, the test returned, and a config missing
+      // `project` or `repo` passed by never being looked at. Exactly the
+      // shape .claude/rules/checks-must-be-able-to-fail.md opens with, in the
+      // check that validates config.
+      const config = tryLoadRungateConfig(root);
+      if (!config) return;
       expect(config.project).toBeDefined();
       expect(config.repo).toBeDefined();
     });
@@ -1994,16 +2005,22 @@ export function runDocHygiene(
 
     test("HYGIENE-11: Stale unreferenced files warn with archival suggestion", () => {
       const index = getRefIndex();
-      // Load stalenessThreshold from rungate.json, default 90 days
-      const configPath = join(root, ".claude", "rungate.json");
+      // stalenessThreshold through the loader (ADR-002 D1, #309), default 90
+      // days. The bare `catch {}` is kept deliberately narrow in meaning: a
+      // config that cannot be read must not take HYGIENE-11 down, but it also
+      // must not silently become 90 — which, with nothing logged, is what it
+      // used to do.
       let threshold = 90;
-      if (existsSync(configPath)) {
-        try {
-          const config = JSON.parse(readFileSync(configPath, "utf-8"));
-          if (typeof config.stalenessThreshold === "number") {
-            threshold = config.stalenessThreshold;
-          }
-        } catch {}
+      try {
+        const config = tryLoadRungateConfig(root);
+        if (typeof config?.stalenessThreshold === "number") {
+          threshold = config.stalenessThreshold;
+        }
+      } catch (err) {
+        console.warn(
+          `WARN: HYGIENE-11 could not read the rungate config (${(err as Error).name}); ` +
+            `using the ${threshold}-day default. A configured threshold is NOT in effect.`,
+        );
       }
 
       // Scan docs directories for markdown files — skip reference/ entirely (AC-2)
@@ -2623,6 +2640,296 @@ export function runModuleDepthCheck(root: string) {
           }
         }
       }
+    });
+  });
+}
+
+// ── Config access conformity (ADR-002 D4, #309) ────────────────
+//
+// ADR-001 decided the single-loader policy on 2026-10-05 and specified this
+// check as the enforcement. It was never built. Six days later the thing it
+// was written to stop had gone from ~24 sites to ~89 — the policy was
+// written down the whole time, which is the measurement that makes
+// "a rule nothing executes is not a rule" a number rather than a slogan.
+//
+// TWO checks, not one, because there are two bypass routes and ADR-001's
+// single check would have missed eleven of them: `workflows/*.js` reaches
+// config from inside agent PROMPT TEXT, which a TypeScript-source scan does
+// not look at.
+//
+// ## The self-reference trap
+//
+// This file is inside the scanned set and is about to contain the literals
+// it searches for. An allowlist naming the exempt files becomes evidence
+// those files are referenced — this repo has hit that three times. So the
+// pattern is ASSEMBLED from fragments that never appear adjacent in this
+// source, and the test asserts the check reports zero against its own file.
+// The three real violations this file used to carry are migrated to the
+// loader in the same change, so that zero is a fact and not an exemption.
+const CFG_DOT = ".";
+const CFG_DIR = "claude";
+const CFG_NAME = "rungate";
+
+/**
+ * A path being built to the config, in CODE.
+ *
+ * Comments are blanked by `stripJsComments` before this runs — offset
+ * preserving, already proven on `ship.js` by its own suite — rather than by a
+ * line rule of my own. Prose that DISCUSSES the config is not an access, and
+ * counting it would bury the real sites in noise until the ratchet became a
+ * number nobody reads.
+ *
+ * STATED LIMIT, carried over from ADR-001 and not an oversight: this is
+ * string matching, so `join(root, CFG_DOT + CFG_DIR, dynamicName)` is not
+ * caught. It catches every one of the present sites; a variable-constructed
+ * path is not the realistic failure mode and an AST check is not worth the
+ * dependency.
+ */
+function configAccessPattern(): RegExp {
+  return new RegExp(
+    "\\" + CFG_DOT + CFG_DIR + "[\"'`/\\\\,\\s)]+\\s*[\"'`]?" + CFG_NAME,
+    "g",
+  );
+}
+
+/** Directories CHECK-1 walks. Tests and `test/` are excluded by ADR-002 D4. */
+const CONFIG_SCAN_DIRS = ["lib", "gates", "scripts", "hooks", "generators"];
+
+/** The one module allowed to read the config. ADR-002 D1. */
+const CONFIG_LOADER = "lib/config-loader.ts";
+
+function walkSources(dir: string, rel: string, out: Array<{ path: string; text: string }>) {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const abs = join(dir, e.name);
+    const relPath = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) {
+      if (e.name === "test" || e.name === "node_modules") continue;
+      walkSources(abs, relPath, out);
+      continue;
+    }
+    if (!/\.(ts|js)$/.test(e.name) || /\.test\.ts$/.test(e.name)) continue;
+    out.push({ path: relPath, text: readFileSync(abs, "utf-8") });
+  }
+}
+
+/** What a scan saw: per-file counts, and how much it actually read. */
+export interface ConfigAccessScan {
+  /** Repo-relative path -> site count. Allowlisted files are excluded. */
+  counts: Record<string, number>;
+  /** Files walked. ZERO means the scan found nothing to look at. */
+  filesScanned: number;
+  /** Bytes read. Zero with a non-zero file count means empty sources. */
+  bytesScanned: number;
+}
+
+/**
+ * CHECK-1's reading: direct config access in TypeScript sources.
+ *
+ * A separate function from the refusal so there is ONE site for the mutation
+ * harness to short-circuit (`.claude/rules/checks-must-be-able-to-fail.md`,
+ * and ADR-002 D4's third mutation).
+ */
+export function scanConfigAccess(root: string): ConfigAccessScan {
+  const files: Array<{ path: string; text: string }> = [];
+  for (const d of CONFIG_SCAN_DIRS) walkSources(join(root, d), d, files);
+
+  const counts: Record<string, number> = {};
+  let bytesScanned = 0;
+  for (const f of files) {
+    bytesScanned += f.text.length;
+    if (f.path === CONFIG_LOADER) continue;
+    const n = (stripJsComments(f.text).match(configAccessPattern()) || []).length;
+    if (n > 0) counts[f.path] = n;
+  }
+  return { counts, filesScanned: files.length, bytesScanned };
+}
+
+/**
+ * CHECK-2's reading: config access inside `workflows/*.js`, prompts included.
+ *
+ * Comments are stripped and literals are NOT, which is the whole point —
+ * `ship.js` is mostly prompt text, and the eleven sites ADR-001's check could
+ * not see all live inside template literals handed to agents.
+ */
+export function scanPromptConfigAccess(root: string): ConfigAccessScan {
+  const dir = join(root, "workflows");
+  const counts: Record<string, number> = {};
+  let filesScanned = 0;
+  let bytesScanned = 0;
+  let entries: string[];
+  try {
+    entries = readdirSync(dir).filter(f => f.endsWith(".js"));
+  } catch {
+    return { counts, filesScanned: 0, bytesScanned: 0 };
+  }
+  for (const f of entries) {
+    const text = readFileSync(join(dir, f), "utf-8");
+    filesScanned++;
+    bytesScanned += text.length;
+    const n = (stripJsComments(text).match(configAccessPattern()) || []).length;
+    if (n > 0) counts[`workflows/${f}`] = n;
+  }
+  return { counts, filesScanned, bytesScanned };
+}
+
+/**
+ * The banked violations, read from `.claude/config-access-ratchet.json`.
+ *
+ * Data rather than a constant, because `lib/conformity.ts` travels into every
+ * scaffolded project and rungate's own numbers have no business there. A
+ * consumer with no ratchet file gets `{}` — zero tolerance, which is the
+ * right default for a tree that has never had the defect.
+ *
+ * NOT `.claude/rungate*`, deliberately: this is harness metadata about a
+ * migration, not project config, and routing it through the loader would make
+ * the check depend on the thing it is enforcing access to.
+ */
+export function readConfigAccessRatchet(
+  root: string,
+  scope: "sources" | "workflows" | "all" = "all",
+): Record<string, number> {
+  const p = join(root, ".claude", "config-access-ratchet.json");
+  if (!existsSync(p)) return {};
+  const raw = JSON.parse(readFileSync(p, "utf-8"));
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (typeof v !== "number") continue;
+    // One file, two checks. Scoping matters because the both-ways ratchet
+    // complains about a banked entry with no violations left, and CHECK-1
+    // never scans `workflows/` — without this it would demand the removal of
+    // every entry CHECK-2 owns, and vice versa.
+    const isWorkflow = k.startsWith("workflows/");
+    if (scope === "sources" && isWorkflow) continue;
+    if (scope === "workflows" && !isWorkflow) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Turn a scan into refusals. Empty allows. BOTH DIRECTIONS.
+ *
+ * Over its number refuses, and so does UNDER — an entry that has stopped
+ * being a violation is an entry nobody will ever remove, and the list rots
+ * into one more artefact that certifies nothing. A file absent from the
+ * ratchet is allowed nothing, which is ADR-002 D4's requirement that the
+ * ratchet "refuses on any new file entering the violation set even while the
+ * count is above zero": the migration window is exactly when the next reader
+ * is most likely to be written.
+ *
+ * An EMPTY SCAN REFUSES. A conformity check that silently scans zero files
+ * reports zero violations and is indistinguishable from compliance, which is
+ * this repo's defining defect and would be the most embarrassing possible
+ * place to reproduce it (ADR-002 D4, mutation 5).
+ */
+export function configAccessViolations(
+  scan: ConfigAccessScan,
+  banked: Record<string, number>,
+  label: string,
+  requireNonEmpty = true,
+): string[] {
+  const out: string[] = [];
+  if (requireNonEmpty && scan.filesScanned === 0) {
+    return [
+      `${label}: the scan read NO files. A check that scans nothing reports ` +
+        `zero violations and cannot be told from compliance — refusing rather ` +
+        `than reporting clean (ADR-002 D4).`,
+    ];
+  }
+  if (requireNonEmpty && scan.filesScanned > 0 && scan.bytesScanned === 0) {
+    return [`${label}: ${scan.filesScanned} files were walked and none had any content.`];
+  }
+
+  for (const [file, n] of Object.entries(scan.counts).sort()) {
+    const allowed = banked[file] ?? 0;
+    if (n > allowed) {
+      out.push(
+        `${label}: ${file} has ${n} direct config access site(s), ${allowed} allowed. ` +
+          `Only ${CONFIG_LOADER} may read the config (ADR-002 D1). Use ` +
+          `loadRungateConfig / tryLoadRungateConfig / resolveConfig.`,
+      );
+    } else if (n < allowed) {
+      out.push(
+        `${label}: ${file} is banked at ${allowed} but only ${n} remain — lower the ` +
+          `number in .claude/config-access-ratchet.json in the same commit that earned it.`,
+      );
+    }
+  }
+  for (const [file, allowed] of Object.entries(banked).sort()) {
+    if (allowed > 0 && !(file in scan.counts)) {
+      out.push(
+        `${label}: ${file} is banked at ${allowed} but has no violations left — ` +
+          `remove its entry from .claude/config-access-ratchet.json.`,
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * CHECK-1 — direct config access in TypeScript sources (ADR-002 D4).
+ *
+ * FAILS; does not warn. `DEPTH-1` and `ABSENCE-1` only `console.warn`, and
+ * warnings are how 89 sites accumulated with the policy written down.
+ */
+export function runConfigAccessValidation(root: string) {
+  describe("Config access (ADR-002 D1)", () => {
+    test("CONFIG-1: only the loader reads the rungate config", () => {
+      const scan = scanConfigAccess(root);
+      const violations = configAccessViolations(
+        scan,
+        readConfigAccessRatchet(root, "sources"),
+        "CONFIG-1",
+      );
+      for (const v of violations) {
+        addFinding({
+          ruleId: "CONFIG-1",
+          severity: "FAIL",
+          file: v.split(": ")[1]?.split(" ")[0] || "",
+          message: v,
+          fixCommand: "Route the read through lib/config-loader.ts",
+        });
+      }
+      expect(violations, violations.join("\n")).toEqual([]);
+    });
+  });
+}
+
+/**
+ * CHECK-2 — config access inside workflow prompt text (ADR-002 D4).
+ *
+ * The check ADR-001 did not have, and the reason its single check would have
+ * been insufficient: `ship.js:1637` reaches the config from inside a prompt.
+ * Allowlist is empty — no workflow has any business reading it directly.
+ */
+export function runPromptConfigAccessValidation(root: string) {
+  describe("Config access in workflows (ADR-002 D4)", () => {
+    test("CONFIG-2: no workflow reaches the rungate config, prompts included", () => {
+      const scan = scanPromptConfigAccess(root);
+      // A project with no workflows/ directory is not in violation; the
+      // empty-scan refusal above is for a scan that should have found files.
+      const violations = configAccessViolations(
+        scan,
+        readConfigAccessRatchet(root, "workflows"),
+        "CONFIG-2",
+        scan.filesScanned > 0,
+      );
+      for (const v of violations) {
+        addFinding({
+          ruleId: "CONFIG-2",
+          severity: "FAIL",
+          file: v.split(": ")[1]?.split(" ")[0] || "",
+          message: v,
+          fixCommand: "Point the prompt at the resolved-config artefact instead",
+        });
+      }
+      expect(violations, violations.join("\n")).toEqual([]);
     });
   });
 }
