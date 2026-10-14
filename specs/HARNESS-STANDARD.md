@@ -3518,3 +3518,144 @@ ASSIGNMENT (`const existingPrResult = await timedAgent(\`…detectExistingPR`)
 and the argument the refusal is handed.
 
 None of the eleven is left in the tree; all were run and reverted.
+
+## A run's artefacts are attributable to it (#288)
+
+`WORK_DIR` is `~/.rungate/<slug>/` and the slug is repo + issue number, so
+every run of one issue writes into one directory. Nothing cleared it and
+nothing stamped it. After a failed run the directory holds a complete,
+plausible, WRONG set of artefacts — `rook-findings.json`, `rook-scope.json`,
+`worktree-groups.json`, `marcus-brief.md`, `canaries.json` — and a reader
+has nothing to tell them apart by.
+
+Measured: `~/.rungate/pai-harness-254/workflow-state.json` was read while a
+fresh #254 run was in flight. It showed `phase: VERIFY`, 6 ACs and a
+populated findings file. The run was actually at `setup`, three agents in.
+Everything read was the previous night's failed run, and a healthy run was
+cancelled on that misreading.
+
+Within a run this was already thought about: ship.js suffixes a re-review's
+findings file `-r<N>` precisely so "a second review cannot read the first
+one's findings file and report them as its own". The reasoning stopped at the
+run boundary. Round 0 of today's run and round 0 of last night's are the same
+path.
+
+### No new write sites
+
+`workflows/ship.js` has 45 return points. A design requiring an
+`endRun()` stamp at each would be wrong by the time the 46th was added, and
+the exits that matter most — refusals — are the ones most likely to miss it.
+So disposition is DERIVED from what the harness already writes: the marker,
+the run id in the state file, the state's own `updatedTs` heartbeat, and the
+ship gate's verdict. Nothing asks ship.js to remember anything.
+
+The order the reader applies them in matters, and each step is the question
+the one before leaves open:
+
+| Reading | Status |
+|---|---|
+| no marker | `NO_MARKER` — said as such, not as a verdict about a run |
+| marker unparseable | `UNREADABLE` — said, not repaired |
+| state names a different run, or names none | `MIXED` — the misreading itself, caught |
+| ship gate has a verdict | `COMPLETED`, carrying it |
+| heartbeat inside the window | `RUNNING` |
+| otherwise, or unparseable | `ABANDONED` |
+
+`COMPLETED` is about whether the run reached its end, not whether it liked
+what it found — a FAIL counts, or every refusal would file as abandoned and
+hide the ones that really were. An unparseable heartbeat is `ABANDONED`
+rather than defaulting to `now`, which would report every corrupt directory
+as a live run.
+
+### Archived, never deleted
+
+`beginRun` moves the previous run's artefacts to
+`previous-run-<their runId>/`. `scripts/preserve-worktree-work.ts` exists
+because output a run refused to collect is still output, sometimes the only
+copy; trading a misattribution bug for a data-loss bug is not a fix. The
+archive is named for the run that WROTE the files, so the directory reads as
+a history. Existing archives are left alone — sweeping them into each other
+would nest a tenth run's directory nine deep and bury the first.
+
+### priorWork was passed and silently dropped
+
+`ship.js` passed it to `initWorkflow`; `InitWorkflowInput` did not declare
+it; nothing wrote it, and nothing read `state.priorWork` — all ten
+references were to the in-memory `discovery.priorWork`. There was no type
+error because the call is assembled into a `bun -e` template string and
+evaluated at runtime, so TypeScript never saw the excess property. Silence is
+the only reason it survived, and it is why #185 and #223 each had to
+reconstruct prior-branch detection from scratch to investigate it.
+
+`undefined` and `null` stay distinct: absent means nobody looked, `null`
+means detection ran and found none.
+
+### Adopted is not earned
+
+A run that inherited six passing ACs and a run that implemented six passing
+ACs produced the same artefact. `acProvenance` labels every AC in the prior
+work's list — `{source: "adopted", branch}` or `{source: "this-run"}` —
+because an absent entry is what an AC nobody classified looks like. This is
+the reading `acCoverage` was added for in #251, missing on the neighbouring
+field.
+
+- [x] SC-873: gates/run-attribution.ts contains [export function newRunId] — a run id that cannot collide with the run before it, which is the pair a timestamp reports as one: a failed run and its immediate re-run
+- [x] SC-874: gates/run-attribution.ts contains [export function beginRun, ARCHIVE_PREFIX] — claiming a work directory stamps it and moves everything that is not this run's into an archive named for the run that wrote it, so no artefact is readable in place without attribution
+- [x] SC-875: gates/run-attribution.ts contains [export function runDisposition] — a reader is told NO_MARKER, UNREADABLE, MIXED, RUNNING, ABANDONED or COMPLETED from signals the harness already writes, and a state file disagreeing with the marker is reported rather than resolved
+- [x] SC-876: gates/orchestrator.ts contains ["priorWork" in opts, acProvenance] — priorWork is declared and persisted so it cannot be dropped again without a type error, an explicit null survives as the measurement it is, and every AC says whether this run earned it or adopted it from a named branch
+
+### What was broken to prove it (SC-873..876)
+
+Run and counted over `test/run-attribution.test.ts` +
+`test/state-contract.test.ts` (42 tests):
+
+| Mutation | Red |
+|---|---|
+| the run id becomes a timestamp — collides on a re-run | 3 of 42 |
+| `beginRun` stops sweeping — the dead run's artefacts stay in place | 7 of 42 |
+| the sweep DELETES instead of archiving | 1 of 42 |
+| the archive is named for the run doing the archiving | 3 of 42 |
+| existing archives are swept into the new one | 1 of 42 |
+| an unreadable marker is trusted, so its artefacts stay | 1 of 42 |
+| a state file from another run is read as ours | 2 of 42 |
+| a state file with NO run id is assumed to be ours | 1 of 42 |
+| an unparseable heartbeat defaults to `now` | 1 of 42 |
+| a cold heartbeat still reads as running | 1 of 42 |
+| a FAIL ship verdict is filed as abandoned | 1 of 42 |
+| no marker is reported as a verdict about a run | 1 of 42 |
+| an adopted AC stops naming its branch | 1 of 42 |
+| an unmet AC is left unlabelled instead of `this-run` | 1 of 42 |
+| `initWorkflow` drops `priorWork` again — #288 undone | 5 of 42 |
+| an explicit `null` `priorWork` is dropped as falsy | 1 of 42 |
+| `initWorkflow` stops stamping the directory | 3 of 42 |
+| the state file stops carrying the run id | 3 of 42 |
+| ship.js stops passing `priorWork` to `initWorkflow` | 1 of 42 |
+
+None of the nineteen is left in the tree; all were run and reverted.
+
+### The sweep is a rename, so a traversal MOVES a file
+
+Security review of `2559c8fa` found the one thing nineteen mutations had
+not: `runId` is read out of a JSON file sitting in the directory whose
+contents this module's entire premise is that it cannot trust, and then
+joined into a path. A `runId` of `../../../etc` would have had
+`beginRun` rename the previous run's artefacts out of the work directory
+— a sweep is `renameSync`, so a traversal there does not read a file, it
+moves one.
+
+`isRunId` is the one shape check. A malformed id read from disk lands on
+the same `null` an unparseable marker does, which is already the path that
+mints a fresh name and archives anyway. A malformed id SUPPLIED by a caller
+throws at `beginRun` rather than at the join, because it becomes this
+directory's name in the next run's archive and the gap between accepting it
+and using it is a whole run.
+
+- [x] SC-877: gates/run-attribution.ts contains [export function isRunId, RUN_ID_SHAPE] — a run id becomes a directory name, so one shape check gates it at every boundary it crosses: minted, read from the marker on disk, or supplied by a caller
+
+| Mutation | Red |
+|---|---|
+| the run-id shape admits a path separator | 4 of 47 |
+| `readRunMarker` stops validating the id it read | 2 of 47 |
+| a supplied runId is accepted unchecked | 1 of 47 |
+
+None is left in the tree; all were run and reverted.

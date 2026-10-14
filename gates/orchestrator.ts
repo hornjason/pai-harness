@@ -7,6 +7,7 @@ import { ZodError } from "zod";
 import { createGitHubClient, addLabels, addComment, type GitHubClient } from "../lib/github";
 import { computeACHash } from "../lib/workflow-security";
 import { verifiedPush, leftWorkLocal, type PushOutcome } from "../lib/verified-push";
+import { acProvenance, beginRun } from "./run-attribution";
 
 /**
  * ADR-009 acHash over AC *definition* fields only.
@@ -67,6 +68,26 @@ export interface InitWorkflowInput {
     covered: string[];
     deferrals: Array<{ specElement: string; reason: string; subIssue?: number }>;
     uncovered: string[];
+  } | null;
+  /**
+   * The prior branch this run adopted work from, as detection reported it
+   * (#288).
+   *
+   * Declared so it cannot be dropped again without a type error. ship.js has
+   * passed this since the field existed, and nothing persisted it: the call
+   * is assembled into a `bun -e` template string and evaluated at runtime, so
+   * TypeScript never saw the excess property and the drop was silent.
+   *
+   * `undefined` and `null` are different. Absent means nothing looked;
+   * `null` means detection ran and found none. Writing `null` for both is
+   * what makes #185 and #223 so hard to investigate — prior-branch detection
+   * leaves no trace, so every post-mortem reconstructs it from scratch.
+   */
+  priorWork?: {
+    branch?: string;
+    refName?: string;
+    commitCount?: number | null;
+    acStatus?: Array<{ id: string; status: string; evidence?: string }>;
   } | null;
 }
 
@@ -591,8 +612,16 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
 
 export function initWorkflow(sf: string, opts: InitWorkflowInput): void {
   const ts = isoNow();
+
+  // Claim the directory before writing into it (#288). The stamp and the
+  // sweep are one action on purpose: a marker written without the sweep
+  // leaves the previous run's findings sitting beside a marker claiming the
+  // directory belongs to this one, which is worse than no marker at all.
+  const marker = beginRun(dirname(sf), { issue: opts.issue, slug: opts.slug });
+
   const state: Record<string, any> = {
     schemaVersion: 2,
+    runId: marker.runId,
     issue: opts.issue,
     repo: opts.repo,
     issueRepo: opts.issueRepo || opts.repo,
@@ -614,6 +643,14 @@ export function initWorkflow(sf: string, opts: InitWorkflowInput): void {
   // nothing deferred" is the reading that makes a short AC list legible, and
   // an absent record would leave it looking exactly like a silent drop (#251).
   if (opts.acCoverage) state.acCoverage = opts.acCoverage;
+  // `in`, not truthiness: an explicit null is detection reporting that it
+  // looked and found nothing, which is a measurement and is recorded. An
+  // absent key is nobody having looked (#288).
+  if ("priorWork" in opts) {
+    state.priorWork = opts.priorWork;
+    const provenance = acProvenance(opts.priorWork);
+    if (provenance) state.acProvenance = provenance;
+  }
 
   WorkflowStateSchema.passthrough().parse(state);
   mkdirSync(dirname(sf), { recursive: true });

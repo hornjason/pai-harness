@@ -554,6 +554,53 @@ export const WorkflowStateSchema = z.object({
     uncovered: z.array(z.string()),
   }).nullable().optional(),
 
+  /**
+   * Which run wrote this file (#288).
+   *
+   * `WORK_DIR` is keyed by slug, so every run of one issue writes into one
+   * directory. Without this a reader cannot tell a live run's state file from
+   * the previous night's — and on 2026-10-13 a healthy #254 run was cancelled
+   * on exactly that misreading. `gates/run-attribution.ts` compares it against
+   * the directory's `run.json` marker; a disagreement reads as MIXED.
+   */
+  runId: z.string().optional(),
+
+  /**
+   * The prior branch this run adopted work from, as detection reported it
+   * (#288). Null means detection ran and found none; absent means nobody
+   * looked.
+   *
+   * ship.js has passed this to `initWorkflow` since the field existed and
+   * nothing persisted it — the call is assembled into a `bun -e` template
+   * string, so TypeScript never saw the excess property and the drop was
+   * silent. It is why #185 and #223 each had to reconstruct prior-branch
+   * detection from scratch to investigate it.
+   */
+  priorWork: z.object({
+    branch: z.string().optional(),
+    refName: z.string().optional(),
+    commitCount: z.number().nullable().optional(),
+    acStatus: z.array(z.object({
+      id: z.string(),
+      status: z.string(),
+      evidence: z.string().optional(),
+    })).optional(),
+  }).passthrough().nullable().optional(),
+
+  /**
+   * Where each AC's verdict came from: earned by this run, or adopted from a
+   * prior branch (#288).
+   *
+   * A run that inherited six passing ACs and a run that implemented six
+   * passing ACs produce the same artefact without it. Every AC in the prior
+   * work's list is labelled, because an absent entry is what an AC nobody
+   * classified looks like.
+   */
+  acProvenance: z.record(z.object({
+    source: z.enum(["adopted", "this-run"]),
+    branch: z.string().optional(),
+  })).optional(),
+
   bootstrappedFrom: z.string().optional(),
   beforeState: z.object({
     type: z.enum(["text", "screenshot", "api", "data", "none"]),

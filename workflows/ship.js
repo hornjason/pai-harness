@@ -1632,6 +1632,17 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
     return false
   }
 
+  // `initWorkflow` keeps two facts apart (#288): an ABSENT priorWork key is
+  // "nobody looked", and a written `null` is "detection ran and found none".
+  //
+  // This run always looked — discovery is upstream of here and prior-branch
+  // detection is part of it — so `null` is the honest value and the key is
+  // always emitted. The absent case belongs to callers that skip discovery.
+  // What changed in #288 is not WHICH value ship.js sends but that the field
+  // is now declared and persisted; it was passed and silently dropped here
+  // for the whole life of the call.
+  const priorWorkArg = `priorWork: ${JSON.stringify(discovery.priorWork ?? null)}`
+
   setupResult = await timedAgent(`
 Run these commands in order. Do NOT implement code. Just run commands and report output.
 
@@ -1646,7 +1657,7 @@ initWorkflow(sf, {
   sizing: {predicted:'${discovery.sizing}', ceremonyTier:'${discovery.ceremonyTier}'},
   sourceSpecs: ${JSON.stringify(discovery.sourceSpecs || [])},
   bootstrappedFrom: 'ship-workflow',
-  priorWork: ${JSON.stringify(discovery.priorWork || null)},
+  ${priorWorkArg},
   acCoverage: ${JSON.stringify(acCoverage)},
 });
 writeACs(sf, ${JSON.stringify(discovery.acs.map(ac => ({
