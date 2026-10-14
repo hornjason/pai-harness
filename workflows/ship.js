@@ -5515,6 +5515,16 @@ Run the command and report the output.
 // is what makes "a PR is opened" a property of the phase rather than of the
 // branch taken through it — test/ship-pr-on-every-path.test.ts brace-matches
 // the conditional to hold it there.
+//
+// The marker pair is the other half, and it guards a shape brace-matching
+// cannot see (#266). A wrapper placed OUTSIDE these comments — `if (false) {`
+// above the START, `}` below the END — leaves the extracted bytes identical
+// and leaves the call site outside the container conditional, so every
+// text-based check still passes while the step never runs. Measured on
+// 2026-10-08 against three other blocks: 19, 113 and 52 pass, 0 fail.
+// `assertMarkedBlockReachable(shipSource, 'PR-UPSERT-CALL')` reads the block's
+// position in the parsed program instead and must return exactly ['Program'].
+// ──── PR-UPSERT-CALL-START ────
 prStep = await timedAgent(`
 Open or update the PR. Run exactly these two commands:
 
@@ -5566,6 +5576,7 @@ a guessed true is not.
   },
   required: ['ok'],
 } })
+// ──── PR-UPSERT-CALL-END ────
 
 // Every refusal from here on has to be able to say what happened to the PR,
 // and the refusal sites are scattered across three phases (#252).

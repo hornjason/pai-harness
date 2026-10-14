@@ -1717,6 +1717,88 @@ count. Both now assert that the text changed, or that a count was produced,
 before reporting. A mutation harness that silently no-ops when its target
 moves is the decorative check this whole rule is about.
 
+### No PR at all when a container is configured (#254/#266, 2026-10-14)
+
+`workflows/ship.js` had exactly one `pr-upsert` call site and it lived inside
+the ELSE arm of `if (containerConfig)`, batched with that arm's
+`environments.prod` write. A consumer that configures a container took the
+other arm, `prStep` stayed null, no PR was ever opened, and the run went on to
+report a shipped status over a pushed branch nobody could review. #252's whole
+draft lifecycle — `--draft`, `pr-ready`, `prReadiness` — is unreachable from
+that arm, so the defect also silently disabled the fix that exists to stop an
+unearned PR looking mergeable. DailyBriefDashboard's hard "7776 before 7777"
+rule REQUIRES container config, so this was not a latent path: it was the path
+the next consumer was going to take.
+
+Phase 1 hoisted the step to one call site below the conditional and proved the
+placement by brace-matching. Phase 2 (#266) adds the guard for the shape
+brace-matching **cannot** see.
+
+**Placement and reachability are different questions, and the first does not
+imply the second.** `prPlacementViolations` asks whether the call site sits
+outside both arms of one conditional. A wrapper placed anywhere else — `if
+(false) {` above the marker pair, `}` below it — leaves the call site outside
+those arms, leaves the extracted bytes byte-identical, and leaves the step
+unreachable. Measured on 2026-10-08 against three other marked blocks:
+BLOCKING-GRADES 19 pass / 0 fail, SECURITY-DECISION 113 pass / 0 fail,
+COMMIT-STATE-GUARD 52 pass / 0 fail. Three suites, 184 tests, nothing red.
+`assertMarkedBlockReachable` reads the block's position in the parsed program
+instead, and REACH-3 asserts BOTH halves over one input: the text check goes
+green on the mutant and the reachability check refuses it.
+
+**#266 asked for two hand-maintained marker lists and got one.** Its AC-6 was
+`grep -c '"PR-UPSERT-CALL"' test/reachability-refusals.test.ts == 2` — the
+name present in the positive-control list and in the regression list, "not
+just one of them". Two lists have a failure mode one does not: a block added
+to the first and forgotten in the second is half-covered and reads as covered.
+The lists are now one `REAL_BLOCKS` constant both groups iterate, and the
+property AC-6 was buying is asserted directly — the shared-list loop appears
+exactly twice, with the needle assembled from fragments so the assertion's own
+source line is not one of its matches.
+
+**AC-8's evidence command passed before any of this work was done.** It asked
+for `grep -cE 'SC-66[4-8]' specs/HARNESS-STANDARD.md >= 5`, and SC-664..668
+were allocated to `collectTarget` and `acDiscoveryViolations` between #266
+being filed and being worked. The command returned 5 against a spec with no
+#254 section in it at all — a check that passed because of what it never
+looked at, in an acceptance criterion, which is the one place that is supposed
+to catch them. The criterion's intent is recorded here under fresh numbers.
+
+- [x] SC-1436: test/ship-pr-on-every-path.test.ts contains [PR-EVERY-PATH-1: the real ship.js places it on a path every run reaches] — the call site is found by brace-matching two offset-preserving views of the source rather than grepped because "ship.js contains pr-upsert" stays true for the broken arrangement and for a comment that merely mentions it
+- [x] SC-1437: test/ship-pr-on-every-path.test.ts contains [MUTANT-1: the step moved back inside the else arm is refused] — the arrangement #254 was filed about is rebuilt and run through the same checker in the same test as the real source so the refusal is paired with an acceptance over one input and a renamed step aborts the build instead of reading as caught
+- [x] SC-1438: test/ship-pr-on-every-path.test.ts contains [ENV-3: neither arm opens a PR] — both arms keep their own environments write because the ship gate refuses on missing environments fields and the two arms record different things so hoisting the PR step must not take the env write with it
+- [x] SC-1439: test/ship-pr-on-every-path.test.ts contains [REACH-2: its enclosing chain is exactly Program] — the block's position is read off the parsed program rather than its text because a wrapper outside the marker comments leaves the extracted bytes identical and every text-based check green while the step never runs
+- [x] SC-1440: test/reachability-refusals.test.ts contains [both groups are driven by the same list] — the positive control and the measured regression iterate one constant so a block covered by the accept case and not by the refusal case is impossible rather than merely unlikely
+
+#### What was broken to prove it (SC-1436..1440)
+
+Run and counted over `test/ship-pr-on-every-path.test.ts` +
+`test/reachability-refusals.test.ts` (80 tests). None is left in the tree; all
+were applied and reverted:
+
+| Mutation | Red |
+|---|---|
+| the PR step wrapped in `if (false)` outside the markers — the defect #266 names | 4 of 80 |
+| the same wrapper in a truthy form (`if (globalThis.nope)`) | 4 of 80 |
+| the step relocated into an uncalled `async function` | 4 of 80 |
+| the `PR-UPSERT-CALL-START` marker deleted | 4 red, and 15 tests never registered |
+| the `PR-UPSERT-CALL-END` marker deleted | 4 red, and 15 tests never registered |
+| `PR-UPSERT-CALL` dropped from `REAL_BLOCKS` | 1 of 80 |
+| the positive-control group given its own hard-coded list again | 1 of 80 |
+
+The two marker deletions are reported with their missing registrations rather
+than as a bare count: `wrapOutsideMarkers` throws while the `describe` body is
+being evaluated, so the regression group never registers. That is the loud
+failure the rule asks for — a harness whose target moved must abort, not
+quietly run zero assertions — but it means the red count alone understates it.
+
+**The mutation harness destroyed its own subject once, and it was mine.** The
+revert step ran `git checkout -- <files>` over work that was not yet
+committed, so the first measured count was followed by the markers and the
+shared list vanishing. Re-applied, and the remaining six mutations were run
+against a WIP commit. The rule's standing advice — commit a checkpoint before
+mutating — is there for this.
+
 ### A prohibition became a work plan (#306, 2026-10-14)
 
 #274 attempt 4 (`wf_b3714a40-bb7`). The goal said, under a heading in

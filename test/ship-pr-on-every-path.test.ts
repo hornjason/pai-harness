@@ -49,6 +49,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
+import { ReachabilityRefusal, assertMarkedBlockReachable } from "../lib/reachability";
 import { stripJsComments } from "../lib/strip-js-comments";
 
 /**
@@ -395,5 +396,90 @@ describe("ENV: both arms keep their own environments write, the PR step has none
     expect(step).toContain("--title-from-issue");
     expect(step).toMatch(/required: \['ok'\]/);
     expect(step).toContain("prDraft");
+  });
+});
+
+// ── REACH ──────────────────────────────────────────────────────────────────
+
+/**
+ * #266: the shape brace-matching cannot see.
+ *
+ * Everything above answers "is the call site outside the container
+ * conditional" — a question about ONE conditional, asked by finding its
+ * braces. It is the right question and it is not the whole one. A wrapper
+ * placed anywhere else, with the PR step still textually below the container
+ * `if`, satisfies every check in this file: `prPlacementViolations` finds the
+ * call outside both arms and returns clean, `prStepSource` extracts the same
+ * bytes, and the step never runs.
+ *
+ * Measured on 2026-10-08 against three other marked blocks, wrapping the
+ * marked region in `if (false)` with the wrapper OUTSIDE the marker comments:
+ * BLOCKING-GRADES 19 pass / 0 fail, SECURITY-DECISION 113 pass / 0 fail,
+ * COMMIT-STATE-GUARD 52 pass / 0 fail. Three suites, 184 tests, nothing red.
+ *
+ * `assertMarkedBlockReachable` reads the block's position in the PARSED
+ * program rather than its text, which is why it sees a wrapper that leaves the
+ * extracted bytes byte-identical. The refusal side of it — real refuses,
+ * mutant does not — lives in test/reachability-refusals.test.ts, which drives
+ * the same marker through both its groups.
+ */
+describe("REACH: the PR step is reachable, not merely well-placed", () => {
+  test("REACH-1: the marker pair exists and the step is inside it", () => {
+    // Without this, the chain assertion below is about an empty region, which
+    // `assertMarkedBlockReachable` would happily report as Program-level.
+    const start = shipSource.indexOf("PR-UPSERT-CALL-START");
+    const end = shipSource.indexOf("PR-UPSERT-CALL-END");
+    expect(start, "the PR-UPSERT-CALL markers are gone").toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const between = shipSource.slice(start, end);
+    expect(between, "the markers no longer wrap the PR step").toContain(PR_CALL);
+    expect(between).toContain(STEP_SIGNATURE);
+  });
+
+  test("REACH-2: its enclosing chain is exactly Program", () => {
+    // Exactly, not `chain[0] === "Program"`: every one of the wrappers this
+    // guards against leaves Program at the head of the chain and adds to it.
+    expect(assertMarkedBlockReachable(shipSource, "PR-UPSERT-CALL")).toEqual(["Program"]);
+  });
+
+  test("REACH-3: a wrapper outside the markers is refused, and the text check is not", () => {
+    // Both halves in one test, over one input, because the pairing is the
+    // point: the text check going green on the mutant is the measurement that
+    // says why REACH-2 had to exist, and on its own "the reachability check
+    // refused" could be a parse error.
+    const lines = shipSource.split("\n");
+    const first = lines.findIndex(l => l.includes("PR-UPSERT-CALL-START"));
+    const last = lines.findIndex(l => l.includes("PR-UPSERT-CALL-END"));
+    expect(last).toBeGreaterThan(first);
+    lines.splice(last + 1, 0, "}");
+    lines.splice(first, 0, "if (false) {");
+    const mutant = lines.join("\n");
+
+    expect(
+      mutant.slice(mutant.indexOf("PR-UPSERT-CALL-START"), mutant.indexOf("PR-UPSERT-CALL-END")),
+      "the wrapper landed inside the markers, so this measures the wrong thing",
+    ).toBe(shipSource.slice(shipSource.indexOf("PR-UPSERT-CALL-START"), shipSource.indexOf("PR-UPSERT-CALL-END")));
+
+    expect(
+      prPlacementViolations(mutant),
+      "the placement check caught the wrapper — then the reachability guard is redundant and this file is overstating its case",
+    ).toEqual([]);
+
+    expect(() => assertMarkedBlockReachable(mutant, "PR-UPSERT-CALL")).toThrow(/IfStatement/);
+    expect(assertMarkedBlockReachable(shipSource, "PR-UPSERT-CALL")).toEqual(["Program"]);
+  });
+
+  test("REACH-4: moving the step into an uncalled function is refused too", () => {
+    // `if (false)` is the case that was measured; it is not the only shape.
+    // A relocation into a function nobody invokes leaves the chain's head as
+    // Program for the FUNCTION, which is why the check reads the whole chain.
+    const lines = shipSource.split("\n");
+    const first = lines.findIndex(l => l.includes("PR-UPSERT-CALL-START"));
+    const last = lines.findIndex(l => l.includes("PR-UPSERT-CALL-END"));
+    lines.splice(last + 1, 0, "}");
+    lines.splice(first, 0, "async function neverCalled() {");
+    expect(() => assertMarkedBlockReachable(lines.join("\n"), "PR-UPSERT-CALL")).toThrow(
+      ReachabilityRefusal,
+    );
   });
 });

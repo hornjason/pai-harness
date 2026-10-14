@@ -47,6 +47,34 @@ const SHIP = join(REPO_ROOT, "workflows", "ship.js");
 
 const source = readFileSync(MODULE_PATH, "utf-8");
 const shipSource = readFileSync(SHIP, "utf-8");
+const selfSource = readFileSync(join(REPO_ROOT, "test", "reachability-refusals.test.ts"), "utf-8");
+
+/**
+ * The marked blocks in workflows/ship.js this file holds reachable (#266).
+ *
+ * ONE list, read by both groups below, because the two groups prove different
+ * halves and a block in only one of them is covered by neither:
+ *
+ *  - POSITIVE CONTROL — the real file is accepted. Without it a helper whose
+ *    body is `refuse("no")` passes every negative case in this file.
+ *  - the measured regression — the `if (false)` wrapper placed outside the
+ *    markers is refused, with the extracted slice asserted byte-identical so
+ *    the reason the text-based suites saw nothing is visible rather than
+ *    claimed.
+ *
+ * #266 named two hand-maintained lists and a grep that both carry the name.
+ * Two lists have a failure mode one does not — a block added to the first and
+ * forgotten in the second is half-covered and reads as covered — so the
+ * duplication is removed and the property it was buying is asserted instead,
+ * in `both groups are driven by the same list` below.
+ */
+const REAL_BLOCKS = [
+  "BLOCKING-GRADES",
+  "SECURITY-DECISION",
+  "COMMIT-STATE-GUARD",
+  "CEREMONY-TIER-FLOOR",
+  "PR-UPSERT-CALL",
+];
 
 // ── Fixtures ─────────────────────────────────────────────────────────────
 //
@@ -182,7 +210,7 @@ function between(src: string, name = "DEMO"): string {
 // other test in this file.
 
 describe("POSITIVE CONTROL — a correctly wired block is accepted", () => {
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "CEREMONY-TIER-FLOOR"]) {
+  for (const name of REAL_BLOCKS) {
     test(`the real, unmutated workflows/ship.js ${name} pair is accepted`, () => {
       expect(
         shipSource.includes(`${name}-START`),
@@ -191,6 +219,21 @@ describe("POSITIVE CONTROL — a correctly wired block is accepted", () => {
       expect(assertMarkedBlockReachable(shipSource, name)).toEqual(["Program"]);
     });
   }
+
+  test("both groups are driven by the same list, so coverage cannot be half-applied", () => {
+    // #266 AC-6's property, kept as an assertion rather than as a duplicated
+    // literal: the name has to reach BOTH groups. The needle is assembled from
+    // fragments that never appear adjacent in this file, or the assertion's own
+    // source line would be one of the matches it counts — the self-reference
+    // trap `.claude/rules/claiming-sc-coverage.md` names, met from the other
+    // side and caught three times in this repo already.
+    const loops = selfSource.match(new RegExp("for \\(const name of " + "REAL_BLOCKS\\)", "g")) || [];
+    expect(loops.length, "a group stopped reading the shared list").toBe(2);
+    expect(REAL_BLOCKS, "the PR step is in neither group").toContain("PR-UPSERT-CALL");
+    expect(new Set(REAL_BLOCKS).size, "a duplicate entry runs one group twice").toBe(
+      REAL_BLOCKS.length,
+    );
+  });
 
   test("a fixture block at module top level is accepted", () => {
     expect(assertMarkedBlockReachable(WIRED_IN, "DEMO")).toEqual(["Program"]);
@@ -394,7 +437,7 @@ describe("the measured regression, rerun against the real workflows/ship.js", ()
     return lines.join("\n");
   }
 
-  for (const name of ["BLOCKING-GRADES", "SECURITY-DECISION", "COMMIT-STATE-GUARD", "CEREMONY-TIER-FLOOR"]) {
+  for (const name of REAL_BLOCKS) {
     const mutated = wrapOutsideMarkers(shipSource, name);
 
     test(`${name}: the extracted slice is byte-identical — this is why the text-based suites saw nothing`, () => {
