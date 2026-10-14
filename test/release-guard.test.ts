@@ -473,11 +473,61 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
      * That is a check whose absence costs an hour in the wrong file.
      */
     const src = wf();
-    const upgrade = stepIndex(src, "npm install -g npm@latest");
+    const upgrade = stepIndex(src, "npm install -g npm@");
     expect(upgrade, "nothing raises npm above the version OIDC requires").toBeGreaterThan(-1);
     expect(upgrade, "npm is upgraded after the publish that needed it")
       .toBeLessThan(stepIndex(src, "npm publish"));
     expect(src, "the floor is not checked, so a failed upgrade is invisible").toContain("11.5.1");
+  });
+
+  test("nothing mutable is installed into the job that can publish", () => {
+    /**
+     * Raised by the commit security review, and the first draft of the OIDC
+     * change was guilty of it: `npm install -g npm@latest`.
+     *
+     * This file's header argues that every `uses:` must be a SHA because the
+     * job holds a credential and a movable tag is the publisher's to repoint.
+     * That argument does not stop at actions. A package manager fetched at
+     * job time is the same exposure by a different route — pinning the
+     * action to a SHA and then asking it for whatever shipped this morning
+     * closes the front door and leaves the window open.
+     *
+     * Under OIDC it is sharper than it was under a token: there is no secret
+     * to steal, but anything running in this job can ask for a credential
+     * that publishes the package.
+     */
+    const steps = workflowSteps(wf());
+    expect(steps, "npm is installed at a mutable tag").not.toMatch(/npm@(latest|next|\*)/);
+    expect(steps, "bun is resolved to whatever shipped today")
+      .not.toMatch(/bun-version:\s*["']?(latest|canary)/);
+
+    // Positive control: the pins must actually be versions, or a step that
+    // stopped installing anything would satisfy both refusals above.
+    expect(steps, "no pinned npm version to check").toMatch(/npm@\d+\.\d+\.\d+/);
+    expect(steps, "no pinned bun version to check").toMatch(/bun-version:\s*["']\d+\.\d+\.\d+["']/);
+  });
+
+  test("id-token: write is granted to the job, not to the whole workflow", () => {
+    /**
+     * Also from the security review. A workflow-level grant applies to every
+     * job the file ever grows, and under OIDC `id-token: write` is not
+     * "allow provenance signing" any more — it IS the credential that
+     * publishes the package. A changelog or notification job added later
+     * would silently inherit the ability to publish.
+     */
+    const src = wf();
+    const lines = src.split("\n");
+    const idToken = lines.findIndex(l => /^\s+id-token:\s*write/.test(l));
+    expect(idToken, "nothing grants the OIDC credential at all").toBeGreaterThan(-1);
+
+    // A job-level block is indented under `jobs:`; a workflow-level one sits
+    // at column 0. Measuring the indentation is what tells them apart.
+    const indent = lines[idToken].match(/^(\s*)/)![1].length;
+    expect(indent, "id-token: write is granted workflow-wide rather than to the publishing job")
+      .toBeGreaterThan(2);
+    expect(src, "the workflow default is no longer read-only").toMatch(
+      /^permissions:\n  contents: read\n\n/m,
+    );
   });
 
   test("package.json names the repository OIDC matches against", () => {
