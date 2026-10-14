@@ -3763,3 +3763,76 @@ reason: the test asserted on SOURCE TEXT where it needed to execute.**
   `unpushedKeepReason`, one exported binding the test drives directly.
 
 None of the sixteen is left in the tree; all were run and reverted.
+
+## #229 — one path, one key, and the segment that could never be a symlink
+
+`claimKey` is the audit's reading of a path; `collect-worktree-files.ts`
+resolves the same path with `realpathSync`. Wherever those two readings can
+differ, a worktree can report a spelling the audit scores as uncontested and
+the collector lands on a file somebody else claimed. That is #178's clobber
+reached through normalisation, and it is the reason `claimKey` normalises at
+all.
+
+The normalisation was three anchored regexes — a LEADING `./`, duplicate
+slashes, a trailing slash — and the anchor is the bug. `a/./b.ts` is a mid-path
+`.`, which `^(?:\.\/)+` can never reach, so it survived as a key distinct from
+`a/b.ts`, passed `escapesWorktree` untouched, and reproduced exactly:
+
+> Two worktrees. A claims `a/b.ts`. B claims **and** reports `a/./b.ts`, so the
+> claim check waves B through on the merits. The audit sees two uncontested
+> files and raises nothing. Collection resolves `a/./b.ts` to `a/b.ts` and
+> writes B's copy over A's claimed file.
+
+Three regexes approximating one rule is also why the gap was invisible: each
+was correct about its own spelling and none of them was the property. The rule
+they were approximating is **drop every empty and `.` segment**, and it is now
+one pass over `split('/')`.
+
+### `..` is still refused rather than collapsed, and that is not an oversight
+
+A segment that is exactly `.` can never be a symlink, so `a/./b` and `a/b` name
+the same file on every filesystem and textual collapse cannot disagree with
+`realpathSync`. `..` has no such guarantee: where a component is a symlink,
+`a/../b` collapses textually to `b` while the collector resolves it somewhere
+else entirely. Collapsing it would reintroduce the exact differential this
+issue exists to close, in a form that is harder to notice because the key now
+looks canonical. So `..` is left intact for `escapesWorktree` to reject.
+
+**SC-1 as written in #229 asks for collapse and is therefore unmet by design.**
+The recommended amendment — "maps to one key *or is refused*" — is Jason's call
+and has not been made; it is not being applied silently here.
+
+Ordering is load-bearing and the test pins it: `a/./../b` must normalise to
+`a/../b` and stay refused. A rewrite that resolved `a/.` to `a` and then paired
+`..` against it would hand back `b` and the refusal would never fire.
+
+- [x] SC-881: workflows/ship.js contains [const segments = s.split('/').filter(seg => seg !== '' && seg !== '.')] — every equivalent spelling of a path maps to one claim key by dropping empty and dot segments in a single pass over the whole path rather than at the front of it, while absoluteness and traversal segments both survive for escapesWorktree to refuse
+
+### What was broken to prove it (SC-881)
+
+Run and counted over `test/collect-claim-enforcement.test.ts` +
+`test/collect-claim-ownership.test.ts` +
+`test/ship-remediation-commits.test.ts` (99 tests):
+
+| Mutation | Red |
+|---|---|
+| the non-collapsing `claimKey` restored — the pre-#229 regex chain | 4 of 99 |
+| the `.` collapse removed, empty-segment collapse kept | 6 of 99 |
+| `..` starts being collapsed too | 5 of 99 |
+| absoluteness lost — the leading `/` dropped | 6 of 99 |
+
+Row one is the one the issue asks for by name, and the reproduction test is
+among the four it turns red. No mutation scored zero.
+
+Row two is larger than row one, which reads backwards until you check what each
+removes: the pre-#229 chain still stripped a leading `./`, while "drop empty
+segments only" stops stripping it anywhere, so it breaks the older cases too.
+
+Rows three and four are the pair that makes the rewrite safe rather than merely
+tidier. Both refusals in `escapesWorktree` read segments, the same thing the
+collapse now reads, so each is driven directly — `escapesWorktree` is exported
+from the sliced block alongside `claimKey`, because "the key still looks
+absolute" and "the boundary still refuses it" are different claims and only the
+second one matters.
+
+None of the four is left in the tree; all were run and reverted.

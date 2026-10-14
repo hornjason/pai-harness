@@ -83,13 +83,19 @@ function block(name: string): string {
 function loadClaimAudit(): {
   auditWorktreeClaims: (results: unknown) => ClaimAudit;
   claimKey: (worktreePath: string, p: unknown) => string;
+  escapesWorktree: (key: string) => boolean;
 } {
   return new Function(
-    `${block("COLLECT-CLAIM")}\nreturn { auditWorktreeClaims, claimKey }`,
+    `${block("COLLECT-CLAIM")}\nreturn { auditWorktreeClaims, claimKey, escapesWorktree }`,
   )();
 }
 
-const { auditWorktreeClaims, claimKey } = loadClaimAudit();
+// `escapesWorktree` is exported alongside the other two because #229's fix
+// changes claimKey's normalisation and the refusal reads the same segments.
+// Asserting the two together is the point: "the key still looks absolute" and
+// "the boundary still refuses it" are different claims, and only the second
+// one is the property that matters.
+const { auditWorktreeClaims, claimKey, escapesWorktree } = loadClaimAudit();
 
 /**
  * `collectAgentWork` with its collaborators injected, so the refusal can be
@@ -882,5 +888,92 @@ describe("#229: claimKey normalises exactly what it claims to, and refuses the r
     expect(refused).toContain("..");
     const kept = audit.candidates.flatMap(c => c.filesChanged);
     expect(kept, "a traversal path reached the collector").not.toContain("test/../workflows/ship.js");
+  });
+
+  /**
+   * SC-881 — the corpus, in the test rather than in prose.
+   *
+   * The issue asks for SC-1 as "claimKey maps every equivalent spelling of a
+   * path to one key". It lives here rather than in a sentence so the next
+   * spelling someone invents has somewhere obvious to go, and so that adding
+   * one is a one-line change that either passes or does not.
+   */
+  test("SC-881: every equivalent spelling of one path collapses to one key", () => {
+    const equivalent = [
+      "a/b.ts",
+      "./a/b.ts",
+      "././a/b.ts",
+      "a//b.ts",
+      "a/./b.ts",        // the measured survivor — a MID-path `.`, which the
+      "a/./././b.ts",    // old `^(?:\.\/)+` anchor could never reach
+      "./a/.//b.ts",
+      "a/b.ts/",
+      "a/b.ts//",
+      "a/./b.ts/",
+      `${WT}/a/./b.ts`,  // and the same through the worktree-prefix strip
+    ];
+    const keys = new Set(equivalent.map(spelling => claimKey(WT, spelling)));
+    expect(
+      [...keys],
+      "one path wearing more than one key is the whole of #229",
+    ).toEqual(["a/b.ts"]);
+  });
+
+  test("SC-881: a mid-path . segment no longer buys a second worktree a claimed file", () => {
+    // The bypass, reproduced. Two worktrees. A claims `a/b.ts`. B claims AND
+    // reports `a/./b.ts` — so the claim check alone waves B through, because
+    // B did report exactly what it claimed. `escapesWorktree` does not fire:
+    // the key is relative and carries no `..`. Before the collapse the audit
+    // saw two uncontested files and raised nothing, and then
+    // collect-worktree-files.ts resolved B's path with realpathSync onto A's
+    // file and wrote B's copy over it. That is #178's clobber reached through
+    // normalisation, which is what this issue exists to close.
+    const audit = auditWorktreeClaims([
+      { worktreePath: WT, filesChanged: ["a/b.ts"], claimedFiles: ["a/b.ts"] },
+      { worktreePath: "/tmp/wt-b", filesChanged: ["a/./b.ts"], claimedFiles: ["a/./b.ts"] },
+    ]);
+
+    // Two worktrees now claim ONE key, which is the pre-existing refusal for a
+    // contested file (ship.js: "a file may have one claimant"). The spelling
+    // difference stops hiding the contest; it does not need a new refusal.
+    expect(audit.violations.length, "the contest went unnoticed").toBeGreaterThan(0);
+    expect(audit.violations.map(v => v.detail).join(" ")).toContain("2 worktrees claim");
+
+    // And neither copy reaches the collector, so there is nothing left to
+    // resolve onto A's file.
+    const kept = audit.candidates.flatMap(c => c.filesChanged);
+    expect(kept, "a contested copy still reached the collector").toEqual([]);
+  });
+
+  test("SC-881: collapsing . does not cost the two properties escapesWorktree reads", () => {
+    // The collapse runs over segments, and both refusals read segments too, so
+    // the risk is that the tidier rewrite quietly launders a path past them.
+    //
+    // Absoluteness: the leading `/` survives an otherwise-empty prefix.
+    expect(claimKey(WT, "/./tmp/wt-b/a.ts")).toBe("/tmp/wt-b/a.ts");
+    expect(escapesWorktree(claimKey(WT, "/./tmp/wt-b/a.ts"))).toBe(true);
+    expect(claimKey(WT, "//tmp//wt-b/a.ts")).toBe("/tmp/wt-b/a.ts");
+    expect(escapesWorktree(claimKey(WT, "//tmp//wt-b/a.ts"))).toBe(true);
+
+    // Traversal: `..` is left intact for escapesWorktree even when it is
+    // surrounded by segments the collapse DOES remove. Ordering is the trap —
+    // a rewrite that resolved `a/.` into `a` and then paired `..` with it
+    // would hand back `b` and the refusal would never fire.
+    expect(claimKey(WT, "a/./../b.ts")).toBe("a/../b.ts");
+    expect(escapesWorktree(claimKey(WT, "a/./../b.ts"))).toBe(true);
+    expect(claimKey(WT, ".././a.ts")).toBe("../a.ts");
+    expect(escapesWorktree(claimKey(WT, ".././a.ts"))).toBe(true);
+  });
+
+  test("SC-881: a path that is nothing but . segments is the empty key, not a claim", () => {
+    // `.` is the worktree root, not a file. The empty key is the value every
+    // caller already drops (`if (!key) continue`), so this must not become a
+    // one-segment key named `.` that a claim could match.
+    expect(claimKey(WT, ".")).toBe("");
+    expect(claimKey(WT, "./")).toBe("");
+    expect(claimKey(WT, "././.")).toBe("");
+    // `/` is not empty — it is an absolute path, and it is refused as one.
+    expect(claimKey(WT, "/")).toBe("/");
+    expect(escapesWorktree(claimKey(WT, "/"))).toBe(true);
   });
 });
