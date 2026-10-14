@@ -505,11 +505,111 @@ async function timedAgent(prompt, opts = {}) {
     // Not a refusal: a missing label must not kill a ship run, and inventing
     // one would merge two call sites into a single row. Run it, and say so.
     log('WARN: an agent call reached timedAgent with no label — this call is UNTIMED (#227)')
-    return agent(prompt, opts)
+    const untimed = await agent(prompt, opts)
+    noteWorktrees(untimed)
+    return untimed
   }
-  return agent(`${prompt}\n\n${timingInstruction(label)}`, opts)
+  const reply = await agent(`${prompt}\n\n${timingInstruction(label)}`, opts)
+  // Every agent call in this workflow goes through here, so this is the one
+  // place a worktree can be learned about (#232). Recording at each site that
+  // builds a `buildResult` would be the instance fix again — four sites
+  // today, and the fifth is the one that strands the work.
+  noteWorktrees(reply)
+  return reply
 }
 // ──── AGENT-TIMING-END ────
+
+// ──── WORKTREE-REGISTRY-START ────
+/**
+ * Every worktree any agent has reported working in (#232).
+ *
+ * Module-level and append-only, because the exits that need it are scattered
+ * across five phases and most of them are nowhere near the code that created
+ * the worktree. A run that ends at IMPLEMENT_FAILED still has to know where
+ * the work is.
+ */
+const WORKTREES_SEEN = new Set()
+
+/**
+ * Record any worktree path an agent reply mentions.
+ *
+ * Walks the reply rather than reading two known fields: agents report
+ * `worktreePath` at the top level, inside `buildResult`, and inside arrays of
+ * per-sub-issue results, and a sixth shape is one schema change away. The
+ * walk is depth-bounded and cycle-safe because it runs on every agent reply
+ * in the run, so a throw or a hang here is a failure mode the whole workflow
+ * inherits.
+ *
+ * `collectDestination` gates what is kept for the same reason it gates
+ * collection: these become arguments to git commands that commit whatever
+ * they find. The project root is excluded outright — `git add -A` there would
+ * sweep up unrelated working-tree state and commit it under a preserve
+ * message.
+ */
+function noteWorktrees(value, seen = new Set(), depth = 0) {
+  if (depth > 6 || value === null || typeof value !== 'object') return
+  if (seen.has(value)) return
+  seen.add(value)
+
+  if (Array.isArray(value)) {
+    for (const item of value) noteWorktrees(item, seen, depth + 1)
+    return
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'worktreePath' && typeof child === 'string') {
+      const wt = child.trim().replace(/\/+$/, '')
+      if (wt && wt !== PROJECT_ROOT && collectDestination(wt)) WORKTREES_SEEN.add(wt)
+      continue
+    }
+    noteWorktrees(child, seen, depth + 1)
+  }
+}
+
+/**
+ * Commit every worktree this run has seen, on the way out (#232).
+ *
+ * #228 routed every COLLECT refusal through `preserveRefusedWork`, which was
+ * correct and scoped to the symptom that had been observed. Run
+ * `wf_89689f50-2e4` returned IMPLEMENT_FAILED instead, and left 13 files in
+ * one worktree and 3 in another entirely uncommitted — reachable from no ref,
+ * absent from every log, and deleted by the next `git worktree remove
+ * --force`. Both agents had reported success, with five mutation proofs
+ * between them. Both were recovered by hand.
+ *
+ * So the funnel is the exit, not the reason for it. `shipFailed` and
+ * `terminalFailure` are the only two ways this workflow ends badly, and
+ * test/preserve-every-exit.test.ts enumerates the terminal statuses out of
+ * this file and requires each to come from one of them — so a status added
+ * later without preservation is named by a failing test rather than by the
+ * next person to lose a day's work.
+ */
+async function preserveSeenWorktrees(phaseName, label) {
+  const paths = [...WORKTREES_SEEN]
+  if (paths.length === 0) return { preserved: [], detail: '' }
+  return preserveRefusedWork(paths.map(worktreePath => ({ worktreePath })), phaseName, label)
+}
+
+/**
+ * End the run on a terminal status, having first given the work a name.
+ *
+ * Every terminal failure other than SHIP_FAILED comes through here.
+ * SHIP_FAILED has its own funnel because it carries the refusal ledger, and
+ * that one preserves too.
+ */
+async function terminalFailure(status, extra = {}) {
+  const kept = await preserveSeenWorktrees(String(status || 'FAILED'), 'terminal-preserve')
+  return {
+    status,
+    ...extra,
+    // Appended rather than replacing: the caller's reason is why the run
+    // stopped, and this is where the work went. Losing either one is how an
+    // operator ends up with a refusal they cannot act on.
+    ...(kept.detail ? { preservedDetail: kept.detail.trim(), preserved: kept.preserved } : {}),
+    workDir: WORK_DIR,
+  }
+}
+// ──── WORKTREE-REGISTRY-END ────
 
 // ── Agent brief loader (config-driven) ────────────────────
 // Workflow sandbox can't resolve project-local agentTypes from .claude/agents/.
@@ -1123,8 +1223,18 @@ function observedDraft(pr) {
   return typeof pr.prDraft === 'boolean' ? pr.prDraft : null
 }
 
-function shipFailed(phaseName, immediateReason, extra = {}) {
+/**
+ * Async since #232: a refusal gives the work a name before it returns.
+ *
+ * Every call site either returns this directly or awaits it, and an async
+ * function returning a promise resolves it — so the change is invisible to
+ * all nineteen of them. It is spelled `async` here rather than preserving at
+ * nineteen call sites for the same reason the registry exists: the next call
+ * site is the one that would forget.
+ */
+async function shipFailed(phaseName, immediateReason, extra = {}) {
   if (immediateReason) recordRefusal('REFUSAL', phaseName, immediateReason)
+  const kept = await preserveSeenWorktrees(phaseName, 'ship-failed-preserve')
   // The one combination nobody should have to infer from a JSON field: this
   // run will not ship and there is a mergeable PR on the branch. Said out
   // loud, at the moment it becomes true.
@@ -1158,6 +1268,9 @@ function shipFailed(phaseName, immediateReason, extra = {}) {
         }
       : { number: null, readiness: 'NO_PR', reason: 'no PR was opened or updated by this run', draft: null },
     issue: ISSUE, slug: SLUG, workDir: WORK_DIR,
+    // Where the work went, beside why the run stopped. Losing either is how
+    // an operator ends up with a refusal they cannot act on (#232).
+    ...(kept.detail ? { preservedDetail: kept.detail.trim(), preserved: kept.preserved } : {}),
     ...extra,
   }
 }
@@ -1243,7 +1356,7 @@ Return these four fields as JSON.
 `, { label: 'read-issue', phase: 'Goal', schema: GOAL_SCHEMA })
 }
 
-if (!goalData) return { status: 'GOAL_FAILED', message: `Could not read issue #${ISSUE}` }
+if (!goalData) return await terminalFailure('GOAL_FAILED', { message: `Could not read issue #${ISSUE}` })
 log(`Goal: "${goalData.issueTitle}" — ${goalData.successCriteria.length} SCs`)
 
 // ── Pre-flight: verify remote host access if configured ──
@@ -1722,7 +1835,7 @@ if (!await runDiscovery(null)) {
   // A coverage refusal already went through shipFailed, so it carries every
   // reason this run refused and the PR state (#252). Returning the bare
   // DISCOVERY_FAILED over the top of it would throw that away.
-  return discoveryRefusal || { status: 'DISCOVERY_FAILED' }
+  return discoveryRefusal || await terminalFailure('DISCOVERY_FAILED')
 }
 
 // ADR-009: Freeze AC definitions at discovery time for cross-gate integrity
@@ -1934,7 +2047,7 @@ This validates via Zod at write time — you get immediate error feedback.`)
   scopeRan = true
 }
 const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)
-if (scopeVerdict === 'FAIL') return { status: 'SCOPE_FAILED', failures: scopeResult?.failures || [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`], workDir: WORK_DIR }
+if (scopeVerdict === 'FAIL') return await terminalFailure('SCOPE_FAILED', { failures: scopeResult?.failures || [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`] })
 log(`Scope: ${scopeVerdict}`)
 
 if (DRY_RUN) {
@@ -2371,7 +2484,7 @@ function implementRefusal(buildResult, label) {
 async function runImplement() {
   const ceremony = await runCeremonyOnce()
   if (!ceremony) {
-    return { status: 'COMPLIANCE_GATE_FAILED', message: 'Brief compliance below 80% threshold' }
+    return await terminalFailure('COMPLIANCE_GATE_FAILED', { message: 'Brief compliance below 80% threshold' })
   }
 
   const { contextExcerpts, acContextFiles } = ceremony
@@ -2570,12 +2683,12 @@ let implementResult
 if (mDecomposition && mDecomposition.subIssues && mDecomposition.subIssues.length >= 2) {
   implementResult = await runDecomposedShip(mDecomposition.subIssues)
   if (!implementResult.success) {
-    return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
+    return await terminalFailure('IMPLEMENT_FAILED', implementResult)
   }
 } else {
   implementResult = await runImplement()
   if (!implementResult.success) {
-    return { status: 'IMPLEMENT_FAILED', ...implementResult, workDir: WORK_DIR }
+    return await terminalFailure('IMPLEMENT_FAILED', implementResult)
   }
 }
 
@@ -2701,7 +2814,7 @@ Do NOT screenshot after every browser_snapshot().
 
     if (!quinnLocalResult) {
       log(`Quinn local: agent failed (network/API error) — attempt ${validateAttempt}/3`)
-      if (validateAttempt >= 3) return { status: 'VALIDATE_FAILED', reason: 'Quinn agent unavailable', workDir: WORK_DIR }
+      if (validateAttempt >= 3) return await terminalFailure('VALIDATE_FAILED', { reason: 'Quinn agent unavailable' })
       continue
     }
     quinnLocalRan = true
@@ -2713,7 +2826,7 @@ Do NOT screenshot after every browser_snapshot().
 
     if (validateAttempt >= 3) {
       log('Quinn local failed 3x — circuit break')
-      return { status: 'VALIDATE_FAILED', quinnLocalResult, workDir: WORK_DIR }
+      return await terminalFailure('VALIDATE_FAILED', { quinnLocalResult })
     }
 
     log(`Quinn local: FAIL — sending back to Marcus (attempt ${validateAttempt}/3)`)
@@ -3464,7 +3577,7 @@ Report: branch name, commit SHA, pushed (true/false), stateRecorded (true/false)
 }})
 
 if (!commitResult?.commitSha) {
-  return { status: 'COMMIT_FAILED', workDir: WORK_DIR }
+  return await terminalFailure('COMMIT_FAILED')
 }
 
 // ──── COMMIT-STATE-GUARD-START ────
@@ -3495,13 +3608,7 @@ function commitStateRefusal(reply) {
 const stateRefusal = commitStateRefusal(commitResult)
 if (stateRefusal) {
   log(`${stateRefusal} — the commit is at ${commitResult.commitSha} but workflow-state.json does not say so`)
-  return {
-    status: 'COMMIT_FAILED',
-    reason: stateRefusal,
-    issue: ISSUE,
-    slug: SLUG,
-    workDir: WORK_DIR,
-  }
+  return await terminalFailure('COMMIT_FAILED', { reason: stateRefusal, issue: ISSUE, slug: SLUG })
 }
 log(`Committed: ${commitResult.commitSha} on ${commitResult.branch}`)
 
@@ -3527,11 +3634,11 @@ const shipBranch = branchToReuse || commitResult.branch
 // name needing quoting is not a branch name this harness created.
 if (!isSafeBranchName(shipBranch)) {
   log(`SHIP ABORTED: "${String(shipBranch).slice(0, 80)}" is not a usable branch name`)
-  return { status: 'COMMIT_FAILED', reason: 'unsafe branch name', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+  return await terminalFailure('COMMIT_FAILED', { reason: 'unsafe branch name', issue: ISSUE, slug: SLUG })
 }
 if (shipBranch === 'main' || shipBranch === 'master') {
   log(`SHIP ABORTED: the work is reported to be on ${shipBranch} — ship does not open a PR from the default branch (#136)`)
-  return { status: 'COMMIT_FAILED', reason: 'work is on the default branch', issue: ISSUE, slug: SLUG, workDir: WORK_DIR }
+  return await terminalFailure('COMMIT_FAILED', { reason: 'work is on the default branch', issue: ISSUE, slug: SLUG })
 }
 log(`Work branch: ${shipBranch}`)
 
@@ -3553,7 +3660,7 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify DISCOVERY regression #${regressionCount}`)
     if (!await runDiscovery('Verify gate found ACs were wrong: ' + (verifyResult.failures || []).join(', '))) {
       return discoveryRefusal ||
-        { status: 'VERIFY_FAILED', reason: 'DISCOVERY regression failed', workDir: WORK_DIR }
+        await terminalFailure('VERIFY_FAILED', { reason: 'DISCOVERY regression failed' })
     }
   }
   if (verifyResult.regressionTarget === 'BUILD' && regressionCount < MAX_REGRESSIONS) {

@@ -25,6 +25,54 @@ export interface CleanupOptions {
 }
 
 /**
+ * How many commits on `branch` no `origin/*` ref contains (#232).
+ *
+ * `0` is the claim "every commit here is also on origin". `null` is the
+ * absence of a claim and the caller keeps the worktree — "I could not tell"
+ * is not grounds for `git worktree remove --force`.
+ *
+ * A repo with no `origin` remote returns `0` rather than the branch's whole
+ * length. There is nowhere for the work to have been pushed TO, so the
+ * question does not apply, and answering it literally would stop cleanup
+ * dead in every local-only checkout — which is the regression that gets a
+ * safety check reverted.
+ */
+export function unpushedCommitCount(projectRoot: string, branch: string): number | null {
+  const remotes = spawnSync("git", ["remote"], {
+    cwd: projectRoot, encoding: "utf-8", timeout: 5000,
+  });
+  if (remotes.status !== 0) return null;
+  if (!remotes.stdout.split("\n").map(r => r.trim()).includes("origin")) return 0;
+
+  const count = spawnSync("git", ["rev-list", "--count", branch, "--not", "--remotes=origin"], {
+    cwd: projectRoot, encoding: "utf-8", timeout: 10_000,
+  });
+  if (count.status !== 0) return null;
+  const n = parseInt(count.stdout.trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Why this worktree must be kept, given what the origin check answered, or
+ * null to go ahead and remove it (#232).
+ *
+ * One exported binding rather than two branches inline, because the `null`
+ * arm is the one no fixture can reach: it needs git to fail between the
+ * branch read and the rev-list, which is real — a branch deleted in that
+ * window — and not something a test can stage. Inline, removing that arm
+ * scored ZERO red; here it is driven directly.
+ */
+export function unpushedKeepReason(
+  entry: string,
+  branch: string,
+  unpushed: number | null,
+): string | null {
+  if (unpushed === null) return `${entry} (could not tell whether ${branch} is on origin)`;
+  if (unpushed > 0) return `${entry} (${unpushed} commit(s) on ${branch} not on origin)`;
+  return null;
+}
+
+/**
  * Clean up stale git worktrees from .claude/worktrees/.
  *
  * @param opts - Cleanup options with projectRoot and optional maxAgeMs filter
@@ -152,6 +200,21 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     if (mergeCheck.status !== 0) {
       // Branch not merged — keep it
       result.kept.push(`${entry} (unmerged branch: ${branchName})`);
+      continue;
+    }
+
+    // Merged into LOCAL main is not the same as safe to delete (#232).
+    //
+    // A branch merged into a main that was never pushed exists in exactly one
+    // place on earth, and this function runs unattended from a SessionStart
+    // hook. #228 and #232 are both about work that was correct and became
+    // unreachable; removing a worktree whose commits are not on origin is the
+    // same loss with a tidier name.
+    const keepReason = unpushedKeepReason(
+      entry, branchName, unpushedCommitCount(projectRoot, branchName),
+    );
+    if (keepReason) {
+      result.kept.push(keepReason);
       continue;
     }
 

@@ -76,6 +76,9 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
   const factory = new Function(
     "ROLES", "PROJECT_ROOT", "HARNESS_ROOT", "WORK_DIR", "log", "agent",
     "loadContextPaths", "loadReinforcementRules",
+    // #232: timedAgent records reported worktrees. Stubbed — see
+    // test/preserve-every-exit.test.ts.
+    "noteWorktrees",
     `${block}\nreturn briefedAgent;`,
   );
 
@@ -91,6 +94,7 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
     },
     async () => [],
     async () => [],
+    () => {},
   ) as BriefedAgent;
 
   return { call, calls };

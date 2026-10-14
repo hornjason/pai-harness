@@ -147,6 +147,10 @@ async function runBlock(block: string, scope: Record<string, unknown> = {}): Pro
     // what the grades SAY, not about which agents ran.
     SPAWNED_ROLES: new Set<string>(),
     gradeResult: completeForTrustChecks({ grades: [{ role: "marcus", total: 1, followed: 1 }] }),
+    // #232: shipFailed preserves the run's worktrees before it returns.
+    // Stubbed — test/preserve-every-exit.test.ts owns that claim; this file
+    // is about what the decision block decides.
+    preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
     ...merged,
   };
   const sandbox = new Proxy(full, {

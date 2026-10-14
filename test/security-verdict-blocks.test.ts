@@ -107,6 +107,10 @@ function decisionScope(
   return {
     log: (m: unknown) => logs.push(String(m)),
     verifyResult: { result: "PASS" },
+    // #232: shipFailed preserves the run's worktrees before it returns.
+    // Stubbed — test/preserve-every-exit.test.ts owns that claim; this file
+    // is about what the decision block decides.
+    preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
     securityVerdict: { spawned: true, verdict: "PASS", failures: [] as string[] },
     shipBranch: "169-deep-modules",
     ISSUE: 169,
@@ -941,6 +945,9 @@ function shipRoundScope(
     WORK_DIR: "/tmp/work",
     testedSha: tested,
     reCommit: { commitSha, parentSha: SHA, stateRecorded: true },
+    // #232: shipFailed preserves before it returns. Stubbed — see
+    // test/preserve-every-exit.test.ts for the claim that it does.
+    preserveSeenWorktrees: async () => ({ preserved: [], detail: '' }),
     ...rest,
   };
 }

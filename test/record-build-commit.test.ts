@@ -690,7 +690,7 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
       "Program",
       "VariableDeclaration",
     ]);
-    expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}status: 'COMMIT_FAILED'/);
+    expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}terminalFailure\('COMMIT_FAILED'/);
   });
 });
 
