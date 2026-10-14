@@ -1624,6 +1624,66 @@ buying green with blindness.
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
 
+### The release job went red over a release that worked (#407, 2026-10-14)
+
+`v0.3.0` published cleanly — `dist-tags.latest` is `0.3.0`, `npm install
+rungate@0.3.0` pulls `bin/ lib/ prompts/ scripts/` — and the job still failed:
+
+```
+✓ Publish
+X Postflight — the registry actually serves this version
+RELEASE REFUSED: the registry's latest is 0.2.1, not the 0.3.0 this run was
+cutting — the publish step did not take effect
+```
+
+The postflight read `registry.npmjs.org/rungate` about a second after `npm
+publish` returned. That packument is CDN-fronted and eventually consistent, so
+a read that close to the write can legitimately still serve the previous
+`latest`. The publish was fine; the check was wrong.
+
+**This is the inverse of the rule this file keeps citing, and it costs the
+same thing.** `.claude/rules/checks-must-be-able-to-fail.md` is about checks
+that cannot fail. A check that cannot reliably PASS gets the message wrong in
+the other direction, and a red job over a green release is precisely how a
+gate teaches the next reader that its red means nothing. Third instance of the
+shape: #397's pre-push hook, #364's un-releasable minor bump, now this.
+
+**The bound is the fix, not the retry.** Polling until green would be the
+original defect wearing the fix's clothes. `awaitRegistryServes` reads at most
+`POSTFLIGHT_ATTEMPTS` times with `POSTFLIGHT_DELAY_MS` between, a publish that
+never lands still refuses, and the refusal says how long it waited — otherwise
+"it refused" and "it did not wait long enough" read identically in a log and
+the first thing anyone does is raise the number blind.
+
+One sub-decision worth stating because it is a fail-open in miniature: a read
+that throws with attempts remaining is retried, and the FINAL one rethrows.
+`registryState` throws rather than returning an empty state precisely so that
+"could not measure" cannot read as "nothing wrong"; swallowing the last throw
+in the poll would put that straight back.
+
+- [x] SC-1419: test/release-guard.test.ts contains [the workflow passes neither test knob - so the release waits for real] — the attempt count and delay are bounded defaults that clear the observed lag and still fit in a watched job and the workflow overrides neither so no release can shorten its own window to nothing
+- [x] SC-1420: lib/release-preflight.ts contains [export async function awaitRegistryServes] — the postflight re-reads the registry when it serves a stale latest instead of refusing on the first read and it reports how many reads it took so a slow propagation is visible rather than inferred
+- [x] SC-1421: test/release-guard.test.ts contains [a publish that never lands is still refused once attempts run out] — the poll is bounded so a publish that genuinely did not happen still refuses and the refusal names the elapsed wait because otherwise a refusal and an impatient read are indistinguishable in the log
+- [x] SC-1422: test/release-guard.test.ts contains [a transient read error is retried - and the last one is not swallowed] — the retry is driven against an injected fetch and an injected sleep so the exhaustion branch runs on every suite without spending its wall clock and a registry that was never reachable throws rather than returning a verdict
+
+#### What was broken to prove it (SC-1419..1422)
+
+Run and counted over `test/release-guard.test.ts` (49 tests):
+
+| Mutation | Red |
+|---|---|
+| the poll collapsed back to a single read (`const attempts = 1`) | 5 of 49 — the #407 scenario itself, both exhaustion cases, the transient-error retry, and the zero-attempt guard |
+| the exhausted poll returning `refusal: null` | 4 of 49 — a publish that never landed waved straight through, which is this fix becoming the defect it replaced |
+| the final read error swallowed instead of rethrown | 1 of 49 — a registry that was never reachable starts reporting a verdict |
+| the zero-attempt guard disabled | 1 of 49 — a loop that runs no iterations returns no refusal, so a check that never ran reads as one that passed |
+
+A fifth mutation was attempted first and is recorded because it is the trap
+this whole section is about: `refusal: null ?? <message>` is a no-op, and it
+scored **0 of 49**. A zero is a finding, and this one was mine, not the
+suite's — the mutation never changed the behaviour. It was rewritten to
+replace the message outright, which is the 4 above. None of the four is left
+in the tree; all were run and reverted.
+
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the

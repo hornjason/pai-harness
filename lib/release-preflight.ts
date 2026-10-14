@@ -184,3 +184,105 @@ export function postflightRefusal(treeVersion: string, latestAfter: string | nul
   }
   return null;
 }
+
+/** What a postflight poll saw, and how hard it had to look (#407). */
+export interface PostflightReading {
+  /** The `latest` dist-tag on the final read. */
+  latest: string | null;
+  /** Reads performed. 1 means the registry had it immediately. */
+  attempts: number;
+  /** Time spent sleeping between reads, in ms. */
+  waitedMs: number;
+  /** The refusal, or `null` to allow. */
+  refusal: string | null;
+}
+
+/** Defaults sized for npm's observed read-after-write lag: up to ~30s. */
+export const POSTFLIGHT_ATTEMPTS = 10;
+export const POSTFLIGHT_DELAY_MS = 3_000;
+
+/**
+ * Poll the registry until it serves `treeVersion`, or give up and refuse (#407).
+ *
+ * `v0.3.0` published cleanly and the release job still went red: the
+ * postflight read `registry.npmjs.org/rungate` about a second after `npm
+ * publish` returned, and that document is CDN-fronted and eventually
+ * consistent, so it was still serving `0.2.1`. The publish was fine. The check
+ * was wrong.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about checks that cannot
+ * fail. This is the inverse and it costs the same thing, because the message
+ * is wrong either way — and a red job over a green release is how a gate
+ * teaches people to stop reading it.
+ *
+ * ## The bound is the point
+ *
+ * Retrying until it goes green would turn this into the defect in the other
+ * direction. The loop is bounded, a publish that never lands still refuses,
+ * and the refusal says how long it waited — otherwise "it refused" and "it
+ * did not wait long enough" are indistinguishable to whoever reads the log.
+ *
+ * ## Why an intermediate throw retries and the last one does not
+ *
+ * A transient network error is exactly what polling is for, so a read that
+ * throws with attempts remaining is retried. The FINAL one rethrows, because
+ * `registryState` throws rather than returning an empty state precisely so
+ * that "could not measure" cannot read as "nothing wrong" — and swallowing
+ * the last throw here would put that fail-open back.
+ *
+ * `sleep` is injectable so the exhaustion case can be driven in a test without
+ * spending 30 seconds of wall clock on it.
+ */
+export async function awaitRegistryServes(
+  pkg: string,
+  treeVersion: string,
+  opts: {
+    fetchImpl?: typeof fetch;
+    base?: string;
+    attempts?: number;
+    delayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<PostflightReading> {
+  const attempts = opts.attempts ?? POSTFLIGHT_ATTEMPTS;
+  const delayMs = opts.delayMs ?? POSTFLIGHT_DELAY_MS;
+  // A zero-attempt poll reads nothing and would fall out of the loop with no
+  // refusal — a check that never runs, reported as a check that passed.
+  if (!Number.isInteger(attempts) || attempts < 1) {
+    throw new Error(`postflight needs at least one attempt, got ${opts.attempts}`);
+  }
+  const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)));
+
+  let waitedMs = 0;
+  let latest: string | null = null;
+  let refusal: string | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const last = attempt === attempts;
+    try {
+      const state = await registryState(pkg, opts.fetchImpl ?? fetch, opts.base);
+      latest = state.latest;
+      refusal = postflightRefusal(treeVersion, latest);
+    } catch (e) {
+      if (last) throw e;
+      refusal = `could not read the registry: ${(e as Error).message}`;
+    }
+
+    if (refusal === null) return { latest, attempts: attempt, waitedMs, refusal: null };
+    if (last) {
+      return {
+        latest,
+        attempts: attempt,
+        waitedMs,
+        refusal:
+          `${refusal} — read ${attempt} times over ${Math.round(waitedMs / 1000)}s, ` +
+          `which is long enough that this is not the registry catching up`,
+      };
+    }
+    await sleep(delayMs);
+    waitedMs += delayMs;
+  }
+
+  /* c8 ignore next */
+  throw new Error("unreachable: the loop returns on its last attempt");
+}

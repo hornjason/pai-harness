@@ -135,19 +135,19 @@ Each of these has happened in this repo and was mistaken for progress.
   subdirectories, so the 254 SCs in `specs/bootstrap-data-flow/` — 45% of 564 —
   are collected by nothing (#225). Quote SC numbers against 564 and say which
   half you measured, or do not quote them.
-- **Correct code nobody can install.** Every number in this file was measured
-  against the working tree at `main`. What a consumer can `bun add -d` is
-  `rungate@0.2.1`, and the tree has moved 719 commits past it since
-  2026-09-19. The release workflow exists as of #364 and the version is now
-  `0.3.0`; until a tag lands, the gap stands. **The
-  evidence base and the installable artifact are different software.** The
-  consumer survey below is the sharpest case: it measured code no consumer
-  can obtain, so whatever it found, it was not a measurement of the consumer
-  experience. Claim 5's own row argues that *"a path nothing has executed is
-  not a path anyone understands"* — the distribution path is in exactly that
-  category, and until #366 it was not counted as one. A harness that is
-  correct in the tree and unobtainable from the registry has not satisfied
-  claim 5.
+- **Correct code nobody can install — closed 2026-10-14, and the lesson is
+  not.** For 719 commits every number in this file was measured against the
+  working tree while what a consumer could `bun add -d` was `rungate@0.2.1`
+  from 2026-09-19. **The evidence base and the installable artifact were
+  different software.** `v0.3.0` was published on 2026-10-14 and they now
+  match. What remains true is why this sat here so long: nothing measured the
+  distribution path, so nothing reported it broken. Claim 5's own row argues
+  that *"a path nothing has executed is not a path anyone understands"* — the
+  distribution path was in exactly that category and was not counted as one
+  until #366. The consumer survey below still describes the tree as surveyed
+  before publication; re-running it against the installed package is
+  outstanding, and the row is not upgraded on the strength of a version
+  number matching.
 
 ## Where we actually stand
 
@@ -159,13 +159,27 @@ this line, compares the first to `package.json` and the second to the npm
 registry, and goes red when either drifts. Bumping `package.json` without
 publishing turns it red, which is the state this line records today.
 
-- **Distribution standing (2026-10-14)** — tree `0.3.0`, published `rungate@0.2.1`.
+- **Distribution standing (2026-10-14)** — tree `0.3.0`, published `rungate@0.3.0`.
 
-Everything below was measured against the tree. The release workflow now
-exists and is tag-triggered (#364), so the gap is closing rather than
-permanent — but until a tag lands, nothing in this file is a measurement of
-what a consumer can install, and the consumer-list row in particular surveyed
-code that is not obtainable.
+**The gap is closed, for the first time since 2026-09-19.** `v0.3.0` was cut
+on 2026-10-14 and `npm install rungate@0.3.0` serves `bin/ lib/ prompts/
+scripts/`. The tree and the installable artifact are the same software as of
+this line, so numbers measured below are no longer measurements of code
+nobody can obtain.
+
+Two things that does NOT yet license. The consumer-list row still records a
+survey of the *tree*, run before any of this was published; re-running it
+against the installed package is the work, and nothing here substitutes for
+it. And "the versions match" is not "the tarball works" — what was verified
+is that it installs and carries the expected directories, not that a consumer
+can scaffold with it.
+
+Worth recording because it is the same defect class the rest of this file is
+about: **the release job that cut this version went red.** The publish
+succeeded and the postflight refused it, because it read the registry about a
+second after `npm publish` returned and npm's packument had not propagated. A
+check that cannot reliably pass gets the message wrong exactly as badly as one
+that cannot fail. Fixed in #407.
 
 **Why `0.3.0` and not `0.2.2` (2026-10-14).** The tree carried `0.2.2` from
 2026-09-19 and the first release attempt tagged it, which was wrong and was

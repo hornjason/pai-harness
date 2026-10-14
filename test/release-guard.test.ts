@@ -1,5 +1,6 @@
 /**
  * Covers SC-828, SC-829, SC-830, SC-831 (HARNESS-STANDARD.md).
+ * Covers SC-1419, SC-1420, SC-1421, SC-1422 (HARNESS-STANDARD.md) — #407.
  *
  * #364 — rungate had no publish step. npm served `0.2.1` while `main` was 741
  * commits past it, so every mutation count and gate measurement in
@@ -23,7 +24,10 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs"
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  awaitRegistryServes,
   NPM_REGISTRY,
+  POSTFLIGHT_ATTEMPTS,
+  POSTFLIGHT_DELAY_MS,
   postflightRefusal,
   preflightRefusal,
   registryState,
@@ -154,6 +158,186 @@ describe("#364 SC-830: the registry reading fails loudly or not at all", () => {
 
   test("the default base is npm", () => {
     expect(NPM_REGISTRY).toBe("https://registry.npmjs.org");
+  });
+});
+
+/**
+ * Covers SC-1419, SC-1420, SC-1421, SC-1422 (HARNESS-STANDARD.md).
+ *
+ * #407 — `v0.3.0` published cleanly and the release job went red anyway. The
+ * postflight read the packument about a second after `npm publish` returned,
+ * and `registry.npmjs.org` is CDN-fronted and eventually consistent, so it
+ * was still serving `0.2.1`. Measured from a shell minutes later:
+ * `dist-tags.latest` was `0.3.0` and `npm install rungate@0.3.0` worked.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about checks that cannot
+ * fail. This is the inverse — a check that cannot reliably PASS — and it
+ * costs the same thing, because the message is wrong either way. Third time
+ * this shape has turned up (#397's pre-push hook, #364's un-releasable minor
+ * bump, now this).
+ *
+ * So every case below is paired. The lag must be tolerated AND the bound must
+ * hold: a poll that retried until green would be the original defect wearing
+ * the fix's clothes.
+ */
+describe("#407: the postflight tolerates the registry's lag without losing its bound", () => {
+  /** A registry that serves `before` for `lagReads` reads, then `after`. */
+  function laggingRegistry(before: string | null, after: string | null, lagReads: number) {
+    let reads = 0;
+    const impl = (async () => {
+      const latest = reads++ < lagReads ? before : after;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          versions: { "0.2.1": {}, ...(latest === null ? {} : { [latest]: {} }) },
+          "dist-tags": latest === null ? {} : { latest },
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    return { impl, reads: () => reads };
+  }
+
+  /** Records what it was asked to wait, and waits for none of it. */
+  function recordingSleep() {
+    const slept: number[] = [];
+    return { slept, sleep: async (ms: number) => void slept.push(ms) };
+  }
+
+  test("SC-1420: a registry that catches up on a later read is accepted", async () => {
+    // The exact #407 scenario: the publish landed, the read replica had not.
+    const reg = laggingRegistry("0.2.1", "0.3.0", 3);
+    const clock = recordingSleep();
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: reg.impl,
+      attempts: 10,
+      delayMs: 3000,
+      sleep: clock.sleep,
+    });
+    expect(got.refusal, got.refusal ?? undefined).toBeNull();
+    expect(got.latest).toBe("0.3.0");
+    expect(got.attempts, "it did not actually re-read").toBe(4);
+    expect(got.waitedMs).toBe(9000);
+    expect(clock.slept).toEqual([3000, 3000, 3000]);
+  });
+
+  test("SC-1420: a registry that has it immediately does not sleep at all", async () => {
+    // The positive control for the case above. A poll that always slept once
+    // would satisfy it and add 3 seconds to every green release.
+    const clock = recordingSleep();
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: laggingRegistry("0.3.0", "0.3.0", 0).impl,
+      sleep: clock.sleep,
+    });
+    expect(got).toMatchObject({ refusal: null, attempts: 1, waitedMs: 0 });
+    expect(clock.slept, "a release that needed no waiting still waited").toEqual([]);
+  });
+
+  test("SC-1421: a publish that never lands is still refused once attempts run out", async () => {
+    // The half that keeps this from becoming a check that cannot fail.
+    const reg = laggingRegistry("0.2.1", "0.2.1", 99);
+    const clock = recordingSleep();
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: reg.impl,
+      attempts: 5,
+      delayMs: 2000,
+      sleep: clock.sleep,
+    });
+    expect(got.refusal, "an unpublished version was waved through").not.toBeNull();
+    expect(got.attempts, "it gave up early or looped past its bound").toBe(5);
+    expect(reg.reads()).toBe(5);
+    expect(clock.slept).toHaveLength(4); // no sleep after the last read
+  });
+
+  test("SC-1421: the refusal names the elapsed wait, not just the mismatch", async () => {
+    // Otherwise "it refused" and "it did not wait long enough" read the same
+    // in the log, and the first thing anyone does is raise the number blind.
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: laggingRegistry("0.2.1", "0.2.1", 99).impl,
+      attempts: 5,
+      delayMs: 2000,
+      sleep: async () => {},
+    });
+    expect(got.refusal).toContain("read 5 times over 8s");
+    expect(got.refusal, "the underlying mismatch was dropped").toContain("0.2.1");
+  });
+
+  test("SC-1421: a package that never published at all is refused too", async () => {
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: laggingRegistry(null, null, 99).impl,
+      attempts: 2,
+      delayMs: 1,
+      sleep: async () => {},
+    });
+    expect(got.refusal).toContain("the release did not happen");
+  });
+
+  // No comma in this title, or SC-1419's and SC-1422's below: the conformity
+  // parser splits an SC's token list on commas, so a comma in a quoted title
+  // becomes two tokens neither of which appears in the file. Caught twice in
+  // one day; the dash is the house workaround.
+  test("SC-1422: a transient read error is retried - and the last one is not swallowed", async () => {
+    // registryState throws rather than returning an empty state so that
+    // "could not measure" cannot read as "nothing wrong". Swallowing the
+    // final throw here would put that fail-open straight back.
+    let reads = 0;
+    const flaky = (async () => {
+      if (++reads < 3) throw new Error("ECONNRESET");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ versions: { "0.3.0": {} }, "dist-tags": { latest: "0.3.0" } }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+    const got = await awaitRegistryServes("rungate", "0.3.0", {
+      fetchImpl: flaky,
+      attempts: 5,
+      delayMs: 1,
+      sleep: async () => {},
+    });
+    expect(got.refusal).toBeNull();
+    expect(got.attempts).toBe(3);
+
+    const alwaysDown = (async () => {
+      throw new Error("ECONNRESET");
+    }) as unknown as typeof fetch;
+    await expect(
+      awaitRegistryServes("rungate", "0.3.0", {
+        fetchImpl: alwaysDown,
+        attempts: 3,
+        delayMs: 1,
+        sleep: async () => {},
+      }),
+      "a registry that was never reachable reported a verdict",
+    ).rejects.toThrow("ECONNRESET");
+  });
+
+  test("SC-1422: a zero-attempt poll throws rather than reporting a pass", async () => {
+    // A loop that runs no iterations would fall out with no refusal — a check
+    // that never ran, reported as a check that was satisfied.
+    await expect(
+      awaitRegistryServes("rungate", "0.3.0", { attempts: 0 }),
+    ).rejects.toThrow("at least one attempt");
+  });
+
+  test("SC-1419: the defaults allow for npm's observed lag, and are bounded", () => {
+    expect(POSTFLIGHT_ATTEMPTS).toBeGreaterThan(1);
+    expect(POSTFLIGHT_ATTEMPTS).toBeLessThan(60);
+    expect(POSTFLIGHT_DELAY_MS).toBeGreaterThanOrEqual(1000);
+    // The window has to clear the lag that produced #407 and still fit inside
+    // a job somebody is watching.
+    const windowMs = (POSTFLIGHT_ATTEMPTS - 1) * POSTFLIGHT_DELAY_MS;
+    expect(windowMs).toBeGreaterThanOrEqual(20_000);
+    expect(windowMs).toBeLessThanOrEqual(120_000);
+  });
+
+  test("SC-1419: the workflow passes neither test knob - so the release waits for real", () => {
+    // `--attempts` and `--delay-ms` exist for the exhaustion case above. A
+    // workflow that set them could shorten the window to nothing and the
+    // bound would be back where #407 found it.
+    const src = readFileSync(WORKFLOW, "utf-8");
+    expect(src, "the workflow overrides the postflight attempt count").not.toContain("--attempts");
+    expect(src, "the workflow overrides the postflight delay").not.toContain("--delay-ms");
   });
 });
 
