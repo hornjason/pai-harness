@@ -17,12 +17,32 @@
 # behind a condition. test/release-guard.test.ts asserts both, because either one
 # turns this whole file back into a job that reports a release it never made.
 #
-# EVERY `uses:` IS PINNED TO A COMMIT SHA, and a test asserts it. This job holds
-# NPM_TOKEN and `id-token: write`, so a third-party action referenced by a
-# movable tag is a path to both. The tag is the publisher's to repoint at any
-# time; the SHA is not. Scoping the token to the publish step is not enough —
-# an earlier step runs in the same workspace and can poison what the later one
-# executes. Found by the commit security review, not by me.
+# EVERY `uses:` IS PINNED TO A COMMIT SHA, and a test asserts it. This job can
+# mint an npm credential from `id-token: write`, so a third-party action
+# referenced by a movable tag is a path to the registry. The tag is the
+# publisher's to repoint at any time; the SHA is not. Scoping permissions to the
+# publish step is not enough — an earlier step runs in the same workspace and can
+# poison what the later one executes. Found by the commit security review.
+#
+# AUTHENTICATION IS OIDC (trusted publishing), NOT A TOKEN — and that is a
+# correctness decision, not a preference. A granular token with "Bypass 2FA"
+# could publish 0.3.0 today and npm REMOVES direct publishing by token in
+# January 2027, so the token route had a three-month life and a rotation
+# deadline attached to it. OIDC has no secret to leak, rotate or expire.
+#
+# Consequences a reader needs, each of which cost a failed run to learn:
+#
+#   - npm CLI >= 11.5.1 and Node >= 22.14.0. `setup-node` with node 22 ships
+#     npm 10.x, which does NOT support OIDC, so npm is upgraded explicitly
+#     below. Without that step the publish falls back to looking for a token
+#     and fails for a reason that reads like a missing secret.
+#   - `package.json` `repository.url` must EXACTLY match the GitHub repo, or
+#     the registry refuses to match the OIDC claim. It was absent entirely.
+#   - no `--provenance` flag: provenance is automatic under OIDC.
+#   - no `NODE_AUTH_TOKEN`, and no `NPM_TOKEN` secret is read by this file.
+#
+# npm does not validate a trusted-publisher configuration when it is saved, and
+# every field in it is case-sensitive, so a typo there surfaces only here.
 name: Release
 
 on:
@@ -64,6 +84,25 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
+      # OIDC needs npm >= 11.5.1 and node 22 ships 10.x. Asserted rather than
+      # assumed: an npm too old to speak OIDC does not say so, it looks for a
+      # token, finds none and reports an auth failure that sends you to the
+      # secrets page instead of to this line.
+      - name: Upgrade npm to a version that supports OIDC
+        run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          have="$(npm --version)"
+          floor="11.5.1"
+          # `sort -V` picks the lower of the two; if that is not the floor then
+          # the installed npm is below it. The check refuses rather than warns:
+          # an unmeasured npm version is the whole failure mode above.
+          if [ "$(printf '%s\n%s\n' "$have" "$floor" | sort -V | head -n1)" != "$floor" ]; then
+            echo "npm $have cannot publish via OIDC; $floor is the floor" >&2
+            exit 1
+          fi
+          echo "npm $have supports OIDC"
+
       - run: bun install
 
       # Before anything irreversible: the tag must name the version in
@@ -83,10 +122,12 @@ jobs:
       - run: bun test
       - run: bun scripts/typecheck.ts
 
+      # No token and no `--provenance`. Authentication is the OIDC credential
+      # minted from `id-token: write`, and provenance is produced automatically
+      # under it. Adding NODE_AUTH_TOKEN back would silently prefer the token
+      # over OIDC and reinstate the January 2027 deadline this removed.
       - name: Publish
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
 
       # The half that cannot be satisfied by doing nothing.
       - name: Postflight — the registry actually serves this version

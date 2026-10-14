@@ -3,6 +3,14 @@
   "version": "0.3.0",
   "type": "module",
   "description": "Ship harness — conformity tests, scaffold, and agent briefs for AI-first development",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hornjason/pai-harness.git"
+  },
+  "homepage": "https://github.com/hornjason/pai-harness#readme",
+  "bugs": {
+    "url": "https://github.com/hornjason/pai-harness/issues"
+  },
   "files": [
     "bin/",
     "lib/",

@@ -436,10 +436,58 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     }
   });
 
-  test("provenance is actually requested, and permitted", () => {
-    expect(wf()).toContain("--provenance");
-    expect(wf(), "npm provenance needs id-token: write or the publish fails")
+  test("the publish authenticates by OIDC and carries no token", () => {
+    /**
+     * This replaces an assertion that `--provenance` is passed, and the
+     * swap is the whole of the change (#364).
+     *
+     * A granular token with "Bypass 2FA" could have published 0.3.0 today.
+     * npm removes direct publishing by token in January 2027, so that route
+     * had a three-month life and a rotation deadline attached. OIDC has no
+     * secret to leak, rotate or expire — and under it provenance is produced
+     * automatically, so the flag the old assertion demanded is no longer the
+     * thing that makes provenance happen. Keeping that assertion would have
+     * pinned the file to a mechanism it had stopped using.
+     *
+     * `id-token: write` is still asserted, and now matters MORE: it was the
+     * provenance permission and it is now the credential itself.
+     */
+    const src = wf();
+    expect(src, "OIDC publishing needs id-token: write or there is no credential at all")
       .toMatch(/id-token:\s*write/);
+    expect(
+      workflowSteps(src),
+      "NODE_AUTH_TOKEN is back — npm prefers a token over OIDC when both are " +
+        "present, which silently reinstates the January 2027 deadline",
+    ).not.toContain("NODE_AUTH_TOKEN");
+    expect(workflowSteps(src), "the workflow reads an npm token secret again")
+      .not.toContain("NPM_TOKEN");
+  });
+
+  test("npm is raised above the floor OIDC needs, before the publish", () => {
+    /**
+     * `setup-node` with node 22 ships npm 10.x and OIDC needs 11.5.1. This
+     * is asserted rather than left to the upgrade step existing, because an
+     * npm too old to speak OIDC does not say so: it looks for a token, finds
+     * none, and reports an auth failure that reads like a missing secret.
+     * That is a check whose absence costs an hour in the wrong file.
+     */
+    const src = wf();
+    const upgrade = stepIndex(src, "npm install -g npm@latest");
+    expect(upgrade, "nothing raises npm above the version OIDC requires").toBeGreaterThan(-1);
+    expect(upgrade, "npm is upgraded after the publish that needed it")
+      .toBeLessThan(stepIndex(src, "npm publish"));
+    expect(src, "the floor is not checked, so a failed upgrade is invisible").toContain("11.5.1");
+  });
+
+  test("package.json names the repository OIDC matches against", () => {
+    // The registry matches the OIDC claim against `repository.url`, and the
+    // field was absent entirely — a publish-time failure with no local
+    // symptom. Asserted here rather than in a packaging test because it is
+    // the release that depends on it.
+    const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf-8"));
+    expect(pkg.repository?.url, "no repository.url — OIDC cannot match the claim").toBeTruthy();
+    expect(pkg.repository.url).toContain("github.com/hornjason/pai-harness");
   });
 
   test("the tag never reaches a shell as interpolated text", () => {
