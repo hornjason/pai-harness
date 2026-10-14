@@ -2499,7 +2499,26 @@ function harnessVersion(): string {
   }
 }
 
-export function addPaiHarnessDevDep(root: string, actions: string[]): void {
+/**
+ * `version` exists for the install tests, and the reason is a release
+ * blocker rather than convenience (#364).
+ *
+ * The range this writes is floored at the harness's own minor, so a tree
+ * carrying an UNPUBLISHED minor emits a range nothing on the registry
+ * satisfies — `0.3.0` emits `^0.3.0` while npm's newest is `0.2.1`. That is
+ * correct output and becomes resolvable the moment the version ships. But a
+ * test that really runs `bun install` cannot pass in the window before the
+ * publish, and the release workflow runs the suite BEFORE publishing, with
+ * no bypass, which made every minor and major bump un-releasable: the check
+ * could not pass until the step it gates had already run.
+ *
+ * Splitting it by phase is the fix. The resolvability half is driven over a
+ * version that IS published, so it keeps catching the `file:` regression it
+ * was written for; the "this tree's own range will resolve once shipped"
+ * half is a pure property and needs no registry. See
+ * `test/scaffold-installable.test.ts`.
+ */
+export function addPaiHarnessDevDep(root: string, actions: string[], version?: string): void {
   const pkgPath = join(root, "package.json");
   if (!existsSync(pkgPath)) return;
 
@@ -2516,7 +2535,7 @@ export function addPaiHarnessDevDep(root: string, actions: string[]): void {
     return;
   }
 
-  pkg.devDependencies["rungate"] = harnessDevDepRange();
+  pkg.devDependencies["rungate"] = harnessDevDepRange(version);
 
   if (!pkg.scripts) {
     pkg.scripts = {};

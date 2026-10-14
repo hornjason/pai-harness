@@ -87,6 +87,45 @@ export async function registryState(
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 /**
+ * Does `version` satisfy a `^x.y.z` range, by npm's rules? (#364)
+ *
+ * Exists because the scaffold pins consumers to a caret floored at the
+ * harness's own minor, and whether that range can ever resolve decided
+ * whether a release could be cut at all. A tree carrying an unpublished
+ * minor emits a range nothing satisfies — `0.3.0` emits `^0.3.0` while the
+ * registry's newest is `0.2.1` — and `release.yml` runs the suite before
+ * publishing, so a check wanting the tree's version already on npm cannot
+ * pass on the run that would put it there.
+ *
+ * The caret's 0.x behaviour is the whole point and is the part hand-rolled
+ * comparisons get wrong: below 1.0.0 a caret is pinned to the MINOR, not the
+ * major, so `^0.3.0` excludes `0.4.0`. Getting that backwards would make
+ * this answer `true` for every bump and the guard would certify nothing.
+ *
+ * Deliberately narrow: `harnessDevDepRange` only ever emits `^x.y.0`, so
+ * this handles carets and refuses anything else rather than pretending to be
+ * a semver range parser.
+ */
+export function satisfiesCaret(version: string, range: string): boolean {
+  const r = /^\^(\d+)\.(\d+)\.(\d+)$/.exec(range);
+  const v = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version);
+  if (!r || !v) return false;
+  const [rMaj, rMin, rPat] = r.slice(1, 4).map(Number);
+  const [vMaj, vMin, vPat] = v.slice(1, 4).map(Number);
+
+  // Lower bound: the version must be at or above the floor.
+  const atOrAbove =
+    vMaj > rMaj ||
+    (vMaj === rMaj && (vMin > rMin || (vMin === rMin && vPat >= rPat)));
+  if (!atOrAbove) return false;
+
+  // Upper bound, and the 0.x special case is the reason this function exists.
+  if (rMaj > 0) return vMaj === rMaj;
+  if (rMin > 0) return vMaj === 0 && vMin === rMin;
+  return vMaj === 0 && vMin === 0 && vPat === rPat;
+}
+
+/**
  * The single place that decides whether a release may be cut. `null` allows.
  *
  * One exported function so there is one binding to mutate. `tag` is the git

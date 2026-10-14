@@ -137,8 +137,9 @@ Each of these has happened in this repo and was mistaken for progress.
   half you measured, or do not quote them.
 - **Correct code nobody can install.** Every number in this file was measured
   against the working tree at `main`. What a consumer can `bun add -d` is
-  `rungate@0.2.1`, and the tree has said `0.2.2` since 2026-09-19 — 697
-  commits ago, with no release workflow to close the gap (#364). **The
+  `rungate@0.2.1`, and the tree has moved 719 commits past it since
+  2026-09-19. The release workflow exists as of #364 and the version is now
+  `0.3.0`; until a tag lands, the gap stands. **The
   evidence base and the installable artifact are different software.** The
   consumer survey below is the sharpest case: it measured code no consumer
   can obtain, so whatever it found, it was not a measurement of the consumer
@@ -158,12 +159,25 @@ this line, compares the first to `package.json` and the second to the npm
 registry, and goes red when either drifts. Bumping `package.json` without
 publishing turns it red, which is the state this line records today.
 
-- **Distribution standing (2026-10-13)** — tree `0.2.2`, published `rungate@0.2.1`.
+- **Distribution standing (2026-10-14)** — tree `0.3.0`, published `rungate@0.2.1`.
 
-Everything below was measured against the tree. The tree has carried `0.2.2`
-since 2026-09-19, 697 commits back, and there is no release workflow (#364).
-Nothing in this file is a measurement of what a consumer can install, and the
-consumer-list row in particular surveyed code that is not obtainable.
+Everything below was measured against the tree. The release workflow now
+exists and is tag-triggered (#364), so the gap is closing rather than
+permanent — but until a tag lands, nothing in this file is a measurement of
+what a consumer can install, and the consumer-list row in particular surveyed
+code that is not obtainable.
+
+**Why `0.3.0` and not `0.2.2` (2026-10-14).** The tree carried `0.2.2` from
+2026-09-19 and the first release attempt tagged it, which was wrong and was
+cancelled before it reached the registry. `0.2.2` is a PATCH, and a patch
+claims backward-compatible bug fixes. Measured against the commit that
+published `0.2.1`: **719 commits, 160 published-surface files changed,
++35,328/−1,815, 86 of the 90 `lib/` files in the tarball are new, and 613
+exported symbols were added.** Three exports appear removed in the diff and
+none actually is — `runSpecDrift`, `runDocHygiene` and `harnessRoot` all moved
+file and are still exported — so the change is purely additive. Under the 0.x
+convention that is a minor bump, and calling it a patch would have understated
+the release by roughly its entire contents.
 
 | Claim | Standing (2026-10-11) |
 |---|---|
