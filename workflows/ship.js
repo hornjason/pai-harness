@@ -135,6 +135,11 @@ const M_DECOMPOSITION_SCHEMA = {
           size: { type: 'string', enum: ['XS', 'S'] },
           acs: { type: 'array', items: { type: 'string' }, maxItems: 5 },
           filesToModify: { type: 'array', items: { type: 'string' } },
+          // #189 — the slot the answer had nowhere to land in. The prompt asked
+          // for "dependency order (foundations first)" and the schema had no
+          // field for it, so the ordering was produced, accepted and discarded.
+          // Titles of the sub-issues in THIS list that must finish first.
+          dependsOn: { type: 'array', items: { type: 'string' } },
           body: { type: 'string' },
         },
         required: ['title', 'size', 'acs', 'filesToModify'],
@@ -2335,7 +2340,22 @@ Constraints — each sub-issue MUST:
 - Cover all ACs from the parent — no AC left behind
 - Be independently shippable through the full pipeline
 
-Return sub-issues in dependency order (foundations first).
+Set "dependsOn" on any sub-issue that cannot be written until another one
+exists. List the other sub-issues' titles, exactly as you wrote them. This is
+read by the dispatcher: sub-issues with no dependsOn run at the same time, and
+a sub-issue with one does not start until the sub-issues it names have
+finished.
+
+File overlap is NOT what makes two sub-issues ordered — that is checked
+separately and these lists are already disjoint. What makes them ordered is a
+sub-issue that creates an export another consumes: a function, a type, a
+config key one writes and the other reads, a test helper, a CLI flag. On run
+wf_92dbb346-949 two sub-issues with disjoint files each wrote their own
+\`harnessRootFor()\` into the same file with opposite contracts, because
+neither could see the other. Say so with dependsOn and that cannot happen.
+
+Leave dependsOn off when there is no such relationship. Declaring one that is
+not real serialises the run for nothing.
   `, { label: 'to-issues', phase: 'Discovery', schema: M_DECOMPOSITION_SCHEMA })
 
   if (decompResult?.subIssues?.length >= 2) {
@@ -2964,6 +2984,81 @@ what it said rather than omitting the field.
 
 // ──── DECOMPOSED-SHIP-START ────
 // ── M-size sub-issue shipping: disjoint sub-issues run concurrently, overlapping ones serialize ──
+// ──── WAVE-DISPATCH-START ────
+// #189 — the topological schedule, inlined because this file runs in a
+// Workflow sandbox with no module loading (#69). `lib/decomposition-waves.ts`
+// is the library copy and `test/decomposition-waves.test.ts` runs both over
+// one matrix, so the two cannot drift silently (the #169/#244/#171 pattern).
+function waveKey(title) {
+  return String(title ?? '').trim().toLowerCase()
+}
+
+function dependencyWaves(subIssues) {
+  const list = Array.isArray(subIssues) ? subIssues : []
+  if (list.length === 0) return { waves: [], reasons: [], refusal: null }
+
+  const byTitle = new Map()
+  for (let i = 0; i < list.length; i++) {
+    const k = waveKey(list[i]?.title)
+    if (!k) {
+      return { waves: [], reasons: [], refusal: `sub-issue ${i + 1} has no title, so nothing can declare a dependency on it (#189)` }
+    }
+    if (byTitle.has(k)) {
+      return { waves: [], reasons: [], refusal: `two sub-issues are both titled ${JSON.stringify(String(list[i].title).trim())} — a dependency naming that title has two possible targets and picking one is a guess (#189)` }
+    }
+    byTitle.set(k, i)
+  }
+
+  const needs = list.map(() => [])
+  for (let i = 0; i < list.length; i++) {
+    for (const raw of (list[i]?.dependsOn || [])) {
+      const k = waveKey(raw)
+      if (!k) continue
+      const target = byTitle.get(k)
+      if (target === undefined) {
+        return { waves: [], reasons: [], refusal: `sub-issue ${JSON.stringify(String(list[i].title).trim())} depends on ${JSON.stringify(String(raw).trim())}, which is not one of the sub-issues — scheduling around a dependency this run cannot see is how ${'wf_92dbb346-949'} produced two functions with one name (#189)` }
+      }
+      if (target === i) {
+        return { waves: [], reasons: [], refusal: `sub-issue ${JSON.stringify(String(list[i].title).trim())} depends on itself (#189)` }
+      }
+      if (!needs[i].includes(target)) needs[i].push(target)
+    }
+  }
+
+  const waves = []
+  const reasons = []
+  const done = new Set()
+
+  while (done.size < list.length) {
+    const ready = []
+    for (let i = 0; i < list.length; i++) {
+      if (done.has(i)) continue
+      if (needs[i].every(d => done.has(d))) ready.push(i)
+    }
+    if (ready.length === 0) {
+      const stuck = list.map((s, i) => (done.has(i) ? null : String(s.title).trim())).filter(Boolean)
+      return { waves: [], reasons: [], refusal: `the dependsOn graph has a cycle — ${JSON.stringify(stuck)} can never start, because each waits on another of them. Refusing rather than falling back to parallel: a fallback would run exactly the schedule this field exists to prevent, and report that it had ordered the work (#189)` }
+    }
+    if (waves.length > 0) {
+      const waited = [...new Set(ready.flatMap(i => needs[i]))].map(d => String(list[d].title).trim()).sort()
+      reasons.push(`wave ${waves.length + 1} (${ready.map(i => String(list[i].title).trim()).join(', ')}) waited for ${waited.join(', ')} — a declared dependsOn, not a file overlap`)
+    }
+    waves.push(ready)
+    for (const i of ready) done.add(i)
+  }
+
+  return { waves, reasons, refusal: null }
+}
+
+function wavePlanSummary(plan, total) {
+  if (plan.refusal) return plan.refusal
+  if (plan.waves.length <= 1) {
+    return `${total} sub-issue(s) declared no dependsOn — dispatching all of them concurrently`
+  }
+  return `${total} sub-issues in ${plan.waves.length} dependency waves (${plan.waves.map(w => w.length).join(' then ')}) — this run is serialised by ${plan.waves.length - 1} barrier(s) and will take correspondingly longer`
+}
+// ──── WAVE-DISPATCH-END ────
+
 async function runDecomposedShip(subIssues) {
   log(`DECOMPOSED SHIP: ${subIssues.length} sub-issues from to-issues decomposition`)
 
@@ -2989,7 +3084,7 @@ async function runDecomposedShip(subIssues) {
       size: sub.size,
     }))
 
-    const settled = await parallel(batchIssues.map(subIssue => async () => {
+    const shipSubIssue = async (subIssue) => {
       log(`Shipping sub-issue: ${subIssue.title} (${subIssue.size})`)
       const buildResult = await briefedAgent(`
 Read ${WORK_DIR}/marcus-brief.md for full instructions.
@@ -3043,7 +3138,53 @@ directory (#218) — not the repo named in your brief, the one your checkout has
       }
       log(`Sub-issue SUCCESS: ${subIssue.title} — ${(buildResult.filesChanged || []).length} files changed`)
       return { subIssue, buildResult, ok: true }
-    }))
+    }
+
+    // #189 — the decomposer was asked for "sub-issues in dependency order",
+    // and every one of them was dispatched at once regardless of the answer.
+    // The overlap check above stays: it catches MERGE collisions, and a
+    // semantic dependency holds between sub-issues whose files are disjoint
+    // (AC-3). Both are needed and neither substitutes for the other.
+    const plan = dependencyWaves(subIssues)
+    log(wavePlanSummary(plan, subIssues.length))
+    if (plan.refusal) {
+      // AC-4 — loud, not a fallback. Falling back to parallel here would run
+      // exactly the schedule `dependsOn` exists to prevent, and report that it
+      // had ordered the work.
+      return {
+        success: false,
+        completed: [],
+        failed: subIssues.map(sub => ({ title: sub.title, buildResult: null })),
+        buildResult: { success: false, filesChanged: [], worktreePath: PROJECT_ROOT, agentResults: [] },
+        refusal: plan.refusal,
+      }
+    }
+
+    const settled = []
+    let waveFailed = false
+    for (let w = 0; w < plan.waves.length; w++) {
+      const wave = plan.waves[w]
+      if (waveFailed) {
+        // A sub-issue does not start when what it waited for did not land.
+        // Reporting it as "did not start" rather than dropping it keeps D-4's
+        // accounting honest: the run says what it ran and what it did not.
+        for (const i of wave) {
+          settled.push({
+            subIssue: batchIssues[i],
+            buildResult: { success: false, filesChanged: [], findings: [`did not start — wave ${w} failed and this sub-issue declared a dependsOn on it (#189)`] },
+            ok: false,
+          })
+        }
+        continue
+      }
+      if (w > 0) log(plan.reasons[w - 1])
+      const waveResults = await parallel(wave.map(i => () => shipSubIssue(batchIssues[i])))
+      for (let k = 0; k < wave.length; k++) {
+        const r = waveResults[k]
+        settled.push(r || { subIssue: batchIssues[wave[k]], buildResult: null, ok: false })
+      }
+      if (waveResults.some(r => !r || !r.ok)) waveFailed = true
+    }
 
     // D-4 — no work is lost: report completed siblings even when one fails, so a
     // late failure does not discard implementations that already succeeded.

@@ -5098,3 +5098,109 @@ agent satisfied with wording the parser had never seen.
   rejected an AST config check: a dependency for a case that is not the
   realistic failure mode. Code fences and section scoping cover all three
   measured readings; the limit is stated here rather than left implicit.
+
+## #189 — the decomposer was asked for an order and had nowhere to write it
+
+`workflows/ship.js`'s decompose prompt ended with one orphan line:
+
+> Return sub-issues in dependency order (foundations first).
+
+`M_DECOMPOSITION_SCHEMA` had `title`, `acs`, `filesToModify` and `size`. It had
+no field for an order, and `runDecomposedShip` dispatched every sub-issue in a
+single `parallel(...)` call. The instruction was followed, the answer was
+produced, and nothing read it — **#166's shape exactly: an instruction an agent
+can follow perfectly without its output changing anything.**
+
+### What that cost, measured
+
+Run `wf_92dbb346-949` (#105) decomposed into four sub-issues whose
+`filesToModify` were genuinely disjoint, which is all ship.js validated. The
+dependency was not in the files. It was in the API:
+
+| worktree | signature | behaviour |
+|---|---|---|
+| `-5` | `harnessRootFor(root: string)` | resolves the root the caller names |
+| `-8` | `harnessRootFor(dir: string)` | walks up looking for `HARNESS.md` |
+
+Two functions, one name, one file, opposite contracts. Both defensible, both
+carefully commented, neither author able to see the other. Eight agents, 77
+minutes, four worktrees of good work that could not be combined.
+
+### File-disjointness is the wrong test, and it is also still needed
+
+Overlap detects **merge** collisions. It cannot detect a **semantic**
+dependency, and two sub-issues can hold disjoint files and still be ordered
+whenever one creates something the other consumes — a function, an exported
+type, a config key one writes and the other reads, a test helper, a CLI flag.
+The overlap check at `ship.js:1028` stays (AC-3). Neither check substitutes for
+the other and a run needs both.
+
+### The positive control is the whole design
+
+A scheduler that put one sub-issue in every wave would satisfy every ordering
+case for free and destroy the only reason decomposition exists. So the
+all-independent case — *one* wave containing everything — is asserted twice:
+on the plan, and on the dispatcher's measured spawn order. It is the control
+that stops the ordering cases from being satisfied by a serialiser.
+
+### The direction this is allowed to be wrong in
+
+Toward **refusing**, never toward running anyway. A cycle, a `dependsOn`
+naming a sub-issue that is not in the list, a self-dependency, and two
+sub-issues sharing a title all refuse with an empty plan. Falling back to
+parallel on a dependency the scheduler could not read is the fail-open shape
+`.claude/rules/checks-must-be-able-to-fail.md` opens with, and here it would
+reproduce `wf_92dbb346-949` exactly while reporting that it had ordered the
+work.
+
+- [x] SC-1461: test/decomposition-waves.test.ts contains [a dependent sub-issue waits for its foundation, dependsOn produces topological waves] — executed against both copies, with the wave boundary carrying one line per barrier naming what it waited for (AC-5)
+- [x] SC-1462: test/decomposition-waves.test.ts contains [independent sub-issues still run in parallel, no dependsOn means ONE wave containing everything, independent sub-issues still overlap in the dispatcher itself] — the positive control, asserted on the plan and on the dispatcher's measured spawn order so a scheduler that serialises everything cannot pass
+- [x] SC-1463: test/decomposition-waves.test.ts contains [a dependency cycle is refused, a cycle refuses the dispatch and spawns no agent at all] — a cycle refuses loudly with an empty plan rather than deadlocking or falling back to parallel (AC-4)
+- [x] SC-1464: test/decomposition-waves.test.ts contains [the inline copy and the library agree, assertMarkedBlockReachable] — a twelve-case matrix run through both copies, with a case asserting the matrix is not all refusals, and the inline block's position read off the parse rather than matched as text
+- [x] SC-1465: workflows/ship.js contains [WAVE-DISPATCH-START, dependsOn:] — the schema has a field for the answer and the prompt names that field, so the ordering instruction has somewhere to land
+
+### What was broken to prove it
+
+Measured over `test/decomposition-waves.test.ts` +
+`test/decomposed-ship-dispatch.test.ts` (48 tests), each mutation applied to
+one anchor checked to appear exactly once, run, and reverted:
+
+| Mutation | Red |
+|---|---|
+| the library ignores `dependsOn` — everything lands in one wave | 9 of 48 |
+| the **inline** copy ignores `dependsOn`, library untouched | 13 of 48 — the parity matrix is what catches the extra four |
+| the library serialises everything — one sub-issue per wave | 6 of 48 — the positive control, and the reason it exists |
+| the cycle branch returns one flat wave instead of refusing | 4 of 48 |
+| the dispatcher `await`s each wave member in turn | 3 of 48 — a plan-level control cannot see this one |
+| the dispatcher stops gating wave N+1 on wave N's success | 1 of 48 |
+| the dispatcher ignores `plan.refusal` and dispatches anyway | 1 of 48 |
+
+One mutation is recorded separately because it does not produce a count.
+Replacing the cycle refusal's condition with `if (false)` — so no branch ever
+fires and `done` never grows — makes `bun test` **never terminate**; the run
+was killed at 600 seconds. That is AC-4's "rather than deadlocking", observed
+rather than argued: the refusal is not decoration on top of a scheduler that
+would otherwise cope, it is the only thing standing between a cyclic
+`dependsOn` and a hung run.
+
+### What this does NOT fix, stated rather than implied
+
+**AC-2's second clause is not delivered.** The issue asks that a dependent
+sub-issue "does not start until sub-issue 1's `lib/paths.ts` is collected and
+**visible in its worktree**". Waves gate on wave N's *success*; they do not
+make wave N's output visible to wave N+1.
+
+The reason is structural. Worktrees branch from `PROJECT_ROOT`'s HEAD at spawn
+(`opts.cwd = PROJECT_ROOT`, `isolation: 'worktree'`), and no run branch exists
+before implement — it is created at the record-build-commit step. Making wave
+N's files visible to wave N+1 would mean committing mid-run to whatever branch
+`PROJECT_ROOT` is on, which is `main`. That is the #267/#136 defect class
+precisely, and it once left 907 lines of unreviewed agent output staged on
+`main`.
+
+So collection stays one step at the end. What the ordering half buys on its
+own is still most of the value: sub-issue 4 is briefed after sub-issue 1 has
+*succeeded*, so a run that was going to produce two incompatible
+`harnessRootFor()`s now fails the foundation first and never briefs the
+consumer. What it does not buy is the consumer being able to *read* the
+foundation's code. Filed as a follow-up rather than left as a silent gap.
