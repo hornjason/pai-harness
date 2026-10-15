@@ -19,6 +19,7 @@ import {
   checkCompliance,
   parseToolCalls,
 } from "../lib/transcript-checker.js";
+import { loadRoleConfig } from "../lib/config-readers.js";
 import { extractDirectives } from "../lib/directive-extractor.js";
 import type { DirectiveCategory } from "../lib/directive-extractor.js";
 import { analyzeTranscript } from "./analyze-transcript.js";
@@ -85,39 +86,28 @@ export interface GradeOutput {
 }
 
 export function loadValidRoles(projectRoot?: string): Set<string> {
-  const configPaths = [
-    projectRoot ? join(projectRoot, ".claude", "rungate.json") : "",
-    join(process.cwd(), ".claude", "rungate.json"),
-  ].filter(Boolean);
-  for (const p of configPaths) {
-    if (existsSync(p)) {
-      try {
-        const config = JSON.parse(readFileSync(p, "utf-8"));
-        if (config.roles) return new Set(Object.keys(config.roles));
-      } catch { /* fall through */ }
-    }
+  // The cwd fallback is kept: this runs as a one-shot CLI and `--project` is
+  // optional. What is NOT kept is the `catch { fall through }` — it meant a
+  // project with a corrupt config was graded against rungate's built-in role
+  // list, and every transcript for a role the project had renamed was
+  // discarded as "unknown role" with no error.
+  for (const root of [projectRoot, process.cwd()]) {
+    if (!root) continue;
+    const roles = loadRoleConfig(root);
+    if (Object.keys(roles).length > 0) return new Set(Object.keys(roles));
   }
   return new Set(["marcus", "quinn", "discovery", "rook", "serena", "aditi", "da"]);
 }
 
 export function loadRoleBriefPaths(projectRoot: string): Record<string, string> {
-  const configPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(configPath)) return {};
-  try {
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    const result: Record<string, string> = {};
-    if (config.roles) {
-      for (const [name, roleConfig] of Object.entries(config.roles)) {
-        const brief = (roleConfig as Record<string, unknown>).brief;
-        if (typeof brief === "string") {
-          result[name] = join(projectRoot, brief);
-        }
-      }
+  const result: Record<string, string> = {};
+  for (const [name, roleConfig] of Object.entries(loadRoleConfig(projectRoot))) {
+    const brief = (roleConfig as Record<string, unknown>).brief;
+    if (typeof brief === "string") {
+      result[name] = join(projectRoot, brief);
     }
-    return result;
-  } catch {
-    return {};
   }
+  return result;
 }
 
 export function inferRole(metaPath: string, transcriptPath: string, validRoles: Set<string>): Role | null {

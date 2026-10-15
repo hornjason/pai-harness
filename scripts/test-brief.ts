@@ -19,6 +19,7 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync } from "fs";
 import { join, basename, resolve } from "path";
 import { spawnSync } from "child_process";
+import { loadRoleConfig as readRoleConfig } from "../lib/config-readers.js";
 import { extractDirectives } from "../lib/directive-extractor.js";
 import { checkCompliance, computeScore, formatReport, evaluateCriteria, parseToolCalls, type Role, type CriterionResult } from "../lib/transcript-checker.js";
 import { createWorktree, type WorktreeResult } from "../lib/worktree-isolation.js";
@@ -52,12 +53,10 @@ interface RoleConfig {
   standardTask?: string;
 }
 
-function loadRoleConfig(): Record<string, RoleConfig> {
-  const configPath = join(ROOT, ".claude", "rungate.json");
-  if (!existsSync(configPath)) return {};
-  const config = JSON.parse(readFileSync(configPath, "utf-8"));
-  return config.roles || {};
-}
+// Through lib/config-readers.ts, which resolves either layout. This read was
+// monolith-only, so `standardTask` lookups below returned nothing for every
+// consumer that followed the documented migration to `.claude/rungate/`.
+const loadRoleConfig = () => readRoleConfig(ROOT) as Record<string, RoleConfig>;
 
 // ── RepoRails integration ────────────────────────────────
 

@@ -11,6 +11,8 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+import { tryLoadRungateConfig } from './config-loader';
+
 export interface CompletionCheckResult {
   passed: boolean;
   blockers: string[];
@@ -105,15 +107,60 @@ export function checkUncommittedChanges(projectRoot: string): CompletionCheckRes
 }
 
 /**
- * Run conformity checks if rungate.json exists.
+ * Run conformity checks if the project is scaffolded.
  * Returns blocker if conformity fails.
  */
 export function checkConformity(projectRoot: string): CompletionCheckResult {
   const blockers: string[] = [];
   const warnings: string[] = [];
 
-  const rungateConfig = join(projectRoot, '.claude', 'rungate.json');
-  if (!existsSync(rungateConfig)) {
+  // Either layout counts as scaffolded. The old existence check named the
+  // monolith only, so every consumer that followed the documented migration
+  // to `.claude/rungate/` stopped having its conformity suite run here —
+  // silently, reporting passed.
+  //
+  // The throw is CAUGHT and converted to a blocker, which is the one place in
+  // this migration that is not simply "let the loader throw". This function is
+  // reached from `hooks/TaskCompleted.hook.ts`, which has no catch of its own,
+  // and a hook that exits 1 is neither allow (0) nor block (2) — so an
+  // escaping throw would disable the entire completion gate, not just this
+  // check, on one unparseable byte. Blocking keeps ADR-001 D2's distinction
+  // (a corrupt config is never a missing config) and keeps the gate closed.
+  let configured: boolean;
+  try {
+    configured = tryLoadRungateConfig(projectRoot) !== null;
+  } catch (err: unknown) {
+    // The CLASS, not the message. `JSON.parse` quotes a token from the file it
+    // failed on — "Unexpected identifier \"ghp_…\"" — and a config can hold
+    // credentials, so the parser's text is a channel out of the file and into
+    // this blocker, which is printed to stderr and captured in transcripts.
+    // The reproduction command is the replacement for the detail: it gives the
+    // operator the full message on their own terminal, where the config
+    // already is.
+    const kind = err instanceof Error && err.name ? err.name : "error";
+    // No runnable command in the text, and the path is JSON-quoted.
+    //
+    // The first draft printed `bun -e '…${projectRoot}…'` for the operator to
+    // paste, which the push review called command injection and is: this is a
+    // library function, the root reaches it from the caller, and a path
+    // carrying `'; rm -rf ~; '` would have been printed as a command a human
+    // is being told to run. A refusal that hands someone a line to paste is
+    // an execution path with a person in the middle of it.
+    //
+    // `JSON.stringify` on the path escapes quotes and newlines, so a crafted
+    // root cannot end the sentence and forge a second one either.
+    return {
+      passed: false,
+      blockers: [
+        `rungate config under ${JSON.stringify(join(projectRoot, '.claude'))} could not be read ` +
+          `(${kind}), so conformity did not run — a config that exists and cannot be parsed is ` +
+          `not an unconfigured project. Load that root with loadRungateConfig from ` +
+          `lib/config-loader.ts to see the parser's own message.`,
+      ],
+      warnings: [],
+    };
+  }
+  if (!configured) {
     // No rungate config — skip conformity check
     return { passed: true, blockers: [], warnings: [] };
   }

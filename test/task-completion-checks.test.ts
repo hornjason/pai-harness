@@ -131,6 +131,83 @@ describe('task-completion-checks', () => {
       // Result depends on whether conformity test exists
       expect(result).toBeDefined();
     });
+
+    it('runs conformity check on the directory layout too', () => {
+      // The monolith-only existence check meant every consumer that followed
+      // the documented migration to `.claude/rungate/` silently stopped having
+      // this gate run, and it reported passed (#214).
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ project: 'x' }));
+      writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ name: 'test', type: 'module' }));
+
+      const result = checkConformity(tempDir);
+      // No conformity suite in the fixture, so the run cannot come back clean.
+      // The assertion is that it RAN — a skipped gate returns the empty shape.
+      expect(result.blockers.length + result.warnings.length).toBeGreaterThan(0);
+    });
+
+    it('blocks rather than throwing when the config cannot be read', () => {
+      // #214 regression. `tryLoadRungateConfig` throws on malformed JSON by
+      // design — a corrupt config is never a missing one — but this function
+      // is reached from `hooks/TaskCompleted.hook.ts`, which has no catch. An
+      // escaping throw exits the hook 1, and 1 is neither "allow" (0) nor
+      // "block" (2): the WHOLE completion gate stops blocking, not just the
+      // conformity part. One unparseable byte would have disabled it.
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), '{ not json');
+
+      let result!: ReturnType<typeof checkConformity>;
+      expect(() => { result = checkConformity(tempDir); }).not.toThrow();
+      expect(result.passed, 'an unreadable config waved the gate through').toBe(false);
+      expect(result.blockers.join(' ')).toMatch(/config/i);
+      // And it must not be mistaken for the unscaffolded case, which passes.
+      expect(checkConformity(mkdtempSync(join(tmpdir(), 'tcc-none-'))).passed).toBe(true);
+    });
+
+    it('does not quote the file back when reporting that it could not be parsed', () => {
+      // Second push-review finding. `JSON.parse` names the token it choked on,
+      // so a config whose malformation sits next to a credential would print
+      // it into a blocker that reaches stderr and the transcript. The blocker
+      // carries the error CLASS and a command the operator can run locally.
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      const SECRET = 'NOT-A-REAL-TOKEN-0123456789';
+      writeFileSync(join(dir, 'config.json'), `{ "token": ${SECRET} }`);
+
+      const result = checkConformity(tempDir);
+      expect(result.passed).toBe(false);
+      const text = result.blockers.join(' ');
+      expect(text, 'the parser quoted the file into the blocker').not.toContain(SECRET);
+      // Still actionable: it says which class of failure and how to see more.
+      expect(text).toContain('SyntaxError');
+      expect(text).toContain('loadRungateConfig');
+    });
+
+    it('hands the operator no line to paste built from the project root', () => {
+      // Third push-review finding. The first draft of the blocker printed
+      // `bun -e '…${projectRoot}…'` for the operator to run. This is a library
+      // function and the root comes from the caller, so a path carrying a
+      // quote and a semicolon would have been printed as a command a human is
+      // being told to execute — an execution path with a person in the middle.
+      const root = mkdtempSync(join(tmpdir(), "tcc-inject-'; touch pwned; '"));
+      const dir = join(root, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), '{ broken');
+
+      const text = checkConformity(root).blockers.join(' ');
+      try {
+        expect(text, 'the blocker suggests a shell command').not.toMatch(/\bbun -e\b/);
+        // The path still appears, so the refusal is still actionable — but
+        // JSON-quoted, so the injected quote is escaped rather than closing
+        // the one around it.
+        expect(text).toContain(JSON.stringify(join(root, '.claude')));
+        expect(text).not.toContain(`'${join(root, '.claude')}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('runAllCompletionChecks', () => {

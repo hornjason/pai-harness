@@ -15,6 +15,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from "fs";
 import { join, basename } from "path";
 import { spawnSync } from "child_process";
+import { loadRoleConfig as readRoleConfig } from "../lib/config-readers.js";
 import { extractDirectives } from "../lib/directive-extractor.js";
 import { checkCompliance, computeScore, parseToolCalls } from "../lib/transcript-checker.js";
 import { writeAuditComplianceJSON } from "../lib/agent-audit.js";
@@ -38,16 +39,10 @@ interface RoleConfig {
   standardTask?: string;
 }
 
-function loadRoleConfig(): Record<string, RoleConfig> {
-  const configPath = join(ROOT, ".claude", "rungate.json");
-  if (!existsSync(configPath)) return {};
-  try {
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    return config.roles || {};
-  } catch {
-    return {};
-  }
-}
+// Through lib/config-readers.ts, which resolves either layout. The old read
+// named the monolith only and swallowed a parse error into `{}`, so a corrupt
+// config produced "unknown role" for every role the project has.
+const loadRoleConfig = () => readRoleConfig(ROOT) as Record<string, RoleConfig>;
 
 // ── Fresh eyes results ──────────────────────────────────
 

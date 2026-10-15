@@ -11,6 +11,8 @@ import { readFileSync, existsSync } from "fs";
 import { execFileSync, execSync } from "child_process";
 import { resolve, join } from "path";
 
+import { tryLoadRungateConfig } from "../lib/config-loader.js";
+
 const args = process.argv.slice(2);
 function getArg(name: string): string | undefined {
   const idx = args.indexOf(`--${name}`);
@@ -56,9 +58,12 @@ const goalData = { issueTitle: title, issueGoal, successCriteria, labels };
 // ── 2. Pre-flight SSH checks ──
 
 let preflightResults: Record<string, any> | undefined;
-const configPath = join(projectRoot, ".claude/rungate.json");
-if (existsSync(configPath)) {
-  const config = JSON.parse(readFileSync(configPath, "utf-8"));
+// Through the loader: this read named the monolith only, so a consumer on the
+// directory layout got no pre-flight checks and no preloaded brief contexts,
+// and the workflow fell back to ceremony agents without reporting why. The
+// `|| echo "{}"` shape ADR-002 D1 names is the same defect one file over.
+const config = tryLoadRungateConfig(projectRoot) as Record<string, any> | null;
+if (config) {
   const remoteHosts = config.remoteHosts || {};
   if (Object.keys(remoteHosts).length > 0) {
     preflightResults = {};
