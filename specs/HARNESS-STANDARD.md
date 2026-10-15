@@ -5392,6 +5392,30 @@ quietly fixes is an acceptance criterion nobody reviewed (#217).
 
 ### What was broken to prove it
 
+Counted over `test/phase2-decomposition.test.ts` (48 tests). None of the
+mutations is left in the tree; all were run and reverted.
+
 | Mutation | Red |
 |---|---|
-| _pending_ | _pending_ |
+| `decompositionRefusal` short-circuited to `return []` | 15 of 48 |
+| the Phase-1-AND-deferred branch removed (#79 AC-3) | 3 of 48 |
+| the neither-kept-nor-deferred branch removed | 4 of 48 |
+| `phase2BodyViolations` checks ids only, not statements | 4 of 48 — the #75 fixture, both directions of the diff, and the paraphrase case |
+| the comparison reads the whole body, not just the Success Criteria section | 1 of 48 |
+| `normalise` lowercases and strips punctuation | 9 of 48 — a looser comparison buys green with blindness, which is why it is mutated toward leniency rather than strictness |
+| `shellSingleQuote` stops escaping the apostrophe | 3 of 48 |
+| an unreadable issue treated as clean | 1 of 48 |
+| `readSplitPlan` takes the ACs from the grouping file too | 1 of 48 — the reference side back through the model |
+| ship.js's inline refusal nested under a dead condition | 1 of 48 |
+| ship.js's inline copy drifts from the library (`specElement` ignored) | 1 of 48 |
+| the prompt stops listing the ACs | 1 of 48 |
+| the prompt stops running the verifier | 1 of 48 |
+
+**One mutation zero, found and closed.** `if (false) ` in front of ship.js's
+`discoveryRefusal = shipFailed(` scored **0**: the test grepped the 1200
+characters after the call site for that string and for `return false`, and
+the mutation leaves BOTH in place. A detector narrower than what it detects —
+the second shape in `.claude/rules/checks-must-be-able-to-fail.md`. The
+decision is read off the parse now (#204): `enclosingChain` must put the
+assignment and the `return` at the guard's own conditional depth, so nesting
+either under another condition changes the chain. Re-measured: 1 of 48.
