@@ -101,8 +101,8 @@ export function runScaffoldWriteSteps(
   // Validators. These used to run outside the `if (fix)` block with a `{ fix }`
   // flag, which is why `addFrontmatterToSpecs` is the one step audit ever
   // reported anything from.
-  addFrontmatterToSpecs(join(projectPath, "specs"), actions, { fix: true });
-  addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions, { fix: true });
+  addFrontmatterToSpecs(join(projectPath, "specs"), actions);
+  addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
   detectOversizedSpecs(join(projectPath, "specs"), actions);
   checkGovernsAlignment(join(projectPath, "specs"), actions);
   detectMisplacedSpecs(projectPath, actions);

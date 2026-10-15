@@ -10,6 +10,7 @@ import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
+import { writtenPath } from "../../lib/scaffold/steps";
 
 const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.ts");
 
@@ -628,20 +629,54 @@ describe("scaffold-project: dry-run mode", () => {
     expect(output).toMatch(/GAP|audit/i);
   });
 
-  test("dry-run: reports missing CODE-MAP.md as gap for code projects", () => {
+  /**
+   * #398 changed the verb these two cases assert, and the change is
+   * deliberate — flagged in the PR rather than slipped in.
+   *
+   * Audit used to PREDICT: four `existsSync` checks emitting
+   * `GAP: X missing — run with --fix to generate`, standing in for
+   * twenty-five write steps. It reported 0 changes on a tree `--fix` rewrote
+   * in 28 places. Audit now REHEARSES — the real steps run against a
+   * throwaway clone — so the report says `GENERATED: CODE-MAP.md`, because
+   * that is what the step did.
+   *
+   * The GAP vocabulary cannot be kept on top of that. A translation layer
+   * from write verbs back to GAP would be a second vocabulary maintained by
+   * hand beside the first, which is the exact shape #398 removes; and
+   * `writtenPath()`'s negative control requires that GAP name no path, so an
+   * audit emitting GAP could never be compared against what `--fix` wrote.
+   * The "run with --fix" half is not lost — `rehearsalNotice()` prints it
+   * once per run instead of once per file.
+   *
+   * What these cases still assert is the part that matters and did not
+   * change: audit NAMES the file, and audit WRITES NOTHING.
+   */
+  test("dry-run: names the missing CODE-MAP.md for code projects, and writes nothing", () => {
     tmpDir = createTempDir();
     mkdirSync(join(tmpDir, "src"), { recursive: true });
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-codemap" }));
     const output = runScaffold(tmpDir); // no --fix
-    expect(output).toMatch(/GAP.*CODE-MAP/);
-    expect(existsSync(join(tmpDir, "CODE-MAP.md"))).toBe(false);
+    // Which write verb is the step's business, not this test's — asserted
+    // through the same binding `postScaffoldCommit` stages by and the
+    // agreement property compares with, so a verb rename cannot make this
+    // pass while breaking those.
+    const named = output.split("\n").map(writtenPath).filter(Boolean);
+    expect(named, "audit did not name CODE-MAP.md as a write").toContain("CODE-MAP.md");
+    expect(
+      existsSync(join(tmpDir, "CODE-MAP.md")),
+      "audit wrote into the tree it was previewing",
+    ).toBe(false);
   });
 
-  test("dry-run: reports missing docs-routing rule as gap", () => {
+  test("dry-run: names the missing docs-routing rule, and writes nothing", () => {
     tmpDir = createTempDir();
     writeFileSync(join(tmpDir, "package.json"), JSON.stringify({ name: "test-routing" }));
     const output = runScaffold(tmpDir); // no --fix
-    expect(output).toMatch(/GAP.*docs-routing/);
+    expect(output).toMatch(/docs-routing/);
+    expect(
+      existsSync(join(tmpDir, ".claude", "rules", "docs-routing.md")),
+      "audit wrote into the tree it was previewing",
+    ).toBe(false);
   });
 
   test("dry-run: exits with code 0", () => {

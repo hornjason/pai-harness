@@ -1298,17 +1298,15 @@ function writeDirectoryStructure(
  * so no later scaffold ever corrected it. Running this step last is what makes
  * that skip safe — the content it preserves is now right from run 1.
  */
-export function generateCodeMapStep(root: string, actions: string[], opts?: { fix?: boolean; dryRun?: boolean }): void {
-  const fixMode = opts?.fix ?? !opts?.dryRun;
+export function generateCodeMapStep(root: string, actions: string[]): void {
+  // No dry-run branch. It reported `GAP: CODE-MAP.md missing` and nothing
+  // else — one of the four `existsSync` checks that stood in for twenty-five
+  // write steps and made audit report 0 changes on a tree `--fix` rewrote in
+  // 28 places. #398 replaced prediction with rehearsal: audit runs THIS,
+  // against a throwaway clone, and reports `GENERATED: CODE-MAP.md` because
+  // that is what happened. Reachable from one caller, which has always passed
+  // fix mode, so the branch was dead as well as wrong.
   const codeMapPath = join(root, "CODE-MAP.md");
-
-  // In dry-run/non-fix mode, only report gaps
-  if (!fixMode) {
-    if (!existsSync(codeMapPath)) {
-      actions.push("GAP: CODE-MAP.md missing — run with --fix to generate");
-    }
-    return;
-  }
 
   // Check staleness
   if (existsSync(codeMapPath)) {
