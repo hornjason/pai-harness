@@ -225,6 +225,37 @@ describe("SC-1478: the writers produce the new shape from a real grade file", ()
     expect(entryVerdicts(loadComplianceHistory(historyPath())[0]!)).toEqual({ "COMP-9": "N/A" });
   });
 
+  test("the LIVE writer carries all three from grade file to history file", async () => {
+    // MEASURED: without this, deleting `rule`, `evidence` and `category` from
+    // `scripts/persist-compliance.ts`'s entry builder scored ZERO — the whole
+    // defect #116 is about, reintroduced, against a suite that only checked
+    // hand-built fixtures and the verdict map. The round trip has to start at
+    // the grade file the writer actually reads.
+    const { persistCompliance } = await import("../scripts/persist-compliance");
+    const { mkdirSync } = await import("fs");
+    const work = join(root, "run");
+    mkdirSync(work, { recursive: true });
+    writeFileSync(
+      join(work, "workflow-state.json"),
+      JSON.stringify({ schemaVersion: 2, issue: 116, slug: "history-evidence", phase: "VERIFY", issueGoal: "keep the evidence", acs: [] }),
+    );
+    writeFileSync(
+      join(work, "compliance-grade.json"),
+      JSON.stringify({ grades: [{ role: "marcus", total: 1, followed: 0, flagged: ["DIR-L29"], rules: [DIR_L29] }] }),
+    );
+
+    persistCompliance(work, join(import.meta.dir, ".."), "116", () => {});
+
+    const written = loadComplianceHistory(join(root, "compliance-history.jsonl"));
+    expect(written.length, "the writer produced no history entry").toBe(1);
+    const rec = ruleRecords(written[0]!).find(r => r.id === "DIR-L29");
+    expect(rec, "the writer dropped the record").toBeDefined();
+    expect(rec!.rule).toBe(DIR_L29.rule);
+    expect(rec!.evidence, "the verdict reached the history unsourced").toBe(DIR_L29.evidence);
+    expect(rec!.category).toBe("quality");
+    expect(historySchema(written[0]!)).toBe(COMPLIANCE_HISTORY_SCHEMA);
+  });
+
   test("the live writer is the one under test and not a copy of it", () => {
     // `scripts/persist-compliance.ts` builds the entry inline. Asserting the
     // shape here and leaving the writer unasserted would be a round-trip test
