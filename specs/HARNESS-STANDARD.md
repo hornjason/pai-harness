@@ -5476,9 +5476,66 @@ and it is the one that now blocks.
 
 - [ ] SC-1489: lib/prove-label-gate.ts contains [proveLabelGateVerdict] — an authenticated read that fails REFUSES and names the read failure as the reason. "No blocking label" and "could not find out" produce different text so a blocked ship can be debugged
 - [ ] SC-1490: test/prove-label-gate.test.ts contains [throwingClient] — the failure branch is EXERCISED by a client whose read rejects rather than argued about and the token-less case is asserted to be UNMEASURED rather than ALLOW
+- [ ] SC-1491: lib/prove-label-gate.ts contains [plantedLabelRead] — a fixture may supply the label list the check reads and may never supply the verdict. `proveLabelViolation` judges planted labels exactly as it judges live ones and no shipping path sets the variable
+
+### The contract test the fix turned red, and why that was the fix working
+
+`test/contract.test.ts` runs the ship gate over a synthetic project whose
+`issueRepo` is `test/repo`. That repo does not exist, so the label read 404s,
+and before #405 the 404 was swallowed — **the fixture did not satisfy
+prove-label, it was merely unreadable by it.** The same sentence is already
+written into that fixture about `code-pushed` (#174), where it was a bare
+directory and `git rev-list @{upstream}..HEAD` failed and the failure read as
+nothing-to-report. Two checks, one fixture, the same defect twice.
+
+With the fail-open gone the contract answers differently depending on the
+machine: green in CI, which has no token and so reports `UNMEASURED` and
+returns, and red locally, where a token is present and the 404 is a refusal. A
+contract whose verdict depends on who runs it is worse than either verdict, so
+the fixture now plants the labels through `RUNGATE_PROVE_LABEL_FIXTURE`.
+
+The seam supplies the **input** and never the verdict. `proveLabelViolation`
+still judges what is planted, so the same fixture carrying `needs-prove`
+without `proven` is still refused — asserted as a contract test beside the
+passing one, because a planted read that could not refuse would be the
+fail-open wearing a fixture's clothes. Malformed content throws rather than
+falling back to the live read: a typo'd fixture that silently became a network
+call is this issue's own defect, one level up. And a grep over `lib`, `gates`,
+`scripts`, `workflows`, `hooks` and `bin` asserts nothing that ships sets the
+variable, because a seam a production path can reach is a bypass.
 
 ### What was broken to prove it
 
+Measured over `test/prove-label-gate.test.ts` (20 tests). None of the nine is
+left in the tree; all were run and reverted.
+
 | Mutation | Red |
 |---|---|
-| _pending_ | _pending_ |
+| the authenticated read failure allows instead of refusing — the #405 fail-open, restored in the decider | 2 of 20 |
+| an unreadable label set is treated as no labels | 5 of 20 |
+| the token-less case refuses too, so every local `bun test gates/` blocks | 3 of 20 |
+| the token-less case ALLOWS — `UNMEASURED` collapsed into clean | 2 of 20 |
+| the two refusal texts become the same string | 2 of 20 |
+| the detail is dropped from the refusal | 1 of 20 |
+| the gate goes back to `catch { return }` | 1 of 20 |
+| the gate reads `process.env.GITHUB_TOKEN` directly instead of `resolveGitHubToken` | 1 of 20 |
+| the gate check is renamed, so the source guards read an empty slice | 2 of 20 |
+
+The seventh row scored **zero** on the first battery, and the reason is this
+file's own subject. The guard was
+`.not.toMatch(/catch\s*\{[^}]*\breturn;\s*\}/)` and the real source reads
+`catch (e) {`, so the pattern could not match the code it was written
+against — a detector narrower than what it detects, which is shape two in
+`.claude/rules/checks-must-be-able-to-fail.md`. A negative text match is the
+easiest place in a tree to write one, because it is green both when the defect
+is absent and when the detector is blind, and nothing distinguishes those two
+readings. The fix is to assert what the code must CONTAIN — the line handing
+the read failure to `proveLabelGateVerdict` — which `catch { return }` cannot
+be reintroduced without deleting, and which turns red rather than blind if the
+source is reformatted.
+
+The ninth row exists for the same reason one layer up. Both source-text guards
+read a slice of `gates/workflow.test.ts`, and a slice whose start index is
+`-1` is an empty string that satisfies every negative assertion in the file.
+`gateCheckBody()` is the one bounded reader and it throws on either bound, so
+renaming the check it looks for aborts both guards instead of passing them.

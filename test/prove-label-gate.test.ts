@@ -33,7 +33,12 @@ import { describe, expect, test } from "bun:test";
 import { join } from "path";
 
 import { getIssueLabels } from "../lib/github";
-import { proveLabelGateVerdict, proveLabelViolation } from "../lib/prove-label-gate";
+import {
+  LABEL_FIXTURE_ENV,
+  plantedLabelRead,
+  proveLabelGateVerdict,
+  proveLabelViolation,
+} from "../lib/prove-label-gate";
 
 /** A fake Octokit that records what it was asked for. */
 function stubClient(labels: unknown, seen: Record<string, unknown> = {}) {
@@ -294,5 +299,75 @@ describe("SC-1490: a token-less environment is UNMEASURED, which is not clean", 
     expect(to, "the verdict call is gone").toBeGreaterThan(from);
     expect(body.slice(from, to), "an early return between the read and the verdict is the #405 fail-open")
       .not.toMatch(/\breturn\s*;/);
+  });
+});
+
+/**
+ * SC-1491 — the fixture seam supplies the input and never the verdict.
+ *
+ * The contract test needs a readable issue and cannot have one: its fixture
+ * names `test/repo`, which 404s, and before #405 that 404 was swallowed. A
+ * seam that let a fixture buy a pass would be the fail-open wearing a test's
+ * clothes, so what it plants is a label list and `proveLabelViolation` still
+ * judges it.
+ */
+describe("SC-1491: the planted label read is an input, not a bypass", () => {
+  test("no env var set means read GitHub", () => {
+    expect(plantedLabelRead({})).toBeNull();
+    expect(plantedLabelRead({ [LABEL_FIXTURE_ENV]: "" })).toBeNull();
+  });
+
+  test("a planted list is returned as a successful read", () => {
+    expect(plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["proven"]' })).toEqual({
+      labels: ["proven"],
+      tokenPresent: true,
+    });
+  });
+
+  test("a planted needs-prove still REFUSES", () => {
+    const read = plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["needs-prove"]' })!;
+    const outcome = proveLabelGateVerdict(read);
+    expect(outcome.verdict).toBe("REFUSE");
+    expect(outcome.message).toContain("Run /prove");
+  });
+
+  test("there is no value of the variable that allows a needs-prove issue", () => {
+    // The seam's whole defence. Anything that is not a label list throws, and
+    // a label list carrying `needs-prove` without `proven` refuses — so the
+    // only way past the check is to plant the labels that would pass a live
+    // read anyway.
+    for (const raw of ['["needs-prove"]', '["needs-prove","other"]']) {
+      expect(proveLabelGateVerdict(plantedLabelRead({ [LABEL_FIXTURE_ENV]: raw })!).verdict).toBe("REFUSE");
+    }
+    expect(proveLabelGateVerdict(plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["needs-prove","proven"]' })!).verdict)
+      .toBe("ALLOW");
+  });
+
+  test("malformed content throws rather than falling back to the live read", () => {
+    // A typo'd fixture that silently became a network call is this issue's
+    // own defect one level up: the caller would believe it planted something.
+    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: "needs-prove" })).toThrow(/not valid JSON/);
+    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: '{"a":1}' })).toThrow(/array of label strings/);
+    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: "[1,2]" })).toThrow(/array of label strings/);
+  });
+
+  test("no shipping path sets the variable", () => {
+    // A fixture seam a shipping path can reach is a bypass. The gate READS it
+    // — that is the one permitted mention, and it is in the file this test
+    // already reads — so the scan is for assignment, anywhere under the dirs
+    // that run in production.
+    const { execFileSync } = require("child_process");
+    const root = join(import.meta.dir, "..");
+    let hits = "";
+    try {
+      hits = execFileSync(
+        "grep",
+        ["-rn", "--include=*.ts", "--include=*.js", `${LABEL_FIXTURE_ENV}=`, "lib", "gates", "scripts", "workflows", "hooks", "bin"],
+        { cwd: root, encoding: "utf-8" },
+      );
+    } catch {
+      hits = ""; // grep exits 1 on no matches, which is the passing case
+    }
+    expect(hits.trim(), `${LABEL_FIXTURE_ENV} is set by a shipping path — that is a bypass`).toBe("");
   });
 });

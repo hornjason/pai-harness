@@ -26,10 +26,27 @@ const GATES_DIR = join(import.meta.dir, "..", "gates");
  * directly would leave that plumbing — the half of #314 that lives in the
  * runner rather than in the checks — unexercised by the contract test that is
  * supposed to be the gate's own proof.
+ *
+ * `RUNGATE_PROVE_LABEL_FIXTURE` plants the labels the prove-label check reads
+ * (#405). The fixture's `issueRepo` is `test/repo`, which 404s, and before
+ * #405 that 404 was swallowed — the fixture did not satisfy prove-label, it
+ * was merely unreadable by it, exactly as it had been unreadable by
+ * `code-pushed` until it was made a real pushed repository. Without a planted
+ * read the contract would now pass in CI (no token, UNMEASURED) and fail
+ * locally (token present, so the 404 refuses), and a contract whose answer
+ * depends on the machine is worse than either answer. What is planted is the
+ * INPUT; `proveLabelViolation` still judges it, and the
+ * `["needs-prove"]` case below asserts the gate still refuses.
  */
-function runGate(gate: string, slug: string, treeUnderTest: string): { pass: number; fail: number; output: string } {
+function runGate(
+  gate: string,
+  slug: string,
+  treeUnderTest: string,
+  labels: string[] = [],
+): { pass: number; fail: number; output: string } {
   const gateRunner = join(GATES_DIR, "run-gate.ts");
-  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --tree-under-test ${treeUnderTest} --force 2>&1`;
+  const fixture = `RUNGATE_PROVE_LABEL_FIXTURE=${JSON.stringify(JSON.stringify(labels))}`;
+  const cmd = `RUNGATE_WORK_DIR=${TEST_BASE} RUNGATE_SKIP_AGENTS=1 ${fixture} bun run ${gateRunner} --gate ${gate} --slug ${slug} --issue 9999 --tree-under-test ${treeUnderTest} --force 2>&1`;
   try {
     const output = execSync(cmd, { encoding: "utf-8", timeout: 30000 });
     const passMatch = output.match(/(\d+) pass/);
@@ -193,6 +210,32 @@ describe("contract: STANDARD tier", () => {
 
   test("ship passes", () => {
     const r = runGate("ship", "standard", STANDARD_PROJECT);
+    expect(r.fail).toBe(0);
+  }, { timeout: 30_000 });
+
+  // #405 — the control for the line above. The planted read supplies the
+  // labels and nothing else: the same fixture, differing only in what the
+  // issue is carrying, must still be refused. Without this the planting would
+  // be indistinguishable from switching the check off, which is the bypass
+  // the seam exists to avoid being.
+  test("ship refuses when the planted labels carry needs-prove without proven", () => {
+    const r = runGate("ship", "standard", STANDARD_PROJECT, ["needs-prove"]);
+    expect(r.fail).toBeGreaterThan(0);
+    expect(r.output).toContain("prove-label-enforcement");
+
+    // The reason, not just the check name. stdout carries a batch summary;
+    // the refusal text is recorded in state, and a check that failed for some
+    // unrelated reason would satisfy the name alone.
+    const state = JSON.parse(readFileSync(join(TEST_BASE, "standard", "workflow-state.json"), "utf-8"));
+    const detail = (state.gates?.ship?.failures ?? [])
+      .map((f: { check?: string; detail?: string }) => `${f.check} ${f.detail}`)
+      .join("\n");
+    expect(detail).toContain("prove-label-enforcement");
+    expect(detail).toContain("Run /prove");
+  }, { timeout: 30_000 });
+
+  test("ship passes when the planted labels carry both", () => {
+    const r = runGate("ship", "standard", STANDARD_PROJECT, ["needs-prove", "proven"]);
     expect(r.fail).toBe(0);
   }, { timeout: 30_000 });
 

@@ -16,7 +16,12 @@ import {
   resolveContainerRuntime,
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
-import { proveLabelGateVerdict } from "../lib/prove-label-gate";
+import {
+  LABEL_FIXTURE_ENV,
+  plantedLabelRead,
+  proveLabelGateVerdict,
+  type LabelRead,
+} from "../lib/prove-label-gate";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -1589,14 +1594,23 @@ describe("ship checks", () => {
     // place.
     const { createGitHubClient, getIssueLabels, resolveGitHubToken } = require("../lib/github");
     const tokenPresent = Boolean(resolveGitHubToken());
-    let read: { labels?: string[]; error?: unknown; tokenPresent: boolean };
-    try {
-      read = {
-        labels: await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber)),
-        tokenPresent,
-      };
-    } catch (e) {
-      read = { error: e, tokenPresent };
+    let read: LabelRead;
+    const planted = plantedLabelRead(process.env);
+    if (planted) {
+      // Announced, because labels that did not come from GitHub must be
+      // visible in the witness. The verdict below is unchanged: a planted
+      // `needs-prove` refuses exactly as a live one would.
+      console.error(`PROVE_LABEL_FIXTURE: labels came from ${LABEL_FIXTURE_ENV}, not from GitHub`);
+      read = planted;
+    } else {
+      try {
+        read = {
+          labels: await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber)),
+          tokenPresent,
+        };
+      } catch (e) {
+        read = { error: e, tokenPresent };
+      }
     }
 
     const outcome = proveLabelGateVerdict(read);
