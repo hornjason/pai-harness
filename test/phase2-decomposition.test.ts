@@ -401,21 +401,21 @@ describe("SC-1487: ship.js's inline copy and the library agree", () => {
     expect(guardAt, "the guard is gone").toBeGreaterThan(0);
     const guardChain = enclosingChain(src, guardAt, guardAt + 10);
 
-    // Exactly ONE conditional deeper than the guard's own nesting — the
-    // guard itself. `if (false) <assignment>` adds a second, which is the
-    // mutation a text grep could not see.
+    // No conditional deeper than the guard. The guard range starts at its
+    // own `if`, so its chain already counts it; `if (false) <assignment>`
+    // adds one more, which is the mutation a text grep could not see.
     const ifs = (chain: string[]) => chain.filter(t => t === "IfStatement").length;
     expect(assignChain.slice(0, guardChain.length)).toEqual(guardChain);
     expect(
       ifs(assignChain),
       `the refusal is nested under a condition the guard does not have — chain ${assignChain.join(" > ")}`,
-    ).toBe(ifs(guardChain) + 1);
+    ).toBe(ifs(guardChain));
 
     const returnAt = src.indexOf("return false", assignAt);
     const returnChain = enclosingChain(src, returnAt, returnAt + "return false".length);
     expect(returnChain.slice(0, guardChain.length)).toEqual(guardChain);
     expect(ifs(returnChain), `the return is conditional — chain ${returnChain.join(" > ")}`)
-      .toBe(ifs(guardChain) + 1);
+      .toBe(ifs(guardChain));
   });
 });
 
