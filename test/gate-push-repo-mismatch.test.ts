@@ -25,7 +25,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { originSlug, repoMatches, verifiedPush } from "../lib/verified-push";
+import { originIdentity, originSlug, parseRemoteSlug, repoMatches, verifiedPush } from "../lib/verified-push";
 
 let TMP = "";
 const ENV = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
@@ -103,31 +103,32 @@ describe("SC-1495: a push whose expected repo is not the cwd's repo is refused",
 });
 
 describe("SC-1496: the control — a matching repo still pushes", () => {
-  test("when the expected repo is the cwd's origin, the push happens", () => {
-    // The fixture's origin has to LOOK like a hosted repo and RESOLVE to the
-    // local bare one, or this control cannot distinguish "the check allowed
-    // it" from "the check could not parse the URL and allowed it anyway".
-    // `url.<local>.insteadOf` does exactly that: `remote get-url` reports the
-    // https URL the check reads, and the transport rewrites it on the way out.
-    const r = repo("matching");
-    const url = "https://github.com/test-owner/test-name.git";
-    git(r.work, ["config", `url.${r.origin}.insteadOf`, url]);
-    git(r.work, ["remote", "set-url", "origin", url]);
+  // A matching repo cannot be pushed end-to-end in a test, and the reason is
+  // the security property itself: `originIdentity` requires the configured
+  // url and the effective push url to be the same parseable slug, so a
+  // fixture can have an origin that PARSES (a https url, unreachable) or one
+  // that RESOLVES (a local bare path, unparseable), never both. The first
+  // draft used `url.<local>.insteadOf` to get both and that is exactly the
+  // rewrite the check now refuses — it was the test demonstrating the hole.
+  //
+  // So the control is split, and both halves are real: the decision permits,
+  // and a push with nothing to compare against still reaches a remote.
 
-    expect(originSlug(r.work, ENV), "the control's origin must parse or it proves nothing")
-      .toBe("test-owner/test-name");
+  test("the decision permits when configured and effective urls agree", () => {
+    const r = repo("matching", "https://github.com/test-owner/test-name.git");
+    const identity = originIdentity(r.work, "test-owner/test-name", ENV);
+    expect(identity.ok, `a matching repo must be permitted: ${JSON.stringify(identity)}`).toBe(true);
+  });
 
-    const outcome = verifiedPush(r.work, { env: ENV, expectRepo: "test-owner/test-name" });
-    expect(outcome.kind, `a matching repo must still push: ${outcome.detail}`).toBe("pushed");
+  test("omitting expectRepo leaves the old behaviour untouched, remote and all", () => {
+    // The option is opt-in, so a caller with no repository to compare
+    // against is not silently blocked — and this half proves the push path
+    // the control above cannot reach still works.
+    const r = repo("no-expectation");
+    expect(verifiedPush(r.work, { env: ENV }).kind).toBe("pushed");
     expect(r.mainSha()).toBe(git(r.work, ["rev-parse", "HEAD"]).trim());
   });
 
-  test("omitting expectRepo leaves the old behaviour untouched", () => {
-    // The option is opt-in so the check cannot silently change callers that
-    // have no repo to compare against.
-    const r = repo("no-expectation");
-    expect(verifiedPush(r.work, { env: ENV }).kind).toBe("pushed");
-  });
 });
 
 describe("SC-1497: slug comparison handles the URL forms git actually produces", () => {
@@ -174,5 +175,54 @@ describe("SC-1497: the gate passes its issueRepo through", () => {
     const call = src.slice(at, end);
     expect(call, "the gate must tell verifiedPush which repo it believes it is shipping")
       .toContain("expectRepo");
+  });
+});
+
+/**
+ * Found by the background security review of the first commit, not by me.
+ * Both are recorded here because a finding without a test is a finding that
+ * comes back.
+ */
+describe("SC-1498: the check cannot be disabled or sidestepped", () => {
+  test("a rewrite that redirects the push is refused, not approved", () => {
+    // The gate/action field mismatch. `git push` resolves
+    // `url.<base>.insteadOf`; the first draft read only the CONFIGURED url,
+    // so a rewrite could satisfy the check and then write somewhere else.
+    // A guard that approves one destination and permits a push to another
+    // is not a guard.
+    const r = repo("rewritten");
+    const url = "https://github.com/test-owner/test-name.git";
+    git(r.work, ["config", `url.${r.origin}.insteadOf`, url]);
+    git(r.work, ["remote", "set-url", "origin", url]);
+
+    const before = r.mainSha();
+    const outcome = verifiedPush(r.work, { env: ENV, expectRepo: "test-owner/test-name" });
+    expect(outcome.kind).toBe("repo-mismatch");
+    expect(outcome.detail).toContain("insteadOf");
+    expect(r.mainSha(), "a rewritten push url reached a remote the check never approved").toBe(before);
+  });
+
+  test("a blank expectRepo refuses rather than skipping the check", () => {
+    // The fail-open. `expectRepo !== undefined && expectRepo.trim() !== ""`
+    // meant an empty value turned the guard off and restored the
+    // unconditional push — malformed input disabling the check.
+    const r = repo("blank-expectation");
+    const before = r.mainSha();
+    for (const expectRepo of ["", "   "]) {
+      expect(verifiedPush(r.work, { env: ENV, expectRepo }).kind).toBe("repo-mismatch");
+    }
+    expect(r.mainSha()).toBe(before);
+  });
+
+  test("the host is not part of the comparison, and that is stated", () => {
+    // Recorded as a KNOWN limit rather than silently relied on. `issueRepo`
+    // is `owner/name` and carries no host, so there is nothing here to
+    // compare one against. If this ever becomes false the docblock is wrong
+    // and this test should be the thing that says so.
+    expect(parseRemoteSlug("https://example.invalid/hornjason/pai-harness.git"))
+      .toBe(parseRemoteSlug("https://github.com/hornjason/pai-harness.git"));
+    const src = require("fs").readFileSync(join(import.meta.dir, "..", "lib", "verified-push.ts"), "utf-8");
+    expect(src, "an undocumented limit is a limit someone will assume away")
+      .toContain("What this does NOT check");
   });
 });

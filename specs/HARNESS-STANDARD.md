@@ -5690,6 +5690,44 @@ are shipping, and reading the rewritten value would refuse their every push.
 - [ ] SC-1496: gates/orchestrator.ts contains [expectRepo] — the gate tells verifiedPush which repository it believes it is shipping, so a fixture issueRepo cannot push a real checkout
 - [ ] SC-1497: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — the matching-repo control uses an origin that parses as a slug and resolves locally, so "the check allowed it" is distinguishable from "the check could not parse the URL"
 
+### Two holes the background security review found in the first fix
+
+Both were in the repo check, both are now tested, and neither was found by
+me.
+
+**The guard read a different value than the action used.** `originSlug`
+read `config --get remote.origin.url` — the configured url — on the
+reasoning that `url.<base>.insteadOf` rewrites are a local transport alias
+and not a statement about which project you are shipping. The reasoning is
+fine and the conclusion was wrong: `git push` resolves rewrites, so a
+rewrite pointing `https://github.com/owner/name` at some other repository
+would satisfy the check and then write that other repository. A guard that
+approves one destination and permits a push to another is not a guard.
+`originIdentity` now requires the configured and effective urls to be the
+same parseable slug, and a rewrite in play is a refusal.
+
+That property is also why the matching-repo control had to be split in two.
+A fixture origin can PARSE (an https url, unreachable) or RESOLVE (a local
+bare path, unparseable), never both — the first draft used `insteadOf` to
+get both, which is precisely the rewrite now refused. The control was
+demonstrating the hole.
+
+**A blank expectation disabled the check.** The opt-in was
+`expectRepo !== undefined && expectRepo.trim() !== ""`, so `""` skipped the
+comparison and restored the unconditional push — malformed input disabling
+the guard, the shape `.claude/rules/checks-must-be-able-to-fail.md` names
+first. Asking the question is the caller's decision; once asked, an
+unanswerable version of it is a refusal.
+
+**A known limit, stated rather than papered over:** the host is not
+compared. `issueRepo` is `owner/name` and carries no host, so
+`https://example.invalid/owner/name` and `https://github.com/owner/name`
+are the same slug here. Hardcoding `github.com` would bind the harness to
+one forge for a check about repository identity. A test pins the limit so
+it cannot be assumed away.
+
+- [ ] SC-1498: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — a rewrite that redirects the push is refused rather than approved, a blank expectation refuses rather than skipping, and the host limit is asserted rather than described
+
 ### What was broken to prove it
 
 The headline evidence is not a mutation but the order of work: both test
@@ -5706,4 +5744,13 @@ comparison returned false. Every refusal test passed — for a reason that had
 nothing to do with the repositories differing — and only
 `a matching repo still pushes` went red. A refusal suite with no control is
 indistinguishable from a function that refuses everything.
+
+The two security findings were mutation-checked after the fact, over
+`test/gate-push-repo-mismatch.test.ts` (18 tests):
+
+| Mutation | Red |
+|---|---|
+| the push-url check dropped — the gate/action field mismatch, restored | 1 of 18 |
+| `&& expectRepo.trim() !== ""` restored — a blank expectation skips the check | 1 of 18 |
+| the repo check removed entirely | 4 of 18 |
 

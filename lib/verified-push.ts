@@ -139,16 +139,81 @@ export function repoMatches(url: string, slug: string): boolean {
 /**
  * The `owner/name` of a tree's `origin`, or `null` when it cannot be read.
  *
- * `config --get remote.origin.url` rather than `remote get-url origin`: the
- * latter applies `url.<base>.insteadOf` rewrites, which are a local transport
- * alias — a mirror, a proxy, a cache — and not a statement about which
- * project this is. A developer who rewrites GitHub to an internal mirror has
- * not changed what repository they are shipping, and reading the rewritten
- * value would refuse their every push.
+ * Reads the CONFIGURED url. `originPushUrl` reads the effective one, and
+ * `originIdentity` requires them to agree — see there for why one alone is
+ * not enough.
  */
 export function originSlug(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const r = runner(cwd, env)(["config", "--get", "remote.origin.url"], 5000);
   return r.ok ? parseRemoteSlug(r.output) : null;
+}
+
+/** The url a push to `origin` would actually use, rewrites applied. */
+export function originPushUrl(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const r = runner(cwd, env)(["remote", "get-url", "--push", "origin"], 5000);
+  return r.ok && r.output.trim() !== "" ? r.output.trim() : null;
+}
+
+/**
+ * Whether this tree is `expected`, judged on the url the push will use.
+ *
+ * ## Why two urls and not one
+ *
+ * The first version of this read only `config --get remote.origin.url`, on
+ * the reasoning that `url.<base>.insteadOf` rewrites are a local transport
+ * alias — a mirror, a proxy, a cache — and not a statement about which
+ * project you are shipping. That reasoning is fine and the conclusion was
+ * wrong, because it made the authorisation check read a different value than
+ * the action uses: `git push` resolves rewrites, so a rewrite pointing
+ * `https://github.com/owner/name` at some other repository would satisfy
+ * this check and then write that other repository. A guard that approves one
+ * destination and permits a push to another is not a guard.
+ *
+ * So both are read and both must agree. A rewrite in play is a refusal, not
+ * an approval — the mirror user loses an auto-push and runs `git push`
+ * themselves, which is the cost this file is allowed to impose
+ * (`leftWorkLocal` already reports the work may be local).
+ *
+ * ## What this does NOT check
+ *
+ * The host. `issueRepo` is `owner/name` and carries no host, so there is
+ * nothing here to compare one against: `https://example.invalid/owner/name`
+ * and `https://github.com/owner/name` are the same slug to this function.
+ * That is a real limit and is stated rather than papered over. It is not the
+ * only thing standing between a run and the wrong forge — the GitHub client
+ * in `lib/github.ts` has its own base url and credentials, and a push to an
+ * unexpected host needs credentials for that host. Hardcoding `github.com`
+ * here would bind the harness to one forge for a check that is about repo
+ * identity, which is the wrong place to make that decision.
+ */
+export function originIdentity(
+  cwd: string,
+  expected: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { ok: true; slug: string } | { ok: false; detail: string } {
+  const configured = originSlug(cwd, env);
+  if (configured === null) {
+    return { ok: false, detail: "this tree's origin url is unreadable or names no owner/name" };
+  }
+  const want = expected.trim().toLowerCase();
+  if (configured !== want) {
+    return { ok: false, detail: `this tree's origin is ${configured}` };
+  }
+
+  const pushUrl = originPushUrl(cwd, env);
+  if (pushUrl === null) {
+    return { ok: false, detail: `this tree's origin is ${configured} but its push url is unreadable` };
+  }
+  const pushSlug = parseRemoteSlug(pushUrl);
+  if (pushSlug !== configured) {
+    return {
+      ok: false,
+      detail: `this tree's origin is configured as ${configured} but a push would go to ` +
+        `${redactSecrets(pushUrl)} — a \`url.<base>.insteadOf\` rewrite is in play, so the ` +
+        `repository this check approved is not the one the push would write`,
+    };
+  }
+  return { ok: true, slug: configured };
 }
 
 /** The sha `ls-remote` reports for a ref, or null if its output names none. */
@@ -411,23 +476,26 @@ export function verifiedPush(
   // Checked FIRST, before any other reading, because "this is not the repo
   // you meant" invalidates everything downstream — an ahead-count against the
   // wrong tree's upstream is not a fact worth reporting.
-  if (opts.expectRepo !== undefined && opts.expectRepo.trim() !== "") {
-    // `actual` is already a slug, so it is compared as one. Running it back
-    // through `repoMatches` — which parses its first argument as a URL —
-    // made every comparison false, including the matching ones, and the
-    // control in test/gate-push-repo-mismatch.test.ts is what caught it: the
-    // refusal cases all still passed, for a reason that had nothing to do
-    // with the repositories differing.
-    const actual = originSlug(cwd, env);
-    if (actual === null || actual !== opts.expectRepo.trim().toLowerCase()) {
+  //
+  // The opt-in is `!== undefined` and nothing more. The first draft also
+  // required `.trim() !== ""`, which made a blank `expectRepo` SKIP the
+  // check — malformed input disabling the guard, which is the fail-open
+  // shape this repo keeps finding (`.claude/rules/checks-must-be-able-to-
+  // fail.md`). A caller that passed `""` because its config was empty would
+  // have got the old unconditional push back, silently. Asking the question
+  // is the caller's decision; once asked, an unanswerable version of it is a
+  // refusal.
+  if (opts.expectRepo !== undefined) {
+    const identity = originIdentity(cwd, opts.expectRepo, env);
+    if (!identity.ok) {
       return {
         kind: "repo-mismatch",
         expected: opts.expectRepo,
-        actual,
-        detail: `the caller is shipping ${opts.expectRepo} and this tree's origin is ` +
-          `${actual ?? "unreadable"}. Nothing was pushed. A run whose issue repository and ` +
-          `working tree disagree is either a fixture pointed at a real checkout or a real run ` +
-          `in the wrong directory, and both are reasons not to write a remote (#430).`,
+        actual: originSlug(cwd, env),
+        detail: `the caller is shipping ${JSON.stringify(opts.expectRepo)} and ${identity.detail}. ` +
+          `Nothing was pushed. A run whose issue repository and working tree disagree is either a ` +
+          `fixture pointed at a real checkout or a real run in the wrong directory, and both are ` +
+          `reasons not to write a remote (#430).`,
       };
     }
   }
