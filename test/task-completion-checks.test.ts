@@ -184,6 +184,30 @@ describe('task-completion-checks', () => {
       expect(text).toContain('SyntaxError');
       expect(text).toContain('loadRungateConfig');
     });
+
+    it('hands the operator no line to paste built from the project root', () => {
+      // Third push-review finding. The first draft of the blocker printed
+      // `bun -e '…${projectRoot}…'` for the operator to run. This is a library
+      // function and the root comes from the caller, so a path carrying a
+      // quote and a semicolon would have been printed as a command a human is
+      // being told to execute — an execution path with a person in the middle.
+      const root = mkdtempSync(join(tmpdir(), "tcc-inject-'; touch pwned; '"));
+      const dir = join(root, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), '{ broken');
+
+      const text = checkConformity(root).blockers.join(' ');
+      try {
+        expect(text, 'the blocker suggests a shell command').not.toMatch(/\bbun -e\b/);
+        // The path still appears, so the refusal is still actionable — but
+        // JSON-quoted, so the injected quote is escaped rather than closing
+        // the one around it.
+        expect(text).toContain(JSON.stringify(join(root, '.claude')));
+        expect(text).not.toContain(`'${join(root, '.claude')}`);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 
   describe('runAllCompletionChecks', () => {

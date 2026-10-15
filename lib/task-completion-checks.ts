@@ -138,13 +138,24 @@ export function checkConformity(projectRoot: string): CompletionCheckResult {
     // operator the full message on their own terminal, where the config
     // already is.
     const kind = err instanceof Error && err.name ? err.name : "error";
+    // No runnable command in the text, and the path is JSON-quoted.
+    //
+    // The first draft printed `bun -e '…${projectRoot}…'` for the operator to
+    // paste, which the push review called command injection and is: this is a
+    // library function, the root reaches it from the caller, and a path
+    // carrying `'; rm -rf ~; '` would have been printed as a command a human
+    // is being told to run. A refusal that hands someone a line to paste is
+    // an execution path with a person in the middle of it.
+    //
+    // `JSON.stringify` on the path escapes quotes and newlines, so a crafted
+    // root cannot end the sentence and forge a second one either.
     return {
       passed: false,
       blockers: [
-        `rungate config under ${join(projectRoot, '.claude')} could not be read (${kind}), ` +
-          `so conformity did not run — a config that exists and cannot be parsed is not an ` +
-          `unconfigured project. Run \`bun -e 'import("${projectRoot}/node_modules/rungate/lib/config-loader.ts")` +
-          `.then(m => m.loadRungateConfig("${projectRoot}"))'\` to see the parser's own message.`,
+        `rungate config under ${JSON.stringify(join(projectRoot, '.claude'))} could not be read ` +
+          `(${kind}), so conformity did not run — a config that exists and cannot be parsed is ` +
+          `not an unconfigured project. Load that root with loadRungateConfig from ` +
+          `lib/config-loader.ts to see the parser's own message.`,
       ],
       warnings: [],
     };

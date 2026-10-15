@@ -218,7 +218,29 @@ keeps the refusal actionable without making the message a channel out of the
 file. `.claude/rules/checks-must-be-able-to-fail.md`'s control-arm rule
 applies in reverse here: a refusal redacted to the point of being unreadable
 is worse than the leak for the 99% of refusals that quote nothing sensitive,
-so the class and the reproduction command stay.
+so the class stays.
+
+### A refusal is not a place to put a command someone will paste
+
+Third push-review finding, and the one that caught the fix for the second.
+The replacement for the parser's message was a `bun -e '…${projectRoot}…'`
+line for the operator to run. `checkConformity` is a library function and the
+root arrives from its caller, so a path carrying `'; rm -rf ~; '` would have
+been printed as a command a human is being told to execute. **A refusal that
+hands someone a line to paste is an execution path with a person in the
+middle of it**, and #155 already established that a path reaching this code
+can originate outside it.
+
+The blocker now names the loader function and JSON-quotes the path, which
+escapes a quote or a newline so a crafted root can neither close the
+surrounding quote nor forge a second line. It is still actionable — the root
+and the function are what an operator needs — and there is nothing in it to
+run.
+
+| Mutation | Red |
+|---|---|
+| the pasteable command comes back | 1 of 14 |
+| the path is interpolated raw instead of JSON-quoted | 1 of 14 |
 
 ### What was broken to prove it (SC-1449..1452)
 
