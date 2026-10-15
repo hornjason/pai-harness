@@ -2553,15 +2553,34 @@ function dirtyPaths(root: string, generated: string[]): string[] {
  * generated file uncommitted — and #398's audit/fix agreement check uses it to
  * compare what audit NAMED against what `--fix` actually wrote.
  *
- * Deliberately excludes SKIP / GAP / WARN / AUDIT / REFUSED: all of them are
- * lines about a write that did not happen. Getting that wrong in the
- * permissive direction would make audit and fix "agree" by both over-reporting,
- * which is agreement for the wrong reason — see
+ * Deliberately excludes SKIP / GAP / WARN / AUDIT / UNCHANGED / REFUSED: all
+ * of them are lines about a write that did not happen. Getting that wrong in
+ * the permissive direction would make audit and fix "agree" by both
+ * over-reporting, which is agreement for the wrong reason — see
  * `.claude/rules/checks-must-be-able-to-fail.md` on assertions that hold
  * vacuously. `test/scaffold-audit-agreement.test.ts` pins both directions.
+ *
+ * **The verb list had drifted from the verbs scaffold emits, and #398's
+ * agreement check is what found it.** `REGENERATED`, `REFRESHED` and
+ * `REPAIRED` are all writes and none of them was here, so for as long as they
+ * have existed `postScaffoldCommit --commit` has quietly failed to stage
+ * `AGENTS.md` (REGENERATED, `write-steps.ts`), `.claude/rules/` (REFRESHED,
+ * `steps.ts:611`) and any seeded config (REPAIRED, `steps.ts:1181`). The
+ * comment above this list used to say missing a verb "silently leaves
+ * generated files uncommitted", which was exactly right and exactly what was
+ * happening.
+ *
+ * A prose warning did not keep the list current, so there is now a test that
+ * greps the sources for emitted write verbs and fails when one is not here.
  */
+export const WRITE_VERBS: readonly string[] = [
+  "CREATED", "UPDATED", "REPLACED", "GENERATED", "REGENERATED",
+  "REFRESHED", "REPAIRED", "DEPLOYED", "SPLIT",
+];
+
 export function writtenPath(line: string): string | null {
-  return line.trim().match(/^(?:CREATED|UPDATED|REPLACED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1] ?? null;
+  const m = line.trim().match(new RegExp(`^(?:${WRITE_VERBS.join("|")}): ([^\\s(]+)`));
+  return m?.[1] ?? null;
 }
 
 export function reportScaffoldActions(actions: string[]): number {

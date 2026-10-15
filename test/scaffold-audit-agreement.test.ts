@@ -36,12 +36,13 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { cpSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync } from "fs";
+import { createHash } from "crypto";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
-import { writtenPath } from "../lib/scaffold/steps";
+import { WRITE_VERBS, writtenPath } from "../lib/scaffold/steps";
 
 const ROOT = join(import.meta.dir, "..");
 const CLI = join(ROOT, "scripts", "scaffold-project.ts");
@@ -97,18 +98,70 @@ function runScaffold(root: string, args: string[]): Run {
   const paths = new Set<string>();
   for (const line of out.split("\n")) {
     const p = writtenPath(line);
-    if (p) paths.add(p);
+    // Normalised the same way postScaffoldCommit normalises before staging:
+    // scaffold reports some output as a created directory rather than
+    // per-file, and "reference/" and "reference" are the same write.
+    if (p) paths.add(p.replace(/\/+$/, ""));
   }
   return { code: r.status ?? -1, out, paths };
 }
 
-/** What git says actually changed — the ground truth both modes answer to. */
-function dirtyPaths(root: string): Set<string> {
-  const r = spawnSync("git", ["status", "--porcelain", "-uall"], { cwd: root, encoding: "utf-8" });
+/**
+ * Every path under `root`, with a content fingerprint for files.
+ *
+ * NOT `git status --porcelain`, which was the first oracle here and was
+ * narrower than the thing it measured — the same defect shape as the bug
+ * under repair. Git does not track directories, so a created `reference/`
+ * is invisible to it, and `.git/hooks/` is never tracked at all, so both
+ * generated hooks were invisible too. Audit named nine paths `git status`
+ * could not see and the test called them phantoms. The audit was right.
+ */
+function snapshot(root: string, rel = "", acc = new Map<string, string>()): Map<string, string> {
+  for (const entry of readdirSync(join(root, rel), { withFileTypes: true })) {
+    // Not scaffold output. `.fallow` is the static-analysis tool's cache,
+    // written as a side effect of a step that shells out to it, and both
+    // modes produce it. Excluding it here rather than teaching audit to
+    // report it: a preview that lists a tool cache as a change it is about
+    // to make is noise, and noise is how a preview stops being read.
+    if (entry.name === "node_modules" || entry.name === ".fallow") continue;
+    const child = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      acc.set(`${child}/`, "dir");
+      snapshot(root, child, acc);
+    } else if (entry.isFile()) {
+      // Size and mtime would report a rewrite that changed nothing; content
+      // is what "scaffold wrote this" has to mean for the comparison to be
+      // about behaviour rather than about touching files.
+      acc.set(child, createHash("sha1").update(readFileSync(join(root, child))).digest("hex"));
+    }
+  }
+  return acc;
+}
+
+/** Paths a run added or rewrote, as the filesystem sees it. */
+function changedPaths(before: Map<string, string>, after: Map<string, string>): Set<string> {
   const out = new Set<string>();
-  for (const line of r.stdout.split("\n")) {
-    const p = line.slice(3).trim();
-    if (p) out.add(p);
+  for (const [p, h] of after) if (before.get(p) !== h) out.add(p);
+  return out;
+}
+
+/**
+ * Git's own bookkeeping, which both modes churn for reasons unrelated to
+ * scaffold output. Excluded from the comparison by prefix rather than by
+ * name, and the two generated hooks are deliberately NOT excluded — they are
+ * scaffold output and the whole point of #85 and #397.
+ */
+function isGitBookkeeping(p: string): boolean {
+  return p.startsWith(".git/") && !p.startsWith(".git/hooks/");
+}
+
+/** Run `--fix` on `copy` and return what it actually wrote. */
+function fixChanges(copy: string): Set<string> {
+  const before = snapshot(copy);
+  runScaffold(copy, ["--fix"]);
+  const out = new Set<string>();
+  for (const p of changedPaths(before, snapshot(copy))) {
+    if (!isGitBookkeeping(p)) out.add(p.replace(/\/$/, "") || p);
   }
   return out;
 }
@@ -122,8 +175,7 @@ describe("SC-1510: audit names what --fix performs", () => {
     roots.push(copy);
     cpSync(fixture, copy, { recursive: true });
 
-    runScaffold(copy, ["--fix"]);
-    const actuallyChanged = dirtyPaths(copy);
+    const actuallyChanged = fixChanges(copy);
     expect(
       actuallyChanged.size,
       "the fixture does not drift — this test would pass vacuously",
@@ -140,9 +192,10 @@ describe("SC-1510: audit names what --fix performs", () => {
     // Separate claim from "reports correctly", and the only one that makes
     // the preview safe. Compared as the tree git sees, not as a count.
     const fixture = plantDriftedConsumer("readonly");
-    const before = dirtyPaths(fixture);
+    const before = snapshot(fixture);
     runScaffold(fixture, []);
-    expect(dirtyPaths(fixture)).toEqual(before);
+    const touched = [...changedPaths(before, snapshot(fixture))].filter(q => !isGitBookkeeping(q));
+    expect(touched, "audit wrote into the tree it was previewing").toEqual([]);
   }, 300_000);
 
   test("every path audit names is one --fix writes", () => {
@@ -155,8 +208,7 @@ describe("SC-1510: audit names what --fix performs", () => {
     cpSync(fixture, copy, { recursive: true });
 
     const audit = runScaffold(fixture, []);
-    runScaffold(copy, ["--fix"]);
-    const changed = dirtyPaths(copy);
+    const changed = fixChanges(copy);
 
     const phantom = [...audit.paths].filter(p => !changed.has(p));
     expect(phantom, "audit named paths --fix never wrote").toEqual([]);
@@ -171,10 +223,29 @@ describe("SC-1510: audit names what --fix performs", () => {
     cpSync(fixture, copy, { recursive: true });
 
     const audit = runScaffold(fixture, []);
-    runScaffold(copy, ["--fix"]);
-    const changed = dirtyPaths(copy);
+    const changed = fixChanges(copy);
 
-    const unreported = [...changed].filter(p => !audit.paths.has(p));
+    // A path counts as reported if audit named it OR named a directory
+    // containing it. Scaffold reports some output per-directory rather than
+    // per-file — `.claude/rungate/` covers the four json files it writes —
+    // and `postScaffoldCommit` already depends on exactly that reading when
+    // it stages a reported directory to pick up its contents.
+    const covered = (q: string) => {
+      if (audit.paths.has(q)) return true;
+      for (let i = q.lastIndexOf("/"); i > 0; i = q.lastIndexOf("/", i - 1)) {
+        if (audit.paths.has(q.slice(0, i))) return true;
+      }
+      // A bare directory that exists only as the parent of something
+      // reported. `.claude` is never an action of its own — it is there
+      // because `.claude/rungate/` was written into it. Listing every
+      // implicit parent would be noise, and noise is how a preview stops
+      // being read, so the comparison accepts the child instead.
+      if (!q.includes(".", 1)) {
+        for (const named of audit.paths) if (named.startsWith(q + "/")) return true;
+      }
+      return false;
+    };
+    const unreported = [...changed].filter(q => !covered(q));
     expect(unreported, "--fix wrote paths audit never mentioned").toEqual([]);
   }, 300_000);
 });
@@ -191,17 +262,32 @@ describe("SC-1511: the fixture exercises more than one outcome", () => {
 });
 
 describe("SC-1512: one binding decides what counts as a written path", () => {
-  test("writtenPath is the shared extractor, not a second copy", () => {
-    // `postScaffoldCommit` already derives "scaffold wrote this" from the
-    // report to decide what to stage. A second extractor here would let the
-    // two disagree about the same line, and this comparison would then be
-    // measuring the test's regex rather than the tool's behaviour.
-    const steps = require("fs").readFileSync(join(ROOT, "lib", "scaffold", "steps.ts"), "utf-8");
-    const inlineExtractors = steps.match(/CREATED\|UPDATED\|REPLACED/g) ?? [];
+  test("every write verb the scaffold emits is in WRITE_VERBS", () => {
+    // The drift guard, and it is here because the drift was real: the list
+    // was missing REGENERATED, REFRESHED and REPAIRED, so `postScaffoldCommit`
+    // had never staged AGENTS.md, `.claude/rules/` or any seeded config. A
+    // comment above the list already warned that a missing verb "silently
+    // leaves generated files uncommitted"; prose did not keep it current.
+    //
+    // Read from the sources rather than listed here, so adding a step with a
+    // new verb fails this rather than going unnoticed until someone audits
+    // a consumer by hand.
+    const sources = ["lib/scaffold/steps.ts", "lib/scaffold/write-steps.ts", "lib/validators/spec-validators.ts"]
+      .map(f => readFileSync(join(ROOT, f), "utf-8")).join("\n");
+
+    // Verbs that announce a write, as distinct from SKIP / GAP / WARN /
+    // AUDIT / AUDITED / UNCHANGED / REFUSED, which announce that none
+    // happened. A new verb lands in one list or the other by hand — that
+    // judgement cannot be derived — but it can no longer land in neither.
+    const NON_WRITE = new Set(["SKIP", "GAP", "WARN", "AUDIT", "AUDITED", "UNCHANGED", "REFUSED", "ERROR", "NOTE"]);
+    const emitted = new Set<string>();
+    for (const m of sources.matchAll(/actions\.push\([`"']([A-Z]{3,12}): /g)) emitted.add(m[1]!);
+
+    const unclassified = [...emitted].filter(v => !NON_WRITE.has(v) && !WRITE_VERBS.includes(v));
     expect(
-      inlineExtractors.length,
-      "the verb list appears more than once in steps.ts — one of them is not writtenPath",
-    ).toBe(1);
+      unclassified,
+      "a report verb is in neither WRITE_VERBS nor the non-write list — postScaffoldCommit will not stage it and audit will not report it",
+    ).toEqual([]);
   });
 
   test.each([
