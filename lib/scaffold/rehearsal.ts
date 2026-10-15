@@ -48,7 +48,7 @@
  */
 
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, existsSync, lstatSync, readdirSync, realpathSync } from "fs";
+import { mkdtempSync, rmSync, lstatSync, readdirSync, readlinkSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve, sep } from "path";
 
@@ -110,16 +110,22 @@ export function escapingSymlinks(dir: string): string[] {
   const out: string[] = [];
   const walk = (rel: string) => {
     let entries;
-    try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch { return; }
+    try {
+      entries = readdirSync(join(root, rel), { withFileTypes: true });
+    } catch (err) {
+      // NOT `return`. A directory we cannot read is a directory whose
+      // symlinks we did not check, and a check that skips what it cannot
+      // see reports the same empty list as a tree with nothing wrong —
+      // `.claude/rules/checks-must-be-able-to-fail.md`'s fail-open shape,
+      // found by the commit security review. Unreadable counts as
+      // escaping, so the audit refuses rather than previewing blind.
+      out.push(`${rel || "."} (unreadable: ${(err as Error).message})`);
+      return;
+    }
     for (const e of entries) {
       const child = rel ? join(rel, e.name) : e.name;
       if (e.isSymbolicLink()) {
-        // realpath, not readlink: a relative link, a link to a link, and a
-        // link through a symlinked parent all have to resolve to the same
-        // answer, and only the resolved path can be compared to the root.
-        let target: string;
-        try { target = realpathSync(join(root, child)); } catch { target = resolve(root, child); }
-        if (target !== root && !target.startsWith(root + sep)) out.push(child);
+        if (linkEscapes(root, child)) out.push(child);
       } else if (e.isDirectory()) {
         walk(child);
       }
@@ -127,6 +133,35 @@ export function escapingSymlinks(dir: string): string[] {
   };
   walk("");
   return out.sort();
+}
+
+/**
+ * Does the link at `root/rel` resolve outside `root`?
+ *
+ * `realpathSync` is right for a link whose target exists and wrong for one
+ * whose target does not: it throws, and the first version treated a throw as
+ * "resolves to the link's own path", i.e. inside the root, i.e. safe. A
+ * DANGLING link to `/etc/thing` was therefore not flagged — and a step that
+ * writes through it creates `/etc/thing`. A dangling link is the more
+ * dangerous case, not the less, because writing is exactly what makes the
+ * target exist. Found by the commit security review.
+ */
+function linkEscapes(root: string, rel: string): boolean {
+  const link = join(root, rel);
+  try {
+    const target = realpathSync(link);
+    return target !== root && !target.startsWith(root + sep);
+  } catch {
+    // Unresolvable: fall back to the literal target, resolved against the
+    // link's own directory the way the kernel would.
+    try {
+      const literal = resolve(join(link, ".."), readlinkSync(link));
+      return literal !== root && !literal.startsWith(root + sep);
+    } catch {
+      // Cannot even read the link. Unknown is not safe.
+      return true;
+    }
+  }
 }
 
 /**
@@ -165,15 +200,31 @@ export function cloneForRehearsal(root: string): Rehearsal {
     method = "copy";
   }
 
+  // Pruning happens through `rmSync(..., { recursive: true })`, which
+  // follows a symlinked PARENT. `.claude/worktrees` in a tree where
+  // `.claude -> /real/.claude` therefore resolves outside the clone and
+  // deletes the consumer's real worktrees — a destructive path traversal
+  // performed by the mode that promises to write nothing. Found by the
+  // commit security review.
+  //
+  // So nothing is deleted through a symlink. Each excluded path is walked
+  // component by component; the moment a component is a link, the link
+  // itself is unlinked (never followed) and the walk stops. `node_modules`
+  // being a symlink is the common case — the pre-push hook makes one — and
+  // must stay cheap rather than refusing the audit.
   for (const rel of REHEARSAL_EXCLUDES) {
-    const p = join(dir, rel);
-    if (existsSync(p)) rmSync(p, { recursive: true, force: true });
+    prunePathWithoutFollowingLinks(dir, rel);
   }
 
   // The copy has to BE the tree, not most of it. Compared at the top level
   // only — a full walk would cost more than the clone did — which is enough
   // to catch a truncated copy that exited 0.
-  const want = readdirSync(root).filter(n => !REHEARSAL_EXCLUDES.some(x => x.split("/")[0] === n));
+  // Only a WHOLE top-level exclude is forgiven. `.claude/worktrees` prunes a
+  // child, so `.claude` itself must still be present — matching on the first
+  // path component instead would excuse a missing `.claude` entirely, which
+  // is the under-reporting this module exists to stop.
+  const topLevelExcludes = new Set(REHEARSAL_EXCLUDES.filter(x => !x.includes("/")));
+  const want = readdirSync(root).filter(n => !topLevelExcludes.has(n));
   const got = new Set(readdirSync(dir));
   const missing = want.filter(n => !got.has(n));
   if (missing.length > 0) {
@@ -191,6 +242,48 @@ export function cloneForRehearsal(root: string): Rehearsal {
   }
 
   return { dir, parent, method };
+}
+
+/**
+ * Remove `root/rel`, never passing through a symlink on the way.
+ *
+ * Two different answers, depending on WHERE the link is:
+ *
+ * - **The link is the path itself** (`node_modules -> /elsewhere/mods`):
+ *   unlink it. `rmSync` on a link removes the link and leaves the target
+ *   alone, and an excluded directory is one we did not want in the clone
+ *   anyway. This is the common case — the pre-push hook makes exactly this
+ *   link — and it has to stay cheap rather than refusing the audit.
+ *
+ * - **The link is an ANCESTOR** (`.claude -> /real/.claude`, pruning
+ *   `.claude/worktrees`): leave it entirely alone. Unlinking it would throw
+ *   away `.claude` — rules, agents, config — and the steps would then run
+ *   over a tree missing the directory half of them read, reporting less than
+ *   `--fix` will do. That is #398 itself, reintroduced by its own fix. It is
+ *   also invisible to the completeness check, which cannot ask for `.claude`
+ *   back while `.claude/worktrees` is on the exclude list.
+ *
+ *   Deleting through it is worse still: `rmSync(..., { recursive: true })`
+ *   follows a symlinked parent, so the consumer's real worktrees go. So
+ *   neither — the link stays, and `escapingSymlinks` refuses the audit a
+ *   moment later because an ancestor pointing out of the clone is exactly
+ *   what it is for. Found by the commit security review.
+ */
+function prunePathWithoutFollowingLinks(root: string, rel: string): void {
+  let current = root;
+  const parts = rel.split("/").filter(Boolean);
+  for (let i = 0; i < parts.length; i++) {
+    current = join(current, parts[i]!);
+    let st;
+    try { st = lstatSync(current); } catch { return; }   // absent: nothing to prune
+    const last = i === parts.length - 1;
+    if (st.isSymbolicLink()) {
+      if (last) rmSync(current, { force: true });
+      return;   // an ancestor link: prune nothing, and let the refusal catch it
+    }
+    if (!last && !st.isDirectory()) return;
+  }
+  rmSync(current, { recursive: true, force: true });
 }
 
 /** Throw the clone away. Safe to call twice. */

@@ -129,6 +129,119 @@ describe("SC-1513: a symlink out of the tree refuses the rehearsal", () => {
   });
 });
 
+describe("SC-1516: pruning never deletes through a symlinked parent", () => {
+  test("a symlinked .claude leaves the real worktrees directory alone", () => {
+    // `.claude/worktrees` is pruned before anything else runs. `rmSync` with
+    // `recursive` follows a symlinked PARENT, so a tree where
+    // `.claude -> /real/.claude` had its real worktrees deleted — by the
+    // mode that promises to write nothing. Found by the commit security
+    // review; this is the case that fails without the component-wise walk.
+    const outside = scratch("outside-claude");
+    const realClaude = join(outside, "dot-claude");
+    mkdirSync(join(realClaude, "worktrees", "precious"), { recursive: true });
+    writeFileSync(join(realClaude, "worktrees", "precious", "work.txt"), "unpushed\n");
+
+    const tree = scratch("tree-symlinked-claude");
+    writeFileSync(join(tree, "package.json"), "{}\n");
+    symlinkSync(realClaude, join(tree, ".claude"));
+
+    // It refuses, because `.claude` escapes — but the refusal is the second
+    // line of defence. The assertion that matters is what survived.
+    expect(() => cloneForRehearsal(tree)).toThrow(/audit did NOT run/);
+    expect(
+      existsSync(join(realClaude, "worktrees", "precious", "work.txt")),
+      "the audit deleted real work through a symlinked parent",
+    ).toBe(true);
+  });
+
+  test("pruning a child never removes its parent", () => {
+    // `.claude/worktrees` is excluded; `.claude` is not, and the steps read
+    // rules and agents out of it. An earlier version unlinked whichever
+    // component turned out to be a link, so a symlinked `.claude` took the
+    // whole config directory with it — #398's under-reporting, reintroduced
+    // by #398's fix.
+    const tree = scratch("tree-child-prune");
+    mkdirSync(join(tree, ".claude", "worktrees", "wt-1"), { recursive: true });
+    writeFileSync(join(tree, ".claude", "rules.md"), "a rule\n");
+
+    const r = cloneForRehearsal(tree);
+    try {
+      expect(existsSync(join(r.dir, ".claude", "worktrees"))).toBe(false);
+      expect(
+        readFileSync(join(r.dir, ".claude", "rules.md"), "utf-8"),
+        "pruning the child took the parent with it",
+      ).toBe("a rule\n");
+    } finally {
+      discardRehearsal(r);
+    }
+  });
+
+  test("a symlinked node_modules is unlinked, and its target survives", () => {
+    // The common case, and the reason pruning cannot simply refuse: the
+    // pre-push hook symlinks node_modules routinely.
+    const outside = scratch("outside-mods");
+    mkdirSync(join(outside, "mods"));
+    writeFileSync(join(outside, "mods", "keep.txt"), "x\n");
+
+    const tree = scratch("tree-mods");
+    writeFileSync(join(tree, "package.json"), "{}\n");
+    symlinkSync(join(outside, "mods"), join(tree, "node_modules"));
+
+    const r = cloneForRehearsal(tree);
+    try {
+      expect(existsSync(join(r.dir, "node_modules"))).toBe(false);
+      expect(
+        existsSync(join(outside, "mods", "keep.txt")),
+        "unlinking the symlink must not touch what it pointed at",
+      ).toBe(true);
+    } finally {
+      discardRehearsal(r);
+    }
+  });
+});
+
+describe("SC-1517: an unresolvable symlink is treated as escaping", () => {
+  test("a DANGLING link to an outside path is flagged", () => {
+    // `realpathSync` throws on a dangling link, and the first version read
+    // that throw as "resolves to its own path", i.e. inside, i.e. safe. So
+    // a link to a path that does not exist yet was not flagged — and a step
+    // writing through it CREATES the target. The dangling case is the more
+    // dangerous one, not the less.
+    const tree = scratch("tree-dangling");
+    symlinkSync("/nonexistent-rungate-probe/AGENTS.md", join(tree, "AGENTS.md"));
+    expect(escapingSymlinks(tree)).toEqual(["AGENTS.md"]);
+    expect(() => cloneForRehearsal(tree)).toThrow(/pointing outside it/);
+  });
+
+  test("a dangling link to an INSIDE path is not flagged", () => {
+    // The control. Resolving the literal target against the link's own
+    // directory has to give the right answer for a relative link whose
+    // target has not been generated yet — which is ordinary in a tree
+    // scaffold is about to write into.
+    const tree = scratch("tree-dangling-inside");
+    symlinkSync("./not-generated-yet.md", join(tree, "alias.md"));
+    expect(escapingSymlinks(tree)).toEqual([]);
+  });
+
+  test("a directory that cannot be read is reported, not skipped", () => {
+    // A directory whose symlinks were never examined reports the same empty
+    // list as a clean tree. Unreadable counts as escaping so the audit
+    // refuses instead of previewing blind.
+    const tree = scratch("tree-unreadable");
+    const locked = join(tree, "locked");
+    mkdirSync(locked);
+    writeFileSync(join(locked, "a.md"), "x\n");
+    require("fs").chmodSync(locked, 0o000);
+    try {
+      const found = escapingSymlinks(tree);
+      expect(found.length, "an unreadable directory was silently skipped").toBe(1);
+      expect(found[0]).toMatch(/^locked \(unreadable/);
+    } finally {
+      require("fs").chmodSync(locked, 0o755);
+    }
+  });
+});
+
 describe("SC-1514: an incomplete copy refuses rather than previewing less", () => {
   test("a clone missing a top-level entry is refused", () => {
     // Simulated by deleting from the clone the way a truncated `cp` would
