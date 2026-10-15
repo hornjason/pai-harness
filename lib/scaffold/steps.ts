@@ -2544,6 +2544,26 @@ function dirtyPaths(root: string, generated: string[]): string[] {
  * steps, it does not implement them. The caller decides what a refusal costs;
  * this only counts them, so it stays callable from a test.
  */
+/**
+ * The path a report line says scaffold WROTE, or null if it wrote nothing.
+ *
+ * One binding, because two callers now depend on the same judgement and a
+ * second copy would let them disagree about the same line. `postScaffoldCommit`
+ * uses it to decide what to stage — a verb it fails to recognise leaves a
+ * generated file uncommitted — and #398's audit/fix agreement check uses it to
+ * compare what audit NAMED against what `--fix` actually wrote.
+ *
+ * Deliberately excludes SKIP / GAP / WARN / AUDIT / REFUSED: all of them are
+ * lines about a write that did not happen. Getting that wrong in the
+ * permissive direction would make audit and fix "agree" by both over-reporting,
+ * which is agreement for the wrong reason — see
+ * `.claude/rules/checks-must-be-able-to-fail.md` on assertions that hold
+ * vacuously. `test/scaffold-audit-agreement.test.ts` pins both directions.
+ */
+export function writtenPath(line: string): string | null {
+  return line.trim().match(/^(?:CREATED|UPDATED|REPLACED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1] ?? null;
+}
+
 export function reportScaffoldActions(actions: string[]): number {
   console.log("\n=== Scaffold Report ===");
   for (const action of actions) console.log(`  ${action}`);
@@ -2575,10 +2595,7 @@ export function postScaffoldCommit(
     // already existed, the real commit then had to be an amend.
     const generated = [...new Set(
       actions
-        // Verbs that mean "scaffold wrote this path". Deliberately excludes
-        // SKIP / GAP / WARN / AUDIT (no write happened) — and all of them,
-        // because missing one silently leaves generated files uncommitted.
-        .map(a => a.trim().match(/^(?:CREATED|UPDATED|REPLACED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
+        .map(writtenPath)
         .filter((p): p is string => Boolean(p))
         // .git/ contents are not tracked; hooks live there.
         // .git/ contents are never tracked. Directories are kept — scaffold
