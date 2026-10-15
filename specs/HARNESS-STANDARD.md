@@ -409,7 +409,7 @@ What was broken to prove these fail — run, counted, reverted:
 |---|---|
 | the guard always returns null | 2 fail |
 | the call-site TEXT removed — `const stateRefusal = commitStateRefusal(commitResult)` deleted | 1 fail |
-| the guard defined but not wired into the run — marked region wrapped in `if (false)`, wrapper outside the markers | **0 fail (52 pass)** before #201; **1 fail** after |
+| the guard defined but not wired into the run — marked region wrapped in `if (false)`, wrapper outside the markers | **0 fail (52 pass)** before #201; **1 fail** after, re-measured 2026-10-14 for #204 |
 | the recorder replaces `agents` instead of spreading it | 2 fail |
 | `stateRecorded` dropped from the step's `required` list | 1 fail |
 | `REFUSE_EXIT = 0` in the real source | the harness refuses to build its mutant and the file aborts |
@@ -452,6 +452,72 @@ the mutant must live beside the real script, because this one imports
 `../gates/orchestrator`. From a temp directory that import does not resolve,
 bun exits non-zero, and every mutant run reads as "the refusal was rejected on
 the merits" — a mutation harness that proves nothing while reporting success.
+
+### The last text assertion in the wiring test (#204, 2026-10-14)
+
+#201 added the reachability read and left one assertion behind:
+
+```ts
+expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}terminalFailure\('COMMIT_FAILED'/);
+```
+
+A regex over the source is exactly what the mutation that matters leaves
+alone. Wrapping a region in `if (false)` does not change one character inside
+it, so this stayed true of a file whose guard could not run — the same
+property that made the whole row above read `0 fail (52 pass)`. It is now
+read off the parse: the branch consuming the refusal must be a direct
+statement of the module body, and the `COMMIT_FAILED` that ends it must be
+inside that branch and inside a `return`.
+
+`indexOf` is still used, as an **anchor** rather than an assertion. Each
+anchor is checked for uniqueness before its range is handed to
+`enclosingChain`, so the range is the one the author meant; every claim about
+position comes from the tree. `COMMIT_FAILED` appears four times in
+`workflows/ship.js`, which is why the anchor names this refusal
+specifically — a check that merely found the string somewhere in the file
+would be satisfied by three other branches.
+
+- [x] SC-1459: test/record-build-commit.test.ts contains [assertMarkedBlockReachable, COMMIT-STATE-GUARD] — the third defeatable suite reads its marked region's position off the parse, and the call site's consumption of the refusal is read the same way rather than matched as text
+- [x] SC-1460: test/record-build-commit.test.ts contains [the limit of the reachability claim is written down and not implied] — a conditional `return` above a marked block leaves it reachable and an unconditional one does not, both executed, so the residual gap is a pair of assertions rather than a sentence
+
+| Mutation | Red |
+|---|---|
+| the marked region wrapped in `if (false)`, wrapper outside the markers | **1 of 53** — 52 pass / 0 fail before #201 |
+| the branch that reads the refusal moved inside another `if` | 1 of 53 |
+| the refusal branch logs instead of ending the run | 1 of 53 |
+| the guard always returns null | 2 of 53 |
+
+None is left in the tree; all were run and reverted with `git status` clean.
+
+### What reachability still cannot catch, stated rather than implied
+
+`assertMarkedBlockReachable` reads the PARSE. A chain of `["Program"]` means
+the block is unconditional in the tree, and `precedingTerminator` additionally
+rejects a block sitting after an unconditional `return` in the same statement
+list. Neither can see a `return` that is conditional in the source and taken
+on every real input: `if (alwaysTrue) return` above the block parses as
+conditional and is dead in practice.
+
+That residual is why the executed `loadGuard` tests are not redundant with the
+reachability one. Three different claims:
+
+| Claim | Proven by | Not proven |
+|---|---|---|
+| the logic refuses for the right reason | `loadGuard` + the `new Function` mutants | that anything calls it |
+| the region is positioned to run | `assertMarkedBlockReachable` | that control reaches it |
+| the run reaches it | a real pipeline run | — nothing in this file |
+
+The third is measured by shipping, not by this suite. Written down here
+because an unstated gap reads as coverage, which is the defect this entire
+section exists about.
+
+**On the SC numbers.** #204's body proposed SC-695 and SC-696. Both are in
+use in `specs/CONFIG-DRIVEN-TESTING-SPEC.md`, allocated to the compound-clause
+matcher. That is the second collision in two issues — #202 proposed
+SC-660..663, all four of which are in use in this file — and both were
+allocated in an issue body before #392 made `nextSCNumber` read the whole
+corpus. Issues written before that change carry numbers that were never
+reserved; take the next free id rather than the one the issue names.
 
 ### The commit recorder records measurements, it does not invent them (#173)
 
