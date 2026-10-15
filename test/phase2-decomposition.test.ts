@@ -34,6 +34,7 @@ import {
   type DecomposedAc,
 } from "../lib/phase2-decomposition";
 import { verifyPhase2, readPlan, readSplitPlan, REFUSE_EXIT } from "../scripts/verify-phase2-bodies";
+import { enclosingChain } from "../lib/reachability";
 
 const ROOT = join(import.meta.dir, "..");
 const SCRIPT = join(ROOT, "scripts", "verify-phase2-bodies.ts");
@@ -379,12 +380,42 @@ describe("SC-1487: ship.js's inline copy and the library agree", () => {
   });
 
   test("the run refuses on a bad split rather than logging it", () => {
+    // MEASURED: the first version of this grepped the 1200 characters after
+    // the call site for `discoveryRefusal = shipFailed(` and `return false`.
+    // Prefixing the assignment with `if (false) ` leaves BOTH strings in
+    // place, so the mutation scored ZERO — a detector narrower than what it
+    // detects, which is the second shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md`. The decision is read
+    // off the parse now (#204): the refusal and the `return` must be DIRECT
+    // statements of the `splitViolations.length > 0` block, so nothing can
+    // be nested under another condition without changing the chain.
     const src = readFileSync(SHIP, "utf-8");
-    const at = src.indexOf("const splitViolations = decompositionRefusal(");
-    expect(at, "the call site is gone").toBeGreaterThan(0);
-    const after = src.slice(at, at + 1200);
-    expect(after, "a violation that does not stop the run is a log line").toContain("discoveryRefusal = shipFailed(");
-    expect(after).toContain("return false");
+    const anchor = "const splitViolations = decompositionRefusal(";
+    expect(src.split(anchor).length - 1, "the call site is gone or duplicated").toBe(1);
+
+    const assignAt = src.indexOf("discoveryRefusal = shipFailed(", src.indexOf(anchor));
+    expect(assignAt, "the refusal assignment is gone").toBeGreaterThan(0);
+    const assignChain = enclosingChain(src, assignAt, assignAt + "discoveryRefusal = shipFailed(".length);
+
+    const guardAt = src.indexOf("if (splitViolations.length > 0) {");
+    expect(guardAt, "the guard is gone").toBeGreaterThan(0);
+    const guardChain = enclosingChain(src, guardAt, guardAt + 10);
+
+    // Exactly ONE conditional deeper than the guard's own nesting — the
+    // guard itself. `if (false) <assignment>` adds a second, which is the
+    // mutation a text grep could not see.
+    const ifs = (chain: string[]) => chain.filter(t => t === "IfStatement").length;
+    expect(assignChain.slice(0, guardChain.length)).toEqual(guardChain);
+    expect(
+      ifs(assignChain),
+      `the refusal is nested under a condition the guard does not have — chain ${assignChain.join(" > ")}`,
+    ).toBe(ifs(guardChain) + 1);
+
+    const returnAt = src.indexOf("return false", assignAt);
+    const returnChain = enclosingChain(src, returnAt, returnAt + "return false".length);
+    expect(returnChain.slice(0, guardChain.length)).toEqual(guardChain);
+    expect(ifs(returnChain), `the return is conditional — chain ${returnChain.join(" > ")}`)
+      .toBe(ifs(guardChain) + 1);
   });
 });
 
