@@ -275,8 +275,31 @@ made.
 | Reading | Result |
 |---|---|
 | `bun scripts/typecheck.ts` | 0 errors, matching baseline |
-| `bun scripts/test-clean-env.ts` | 0 failures |
+| `bun scripts/test-clean-env.ts` | 0 failures — **after two fixes below**; it reported 2 on first run |
 | CI on the merged Phase 1 commit | `test` and `gates` green |
+
+**`bun scripts/test-clean-env.ts` did not report 0 on the first run**, and
+neither failure was Phase 1's. Both were the modelled environment differing
+from CI in a way that made a correct test fail — the inversion that module
+exists to prevent — so both were fixed rather than recorded:
+
+- `test/worktree-repo.test.ts` SC-1444 asks which repository the checkout is
+  of. `ciCheckoutPlan` repoints `origin` at `file://source` so the replayed
+  fetches resolve offline, and then left it there. `actions/checkout@v4`
+  leaves `origin` on the GitHub repository, so the test read a filesystem path
+  under the model and `github.com/owner/name` in CI. The plan now restores the
+  source's own `origin` as its **last** command, after the fetches that need
+  the `file://` URL. A source with no remote restores nothing, which is also
+  what CI would have, and that is the control.
+- `test/scaffold-ownership.test.ts` copies the working tree's dirty paths into
+  a clone. `--untracked-files=all` descends into untracked directories but
+  reports a **symlink** to one as a single entry, and the CI-shaped checkout
+  symlinks `node_modules` in — so `readFileSync` hit `EISDIR` and the case
+  died for a reason unrelated to scaffolding. Filtered on what the path *is*
+  rather than on its name; a name filter would be the hand-kept list that
+  comment already rejects.
+
+- [ ] SC-1471: lib/ci-checkout.ts contains [originUrl] — the modelled checkout ends with the source's own remote rather than the temp path it cloned from so a test cannot pass in CI and fail in the model
 
 ### Shape 1 — checks with no assertion
 
@@ -351,9 +374,18 @@ Measured over `test/gate-check-audit.test.ts` (18 tests):
 | `WARN_TIER_CHECKS` emptied | 2 of 18 — the unlisted check and the two-shapes mix |
 | an entry left in after its check gained an assertion | 1 of 18 — the other direction |
 | the parser's `expect` regex narrowed back to `\bexpect\s*\(` | 2 of 18 — the generic-form case and the unlisted-check case, because `workflow-state.json validates` reappears |
-| `gateChecks` short-circuited to `return []` | 4 of 18 — and the audit's own assertions go GREEN, which is why the count control exists |
-| `s.environments.prod.rebuild = 'PASS'` restored in ship.js | 2 of 18 |
+| `gateChecks` short-circuited to `return []` | 8 of 18 — every assertion about the file at once, which is what the count control is for: without it the two SC-1466 cases would both go green over an empty list |
+| `s.environments.prod.rebuild = 'PASS'` restored in ship.js | **1 of 18** |
 | `classifyContainerProvenance` stops suppressing on `PASS` | 1 of 18 — the pair is not two views of one branch |
+
+The **1 of 18** is a finding, not a comfortable number. The second SC-1469
+case asserts that the file contains `rebuild = 'SKIP'` and a
+`rebuildSkipReason`, and the *container-down* arm contains both — so restoring
+the false PASS in the container-up arm leaves that case green. A substring
+test over a file with two similar arms cannot tell which arm it matched. The
+case that does catch it is the `not contains` one, which is why SC-1469 is
+written as an absence; the positive case is there to stop an arm that records
+`SKIP` for everything and is honest about being the weaker half.
 
 ### What this does NOT fix
 

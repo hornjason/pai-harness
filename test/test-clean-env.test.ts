@@ -238,6 +238,54 @@ describe("#168: the prepared checkout has CI's refs and not the developer's", ()
     }
   });
 
+  // SC-1471 — #183. `actions/checkout@v4` leaves `origin` on the GitHub
+  // repository; this plan repoints it at `file://source` so the replayed
+  // fetches resolve offline, and used to leave it there. A test asking "which
+  // repository is this a checkout of" then got a filesystem path under the
+  // model and `github.com/owner/name` in CI — the model failing a test CI
+  // passes, which is the inversion this module exists to prevent.
+  test("origin is restored to the source's own remote, after the fetches", () => {
+    const plan = ciCheckoutPlan({
+      source: "/src",
+      dest: "/dst",
+      model: { jobName: "test", depth: 1, fetches: [{ refspec: "refs/heads/main", depth: null }] },
+      originUrl: "https://github.com/owner/name",
+    });
+    const flat = plan.map(c => (c.kind === "exec" ? c.argv.join(" ") : `<${c.kind}>`));
+    const restore = flat.findIndex(c => c.includes("set-url origin https://github.com/owner/name"));
+    expect(restore, "origin is never restored").toBeGreaterThan(-1);
+    expect(restore, "origin was restored before a fetch that needs file://")
+      .toBeGreaterThan(flat.findIndex(c => c.includes("fetch")));
+    expect(restore).toBe(flat.length - 1);
+  });
+
+  test("no origin on the source means the file:// URL stays", () => {
+    // The control. A plan that always rewrote `origin` would satisfy the case
+    // above and break offline fetch replay for a source that has no remote.
+    const plan = ciCheckoutPlan({ source: "/src", dest: "/dst", model });
+    const flat = plan.map(c => (c.kind === "exec" ? c.argv.join(" ") : "")).join("\n");
+    expect((flat.match(/set-url origin/g) || []).length).toBe(1);
+    expect(flat).toContain("set-url origin file:///src");
+  });
+
+  test("a real clone reports the source's remote, not the temp directory", () => {
+    const src = sourceRepo();
+    const parent = mkdtempSync(join(tmpdir(), "cce-dst-"));
+    const dest = join(parent, "repo");
+    try {
+      const url = "https://github.com/owner/name.git";
+      const r = executeCheckoutPlan(
+        ciCheckoutPlan({ source: src, dest, model, originUrl: url }),
+        dest, parent, run,
+      );
+      expect(r.ok, r.ok ? "" : r.why).toBe(true);
+      expect(run(["git", "remote", "get-url", "origin"], dest).stdout.trim()).toBe(url);
+    } finally {
+      rmSync(src, { recursive: true, force: true });
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
   test("a plan that leaves a local branch standing is refused, not reported clean", () => {
     // The fail-open this whole file is about, aimed at itself. A preparer
     // that ran every command successfully and left `refs/heads/main` in

@@ -19,7 +19,7 @@
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -384,7 +384,15 @@ describe("#208 AC-2: measured on this repo", () => {
     })
       .split("\n")
       .map(l => l.slice(3).trim())
-      .filter(rel => rel && !rel.startsWith(".claude/worktrees/") && existsSync(join(ROOT, rel)));
+      .filter(rel => rel && !rel.startsWith(".claude/worktrees/") && existsSync(join(ROOT, rel)))
+      // `--untracked-files=all` descends into untracked DIRECTORIES but not
+      // through a symlink to one, which it reports as a single entry. Under
+      // `scripts/test-clean-env.ts` the CI-shaped checkout has exactly that:
+      // `node_modules` is symlinked in, so this list contained one path whose
+      // `readFileSync` is EISDIR and the case died for a reason that has
+      // nothing to do with scaffolding (#183). The filter is on what the path
+      // IS rather than on its name — a name filter would be a list again.
+      .filter(rel => statSync(join(ROOT, rel)).isFile());
     for (const rel of dirty) {
       mkdirSync(dirname(join(clone, rel)), { recursive: true });
       writeFileSync(join(clone, rel), readFileSync(join(ROOT, rel)));
