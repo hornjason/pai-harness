@@ -588,9 +588,35 @@ baseline carries over unchanged.
 
 ### What was broken to prove these can fail
 
-Counted over `test/typescript-project.test.ts` (29 tests) unless noted. None
-of the mutations is left in the tree; all were run and reverted.
+Counted over `test/typescript-project.test.ts` (33 tests). None of the
+mutations is left in the tree; all were run and reverted.
 
 | Mutation | Red |
 |---|---|
-| _pending_ | _pending_ |
+| `tsconfigVerdict`'s `applicable` forced to `false` | 4 of 33 — both verdict cases and both executed TSC-1 arms |
+| TSC-1's skip stops calling `addFinding` | 1 of 33 — the silent pass, which is the arm with nothing else to observe |
+| `typecheckDecision` loses the `scripts.typecheck` branch | 3 of 33 — the decision, the CI step and the AGENTS.md row |
+| `typecheckDecision` returns `bunx tsc --noEmit` with no tsconfig (the old constant) | 5 of 33 — the decision, the CI comment, the absent doc row, `dev.typeCheck` and its read-back |
+| the ratchet falls back to `bunx` instead of refusing | 1 of 33 — the executed copy, run from a directory with no `node_modules` |
+| the `typescript` pin becomes `^5.9.3` | 2 of 33 — package.json and the lockfile |
+| a second `containsTypeScript` planted in `lib/scaffold/steps.ts` | 2 of 33 — the singleton and the planted-copy control |
+| `createCiWorkflows` keeps its own ladder | 1 of 33 |
+| `generateAgentsMd` keeps its own ladder | 1 of 33 |
+| `DevSchema.typeCheck` back to `z.string().optional()` | 1 of 33 — the loader refuses the value the generator writes |
+
+**One mutation zero, found and closed.** Restoring the old `bunx tsc
+--noEmit` constant scored **0** against `dev.typeCheck` at first. The test
+asked `lib/scanner.ts`'s `scanProject`, which has no `dev` block at all, so
+`?? null` was null whatever the generator did — a vacuous assertion of
+exactly the shape `.claude/rules/checks-must-be-able-to-fail.md` lists third.
+The field is written by `generateOrAuditProjectHarness`; the case now runs it
+and reads the value back off disk, with a TypeScript-consumer control beside
+it so "always null" cannot satisfy it. Re-measured: 5 of 33.
+
+**And one defect the full suite found that this file had not.**
+`DevSchema.typeCheck` was `z.string().optional()`, so the honest `null` threw
+a `ZodError` out of `loadRungateConfig` and took four greenfield-scaffold
+tests with it. A value the generator writes and the loader refuses is not a
+value; `typeCheck` is now `.nullable().optional()` for the reason
+`healthPath` already is, and the round trip through the loader is asserted
+here rather than left to a neighbouring suite to discover.

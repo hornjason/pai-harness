@@ -1,8 +1,8 @@
 ---
 doc-type: code-map
 status: generated
-updated: 2026-10-13
-scanned-at-sha: 842885b8
+updated: 2026-10-15
+scanned-at-sha: c5b0229a
 generator: rungate/scripts/generate-code-map.ts
 ---
 
@@ -17,12 +17,12 @@ Regenerate when src/ has commits since scanned-at-sha.
 |--------|-------|
 | Source directories | 14 |
 | Dependencies | 3 |
-| Dev dependencies | 1 |
+| Dev dependencies | 2 |
 | API routes | 0 |
 | React components | 0 |
-| Entry points (fallow) | 346 |
+| Entry points (fallow) | 368 |
 | Unused files | 6 |
-| Unused exports | 29 |
+| Unused exports | 32 |
 | Circular dependencies | N/A |
 | Module import mappings | 0 |
 | Page-component mappings | 0 |
@@ -31,13 +31,13 @@ Regenerate when src/ has commits since scanned-at-sha.
 
 | Directory | Files | Types |
 |-----------|-------|-------|
-| .claude/ | 118357 | DS_Store, json, output-styles, agents, rungate |
-| test/ | 345 | ts, unit, types, json, fixtures |
+| .claude/ | 118359 | DS_Store, json, output-styles, agents, rungate |
+| test/ | 366 | ts, unit, types, json, fixtures |
 | evals/ | 151 | marcus-tdd-order, marcus-tdd-vs-speed, marcus-surgical, quinn-real-verification, marcus-no-cat |
-| lib/ | 89 | ts, validators, generators, scaffold |
+| lib/ | 102 | ts, validators, generators, scaffold |
 | scripts/ | 64 | ts, sh, git-hooks, lib, git-hooks/pre-push |
 | docs/ | 45 | research, adr, DS_Store, council, session-log |
-| gates/ | 37 | ts, gate-salt, toml, md, sha256 |
+| gates/ | 38 | ts, gate-salt, toml, md, sha256 |
 | specs/ | 32 | md, bootstrap-data-flow, json |
 | hooks/ | 25 | ts, lib |
 | prompts/ | 24 | md |
@@ -62,5 +62,6 @@ Regenerate when src/ has commits since scanned-at-sha.
 - `test`
 - `posttest`
 - `sync-scs`
+- `typecheck`
 - `test:structure`
 - `test:external-deps`
