@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-14
+updated: 2026-10-15
 ---
 
 # rungate
@@ -28,7 +28,7 @@ Ship harness — conformity tests, scaffold, and agent briefs for AI-first devel
 | Action | Command |
 |--------|---------|
 | Test | `bun test` |
-| Type check | `bun scripts/typecheck.ts` |
+| Type check | `bun run typecheck` |
 | Test as CI sees it | `bun scripts/test-clean-env.ts` |
 | Conformity | `bun test test/scaffold-conformity.test.ts` |
 | Create spec | `bun bin/rungate.ts create-spec "title"` |

@@ -307,6 +307,18 @@ describe("SC-1481: one decider produces the CI step, the doc row and dev.typeChe
     expect(config.dev.typeCheck).toBeNull();
   });
 
+  test("a null dev.typeCheck survives the config loader", () => {
+    // MEASURED by the full suite: `DevSchema.typeCheck` was
+    // `z.string().optional()`, so the honest null threw a ZodError out of
+    // `loadRungateConfig` and took four greenfield-scaffold tests with it. A
+    // value the generator writes and the loader refuses is not a value.
+    const { loadRungateConfig } = require("../lib/config-loader");
+    const { generateOrAuditProjectHarness } = require("../lib/scaffold/steps");
+    const root = project({ "main.py": "print(1)\n", "package.json": JSON.stringify({ name: "p" }) });
+    generateOrAuditProjectHarness(root, []);
+    expect(loadRungateConfig(root).dev?.typeCheck ?? null).toBeNull();
+  });
+
   test("a TypeScript consumer still gets a runnable dev.typeCheck", () => {
     // The control. "Always null" would satisfy the case above and switch the
     // verify gate's type check off for every consumer instead of fixing it.

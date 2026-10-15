@@ -6,7 +6,19 @@ export const DevSchema = z.object({
   uiBase: z.string().url(),
   preStart: z.string().optional(),
   testCmd: z.string().optional(),
-  typeCheck: z.string().optional(),
+  /**
+   * The project's type check, or `null` when it has nothing to type-check.
+   *
+   * **Nullable as well as optional (#87)**, for `healthPath`'s reason below.
+   * The scaffold used to write `bunx tsc --noEmit` here unconditionally, and
+   * `gates/gate-executor.ts` RUNS what it finds; without a tsconfig that
+   * command prints its help text and exits 1, so the verify gate reported
+   * `Type check FAIL` at every consumer the rest of the scaffold had already
+   * decided was not a TypeScript project. Absent and null are different facts
+   * — "nobody configured this" versus "the scaffold looked and there is
+   * nothing to run" — and the gate skips on either.
+   */
+  typeCheck: z.string().nullable().optional(),
   note: z.string().optional(),
   /**
    * The path the dev-server liveness probe requests, relative to `apiBase`.
