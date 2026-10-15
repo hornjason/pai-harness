@@ -5528,24 +5528,22 @@ match the code that prints the line rather than the line.
 
 ### What was broken to prove it
 
-Measured over `test/prove-label-gate.test.ts` (26 tests), with the last row
-measured a second time over `test/contract.test.ts` (17 tests). None of the
-twelve is left in the tree; all were run and reverted.
+Measured over `test/prove-label-gate.test.ts` (22 tests). None of the eleven
+is left in the tree; all were run and reverted.
 
 | Mutation | Red |
 |---|---|
-| the authenticated read failure allows instead of refusing — the #405 fail-open, restored in the decider | 2 of 26 |
-| an unreadable label set is treated as no labels | 5 of 26 |
-| the token-less case refuses too, so every local `bun test gates/` blocks | 3 of 26 |
-| the token-less case ALLOWS — `UNMEASURED` collapsed into clean | 2 of 26 |
-| the two refusal texts become the same string | 2 of 26 |
-| the detail is dropped from the refusal | 1 of 26 |
-| the gate goes back to `catch { return }` | 1 of 26 |
-| the gate reads `process.env.GITHUB_TOKEN` directly instead of `resolveGitHubToken` | 1 of 26 |
-| the gate check is renamed, so the source guards read an empty slice | 2 of 26 |
-| malformed fixture content falls back to the live read instead of throwing | 1 of 26 |
-| a non-array fixture is accepted | 1 of 26 |
-| the planted read returns `[]` whatever was planted — the fixture buys a pass | 3 of 26, and 1 of 17 in `test/contract.test.ts` |
+| the authenticated read failure allows instead of refusing — the #405 fail-open, restored in the decider | 3 of 22 |
+| an unreadable label set is treated as no labels | 7 of 22 |
+| the token-less case refuses too, so every local `bun test gates/` blocks | 4 of 22 |
+| the token-less case ALLOWS — `UNMEASURED` collapsed into clean | 3 of 22 |
+| the two refusal texts become the same string | 2 of 22 |
+| the detail is dropped from the refusal | 1 of 22 |
+| the gate goes back to `catch { return }` | 3 of 22 |
+| the gate stops printing the report and just returns — `SKIP`, not `UNMEASURED` | 1 of 22 |
+| the gate reads `process.env.GITHUB_TOKEN` directly instead of `resolveGitHubToken` | 1 of 22 |
+| the gate check is renamed, so the source guards read an empty slice | 2 of 22 |
+| the gate check returns before the labels are read — the whole check switched off | 2 of 22 |
 
 The seventh row scored **zero** on the first battery, and the reason is this
 file's own subject. The guard was
