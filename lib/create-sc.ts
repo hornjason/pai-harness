@@ -9,6 +9,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import type { ScRegistry } from "./sc-ids";
+import { tryLoadRungateConfig } from "./config-loader";
 
 // ── Types ─────────────────────────────────────────────────────
 
@@ -41,9 +42,10 @@ function loadBuiltInRegistry(): RegistryEntry[] {
 /**
  * Load the matcher registry, optionally merging consumer-defined custom matchers.
  *
- * When projectRoot is provided, looks for .claude/rungate.json in that directory
- * and merges any `customMatchers` array entries with the built-in registry.
- * Consumer entries with the same `name` as a built-in entry override the built-in.
+ * When projectRoot is provided, resolves that project's config through
+ * `lib/config-loader.ts` and merges any `customMatchers` array entries with the
+ * built-in registry. Consumer entries with the same `name` as a built-in entry
+ * override the built-in.
  */
 export function loadRegistry(projectRoot?: string): RegistryEntry[] {
   const cacheKey = projectRoot ?? "__builtin__";
@@ -54,33 +56,26 @@ export function loadRegistry(projectRoot?: string): RegistryEntry[] {
     return builtIn;
   }
 
-  // Look for consumer custom matchers in .claude/rungate.json
-  const configPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(configPath)) {
+  // Through the loader, so a consumer on the directory layout can supply
+  // custom matchers at all — this read was monolith-only, which is #212/#90.
+  // The parse failure is NOT caught: the old `catch` returned the built-in
+  // registry, so a consumer whose config had a trailing comma silently got
+  // rungate's matchers and no indication their own had been dropped.
+  const config = tryLoadRungateConfig(projectRoot);
+  const customMatchers = (config?.customMatchers ?? []) as RegistryEntry[];
+  if (customMatchers.length === 0) {
     _registryCache.set(cacheKey, builtIn);
     return builtIn;
   }
 
-  try {
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    const customMatchers: RegistryEntry[] = config.customMatchers ?? [];
-    if (customMatchers.length === 0) {
-      _registryCache.set(cacheKey, builtIn);
-      return builtIn;
-    }
+  // Merge: consumer entries override built-in entries with same name
+  const merged = builtIn.filter(
+    (entry) => !customMatchers.some((c) => c.name === entry.name)
+  );
+  merged.push(...customMatchers);
 
-    // Merge: consumer entries override built-in entries with same name
-    const merged = builtIn.filter(
-      (entry) => !customMatchers.some((c) => c.name === entry.name)
-    );
-    merged.push(...customMatchers);
-
-    _registryCache.set(cacheKey, merged);
-    return merged;
-  } catch {
-    _registryCache.set(cacheKey, builtIn);
-    return builtIn;
-  }
+  _registryCache.set(cacheKey, merged);
+  return merged;
 }
 
 // ── Pattern param definitions ─────────────────────────────────

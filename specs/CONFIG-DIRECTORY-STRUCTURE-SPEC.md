@@ -3,7 +3,7 @@ doc-type: spec
 status: active
 owner: jason
 created: 2026-10-02
-updated: 2026-10-02
+updated: 2026-10-14
 governs: rungate config architecture — directory-based config replacing monolithic rungate.json, self-describing compliance policy, organize external sources
 testable: true
 compliance: strict
@@ -99,7 +99,9 @@ counting — prose that discusses the config is not an access:
 | CONFIG-2 | `workflows/*.js`, prompt bodies included | 3 | 14 |
 
 ADR-001 proposed ~24 and ADR-002 measured ~89; both counted comment
-mentions. 61 is the code figure.
+mentions. 61 is the code figure. **That is the figure on the day the ratchet
+was banked, not the standing one** — see the decrement below, and
+`.claude/config-access-ratchet.json` for what is live.
 
 `lib/config-loader.ts` is CONFIG-1's only allowlist entry. CONFIG-2's is
 empty — no workflow has any business reading the config directly; it reads
@@ -122,6 +124,97 @@ entry, or remove reads without lowering the count.
 checks and carried three reads of its own; those were migrated in #309 rather
 than allowlisted, because an allowlist naming the exempt files becomes
 evidence those files are referenced.
+
+## The first decrement (#214, 2026-10-14)
+
+ADR-001 D1 named the check and it was never built; #309 built it and banked
+61 sites. A ratchet nobody lowers is one more artefact that certifies nothing,
+so this is the first entry being earned off it.
+
+| Check | Files | Sites | Change |
+|---|---|---|---|
+| CONFIG-1 | 17 → **10** | 47 → **38** | seven files migrated, nine reads |
+| CONFIG-2 | 3 | 14 | untouched — ADR-002 D1's subprocess route, #307 |
+
+Migrated: `lib/create-sc.ts`, `lib/task-completion-checks.ts`,
+`scripts/fresh-eyes-test.ts`, `scripts/grade-deterministic.ts` (2),
+`scripts/parallel-ship.ts`, `scripts/precompute-goal.ts`,
+`scripts/test-brief.ts`.
+
+### Six copies of one read, and six private answers
+
+Each site did the whole thing by hand — `existsSync`, `JSON.parse`, pick a
+key — and four wrapped it in a bare `catch` returning a default. Pointing six
+copies at the loader would have removed the path construction and kept the
+defaulting, which ADR-002 names as the defect under the defect: *"Drift was
+not the failure. Defaulting was."* So the reads collapse into three accessors
+in `lib/config-readers.ts`, each answering absence once and in the open, and
+none of them catching a parse error — per ADR-001 D2, a malformed config is
+never a missing config.
+
+**What the migration fixes beyond the policy.** Every one of these read
+`.claude/rungate.json` and nothing else. A consumer on the layout this
+document tells them to adopt got `{}` from all of them: no custom matchers
+(#212/#90), no roles for grading, no pre-flight hosts, no conformity run at
+task completion, and a worktree named `project`. Silently — the same shape as
+Phase 3's tier control, one layer down.
+
+### Assert adoption, not existence
+
+ADR-001 diagnosed its own failure as existence assertions over source text:
+*"a loader that is written correctly and called by nothing satisfies them
+perfectly."* Every criterion below runs the migrated function against a
+project root on the directory layout and reads back an authored value. Each
+accessor is also run against the monolith over the SAME authored values and
+the two results compared to each other rather than to a literal — a reader
+that handled only the directory form would pass the first assertion and be a
+new instance of the same bug.
+
+- [x] SC-1449: test/config-access-adoption.test.ts contains [the accessors read the directory layout] — roles, slug and pre-flight hosts are read back from `.claude/rungate/` and compared against the same values authored as a monolith, so neither layout can be the only one that works
+- [x] SC-1450: test/config-access-adoption.test.ts contains [a corrupt config throws rather than reading as unconfigured] — absence returns the empty value and malformed JSON throws, which is the distinction four bare `catch` blocks erased
+- [x] SC-1451: test/config-access-adoption.test.ts contains [loadRegistry picks up customMatchers authored in the directory layout] — the migrated call sites are executed against a fixture, not asserted to import the loader
+- [x] SC-1452: test/config-access-adoption.test.ts contains [no migrated file keeps a private reader beside the shared one] — every migrated file is named and asserted gone from the ratchet, so a revert cannot put one back while the suite stays green
+
+### What was broken to prove it (SC-1449..1452)
+
+Run and counted over `test/config-access-adoption.test.ts` +
+`test/config-access-conformity.test.ts` (28 tests, 0 red). None is left in the
+tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `loadRegistry` reads the monolith only, as before | 2 — the customMatchers case, and CONFIG-1, because the reintroduced path is on no ratchet entry |
+| the grader's role reader goes back to the monolith | 2 — same pair |
+| brief-path resolution goes back to the monolith | 2 — same pair |
+| the worktree slug goes back to the monolith | 2 — same pair |
+| `loadRoleConfig` catches the parse error and returns `{}` | 1 — only the malformed case; no path is constructed, so CONFIG-1 stays green, which is exactly the bug CONFIG-1 cannot see |
+| the `"project"` default moves from the call site into the accessor | 2 — a second unconfigured repo would name the same worktree |
+| a migrated file is left banked on the ratchet | 2 — SC-1452 and CONFIG-1's under-its-number refusal |
+
+The fifth row is the one worth reading. A bare `catch` around a config read is
+invisible to CONFIG-1 — the check sees path construction, not defaulting — and
+ADR-002 lists it as a risk to be caught in review. It is caught by a test
+instead.
+
+### What this does NOT fix, stated plainly
+
+- **The remaining 38 sites are #307's.** `gates/`, `lib/scaffold/steps.ts`,
+  `lib/scanner.ts` and `scripts/resolve-config.ts` are sequenced by ADR-002's
+  implementation brief with semantics this change does not touch
+  (`UNMEASURED` baselines, the resolved-config artefact). Migrating them here
+  would collide with work already specified.
+- **Three banked entries are not reads at all.**
+  `lib/generators/agent-briefs.ts` (2) and `lib/scaffold/owned-files.ts` (3)
+  carry the path inside *user-facing strings* — "check
+  `.claude/rungate/config.json`" — and `scripts/scaffold-rungate-config.ts`
+  (2) is the writer that creates the file. None can route through a read
+  loader, so those 7 sites cannot reach zero by migration, and the obvious
+  way to clear them is to reword documentation to satisfy a grep. Filed as
+  #415.
+- **`scripts/create-brief.ts` writes.** It registers a new role in the
+  monolith and does nothing on the directory layout, which is a real
+  consumer bug — but a writer, not a reader, and a different class. Filed
+  as #415.
 
 ## A fix for new projects is not a fix (#121)
 

@@ -11,6 +11,8 @@ import { spawnSync } from 'child_process';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 
+import { tryLoadRungateConfig } from './config-loader';
+
 export interface CompletionCheckResult {
   passed: boolean;
   blockers: string[];
@@ -105,15 +107,18 @@ export function checkUncommittedChanges(projectRoot: string): CompletionCheckRes
 }
 
 /**
- * Run conformity checks if rungate.json exists.
+ * Run conformity checks if the project is scaffolded.
  * Returns blocker if conformity fails.
  */
 export function checkConformity(projectRoot: string): CompletionCheckResult {
   const blockers: string[] = [];
   const warnings: string[] = [];
 
-  const rungateConfig = join(projectRoot, '.claude', 'rungate.json');
-  if (!existsSync(rungateConfig)) {
+  // Either layout counts as scaffolded. The old existence check named the
+  // monolith only, so every consumer that followed the documented migration
+  // to `.claude/rungate/` stopped having its conformity suite run here —
+  // silently, reporting passed.
+  if (tryLoadRungateConfig(projectRoot) === null) {
     // No rungate config — skip conformity check
     return { passed: true, blockers: [], warnings: [] };
   }

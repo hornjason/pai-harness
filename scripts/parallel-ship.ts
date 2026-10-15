@@ -4,6 +4,8 @@ import { execSync, spawn } from "child_process";
 import { rmSync, existsSync, readFileSync } from "fs";
 import { join } from "path";
 
+import { readProjectSlug } from "../lib/config-readers.js";
+
 export interface ShipJob {
   issue: number;
   worktreePath: string;
@@ -43,13 +45,15 @@ export function cleanupShipWorktree(projectRoot: string, issue: number): void {
   try { execSync(`git branch -D ${branchName}`, { cwd: projectRoot, stdio: "pipe" }); } catch {}
 }
 
-function getProjectSlug(projectRoot: string): string {
-  const configPath = join(projectRoot, ".claude", "rungate.json");
-  if (existsSync(configPath)) {
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    if (config.project) return config.project;
-  }
-  return "project";
+/**
+ * Exported for `test/config-access-adoption.test.ts`: the slug names a
+ * worktree directory, so "which layout did this come from" is observable as a
+ * path and worth asserting rather than asserting the import.
+ */
+export function getProjectSlug(projectRoot: string): string {
+  // The "project" default stays here, where the collision is visible — two
+  // unconfigured repos sharing it would name the same worktree.
+  return readProjectSlug(projectRoot) ?? "project";
 }
 
 function launchShipSession(job: ShipJob): void {
