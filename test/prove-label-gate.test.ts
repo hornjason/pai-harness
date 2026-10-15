@@ -1,7 +1,7 @@
 /**
  * The close gate's label check, and the transport it was entangled with (#395).
  *
- * Covers SC-1416, SC-1417, SC-1418 of HARNESS-STANDARD.md.
+ * Covers SC-1416, SC-1417, SC-1418, SC-1489, SC-1490 of HARNESS-STANDARD.md.
  *
  * `gates/workflow.test.ts` read an issue's labels by shelling out to the
  * GitHub CLI. GITHUB-API-MIGRATION-SPEC.md's SC-502 forbids exactly that,
@@ -30,8 +30,10 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { join } from "path";
+
 import { getIssueLabels } from "../lib/github";
-import { proveLabelViolation } from "../lib/prove-label-gate";
+import { proveLabelGateVerdict, proveLabelViolation } from "../lib/prove-label-gate";
 
 /** A fake Octokit that records what it was asked for. */
 function stubClient(labels: unknown, seen: Record<string, unknown> = {}) {
@@ -149,5 +151,106 @@ describe("SC-1418: read and decision compose the way the gate uses them", () => 
       1,
     );
     expect(proveLabelViolation(labels)).toBeNull();
+  });
+});
+
+// ── SC-1489 / SC-1490 (#405) ────────────────────────────────────────────────
+
+/** A fake Octokit whose read rejects. */
+function throwingClient(message: string) {
+  return {
+    rest: {
+      issues: {
+        get: async () => { throw new Error(message); },
+      },
+    },
+  } as never;
+}
+
+/** The gate's own sequence: try the read, hand whatever happened to the verdict. */
+async function driveGate(client: never, tokenPresent: boolean) {
+  try {
+    return proveLabelGateVerdict({
+      labels: await getIssueLabels(client, "hornjason/pai-harness", 405),
+      tokenPresent,
+    });
+  } catch (error) {
+    return proveLabelGateVerdict({ error, tokenPresent });
+  }
+}
+
+describe("SC-1489: an authenticated read that fails REFUSES rather than passing", () => {
+  test("a throwing client with a token present blocks the gate", async () => {
+    // The whole of #405. This was `catch { return }`, so this case was a pass.
+    // Driven through the real `getIssueLabels` so the rejection travels the
+    // path the gate travels, rather than being handed in as a value.
+    const outcome = await driveGate(throwingClient("API rate limit exceeded"), true);
+    expect(outcome.verdict).toBe("REFUSE");
+    expect(outcome.message).toContain("a token was present");
+    expect(outcome.message, "the reason has to survive into the output").toContain("API rate limit exceeded");
+  });
+
+  test("the refusal says which fact it is, not just that something went wrong", () => {
+    // SC-1. "No blocking label" and "could not find out" must be
+    // distinguishable or the next person debugging a blocked ship has
+    // nothing to go on.
+    const unreadable = proveLabelGateVerdict({ error: new Error("ENOTFOUND"), tokenPresent: true });
+    const labelled = proveLabelGateVerdict({ labels: ["needs-prove"], tokenPresent: true });
+    expect(unreadable.verdict).toBe("REFUSE");
+    expect(labelled.verdict).toBe("REFUSE");
+    expect(unreadable.message).not.toBe(labelled.message);
+    expect(unreadable.message).toContain("could not be read");
+    expect(labelled.message).toContain("needs-prove");
+  });
+
+  test("a successful read still decides on the labels", async () => {
+    // The control. "Always refuse" would satisfy both cases above and turn
+    // the gate into a block on every run.
+    expect((await driveGate(stubClient([{ name: "proven" }, { name: "needs-prove" }]), true)).verdict).toBe("ALLOW");
+    expect((await driveGate(stubClient([{ name: "needs-prove" }]), true)).verdict).toBe("REFUSE");
+    expect((await driveGate(stubClient([]), true)).verdict).toBe("ALLOW");
+  });
+});
+
+describe("SC-1490: a token-less environment is UNMEASURED, which is not clean", () => {
+  test("no token yields UNMEASURED rather than ALLOW", async () => {
+    const outcome = await driveGate(throwingClient("GITHUB_TOKEN environment variable is not set"), false);
+    expect(outcome.verdict, "a token-less run must not read as a pass").toBe("UNMEASURED");
+    expect(outcome.verdict).not.toBe("ALLOW");
+  });
+
+  test("the UNMEASURED message says why it is not clean", () => {
+    const outcome = proveLabelGateVerdict({ error: new Error("no token"), tokenPresent: false });
+    expect(outcome.message).toContain("UNMEASURED, not clean");
+    expect(outcome.message).toContain("needs-prove");
+  });
+
+  test("the three verdicts are three, not two wearing three names", () => {
+    const verdicts = new Set([
+      proveLabelGateVerdict({ labels: [], tokenPresent: true }).verdict,
+      proveLabelGateVerdict({ labels: ["needs-prove"], tokenPresent: true }).verdict,
+      proveLabelGateVerdict({ error: new Error("x"), tokenPresent: false }).verdict,
+    ]);
+    expect(verdicts).toEqual(new Set(["ALLOW", "REFUSE", "UNMEASURED"]));
+  });
+
+  test("the gate reads tokenPresent from resolveGitHubToken, not a second env read", () => {
+    // Two deciders of "is there a token" survive any mutation of either, and
+    // `resolveGitHubToken` already trims — a `GH_TOKEN` with a trailing
+    // newline is present to a bare `process.env` check and rejected by the
+    // API, which is the exact pair of answers that must not diverge.
+    const src = require("fs").readFileSync(join(import.meta.dir, "..", "gates", "workflow.test.ts"), "utf-8");
+    expect(src).toContain("const tokenPresent = Boolean(resolveGitHubToken())");
+    const at = src.indexOf("const tokenPresent = Boolean(resolveGitHubToken())");
+    const region = src.slice(at - 2000, at + 2000);
+    expect(region, "the fail-open is back").not.toMatch(/catch\s*\{\s*\n\s*(\/\/[^\n]*\n\s*)*return\s*$/m);
+  });
+
+  test("the gate no longer swallows the read", () => {
+    const src = require("fs").readFileSync(join(import.meta.dir, "..", "gates", "workflow.test.ts"), "utf-8");
+    const at = src.indexOf("prove-label-enforcement: needs-prove requires proven label");
+    const body = src.slice(at, src.indexOf("});", src.indexOf("expect(outcome.verdict", at)));
+    expect(body).toContain("proveLabelGateVerdict");
+    expect(body, "a bare catch-and-return is the defect").not.toMatch(/catch\s*\{[^}]*\breturn;\s*\}/);
   });
 });

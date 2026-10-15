@@ -5419,3 +5419,66 @@ the second shape in `.claude/rules/checks-must-be-able-to-fail.md`. The
 decision is read off the parse now (#204): `enclosingChain` must put the
 assignment and the `return` at the guard's own conditional depth, so nesting
 either under another condition changes the chain. Re-measured: 1 of 48.
+
+## #405 — the prove-label gate passed when it could not read the labels
+
+```ts
+let labels: string[];
+try {
+  labels = await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber));
+} catch {
+  return;   // an unreachable GitHub is a PASS
+}
+```
+
+Shape one in `.claude/rules/checks-must-be-able-to-fail.md`. A missing token,
+a rate limit, a network blip and a typo'd repo slug all landed in that one
+`catch`, and the check that exists to stop an unproven issue from closing
+could not fail for the most common reason it would ever be unable to answer.
+**"No blocking label" and "could not find out" were the same outcome.**
+
+#395 left it deliberately: that issue swapped a `gh` subprocess for Octokit,
+and making the gate refuse is a behaviour change to the ship pipeline with
+its own blast radius.
+
+### The token-less question, decided
+
+#405 left it open — *"whether a token-less local run should refuse or skip. A
+gate that refuses every local invocation is a gate people will comment out."*
+Three outcomes rather than two, decided on what the environment can answer:
+
+| token | read | verdict |
+|---|---|---|
+| absent | n/a | `UNMEASURED` — the environment was never able to answer |
+| present | threw | `REFUSE` — something that should have worked did not |
+| present | ok | `ALLOW` / `REFUSE` by `proveLabelViolation` |
+
+A token-less run does not refuse, because every local `bun test gates/` would
+block and the gate would be deleted within a week. It does not silently pass
+either: the verdict is `UNMEASURED` and carries its reason, which is the
+distinction `.claude/rules/config-access.md` draws — `SKIP` is
+indistinguishable from success and `UNMEASURED` is not.
+
+That is safe where it matters because of where the gate runs, checked rather
+than assumed:
+
+- `isShipPlus()` (`gates/workflow.test.ts:229`) is true only when workflow
+  state says `SHIP` or `DONE`. The gate is reached from
+  `gates/gate-executor.ts`, which spawns `bun test gates/` in the ship
+  pipeline's own process environment, where a token is present.
+- CI runs the file too — `ci.yml` runs a bare `bun test` — and has no token.
+  It never reaches this code: a CI checkout has no workflow state, so
+  `isShipPlus()` is false and the test returns first. The `gates` job does
+  not run this file at all, only the conformity suite and the secret scan.
+
+So the authenticated-and-still-failing case is the one real invocations hit,
+and it is the one that now blocks.
+
+- [ ] SC-1489: lib/prove-label-gate.ts contains [proveLabelGateVerdict] — an authenticated read that fails REFUSES and names the read failure as the reason. "No blocking label" and "could not find out" produce different text so a blocked ship can be debugged
+- [ ] SC-1490: test/prove-label-gate.test.ts contains [throwingClient] — the failure branch is EXERCISED by a client whose read rejects rather than argued about and the token-less case is asserted to be UNMEASURED rather than ALLOW
+
+### What was broken to prove it
+
+| Mutation | Red |
+|---|---|
+| _pending_ | _pending_ |

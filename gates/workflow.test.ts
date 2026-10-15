@@ -16,7 +16,7 @@ import {
   resolveContainerRuntime,
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
-import { proveLabelViolation } from "../lib/prove-label-gate";
+import { proveLabelGateVerdict } from "../lib/prove-label-gate";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -1577,27 +1577,36 @@ describe("ship checks", () => {
     const issueRepo = sf("issueRepo") || sf("repo");
     if (!issueNumber || !issueRepo) return;
 
-    let labels: string[];
+    // #405 — the fail-open is gone. This used to be `catch { return }`, so a
+    // missing token, a rate limit, a network blip and a typo'd repo slug all
+    // landed in one place and the gate reported clean: "no blocking label"
+    // and "could not find out" were the same outcome.
+    //
+    // `proveLabelGateVerdict` owns the three-way decision and the reasoning
+    // behind the token-less case. The read is the only thing left here,
+    // because a decision entangled with its transport is a decision nobody
+    // tests — the lesson that produced `proveLabelViolation` in the first
+    // place.
+    const { createGitHubClient, getIssueLabels, resolveGitHubToken } = require("../lib/github");
+    const tokenPresent = Boolean(resolveGitHubToken());
+    let read: { labels?: string[]; error?: unknown; tokenPresent: boolean };
     try {
-      const { createGitHubClient, getIssueLabels } = require("../lib/github");
-      labels = await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber));
-    } catch {
-      // UNCHANGED FAIL-OPEN, and flagged rather than quietly carried over.
-      //
-      // An unreadable label set skips the check, so a gate that cannot reach
-      // GitHub passes rather than refusing — which is the shape
-      // `.claude/rules/checks-must-be-able-to-fail.md` is about, and the
-      // reason an outage here is indistinguishable from a clean issue.
-      //
-      // #395 is the transport, and swapping a subprocess for Octokit must
-      // not also change which runs this gate blocks. Making it refuse is a
-      // behaviour change to the ship pipeline and belongs in its own issue
-      // with its own reproducer. Filed as #405.
-      return;
+      read = {
+        labels: await getIssueLabels(createGitHubClient(), issueRepo, Number(issueNumber)),
+        tokenPresent,
+      };
+    } catch (e) {
+      read = { error: e, tokenPresent };
     }
 
-    const refusal = proveLabelViolation(labels);
-    expect(refusal ?? "allowed", refusal ?? undefined).toBe("allowed");
+    const outcome = proveLabelGateVerdict(read);
+    if (outcome.verdict === "UNMEASURED") {
+      // Reported, not swallowed. `SKIP` is indistinguishable from success and
+      // `UNMEASURED` is not (`.claude/rules/config-access.md`).
+      console.error(`PROVE_LABEL_UNMEASURED: ${outcome.message}`);
+      return;
+    }
+    expect(outcome.verdict, outcome.message ?? undefined).toBe("ALLOW");
   });
 });
 
