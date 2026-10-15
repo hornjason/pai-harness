@@ -261,3 +261,108 @@ The `~/.rungate/` directory accumulates workflow state slugs with no archival me
 - [ ] GI-7: SCHEMA-GUIDE.md references validated write path (not Write tool)
 - [ ] GI-8: writeWorkflowState() and workflow.test.ts use same parse strictness
 - [ ] GI-9: initWorkflow() warns when overwriting non-DONE workflow state
+
+## #183 — the audit of the rest of the ported-check list
+
+#176 fixed three checks that could not fail. This is Phase 2: whole-repo
+verification of those changes, and the audit of the remaining ported checks
+for the same two shapes — **an early return with no tail**, and **a field read
+as a verdict that only configuration writes** — reported even where no fix is
+made.
+
+### Verification (AC-7 of #176)
+
+| Reading | Result |
+|---|---|
+| `bun scripts/typecheck.ts` | 0 errors, matching baseline |
+| `bun scripts/test-clean-env.ts` | 0 failures |
+| CI on the merged Phase 1 commit | `test` and `gates` green |
+
+### Shape 1 — checks with no assertion
+
+`gates/workflow.test.ts` holds **79** `test(...)` calls. Seven are the
+`skipped — no active workflow (standalone run)` placeholder, which is a stub
+and not a check; all seven have empty bodies. Of the remaining 72, **four**
+contain no `expect` anywhere:
+
+| Check | Documented decision? |
+|---|---|
+| `quinn-container-port` | **Yes** — #344 states the warning is deliberate and that making it refuse needs its own measurement |
+| `spec-decision-compliance` | **Yes** — #409 Decision #9 placed it in the WARN tier |
+| `outcome-evidence-behavioral` | **No** — `tsc-pass`'s shape with a `console.warn` where the assertion should be. Its sibling two tests above, `outcome-acs-no-skip`, does assert |
+| `ac-issue-alignment` | **No** — found by this audit. Computes a stopword-filtered keyword coverage ratio and warns under 50% |
+
+**The finding is not the four. It is that nothing could tell them apart.** Two
+were deliberate, two were not, and from outside the file they were
+indistinguishable — which is the gap `tsc-pass` lived in for its whole life.
+So the audit is a binding rather than a paragraph: `WARN_TIER_CHECKS` in
+`lib/gate-check-audit.ts` names all four with a reason, and the list fails in
+**both** directions. A new warn-only check fails the suite; a listed check
+that gains an assertion fails the suite until its entry is deleted.
+
+The two undocumented checks are **reported, not fixed**. Tightening either
+changes what blocks live runs, which is a behaviour change with its own
+measurement, and #183's AC asks for the audit rather than the fix.
+
+### Shape 2 — a verdict nobody measured
+
+Thirteen `environments` fields are read by the gate suite. Tracing each to its
+writer:
+
+| Field | Writer | Verdict |
+|---|---|---|
+| `local.api` / `local.ui` | whoever measured the environment | clean — #176 |
+| `local.tests` | a real suite run | clean — #173 |
+| `local.quinn.port` | Quinn's own run | clean |
+| `prod.quinn` / `prod.quinnSpot` | always `SKIP` with a reason on every arm | no false verdict, but also no path to anything else |
+| **`prod.rebuild`** | **a health curl** | **the defect** |
+| `prod.smoke` | the same health curl | honest — a 200 from the configured health path *is* a smoke test |
+
+`workflows/ship.js`'s "container is up (200)" arm wrote
+`s.environments.prod.rebuild = 'PASS'`. A health check says a container is
+**answering**; it says nothing about whether that container was built from
+this commit, and during a ship run it has not been — the rebuild happens after
+merge.
+
+That literal did not merely sit in the file. `container-has-fix`
+(`gates/workflow.test.ts:636`) reads it and passes it to
+`classifyContainerProvenance` as `prodRebuild`, where `"PASS"` turns a
+**measured** `BEHIND` verdict non-blocking. So a container that merely
+responded switched off the one check that compares the container's image
+revision against HEAD — the check added by #341 for exactly this.
+
+This one **is** fixed, to the standard #176 AC-3 already set: *SKIP with a
+reason is acceptable; PASS without a measurement is not.* The arm now records
+`rebuild = 'SKIP'` with a reason naming what was and was not measured, and
+leaves `smoke = 'PASS'`, which is the one thing the curl does establish.
+
+- [ ] SC-1466: test/gate-check-audit.test.ts contains [no check warns without being on the list, no name on the list has quietly gained an assertion] — the warn-tier list fails in both directions so it cannot outlive what it describes
+- [ ] SC-1467: lib/gate-check-audit.ts contains [WARN_TIER_CHECKS, STANDALONE_STUB_NAME] — one binding for the list and a separate category for the placeholder stub whose emptiness is asserted rather than assumed
+- [ ] SC-1468: test/gate-check-audit.test.ts contains [the parse count matches the number of test( lines] — the positive control: a parser returning nothing would satisfy the whole audit vacuously
+- [ ] SC-1469: workflows/ship.js not contains [s.environments.prod.rebuild = 'PASS'] — a container that answers a health check is recorded as SKIP with a reason rather than as a rebuild that happened
+- [ ] SC-1470: test/gate-check-audit.test.ts contains [the same reading does NOT block when the rebuild says PASS] — the suppression the false verdict was switching off is executed from both sides
+
+### What was broken to prove it
+
+Measured over `test/gate-check-audit.test.ts` (18 tests):
+
+| Mutation | Red |
+|---|---|
+| `WARN_TIER_CHECKS` emptied | 2 of 18 — the unlisted check and the two-shapes mix |
+| an entry left in after its check gained an assertion | 1 of 18 — the other direction |
+| the parser's `expect` regex narrowed back to `\bexpect\s*\(` | 2 of 18 — the generic-form case and the unlisted-check case, because `workflow-state.json validates` reappears |
+| `gateChecks` short-circuited to `return []` | 4 of 18 — and the audit's own assertions go GREEN, which is why the count control exists |
+| `s.environments.prod.rebuild = 'PASS'` restored in ship.js | 2 of 18 |
+| `classifyContainerProvenance` stops suppressing on `PASS` | 1 of 18 — the pair is not two views of one branch |
+
+### What this does NOT fix
+
+- **`outcome-evidence-behavioral` and `ac-issue-alignment` still only warn.**
+  Named, reasoned, and ratcheted; not tightened.
+- **`prod.quinn` has no path to PASS.** Every arm writes `SKIP` with a reason,
+  so `prod-quinn-pass` can never report anything else for a configured
+  project. Reported, not changed — giving it a real verdict means deciding
+  what measures it.
+- **#341 criterion 1 is still unmet.** Only a measured `BEHIND` blocks. The
+  fix above restores that block on a path where it had been suppressed; it
+  does not widen which outcomes block.
