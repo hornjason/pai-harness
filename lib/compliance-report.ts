@@ -1,15 +1,109 @@
 import { appendFileSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { dirname, join } from "path";
 
+/**
+ * The history's record shape (#116).
+ *
+ * **1** — `scores`, a flat `id → verdict` map, and nothing else.
+ * **2** — `rules`, the whole record the grader produced.
+ *
+ * A grade file carries `{ id, rule, verdict, evidence, category }` per rule.
+ * The history kept `id → verdict` and dropped the other three, so
+ *
+ * ```
+ * grade:   { id: "DIR-L29", verdict: "VIOLATED",
+ *            rule: "Run the full suite at most TWICE…",
+ *            evidence: "5 bun test runs (expected 1-2)", category: "quality" }
+ * history: { "DIR-L29": "VIOLATED" }
+ * ```
+ *
+ * The second is an unsourced verdict. It cannot be re-checked, the rule text
+ * is unrecoverable once the rule is edited, and a trend built from it cannot
+ * explain itself — which is tier F by the standard this repo applies to ACs.
+ *
+ * The lossiness had not bitten only because the writer was never running
+ * (#69: the Grade-phase tail ran in a sandbox with no `require` and failed
+ * inside a `catch`). All four entries on disk when #116 was filed were
+ * synthetic fixtures, which is why the schema was changed then rather than
+ * migrated later.
+ */
+export const COMPLIANCE_HISTORY_SCHEMA = 2;
+
+/** One graded rule, as the grader produced it. */
+export interface ComplianceRuleRecord {
+  id: string;
+  verdict: string;
+  /** The rule's text at grading time — not recoverable later if it is edited. */
+  rule?: string;
+  /** What the grader saw. Without it the verdict is unsourced. */
+  evidence?: string;
+  category?: string;
+}
+
 export interface ComplianceEntry {
   timestamp: string;
   issue: string;
   role: string;
-  scores: Record<string, string>;
+  /**
+   * Absent means 1. Stamped rather than inferred so a reader can tell "written
+   * before the change" from "written after it and carrying nothing".
+   */
+  schema?: number;
+  /** Schema 1 only. New entries do not write it — see `entryVerdicts`. */
+  scores?: Record<string, string>;
+  /** Schema 2. The full records. */
+  rules?: ComplianceRuleRecord[];
   total: number;
   followed: number;
   pct: number;
   flagged: string[];
+}
+
+/** 1 for an unstamped entry, which is what every pre-#116 line is. */
+export function historySchema(entry: ComplianceEntry): number {
+  return typeof entry.schema === "number" ? entry.schema : 1;
+}
+
+/**
+ * `id → verdict`, from whichever shape the entry is in.
+ *
+ * The single reader, so there is one place that knows both forms (SC-3). A
+ * v2 entry does NOT also carry `scores`: two copies of the same fact in one
+ * record can disagree, and nothing would notice which was right.
+ */
+export function entryVerdicts(entry: ComplianceEntry): Record<string, string> {
+  if (Array.isArray(entry.rules)) {
+    const out: Record<string, string> = {};
+    for (const r of entry.rules) {
+      if (r && r.id) out[r.id] = r.verdict || "N/A";
+    }
+    return out;
+  }
+  return entry.scores ?? {};
+}
+
+/** The records, empty for a v1 entry — which is the point of the version. */
+export function ruleRecords(entry: ComplianceEntry): ComplianceRuleRecord[] {
+  return Array.isArray(entry.rules) ? entry.rules : [];
+}
+
+/** The rule's recorded text for one id, newest entry first. Null if no entry kept it. */
+export function recordedRuleText(entries: ComplianceEntry[], compId: string): string | null {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const hit = ruleRecords(entries[i]!).find(r => r.id === compId && r.rule);
+    if (hit?.rule) return hit.rule;
+  }
+  return null;
+}
+
+/** Everything recorded for one id, newest first, so a verdict can be re-checked. */
+export function evidenceFor(entries: ComplianceEntry[], compId: string): ComplianceRuleRecord[] {
+  const out: ComplianceRuleRecord[] = [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const hit = ruleRecords(entries[i]!).find(r => r.id === compId);
+    if (hit) out.push(hit);
+  }
+  return out;
 }
 
 export interface TrendLine {
@@ -88,22 +182,29 @@ export function generateComplianceReport(
   const window = roleHistory.slice(-TREND_WINDOW);
   const allPcts = [...window.map((h) => h.pct), current.pct];
 
+  const considered = [...window, current];
+  const verdictMaps = new Map(considered.map(e => [e, entryVerdicts(e)]));
+
   const allCompIds = new Set<string>();
-  for (const entry of [...window, current]) {
-    for (const id of Object.keys(entry.scores)) allCompIds.add(id);
+  for (const entry of considered) {
+    for (const id of Object.keys(verdictMaps.get(entry)!)) allCompIds.add(id);
   }
+
+  // The rule text the grader recorded beats the hardcoded map (#116): the map
+  // goes stale the moment a rule is edited, and a v2 entry carries what the
+  // rule actually said when the verdict was reached.
+  const ruleTextFor = (compId: string) =>
+    recordedRuleText(considered, compId) || COMP_RULES[compId] || compId;
 
   const compTrends: TrendLine[] = [];
   for (const compId of [...allCompIds].sort()) {
-    const verdicts = [...window, current].map(
-      (e) => e.scores[compId] || "N/A"
-    );
+    const verdicts = considered.map((e) => verdictMaps.get(e)![compId] || "N/A");
     const checkable = verdicts.filter((v) => v !== "N/A");
     const passed = checkable.filter((v) => v === "FOLLOWED").length;
     const passRate = checkable.length > 0 ? passed / checkable.length : 0;
 
     if (checkable.length < 2) {
-      compTrends.push({ compId, rule: COMP_RULES[compId] || compId, lastN: verdicts, passRate, direction: "stable" });
+      compTrends.push({ compId, rule: ruleTextFor(compId), lastN: verdicts, passRate, direction: "stable" });
       continue;
     }
     const firstHalf = checkable.slice(0, Math.ceil(checkable.length / 2));
@@ -122,7 +223,7 @@ export function generateComplianceReport(
 
     compTrends.push({
       compId,
-      rule: COMP_RULES[compId] || compId,
+      rule: ruleTextFor(compId),
       lastN: verdicts,
       passRate,
       direction,
