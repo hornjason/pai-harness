@@ -5563,3 +5563,66 @@ read a slice of `gates/workflow.test.ts`, and a slice whose start index is
 `-1` is an empty string that satisfies every negative assertion in the file.
 `gateCheckBody()` is the one bounded reader and it throws on either bound, so
 renaming the check it looks for aborts both guards instead of passing them.
+
+## #433 — the prior-branch matcher read digits inside generated run ids
+
+`test/prior-branch.test.ts` passed locally and failed in CI on a PR touching
+neither `lib/prior-branch.ts` nor anything it imports. Two causes.
+
+**The matcher.** `issueReference` bounded on decimal digits —
+`(^|[^\d])N([^\d]|$)` — which correctly stops `55` matching `550` and does
+nothing about the branches this repo generates by the hundred. In
+`worktree-wf_55baa4aa-a00-9` the `55` is preceded by `_` and followed by
+`b`: both non-digits, so it matched, and `detectPriorBranch` reported a
+stranger's abandoned fan-out worktree as issue 55's prior work. There were
+149 such branches when this was found.
+
+The bound is now `\b` — which is what "word-boundary matching", the name
+these tests have always carried, actually means. A hand-rolled
+`[0-9a-fA-F_]` class was written first and **a mutation widening it to all
+letters scored ZERO**: no fixture could tell the two apart, because every
+real form separates the number with punctuation. The zero was the finding.
+The narrow class was buying nothing over the broad one, and `\b` is the
+broad one already — it treats `_` and every letter as a word character, so
+it rejects `worktree-wf_55baa4aa-a00-9` and `550-matcher-registry` and
+accepts `209-deep-modules`, `fix/55`, `Closes #209` and `fix(#209):`. The
+simpler expression is also the correct one.
+
+**The test.** It asked the LIVE repository which branches exist and asserted
+on whichever one won, so its verdict was a property of the week rather than
+of the code. Two checkouts with different branch sets gave different
+answers, and an unrelated PR went red. The bound is now pinned statelessly;
+what remains against the real repo is the one property that holds for any
+branch set — whatever `detectPriorBranch` returns, `issueReference` agrees
+it refers to the issue asked for.
+
+**A residual limit, pinned rather than papered over.** A fan-out branch ends
+in `-<n>`, the fan-out index, which is a bare decimal number in exactly the
+position a real reference occupies. Nothing about neighbouring characters
+can tell `worktree-wf_be8d195f-0be-16` from `fix/16`, and a rule that tried
+would reject real branches. The fix belongs in which candidates
+`detectPriorBranch` considers, not in what counts as a reference. It bites
+only issue numbers below the fan-out width, and a test asserts the
+limitation so the next reader finds it stated.
+
+- [ ] SC-1499: lib/prior-branch.ts contains [word-boundary matching] — the reference bound is a word boundary so a generated run id is not read as an issue number
+- [ ] SC-1500: test/prior-branch-reference.test.ts contains [issueReference] — every accepted and rejected form is stated as a fixture rather than discovered from the live repository, and the residual fan-out-index limit is asserted rather than described
+
+### What was broken to prove it
+
+Measured over `test/prior-branch.test.ts` + `test/prior-branch-reference.test.ts`
+(29 tests). Neither mutation is left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the bound restored to `[^\d]` — the #433 defect | 2 of 34 |
+| the bound dropped entirely, so any substring matches | 5 of 34 |
+| only the left `\b` kept | 2 of 34 |
+| only the right `\b` kept | 2 of 34 |
+
+A fifth was run and is recorded because it scored **zero**: widening the
+first draft's `[0-9a-fA-F_]` class to `[0-9a-zA-Z_]` changed nothing any
+fixture could see. That is not a weak suite — it is two expressions that
+agree on every input this matcher receives, and the response was to take the
+simpler one rather than to invent a fixture justifying the complicated one.
+

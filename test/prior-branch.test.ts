@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
-import { detectPriorBranch, detectExistingPR, type PriorBranch, type DetectOptions, type ExistingPR, type PRCommandExecutor } from '../lib/prior-branch'
+import { detectPriorBranch, detectExistingPR, issueReference, type PriorBranch, type DetectOptions, type ExistingPR, type PRCommandExecutor } from '../lib/prior-branch'
 import { resolve } from 'path'
 import { spawnSync } from 'child_process'
 
@@ -43,17 +43,25 @@ describe('prior-branch', () => {
     expect(result?.branch).toMatch(/550/)
   })
 
-  test('word-boundary matching: issue 55 does NOT match "550-matcher-registry"', async () => {
-    // Issue 55 should not match branches with "550" in them
+  test('word-boundary matching: a match is one this repo would also make by hand', async () => {
+    // This used to assert `result.branch` does not match /550/, and it asked
+    // the LIVE repository which branches exist. It passed here and failed in
+    // CI on a PR that touched nothing it depends on, because the two
+    // checkouts have different branches and the answer was a property of the
+    // week (#433). The bound itself is now pinned, statelessly, in
+    // test/prior-branch-reference.test.ts.
+    //
+    // What is left here is the half that genuinely needs the real repo: that
+    // whatever `detectPriorBranch` returns, the predicate agrees it is a
+    // reference to the issue asked for. That holds for any branch set, so it
+    // cannot go red because somebody pushed something.
     const result = await detectPriorBranch({
       issueNumber: 55,
       projectRoot: PROJECT_ROOT,
       runTests: false,
     })
-    // If there's no actual "55" branch, this should be null
-    // But it definitely should NOT match "550-*" branches
     if (result !== null) {
-      expect(result.branch).not.toMatch(/550/)
+      expect(issueReference(55)(result.branch), `${result.branch} is not a reference to 55`).toBe(true)
     }
   })
 

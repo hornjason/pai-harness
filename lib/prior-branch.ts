@@ -120,7 +120,30 @@ export function issueReference(issueNumber: number): (text: unknown) => boolean 
       `issueReference needs a non-negative integer issue number, got ${JSON.stringify(issueNumber)}`,
     )
   }
-  const pattern = new RegExp(`(^|[^\\d])${issueNumber}([^\\d]|$)`)
+  // The bound is on HEX digits and `_`, not on decimal digits alone (#433).
+  //
+  // `[^\d]` was right about the case it was written for — it stops `55`
+  // matching `550` — and wrong about the case this repo actually generates.
+  // Workflow fan-out branches are named `worktree-wf_<runid>-<n>` with a hex
+  // run id, and in `worktree-wf_55baa4aa-a00-9` the `55` is preceded by `_`
+  // and followed by `b`. Both are non-digits, so it matched, and
+  // `detectPriorBranch` reported a stranger's fan-out worktree as issue 55's
+  // prior work. There were 149 such branches here when this was found.
+  //
+  // The bound is `\b`, which is what "word-boundary matching" meant all
+  // along. A hand-rolled hex class was tried first and a mutation scored
+  // ZERO against widening it to all letters — the fixtures could not tell
+  // the two apart, because every real form separates the number with
+  // punctuation. The zero was the finding: the narrower class was buying
+  // nothing over the broader one, and `\b` IS the broader one, already
+  // treating `_` and every letter as a word character.
+  //
+  // `\b55\b` rejects `worktree-wf_55baa4aa-a00-9` (`_` and `b` are word
+  // characters, so neither side is a boundary) and `550-matcher-registry`
+  // (`0` likewise), and accepts `209-deep-modules`, `fix/55`, `Closes #209`
+  // and `fix(#209):`. All of them are asserted in
+  // test/prior-branch-reference.test.ts rather than trusted to this comment.
+  const pattern = new RegExp(`\\b${issueNumber}\\b`)
   return (text: unknown) => typeof text === 'string' && pattern.test(text)
 }
 
