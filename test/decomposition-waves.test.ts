@@ -212,7 +212,7 @@ describe("SC-1463: a dependency cycle is refused", () => {
 
     test(`${name}: the summary of a refusal is the refusal`, () => {
       const plan = impl.dependencyWaves([{ title: "a", dependsOn: ["a"] }]);
-      expect(impl.wavePlanSummary(plan, 1)).toBe(plan.refusal);
+      expect(impl.wavePlanSummary(plan, 1)).toBe(plan.refusal as string);
     });
   }
 });
