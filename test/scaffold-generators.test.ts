@@ -14,6 +14,7 @@ import { join } from "path";
 import { execSync } from "child_process";
 import { mockProjectScan } from "../lib/generators/types";
 import { generateOrAuditProjectHarness, copySpecTemplateIfEmpty } from "../lib/scaffold/steps";
+import { scaffoldPipelineSource } from "./helpers/scaffold-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -26,8 +27,10 @@ describe("AC-5: scaffold pipeline imports from lib/generators/", () => {
     expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/scaffold/);
   });
 
-  test("scaffold imports from lib/validators/ (decomposed validators)", () => {
-    expect(scaffoldSrc).toMatch(/from\s+["']\.\.\/lib\/validators/);
+  test("the scaffold write pipeline imports from lib/validators/ (decomposed validators)", () => {
+    // The pipeline, not the CLI — #398 split them so audit could rehearse the
+    // real write steps against a clone instead of predicting them.
+    expect(scaffoldPipelineSource()).toMatch(/from\s+["']\.\.\/validators/);
   });
 
   test("steps.ts has >= 3 import statements from lib/generators/", () => {

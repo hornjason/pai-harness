@@ -6,6 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
+import { scaffoldPipelineSource } from "./helpers/scaffold-fixture";
 
 // ── Test fixture helpers ─────────────────────────────────────
 
@@ -395,13 +396,17 @@ governs: test
     });
 
     test("audit-specs post-generation step appears after spec template copy", () => {
-      const scaffoldSrc = readFileSync(
-        join(import.meta.dir, "..", "scripts", "scaffold-project.ts"),
-        "utf-8"
-      );
-      const specTemplateIdx = scaffoldSrc.indexOf("copySpecTemplateIfEmpty");
-      const auditIdx = scaffoldSrc.indexOf("runAuditSpecsFix(");
-      const commitIdx = scaffoldSrc.indexOf("postScaffoldCommit(");
+      // Read from the pipeline rather than scripts/scaffold-project.ts, which
+      // held the write body until #398 split it so audit could rehearse the
+      // real steps against a clone. The ordering property is unchanged; only
+      // the file it lives in moved.
+      const src = scaffoldPipelineSource();
+      const specTemplateIdx = src.indexOf("copySpecTemplateIfEmpty");
+      const auditIdx = src.indexOf("runAuditSpecsFix(");
+      const commitIdx = src.indexOf("postScaffoldCommit(");
+      // An index of -1 orders earlier than everything, so a call that vanished
+      // would satisfy `auditIdx < commitIdx` while measuring nothing.
+      expect([specTemplateIdx, auditIdx, commitIdx].filter(i => i < 0)).toEqual([]);
       // audit-specs should be called after spec template copy and before commit
       expect(auditIdx).toBeGreaterThan(specTemplateIdx);
       expect(auditIdx).toBeLessThan(commitIdx);

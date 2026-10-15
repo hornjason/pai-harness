@@ -6,7 +6,7 @@
  * The fixture mechanics live here; the test file asserts.
  */
 import { execSync } from "child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { initFixtureRepo, commitFixture } from "./git-fixture";
 
@@ -31,6 +31,27 @@ export function checkSpecDrift(): void {
 
 const FIXTURE = join(import.meta.dir, "..", "fixtures/golden-project");
 const SCAFFOLD = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.ts");
+
+/**
+ * The file holding the scaffold write pipeline, as ONE binding.
+ *
+ * `scripts/scaffold-project.ts` was both the CLI and the pipeline until #398
+ * split them, and six tests across four files had each hardcoded that path to
+ * assert something about the pipeline — validator imports, step ordering,
+ * module boundaries. When the body moved they all went red at once, and each
+ * one would have been repointed by hand at a path the next move invalidates
+ * again. `.claude/rules/checks-must-be-able-to-fail.md` names the shape: a
+ * source-text assertion cannot notice that it has stopped describing the
+ * code, so there should be one place to update when it does.
+ */
+export const SCAFFOLD_PIPELINE = join(import.meta.dir, "..", "..", "lib", "scaffold", "write-steps.ts");
+
+/** The pipeline's source text. Throws rather than returning "" if it moved. */
+export function scaffoldPipelineSource(): string {
+  if (!existsSync(SCAFFOLD_PIPELINE))
+    throw new Error(`the scaffold write pipeline is not at ${SCAFFOLD_PIPELINE} — update SCAFFOLD_PIPELINE`);
+  return readFileSync(SCAFFOLD_PIPELINE, "utf-8");
+}
 
 /**
  * Canary value planted in .claude/rungate/roles.json only. It appears in no

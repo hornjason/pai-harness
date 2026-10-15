@@ -79,7 +79,8 @@ These fields are emitted by the scaffold generator and leverage Claude Code's na
 - [x] SC-353: .claude/agents/marcus.md is under [120] lines
 - [x] SC-354: Editing a template file and re-scaffolding updates the generated brief (behavioral)
 - [x] SC-355: lib/generators/agent-briefs.ts contains [_shared] — same move as SC-350
-- [x] SC-356: scripts/scaffold-project.ts contains [routing]
+- [x] SC-356: lib/scaffold/steps.ts contains [promptKeywords]
+  - Repointed in #398, and the move is the smaller half of why. The token was `routing` against `scripts/scaffold-project.ts`, and what it matched there was `docs-routing.md` inside a GAP message — an unrelated filename containing the substring. Prompt-keyword routing has lived in `lib/scaffold/steps.ts` for as long as the generators have; the SC was green the whole time without ever looking at it, which is `.claude/rules/checks-must-be-able-to-fail.md`'s second shape. `promptKeywords` is the config key the routing actually merges, so it cannot be satisfied by prose.
 - [x] SC-357: Template variables filled from project scan match actual project values (behavioral)
 - [ ] SC-385: Agent-to-prompt keyword routing defined in config, not hardcoded in scaffold (behavioral)
 - [x] SC-386: Consumers can override keyword routing in their rungate.json (behavioral)
