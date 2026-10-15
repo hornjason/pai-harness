@@ -210,7 +210,7 @@ guard refused a release that had succeeded, and the clause it refused with —
 *"long enough that this is not the registry catching up"* — is an assertion
 the guard has no way to support. A retry budget is a guess about someone
 else's infrastructure, and stating a guess as a finding is how a reader comes
-to distrust a correct refusal later. Filed as #444.
+to distrust a correct refusal later. Filed as #445.
 
 **Why `0.3.0` and not `0.2.2` (2026-10-14).** The tree carried `0.2.2` from
 2026-09-19 and the first release attempt tagged it, which was wrong and was
