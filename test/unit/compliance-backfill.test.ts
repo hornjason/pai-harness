@@ -28,7 +28,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
-import type { ComplianceEntry } from "../../lib/compliance-report";
+import {
+  COMPLIANCE_HISTORY_SCHEMA,
+  entryVerdicts,
+  ruleRecords,
+  type ComplianceEntry,
+} from "../../lib/compliance-report";
 import { planComplianceBackfill, mergeHistory } from "../../lib/compliance-backfill";
 
 let root: string;
@@ -90,7 +95,7 @@ describe("reading the grades off disk", () => {
     expect(byIssue["#2"]).toBe(0);
   });
 
-  test("carries the per-rule verdicts into scores", () => {
+  test("carries the whole rule record, not just the verdict (#116)", () => {
     workDir("a", [grade("marcus", 1, 2, [
       { id: "COMP-7", rule: "No cat/head via Bash", verdict: "FOLLOWED" },
       { id: "COMP-12", rule: "Grep before Read", verdict: "IGNORED" },
@@ -98,7 +103,12 @@ describe("reading the grades off disk", () => {
     ])], { issue: 9 });
 
     const [entry] = planComplianceBackfill(root, []).added;
-    expect(entry.scores).toEqual({ "COMP-7": "FOLLOWED", "COMP-12": "IGNORED" });
+    expect(entryVerdicts(entry!)).toEqual({ "COMP-7": "FOLLOWED", "COMP-12": "IGNORED" });
+    // #116 — the three fields the backfill used to drop on the floor. They
+    // were in the grade file the whole time.
+    expect(entry!.schema).toBe(COMPLIANCE_HISTORY_SCHEMA);
+    expect(ruleRecords(entry!).map(r => r.rule))
+      .toEqual(["No cat/head via Bash", "Grep before Read"]);
   });
 });
 

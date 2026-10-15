@@ -23,6 +23,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import { persistCompliance } from "../../scripts/persist-compliance";
+import { COMPLIANCE_HISTORY_SCHEMA, entryVerdicts } from "../../lib/compliance-report";
 
 const HARNESS_ROOT = join(import.meta.dir, "..", "..");
 
@@ -180,8 +181,12 @@ describe("#69: compliance history", () => {
     expect(lines.length).toBe(2);
     expect(lines[0].role).toBe("marcus");
     expect(lines[0].issue).toBe("#69");
-    expect(lines[0].scores).toEqual({ "COMP-1": "FOLLOWED", "COMP-7": "IGNORED" });
-    expect(lines[1].scores).toEqual({ "COMP-2": "FOLLOWED" });
+    expect(entryVerdicts(lines[0])).toEqual({ "COMP-1": "FOLLOWED", "COMP-7": "IGNORED" });
+    expect(entryVerdicts(lines[1])).toEqual({ "COMP-2": "FOLLOWED" });
+    // #116 — written as records, and NOT also as a flat map: two copies of
+    // one fact in a record can disagree and nothing would notice.
+    expect(lines[0].schema).toBe(COMPLIANCE_HISTORY_SCHEMA);
+    expect(lines[0].scores).toBeUndefined();
   });
 
   test("a rule with no verdict is recorded N/A rather than dropped", () => {
@@ -189,7 +194,7 @@ describe("#69: compliance history", () => {
     writeGrade(workDir, [{ role: "marcus", total: 1, followed: 0, rules: [{ id: "COMP-9" }] }]);
     persistCompliance(workDir, HARNESS_ROOT, "69", () => {});
     const entry = JSON.parse(readFileSync(historyPath(), "utf-8").trim());
-    expect(entry.scores).toEqual({ "COMP-9": "N/A" });
+    expect(entryVerdicts(entry)).toEqual({ "COMP-9": "N/A" });
   });
 
   test("history accumulates across runs instead of overwriting", () => {
