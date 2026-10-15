@@ -5937,3 +5937,128 @@ mis-reports its own reach is exactly the decorative check this rule is about,
 and it is recorded here because the fix — count occurrences, not lines — is
 not obvious from output that reads like a moved anchor.
 
+## #398 — audit reported 0 changes on a tree `--fix` rewrote in 28 places
+
+`rungate scaffold <path>` without `--fix` printed
+`Mode: audit (pass --fix to apply changes)` and
+`Total: 0 created, 0 replaced, 0 skipped, 0 refused`, and then `--fix` on the
+same tree wrote 28 paths — 16 on agentgrit, where it was found. It was not a
+conservative preview. It was a report with nothing in it.
+
+The cause was structural rather than a missing branch. **Audit was four
+`existsSync` checks and fix was twenty-five write steps: two bodies of code
+sharing nothing.** Two implementations of the same question can only agree by
+someone keeping them in step by hand, and nobody was — three of the four
+audit branches turned out to be unreachable as well as wrong, because their
+only callers had always passed fix mode.
+
+`--fix` is the DESTRUCTIVE mode. #370 is `--fix` truncating
+`.claude/rules/checks-must-be-able-to-fail.md` from 262 lines to 65 — the
+rule three specs cite by path. Audit is the one thing between a consumer and
+that, and it reported clean no matter what was about to happen. **A preview
+that under-reports is worse than no preview, because it converts "I checked
+first" into false confidence.**
+
+### So audit does not predict what fix would do. It does it, somewhere else.
+
+Clone the tree, run the REAL steps against the clone, report what they say,
+throw the clone away. The modes then agree by construction rather than by
+maintenance, and a step added later cannot forget its audit branch because
+there is no audit branch to forget. On APFS `cp -Rc` is a copy-on-write
+clone, measured at 0.2s for this repo, so the cost is bounded by metadata
+rather than by tree size.
+
+Two steps are not rehearsed, and both are named in `STEPS_NOT_REHEARSED` with
+the reason attached, because an exclusion without a stated reason is
+indistinguishable from an oversight: `deployHooksToConsumers` writes to
+absolute paths in OTHER repositories, and `postScaffoldCommit` creates a
+commit in a clone whose `.git` may point back at the real one.
+
+**The reported verb changed, deliberately.** Audit used to say
+`GAP: CODE-MAP.md missing — run with --fix to generate`; it now says
+`UPDATED: CODE-MAP.md`, because that is what the step did. The GAP vocabulary
+cannot sit on top of rehearsal — a translation from write verbs back to GAP
+is a second vocabulary maintained by hand beside the first, which is the
+shape this issue removes, and `writtenPath()`'s negative control requires
+that GAP name no path, so an audit emitting GAP could never be compared
+against what `--fix` wrote. The "run with --fix" half is printed once per run
+by `rehearsalNotice()` instead of once per file.
+
+- [x] SC-1510: Every path `--fix` writes is named by audit, and every path audit names is one `--fix` writes — compared between audit's report and a content-hash filesystem snapshot, not between the two reports
+- [x] SC-1511: The fixture drifts as well as lacks, so a mode reporting only creations cannot pass
+- [x] SC-1512: One exported binding decides what counts as a written path, and every write verb the scaffold emits is read from the sources rather than listed in the test
+- [x] SC-1513: A symlink whose target resolves outside the CLONE refuses the rehearsal, with the reproduction that writing through one reaches the original, and a relative-link positive control
+- [x] SC-1514: An incomplete copy refuses rather than previewing less, measured through the same `missingTopLevel` the production path calls
+- [x] SC-1515: Cleanup removes the mkdtemp it created and nothing above it, with the parent recorded at creation rather than derived by walking up
+- [x] SC-1516: Pruning an excluded path never deletes through a symlinked ancestor, and never removes an ancestor that is not itself excluded
+- [x] SC-1517: A symlink that cannot be resolved — dangling, or in a directory that cannot be read — counts as escaping, with a dangling-inside-the-tree positive control
+- [x] SC-1518: A rehearsal that cannot be set up refuses the run, exiting non-zero and writing nothing, rather than falling back to the previous guesswork
+- [x] SC-1519: The two steps a rehearsal must not run do not run, with a `--fix` positive control proving the fixture configures them
+
+### What was broken to prove it
+
+Run and counted over `test/scaffold-rehearsal-safety.test.ts`,
+`test/scaffold-audit-agreement.test.ts` and
+`test/unit/scaffold-project.test.ts` (73 tests). None is left in the tree; all
+were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `escapingSymlinks` short-circuited to `return []` | 7 |
+| `writtenPath` returns the whole line instead of the path | 7 |
+| the escaping-symlink refusal dropped | 5 |
+| the #398 bug restored — audit runs no write steps at all | 5 |
+| pruning follows a symlinked ancestor again (plain recursive `rmSync`) | 1 |
+| pruning unlinks an ancestor link instead of leaving it | 1 |
+| a dangling link reads as inside (a `realpathSync` throw treated as safe) | 1 |
+| an unreadable directory skipped instead of reported | 1 |
+| `missingTopLevel` forgives any top-level name appearing in an exclude | 1 |
+| `discardRehearsal` removes the clone but leaks the mkdtemp (#437) | 1 |
+| audit rehearses `deployHooksToConsumers` | 1 |
+| `WRITE_VERBS` loses the three verbs this issue found missing | 1 |
+| audit falls back to `--fix` on the real tree when the clone refuses | 1 |
+| the completeness check at its call site dropped | **0 — see below** |
+| `attemptCopy` stops clearing the destination first | **0 — see below** |
+
+**Five rows were zero on the first battery.** Four were the tests' fault and
+are now closed; the counts above are after the repair.
+
+- **The symlinked-`.claude` case asserted `toThrow(/audit did NOT run/)`,**
+  which both readings satisfy — unlinking `.claude` also refuses, via the
+  completeness check. The assertion could not tell "the escape was caught"
+  from "pruning destroyed the tree", so it is now pinned to the refusal's
+  own text.
+- **SC-1514 re-implemented the completeness comparison inside the test,**
+  `readdirSync(tree)` against `readdirSync(clone)` by hand. It asserted that
+  two `readdirSync` calls disagree, which they did, while the production
+  comparison went entirely unexercised. The comparison is now exported as
+  `missingTopLevel` and the test drives that.
+- **Nothing ran the CLI against a tree whose clone refuses,** so the one
+  branch standing between a refused preview and `--fix` on the consumer's
+  real repository was untested. Replacing `process.exit(1)` with a fall-back
+  to the write steps scored 0. SC-1518 is that case.
+- **`STEPS_NOT_REHEARSED` naming a step is not evidence the guard fires.**
+  Removing `if (!rehearsing)` scored 0 until SC-1519 existed. A decider being
+  right is not the same as the caller asking it — the same distinction #395
+  measured as its tenth row.
+
+**The two remaining zeros are recorded rather than closed, and the reason is
+the same for both: their call sites are unreachable from a working `cp`.**
+
+- The completeness check only fires when `cp` exits 0 having copied less than
+  the tree. Nothing in the suite can produce that, so what is proved is the
+  comparison (`missingTopLevel`, 1 red) and not its wiring. It is kept as
+  defence-in-depth against a silently-truncating copy, and the gap is named
+  here rather than hidden behind a passing row.
+- `attemptCopy`'s unconditional clear is unobservable because the destination
+  is always a fresh `mkdtemp`. It became unconditional precisely for that
+  reason: the first draft cleared only in the `cp -Rc` fallback, and since
+  `cp -Rc` succeeds on every machine the tests run on, no test could ever
+  reach the second branch. **The ordering was removed rather than tested** —
+  one shared helper, no sequence to get wrong — which is the better answer
+  when a guard cannot be exercised, but it does leave a line whose removal
+  nothing catches.
+
+`UNMEASURED is not SKIP` applies to a mutation battery as much as to a config
+read: a row quietly dropped from the table because it scored 0 is a table
+that cannot report its own reach.

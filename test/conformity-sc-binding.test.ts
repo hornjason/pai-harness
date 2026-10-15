@@ -72,13 +72,29 @@ const CHECKED_SC_BASELINE = 261;
  * about file contents — which would lower this number by making the spec say
  * less. That is the wrong trade, so the number goes up instead and says why.
  *
- * The structural problem this exposes is filed separately: a ratchet that
- * rises whenever an issue writes a well-formed behavioural criterion is
+ * The structural problem this exposes is filed separately (#441): a ratchet
+ * that rises whenever an issue writes a well-formed behavioural criterion is
  * measuring the matcher's vocabulary, not the project's honesty, and it will
  * be raised by every future issue that does the same thing. Three of the six
  * fitted in the headroom that existed; three did not.
+ *
+ * 242 → 252 by #398, and it is the prediction above coming true one issue
+ * later. All ten of SC-1510..1519 are unmatched and all ten are executed, in
+ * `test/scaffold-rehearsal-safety.test.ts`,
+ * `test/scaffold-audit-agreement.test.ts` and
+ * `test/unit/scaffold-project.test.ts`. They are also the least bindable
+ * shape yet: the headline criterion is that two MODES AGREE — "every path
+ * `--fix` writes is named by audit" — which is a claim about the relation
+ * between two program runs. There is no state of the tree that expresses it,
+ * so there is no `content-contains` that could. The rest are refusals, and
+ * the registry still cannot express a refusal.
+ *
+ * Rewriting them to bind would mean asserting that `lib/scaffold/rehearsal.ts`
+ * contains some string, which is the source-text assertion #397's own
+ * post-mortem names as the thing that let a hook ship unable to pass. The
+ * number goes up and says why, for the second issue running.
  */
-const UNMATCHED_CHECKED_RATCHET = 242;
+const UNMATCHED_CHECKED_RATCHET = 252;
 
 function specFiles(): string[] {
   return readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));

@@ -250,6 +250,103 @@ describe("SC-1510: audit names what --fix performs", () => {
   }, 300_000);
 });
 
+describe("SC-1518: a rehearsal that cannot be set up refuses the run", () => {
+  test("audit exits non-zero and writes nothing when the clone is refused", () => {
+    // The end-to-end half, and the mutation battery is why it exists:
+    // replacing the CLI's `process.exit(1)` with a fall-back to the real
+    // write steps scored 0 red. Nothing ran the CLI against a tree whose
+    // clone refuses, so the one branch standing between a refused preview
+    // and `--fix` on the consumer's actual repository was untested.
+    //
+    // Falling back is the tempting failure. "The preview could not be set
+    // up, so preview the real tree" is #370's damage with a reassuring
+    // message in front of it: an audit that reports nothing because it
+    // could not look is indistinguishable from one that found nothing, and
+    // that is the defect, not a lesser version of it.
+    const outside = mkdtempSync(join(tmpdir(), "scaffold-audit-outside-"));
+    roots.push(outside);
+    writeFileSync(join(outside, "AGENTS.md"), "the consumer's real file\n");
+
+    const fixture = plantDriftedConsumer("refused");
+    rmSync(join(fixture, "AGENTS.md"));
+    require("fs").symlinkSync(join(outside, "AGENTS.md"), join(fixture, "AGENTS.md"));
+
+    const before = snapshot(fixture);
+    const r = runScaffold(fixture, []);
+
+    expect(r.code, "a refused rehearsal must not exit 0").not.toBe(0);
+    expect(r.out).toMatch(/audit did NOT run/);
+    expect(r.out).toMatch(/pointing outside it/);
+    expect(
+      readFileSync(join(outside, "AGENTS.md"), "utf-8"),
+      "audit wrote through the symlink into the consumer's real file",
+    ).toBe("the consumer's real file\n");
+    const touched = [...changedPaths(before, snapshot(fixture))].filter(q => !isGitBookkeeping(q));
+    expect(touched, "audit fell back to writing the real tree").toEqual([]);
+  }, 300_000);
+});
+
+describe("SC-1519: the two steps a rehearsal must not run, do not run", () => {
+  test("audit does not deploy hooks into a configured consumer", () => {
+    // `deployHooksToConsumers` resolves `consumer.startsWith("/")` and writes
+    // to ABSOLUTE paths in other repositories. Rehearsing it would deploy
+    // hooks to every consumer on the machine during a preview — damage done
+    // outside the clone entirely, so no amount of throwing the clone away
+    // undoes it.
+    //
+    // `STEPS_NOT_REHEARSED` naming the step is not evidence the guard fires;
+    // the mutation battery scored removing the guard 0 red until this case
+    // existed. A decider being right is not the same as the caller asking it.
+    const consumer = mkdtempSync(join(tmpdir(), "scaffold-audit-consumer-"));
+    roots.push(consumer);
+    mkdirSync(join(consumer, ".claude"));
+    writeFileSync(join(consumer, ".claude", "settings.local.json"), "{}\n");
+
+    const fixture = plantDriftedConsumer("consumers");
+    mkdirSync(join(fixture, "hooks"), { recursive: true });
+    writeFileSync(join(fixture, "hooks", "probe.ts"), "// a hook\n");
+    // Two fixture details the positive control below forced out, and the
+    // reason it is here: `hooks` comes from hooks.json, not config.json —
+    // `loadFromDirectory` spreads it last and defaults it to `[]`, so a
+    // hooks array in config.json is silently dropped — and the step only
+    // deploys an entry carrying `enabled`, `hookFor`, `command` and
+    // `deployToConsumers: true`. Either mistake leaves `--fix` writing
+    // nothing, which would have made the guard look like it fired.
+    mkdirSync(join(fixture, ".claude", "rungate"), { recursive: true });
+    writeFileSync(
+      join(fixture, ".claude", "rungate", "config.json"),
+      JSON.stringify({ consumers: [consumer] }, null, 2),
+    );
+    writeFileSync(
+      join(fixture, ".claude", "rungate", "hooks.json"),
+      JSON.stringify([{
+        name: "probe", enabled: true, hookFor: "PreToolUse",
+        command: "bun ${RUNGATE_HOOKS_DIR}/probe.ts", deployToConsumers: true,
+      }], null, 2),
+    );
+
+    const before = snapshot(consumer);
+    const audit = runScaffold(fixture, []);
+    expect(audit.out, "the notice must say what was not rehearsed").toContain("deployHooksToConsumers");
+    expect(
+      [...changedPaths(before, snapshot(consumer))],
+      "audit wrote into another repository",
+    ).toEqual([]);
+
+    // The positive control: --fix DOES deploy, so the case above is a guard
+    // firing rather than a config the step ignored. Without this, misspelling
+    // the config key would make both halves pass.
+    const copy = `${fixture}-fix`;
+    roots.push(copy);
+    cpSync(fixture, copy, { recursive: true });
+    runScaffold(copy, ["--fix"]);
+    expect(
+      [...changedPaths(before, snapshot(consumer))].length,
+      "--fix did not deploy either — the fixture does not configure a consumer",
+    ).toBeGreaterThan(0);
+  }, 300_000);
+});
+
 describe("SC-1511: the fixture exercises more than one outcome", () => {
   test("--fix both creates and replaces on this fixture", () => {
     // Without this the agreement property could hold over a fixture with one

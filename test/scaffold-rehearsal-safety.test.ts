@@ -15,7 +15,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 
 import {
-  cloneForRehearsal, discardRehearsal, escapingSymlinks, REHEARSAL_EXCLUDES,
+  cloneForRehearsal, discardRehearsal, escapingSymlinks, missingTopLevel, REHEARSAL_EXCLUDES,
 } from "../lib/scaffold/rehearsal";
 
 const roots: string[] = [];
@@ -145,9 +145,11 @@ describe("SC-1516: pruning never deletes through a symlinked parent", () => {
     writeFileSync(join(tree, "package.json"), "{}\n");
     symlinkSync(realClaude, join(tree, ".claude"));
 
-    // It refuses, because `.claude` escapes — but the refusal is the second
-    // line of defence. The assertion that matters is what survived.
-    expect(() => cloneForRehearsal(tree)).toThrow(/audit did NOT run/);
+    // It must refuse FOR THE RIGHT REASON. `toThrow(/audit did NOT run/)`
+    // alone scored 0 in the mutation battery: unlinking `.claude` also
+    // refuses, via the completeness check, so the loose pattern could not
+    // tell "the escape was caught" from "pruning destroyed the tree".
+    expect(() => cloneForRehearsal(tree)).toThrow(/pointing outside it/);
     expect(
       existsSync(join(realClaude, "worktrees", "precious", "work.txt")),
       "the audit deleted real work through a symlinked parent",
@@ -243,21 +245,49 @@ describe("SC-1517: an unresolvable symlink is treated as escaping", () => {
 });
 
 describe("SC-1514: an incomplete copy refuses rather than previewing less", () => {
-  test("a clone missing a top-level entry is refused", () => {
-    // Simulated by deleting from the clone the way a truncated `cp` would
-    // leave it, then re-running the completeness comparison the function
-    // performs. A partial clone under-reports, and under-reporting IS the
-    // bug — a weaker version of it is not an acceptable fallback.
+  test("a partial copy is named by the real comparison", () => {
+    // Through `missingTopLevel`, the function `cloneForRehearsal` actually
+    // calls. The first version re-implemented the comparison inside the test
+    // — `readdirSync(tree)` against `readdirSync(r.dir)` by hand — so it
+    // asserted that two `readdirSync` calls disagree, which they did, while
+    // the production comparison went entirely unexercised. The mutation
+    // battery scored it 0. A test that reproduces the logic it is checking
+    // is the vacuous shape in `.claude/rules/checks-must-be-able-to-fail.md`.
     const tree = scratch("tree-partial");
     writeFileSync(join(tree, "AGENTS.md"), "a\n");
     writeFileSync(join(tree, "package.json"), "{}\n");
 
     const r = cloneForRehearsal(tree);
     try {
+      expect(missingTopLevel(tree, r.dir), "a complete clone reports nothing missing").toEqual([]);
       rmSync(join(r.dir, "AGENTS.md"));
-      const want = require("fs").readdirSync(tree);
-      const got = new Set(require("fs").readdirSync(r.dir));
-      expect(want.filter((n: string) => !got.has(n))).toEqual(["AGENTS.md"]);
+      expect(missingTopLevel(tree, r.dir)).toEqual(["AGENTS.md"]);
+    } finally {
+      discardRehearsal(r);
+    }
+  });
+
+  test("only a WHOLE top-level exclude is forgiven", () => {
+    // `.claude/worktrees` is excluded; `.claude` is not. Matching on the
+    // first path component forgives both, so a clone that lost `.claude`
+    // entirely would report complete and the steps would run over a tree
+    // missing the directory half of them read — #398's under-reporting,
+    // arriving through its own completeness check. Scored 0 before this
+    // case existed, because with pruning correct `.claude` is present
+    // either way and nothing else distinguished the two readings.
+    const tree = scratch("tree-forgiveness");
+    writeFileSync(join(tree, "package.json"), "{}\n");
+    mkdirSync(join(tree, ".claude", "worktrees"), { recursive: true });
+    mkdirSync(join(tree, "node_modules"));
+
+    const r = cloneForRehearsal(tree);
+    try {
+      expect(missingTopLevel(tree, r.dir), "node_modules is a whole exclude").toEqual([]);
+      rmSync(join(r.dir, ".claude"), { recursive: true });
+      expect(
+        missingTopLevel(tree, r.dir),
+        ".claude was forgiven because .claude/worktrees is excluded",
+      ).toEqual([".claude"]);
     } finally {
       discardRehearsal(r);
     }

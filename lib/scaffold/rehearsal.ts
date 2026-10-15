@@ -183,19 +183,20 @@ export function cloneForRehearsal(root: string): Rehearsal {
 
   // `-c` asks for an APFS clonefile. It fails on filesystems that cannot do
   // it, so the fallback is explicit rather than a silent slow path.
+  //
+  // Both attempts go through `attemptCopy`, which clears the destination
+  // first. A failed `cp` may have copied some of the tree before giving up,
+  // and falling back on top of that leaves a PARTIAL clone — the steps then
+  // run over a tree missing files, report less than `--fix` will do, and
+  // look like a clean preview, which is this module's whole subject. The
+  // first draft cleared only in the fallback, and the mutation battery
+  // scored that guard 0: `cp -Rc` succeeds on every machine the tests run
+  // on, so no test could ever reach the second branch. One shared helper
+  // removes the ordering rather than testing it.
   let method: Rehearsal["method"] = "clone";
-  const cow = spawnSync("cp", ["-Rc", root, dir], { encoding: "utf-8", timeout: 300_000 });
-  if (cow.status !== 0) {
-    // A failed `cp` may have copied some of the tree first. Falling back on
-    // top of that leaves a PARTIAL clone, and a partial clone is the whole
-    // bug this module exists to fix — the steps would run over a tree
-    // missing files, report less than `--fix` will do, and look like a
-    // clean preview. Start from nothing. Found by the commit security
-    // review.
-    rmSync(dir, { recursive: true, force: true });
-    const plain = spawnSync("cp", ["-R", root, dir], { encoding: "utf-8", timeout: 600_000 });
-    if (plain.status !== 0) {
-      return fail(`the tree could not be copied: ${plain.stderr?.trim() || "cp failed"}`);
+  if (attemptCopy(["-Rc", root, dir], 300_000) !== 0) {
+    if (attemptCopy(["-R", root, dir], 600_000) !== 0) {
+      return fail("the tree could not be copied");
     }
     method = "copy";
   }
@@ -216,17 +217,7 @@ export function cloneForRehearsal(root: string): Rehearsal {
     prunePathWithoutFollowingLinks(dir, rel);
   }
 
-  // The copy has to BE the tree, not most of it. Compared at the top level
-  // only — a full walk would cost more than the clone did — which is enough
-  // to catch a truncated copy that exited 0.
-  // Only a WHOLE top-level exclude is forgiven. `.claude/worktrees` prunes a
-  // child, so `.claude` itself must still be present — matching on the first
-  // path component instead would excuse a missing `.claude` entirely, which
-  // is the under-reporting this module exists to stop.
-  const topLevelExcludes = new Set(REHEARSAL_EXCLUDES.filter(x => !x.includes("/")));
-  const want = readdirSync(root).filter(n => !topLevelExcludes.has(n));
-  const got = new Set(readdirSync(dir));
-  const missing = want.filter(n => !got.has(n));
+  const missing = missingTopLevel(root, dir);
   if (missing.length > 0) {
     return fail(`the copy is incomplete — ${missing.length} top-level entr(ies) missing: ${missing.slice(0, 5).join(", ")}`);
   }
@@ -242,6 +233,39 @@ export function cloneForRehearsal(root: string): Rehearsal {
   }
 
   return { dir, parent, method };
+}
+
+/**
+ * Copy into `dir`, having first removed whatever is there.
+ *
+ * The clear is unconditional so there is one code path rather than two with
+ * an ordering between them. See `cloneForRehearsal` for why.
+ */
+function attemptCopy(args: string[], timeout: number): number {
+  const dest = args[args.length - 1]!;
+  rmSync(dest, { recursive: true, force: true });
+  return spawnSync("cp", args, { encoding: "utf-8", timeout }).status ?? 1;
+}
+
+/**
+ * Top-level entries present in `root` but absent from its copy at `dir`.
+ *
+ * The copy has to BE the tree, not most of it. Compared at the top level
+ * only — a full walk would cost more than the clone did — which is enough to
+ * catch a truncated copy that exited 0.
+ *
+ * **Only a WHOLE top-level exclude is forgiven.** `.claude/worktrees` prunes
+ * a child, so `.claude` itself must still be present; matching on the first
+ * path component instead excuses a missing `.claude` entirely, which is the
+ * under-reporting this module exists to stop. Exported so that reading is one
+ * binding a test can feed a genuinely partial copy — the first version of
+ * SC-1514 re-implemented this comparison inside the test and therefore never
+ * ran the real one, and the mutation battery scored it 0.
+ */
+export function missingTopLevel(root: string, dir: string): string[] {
+  const forgiven = new Set(REHEARSAL_EXCLUDES.filter(x => !x.includes("/")));
+  const got = new Set(readdirSync(dir));
+  return readdirSync(root).filter(n => !forgiven.has(n) && !got.has(n));
 }
 
 /**
