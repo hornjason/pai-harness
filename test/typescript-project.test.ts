@@ -271,6 +271,24 @@ describe("SC-1481: one decider produces the CI step, the doc row and dev.typeChe
       .toContain("# No type check:");
   });
 
+  test("the AGENTS.md row advertises the command the decider returned", () => {
+    const { generateAgentsMdContent } = require("../lib/scaffold/steps");
+    const root = project({
+      "tsconfig.json": TSCONFIG,
+      "lib/a.ts": "export const a = 1;\n",
+      "package.json": JSON.stringify({ name: "p", scripts: { typecheck: "bun scripts/typecheck.ts" } }),
+    });
+    const md = generateAgentsMdContent(root, "code", []);
+    expect(md).toContain("| Type check | `bun run typecheck` |");
+    expect(md, "the doc kept its own copy of the ladder").not.toContain("bunx tsc --noEmit");
+  });
+
+  test("and omits the row entirely when there is nothing to run", () => {
+    const { generateAgentsMdContent } = require("../lib/scaffold/steps");
+    const root = project({ "main.py": "print(1)\n", "package.json": JSON.stringify({ name: "p" }) });
+    expect(generateAgentsMdContent(root, "code", [])).not.toContain("| Type check |");
+  });
+
   test("dev.typeCheck is null rather than a command that can only fail", () => {
     // `gates/gate-executor.ts` RUNS whatever lands here. `bunx tsc --noEmit`
     // without a tsconfig prints 147 lines of help and exits 1, which the gate
