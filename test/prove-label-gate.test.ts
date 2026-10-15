@@ -167,6 +167,26 @@ function throwingClient(message: string) {
   } as never;
 }
 
+const GATE_CHECK = 'test("prove-label-enforcement: needs-prove requires proven label"';
+
+/**
+ * The source of the gate check itself, bounded and asserted non-empty.
+ *
+ * Two source-text guards below read this. A slice whose start index is `-1`,
+ * or whose end lands before its start, is an empty string that satisfies
+ * every `.not.toMatch` in the file — the guard's view of the input shrinking
+ * to nothing while reporting clean. So the bounds are checked here, once,
+ * rather than being a precondition each caller has to remember.
+ */
+function gateCheckBody(): string {
+  const src = require("fs").readFileSync(join(import.meta.dir, "..", "gates", "workflow.test.ts"), "utf-8");
+  const from = src.indexOf(GATE_CHECK);
+  if (from < 0) throw new Error(`the prove-label gate check moved: ${GATE_CHECK} is not in gates/workflow.test.ts`);
+  const to = src.indexOf("\n  });", from);
+  if (to < from) throw new Error("the prove-label gate check has no end — the slice would be the rest of the file");
+  return src.slice(from, to);
+}
+
 /** The gate's own sequence: try the read, hand whatever happened to the verdict. */
 async function driveGate(client: never, tokenPresent: boolean) {
   try {
@@ -239,18 +259,40 @@ describe("SC-1490: a token-less environment is UNMEASURED, which is not clean", 
     // `resolveGitHubToken` already trims — a `GH_TOKEN` with a trailing
     // newline is present to a bare `process.env` check and rejected by the
     // API, which is the exact pair of answers that must not diverge.
-    const src = require("fs").readFileSync(join(import.meta.dir, "..", "gates", "workflow.test.ts"), "utf-8");
-    expect(src).toContain("const tokenPresent = Boolean(resolveGitHubToken())");
-    const at = src.indexOf("const tokenPresent = Boolean(resolveGitHubToken())");
-    const region = src.slice(at - 2000, at + 2000);
-    expect(region, "the fail-open is back").not.toMatch(/catch\s*\{\s*\n\s*(\/\/[^\n]*\n\s*)*return\s*$/m);
+    expect(gateCheckBody()).toContain("const tokenPresent = Boolean(resolveGitHubToken())");
   });
 
   test("the gate no longer swallows the read", () => {
-    const src = require("fs").readFileSync(join(import.meta.dir, "..", "gates", "workflow.test.ts"), "utf-8");
-    const at = src.indexOf("prove-label-enforcement: needs-prove requires proven label");
-    const body = src.slice(at, src.indexOf("});", src.indexOf("expect(outcome.verdict", at)));
-    expect(body).toContain("proveLabelGateVerdict");
-    expect(body, "a bare catch-and-return is the defect").not.toMatch(/catch\s*\{[^}]*\breturn;\s*\}/);
+    const body = gateCheckBody();
+
+    // The load-bearing assertions here are the POSITIVE ones. The first draft
+    // of this test asserted `.not.toMatch(/catch\s*\{[^}]*\breturn;\s*\}/)`
+    // and scored ZERO against the mutation that restores the fail-open,
+    // because the real source reads `catch (e) {` and the pattern demanded
+    // `catch {`. That is shape two in
+    // `.claude/rules/checks-must-be-able-to-fail.md` — a detector narrower
+    // than what it detects — and a negative text match is the easiest place
+    // in the tree to write one, because it is green both when the defect is
+    // absent and when the detector is blind.
+    //
+    // So this asserts what the code must CONTAIN instead. `catch { return }`
+    // cannot be reintroduced without deleting the line that hands the failure
+    // to the decider, and a reformat that defeats these strings turns the
+    // test red rather than quietly blind.
+    expect(body, "the catch must route the read failure to proveLabelGateVerdict, not swallow it")
+      .toContain("read = { error: e, tokenPresent }");
+    expect(body, "the verdict must be computed from the read, unconditionally")
+      .toContain("const outcome = proveLabelGateVerdict(read)");
+
+    // Nothing may return between the read and the verdict: that is the
+    // fail-open, whatever shape its catch clause is written in. The
+    // UNMEASURED branch's own `return` sits after the verdict and is the
+    // reported outcome, not a swallowed one, so it is outside this slice.
+    const from = body.indexOf("try {");
+    const to = body.indexOf("const outcome = proveLabelGateVerdict(read)");
+    expect(from, "the read is gone").toBeGreaterThan(-1);
+    expect(to, "the verdict call is gone").toBeGreaterThan(from);
+    expect(body.slice(from, to), "an early return between the read and the verdict is the #405 fail-open")
+      .not.toMatch(/\breturn\s*;/);
   });
 });
