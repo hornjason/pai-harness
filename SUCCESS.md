@@ -159,20 +159,14 @@ this line, compares the first to `package.json` and the second to the npm
 registry, and goes red when either drifts. Bumping `package.json` without
 publishing turns it red, which is the state this line records today.
 
-- **Distribution standing (2026-10-15)** — tree `0.4.0`, published `rungate@0.3.0`.
+- **Distribution standing (2026-10-15)** — tree `0.4.0`, published `rungate@0.4.0`.
 
-**The gap is OPEN again, deliberately and briefly.** The tree was bumped to
-`0.4.0` on 2026-10-15 and the tag has not been pushed yet, so a consumer
-installs `0.3.0` and the numbers below describe `0.4.0`. This line says so
-rather than rounding it off, which is the whole reason the line is enforced:
-the state between a bump and a publish is exactly the state that went
-unrecorded for 719 commits.
-
-Read any measurement below as describing the tree until this line reads
-`published rungate@0.4.0`. The guard will go red the moment the registry
-serves `0.4.0` and this line still says `0.3.0`, which is the intended
-forcing function — the window closes because the suite will not let it stay
-open.
+**The gap is closed again.** `v0.4.0` was cut on 2026-10-15 and the registry
+serves it; `npm view rungate dist-tags` returns `{"latest":"0.4.0"}`. The
+window between the bump and the publish was recorded in this line rather
+than rounded off, and the guard closed it: the moment the registry moved,
+`test/distribution-standing.test.ts` went red against the stale number and
+stayed red until this edit.
 
 **Why 0.4.0 is a minor and not a patch.** Three of the 29 commits past
 `v0.3.0` are observable behaviour changes, not fixes. #429/#430 changed
@@ -199,6 +193,24 @@ succeeded and the postflight refused it, because it read the registry about a
 second after `npm publish` returned and npm's packument had not propagated. A
 check that cannot reliably pass gets the message wrong exactly as badly as one
 that cannot fail. Fixed in #407.
+
+**And it happened again on 0.4.0 (2026-10-15), which means #407 did not fix
+it — it widened it.** The postflight now reads the registry 10 times over 27
+seconds, and still refused:
+
+```
+RELEASE REFUSED: the registry's latest is 0.3.0, not the 0.4.0 this run was
+cutting — the publish step did not take effect — read 10 times over 27s,
+which is long enough that this is not the registry catching up
+```
+
+It was the registry catching up. `npm view rungate dist-tags` returned
+`{"latest":"0.4.0"}` a few minutes later, from the same endpoint. So the
+guard refused a release that had succeeded, and the clause it refused with —
+*"long enough that this is not the registry catching up"* — is an assertion
+the guard has no way to support. A retry budget is a guess about someone
+else's infrastructure, and stating a guess as a finding is how a reader comes
+to distrust a correct refusal later. Filed as #444.
 
 **Why `0.3.0` and not `0.2.2` (2026-10-14).** The tree carried `0.2.2` from
 2026-09-19 and the first release attempt tagged it, which was wrong and was
