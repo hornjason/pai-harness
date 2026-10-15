@@ -159,13 +159,32 @@ this line, compares the first to `package.json` and the second to the npm
 registry, and goes red when either drifts. Bumping `package.json` without
 publishing turns it red, which is the state this line records today.
 
-- **Distribution standing (2026-10-14)** — tree `0.3.0`, published `rungate@0.3.0`.
+- **Distribution standing (2026-10-15)** — tree `0.4.0`, published `rungate@0.3.0`.
 
-**The gap is closed, for the first time since 2026-09-19.** `v0.3.0` was cut
-on 2026-10-14 and `npm install rungate@0.3.0` serves `bin/ lib/ prompts/
-scripts/`. The tree and the installable artifact are the same software as of
-this line, so numbers measured below are no longer measurements of code
-nobody can obtain.
+**The gap is OPEN again, deliberately and briefly.** The tree was bumped to
+`0.4.0` on 2026-10-15 and the tag has not been pushed yet, so a consumer
+installs `0.3.0` and the numbers below describe `0.4.0`. This line says so
+rather than rounding it off, which is the whole reason the line is enforced:
+the state between a bump and a publish is exactly the state that went
+unrecorded for 719 commits.
+
+Read any measurement below as describing the tree until this line reads
+`published rungate@0.4.0`. The guard will go red the moment the registry
+serves `0.4.0` and this line still says `0.3.0`, which is the intended
+forcing function — the window closes because the suite will not let it stay
+open.
+
+**Why 0.4.0 is a minor and not a patch.** Three of the 29 commits past
+`v0.3.0` are observable behaviour changes, not fixes. #429/#430 changed
+`verifiedPush`'s signature and added `ref-mismatch` and `repo-mismatch` to
+`PushOutcome`, so an exhaustive `switch` on `.kind` no longer compiles. #405
+made the prove-label gate refuse where it previously passed. #397 made the
+generated pre-push hook block on `UNMEASURED`, where it previously only
+blocked on a conformity `FAIL`.
+
+**The gap was closed on 2026-10-14, for the first time since 2026-09-19.**
+`v0.3.0` was cut that day and `npm install rungate@0.3.0` serves `bin/ lib/
+prompts/ scripts/`.
 
 Two things that does NOT yet license. The consumer-list row still records a
 survey of the *tree*, run before any of this was published; re-running it
