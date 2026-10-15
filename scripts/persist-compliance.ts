@@ -57,6 +57,7 @@ import {
   formatComplianceReport,
   detectHillClimbNeeds,
   applyHillClimb,
+  COMPLIANCE_HISTORY_SCHEMA,
   type ComplianceEntry,
 } from "../lib/compliance-report";
 import { writeWorkflowState } from "../gates/orchestrator";
@@ -148,15 +149,24 @@ export function persistCompliance(
   let hillClimbApplied = 0;
 
   for (const g of grades) {
-    const scores: Record<string, string> = {};
-    for (const r of g.rules || []) {
-      if (r.id) scores[r.id] = r.verdict || "N/A";
-    }
+    // #116 — the whole record, not `id → verdict`. The grader already has
+    // `rule`, `evidence` and `category`; dropping them here is what made every
+    // history entry an unsourced verdict. No `scores` beside it: two copies of
+    // one fact in a record can disagree and nothing would notice which was right.
     const entry: ComplianceEntry = {
       timestamp: new Date().toISOString(),
       issue: `#${issue}`,
       role: g.role,
-      scores,
+      schema: COMPLIANCE_HISTORY_SCHEMA,
+      rules: (g.rules || [])
+        .filter(r => r.id)
+        .map(r => ({
+          id: r.id as string,
+          verdict: r.verdict || "N/A",
+          rule: r.rule,
+          evidence: r.evidence,
+          category: r.category,
+        })),
       total: g.total,
       followed: g.followed,
       pct: pct(g),

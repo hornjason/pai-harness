@@ -33,12 +33,17 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { basename, dirname, join, relative } from "path";
 
-import type { ComplianceEntry } from "./compliance-report";
+import { COMPLIANCE_HISTORY_SCHEMA, type ComplianceEntry } from "./compliance-report";
 
 /** A grade file on disk, before it becomes history entries. */
 interface GradeRule {
   id?: string;
   verdict?: string;
+  // #116 — these three were on disk the whole time and the backfill dropped
+  // them, so a reconstructed entry was as unsourced as a live one.
+  rule?: string;
+  evidence?: string;
+  category?: string;
 }
 
 interface Grade {
@@ -182,9 +187,16 @@ export function planComplianceBackfill(root: string, existing: ComplianceEntry[]
         timestamp,
         issue,
         role: g.role,
-        scores: Object.fromEntries(
-          (g.rules ?? []).filter(r => r.id).map(r => [r.id as string, r.verdict || "N/A"]),
-        ),
+        schema: COMPLIANCE_HISTORY_SCHEMA,
+        rules: (g.rules ?? [])
+          .filter(r => r.id)
+          .map(r => ({
+            id: r.id as string,
+            verdict: r.verdict || "N/A",
+            rule: r.rule,
+            evidence: r.evidence,
+            category: r.category,
+          })),
         total: g.total,
         followed: g.followed,
         pct: pct(g),

@@ -480,3 +480,97 @@ other two slicers, where a miss takes the whole file down loudly.
 - .claude/agents/rook.md: 1 HIGH (1 agnix, 74 RepoRails)
 - prompts/ac-adversary.md: 1 HIGH (1 agnix)
 - 24 prompt files: 0 findings (content files, not instruction files)
+
+## #116 — the history recorded verdicts and threw away the evidence
+
+`scripts/persist-compliance.ts` built each history entry from the grade file
+like this:
+
+```ts
+for (const r of g.rules || []) {
+  if (r.id) scores[r.id] = r.verdict || "N/A";
+}
+```
+
+A grade record carries `{ id, rule, verdict, evidence, category }`. The
+history kept the first two and dropped the rest:
+
+```
+grade:   { id: "DIR-L29", verdict: "VIOLATED",
+           rule: "Run the full suite at most TWICE…",
+           evidence: "5 bun test runs (expected 1-2)", category: "quality" }
+history: { "DIR-L29": "VIOLATED" }
+```
+
+The second is an **unsourced verdict**. It cannot be re-checked, the rule text
+it refers to is unrecoverable once the rule is edited, and a trend built from
+it cannot explain itself — which is tier F by the standard this repo applies
+to ACs.
+
+It had not bitten because the writer was never running: #69's Grade-phase tail
+executed in a sandbox with no `require` and failed inside a `catch`. All four
+entries on disk when #116 was filed were synthetic fixtures, so this was the
+cheapest the schema would ever be to change.
+
+### Two shapes, one reader
+
+`COMPLIANCE_HISTORY_SCHEMA = 2`. A v2 entry carries `rules` — the whole record
+per graded rule — and **not** `scores`. Two copies of one fact in a record can
+disagree and nothing would notice which was right, so `entryVerdicts()` is the
+single reader that derives the flat map from whichever shape it is given.
+
+The version is **stamped rather than inferred from the shape.** "It has
+`rules`, so it is v2" conflates *written after the change* with *written after
+the change and carrying something*, and those are the two states a reader most
+needs to tell apart: a role graded on nothing produces a v2 entry with an
+empty `rules`.
+
+`lib/compliance-backfill.ts` was lossy in exactly the same way, from the same
+files, and is fixed with it — the three fields had been on disk the whole time.
+
+One thing this buys beyond auditability: `TrendLine.rule` now prefers the
+rule text the entry recorded over the hardcoded `COMP_RULES` map, which goes
+stale the moment a rule is edited. The map stays as the fallback for v1
+entries, because a reader that only used recorded text would label every
+pre-#116 trend line with a bare id.
+
+- [ ] SC-1475: test/compliance-history-evidence.test.ts contains [the round trip keeps all three] — rule, evidence and category survive a write/read through the history for every graded rule and not only the violated ones
+- [ ] SC-1476: lib/compliance-report.ts contains [COMPLIANCE_HISTORY_SCHEMA] — each entry records its shape so records written before and after the change are distinguishable without guessing from their contents
+- [ ] SC-1477: lib/compliance-report.ts contains [entryVerdicts] — one reader handles the old flat map and the new records so the four v1 lines already on disk still trend
+- [ ] SC-1478: test/compliance-history-evidence.test.ts contains [the LIVE writer carries all three from grade file to history file] — persistCompliance itself is run over a grade file and the three fields are read back out of the history file rather than out of a fixture this test wrote
+
+### What was broken to prove it
+
+Measured over `test/compliance-history-evidence.test.ts` +
+`test/unit/persist-compliance.test.ts` + `test/unit/compliance-backfill.test.ts` +
+`test/compliance-report.test.ts` (78 tests):
+
+| Mutation | Red |
+|---|---|
+| the writer drops `rule`/`evidence`/`category` again | 1 of 78 — **was 0** |
+| `entryVerdicts` stops reading v2 `rules` | 7 of 78 |
+| `entryVerdicts` stops reading v1 `scores` | 5 of 78 — the four lines on disk |
+| the schema stamp removed from the writer | 3 of 78 |
+| `historySchema` defaults to 2 instead of 1 | 1 of 78 |
+| the trend ignores recorded rule text | 1 of 78 |
+| `recordedRuleText` loses its v1 fallback | 1 of 78 |
+| the backfill keeps writing a flat map | 2 of 78 |
+
+**The first row was a zero**, and it is the headline defect: deleting the
+three fields from the live writer's entry builder changed nothing. The suite
+checked hand-built fixtures and the verdict map, and the one assertion aimed
+at the writer was a grep for the old `scores[r.id] =` line — which a writer
+that kept `rules` but dropped their contents still satisfies. Closed by
+running `persistCompliance` itself over a grade file carrying #116's own
+`DIR-L29` record and reading the three fields back out of the history file.
+A round trip that does not start where the real data starts is a round trip
+of its own fixtures.
+
+### What this does NOT fix
+
+- **The four synthetic entries are left alone.** They read as v1 and trend
+  correctly; rewriting them would destroy the only real v1 data the
+  compatibility reader is exercised against.
+- **Nothing reads `evidence` yet beyond the round trip.** `evidenceFor()`
+  exists so a verdict can be re-checked; wiring it into the report's output is
+  a separate change.
