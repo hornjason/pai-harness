@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from "os";
 import { join } from "path";
 
-import { assertMarkedBlockReachable, enclosingChain } from "../lib/reachability";
+import { assertMarkedBlockReachable, enclosingChain, UNCONDITIONAL_TERMINATORS } from "../lib/reachability";
 import {
   PRESERVED_VERDICTS,
   PRESERVE_MEASURED_ENVIRONMENTS,
@@ -690,7 +690,86 @@ describe("#166: ship.js asks for the receipt rather than hoping for the side eff
       "Program",
       "VariableDeclaration",
     ]);
-    expect(shipSource).toMatch(/if \(stateRefusal\) \{[\s\S]{0,400}terminalFailure\('COMMIT_FAILED'/);
+
+    // #204 — the last text assertion in this test, replaced.
+    //
+    // It was `expect(shipSource).toMatch(/if \(stateRefusal\) \{…COMMIT_FAILED/)`,
+    // and a regex over the source is precisely what the mutation that matters
+    // leaves alone: wrapping a region in `if (false)` does not change one
+    // character inside it, so the pattern stayed true of a file whose guard
+    // could not run. The three indexOf calls below are ANCHORS for a parse,
+    // not assertions about text — each one is checked for uniqueness so the
+    // range handed to `enclosingChain` is the one the author meant, and every
+    // claim is read off the tree.
+    const BRANCH = "if (stateRefusal) {";
+    const branchAt = shipSource.indexOf(BRANCH);
+    expect(branchAt, "nothing reads the refusal").toBeGreaterThan(-1);
+    expect(shipSource.indexOf(BRANCH, branchAt + 1), "two branches read it").toBe(-1);
+    // `["Program", "IfStatement"]`, not `["Program"]`: the range is the `if`'s
+    // own header, so the IfStatement contains it. What the comparison proves
+    // is that NOTHING ELSE does — the branch is a direct statement of the
+    // module body rather than sitting inside another conditional.
+    expect(
+      enclosingChain(shipSource, branchAt, branchAt + BRANCH.length),
+      "the branch that reads the refusal is itself conditional",
+    ).toEqual(["Program", "IfStatement"]);
+
+    // And the branch ENDS THE RUN. `COMMIT_FAILED` appears four times in
+    // ship.js, so the anchor names this refusal specifically; a check that
+    // merely found the string somewhere in the file would be satisfied by
+    // three other branches.
+    const TERMINAL = "terminalFailure('COMMIT_FAILED', { reason: stateRefusal";
+    const terminalAt = shipSource.indexOf(TERMINAL);
+    expect(terminalAt, "the branch no longer ends the run").toBeGreaterThan(-1);
+    expect(shipSource.indexOf(TERMINAL, terminalAt + 1)).toBe(-1);
+    const terminalChain = enclosingChain(shipSource, terminalAt, terminalAt + TERMINAL.length);
+    expect(
+      terminalChain.slice(0, 2),
+      "the refusal's COMMIT_FAILED is not inside a top-level branch",
+    ).toEqual(["Program", "IfStatement"]);
+    expect(terminalChain, "the branch falls through instead of returning").toContain(
+      "ReturnStatement",
+    );
+  });
+
+  /**
+   * What reachability still cannot catch (#204).
+   *
+   * `assertMarkedBlockReachable` reads the PARSE. A block whose ancestor chain
+   * is `["Program"]` is unconditional in the tree, and `precedingTerminator`
+   * additionally rejects a block sitting after an unconditional `return` in
+   * the same statement list. Neither can see a `return` that is conditional in
+   * the source and taken on every real input — `if (alwaysTrue) return` above
+   * the block parses as conditional and is dead in practice.
+   *
+   * That residual is the reason the executed `loadGuard` tests above are not
+   * redundant with the reachability one: those prove the logic refuses, this
+   * proves the region is positioned to run, and neither proves the run reaches
+   * it. The third claim is what a real pipeline run measures and no unit test
+   * does — stated here rather than left as implied coverage.
+   */
+  test("the limit of the reachability claim is written down and not implied", () => {
+    expect(Object.keys(UNCONDITIONAL_TERMINATORS)).toContain("ReturnStatement");
+    // The guard sits below exactly this shape and must still be reachable: a
+    // conditional `return` is NOT a terminator, which is the documented limit
+    // and also what keeps the check usable on ship.js at all.
+    const conditional = [
+      "const a = 1",
+      "if (a) { return 2 }",
+      "// ──── X-START ────",
+      "const b = 3",
+      "// ──── X-END ────",
+    ].join("\n");
+    expect(assertMarkedBlockReachable(conditional, "X")).toEqual(["Program"]);
+
+    const unconditional = [
+      "const a = 1",
+      "return 2",
+      "// ──── X-START ────",
+      "const b = 3",
+      "// ──── X-END ────",
+    ].join("\n");
+    expect(() => assertMarkedBlockReachable(unconditional, "X")).toThrow(/ReturnStatement/);
   });
 });
 
