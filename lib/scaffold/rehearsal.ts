@@ -48,9 +48,9 @@
  */
 
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, existsSync } from "fs";
+import { mkdtempSync, rmSync, existsSync, lstatSync, readdirSync, realpathSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 
 /**
  * Steps a rehearsal must not run, and why. Keys are the exported function
@@ -78,8 +78,55 @@ export const REHEARSAL_EXCLUDES: readonly string[] = [
 export interface Rehearsal {
   /** The clone the steps ran against. Always inside the OS temp directory. */
   dir: string;
+  /** The mkdtemp that owns `dir`. Tracked so cleanup never walks `..`. */
+  parent: string;
   /** `clone` when copy-on-write was used, `copy` when it fell back. */
   method: "clone" | "copy";
+}
+
+/**
+ * Symlinks in the clone whose target resolves outside it.
+ *
+ * **A rehearsal is only a rehearsal while every write lands in the copy, and
+ * a symlink is a hole straight through the floor.** `cp -R` preserves
+ * symlinks rather than following them, so a clone of a tree containing
+ * `AGENTS.md -> /elsewhere/AGENTS.md` carries a link to the ORIGINAL file,
+ * and the first step that writes `AGENTS.md` overwrites it. Reproduced
+ * directly: write through a cloned symlink, read the original, see the new
+ * bytes.
+ *
+ * That is #370's damage — scaffold destroying a real file — arriving through
+ * the preview built to prevent it, and in the one mode whose entire promise
+ * is that it writes nothing. Found by the commit security review.
+ *
+ * Reported rather than deleted. Removing the links would let the audit
+ * proceed over a tree that is not the consumer's, so it would answer a
+ * question nobody asked; `.claude/rules/config-access.md` is the governing
+ * idea — a reading that cannot be taken safely is UNMEASURED, and UNMEASURED
+ * is not SKIP.
+ */
+export function escapingSymlinks(dir: string): string[] {
+  const root = realpathSync(dir);
+  const out: string[] = [];
+  const walk = (rel: string) => {
+    let entries;
+    try { entries = readdirSync(join(root, rel), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const child = rel ? join(rel, e.name) : e.name;
+      if (e.isSymbolicLink()) {
+        // realpath, not readlink: a relative link, a link to a link, and a
+        // link through a symlinked parent all have to resolve to the same
+        // answer, and only the resolved path can be compared to the root.
+        let target: string;
+        try { target = realpathSync(join(root, child)); } catch { target = resolve(root, child); }
+        if (target !== root && !target.startsWith(root + sep)) out.push(child);
+      } else if (e.isDirectory()) {
+        walk(child);
+      }
+    }
+  };
+  walk("");
+  return out.sort();
 }
 
 /**
@@ -94,35 +141,65 @@ export interface Rehearsal {
 export function cloneForRehearsal(root: string): Rehearsal {
   const parent = mkdtempSync(join(tmpdir(), "rungate-rehearsal-"));
   const dir = join(parent, "tree");
-
-  // `-c` asks for an APFS clonefile. It fails outright on filesystems that
-  // cannot do it rather than silently copying, so the fallback is explicit.
-  const cow = spawnSync("cp", ["-Rc", root, dir], { encoding: "utf-8", timeout: 300_000 });
-  if (cow.status === 0) return pruned({ dir, method: "clone" });
-
-  const plain = spawnSync("cp", ["-R", root, dir], { encoding: "utf-8", timeout: 600_000 });
-  if (plain.status !== 0) {
+  const fail = (why: string): never => {
     rmSync(parent, { recursive: true, force: true });
-    throw new Error(
-      `audit could not clone the tree to rehearse against: ${plain.stderr?.trim() || "cp failed"}`,
-    );
-  }
-  return pruned({ dir, method: "copy" });
-}
+    throw new Error(`audit did NOT run: ${why}`);
+  };
 
-function pruned(r: Rehearsal): Rehearsal {
+  // `-c` asks for an APFS clonefile. It fails on filesystems that cannot do
+  // it, so the fallback is explicit rather than a silent slow path.
+  let method: Rehearsal["method"] = "clone";
+  const cow = spawnSync("cp", ["-Rc", root, dir], { encoding: "utf-8", timeout: 300_000 });
+  if (cow.status !== 0) {
+    // A failed `cp` may have copied some of the tree first. Falling back on
+    // top of that leaves a PARTIAL clone, and a partial clone is the whole
+    // bug this module exists to fix — the steps would run over a tree
+    // missing files, report less than `--fix` will do, and look like a
+    // clean preview. Start from nothing. Found by the commit security
+    // review.
+    rmSync(dir, { recursive: true, force: true });
+    const plain = spawnSync("cp", ["-R", root, dir], { encoding: "utf-8", timeout: 600_000 });
+    if (plain.status !== 0) {
+      return fail(`the tree could not be copied: ${plain.stderr?.trim() || "cp failed"}`);
+    }
+    method = "copy";
+  }
+
   for (const rel of REHEARSAL_EXCLUDES) {
-    const p = join(r.dir, rel);
+    const p = join(dir, rel);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   }
-  return r;
+
+  // The copy has to BE the tree, not most of it. Compared at the top level
+  // only — a full walk would cost more than the clone did — which is enough
+  // to catch a truncated copy that exited 0.
+  const want = readdirSync(root).filter(n => !REHEARSAL_EXCLUDES.some(x => x.split("/")[0] === n));
+  const got = new Set(readdirSync(dir));
+  const missing = want.filter(n => !got.has(n));
+  if (missing.length > 0) {
+    return fail(`the copy is incomplete — ${missing.length} top-level entr(ies) missing: ${missing.slice(0, 5).join(", ")}`);
+  }
+
+  const escaping = escapingSymlinks(dir);
+  if (escaping.length > 0) {
+    return fail(
+      `the tree contains ${escaping.length} symlink(s) pointing outside it, and a step writing through one ` +
+      `would modify the real file rather than the copy — which is the damage a preview exists to prevent (#370). ` +
+      `Offending paths: ${escaping.slice(0, 5).join(", ")}${escaping.length > 5 ? ", …" : ""}. ` +
+      `Re-run with --fix if you intend those writes, or replace the symlinks with real files.`,
+    );
+  }
+
+  return { dir, parent, method };
 }
 
 /** Throw the clone away. Safe to call twice. */
 export function discardRehearsal(r: Rehearsal): void {
-  // The parent, not the tree: `cloneForRehearsal` owns both and leaving the
-  // mkdtemp behind is the leak #437 is about.
-  rmSync(join(r.dir, ".."), { recursive: true, force: true });
+  // `r.parent`, not `join(r.dir, "..")`. Deriving a deletion target by
+  // walking up from a path is how a cleanup ends up removing something it
+  // does not own; the owner is recorded at creation instead. Leaving the
+  // mkdtemp behind is the leak #437 is about, so it is the parent that goes.
+  rmSync(r.parent, { recursive: true, force: true });
 }
 
 /**

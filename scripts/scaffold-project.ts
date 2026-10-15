@@ -64,7 +64,18 @@ if (fix) {
   // and reports what the real steps said (#398). The previous audit branch was
   // four existsSync checks against twenty-five write steps and reported 0
   // changes on a tree --fix rewrote in 28 places.
-  const rehearsal = cloneForRehearsal(projectPath);
+  //
+  // A rehearsal that cannot be set up safely REFUSES rather than falling
+  // back to the old guesswork. An audit that reports nothing because it
+  // could not look is indistinguishable from an audit that found nothing,
+  // and that is the defect, not a lesser version of it.
+  let rehearsal;
+  try {
+    rehearsal = cloneForRehearsal(projectPath);
+  } catch (err) {
+    console.error(`ERROR: ${(err as Error).message}`);
+    process.exit(1);
+  }
   try {
     console.log(rehearsalNotice(rehearsal));
     runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true });
