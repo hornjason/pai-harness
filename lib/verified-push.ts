@@ -83,7 +83,11 @@ export type PushOutcome =
   /** The push ran and exited non-zero. */
   | { kind: "rejected"; detail: string }
   /** The push exited zero and the remote does not carry HEAD. */
-  | { kind: "unconfirmed"; sha: string; remoteSha: string | null; detail: string };
+  | { kind: "unconfirmed"; sha: string; remoteSha: string | null; detail: string }
+  /** The upstream names a ref other than the branch's own. Nothing was pushed. */
+  | { kind: "ref-mismatch"; branch: string; remoteRef: string; detail: string }
+  /** The caller expected a different repository than the tree's origin. */
+  | { kind: "repo-mismatch"; expected: string; actual: string | null; detail: string };
 
 /**
  * The outcomes that mean a commit this run reported on may not be on the
@@ -96,10 +100,55 @@ export const OUTCOMES_LEAVING_WORK_LOCAL: ReadonlySet<PushOutcome["kind"]> = new
   "not-attempted",
   "rejected",
   "unconfirmed",
+  "ref-mismatch",
+  "repo-mismatch",
 ]);
 
 export function leftWorkLocal(outcome: PushOutcome): boolean {
   return OUTCOMES_LEAVING_WORK_LOCAL.has(outcome.kind);
+}
+
+/**
+ * The `owner/name` a git remote URL points at, or `null` if it names none.
+ *
+ * Returns `null` rather than a best guess for anything it cannot parse —
+ * including the filesystem paths every fixture in the suite uses as its
+ * origin. `repoMatches` turns `null` into "does not match", so an
+ * unrecognised remote refuses a push instead of permitting one, which is the
+ * direction this is allowed to be wrong in (#430).
+ */
+export function parseRemoteSlug(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  // scp-style (`git@host:owner/name.git`) and URL-style, with any userinfo —
+  // which is where a token lives on an HTTPS remote — discarded.
+  const m = trimmed.match(/^(?:[a-z+]+:\/\/)?(?:[^@/]*@)?[^/:]+[:/](.+?)(?:\.git)?\/?$/i);
+  const path = m?.[1];
+  if (!path) return null;
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length !== 2) return null;
+  return `${parts[0]}/${parts[1]}`.toLowerCase();
+}
+
+/** Whether a remote URL names the given `owner/name`. Unparseable matches nothing. */
+export function repoMatches(url: string, slug: string): boolean {
+  const parsed = parseRemoteSlug(url);
+  return parsed !== null && parsed === slug.trim().toLowerCase();
+}
+
+/**
+ * The `owner/name` of a tree's `origin`, or `null` when it cannot be read.
+ *
+ * `config --get remote.origin.url` rather than `remote get-url origin`: the
+ * latter applies `url.<base>.insteadOf` rewrites, which are a local transport
+ * alias — a mirror, a proxy, a cache — and not a statement about which
+ * project this is. A developer who rewrites GitHub to an internal mirror has
+ * not changed what repository they are shipping, and reading the rewritten
+ * value would refuse their every push.
+ */
+export function originSlug(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const r = runner(cwd, env)(["config", "--get", "remote.origin.url"], 5000);
+  return r.ok ? parseRemoteSlug(r.output) : null;
 }
 
 /** The sha `ls-remote` reports for a ref, or null if its output names none. */
@@ -158,6 +207,33 @@ export function classifyPush(raw: PushReadings): PushOutcome {
   const remoteName = r.remoteName.output.trim();
   const remoteRef = r.remoteRef.output.trim();
   const upstream = `${remoteName} ${remoteRef}`;
+
+  // #429 — the push below is `HEAD:${remoteRef}`, and `remoteRef` is whatever
+  // `branch.<b>.merge` says. `git checkout -b <name> origin/main`, the
+  // ordinary way to start work here, sets that to `refs/heads/main` — so an
+  // unattended auto-push on a feature branch wrote `main` and reported a
+  // verified success, which it was, to the wrong ref. Four `wip:` commits
+  // reached origin/main that way on 2026-10-15 from a session that never ran
+  // `git push`.
+  //
+  // Refusing rather than rewriting the target: a branch whose upstream names
+  // a different ref may well be deliberate — this repo has several — and
+  // guessing which the operator meant is the kind of repair
+  // `.claude/rules/checks-must-be-able-to-fail.md` warns about. This is
+  // bookkeeping, not a gate, so the refusal costs a manual `git push` and
+  // `leftWorkLocal` already says the work may be local.
+  if (remoteRef !== `refs/heads/${branch}`) {
+    return {
+      kind: "ref-mismatch",
+      branch,
+      remoteRef,
+      detail: `branch ${branch} is configured to track ${upstream}, so an auto-push would write ` +
+        `${remoteRef} from a branch that is not it. Nothing was pushed. This is usually a branch ` +
+        `created with \`git checkout -b ${branch} origin/main\`, which sets the upstream to main ` +
+        `rather than to a ref of its own name (#429). Push explicitly with ` +
+        `\`git push -u origin ${branch}\` if that is what you meant.`,
+    };
+  }
 
   if (!r.ahead.ok) {
     return {
@@ -318,10 +394,43 @@ function runner(cwd: string, env: NodeJS.ProcessEnv) {
  */
 export function verifiedPush(
   cwd: string,
-  opts: { env?: NodeJS.ProcessEnv } = {},
+  opts: { env?: NodeJS.ProcessEnv; expectRepo?: string } = {},
 ): PushOutcome {
   const env = opts.env ?? process.env;
   const git = runner(cwd, env);
+
+  // #430 — the caller says which repository it believes it is shipping, and
+  // that belief is compared against the tree rather than assumed to match it.
+  //
+  // `gates/orchestrator.ts` pushes `process.cwd()` and guards on
+  // `issueRepo && issue > 0`. `test/contract.test.ts` runs the ship gate with
+  // `issueRepo: "test/repo"` and `issue: 9998` — both truthy — from inside
+  // the real rungate checkout, so running the test suite pushed to origin.
+  // The cwd choice is right and stays; what was missing is this comparison.
+  //
+  // Checked FIRST, before any other reading, because "this is not the repo
+  // you meant" invalidates everything downstream — an ahead-count against the
+  // wrong tree's upstream is not a fact worth reporting.
+  if (opts.expectRepo !== undefined && opts.expectRepo.trim() !== "") {
+    // `actual` is already a slug, so it is compared as one. Running it back
+    // through `repoMatches` — which parses its first argument as a URL —
+    // made every comparison false, including the matching ones, and the
+    // control in test/gate-push-repo-mismatch.test.ts is what caught it: the
+    // refusal cases all still passed, for a reason that had nothing to do
+    // with the repositories differing.
+    const actual = originSlug(cwd, env);
+    if (actual === null || actual !== opts.expectRepo.trim().toLowerCase()) {
+      return {
+        kind: "repo-mismatch",
+        expected: opts.expectRepo,
+        actual,
+        detail: `the caller is shipping ${opts.expectRepo} and this tree's origin is ` +
+          `${actual ?? "unreadable"}. Nothing was pushed. A run whose issue repository and ` +
+          `working tree disagree is either a fixture pointed at a real checkout or a real run ` +
+          `in the wrong directory, and both are reasons not to write a remote (#430).`,
+      };
+    }
+  }
 
   const localSha = git(["rev-parse", "HEAD"], 5000);
   const branch = git(["symbolic-ref", "--short", "HEAD"], 5000);

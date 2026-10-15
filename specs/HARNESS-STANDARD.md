@@ -5625,4 +5625,85 @@ first draft's `[0-9a-fA-F_]` class to `[0-9a-zA-Z_]` changed nothing any
 fixture could see. That is not a weak suite — it is two expressions that
 agree on every input this matcher receives, and the response was to take the
 simpler one rather than to invent a fixture justifying the complicated one.
+## #429 / #430 — the harness pushed to main, from a feature branch, during a test run
+
+Four `wip:` commits reached `origin/main` on 2026-10-15 from a session that
+was on `fix/405-prove-label-refusal` and never ran `git push`. GitHub's
+activity log records three `push ref=refs/heads/main` events whose timestamps
+match no commit — they match **gate and contract test runs**.
+
+Two independent causes. Either alone is sufficient; fixing one leaves the
+other live.
+
+### #429 — the upstream of a new branch is main
+
+`git checkout -b <name> origin/main` sets `branch.<name>.merge` to
+`refs/heads/main`, not to a ref of the branch's own name. That is git's
+default behaviour, not a misconfiguration, and it is how every branch in this
+repo gets started. Reproduced in the test rather than asserted:
+
+```
+$ git checkout -b probe origin/main
+$ git config --get branch.probe.merge
+refs/heads/main
+```
+
+`lib/verified-push.ts` pushed `HEAD:${branch.<b>.merge}` with nothing
+comparing that ref to the branch. So the ship gate's auto-push sent a feature
+branch's HEAD to `main` and recorded a verified success — which it was, to
+the wrong ref. **31 branches** in this repo tracked a ref other than their
+own, 14 of them `main`.
+
+The new `ref-mismatch` outcome refuses rather than retargeting. A branch
+whose upstream names a different ref may be deliberate — this repo has
+`fix/remove-hardcoded-quinn-rules-from-ship` tracking `refs/heads/ship-1344` —
+and guessing which the operator meant is the silent repair
+`.claude/rules/checks-must-be-able-to-fail.md` warns about. The refusal costs
+one manual `git push -u`, and `leftWorkLocal` already says the work may be
+local. `scripts/repair-branch-upstreams.ts` unsets the 31.
+
+### #430 — a fixture `issueRepo` pushed the real tree
+
+`gates/orchestrator.ts` guards the auto-push with `if (issueRepo && issue > 0)`
+and pushes `process.cwd()`. `test/contract.test.ts` runs the ship gate with
+`issueRepo: "test/repo"` and `issue: 9998` — both truthy — from inside the
+real rungate checkout. The guard passed, the push ran, and the repository it
+reached was the one that must not be touched. **Running the test suite pushed
+to origin.**
+
+The `process.cwd()` choice stays and its reasoning is unchanged: letting a
+state file pick the repository a `git push` runs against is a privileged
+operation taking its target from data. What was missing is the other half —
+when the state is a fixture, `process.cwd()` is precisely the wrong tree, so
+the two facts are now compared instead of assumed to agree.
+
+`originSlug` reads `config --get remote.origin.url`, not
+`remote get-url origin`: the latter applies `url.<base>.insteadOf` rewrites,
+which are a local transport alias and not a statement about which project
+this is. A developer mirroring GitHub internally has not changed what they
+are shipping, and reading the rewritten value would refuse their every push.
+
+- [ ] SC-1492: lib/verified-push.ts contains [ref-mismatch] — a push whose target ref is not the branch's own name is refused and the remote is not written. The refusal names the branch and the ref it would have written
+- [ ] SC-1493: test/verified-push-ref-mismatch.test.ts contains [origin/main] — the upstream inheritance is produced by a real `git checkout -b <name> origin/main` against a real remote and asserted as the premise, not hand-written into a config
+- [ ] SC-1494: lib/verified-push.ts contains [OUTCOMES_LEAVING_WORK_LOCAL] — every new outcome joins the local-work set in the same commit that adds it. A kind nobody listed would default to "fine"
+- [ ] SC-1495: lib/verified-push.ts contains [repo-mismatch] — a push is refused when the caller's expected repository is not the one the working tree's origin names. An unreadable origin refuses too
+- [ ] SC-1496: gates/orchestrator.ts contains [expectRepo] — the gate tells verifiedPush which repository it believes it is shipping, so a fixture issueRepo cannot push a real checkout
+- [ ] SC-1497: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — the matching-repo control uses an origin that parses as a slug and resolves locally, so "the check allowed it" is distinguishable from "the check could not parse the URL"
+
+### What was broken to prove it
+
+The headline evidence is not a mutation but the order of work: both test
+files were written and run **before** the fix, and
+`verifiedPush does not move the remote's main` failed — the bare remote's
+`main` really was rewritten from a feature branch. 6 of 13 red before the
+fix, 0 after.
+
+One defect was caught by a control rather than by a mutation, and it is worth
+recording because the positive cases did not notice it. The first draft of
+the repo check called `repoMatches(actual, expectRepo)` where `actual` is
+already a slug; `repoMatches` parses its first argument as a URL, so every
+comparison returned false. Every refusal test passed — for a reason that had
+nothing to do with the repositories differing — and only
+`a matching repo still pushes` went red. A refusal suite with no control is
+indistinguishable from a function that refuses everything.
 
