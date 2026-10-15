@@ -45,8 +45,14 @@ const MUTATIONS = [
   {
     name: "the gate goes back to catch-and-return",
     file: "gates/workflow.test.ts",
-    anchor: "      } catch (e) {\n        read = { error: e, tokenPresent };\n      }",
-    replace: "      } catch (e) {\n        return;\n      }",
+    anchor: "    } catch (e) {\n      read = { error: e, tokenPresent };\n    }",
+    replace: "    } catch (e) {\n      return;\n    }",
+  },
+  {
+    name: "the gate stops reporting UNMEASURED and just returns (SKIP, not UNMEASURED)",
+    file: "gates/workflow.test.ts",
+    anchor: "      console.error(`PROVE_LABEL_UNMEASURED: ${outcome.message}`);",
+    replace: "      ;",
   },
   {
     name: "the gate reads the env directly instead of resolveGitHubToken",
@@ -61,22 +67,10 @@ const MUTATIONS = [
     replace: "  test(\"prove-label-enforcement: needs-prove must carry proven\", async () => {",
   },
   {
-    name: "the planted read becomes the verdict (the fixture buys a pass)",
-    file: "lib/prove-label-gate.ts",
-    anchor: "  return { labels: parsed as string[], tokenPresent: true };",
-    replace: "  return { labels: [] as string[], tokenPresent: true };",
-  },
-  {
-    name: "malformed fixture content falls back to the live read instead of throwing",
-    file: "lib/prove-label-gate.ts",
-    anchor: "    throw new Error(`${LABEL_FIXTURE_ENV} is not valid JSON: ${(e as Error).message}`);",
-    replace: "    return null;",
-  },
-  {
-    name: "a non-array fixture is accepted",
-    file: "lib/prove-label-gate.ts",
-    anchor: "  if (!Array.isArray(parsed) || parsed.some((l) => typeof l !== \"string\")) {",
-    replace: "  if (false) {",
+    name: "the gate check returns before the labels are ever read (the whole check switched off)",
+    file: "gates/workflow.test.ts",
+    anchor: "    if (!issueNumber || !issueRepo) return;",
+    replace: "    if (!issueNumber || !issueRepo) return;\n    return;",
   },
 ];
 

@@ -99,50 +99,6 @@ export interface ProveLabelOutcome {
   message: string | null;
 }
 
-/** The one env var that can supply the labels instead of GitHub. */
-export const LABEL_FIXTURE_ENV = "RUNGATE_PROVE_LABEL_FIXTURE";
-
-/**
- * Labels planted by a test, or `null` to read GitHub (#405).
- *
- * The contract test in `test/contract.test.ts` runs the ship gate over a
- * synthetic project whose `issueRepo` is `test/repo`. Before #405 the check
- * swallowed the resulting 404 and the contract was green — the fixture did
- * not satisfy prove-label, it was merely unreadable by it, which is the same
- * thing that had been true of `code-pushed` until that fixture was made a
- * real pushed repository. With the fail-open gone the contract goes red
- * locally (a token is present, so the 404 is a refusal) and green in CI (no
- * token, so it is UNMEASURED). A check whose verdict depends on which machine
- * runs it is worse than either answer.
- *
- * So the fixture supplies the INPUT and never the verdict. What is planted is
- * a label list, and `proveLabelViolation` still judges it — planting
- * `["needs-prove"]` refuses exactly as a live read of that issue would. There
- * is no value of this variable that buys a pass the real labels would not.
- *
- * Every use is announced, and `test/prove-label-gate.test.ts` asserts that
- * nothing under `lib/`, `gates/`, `scripts/` or `workflows/` sets it — a
- * fixture seam a shipping path can reach is a bypass, not a seam.
- *
- * Throws on unparseable content rather than falling back to the live read: a
- * typo'd fixture that silently became a network call is the fail-open this
- * whole issue is about, one level up.
- */
-export function plantedLabelRead(env: Record<string, string | undefined>): LabelRead | null {
-  const raw = env[LABEL_FIXTURE_ENV];
-  if (raw === undefined || raw === "") return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (e) {
-    throw new Error(`${LABEL_FIXTURE_ENV} is not valid JSON: ${(e as Error).message}`);
-  }
-  if (!Array.isArray(parsed) || parsed.some((l) => typeof l !== "string")) {
-    throw new Error(`${LABEL_FIXTURE_ENV} must be a JSON array of label strings, got: ${raw}`);
-  }
-  return { labels: parsed as string[], tokenPresent: true };
-}
-
 export function proveLabelGateVerdict(read: LabelRead): ProveLabelOutcome {
   if (read.labels !== undefined) {
     const refusal = proveLabelViolation(read.labels);

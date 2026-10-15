@@ -30,15 +30,13 @@
  */
 import { describe, expect, test } from "bun:test";
 
+import { mkdirSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
+import { spawnSync } from "child_process";
 
 import { getIssueLabels } from "../lib/github";
-import {
-  LABEL_FIXTURE_ENV,
-  plantedLabelRead,
-  proveLabelGateVerdict,
-  proveLabelViolation,
-} from "../lib/prove-label-gate";
+import { proveLabelGateVerdict, proveLabelViolation } from "../lib/prove-label-gate";
 
 /** A fake Octokit that records what it was asked for. */
 function stubClient(labels: unknown, seen: Record<string, unknown> = {}) {
@@ -303,71 +301,72 @@ describe("SC-1490: a token-less environment is UNMEASURED, which is not clean", 
 });
 
 /**
- * SC-1491 — the fixture seam supplies the input and never the verdict.
+ * SC-1491 — the gate check EXECUTED, over planted state, in both environments.
  *
- * The contract test needs a readable issue and cannot have one: its fixture
- * names `test/repo`, which 404s, and before #405 that 404 was swallowed. A
- * seam that let a fixture buy a pass would be the fail-open wearing a test's
- * clothes, so what it plants is a label list and `proveLabelViolation` still
- * judges it.
+ * Everything above drives `proveLabelGateVerdict` directly, which proves the
+ * decision and not the wiring. The #405 defect was in the wiring: the
+ * decision never ran. So the real check is spawned here the way #224 spawns
+ * the suite-verdict check — `bun test gates/workflow.test.ts -t <name>`
+ * against a planted `workflow-state.json` — and the two environments that
+ * disagreed are run as a pair.
+ *
+ * `test/contract.test.ts` cannot make this observation: `run-gate.ts` prints
+ * a batch summary and records detail only for failures, so a passing check's
+ * stderr never reaches it.
  */
-describe("SC-1491: the planted label read is an input, not a bypass", () => {
-  test("no env var set means read GitHub", () => {
-    expect(plantedLabelRead({})).toBeNull();
-    expect(plantedLabelRead({ [LABEL_FIXTURE_ENV]: "" })).toBeNull();
-  });
+describe("SC-1491: the gate check, spawned over planted state", () => {
+  const PLANT = join(tmpdir(), "rungate-405-gate-check");
 
-  test("a planted list is returned as a successful read", () => {
-    expect(plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["proven"]' })).toEqual({
-      labels: ["proven"],
-      tokenPresent: true,
-    });
-  });
+  function runCheck(env: Record<string, string>) {
+    mkdirSync(PLANT, { recursive: true });
+    writeFileSync(
+      join(PLANT, "workflow-state.json"),
+      // `test/repo` does not exist, which is the point: no token means the
+      // read cannot happen at all, and a token means it happens and fails.
+      JSON.stringify({ phase: "SHIP", issue: 9998, repo: "test/repo", issueRepo: "test/repo" }),
+    );
+    const r = spawnSync(
+      "bun",
+      ["test", join(import.meta.dir, "..", "gates", "workflow.test.ts"), "-t", "prove-label-enforcement"],
+      {
+        cwd: join(import.meta.dir, ".."),
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: { ...process.env, TEST_WORK_DIR: PLANT, GITHUB_TOKEN: "", GH_TOKEN: "", ...env },
+      },
+    );
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    // A `-t` filter that matched nothing leaves bun reporting zero of
+    // everything, which is indistinguishable from the check passing. #224's
+    // lesson: go through "it ran" before reading any verdict out of it.
+    const ran = Number(out.match(/(\d+) pass/)?.[1] ?? 0) + Number(out.match(/(\d+) fail/)?.[1] ?? 0);
+    expect(ran, `the check did not run — the -t filter matched nothing:\n${out}`).toBe(1);
+    return { out, failed: /\s1 fail/.test(out) };
+  }
 
-  test("a planted needs-prove still REFUSES", () => {
-    const read = plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["needs-prove"]' })!;
-    const outcome = proveLabelGateVerdict(read);
-    expect(outcome.verdict).toBe("REFUSE");
-    expect(outcome.message).toContain("Run /prove");
-  });
+  test("with no token it reports UNMEASURED and does not fail the gate", () => {
+    const { out, failed } = runCheck({});
+    expect(failed, "a token-less run must not block every local gate").toBe(false);
+    // The report is the whole difference between UNMEASURED and SKIP. A
+    // check that returned silently would pass this gate identically, and
+    // that silence is #405.
+    // Line-anchored, because a failing bun test echoes the source around the
+    // failure and the `console.error` call itself is in that listing. A bare
+    // `toContain` would match the code that prints the line instead of the
+    // line, which is a detector reading its own target's source.
+    expect(out, "an unreported skip is indistinguishable from a pass")
+      .toMatch(/^PROVE_LABEL_UNMEASURED: prove-label was NOT checked/m);
+    expect(out).toContain("no GITHUB_TOKEN or GH_TOKEN");
+  }, { timeout: 130_000 });
 
-  test("there is no value of the variable that allows a needs-prove issue", () => {
-    // The seam's whole defence. Anything that is not a label list throws, and
-    // a label list carrying `needs-prove` without `proven` refuses — so the
-    // only way past the check is to plant the labels that would pass a live
-    // read anyway.
-    for (const raw of ['["needs-prove"]', '["needs-prove","other"]']) {
-      expect(proveLabelGateVerdict(plantedLabelRead({ [LABEL_FIXTURE_ENV]: raw })!).verdict).toBe("REFUSE");
-    }
-    expect(proveLabelGateVerdict(plantedLabelRead({ [LABEL_FIXTURE_ENV]: '["needs-prove","proven"]' })!).verdict)
-      .toBe("ALLOW");
-  });
-
-  test("malformed content throws rather than falling back to the live read", () => {
-    // A typo'd fixture that silently became a network call is this issue's
-    // own defect one level up: the caller would believe it planted something.
-    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: "needs-prove" })).toThrow(/not valid JSON/);
-    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: '{"a":1}' })).toThrow(/array of label strings/);
-    expect(() => plantedLabelRead({ [LABEL_FIXTURE_ENV]: "[1,2]" })).toThrow(/array of label strings/);
-  });
-
-  test("no shipping path sets the variable", () => {
-    // A fixture seam a shipping path can reach is a bypass. The gate READS it
-    // — that is the one permitted mention, and it is in the file this test
-    // already reads — so the scan is for assignment, anywhere under the dirs
-    // that run in production.
-    const { execFileSync } = require("child_process");
-    const root = join(import.meta.dir, "..");
-    let hits = "";
-    try {
-      hits = execFileSync(
-        "grep",
-        ["-rn", "--include=*.ts", "--include=*.js", `${LABEL_FIXTURE_ENV}=`, "lib", "gates", "scripts", "workflows", "hooks", "bin"],
-        { cwd: root, encoding: "utf-8" },
-      );
-    } catch {
-      hits = ""; // grep exits 1 on no matches, which is the passing case
-    }
-    expect(hits.trim(), `${LABEL_FIXTURE_ENV} is set by a shipping path — that is a bypass`).toBe("");
-  });
+  test("with a token present the same unreadable issue REFUSES", () => {
+    // The control. Same state, same unreachable repo, one variable changed.
+    // Whatever the credential does — 401, 404, no route to host — the read
+    // did not answer and a token says it should have.
+    const { out, failed } = runCheck({ GITHUB_TOKEN: "NOT-A-REAL-TOKEN-0123456789" });
+    expect(failed, `an authenticated read that failed must block:\n${out}`).toBe(true);
+    expect(out).toContain("could not find out");
+    expect(out, "a refusal must not be reported as unmeasured")
+      .not.toMatch(/^PROVE_LABEL_UNMEASURED: prove-label was NOT checked/m);
+  }, { timeout: 130_000 });
 });

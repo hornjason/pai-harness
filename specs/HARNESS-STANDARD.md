@@ -5476,7 +5476,7 @@ and it is the one that now blocks.
 
 - [ ] SC-1489: lib/prove-label-gate.ts contains [proveLabelGateVerdict] — an authenticated read that fails REFUSES and names the read failure as the reason. "No blocking label" and "could not find out" produce different text so a blocked ship can be debugged
 - [ ] SC-1490: test/prove-label-gate.test.ts contains [throwingClient] — the failure branch is EXERCISED by a client whose read rejects rather than argued about and the token-less case is asserted to be UNMEASURED rather than ALLOW
-- [ ] SC-1491: lib/prove-label-gate.ts contains [plantedLabelRead] — a fixture may supply the label list the check reads and may never supply the verdict. `proveLabelViolation` judges planted labels exactly as it judges live ones and no shipping path sets the variable
+- [ ] SC-1491: test/prove-label-gate.test.ts contains [TEST_WORK_DIR] — the gate check is SPAWNED over planted state in both environments. The token-less run emits its UNMEASURED report and does not block; the same unreadable issue with a token present refuses
 
 ### The contract test the fix turned red, and why that was the fix working
 
@@ -5490,36 +5490,62 @@ nothing-to-report. Two checks, one fixture, the same defect twice.
 
 With the fail-open gone the contract answers differently depending on the
 machine: green in CI, which has no token and so reports `UNMEASURED` and
-returns, and red locally, where a token is present and the 404 is a refusal. A
-contract whose verdict depends on who runs it is worse than either verdict, so
-the fixture now plants the labels through `RUNGATE_PROVE_LABEL_FIXTURE`.
+returns, and red locally, where a token is present and the 404 is a refusal.
+A contract whose verdict depends on who runs it is worse than either verdict,
+so the DIFFERENCE is removed rather than the failure — the contract clears
+`GITHUB_TOKEN` and `GH_TOKEN` for the gate subprocess, which is the
+environment CI already gives it, and both agree.
 
-The seam supplies the **input** and never the verdict. `proveLabelViolation`
-still judges what is planted, so the same fixture carrying `needs-prove`
-without `proven` is still refused — asserted as a contract test beside the
-passing one, because a planted read that could not refuse would be the
-fail-open wearing a fixture's clothes. Malformed content throws rather than
-falling back to the live read: a typo'd fixture that silently became a network
-call is this issue's own defect, one level up. And a grep over `lib`, `gates`,
-`scripts`, `workflows`, `hooks` and `bin` asserts nothing that ships sets the
-variable, because a seam a production path can reach is a bypass.
+#### The seam that was written first, and why it was deleted
+
+The first attempt added `RUNGATE_PROVE_LABEL_FIXTURE`, an env var planting the
+label list so the contract could exercise the check instead of skipping it,
+defended by the claim that it supplied the input and never the verdict. **That
+claim was false.** `RUNGATE_PROVE_LABEL_FIXTURE='["needs-prove","proven"]'`
+allows a close on an issue carrying only `needs-prove`: the planting is judged
+honestly and the thing judged is a lie. A seam that overrides an enforcement
+input is a bypass however carefully its own contents are validated, and it
+reached production code in `lib/`, not just the fixture.
+
+What makes the deletion free is that the seam was buying nothing. The check's
+decision is driven directly by 20 tests in `test/prove-label-gate.test.ts`,
+and the wiring — the half #405 was actually about — is now **spawned** over
+planted state the way #224 spawns the suite-verdict check:
+`bun test gates/workflow.test.ts -t prove-label-enforcement` against a
+`TEST_WORK_DIR` holding a `SHIP`-phase state, run twice, once with no token
+and once with a bad one. The token-less run must emit
+`PROVE_LABEL_UNMEASURED` and must not fail; the authenticated run must refuse.
+That pair is strictly more than the seam proved, and nothing in `lib/` knows
+a test exists.
+
+Two details the spawn needs, both from #224. A `-t` filter that matches
+nothing leaves bun reporting zero of everything, which is indistinguishable
+from the check passing — so both cases assert `ran === 1` before reading any
+verdict. And the report assertions are line-anchored: a failing bun test
+echoes the source around the failure, the `console.error` that prints
+`PROVE_LABEL_UNMEASURED` is inside that listing, and a bare `toContain` would
+match the code that prints the line rather than the line.
 
 ### What was broken to prove it
 
-Measured over `test/prove-label-gate.test.ts` (20 tests). None of the nine is
-left in the tree; all were run and reverted.
+Measured over `test/prove-label-gate.test.ts` (26 tests), with the last row
+measured a second time over `test/contract.test.ts` (17 tests). None of the
+twelve is left in the tree; all were run and reverted.
 
 | Mutation | Red |
 |---|---|
-| the authenticated read failure allows instead of refusing — the #405 fail-open, restored in the decider | 2 of 20 |
-| an unreadable label set is treated as no labels | 5 of 20 |
-| the token-less case refuses too, so every local `bun test gates/` blocks | 3 of 20 |
-| the token-less case ALLOWS — `UNMEASURED` collapsed into clean | 2 of 20 |
-| the two refusal texts become the same string | 2 of 20 |
-| the detail is dropped from the refusal | 1 of 20 |
-| the gate goes back to `catch { return }` | 1 of 20 |
-| the gate reads `process.env.GITHUB_TOKEN` directly instead of `resolveGitHubToken` | 1 of 20 |
-| the gate check is renamed, so the source guards read an empty slice | 2 of 20 |
+| the authenticated read failure allows instead of refusing — the #405 fail-open, restored in the decider | 2 of 26 |
+| an unreadable label set is treated as no labels | 5 of 26 |
+| the token-less case refuses too, so every local `bun test gates/` blocks | 3 of 26 |
+| the token-less case ALLOWS — `UNMEASURED` collapsed into clean | 2 of 26 |
+| the two refusal texts become the same string | 2 of 26 |
+| the detail is dropped from the refusal | 1 of 26 |
+| the gate goes back to `catch { return }` | 1 of 26 |
+| the gate reads `process.env.GITHUB_TOKEN` directly instead of `resolveGitHubToken` | 1 of 26 |
+| the gate check is renamed, so the source guards read an empty slice | 2 of 26 |
+| malformed fixture content falls back to the live read instead of throwing | 1 of 26 |
+| a non-array fixture is accepted | 1 of 26 |
+| the planted read returns `[]` whatever was planted — the fixture buys a pass | 3 of 26, and 1 of 17 in `test/contract.test.ts` |
 
 The seventh row scored **zero** on the first battery, and the reason is this
 file's own subject. The guard was
