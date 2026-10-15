@@ -12,6 +12,11 @@ import { execFileSync, execSync } from "child_process";
 import { resolve, join } from "path";
 
 import { tryLoadRungateConfig } from "../lib/config-loader.js";
+import {
+  extractGoal,
+  extractSuccessCriteria,
+  GOAL_REFUSE_EXIT,
+} from "../lib/issue-extraction.js";
 
 const args = process.argv.slice(2);
 function getArg(name: string): string | undefined {
@@ -41,17 +46,28 @@ const title: string = issueJson.title;
 const body: string = issueJson.body || "";
 const labels: string[] = (issueJson.labels || []).map((l: any) => l.name);
 
-// Extract goal: first paragraph of body
-const goalMatch = body.match(/^(.+?)(?:\n\s*\n|^##)/ms);
-const issueGoal = goalMatch ? goalMatch[1].trim() : title;
-
-// Extract success criteria
-const successCriteria: string[] = [];
-const scPattern = /^-\s*\[[ x]\]\s*(SC-\d+:?\s*.+|.+)/gm;
-let match;
-while ((match = scPattern.exec(body)) !== null) {
-  successCriteria.push(match[1].trim());
+// Goal and criteria, through lib/issue-extraction.ts (#210, #202).
+//
+// Both used to be a regex over the raw markdown here, at module top level and
+// therefore reachable from no test. The goal regex took the first paragraph,
+// which on a rescoped issue is the harness's own skipBanner-able blockquote
+// banner; the criteria regex matched any `- [ ]` line anywhere, including
+// inside a fenced code block. Each refusal exits GOAL_REFUSE_EXIT and writes
+// nothing to stdout, so the caller falls back to agent extraction rather than
+// receiving a plausible-looking fabrication.
+const goalReading = extractGoal(body, title);
+if (goalReading.refusal) {
+  console.error(`precompute-goal refused: ${goalReading.refusal}`);
+  process.exit(GOAL_REFUSE_EXIT);
 }
+const issueGoal = goalReading.goal!;
+
+const criteriaReading = extractSuccessCriteria(body);
+if (criteriaReading.refusal) {
+  console.error(`precompute-goal refused: ${criteriaReading.refusal}`);
+  process.exit(GOAL_REFUSE_EXIT);
+}
+const successCriteria = criteriaReading.criteria;
 
 const goalData = { issueTitle: title, issueGoal, successCriteria, labels };
 

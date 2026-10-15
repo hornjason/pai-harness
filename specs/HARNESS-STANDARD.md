@@ -2,7 +2,7 @@
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-06
+updated: 2026-10-14
 testable: true
 compliance: strict
 created: 2026-09-20
@@ -4934,3 +4934,101 @@ None of the seven is left in the tree; all were run and reverted.
 the five withdrawals, so the floor is not reached and nothing needed
 lowering. Recorded rather than adjusted, because a baseline silently left
 alone is indistinguishable from one nobody checked.
+
+## #210 / #202 — the goal extractor had no model of the document it read
+
+`scripts/precompute-goal.ts` replaces two ceremony agents with two regexes
+over the raw markdown of a GitHub issue. Both were wrong the same way, and
+the cause is one sentence: **it matched lines.** A line inside a fenced code
+block, a line under a "Scope" heading, and a line the harness itself wrote
+into the issue are all just lines.
+
+Three measured readings, not two. The third was found by this change.
+
+| Reading | What the agent was briefed with |
+|---|---|
+| #210, shipping #209 | one AC: `` SC-N: `workflows/ship.js` executes [MARKER-NAME] `` — an illustration inside a fence showing the SYNTAX of a proposed SC, placeholders end to end |
+| #202, run `wf_831f1294-088` | 414 characters of rescope banner as the goal, none of which describe the defect |
+| **this change**, `test/fixtures/github/issue-48.json` | the goal `Parent: #47` — eleven characters of cross-reference |
+
+The third is the worst of the three and had no issue number. Sub-issue bodies
+open with `Parent: #N`, the old regex took the first paragraph, so **every
+decomposed run in this repo's history briefed its agent with a cross-
+reference as the problem statement.** #202's banner fires only on a rescope;
+this fires on every sub-issue. It was invisible because an eleven-character
+goal is still a string, and the fixture that would have caught it was in the
+tree the whole time being asserted on for other things.
+
+### Why a module, and why controls on every case
+
+It was twenty lines at module top level in the script, reachable from no
+test, which is why both filed defects were found by a human reading pipeline
+output rather than by the suite. `lib/issue-extraction.ts` takes a string and
+returns a value; every case below is a fixture.
+
+Each positive case has a negative control beside it, because the cheap fix
+for all three readings is to delete more:
+
+- strip every code block → the real criterion outside the fence is lost
+- discard every leading blockquote → the goal of any issue whose author opens
+  with a quote is lost
+- treat any line starting with `Spec: ` as front matter → a one-line prose
+  paragraph that opens with the word is lost
+- call everything a placeholder → every real issue refuses
+
+All four controls are in the file, and three of the twelve mutations below
+are the control arms themselves.
+
+- [x] SC-1454: test/issue-extraction.test.ts contains [a line inside a code fence is not a criterion] — the #210 reading is not extracted while a real criterion outside the fence in the same body is, which a stripper that blanked everything would fail
+- [x] SC-1455: test/issue-extraction.test.ts contains [criteria come from the Success Criteria section and nowhere else] — a checklist under another heading is not promoted, the section ends at the next heading of the same level, and an issue with no such section returns an empty list rather than refusing
+- [x] SC-1456: test/issue-extraction.test.ts contains [an acceptance list made of placeholders refuses] — a list that is entirely template notation refuses, a real criterion beside a placeholder is kept, and the predicate is shown to separate notation from prose
+- [x] SC-1457: test/issue-extraction.test.ts contains [the rescope banner is not the goal and a blockquote the author wrote is kept] — both executed, the second being the positive control so a parser that strips every blockquote cannot pass
+- [x] SC-1458: test/issue-extraction.test.ts contains [a goal that is only metadata refuses instead of returning the title] — a short goal and a missing goal are not the same state and neither is a goal, and the refusal routes through one exit constant that is not the usage exit
+
+### What was broken to prove it
+
+Run and counted over `test/issue-extraction.test.ts` +
+`test/precompute-goal.test.ts` (26 tests, 0 red). None is left in the tree.
+
+| Mutation | Red |
+|---|---|
+| code fences are not stripped | 1 |
+| criteria are taken from the whole body again | 4 |
+| the section runs to the end of the document | 3 |
+| a list of placeholders is returned instead of refused | 1 |
+| `isPlaceholder` calls everything a placeholder — control arm | 12 |
+| every leading blockquote is discarded — control arm | 1 |
+| the harness banner is kept as the goal | 2 |
+| front matter is not stepped over so `Parent: #N` is the goal again | 5 |
+| any line starting with a marker is front matter — control arm | 1 |
+| a too-short goal is returned rather than refused | 1 |
+| `GOAL_REFUSE_EXIT` zeroed | 1 |
+| the script stops acting on the criteria refusal | 1 |
+
+**The control arm for the front matter scored ZERO on the first run and the
+zero was closed, not explained.** Removing the length limit changed nothing,
+because the only control that existed was a two-line paragraph whose SECOND
+line carries no marker — the every-line rule saved it, and the limit was a
+guard nothing tested. A one-line paragraph opening with `Spec: ` is the only
+shape where the length is what decides, and it is a shape an author writes.
+That case now exists and the mutation scores 1.
+
+### The emitter and the parser are held together
+
+A marker list the producer has drifted away from is worse than no list: the
+banner comes back as the goal and nothing says so. `HARNESS_BANNER_MARKERS`
+and `HARNESS_PREAMBLE_MARKERS` are exported, and the test asserts every one
+of them still appears in `workflows/ship.js`'s decompose prompt. The prompt
+was also tightened to name the strings as load-bearing rather than
+describing them — it previously said "list the sub-issue numbers", which an
+agent satisfied with wording the parser had never seen.
+
+### What this does NOT fix
+
+- **#79 is still open and adjacent.** This is about what the split destroys
+  in the parent; #79 is about what the split carries over.
+- **The criteria reading is still line-based inside the section.** A real
+  markdown parse was considered and rejected for the same reason ADR-002
+  rejected an AST config check: a dependency for a case that is not the
+  realistic failure mode. Code fences and section scoping cover all three
+  measured readings; the limit is stated here rather than left implicit.

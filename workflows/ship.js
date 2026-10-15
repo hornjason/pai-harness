@@ -2016,9 +2016,17 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
    The body file should contain: "Parent: #${ISSUE}", "Spec: ${specPath} — Phase N",
    a "## Success Criteria" section listing that phase's SCs, and a "## Dependencies"
    line saying it requires the previous phase.
+   Put the Parent and Spec lines in their OWN paragraph at the top, then a blank
+   line, then a paragraph stating the problem. lib/issue-extraction.ts steps over
+   that front matter when reading the goal; a sub-issue whose first paragraph is
+   only "Parent: #N" briefs the next agent with eleven characters (#202).
    The command prints {"number":N,...} — take the number from there.
 4. Rescope the parent. Write the new body for #${ISSUE} to ${WORK_DIR}/parent-body.md —
-   it must say "Rescoped to Phase 1 only" and list the sub-issue numbers — then run:
+   it must open with a blockquote saying "Rescoped to Phase 1 only" and carrying a
+   "Sub-issues:" line with the numbers. Those two strings are how
+   lib/issue-extraction.ts tells your banner from the author's own prose and steps
+   over it when reading the goal — write them verbatim or the next run's goal
+   becomes this banner (#202). Then run:
 
    cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
 5. Return the Phase 1 AC IDs — at most ${MAX_ACS_PER_ISSUE}, chosen by what they

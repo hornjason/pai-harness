@@ -34,6 +34,16 @@ describe("precompute-goal", () => {
     expect(result.goalData.labels).toBeInstanceOf(Array);
   });
 
+  test("the goal is the problem statement and not the sub-issue front matter", () => {
+    // End to end, through the real script, because `lib/issue-extraction.ts`
+    // being correct is not the same claim as the script calling it. #48 is a
+    // sub-issue and its body opens with `Parent: #47`, which is what every
+    // decomposed run was briefed with before #202 (#210's PR).
+    const result = JSON.parse(runScript(["--issue", "48", "--repo", "hornjason/pai-harness"]));
+    expect(result.goalData.issueGoal).not.toBe("Parent: #47");
+    expect(result.goalData.issueGoal).toContain("Replace `read-issue`");
+  });
+
   test("extracts preloadedContexts with reinforcement rules", () => {
     const output = runScript(["--issue", "48", "--repo", "hornjason/pai-harness"]);
     const result = JSON.parse(output);
