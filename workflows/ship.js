@@ -1300,6 +1300,93 @@ function coverageRecord(successCriteria, acs, deferrals) {
 }
 // ──── AC-COVERAGE-END ────
 
+// ──── PHASE2-DECOMPOSITION-START ────
+/**
+ * Inline copy of lib/phase2-decomposition.ts (#79). ship.js cannot import
+ * (#69), so this block and the library are held together by a shared matrix
+ * in test/phase2-decomposition.test.ts — see test/decomposition-waves.test.ts
+ * for the same arrangement.
+ *
+ * The defect: the decompose step returns a structured `{number, phase,
+ * acIds}` list and separately writes each sub-issue's prose body, and nothing
+ * compared the two. On #70 they disagreed completely and the disagreement
+ * deleted the defect that caused the bug report.
+ */
+function acsForGroup(acs, group) {
+  const ids = new Set(Array.isArray(group && group.acIds) ? group.acIds : [])
+  if (ids.size === 0) return []
+  return (Array.isArray(acs) ? acs : []).filter(ac => {
+    if (ids.has(ac.id)) return true
+    if (!ac.specElement) return false
+    return ac.specElement.split(',').some(s => ids.has(s.trim()))
+  })
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+function acListBlock(acs) {
+  return acs.map(ac => `- [ ] ${ac.id}: ${ac.statement}`).join('\n')
+}
+
+function phase2AcsCommand(harnessRoot, workDir, acs) {
+  const payload = JSON.stringify(acs.map(a => ({ id: a.id, statement: a.statement, specElement: a.specElement })))
+  return `cd ${harnessRoot} && bun -e 'require("fs").writeFileSync(process.argv[1], process.argv[2])' ` +
+    `${workDir}/phase2-acs.json ${shellSingleQuote(payload)}`
+}
+
+function decompositionRefusal(allAcs, phase1AcIds, subIssues) {
+  const acs = Array.isArray(allAcs) ? allAcs : []
+  const phase1 = Array.isArray(phase1AcIds) ? phase1AcIds : []
+  const groups = Array.isArray(subIssues) ? subIssues : []
+  const out = []
+
+  if (acs.length === 0) return ['decomposition was asked for with no ACs to decompose']
+
+  const known = new Set()
+  for (const ac of acs) {
+    if (ac && ac.id) known.add(ac.id)
+    if (ac && ac.specElement) for (const s of ac.specElement.split(',')) known.add(s.trim())
+  }
+
+  if (phase1.length === 0) out.push('no AC was kept for Phase 1 — the whole issue was deferred')
+  for (const id of phase1) {
+    if (!known.has(id)) out.push(`Phase 1 keeps ${id}, which discovery never produced`)
+  }
+
+  const claimedBy = new Map()
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i]
+    const label = g && g.number ? `#${g.number}` : ((g && g.phase) || `group ${i + 1}`)
+    const ids = Array.isArray(g && g.acIds) ? g.acIds : []
+    if (ids.length === 0) out.push(`${label} was created carrying no ACs`)
+    for (const id of ids) {
+      if (!known.has(id)) out.push(`${label} claims ${id}, which discovery never produced`)
+      claimedBy.set(id, [...(claimedBy.get(id) || []), label])
+    }
+  }
+
+  const phase1Set = new Set(phase1)
+  for (const [id, labels] of claimedBy) {
+    if (phase1Set.has(id)) {
+      out.push(`${id} is in Phase 1 AND deferred to ${labels.join(' and ')} — a deferral that duplicates shipped work`)
+    }
+    if (labels.length > 1) {
+      out.push(`${id} is claimed by ${labels.join(' and ')} — two phases cannot both own one AC`)
+    }
+  }
+
+  for (const ac of acs) {
+    const ids = [ac.id, ...(ac.specElement ? ac.specElement.split(',').map(s => s.trim()) : [])].filter(Boolean)
+    const placed = ids.some(id => phase1Set.has(id) || claimedBy.has(id))
+    if (!placed) out.push(`${ac.id} was neither kept nor deferred — it is gone, and nothing else would say so`)
+  }
+
+  return out
+}
+// ──── PHASE2-DECOMPOSITION-END ────
+
 // ──── FAILURE-LEDGER-START ────
 /**
  * Every refusal this run made, so the terminal result can report all of them
@@ -2056,6 +2143,18 @@ Project root: ${PROJECT_ROOT}
     const decomposeResult = await timedAgent(`
 You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX_ACS_PER_ISSUE} AC limit per ship run. Decompose into sub-issues.
 
+THE ACs, VERBATIM. These are the statements discovery produced. Every body
+you write must copy the ones it carries character for character; nothing
+below is a summary you may improve on.
+
+${acListBlock(discovery.acs)}
+
+0. Write the comparison's reference copy of that list. Run this command
+   EXACTLY as written — it is the harness's own copy of the statements, and
+   step 6 compares your issue bodies against it:
+
+   ${phase2AcsCommand(HARNESS_ROOT, WORK_DIR, discovery.acs)}
+
 1. Read the governing spec at ${PROJECT_ROOT}/${specPath} — find phase headers (### Phase N or similar groupings)
 2. Group the ACs by phase (max ${MAX_ACS_PER_ISSUE} per group).
 
@@ -2078,8 +2177,19 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
    The title file holds one line: "#${ISSUE} Phase N: [phase description]".
 
    The body file should contain: "Parent: #${ISSUE}", "Spec: ${specPath} — Phase N",
-   a "## Success Criteria" section listing that phase's SCs, and a "## Dependencies"
+   a "## Success Criteria" section listing that phase's ACs, and a "## Dependencies"
    line saying it requires the previous phase.
+
+   The "## Success Criteria" section must carry, for every AC in that group,
+   its id and its statement COPIED CHARACTER FOR CHARACTER from the AC list
+   below — one line each, "- [ ] AC-N: <statement>". Do not summarise it, do
+   not reword it, and do not describe the group's scope in your own words in
+   that section. Writing the body independently of the ACs it carries is
+   #79: on #70 the two disagreed completely, the prose described work that
+   was already in Phase 1, and the deferral would have closed the parent
+   while losing the defect that opened it. Both halves looked right.
+   Step 6 reads the issue back from GitHub and compares them, so a reworded
+   statement fails the run rather than reaching the next agent.
    Put the Parent and Spec lines in their OWN paragraph at the top, then a blank
    line, then a paragraph stating the problem. lib/issue-extraction.ts steps over
    that front matter when reading the goal; a sub-issue whose first paragraph is
@@ -2093,7 +2203,25 @@ You have ${discovery.acs.length} ACs for issue #${ISSUE} which exceeds the ${MAX
    becomes this banner (#202). Then run:
 
    cd ${HARNESS_ROOT} && bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue ${ISSUE} --body-file ${WORK_DIR}/parent-body.md
-5. Return the Phase 1 AC IDs — at most ${MAX_ACS_PER_ISSUE}, chosen by what they
+5. Write your grouping to ${WORK_DIR}/phase2-grouping.json:
+
+   {"phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}]}
+
+6. Verify the issues you created actually carry their ACs. Run:
+
+   cd ${HARNESS_ROOT} && bun scripts/verify-phase2-bodies.ts --repo ${ISSUE_REPO} \\
+     --acs ${WORK_DIR}/phase2-acs.json --grouping ${WORK_DIR}/phase2-grouping.json
+
+   It reads each sub-issue back FROM GITHUB and compares its
+   "## Success Criteria" section against the statements from step 0. If it
+   exits non-zero, FIX THE ISSUE BODY with
+   \`bun scripts/github-op.ts issue-update --repo ${ISSUE_REPO} --issue N --body-file …\`
+   and run it again. Do not report success while it is failing, and do not
+   edit ${WORK_DIR}/phase2-acs.json to make it pass — that file is the
+   reference, and changing it is changing an acceptance criterion nobody
+   reviewed.
+
+7. Return the Phase 1 AC IDs — at most ${MAX_ACS_PER_ISSUE}, chosen by what they
    prove, NOT the first ${MAX_ACS_PER_ISSUE} in the list.
 
 Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase": "Phase 2", "acIds": ["AC-5", ...]}] }
@@ -2133,6 +2261,28 @@ Return JSON: { "phase1AcIds": ["AC-1", ...], "subIssues": [{"number": N, "phase"
           subIssue: (decomposeResult.subIssues || [])
             .find(s => (s.acIds || []).includes(ac.id) || (s.acIds || []).includes(ac.specElement))?.number,
         }))
+      // #79 — the structural half, before anything downstream reads the
+      // split. An AC in Phase 1 AND in a sub-issue is a deferral that
+      // duplicates shipped work; an AC in neither is gone, and every count
+      // this run prints still adds up. Both are refusals rather than
+      // repairs: a decomposition the harness quietly fixes is an acceptance
+      // criterion nobody reviewed (#217).
+      const splitViolations = decompositionRefusal(
+        originalAcs,
+        decomposeResult.phase1AcIds,
+        decomposeResult.subIssues,
+      )
+      if (splitViolations.length > 0) {
+        for (const v of splitViolations) log(`DECOMPOSITION_REFUSED: ${v}`)
+        discoveryRefusal = shipFailed(
+          'Discovery',
+          `the decomposition is not a partition of the ${originalAcs.length} ACs discovery produced ` +
+            `(#79) — a deferral that duplicates shipped work or drops an AC looks complete and is not:\n  - ` +
+            splitViolations.join('\n  - '),
+        )
+        return false
+      }
+
       log(`Scoped to Phase 1: ${discovery.acs.length} ACs (${discovery.acs.map(a => a.id).join(', ')}). ${decomposeResult.subIssues?.length || 0} sub-issues created. ${acDeferrals.length} AC(s) deferred.`)
     }
   }

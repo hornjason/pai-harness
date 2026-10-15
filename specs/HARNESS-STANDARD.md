@@ -5321,3 +5321,77 @@ Measured over `test/implement-brief-precedence.test.ts` +
   on an agent choosing to narrate it.
 - **Only the implement reply carries the field.** Quinn and Rook get the
   notice and have no equivalent slot; their schemas are a separate change.
+
+## #79 — the Phase 2 issue's prose and the ACs it carried were written independently
+
+When discovery produces more than `MAX_ACS_PER_ISSUE` ACs, the decompose step
+groups them and opens a sub-issue per group after the first. It returns a
+STRUCTURED list — `{number, phase, acIds}` — and separately writes each
+sub-issue's BODY as prose. Nothing compared the two.
+
+On #70 they disagreed completely:
+
+| | what it said |
+|---|---|
+| the structured list | AC-7 a greenfield scaffold writes a `roles.json` with at least three agent role entries that survive a read-back; AC-8 hook registrations in `hooks.json` drive consumer hook deployment; AC-9 the existing scaffold and scanner tests still pass |
+| #75's body | "Deferred scope — stale `.claude/rungate.json` customization path cleanup"; AC-7 `harness-managed.md` points at the new path; AC-8 generated workflow headers stop carrying the stale path; AC-9 no generated artifact references the old path |
+
+The body's three are a restatement of **AC-5**, which was already in Phase 1.
+Both halves are internally plausible — the ids line up, the spec cited is
+real, the line numbers are real. A human or an agent picking up #75 reads the
+prose, not the structured list, so the deferral would have re-fixed Phase 1's
+work and closed the parent while `lib/scaffold/steps.ts:826` and
+`scripts/scaffold-rungate-config.ts:97` went on writing an empty `roles.json`
+and `hooks.json` for every greenfield consumer — the defect that opened #70.
+
+**Scope loss here is silent and looks complete.** The sub-issue exists, is
+linked to its parent, and has well-formed ACs. Nothing is visibly missing,
+which is why the fix is a comparison rather than a better prompt.
+
+### Why the id check alone would not have caught it
+
+#75's body lists AC-7, AC-8 and AC-9. Every id is right. The statements are
+what diverged, so the statement comparison is the load-bearing half and the
+id check exists only for the case where a body carries one fewer. That
+asymmetry is asserted — `test/phase2-decomposition.test.ts` runs #75's real
+body through the comparison and states, as its own test, that an
+id-only check passes it.
+
+### Why the reference copy cannot come from the agent
+
+The comparison's two sides must have different authors. The harness writes
+`phase2-acs.json` from its own validated discovery output, via a `bun -e`
+command the agent runs verbatim with the payload shell-quoted by
+`shellSingleQuote`; the agent writes `phase2-grouping.json`, because the
+grouping is the judgement it was asked for. Merging them into one file the
+agent writes would put the reference side through the model, and a model
+that reworded both the body and the thing the body is compared against would
+pass any comparison.
+
+The prompt also now LISTS the ACs. It previously listed none, so the agent
+wrote each body by reconstructing the scope from memory, which is how #75's
+body came to describe Phase 1's work.
+
+### Two refusals, because they fail separately
+
+`decompositionRefusal` reads the structure alone and runs inside
+`runDiscovery` before anything downstream sees the split.
+`phase2BodyViolations` reads a body against the ACs it is supposed to carry
+and runs from `scripts/verify-phase2-bodies.ts`, which fetches each
+sub-issue back **from GitHub** rather than trusting what the agent reported
+writing. A grouping can be sound and the body still describe something else
+(#70's case); a body can quote its ACs perfectly while the grouping has
+dropped one. Both are refusals, never repairs: a decomposition the harness
+quietly fixes is an acceptance criterion nobody reviewed (#217).
+
+- [ ] SC-1484: lib/phase2-decomposition.ts contains [decompositionRefusal] — the split is refused when an AC is in Phase 1 AND deferred (#79 AC-3) when it is in neither when two groups claim it or when an id nothing produced appears. Every problem is reported rather than the first
+- [ ] SC-1485: lib/phase2-decomposition.ts contains [phase2BodyViolations] — a body is compared to its ACs statement by statement after whitespace collapsing. #75's real body is the fixture and the test states that an id-only check passes it
+- [ ] SC-1486: scripts/verify-phase2-bodies.ts contains [readSplitPlan] — the comparison's reference side is written by the harness and the grouping by the agent so the two sides have different authors. The issue is read back from GitHub and an unreadable one is a violation not a pass
+- [ ] SC-1487: workflows/ship.js contains [PHASE2-DECOMPOSITION-START] — the inline copy is held to the library on a shared matrix and the prompt both lists the ACs verbatim and runs the verifier
+- [ ] SC-1488: test/phase2-decomposition.test.ts contains [REFUSE_EXIT] — the script's refusal is routed through ONE exported exit-code constant and every negative case runs twice: the real script which must refuse and a mutant with the constant zeroed which must not
+
+### What was broken to prove it
+
+| Mutation | Red |
+|---|---|
+| _pending_ | _pending_ |
