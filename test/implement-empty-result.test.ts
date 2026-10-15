@@ -178,12 +178,18 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const iEnd = shipSource.indexOf("// ──── WORKTREE-IDENTITY-END ────");
     if (iStart === -1 || iEnd === -1) throw new Error("missing WORKTREE-IDENTITY markers");
     const identity = new Function(`${shipSource.slice(iStart, iEnd)}\nreturn worktreeIdentity;`)();
+    // #180s guard, injected the same way and for the same reason.
+    const pStart = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-START ────");
+    const pEnd = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-END ────");
+    if (pStart === -1 || pEnd === -1) throw new Error("missing BRIEF-PRECEDENCE markers");
+    const taskSource = new Function(`${shipSource.slice(pStart, pEnd)}\nreturn taskSourceRefusal;`)();
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal",
     "worktreeIdentity",
     "REPO",
+      "taskSourceRefusal",
       `${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
@@ -195,6 +201,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       guard,
       identity,
       "owner/project",
+      taskSource,
     );
     return { run, logs };
   }
@@ -242,6 +249,9 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       worktreeRepo: "git@github.com:owner/project.git",
       filesChanged: [`${label}.ts`],
       testOutput: "2 pass",
+      // #180 — the dispatch now also refuses a reply that cannot say which
+      // instruction it worked from, so the positive control has to say.
+      taskSource: "brief",
     }));
     const result: any = await run(SUBS);
     expect(result.success).toBe(true);

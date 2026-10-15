@@ -5204,3 +5204,120 @@ own is still most of the value: sub-issue 4 is briefed after sub-issue 1 has
 `harnessRootFor()`s now fails the foundation first and never briefs the
 consumer. What it does not buy is the consumer being able to *read* the
 foundation's code. Filed as a follow-up rather than left as a silent gap.
+
+## #180 — the brief lost to text it never saw
+
+The Workflow runtime prepends the relayed user request to every subagent
+prompt and introduces it like this:
+
+> `[user request]` The harness relays, verbatim and indented below, the user
+> request that triggered this workflow run. **This relayed request is the only
+> user voice in this task**; …
+
+rungate does not write that sentence and cannot remove it. On
+`wf_17267830-401`, which shipped #178, the relayed text was a status question
+typed in the parent session in the same turn the run was launched — *"What do
+we still need to do to get the pipeline to ship?"* — and Marcus returned:
+
+```json
+{"success": true, "filesChanged": [], "testOutput":
+ "No tests run — the relayed user request was a status/priority question, not an
+  implementation task, and the harness framing states the user request wins over
+  the computed task. No code was changed."}
+```
+
+**The agent was not confused.** It followed the precedence the framing gave
+it, and the framing was wrong for this run. `marcus-brief.md` for the same run
+was correct and complete: 63 lines, five ACs, eight files to read, a canary.
+It carried the issue's acceptance criteria, the governing spec, the file list
+and the verify commands, and it lost to text it never saw.
+
+### Why this is the harness's problem
+
+Not launching a run in the same turn as an unrelated message avoids it, which
+makes it a timing rule a human has to remember — the kind of control this repo
+keeps filing issues about. The deeper problem is the precedence itself. For an
+implement agent the brief *is* the task; the parent session is not the issue
+tracker, and the relayed text is not guaranteed to be about this run at all.
+
+### What changes, and what deliberately does not
+
+The relay is **not** removed (AC-3). "Focus on the API half first" should
+still reach the agent, and a notice telling an agent to ignore whatever the
+user typed would satisfy every precedence case here while destroying the only
+reason the channel exists — so the test asserts the notice says *narrow or
+prioritise* and asserts it does **not** say *ignore*.
+
+Two things change:
+
+- **Precedence.** `briefPrecedenceNotice` is appended to every briefed
+  prompt, as the **last** thing before the task. Last because the relay is
+  prepended above everything this file writes, so the counterweight has to be
+  the nearest instruction to the work rather than another line near the top.
+  It goes on every briefed role rather than a list of implement roles: a
+  hardcoded role name in harness code is its own defect, and the claim is true
+  of every computed brief.
+- **Reportability.** `BUILD_RESULT_SCHEMA` gains `taskSource`
+  (`brief` | `relayed-request` | `both`), **required**. This is #166 applied
+  to which instruction was obeyed — on `wf_17267830-401` the substitution was
+  visible only because the agent chose to narrate it in `testOutput`. Absent
+  is a refusal, not a pass, which is the same decision `worktreeRepo` made in
+  #218: a field the run accepts as missing is a field that stops being
+  written. `both` passes, because narrowing a brief is the supported case.
+
+- [x] SC-1472: lib/brief-precedence.ts contains [the brief is the task] — every briefed prompt states the brief's Task and Acceptance Criteria are authoritative and a relayed request narrows them rather than replacing them
+- [x] SC-1473: workflows/ship.js contains [taskSource] — the implement reply reports which instruction it worked from and the schema requires it so a substitution is a value rather than prose nobody parses
+- [x] SC-1474: test/implement-brief-precedence.test.ts contains [a relayed request does not replace the brief, the brief alone still works] — driven over the extracted prompt builder with a positive control so a prompt that ignores every input cannot pass
+
+### Two mutation zeros, and what they were
+
+The first battery scored **0** on both of the act-on-it mutations: making
+`runImplement` and the decomposed path compute the refusal and discard it
+(`if (false && sourceRefusal)`) changed nothing. A guard that is called and
+whose answer is thrown away is precisely the defect
+`.claude/rules/checks-must-be-able-to-fail.md` is about, committed by the test
+written for it — the call-site assertion was a `match()` count, and a count
+still counts a call whose result goes nowhere.
+
+Closed differently on each path, because the two paths are not equally
+reachable:
+
+- **The decomposed path is executed.** `runDecomposedShip` is extractable by
+  marker, so the test runs it with one sub-issue reporting
+  `taskSource: "relayed-request"` and asserts the batch fails and names it,
+  with the all-`brief` batch beside it as the control.
+- **`runImplement` is not extractable today** — it closes over a large part
+  of the module and no test runs it. Its branch is anchored as exact text,
+  checked unique, and its `return` is located with `enclosingChain`, which is
+  the #204 pattern. That is weaker than execution and is recorded here as
+  weaker rather than described as equivalent.
+
+### What was broken to prove it
+
+Measured over `test/implement-brief-precedence.test.ts` +
+`test/implement-empty-result.test.ts` + `test/decomposition-waves.test.ts`
+(82 tests), after the two zeros were closed:
+
+| Mutation | Red |
+|---|---|
+| the notice is never appended to the prompt | 2 of 82 |
+| the notice drops the brief's own path | 2 of 82 |
+| absent `taskSource` is accepted | 2 of 82 |
+| `relayed-request` is accepted | 2 of 82 |
+| the refusal refuses everything except `brief` | 2 of 82 — the AC-3 control |
+| the inline copy diverges from the library | 3 of 82 |
+| `runImplement` computes the refusal and discards it | 1 of 82 — **was 0** |
+| the decomposed path stops acting on it | 1 of 82 — **was 0** |
+| `taskSource` dropped from the schema's `required` | 1 of 82 |
+
+### What this does NOT fix
+
+- **The relay still arrives first and still calls itself the only user
+  voice.** This is a counterweight written by the consumer of a framing it
+  does not own, not a fix to the framing.
+- **`taskSource` is self-reported.** An agent that worked from the relay and
+  says `brief` is not caught, and cannot be from inside this harness. What it
+  buys is that the honest case is now machine-readable instead of depending
+  on an agent choosing to narrate it.
+- **Only the implement reply carries the field.** Quinn and Rook get the
+  notice and have no equivalent slot; their schemas are a separate change.

@@ -33,6 +33,8 @@ const BLOCK_START = "// ──── BRIEFED-AGENT-START ────";
 const BLOCK_END = "// ──── BRIEFED-AGENT-END ────";
 const TIMING_START = "// ──── AGENT-TIMING-START ────";
 const TIMING_END = "// ──── AGENT-TIMING-END ────";
+const PRECEDENCE_START = "// ──── BRIEF-PRECEDENCE-START ────";
+const PRECEDENCE_END = "// ──── BRIEF-PRECEDENCE-END ────";
 
 interface Captured { prompt: string; opts: Record<string, unknown> }
 
@@ -58,7 +60,13 @@ function loadBriefedAgent(roles: Record<string, unknown>): { call: BriefedAgent;
   // Loading briefedAgent alone would capture the prompt one layer too early
   // and the ordering assertion below would compare against a string the
   // timing text is not in yet, which passes for the wrong reason.
+  // The precedence block too (#180): briefedAgent appends
+  // `briefPrecedenceNotice(briefPath)` as the last thing before the task, so
+  // without it the block has a free reference and every case here dies on a
+  // ReferenceError — which is the correct signal and the reason it is sliced
+  // from its own markers rather than stubbed.
   const block = `${shipSource.match(/function shellQuote\(word\)[\s\S]*?\n}/)?.[0] ?? ""}\n` +
+    `${sliceBlock(PRECEDENCE_START, PRECEDENCE_END)}\n` +
     `${sliceBlock(TIMING_START, TIMING_END)}\n${sliceBlock(BLOCK_START, BLOCK_END)}`;
   const calls: Captured[] = [];
 
