@@ -12,6 +12,7 @@ import { join } from "path";
 import type { ProjectScan } from "./types";
 import { OWNED_FILES, ownedFilesTable } from "../scaffold/owned-files";
 import { isHarnessItself } from "../harness-identity";
+import { typecheckDecision } from "../typescript-project";
 
 /**
  * Build the AGENTS.md frontmatter block.
@@ -102,11 +103,15 @@ export function generateAgentsMd(scan: ProjectScan): string {
   // without a tsconfig.json that command prints help and exits 1. Every project
   // scaffolded by rungate — including rungate — documented a type check that
   // had never checked anything (#65/#76).
-  const typecheckRow = !existsSync(join(scan.root, "tsconfig.json"))
-    ? ""
-    : existsSync(join(scan.root, "scripts", "typecheck.ts"))
-      ? `\n| Type check | \`bun scripts/typecheck.ts\` |`
-      : `\n| Type check | \`bunx tsc --noEmit\` |`;
+  //
+  // #87 — which command, and whether there is one, is `typecheckDecision`'s to
+  // answer. This site had its own copy of the ladder and a third site had a
+  // different one again, so a project with its own `typecheck` script was
+  // documented as running `bunx tsc --noEmit` instead.
+  const typecheckCommand = typecheckDecision(scan.root).command;
+  const typecheckRow = typecheckCommand
+    ? `\n| Type check | \`${typecheckCommand}\` |`
+    : "";
 
   // The command that reproduces CI locally. Worth a row only where the script
   // exists: a documented command that is not present is how the type check row

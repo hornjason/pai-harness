@@ -23,6 +23,7 @@ import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { referencedPaths } from "../agents-md-refs";
+import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
   OWNED_FILES,
   SCAFFOLD_REFUSE,
@@ -907,12 +908,17 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
   // Scan test commands
   const pkgPath = join(root, "package.json");
   let testCmd = "bun test";
-  let typeCheckCmd = "bunx tsc --noEmit";
   if (existsSync(pkgPath)) {
     const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
     if (pkg.scripts?.test) testCmd = pkg.scripts.test;
-    if (pkg.scripts?.typecheck) typeCheckCmd = pkg.scripts.typecheck;
   }
+  // #87 — this defaulted to `bunx tsc --noEmit` for every project, including
+  // one with no tsconfig, and `gates/gate-executor.ts` RUNS what lands here.
+  // Without a tsconfig that command prints 147 lines of help and exits 1, so
+  // the verify gate reported "Type check FAIL" at every consumer that the
+  // three other sites had already agreed should not be type-checked at all.
+  // `null` is the honest value and the gate already skips on a falsy one.
+  const typeCheckCmd = typecheckDecision(root).command;
 
   // Scan port from Makefile, docker-compose.yml, or .env.example
   const makefile = join(root, "Makefile");
@@ -1464,43 +1470,10 @@ export function copySpecTemplateIfEmpty(specsDir: string, actions: string[]): vo
 
 // ── tsconfig.json ──────────────────────────────────────────────
 
-/**
- * Trees a generated tsconfig type-checks. Same list as the scanner's source
- * directories, plus `scripts/` — a consumer keeps real TypeScript there and
- * nothing else would check it.
- *
- * `test/` is deliberately absent. The conformity test rungate generates into
- * every consumer imports `bun:test` and `rungate/lib/conformity`, and neither
- * resolves for tsc without `@types/bun` and an installed `rungate` — so
- * including the test tree would hand a freshly scaffolded project a type check
- * that reports 4 errors it did not cause and cannot fix. That is the #65/#76
- * defect again in the other direction: a documented command whose result says
- * nothing about the project's code.
- */
-const TS_SOURCE_DIRS = ["src", "lib", "scripts", "gates", "hooks", "workflows"] as const;
-
-/** True when `dir` holds at least one hand-written .ts/.tsx file. */
-function containsTypeScript(dir: string): boolean {
-  let stack = [dir];
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    let entries;
-    try {
-      entries = readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
-      if (entry.isDirectory()) {
-        stack.push(join(current, entry.name));
-      } else if (/\.tsx?$/.test(entry.name) && !entry.name.endsWith(".d.ts")) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
+// `TS_SOURCE_DIRS`, `containsTypeScript` and the directory filter all moved to
+// lib/typescript-project.ts in #87. Five sites decided "is this a TypeScript
+// project" and they disagreed; two copies of a predicate survive any mutation
+// of either, which is what SC-842 and SC-843 already say about this file.
 
 /**
  * Write a tsconfig.json for a TypeScript consumer that has none (#72, #65/#76).
@@ -1526,13 +1499,14 @@ export function createTsconfig(root: string, actions: string[]): void {
     return;
   }
 
-  // The include list and the "is this a TypeScript project" test are the same
-  // question, answered once. Deriving them separately is how you get a
+  // The include list, the "is this a TypeScript project" test and TSC-1's
+  // applicability are the same question, answered once in
+  // lib/typescript-project.ts. Deriving them separately is how you get a
   // tsconfig whose include matches no files — tsc error TS18003, which reads
-  // as a broken type check rather than as "nothing to check".
-  const include = TS_SOURCE_DIRS
-    .filter(dir => containsTypeScript(join(root, dir)))
-    .map(dir => `${dir}/**/*.ts`);
+  // as a broken type check rather than as "nothing to check" — and how TSC-1
+  // came to hard-fail over a file this function had deliberately not written
+  // (#87).
+  const include = typeScriptSourceDirs(root).map(dir => `${dir}/**/*.ts`);
 
   if (include.length === 0) {
     actions.push(`SKIP: tsconfig.json (no TypeScript source in ${TS_SOURCE_DIRS.join("/, ")}/)`);
@@ -2098,16 +2072,15 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   // Rungate itself was shielded from noticing because `bun test` failed first
   // and the step never ran.
   //
-  // Emit it only when the project actually has a tsconfig, and prefer the
-  // project's own ratchet script when it has one — consumers do not get
-  // rungate's scripts/, so they must fall back to plain tsc.
-  const hasTsconfig = existsSync(join(root, "tsconfig.json"));
-  const hasRatchet = existsSync(join(root, "scripts", "typecheck.ts"));
-  const typecheckStep = !hasTsconfig
-    ? ""
-    : hasRatchet
-      ? `\n      - run: bun scripts/typecheck.ts`
-      : `\n      - run: bunx tsc --noEmit`;
+  // Which command, and whether there is one at all, is `typecheckDecision`'s
+  // to answer — the same binding AGENTS.md's row and the scanned
+  // `dev.typeCheck` read (#87). This site used to check for
+  // `scripts/typecheck.ts` on disk, a branch `files:` makes unreachable for
+  // every consumer, and never looked at a project's own `typecheck` script.
+  const typecheck = typecheckDecision(root);
+  const typecheckStep = typecheck.command
+    ? `\n      - run: ${typecheck.command}`
+    : `\n      # No type check: ${typecheck.reason}.`;
 
   const ciYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.
 name: CI

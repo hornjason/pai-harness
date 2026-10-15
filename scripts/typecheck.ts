@@ -39,10 +39,34 @@ function countErrors(output: string): number {
   return output.split("\n").filter((l) => ERROR_LINE.test(l)).length;
 }
 
-const result = spawnSync("bunx", ["tsc", "--noEmit"], {
+/**
+ * The PINNED compiler, not whatever the registry hands back (#87).
+ *
+ * `bunx tsc` with no `typescript` in package.json resolved **TypeScript 7.0.2**
+ * — the Go port, a major-version rewrite — because bunx falls through to the
+ * registry's latest. A baseline is a snapshot of one compiler build's
+ * diagnostics and this ratchet fails in BOTH directions, so any upstream
+ * release that adds or removes a diagnostic turned CI red with no code change.
+ * `typescript` is now an exact pin in devDependencies (not a caret: a caret
+ * re-opens exactly the hole, one patch release at a time), and this spawns the
+ * installed binary.
+ *
+ * Fails closed when it is missing. Falling back to `bunx` would silently
+ * restore the unpinned behaviour, and an unpinned run that happens to report
+ * the baseline count is indistinguishable from a pinned one that does.
+ */
+const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+if (!existsSync(TSC)) {
+  console.error(
+    `typecheck: no ${TSC} — \`typescript\` is pinned in devDependencies for a reason (#87). ` +
+      `Run \`bun install\`. Refusing to type-check with whatever the registry resolves.`,
+  );
+  process.exit(1);
+}
+
+const result = spawnSync(TSC, ["--noEmit"], {
   cwd: ROOT,
   encoding: "utf-8",
-  // tsc writes diagnostics to stdout; bunx writes install noise to stderr.
   stdio: ["ignore", "pipe", "pipe"],
 });
 

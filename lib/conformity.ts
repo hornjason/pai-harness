@@ -17,6 +17,7 @@ import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
+import { tsconfigVerdict } from "./typescript-project";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -2581,10 +2582,39 @@ export function runPackageValidation(root: string) {
   });
 }
 
+/**
+ * #87 — TSC-1 demanded a tsconfig.json that the generator had deliberately
+ * decided not to write.
+ *
+ * `createTsconfig` skips a project with no hand-written TypeScript, because a
+ * tsconfig whose `include` matches nothing is tsc error TS18003 — a type check
+ * that reads as broken rather than as "nothing to check". `createCiWorkflows`
+ * and the AGENTS.md generator both agreed and emitted no step and no row. Then
+ * this hard assert ran in that same consumer's generated conformity suite and
+ * failed over the absent file. Both halves of the question were asserted at
+ * once, which is the contradiction #87 was filed to settle.
+ *
+ * Settled in favour of "consumers may be non-TypeScript projects", so TSC-1
+ * asks `tsconfigVerdict` — the one predicate `createTsconfig` uses — whether
+ * it has anything to assert. The skip is RECORDED as a finding rather than
+ * taken quietly: an unmeasured check and a satisfied check look identical from
+ * the outside, and `.claude/rules/config-access.md` names the silent form as
+ * the anti-pattern it is.
+ */
 export function runTsconfigValidation(root: string) {
   describe("TSConfig validation", () => {
-    test("TSC-1: tsconfig.json exists", () => {
-      expect(existsSync(join(root, "tsconfig.json"))).toBe(true);
+    test("TSC-1: tsconfig.json exists where TypeScript source does", () => {
+      const verdict = tsconfigVerdict(root);
+      if (!verdict.applicable) {
+        addFinding({
+          ruleId: "TSC-1",
+          severity: "WARN",
+          file: "tsconfig.json",
+          message: `UNMEASURED: ${verdict.reason}`,
+        });
+        return;
+      }
+      expect(verdict.present, verdict.reason).toBe(true);
     });
 
     test("TSC-2: strict mode enabled", () => {

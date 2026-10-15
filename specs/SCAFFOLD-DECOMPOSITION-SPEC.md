@@ -506,3 +506,91 @@ seen while the bare word is not.
 None of the seven mutations is left in the tree; all were run and reverted,
 and the counts were re-measured after the dead guard was removed so they
 come from one tree.
+
+## #87 — the generator decided the project needed no tsconfig and the suite failed it for not having one
+
+Five sites answered "is this a TypeScript project, and what type-checks it?"
+and they disagreed. The disagreement is not a tidiness complaint: a consumer
+could not satisfy all five at once.
+
+| site | asked | answered |
+|---|---|---|
+| `createTsconfig` | is there TypeScript source? | skip the tsconfig if not |
+| `createCiWorkflows` | is there a tsconfig? | skip the CI step if not |
+| `generateAgentsMd` | is there a tsconfig? | skip the doc row if not |
+| `scanProject` → `dev.typeCheck` | nothing | `bunx tsc --noEmit`, always |
+| `runTsconfigValidation` (TSC-1) | nothing | the tsconfig MUST exist |
+
+So a consumer with no hand-written TypeScript got: no tsconfig, from the
+generator that decided it did not need one; no CI step and no doc row, from
+the two that agreed; **a hard TSC-1 failure in its generated conformity
+suite**, over that same absent file; and a `dev.typeCheck` of `bunx tsc
+--noEmit` written into its config, which `gates/gate-executor.ts` runs.
+Without a tsconfig that command prints 147 lines of help text and exits 1, so
+the verify gate reported `Type check FAIL` at every consumer the other sites
+had agreed not to type-check. That last one is #65/#76 reintroduced in the one
+place #65/#76 never looked, and it was the fourth site, not the first.
+
+### The decision the issue asked for
+
+> Either consumers are allowed to be non-TypeScript projects (then TSC-1 must
+> become conditional or a warning), or they are not (then the scaffold should
+> generate a tsconfig and TSC-1 is right). Pick one; today both are asserted.
+
+**Consumers are allowed to be non-TypeScript projects.** Two generators had
+already shipped that answer, and the alternative is worse on its own terms: a
+tsconfig written into a project with no TypeScript in it has `include: []`,
+which is tsc error TS18003 — a type check that reads as broken rather than as
+"nothing to check".
+
+TSC-1 therefore reads `tsconfigVerdict`, the predicate `createTsconfig`
+already used, and the conditional arm **records** a WARN finding rather than
+passing quietly. An unmeasured check and a satisfied check are the same shape
+from the outside; `.claude/rules/config-access.md` names the silent form
+*Silent Default Substitution* and this is the same defect with a different
+subject.
+
+### The ratchet branch no consumer could reach
+
+`package.json` `files:` ships neither `scripts/typecheck.ts` nor
+`tsconfig.json`, so `createCiWorkflows`'s `hasRatchet` branch was dead code
+that read as a supported configuration, and a consumer with a tsconfig full of
+pre-existing errors was handed `bunx tsc --noEmit` in a generated file carrying
+a *do not edit* banner.
+
+Shipping `scripts/typecheck.ts` would not have fixed it: its `ROOT` is
+`join(import.meta.dir, "..")`, so from `node_modules/rungate/scripts/` it would
+ratchet rungate's tree rather than the consumer's. The reachable branch is the
+consumer's own `package.json` `scripts.typecheck`, which `typecheckDecision`
+now checks first — one ladder, read by the CI step, the AGENTS.md row and
+`dev.typeCheck` alike, where there were three ladders and a constant.
+
+### The ratchet was pinned to nothing
+
+`typescript` was absent from `package.json` and from `bun.lock`, so `bunx tsc`
+fell through to the registry and resolved **TypeScript 7.0.2** — the Go port, a
+major-version rewrite. A baseline is a snapshot of one compiler build's
+diagnostics and the ratchet fails in BOTH directions, so any upstream release
+that added or removed a diagnostic turned CI red with no code change.
+`typescript` is now an **exact** pin (a caret re-opens the hole one patch
+release at a time), `scripts/typecheck.ts` spawns the installed binary, and it
+refuses rather than falling back to `bunx` when that binary is missing —
+a fallback would silently restore the unpinned behaviour, and an unpinned run
+that happens to report the baseline count is indistinguishable from a pinned
+one that does. Measured: 0 errors under both 7.0.2 and the pinned 5.9.3, so the
+baseline carries over unchanged.
+
+- [ ] SC-1479: lib/typescript-project.ts contains [tsconfigVerdict] — ONE predicate answers "does this project need a tsconfig.json". It returns a reason rather than a boolean, because a check that skips has to be able to say what it skipped over
+- [ ] SC-1480: lib/conformity.ts contains [tsconfigVerdict] — TSC-1 fails for a project with TypeScript source and no tsconfig and records a WARN finding for a project with neither. Both arms are EXECUTED under a spawned `bun test`: a direct call cannot tell a conditional check from one whose assertion never ran
+- [ ] SC-1481: lib/typescript-project.ts contains [typecheckDecision] — one ladder produces the CI step the AGENTS.md row and `dev.typeCheck`. A project's own `scripts.typecheck` wins which is the only branch a consumer can reach; `dev.typeCheck` is null rather than a command the verify gate can only fail
+- [ ] SC-1482: scripts/typecheck.ts contains [node_modules] — the ratchet spawns the pinned compiler and REFUSES when it is absent rather than falling back to whatever the registry resolves
+- [ ] SC-1483: test/typescript-project.test.ts contains [SOURCE_DIR_DECIDERS] — the singleton is MECHANICAL. It scans lib/ for a second definition of the predicate or the directory list and proves the scan sees a planted one rather than passing over an empty result
+
+### What was broken to prove these can fail
+
+Counted over `test/typescript-project.test.ts` (29 tests) unless noted. None
+of the mutations is left in the tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| _pending_ | _pending_ |
