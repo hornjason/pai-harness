@@ -5838,3 +5838,102 @@ real sweeper over a real locked worktree, because a decider being right is
 not the same as the sweeper asking it. That last distinction is the tenth
 row, measured separately.
 
+## #397 — the pre-push hook could not pass, and named the wrong cause
+
+The generated `.git/hooks/pre-push` compared `$TOPLEVEL/bun.lock` with
+`$tmp/bun.lock`, where `$tmp` is a checkout of the commit being pushed. A
+gitignored lockfile is not in a checkout. So the fast-path comparison could
+never be taken in such a consumer, every push fell through to
+`bun install --frozen-lockfile` with no lockfile to freeze against, and the
+hook printed `ERROR: Conformity tests failed against the commits being
+pushed` over a conformity suite sitting at 43 pass, 0 fail. Found on agentgrit
+on 2026-10-14. For a consumer with a relative `file:`/`link:` dependency it
+then failed a second, independent way, because a relative path does not
+resolve from `/tmp`.
+
+`.claude/rules/checks-must-be-able-to-fail.md` is about guards that cannot
+fail. This is the inverse — a guard that cannot pass — and the damage has the
+same shape, because the message is wrong in both directions. A developer told
+"conformity failed" goes and reads a green suite, concludes the hook is
+broken, and starts pushing with `--no-verify`. That is how a gate stops
+existing without anyone deciding to remove it.
+
+Two structural causes, and the second is the one worth keeping:
+
+1. **The hook was a template literal in the middle of a 2,400-line
+   generator.** Nothing could run it, so every test it had asserted its
+   *source text*. Those tests were all green. A source-text assertion cannot
+   notice that the script's behaviour is impossible. The script is now
+   `lib/scaffold/pre-push-hook.ts` — one binding, one exported exit-code
+   constant — and `test/pre-push-hook.test.ts` drives it against planted
+   repositories, asserting only what the hook prints and exits, because that
+   is all a developer ever sees.
+
+2. **It had two outcomes where the facts have three.** "Conformity failed" and
+   "conformity could not be run" shared one `status` variable and one message.
+   They are now separate, and the discriminator is measured rather than
+   assumed: a missing file, an unresolvable import and a red assertion all
+   exit non-zero, so the hook reads bun's own summary — a counted `N error`
+   line means the suite did not load, counted `N pass`/`N fail` with a
+   non-zero exit means it ran and failed, and no counted tests at all means
+   nothing was measured even when the exit code is 0.
+
+UNMEASURED **blocks**, and that is a recorded decision rather than an accident
+of control flow. A pre-push gate that waves a commit through when it could not
+check is the fail-open this repo keeps finding —
+`.claude/rules/config-access.md`: `0`, `{}`, `null` and `SKIP` are all
+indistinguishable from success, and `UNMEASURED` is not. What makes blocking
+tolerable is that the message says which of the two happened, names the cause,
+and names `--no-verify` itself.
+
+- [x] SC-1504: A consumer whose `bun.lock` is gitignored can push when its conformity tests pass, driven against a planted fixture repo rather than asserted from the hook's source text
+- [x] SC-1505: A genuine conformity failure is still refused, with the conformity message, and a positive control proves the refusal is removable
+- [x] SC-1506: A suite that could not run — missing file, unresolvable import, no tests declared, or dependencies that could not be installed — is reported as UNMEASURED and is distinguishable in the hook's output from a conformity FAIL
+- [x] SC-1507: That UNMEASURED blocks the push is asserted, and the message names both the cause and the escape hatch
+- [x] SC-1508: The properties #85 and #68 bought — checking the pushed commit rather than the working tree, skipping the all-zero deletion sha, and leaving no worktree behind on either outcome — are executed, not described
+- [x] SC-1509: `createGitHooks` writes exactly `prePushHookScript()`, and the generator holds no second copy of the body
+
+### What was broken to prove it
+
+Run and counted over `test/pre-push-hook.test.ts`,
+`test/unit/pre-push-pushed-sha.test.ts` and
+`test/unit/generated-shell-syntax.test.ts` (29 tests). None is left in the
+tree; all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| the refusal constant zeroed | 9 of 29 |
+| the counted-tests arm always true — a missing suite reads as a red one | 5 of 29 |
+| UNMEASURED collapsed into the conformity message | 5 of 29 |
+| the absent-lockfile arm made unreachable (the #397 bug, restored) | 3 of 29 |
+| the error-count arm removed — an unloadable suite reads as a red one | 2 of 29 |
+| a refusal inlined around the constant | 2 of 29 |
+| the install failure no longer counts as unmeasured | 2 of 29 |
+| the worktree cleanup moved behind the refusal | 2 of 29 |
+| the generator keeps its own copy of the body | 2 of 29 |
+| the zero-sha guard dropped | 1 of 29 |
+
+Two rows were **zero** on the first battery, and both were the test's fault
+rather than the hook's.
+
+**The refusal constant scored 0.** Every behavioural assertion read
+`expect(code).toBe(PRE_PUSH_REFUSE_EXIT)`, so setting the constant to `0`
+zeroed the script's refusal and the expected value in the same edit and
+nothing moved. A test parameterised by the thing it is checking cannot check
+it — the vacuous-assertion shape from
+`.claude/rules/checks-must-be-able-to-fail.md`, reached by a route that looks
+like good hygiene. The behaviour is now pinned to the literal `1` and the
+constant is asserted once, separately; the same mutation now scores 9.
+
+**Emptying the install-failure reason scored 0,** because the test asserted
+the bucket (`did NOT run the conformity suite`) and not the cause. Being told
+a push was not measured, without being told that the install is why, is most
+of the original bug again. The reason string is now asserted.
+
+Two further rows printed `NOT APPLIED` and were not real refusals: the battery
+counted anchors with `grep -c`, which counts matching *lines*, so a multi-line
+anchor occurring once was reported as 32 and as 3. A mutation harness that
+mis-reports its own reach is exactly the decorative check this rule is about,
+and it is recorded here because the fix — count occurrences, not lines — is
+not obvious from output that reads like a moved anchor.
+
