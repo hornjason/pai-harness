@@ -92,6 +92,7 @@ describe("worktree-cleanup", () => {
     const result: CleanupResult = {
       removed: ["a", "b"],
       kept: ["c"],
+      skipped: ["e"],
       errors: ["d"],
     };
     expect(result.removed).toEqual(["a", "b"]);

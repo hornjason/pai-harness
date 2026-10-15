@@ -5754,3 +5754,87 @@ The two security findings were mutation-checked after the fact, over
 | `&& expectRepo.trim() !== ""` restored — a blank expectation skips the check | 1 of 18 |
 | the repo check removed entirely | 4 of 18 |
 
+
+## #431 — 149 worktrees, none removable, and the totals did not sum
+
+`StaleTTLCleanup` reported `0 removed, 144 kept` at every session start.
+`git worktree list` showed **149**, the oldest 13.7 days old. Measured: 72
+with uncommitted changes, 71 clean but unmerged, 1 clean and merged, 4
+detached, 1 whose directory was gone.
+
+### Unmerged was the wrong question
+
+The 71 were kept by `unmerged → keep`, which reads as prudence and asks
+about the wrong thing. **`git worktree remove` deletes a checkout, not a
+branch.** The ref survives, its commits survive, `git checkout` brings it
+all back. What can be lost is work that exists in exactly one place:
+uncommitted changes, and commits that never reached origin.
+
+So the real property is "is every commit here also somewhere else" — and
+the old code asked it SECOND, in `unpushedKeepReason`, after an arm that
+returned first. The stronger check was dead code for every branch that
+needed it. Asking it first both **protects more** (a branch merged into a
+main that was never pushed was removable before) and **permits more** (a
+fully-pushed fan-out branch is just a stale directory).
+
+`merged` stays load-bearing in exactly one case: a repo with no `origin`,
+where "somewhere else" has no meaning. Without that arm the change would
+delete unmerged local-only work — `unpushedCommitCount` returns `0` for a
+remote-less repo, so it would have looked exactly like a pushed branch.
+`OriginState` makes the two distinguishable, which `number | null` could
+not.
+
+### A lock is a claim, and the sweeper could not see one
+
+`git worktree lock` is git's own durable claim, and `worktree remove`
+refuses a locked tree regardless. Reading it turns "something owns this"
+into a KEPT with a reason rather than a failed removal in `errors`.
+
+The first implementation compared git's reported path against a `join()`ed
+one. git reports paths resolved; on macOS the temp directory is under a
+`/var` → `/private/var` symlink, so the comparison never matched and the
+check was **inert on the platform it was written on**. Both sides now go
+through `realpathSync`.
+
+### The totals now reconcile
+
+Entries skipped for age `continue`d without being recorded, so
+`removed + kept` did not equal the number of worktrees — 144 against 149,
+and the gap was invisible because nothing was supposed to add up. There is
+now a `skipped` bucket, all four are printed, and a test asserts the sum
+equals the entries examined.
+
+- [ ] SC-1501: lib/worktree-cleanup.ts contains [removalKeepReason] — one decider answers merged and unpushed together so the weaker proxy cannot short-circuit the stronger property. A repo with no origin falls back to merged
+- [ ] SC-1502: lib/worktree-cleanup.ts contains [lockKeepReason] — a locked worktree is kept with its reason and an unreadable lock listing keeps everything. Paths are compared resolved on both sides
+- [ ] SC-1503: lib/worktree-cleanup.ts contains [skipped] — removed + kept + skipped + errors equals the number of entries examined, asserted by a test and printed in the summary
+
+### What was broken to prove it
+
+Measured over `test/worktree-cleanup-orphans.test.ts`,
+`test/worktree-cleanup.test.ts` and `test/unit/worktree-cleanup-merge.test.ts`
+(35 tests). None is left in the tree.
+
+| Mutation | Red |
+|---|---|
+| the removal decider short-circuits to removable | 7 of 35 |
+| the no-origin arm ignores `merged`, so local-only work is deleted | 5 of 35 |
+| the lock check never keeps anything | 3 of 35 |
+| the dirty-tree check removed | 2 of 35 |
+| locks compared on raw paths again — inert on macOS | 2 of 35 |
+| unpushed commits no longer keep the worktree | 1 of 35 |
+| an unanswerable origin is treated as clean | 1 of 35 |
+| an unreadable lock listing is treated as no locks | 1 of 35 |
+| the cleanup stops consulting the lock decider | 1 of 35 |
+| skipped entries vanish from the totals again | 1 of 35 |
+
+Three of those were **zero** on the first battery, and all three were the
+lock check. The tests drove `lockedWorktreePaths` directly and nothing drove
+the branch in `cleanupWorktrees` that consumes it — so removing the check,
+reverting the realpath comparison, and collapsing `null` into "no locks"
+were all invisible. The fix is this file's own established pattern:
+`lockKeepReason` is one exported binding, like `unpushedKeepReason` before
+it, whose `null` arm no fixture can stage; and one end-to-end case runs the
+real sweeper over a real locked worktree, because a decider being right is
+not the same as the sweeper asking it. That last distinction is the tenth
+row, measured separately.
+
