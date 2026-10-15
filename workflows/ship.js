@@ -5876,6 +5876,21 @@ phase('Ship')
 // created looked exactly like one in which a PR was created. It is captured
 // now, and the ship gate's heal text below says what is actually true rather
 // than asserting a PR exists.
+//
+// #183: the "container is up" arm below used to write `prod.rebuild = 'PASS'`.
+// A 200 from a health endpoint says a container is ANSWERING; it says nothing
+// about whether that container was built from this commit — during a ship run
+// it has not been, because the rebuild happens after merge. That literal was
+// then read back by `container-has-fix` (gates/workflow.test.ts:636) and
+// handed to `classifyContainerProvenance`, where `prodRebuild === "PASS"`
+// turns a measured BEHIND verdict non-blocking. So a container that merely
+// responded switched OFF the one check that compares the container's image
+// revision against HEAD. #176 AC-3 states the standard this now follows:
+// SKIP with a reason is acceptable, PASS without a measurement is not.
+//
+// `smoke` stays PASS, and that is deliberate rather than an oversight: a 200
+// from the configured health path IS a smoke test, and it is the only one of
+// the three the curl actually measures.
 let prStep = null
 
 if (containerConfig) {
@@ -5888,7 +5903,7 @@ Check test container status, then update workflow-state.json via writeWorkflowSt
 2. Based on result, run this bun -e command (pick the version matching your result):
 
 If container is up (200):
-bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'PASS'; s.environments.prod.smoke = 'PASS'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'Quinn validated on local dev'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'the container answered a health check; whether it was built from this commit was not measured (#183) — container-has-fix compares the image revision against HEAD'; s.environments.prod.smoke = 'PASS'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'Quinn validated on local dev'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
 If container is down:
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'test container not running'; s.environments.prod.smoke = 'SKIP'; s.environments.prod.smokeSkipReason = 'test container not running'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'test container not running'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"

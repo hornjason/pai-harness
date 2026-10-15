@@ -193,6 +193,21 @@ export function ciCheckoutPlan(opts: {
   source: string;
   dest: string;
   model: CheckoutModel;
+  /**
+   * The source repo's own `origin`, restored after the fetches (#183).
+   *
+   * `actions/checkout@v4` leaves `origin` pointing at the GitHub repository.
+   * This plan repoints it at `file://source` so the replayed fetches resolve
+   * offline, and before #183 it left it there — so a test asking "what
+   * repository is this checkout of" got a filesystem path under the model and
+   * `github.com/owner/name` in CI. `test/worktree-repo.test.ts`'s SC-1444
+   * positive control failed here for that reason and passed in CI, which is
+   * the inversion this whole module exists to prevent.
+   *
+   * Omit it and `origin` keeps the `file://` URL — a source with no origin
+   * has nothing to restore.
+   */
+  originUrl?: string | null;
 }): CheckoutCommand[] {
   const { source, dest, model } = opts;
   const cmds: CheckoutCommand[] = [];
@@ -225,6 +240,12 @@ export function ciCheckoutPlan(opts: {
     // carries on), so the model must too — a model stricter than CI starts
     // failing runs CI would pass, which costs trust the same way.
     cmds.push({ kind: "exec", argv, inClone: true, tolerateFailure: true });
+  }
+
+  // Last, and it has to be last: every fetch above needs `file://` to resolve
+  // without a network.
+  if (opts.originUrl) {
+    cmds.push({ kind: "exec", argv: ["git", "remote", "set-url", "origin", opts.originUrl], inClone: true });
   }
 
   return cmds;
@@ -363,8 +384,13 @@ export function prepareCiCheckout(opts: PrepareOptions): PrepareOutcome {
   }
 
   const dest = `${opts.tmpRoot}/repo`;
+  // What the runner's `origin` points at (#183). A source with no origin —
+  // a bare init, a consumer's unpushed scaffold — restores nothing, which is
+  // also what CI would have.
+  const srcOrigin = opts.run(["git", "remote", "get-url", "origin"], opts.source);
+  const originUrl = srcOrigin.status === 0 ? srcOrigin.stdout.trim() || null : null;
   const result = executeCheckoutPlan(
-    ciCheckoutPlan({ source: opts.source, dest, model }),
+    ciCheckoutPlan({ source: opts.source, dest, model, originUrl }),
     dest,
     opts.tmpRoot,
     opts.run,
