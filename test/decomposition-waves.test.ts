@@ -287,7 +287,7 @@ describe("SC-1465: the dispatcher reads the plan and the decomposer can write it
         success: true,
         filesChanged: [`${label}.ts`],
         worktreePath: "/tmp/wt",
-        worktreeRepo: `git@github.com:${RUN_REPO}.git`,
+        worktreeRepo: `git@github.com:${RUN_REPO}.git`, taskSource: 'brief',
       };
     });
 
@@ -318,7 +318,7 @@ describe("SC-1465: the dispatcher reads the plan and the decomposer can write it
         success: true,
         filesChanged: [`${label}.ts`],
         worktreePath: "/tmp/wt",
-        worktreeRepo: `git@github.com:${RUN_REPO}.git`,
+        worktreeRepo: `git@github.com:${RUN_REPO}.git`, taskSource: 'brief',
       };
     });
 
@@ -334,7 +334,7 @@ describe("SC-1465: the dispatcher reads the plan and the decomposer can write it
     let spawns = 0;
     const { runDecomposedShip } = loadRunDecomposedShip(async () => {
       spawns++;
-      return { success: true, filesChanged: [], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git` };
+      return { success: true, filesChanged: [], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git`, taskSource: 'brief' };
     });
 
     const result = (await runDecomposedShip([
@@ -349,8 +349,8 @@ describe("SC-1465: the dispatcher reads the plan and the decomposer can write it
 
   test("a sub-issue whose wave failed is reported as not started rather than dropped", async () => {
     const { runDecomposedShip } = loadRunDecomposedShip(async (_p, { label }) => {
-      if (label.endsWith("66001")) return { success: false, findings: ["injected failure"] };
-      return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git` };
+      if (label.endsWith("66001")) return { success: false, findings: ["injected failure"], taskSource: "brief" };
+      return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git`, taskSource: 'brief' };
     });
 
     const result = (await runDecomposedShip([
@@ -390,6 +390,7 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
   const factory = new Function(
     "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
     "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
+    "taskSourceRefusal",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -405,6 +406,10 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     sliced("IMPLEMENT-RESULT", "implementRefusal"),
     sliced("WORKTREE-IDENTITY", "worktreeIdentity"),
     RUN_REPO,
+    // #180's guard, injected from its own markers for the same reason as the
+    // two above: a stub would let the two copies disagree about what counts
+    // as having worked from the brief.
+    sliced("BRIEF-PRECEDENCE", "taskSourceRefusal"),
   ) as (subIssues: unknown[]) => Promise<unknown>;
 
   return { runDecomposedShip, logs };

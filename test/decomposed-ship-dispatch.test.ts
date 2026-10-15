@@ -79,6 +79,16 @@ function loadRunDecomposedShip(deps: {
     `${shipSource.slice(identityStart, identityEnd)}\nreturn worktreeIdentity;`,
   )();
 
+  // #180's guard, injected for the reason the two above are.
+  const precStart = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-START ────");
+  const precEnd = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-END ────");
+  if (precStart === -1 || precEnd === -1) {
+    throw new Error("ship.js is missing the BRIEF-PRECEDENCE-START/END markers");
+  }
+  const taskSourceRefusal = new Function(
+    `${shipSource.slice(precStart, precEnd)}\nreturn taskSourceRefusal;`,
+  )();
+
   const factory = new Function(
     "log",
     "briefedAgent",
@@ -91,6 +101,7 @@ function loadRunDecomposedShip(deps: {
     "implementRefusal",
     "worktreeIdentity",
     "REPO",
+    "taskSourceRefusal",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -106,6 +117,9 @@ function loadRunDecomposedShip(deps: {
     implementRefusal,
     worktreeIdentity,
     RUN_REPO,
+    // #180 guard, injected from its own markers rather than stubbed — the
+    // same reason the two above are.
+    taskSourceRefusal,
   );
 
   return { runDecomposedShip, logs };
@@ -125,7 +139,7 @@ function makeTimingAgent(opts: {
     if (opts.failOn && label.includes(opts.failOn)) {
       return { success: false, findings: ["injected failure"] };
     }
-    return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git` };
+    return { success: true, filesChanged: [`${label}.ts`], worktreePath: "/tmp/wt", worktreeRepo: `git@github.com:${RUN_REPO}.git`, taskSource: "brief" };
   };
 }
 

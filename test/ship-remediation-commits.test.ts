@@ -287,6 +287,20 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     `${shipSource.slice(iStart, iEnd)}\nreturn worktreeIdentity;`,
   )();
 
+  // #180 added a third, injected for the same reason: a stub would let this
+  // suite and the guard disagree about which instruction an agent worked
+  // from. The fixtures below report `taskSource` because the real agents are
+  // now asked for it, and one that omitted it would be testing the refusal
+  // rather than the path it claims to test.
+  const pStart = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-START ────");
+  const pEnd = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-END ────");
+  if (pStart === -1 || pEnd === -1) {
+    throw new Error("ship.js is missing the BRIEF-PRECEDENCE-START/END markers");
+  }
+  const taskSourceRefusal = new Function(
+    `${shipSource.slice(pStart, pEnd)}\nreturn taskSourceRefusal;`,
+  )();
+
   return new Function(
     "runCeremonyOnce",
     "briefedAgent",
@@ -297,6 +311,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     "implementRefusal",
     "worktreeIdentity",
     "REPO",
+    "taskSourceRefusal",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => opts.ceremony ?? { contextExcerpts: [], acContextFiles: [] },
@@ -308,6 +323,7 @@ function loadRunImplement(opts: { ceremony?: unknown; buildResult: unknown }) {
     implementRefusal,
     worktreeIdentity,
     RUN_REPO,
+    taskSourceRefusal,
   ) as () => Promise<{ success?: boolean; status?: string; buildResult?: any }>;
 }
 
@@ -336,6 +352,8 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
         success: true,
         worktreePath: WORKTREE_B,
         worktreeRepo: RUN_REMOTE,
+        // #180 — the implement reply now says which instruction it worked from.
+        taskSource: "brief",
         filesChanged: ["lib/a.ts", "test/a.test.ts"],
       },
     });
@@ -349,6 +367,9 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
     // refuse a correct run.
     expect(result.buildResult.agentResults).toEqual([
       {
+        // No `taskSource` here, and that is the shape not an omission: the
+        // field is a property of the REPLY, consumed by the refusal before
+        // this row is built, and the collection boundary has no use for it.
         worktreePath: WORKTREE_B,
         worktreeRepo: RUN_REMOTE,
         filesChanged: ["lib/a.ts", "test/a.test.ts"],
@@ -378,7 +399,7 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
   test("agentResults is an array for every result that reaches it (#162)", async () => {
     // #162's actual invariant, kept, on a result that gets that far.
     const runImplement = loadRunImplement({
-      buildResult: { success: true, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, filesChanged: ["lib/a.ts"] },
+      buildResult: { success: true, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, taskSource: "brief", filesChanged: ["lib/a.ts"] },
     });
     const result = await runImplement();
     expect(Array.isArray(result.buildResult.agentResults)).toBe(true);
@@ -387,7 +408,7 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
 
   test("a failed build is still a failure and is not dressed up", async () => {
     const runImplement = loadRunImplement({
-      buildResult: { success: false, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, findings: ["tests red"] },
+      buildResult: { success: false, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, taskSource: "brief", findings: ["tests red"] },
     });
     const result = await runImplement();
     expect(result.success).toBe(false);
@@ -398,7 +419,7 @@ describe("#162: runImplement's single-agent path reports what to collect", () =>
     // produced {ok:true, collected:0} on every remediation round: the shape
     // runImplement returns, fed to the collector the remediation calls.
     const runImplement = loadRunImplement({
-      buildResult: { success: true, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, filesChanged: ["lib/a.ts"] },
+      buildResult: { success: true, worktreePath: WORKTREE_B, worktreeRepo: RUN_REMOTE, taskSource: "brief", filesChanged: ["lib/a.ts"] },
     });
     const impl = await runImplement();
     const { collect, calls } = collectorWithAgent({ ok: true, collected: 1 });

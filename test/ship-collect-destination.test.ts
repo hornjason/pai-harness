@@ -177,7 +177,15 @@ describe("#190: the run's harness root reaches spawned agents", () => {
     if (start === -1 || end === -1) {
       throw new Error(`${BLOCK_START} / ${BLOCK_END} markers missing from workflows/ship.js`);
     }
-    return shipSource.slice(start, end);
+    // #180 — briefedAgent appends briefPrecedenceNotice(briefPath), which
+    // lives in its own marked block. Sliced in rather than stubbed: a stub
+    // would let the two copies disagree about what the prompt says.
+    const pStart = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-START ────");
+    const pEnd = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-END ────");
+    if (pStart === -1 || pEnd === -1) {
+      throw new Error("BRIEF-PRECEDENCE markers missing from workflows/ship.js");
+    }
+    return `${shipSource.slice(pStart, pEnd)}\n${shipSource.slice(start, end)}`;
   }
 
   /** Evaluate a briefedAgent block against fakes for everything it closes over. */

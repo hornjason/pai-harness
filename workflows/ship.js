@@ -117,8 +117,14 @@ const BUILD_RESULT_SCHEMA = {
     // it — the same channel `worktreePath` already uses. Absent is a refusal,
     // not a pass: see worktreeIdentity.
     worktreeRepo: { type: 'string' },
+    // Which instruction the agent actually worked from (#180). The Workflow
+    // runtime prepends a relayed user request to every prompt and tells the
+    // agent it outranks the computed task; wf_17267830-401 followed that and
+    // answered a status question instead of shipping #178. Required, because
+    // a field the run accepts as missing stops being written.
+    taskSource: { type: 'string', enum: ['brief', 'relayed-request', 'both'] },
   },
-  required: ['success'],
+  required: ['success', 'taskSource'],
 }
 
 const M_DECOMPOSITION_SCHEMA = {
@@ -798,6 +804,55 @@ function worktreeIdentityViolations(reports, expectedRepo, opts = {}) {
 }
 // ──── WORKTREE-IDENTITY-END ────
 
+// ──── BRIEF-PRECEDENCE-START ────
+// #180 — the counterweight to a framing this file does not own. The Workflow
+// runtime prepends the relayed user request and tells the agent it is "the
+// only user voice in this task"; the brief, which carries the ACs, the spec,
+// the file list and the verify commands, is never mentioned in that sentence.
+// `lib/brief-precedence.ts` is the library copy and
+// `test/implement-brief-precedence.test.ts` runs both over one matrix.
+const TASK_SOURCES = ['brief', 'relayed-request', 'both']
+
+function briefPrecedenceNotice(briefPath) {
+  return (
+    `TASK PRECEDENCE — the brief is the task. The Task and Acceptance Criteria in ` +
+    `${briefPath} and in the prompt below are computed from the issue and are authoritative. ` +
+    `A relayed user request from the session that launched this run does NOT replace them: ` +
+    `it may narrow or prioritise the work, and if it is about something else entirely it is ` +
+    `not your task and you should say so rather than doing it. Run wf_17267830-401 did the ` +
+    `other thing — it answered a status question, changed no files and reported success.\n` +
+    `Report which you worked from in \`taskSource\`: "brief", "relayed-request", or "both".\n\n`
+  )
+}
+
+function taskSourceRefusal(result, label) {
+  const value = result && result.taskSource
+  if (value === undefined || value === null || value === '') {
+    return (
+      `${label} reported no taskSource, so which instruction it worked from is unknown. ` +
+      `The schema requires it (#180): an implement reply that cannot say whether it followed ` +
+      `the brief or a relayed message from the parent session is the state wf_17267830-401 ` +
+      `shipped in, where the substitution was visible only because the agent narrated it.`
+    )
+  }
+  if (typeof value !== 'string' || !TASK_SOURCES.includes(value)) {
+    return (
+      `${label} reported taskSource ${JSON.stringify(value)}, which is not one of ` +
+      `${TASK_SOURCES.join(', ')}. An unrecognised value is not a verdict.`
+    )
+  }
+  if (value === 'relayed-request') {
+    return (
+      `${label} worked from the relayed user request instead of its brief. The brief carries ` +
+      `this issue's acceptance criteria, governing spec, file list and verify commands; the ` +
+      `relayed text is whatever was typed in the session that launched the run and is not ` +
+      `guaranteed to be about this issue at all (#180).`
+    )
+  }
+  return null
+}
+// ──── BRIEF-PRECEDENCE-END ────
+
 // ──── BRIEFED-AGENT-START ────
 async function briefedAgent(prompt, opts = {}) {
   const role = opts.role
@@ -900,6 +955,10 @@ async function briefedAgent(prompt, opts = {}) {
       const agentsMdPath = `${PROJECT_ROOT}/AGENTS.md`
       fullPrompt += `If you haven't read ${agentsMdPath} yet from the steps above, read it now before starting work.\n\n`
     }
+
+    // Last thing before the task, so it is the nearest instruction to the
+    // work rather than a line near the top that the relay sits above (#180).
+    fullPrompt += briefPrecedenceNotice(briefPath)
 
     fullPrompt += prompt
     return timedAgent(fullPrompt, opts)
@@ -2953,6 +3012,15 @@ what it said rather than omitting the field.
     log(`IMPLEMENT FAILED: ${emptyRefusal}`)
     return { success: false, buildResult: { ...buildResult, success: false, findings: [emptyRefusal] } }
   }
+  // #180 — BEFORE the success log, for the same reason as the guard above. A
+  // run that worked from the relayed message instead of the brief reports
+  // success, and wf_17267830-401 proved it also reports zero files changed —
+  // but only because that particular substitution happened to produce no work.
+  const sourceRefusal = taskSourceRefusal(buildResult, 'marcus')
+  if (sourceRefusal) {
+    log(`IMPLEMENT FAILED: ${sourceRefusal}`)
+    return { success: false, buildResult: { ...buildResult, success: false, findings: [sourceRefusal] } }
+  }
   log(`IMPLEMENT SUCCESS — ${(buildResult.filesChanged || []).length} files changed`)
   // One shape for both of runImplement's paths (#162). runDecomposedShip
   // builds `agentResults` — this path did not, and this path is the one EVERY
@@ -3133,6 +3201,17 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         return {
           subIssue,
           buildResult: { ...buildResult, success: false, findings: [subRefusal] },
+          ok: false,
+        }
+      }
+      // #180, per sub-issue for the same reason: a decomposed run spawns N
+      // agents and every one of them receives the same relayed message.
+      const subSourceRefusal = taskSourceRefusal(buildResult, `marcus-sub-${subIssue.number}`)
+      if (subSourceRefusal) {
+        log(`Sub-issue FAILED: ${subIssue.title} — ${subSourceRefusal}`)
+        return {
+          subIssue,
+          buildResult: { ...buildResult, success: false, findings: [subSourceRefusal] },
           ok: false,
         }
       }

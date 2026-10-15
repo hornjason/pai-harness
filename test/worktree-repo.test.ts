@@ -446,6 +446,7 @@ describe("SC-1444: readWorktreeRemote reads a real checkout", () => {
 
 const AGENT_TIMING = "AGENT-TIMING";
 const BRIEFED = "BRIEFED-AGENT";
+const PRECEDENCE = "BRIEF-PRECEDENCE";
 /** The single site. Removing it is the mutation; a rename aborts the build. */
 const CWD_PIN = "if (opts.isolation === 'worktree') opts.cwd = PROJECT_ROOT";
 
@@ -469,8 +470,10 @@ function loadBriefedAgent(source = shipSource) {
     // omitting it throws ReferenceError at spawn time rather than at load,
     // which reads as the block being broken. Same assembly as
     // test/briefed-agent-model.test.ts.
+    // BRIEF-PRECEDENCE likewise: briefedAgent appends its notice (#180), so
+    // without the block the composed prompt dies on a free reference.
     `${source.match(/function shellQuote\(word\)[\s\S]*?\n}/)?.[0] ?? ""}\n` +
-      `${block(AGENT_TIMING)}\n${block(BRIEFED)}\nreturn briefedAgent;`,
+      `${block(PRECEDENCE)}\n${block(AGENT_TIMING)}\n${block(BRIEFED)}\nreturn briefedAgent;`,
   );
   const call = factory(
     { marcus: { brief: ".claude/agents/marcus.md" } },
