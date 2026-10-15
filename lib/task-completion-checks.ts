@@ -130,10 +130,22 @@ export function checkConformity(projectRoot: string): CompletionCheckResult {
   try {
     configured = tryLoadRungateConfig(projectRoot) !== null;
   } catch (err: unknown) {
-    const why = err instanceof Error ? err.message : String(err);
+    // The CLASS, not the message. `JSON.parse` quotes a token from the file it
+    // failed on — "Unexpected identifier \"ghp_…\"" — and a config can hold
+    // credentials, so the parser's text is a channel out of the file and into
+    // this blocker, which is printed to stderr and captured in transcripts.
+    // The reproduction command is the replacement for the detail: it gives the
+    // operator the full message on their own terminal, where the config
+    // already is.
+    const kind = err instanceof Error && err.name ? err.name : "error";
     return {
       passed: false,
-      blockers: [`rungate config could not be read, so conformity did not run: ${why}`],
+      blockers: [
+        `rungate config under ${join(projectRoot, '.claude')} could not be read (${kind}), ` +
+          `so conformity did not run — a config that exists and cannot be parsed is not an ` +
+          `unconfigured project. Run \`bun -e 'import("${projectRoot}/node_modules/rungate/lib/config-loader.ts")` +
+          `.then(m => m.loadRungateConfig("${projectRoot}"))'\` to see the parser's own message.`,
+      ],
       warnings: [],
     };
   }

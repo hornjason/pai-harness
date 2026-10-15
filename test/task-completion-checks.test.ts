@@ -165,6 +165,25 @@ describe('task-completion-checks', () => {
       // And it must not be mistaken for the unscaffolded case, which passes.
       expect(checkConformity(mkdtempSync(join(tmpdir(), 'tcc-none-'))).passed).toBe(true);
     });
+
+    it('does not quote the file back when reporting that it could not be parsed', () => {
+      // Second push-review finding. `JSON.parse` names the token it choked on,
+      // so a config whose malformation sits next to a credential would print
+      // it into a blocker that reaches stderr and the transcript. The blocker
+      // carries the error CLASS and a command the operator can run locally.
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      const SECRET = 'NOT-A-REAL-TOKEN-0123456789';
+      writeFileSync(join(dir, 'config.json'), `{ "token": ${SECRET} }`);
+
+      const result = checkConformity(tempDir);
+      expect(result.passed).toBe(false);
+      const text = result.blockers.join(' ');
+      expect(text, 'the parser quoted the file into the blocker').not.toContain(SECRET);
+      // Still actionable: it says which class of failure and how to see more.
+      expect(text).toContain('SyntaxError');
+      expect(text).toContain('loadRungateConfig');
+    });
   });
 
   describe('runAllCompletionChecks', () => {

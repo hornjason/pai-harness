@@ -205,6 +205,20 @@ Run and counted over `test/task-completion-checks.test.ts` (12 tests, 0 red):
 | an unreadable config is treated as unscaffolded | 1 |
 | the gate blocks but says nothing about the config | 1 |
 | the layout check goes back to the monolith only | 2 — the directory-layout case as well, which is the #214 migration itself |
+| the parser's message is quoted back into the blocker | 1 of 13, after the second review finding below |
+
+### A refusal that quotes the file it could not parse
+
+Second push-review finding on the same function, and also correct.
+`JSON.parse` names the token it choked on — `Unexpected identifier "ghp_…"` —
+so a config whose malformation sits beside a credential would print it into a
+blocker that reaches stderr and is captured in the transcript. The fix
+reports the error **class** and a command the operator can run locally, which
+keeps the refusal actionable without making the message a channel out of the
+file. `.claude/rules/checks-must-be-able-to-fail.md`'s control-arm rule
+applies in reverse here: a refusal redacted to the point of being unreadable
+is worse than the leak for the 99% of refusals that quote nothing sensitive,
+so the class and the reproduction command stay.
 
 ### What was broken to prove it (SC-1449..1452)
 
