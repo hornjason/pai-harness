@@ -275,9 +275,32 @@ describe("SC-1481: one decider produces the CI step, the doc row and dev.typeChe
     // `gates/gate-executor.ts` RUNS whatever lands here. `bunx tsc --noEmit`
     // without a tsconfig prints 147 lines of help and exits 1, which the gate
     // reported as "Type check FAIL" at every non-TypeScript consumer.
-    const { scanProject } = require("../lib/scanner");
+    //
+    // MEASURED: the first version of this asked `lib/scanner.ts`'s
+    // `scanProject`, which has no `dev` block at all — so `?? null` was null
+    // whatever the generator did, and restoring the old constant scored ZERO
+    // against it. The field is written by `generateOrAuditProjectHarness`, so
+    // that is what gets run, and the value is read back off disk.
+    const { generateOrAuditProjectHarness } = require("../lib/scaffold/steps");
     const root = project({ "main.py": "print(1)\n", "package.json": JSON.stringify({ name: "p" }) });
-    expect(scanProject(root).dev?.typeCheck ?? null).toBeNull();
+    generateOrAuditProjectHarness(root, []);
+    const config = JSON.parse(readFileSync(join(root, ".claude", "rungate", "config.json"), "utf-8"));
+    expect(Object.hasOwn(config.dev, "typeCheck"), "the field vanished rather than going null").toBe(true);
+    expect(config.dev.typeCheck).toBeNull();
+  });
+
+  test("a TypeScript consumer still gets a runnable dev.typeCheck", () => {
+    // The control. "Always null" would satisfy the case above and switch the
+    // verify gate's type check off for every consumer instead of fixing it.
+    const { generateOrAuditProjectHarness } = require("../lib/scaffold/steps");
+    const root = project({
+      "tsconfig.json": TSCONFIG,
+      "lib/a.ts": "export const a = 1;\n",
+      "package.json": JSON.stringify({ name: "p" }),
+    });
+    generateOrAuditProjectHarness(root, []);
+    const config = JSON.parse(readFileSync(join(root, ".claude", "rungate", "config.json"), "utf-8"));
+    expect(config.dev.typeCheck).toBe("bunx tsc --noEmit");
   });
 });
 
