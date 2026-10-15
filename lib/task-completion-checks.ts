@@ -118,7 +118,26 @@ export function checkConformity(projectRoot: string): CompletionCheckResult {
   // monolith only, so every consumer that followed the documented migration
   // to `.claude/rungate/` stopped having its conformity suite run here —
   // silently, reporting passed.
-  if (tryLoadRungateConfig(projectRoot) === null) {
+  //
+  // The throw is CAUGHT and converted to a blocker, which is the one place in
+  // this migration that is not simply "let the loader throw". This function is
+  // reached from `hooks/TaskCompleted.hook.ts`, which has no catch of its own,
+  // and a hook that exits 1 is neither allow (0) nor block (2) — so an
+  // escaping throw would disable the entire completion gate, not just this
+  // check, on one unparseable byte. Blocking keeps ADR-001 D2's distinction
+  // (a corrupt config is never a missing config) and keeps the gate closed.
+  let configured: boolean;
+  try {
+    configured = tryLoadRungateConfig(projectRoot) !== null;
+  } catch (err: unknown) {
+    const why = err instanceof Error ? err.message : String(err);
+    return {
+      passed: false,
+      blockers: [`rungate config could not be read, so conformity did not run: ${why}`],
+      warnings: [],
+    };
+  }
+  if (!configured) {
     // No rungate config — skip conformity check
     return { passed: true, blockers: [], warnings: [] };
   }

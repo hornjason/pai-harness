@@ -131,6 +131,40 @@ describe('task-completion-checks', () => {
       // Result depends on whether conformity test exists
       expect(result).toBeDefined();
     });
+
+    it('runs conformity check on the directory layout too', () => {
+      // The monolith-only existence check meant every consumer that followed
+      // the documented migration to `.claude/rungate/` silently stopped having
+      // this gate run, and it reported passed (#214).
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), JSON.stringify({ project: 'x' }));
+      writeFileSync(join(tempDir, 'package.json'), JSON.stringify({ name: 'test', type: 'module' }));
+
+      const result = checkConformity(tempDir);
+      // No conformity suite in the fixture, so the run cannot come back clean.
+      // The assertion is that it RAN — a skipped gate returns the empty shape.
+      expect(result.blockers.length + result.warnings.length).toBeGreaterThan(0);
+    });
+
+    it('blocks rather than throwing when the config cannot be read', () => {
+      // #214 regression. `tryLoadRungateConfig` throws on malformed JSON by
+      // design — a corrupt config is never a missing one — but this function
+      // is reached from `hooks/TaskCompleted.hook.ts`, which has no catch. An
+      // escaping throw exits the hook 1, and 1 is neither "allow" (0) nor
+      // "block" (2): the WHOLE completion gate stops blocking, not just the
+      // conformity part. One unparseable byte would have disabled it.
+      const dir = join(tempDir, '.claude', 'rungate');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'config.json'), '{ not json');
+
+      let result!: ReturnType<typeof checkConformity>;
+      expect(() => { result = checkConformity(tempDir); }).not.toThrow();
+      expect(result.passed, 'an unreadable config waved the gate through').toBe(false);
+      expect(result.blockers.join(' ')).toMatch(/config/i);
+      // And it must not be mistaken for the unscaffolded case, which passes.
+      expect(checkConformity(mkdtempSync(join(tmpdir(), 'tcc-none-'))).passed).toBe(true);
+    });
   });
 
   describe('runAllCompletionChecks', () => {

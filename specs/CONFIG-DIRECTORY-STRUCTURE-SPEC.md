@@ -174,6 +174,37 @@ new instance of the same bug.
 - [x] SC-1450: test/config-access-adoption.test.ts contains [a corrupt config throws rather than reading as unconfigured] — absence returns the empty value and malformed JSON throws, which is the distinction four bare `catch` blocks erased
 - [x] SC-1451: test/config-access-adoption.test.ts contains [loadRegistry picks up customMatchers authored in the directory layout] — the migrated call sites are executed against a fixture, not asserted to import the loader
 - [x] SC-1452: test/config-access-adoption.test.ts contains [no migrated file keeps a private reader beside the shared one] — every migrated file is named and asserted gone from the ratchet, so a revert cannot put one back while the suite stays green
+- [x] SC-1453: test/task-completion-checks.test.ts contains [blocks rather than throwing when the config cannot be read] — the one migrated site whose throw crosses into a gate converts it to a blocker instead, because a hook that exits 1 is neither allow nor block
+
+### Letting the loader throw is right everywhere except into a gate
+
+The push security review flagged `lib/task-completion-checks.ts` as a
+fail-open regression, and it was right. `checkConformity` is reached from
+`hooks/TaskCompleted.hook.ts`, which has **no `catch`**. Hook exit codes are
+`0` allow and `2` block; an escaping throw exits `1`, which is neither — so
+one unparseable byte in the config would have disabled the **entire**
+completion gate, not merely the conformity part of it. The old code could not
+do this: it checked `existsSync` and never parsed.
+
+So this site catches, and returns a blocker naming the config. That keeps
+ADR-001 D2's distinction — the unreadable config is still not an unscaffolded
+project — while keeping the gate closed, which is the direction a gate is
+allowed to be wrong in.
+
+Checked at the other five migrated sites and not repeated: `loadRegistry`,
+`grade-deterministic` and `test-brief` are CLIs where a throw is a non-zero
+exit, and `parallel-ship` and `precompute-goal` already called bare
+`JSON.parse` with no catch, so their behaviour on a corrupt config is
+unchanged.
+
+Run and counted over `test/task-completion-checks.test.ts` (12 tests, 0 red):
+
+| Mutation | Red |
+|---|---|
+| the throw escapes into the hook again | 1 |
+| an unreadable config is treated as unscaffolded | 1 |
+| the gate blocks but says nothing about the config | 1 |
+| the layout check goes back to the monolith only | 2 — the directory-layout case as well, which is the #214 migration itself |
 
 ### What was broken to prove it (SC-1449..1452)
 
