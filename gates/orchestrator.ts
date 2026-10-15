@@ -401,8 +401,15 @@ export function generateShipEvidence(
   let pushOutcome: PushOutcome | null = null;
   if (issueRepo && issue > 0) {
     try {
+      // `expectRepo` is the other half of the cwd decision above (#430). The
+      // tree is process.cwd() for the reasons given, and `issueRepo` says
+      // which repository the run believes it is shipping — so the two are
+      // compared rather than assumed to agree. A fixture `issueRepo` run from
+      // a real checkout, which is what test/contract.test.ts was doing, now
+      // refuses instead of pushing.
       pushOutcome = verifiedPush(process.cwd(), {
         env: { ...process.env, GATE_PASSED_PUSH: "1" },
+        expectRepo: issueRepo,
       });
     } catch (e: any) {
       pushOutcome = {

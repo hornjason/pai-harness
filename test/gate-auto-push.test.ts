@@ -191,13 +191,17 @@ describe("#213: classifyPush names every way a push can leave work local", () =>
     // fail-open this issue is about, one level up.
     const kinds = [
       "pushed", "nothing-to-push", "no-upstream", "unmeasured",
-      "not-attempted", "rejected", "unconfirmed",
+      "not-attempted", "rejected", "unconfirmed", "ref-mismatch", "repo-mismatch",
     ];
     for (const k of OUTCOMES_LEAVING_WORK_LOCAL) {
       expect(kinds, `${k} is in the local set but is not a known outcome kind`).toContain(k);
     }
+    // `ref-mismatch` (#429) and `repo-mismatch` (#430) joined the set in the
+    // same commit that added the kinds, which is what this test is for: it
+    // went red on each addition and had to be looked at rather than
+    // defaulting to "fine".
     expect([...OUTCOMES_LEAVING_WORK_LOCAL].sort()).toEqual(
-      ["no-upstream", "not-attempted", "rejected", "unconfirmed", "unmeasured"],
+      ["no-upstream", "not-attempted", "ref-mismatch", "rejected", "repo-mismatch", "unconfirmed", "unmeasured"],
     );
   });
 });

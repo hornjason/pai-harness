@@ -83,7 +83,11 @@ export type PushOutcome =
   /** The push ran and exited non-zero. */
   | { kind: "rejected"; detail: string }
   /** The push exited zero and the remote does not carry HEAD. */
-  | { kind: "unconfirmed"; sha: string; remoteSha: string | null; detail: string };
+  | { kind: "unconfirmed"; sha: string; remoteSha: string | null; detail: string }
+  /** The upstream names a ref other than the branch's own. Nothing was pushed. */
+  | { kind: "ref-mismatch"; branch: string; remoteRef: string; detail: string }
+  /** The caller expected a different repository than the tree's origin. */
+  | { kind: "repo-mismatch"; expected: string; actual: string | null; detail: string };
 
 /**
  * The outcomes that mean a commit this run reported on may not be on the
@@ -96,10 +100,120 @@ export const OUTCOMES_LEAVING_WORK_LOCAL: ReadonlySet<PushOutcome["kind"]> = new
   "not-attempted",
   "rejected",
   "unconfirmed",
+  "ref-mismatch",
+  "repo-mismatch",
 ]);
 
 export function leftWorkLocal(outcome: PushOutcome): boolean {
   return OUTCOMES_LEAVING_WORK_LOCAL.has(outcome.kind);
+}
+
+/**
+ * The `owner/name` a git remote URL points at, or `null` if it names none.
+ *
+ * Returns `null` rather than a best guess for anything it cannot parse —
+ * including the filesystem paths every fixture in the suite uses as its
+ * origin. `repoMatches` turns `null` into "does not match", so an
+ * unrecognised remote refuses a push instead of permitting one, which is the
+ * direction this is allowed to be wrong in (#430).
+ */
+export function parseRemoteSlug(url: string): string | null {
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+  // scp-style (`git@host:owner/name.git`) and URL-style, with any userinfo —
+  // which is where a token lives on an HTTPS remote — discarded.
+  const m = trimmed.match(/^(?:[a-z+]+:\/\/)?(?:[^@/]*@)?[^/:]+[:/](.+?)(?:\.git)?\/?$/i);
+  const path = m?.[1];
+  if (!path) return null;
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length !== 2) return null;
+  return `${parts[0]}/${parts[1]}`.toLowerCase();
+}
+
+/** Whether a remote URL names the given `owner/name`. Unparseable matches nothing. */
+export function repoMatches(url: string, slug: string): boolean {
+  const parsed = parseRemoteSlug(url);
+  return parsed !== null && parsed === slug.trim().toLowerCase();
+}
+
+/**
+ * The `owner/name` of a tree's `origin`, or `null` when it cannot be read.
+ *
+ * Reads the CONFIGURED url. `originPushUrl` reads the effective one, and
+ * `originIdentity` requires them to agree — see there for why one alone is
+ * not enough.
+ */
+export function originSlug(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const r = runner(cwd, env)(["config", "--get", "remote.origin.url"], 5000);
+  return r.ok ? parseRemoteSlug(r.output) : null;
+}
+
+/** The url a push to `origin` would actually use, rewrites applied. */
+export function originPushUrl(cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const r = runner(cwd, env)(["remote", "get-url", "--push", "origin"], 5000);
+  return r.ok && r.output.trim() !== "" ? r.output.trim() : null;
+}
+
+/**
+ * Whether this tree is `expected`, judged on the url the push will use.
+ *
+ * ## Why two urls and not one
+ *
+ * The first version of this read only `config --get remote.origin.url`, on
+ * the reasoning that `url.<base>.insteadOf` rewrites are a local transport
+ * alias — a mirror, a proxy, a cache — and not a statement about which
+ * project you are shipping. That reasoning is fine and the conclusion was
+ * wrong, because it made the authorisation check read a different value than
+ * the action uses: `git push` resolves rewrites, so a rewrite pointing
+ * `https://github.com/owner/name` at some other repository would satisfy
+ * this check and then write that other repository. A guard that approves one
+ * destination and permits a push to another is not a guard.
+ *
+ * So both are read and both must agree. A rewrite in play is a refusal, not
+ * an approval — the mirror user loses an auto-push and runs `git push`
+ * themselves, which is the cost this file is allowed to impose
+ * (`leftWorkLocal` already reports the work may be local).
+ *
+ * ## What this does NOT check
+ *
+ * The host. `issueRepo` is `owner/name` and carries no host, so there is
+ * nothing here to compare one against: `https://example.invalid/owner/name`
+ * and `https://github.com/owner/name` are the same slug to this function.
+ * That is a real limit and is stated rather than papered over. It is not the
+ * only thing standing between a run and the wrong forge — the GitHub client
+ * in `lib/github.ts` has its own base url and credentials, and a push to an
+ * unexpected host needs credentials for that host. Hardcoding `github.com`
+ * here would bind the harness to one forge for a check that is about repo
+ * identity, which is the wrong place to make that decision.
+ */
+export function originIdentity(
+  cwd: string,
+  expected: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { ok: true; slug: string } | { ok: false; detail: string } {
+  const configured = originSlug(cwd, env);
+  if (configured === null) {
+    return { ok: false, detail: "this tree's origin url is unreadable or names no owner/name" };
+  }
+  const want = expected.trim().toLowerCase();
+  if (configured !== want) {
+    return { ok: false, detail: `this tree's origin is ${configured}` };
+  }
+
+  const pushUrl = originPushUrl(cwd, env);
+  if (pushUrl === null) {
+    return { ok: false, detail: `this tree's origin is ${configured} but its push url is unreadable` };
+  }
+  const pushSlug = parseRemoteSlug(pushUrl);
+  if (pushSlug !== configured) {
+    return {
+      ok: false,
+      detail: `this tree's origin is configured as ${configured} but a push would go to ` +
+        `${redactSecrets(pushUrl)} — a \`url.<base>.insteadOf\` rewrite is in play, so the ` +
+        `repository this check approved is not the one the push would write`,
+    };
+  }
+  return { ok: true, slug: configured };
 }
 
 /** The sha `ls-remote` reports for a ref, or null if its output names none. */
@@ -158,6 +272,33 @@ export function classifyPush(raw: PushReadings): PushOutcome {
   const remoteName = r.remoteName.output.trim();
   const remoteRef = r.remoteRef.output.trim();
   const upstream = `${remoteName} ${remoteRef}`;
+
+  // #429 — the push below is `HEAD:${remoteRef}`, and `remoteRef` is whatever
+  // `branch.<b>.merge` says. `git checkout -b <name> origin/main`, the
+  // ordinary way to start work here, sets that to `refs/heads/main` — so an
+  // unattended auto-push on a feature branch wrote `main` and reported a
+  // verified success, which it was, to the wrong ref. Four `wip:` commits
+  // reached origin/main that way on 2026-10-15 from a session that never ran
+  // `git push`.
+  //
+  // Refusing rather than rewriting the target: a branch whose upstream names
+  // a different ref may well be deliberate — this repo has several — and
+  // guessing which the operator meant is the kind of repair
+  // `.claude/rules/checks-must-be-able-to-fail.md` warns about. This is
+  // bookkeeping, not a gate, so the refusal costs a manual `git push` and
+  // `leftWorkLocal` already says the work may be local.
+  if (remoteRef !== `refs/heads/${branch}`) {
+    return {
+      kind: "ref-mismatch",
+      branch,
+      remoteRef,
+      detail: `branch ${branch} is configured to track ${upstream}, so an auto-push would write ` +
+        `${remoteRef} from a branch that is not it. Nothing was pushed. This is usually a branch ` +
+        `created with \`git checkout -b ${branch} origin/main\`, which sets the upstream to main ` +
+        `rather than to a ref of its own name (#429). Push explicitly with ` +
+        `\`git push -u origin ${branch}\` if that is what you meant.`,
+    };
+  }
 
   if (!r.ahead.ok) {
     return {
@@ -318,10 +459,46 @@ function runner(cwd: string, env: NodeJS.ProcessEnv) {
  */
 export function verifiedPush(
   cwd: string,
-  opts: { env?: NodeJS.ProcessEnv } = {},
+  opts: { env?: NodeJS.ProcessEnv; expectRepo?: string } = {},
 ): PushOutcome {
   const env = opts.env ?? process.env;
   const git = runner(cwd, env);
+
+  // #430 — the caller says which repository it believes it is shipping, and
+  // that belief is compared against the tree rather than assumed to match it.
+  //
+  // `gates/orchestrator.ts` pushes `process.cwd()` and guards on
+  // `issueRepo && issue > 0`. `test/contract.test.ts` runs the ship gate with
+  // `issueRepo: "test/repo"` and `issue: 9998` — both truthy — from inside
+  // the real rungate checkout, so running the test suite pushed to origin.
+  // The cwd choice is right and stays; what was missing is this comparison.
+  //
+  // Checked FIRST, before any other reading, because "this is not the repo
+  // you meant" invalidates everything downstream — an ahead-count against the
+  // wrong tree's upstream is not a fact worth reporting.
+  //
+  // The opt-in is `!== undefined` and nothing more. The first draft also
+  // required `.trim() !== ""`, which made a blank `expectRepo` SKIP the
+  // check — malformed input disabling the guard, which is the fail-open
+  // shape this repo keeps finding (`.claude/rules/checks-must-be-able-to-
+  // fail.md`). A caller that passed `""` because its config was empty would
+  // have got the old unconditional push back, silently. Asking the question
+  // is the caller's decision; once asked, an unanswerable version of it is a
+  // refusal.
+  if (opts.expectRepo !== undefined) {
+    const identity = originIdentity(cwd, opts.expectRepo, env);
+    if (!identity.ok) {
+      return {
+        kind: "repo-mismatch",
+        expected: opts.expectRepo,
+        actual: originSlug(cwd, env),
+        detail: `the caller is shipping ${JSON.stringify(opts.expectRepo)} and ${identity.detail}. ` +
+          `Nothing was pushed. A run whose issue repository and working tree disagree is either a ` +
+          `fixture pointed at a real checkout or a real run in the wrong directory, and both are ` +
+          `reasons not to write a remote (#430).`,
+      };
+    }
+  }
 
   const localSha = git(["rev-parse", "HEAD"], 5000);
   const branch = git(["symbolic-ref", "--short", "HEAD"], 5000);
