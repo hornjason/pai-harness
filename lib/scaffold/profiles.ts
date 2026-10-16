@@ -32,10 +32,13 @@ export const DEFAULT_PROFILE: ScaffoldProfile = "full";
  */
 export const STEPS_NOT_MINIMAL: ReadonlyMap<string, string> = new Map([
   [
-    // The path is named in prose rather than spelled as a literal on purpose:
-    // CONFIG-1 counts a config path literal in lib/ as a direct access site,
-    // and a comment describing a step is not a read. Writing it out cost two
-    // red tests on the first run of this file.
+    // The path is described rather than spelled out because this reason is a
+    // STRING, and CONFIG-1 counts a config path literal in a string as a
+    // direct access site. `scanConfigAccess` strips comments before matching,
+    // so a doc comment naming the path is fine — a map value is not. That
+    // distinction is deliberate: CONFIG-2 exists because ship.js hid eleven
+    // real config reads inside template literals. Spelling it out here cost
+    // two red tests on the first run of this file.
     "generateOrAuditProjectHarness",
     "writes the harness config directory, which configures a ship pipeline this project does not run",
   ],
