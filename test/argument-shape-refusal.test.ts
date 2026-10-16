@@ -222,9 +222,19 @@ describe("#533: the run refuses before any of it reaches a shell", () => {
     const withSlug = await ran({ repo: undefined, slug: "thing-1", issueRepo: "o/r" });
     expect(((withSlug.result ?? {}) as Record<string, unknown>).status).not.toBe("ARGS_ERROR");
 
-    // But the exemption is for `repo` alone. `issueRepo` reaches eleven shell
-    // sites of its own, and an exemption that spread to it would be an
-    // allowlist quietly widening into the thing it exempts.
+    // But the exemption is for an ABSENT `repo`, not for any run that has a
+    // slug. A malformed `repo` reaches its six shell sites whether or not a
+    // slug was passed, and "the caller gave us a slug" says nothing about
+    // that — widening the exemption to the whole check is the cheapest way
+    // to make the first case above pass, and it would open the hole.
+    const badRepoWithSlug = await ran({ repo: "o/r$(id)", slug: "thing-1" });
+    const first = (badRepoWithSlug.result ?? {}) as Record<string, unknown>;
+    expect(first.status, "a malformed repo was waved through because a slug was present").toBe("ARGS_ERROR");
+    expect(String(first.message)).toContain("repo");
+
+    // And `issueRepo` reaches eleven shell sites of its own, so an exemption
+    // that spread to it would be an allowlist widening into the thing it
+    // exempts.
     const badIssueRepo = await ran({ repo: undefined, slug: "thing-1", issueRepo: "o/r$(id)" });
     const out = (badIssueRepo.result ?? {}) as Record<string, unknown>;
     expect(out.status).toBe("ARGS_ERROR");
