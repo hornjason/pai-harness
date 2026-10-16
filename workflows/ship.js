@@ -559,9 +559,23 @@ function safeSSHCommand(host, remoteCmd) {
 const TIMING_ARTIFACT = `${WORK_DIR}/agent-timings.jsonl`
 const TIMING_SCRIPT = `${HARNESS_ROOT}/scripts/record-agent-timings.ts`
 
-function timingInstruction(label) {
+function timingInstruction(label, phaseName) {
+  // #60 — the phase travels on the bracket the agent already writes, rather
+  // than on a marker at the phase boundary. A boundary is a `phase('Goal')`
+  // call inside the sandbox: no clock, no filesystem, nothing that can record.
+  // The agents inside the phase are the only participants that can, so a
+  // phase's span is as wide as its agents and no wider, and `phaseSpans` in
+  // lib/trajectory.ts derives it rather than reading a written one.
+  //
+  // Omitted rather than defaulted when the call site declares no phase. A
+  // literal like 'unknown' would become a phase in the timeline, sitting
+  // beside the real ones and spanning whatever those calls happened to cover.
+  const where = typeof phaseName === 'string' && phaseName
+    ? ` --phase ${shellQuote(phaseName)}`
+    : ''
   const cmd = (event) =>
-    `bun ${shellQuote(TIMING_SCRIPT)} ${event} --label ${shellQuote(label)} --artifact ${shellQuote(TIMING_ARTIFACT)}`
+    `bun ${shellQuote(TIMING_SCRIPT)} ${event} --label ${shellQuote(label)} --artifact ${shellQuote(TIMING_ARTIFACT)}` +
+    (event === 'queued' ? '' : where)
   return (
     `TIMING — this call is measured, and you are the only thing that can measure it (#227).\n` +
     `Run this once, before you begin the task work (after any mandatory reads above):\n` +
@@ -617,7 +631,7 @@ async function timedAgent(prompt, opts = {}) {
     noteWorktrees(untimed)
     return untimed
   }
-  const reply = await agent(`${prompt}\n\n${timingInstruction(label)}`, opts)
+  const reply = await agent(`${prompt}\n\n${timingInstruction(label, opts.phase)}`, opts)
   // Every agent call in this workflow goes through here, so this is the one
   // place a worktree can be learned about (#232). Recording at each site that
   // builds a `buildResult` would be the instance fix again — four sites

@@ -8,6 +8,7 @@ import { createGitHubClient, addLabels, addComment, type GitHubClient } from "..
 import { computeACHash } from "../lib/workflow-security";
 import { verifiedPush, leftWorkLocal, type PushOutcome } from "../lib/verified-push";
 import { acProvenance, beginRun } from "./run-attribution";
+import { recordStateWrite } from "../lib/trajectory";
 
 /**
  * ADR-009 acHash over AC *definition* fields only.
@@ -612,7 +613,25 @@ export function writeWorkflowState(sf: string, state: Record<string, unknown>): 
     gates.scope.acHash = hashAcDefinitions(acs);
   }
 
+  // #60 — the one door every state write goes through, which is why the
+  // mutation record lives here rather than at the call sites. Read BEFORE the
+  // write, because afterwards there is nothing left to diff against.
+  //
+  // `null` for a first write, not an empty object: "there was no prior state"
+  // and "the prior state was empty" are different facts and only one of them
+  // is an initial write. A read that throws is also `null` and that is a
+  // deliberate loss — a corrupt prior state must not stop this write, and the
+  // row it produces says `<initial write>`, which is wrong but visibly so
+  // beside a run that already has rows.
+  let before: Record<string, unknown> | null = null;
+  try {
+    before = existsSync(sf) ? (JSON.parse(readFileSync(sf, "utf-8")) as Record<string, unknown>) : null;
+  } catch {
+    before = null;
+  }
+
   writeState(sf, state as WorkflowState);
+  recordStateWrite(sf, before, state, process.env.RUNGATE_AGENT_LABEL || undefined);
 }
 
 // ── Structured workflow authoring (#454) ─────────────────────────────────
