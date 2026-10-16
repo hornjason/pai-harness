@@ -7692,8 +7692,9 @@ directory; the other fixture carried both as well. `test/anti.test.ts` refuses
 exactly those two strings — and could not see these, twice over: its walk
 collects `.ts` files only, *and* skips `test-fixtures`. The consumer-naming
 guard was green for the whole life of the violation, which is the
-exemption-list shape (`.claude/rules/exemption-list-self-reference.md`) in a
-new place.
+first shape in `.claude/rules/checks-must-be-able-to-fail.md` — a check that
+passed because of what it never looked at — reached by an exemption list
+rather than by a bug.
 
 **It had drifted out of the state schema.** Two separate breakages:
 `threshold: {op: ">=", value: 1}` is refused as "effectively always passes",
