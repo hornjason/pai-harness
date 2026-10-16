@@ -324,24 +324,29 @@ describe("SC-1431: the ratchet is data, scoped per check", () => {
  * predicate and must still be measured — and the five reds are five distinct
  * questions, which is what the row is for.
  */
+/**
+ * A throwaway project tree, shared by every case below.
+ *
+ * Module scope rather than per-`describe`, so the two blocks cannot drift
+ * into disagreeing about what a project or a config read looks like.
+ */
+const project = (files: Record<string, string>): string => {
+  const root = mkdtempSync(join(tmpdir(), "rungate-476-"));
+  for (const [rel, body] of Object.entries(files)) {
+    const abs = join(root, rel);
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, body);
+  }
+  return root;
+};
+
+/** One direct config read, in the syntax `classifyConfigSites` calls a use. */
+const READS_CONFIG = [
+  'import { join } from "path";',
+  'export const p = join(process.cwd(), ".claude", "rungate.json");',
+].join("\n");
+
 describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decided", () => {
-  /** A throwaway project tree. Returns its root. */
-  const project = (files: Record<string, string>): string => {
-    const root = mkdtempSync(join(tmpdir(), "rungate-476-"));
-    for (const [rel, body] of Object.entries(files)) {
-      const abs = join(root, rel);
-      mkdirSync(dirname(abs), { recursive: true });
-      writeFileSync(abs, body);
-    }
-    return root;
-  };
-
-  /** One direct config read, in the syntax `classifyConfigSites` calls a use. */
-  const READS_CONFIG = [
-    'import { join } from "path";',
-    'export const p = join(process.cwd(), ".claude", "rungate.json");',
-  ].join("\n");
-
   /**
    * CONFIG-1 by RUNNING IT — `runConfigAccessValidation` in a spawned suite,
    * reading the findings it actually recorded.
@@ -584,5 +589,173 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     expect(src).toContain('existsSync(join(root, "workflows")),');
     // And neither still passes the vacuous waiver.
     expect(src.replace(/\s+/g, " ")).not.toMatch(/unmeasuredScanReason\([^)]*scan\.filesScanned > 0/);
+  });
+});
+
+/**
+ * The evidence walk must agree with the scan about what source IS (#500 review).
+ *
+ * `projectSourceEvidence` answers "should the scan have found something?" So
+ * a file the scan would never read is not an answer to that question, and
+ * every case below is one where the first draft said it was.
+ *
+ * The blocker, found by running the real CLI rather than reasoning about it:
+ * the scaffold writes `tests/scaffold-conformity.test.ts`, which on a
+ * `--profile=minimal` content project is the ONLY code-extension file in the
+ * tree. The walk saw it, reported source present, and CONFIG-1 refused with
+ * "the scan read NO files" — on every scaffolded content project, with no way
+ * out but adding source the project does not want or deleting the suite.
+ * **The file that made the evidence true was the generated suite running the
+ * check.** #476's own complaint, arriving through the fix for the fix.
+ *
+ * Mutation counts for this block are recorded in the #476 docstring above.
+ */
+describe("#500 review: the walk is not wider than the question it answers", () => {
+  const content = (extra: Record<string, string> = {}) =>
+    project({ "README.md": "# docs", "docs/a.md": "# a", ...extra });
+
+  /** The waiver decision, composed exactly as `runConfigAccessValidation` does. */
+  const waived = (root: string): boolean =>
+    unmeasuredScanReason(
+      scanConfigAccess(root),
+      projectSourceEvidence(root),
+      "CONFIG-1",
+      "hand-written TypeScript",
+    ) !== null;
+
+  test("B1: the scaffold's OWN generated suite does not make CONFIG-1 red", () => {
+    // The blocker. Named with the path the generator actually writes, and the
+    // next case holds that name to the generator so this fixture cannot
+    // quietly stop describing reality.
+    const root = content({ "tests/scaffold-conformity.test.ts": "import { x } from 'y';\n" });
+    expect(projectSourceEvidence(root).found, "the generated suite counted as project source")
+      .toBe(false);
+    expect(waived(root), "every scaffolded content project is CONFIG-1 red").toBe(true);
+  });
+
+  test("B1: the fixture above is the path the scaffold really writes", () => {
+    // Without this, B1 is a test about a string I chose. The conformity suite
+    // is written to `test/` or `tests/` depending on which the project has;
+    // both are excluded, and both are asserted so a rename cannot silently
+    // reopen the blocker.
+    const src = readFileSync(join(REPO, "lib", "scaffold", "steps.ts"), "utf-8");
+    expect(src, "the generated suite is no longer named scaffold-conformity.test.ts")
+      .toContain("scaffold-conformity.test.ts");
+    for (const dir of ["test", "tests"]) {
+      const root = content({ [`${dir}/scaffold-conformity.test.ts`]: "export const a = 1;\n" });
+      expect(projectSourceEvidence(root).found, `${dir}/ was treated as project source`).toBe(false);
+    }
+  });
+
+  test("the TEST_DIRS decider, on an input only it reaches", () => {
+    // `tests/scaffold-conformity.test.ts` is caught by BOTH the directory
+    // exclusion and the filename exclusion, so removing either left the other
+    // holding B1 up and each mutation was 0 red — two deciders that agree,
+    // the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`,
+    // found by the count coming back 1 where 3 was predicted.
+    //
+    // This is the directory decider's own input: a helper inside a test
+    // directory whose NAME is not a test file.
+    const root = content({ "tests/helpers/setup.ts": "export const s = 1;\n" });
+    expect(projectSourceEvidence(root).found, "a test helper counted as project source")
+      .toBe(false);
+  });
+
+  test("the test-FILE decider, on an input only it reaches", () => {
+    // And the filename decider's own: a test file that is not in a test
+    // directory. Co-located tests are ordinary in `src/`, and neither
+    // exclusion covers both of these cases.
+    const root = content({ "src/app.test.ts": "import { test } from 'bun:test';\n" });
+    expect(projectSourceEvidence(root).found, "a co-located test counted as project source")
+      .toBe(false);
+  });
+
+  test("B2: tooling in dot-directories is not the project's source", () => {
+    // `containsTypeScript` skipped every entry starting with "." and this walk
+    // replaced it. Dropping that was a silent widening: a release script is
+    // not source, and a content project that has one is still unmeasurable.
+    for (const f of [".eslintrc.js", "prettier.config.js", ".github/scripts/release.js", ".husky/pre-commit.js"]) {
+      const root = content({ [f]: "module.exports = {};\n" });
+      expect(waived(root), `${f} turned a content project CONFIG-1 red`).toBe(true);
+    }
+  });
+
+  test("B3: a DANGLING symlink is empty, not unmeasured", () => {
+    // `unreadable` exists for source that might be hiding behind something we
+    // could not open. A link resolving to nothing cannot hide anything, and
+    // counting it meant one broken link refused CONFIG-1 for the life of the
+    // project.
+    const root = content();
+    symlinkSync("/nonexistent/target", join(root, "docs", "dangling"));
+    const ev = projectSourceEvidence(root);
+    expect(ev.unreadable, "a dangling symlink was recorded as unmeasured").toEqual([]);
+    expect(waived(root)).toBe(true);
+  });
+
+  test("B3: a directory that cannot be opened IS still unmeasured", () => {
+    // The control for the case above, and the reason it is narrowed rather
+    // than deleted. Real source can hide behind a permission error, so that
+    // one must still refuse. Skipped as root, which can open anything.
+    const root = content();
+    const locked = join(root, "locked");
+    mkdirSync(locked, { recursive: true });
+    writeFileSync(join(locked, "app.ts"), "export const a = 1;\n");
+    chmodSync(locked, 0o000);
+    try {
+      if (process.getuid?.() === 0) return;
+      const ev = projectSourceEvidence(root);
+      expect(ev.unreadable, "an unopenable directory was waved through").not.toEqual([]);
+      expect(waived(root), "a tree we could not fully read was waived").toBe(false);
+    } finally {
+      chmodSync(locked, 0o755);
+    }
+  });
+
+  test("B4: the walk does not leave the project", () => {
+    // `found` must not be true because of code that is not in this project.
+    // The consequence of the unbounded version is the interesting one: a link
+    // to `$HOME` or `/` would walk all of it to decide.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-outside-"));
+    mkdirSync(join(outside, "deep"), { recursive: true });
+    writeFileSync(join(outside, "deep", "stray.js"), "export const x = 1;\n");
+    const root = content();
+    symlinkSync(outside, join(root, "extlink"));
+    const ev = projectSourceEvidence(root);
+    expect(ev.examples, "source outside the project was counted as evidence").toEqual([]);
+    expect(ev.found).toBe(false);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("the positive control: F1's layouts are still refused", () => {
+    // Narrowing a detector is the change most likely to buy green with
+    // blindness, so every layout the original review confirmed is re-asserted
+    // here rather than trusted to the cases above.
+    for (const f of ["lib/loader.mjs", "lib/loader.cjs", "src/app.js", "bin/cli.ts", "index.ts"]) {
+      const root = content({ [f]: READS_CONFIG });
+      expect(waived(root), `${f} is real source and was waived`).toBe(false);
+    }
+  });
+
+  test("the refusal NAMES the source that caused it", () => {
+    // `SourceEvidence.examples` was computed and read by nothing — its own
+    // docstring promised "so a refusal can name what went unscanned" and that
+    // was unimplemented. A consumer hitting this got "the scan read NO files"
+    // on a project they believe has no code, with no pointer to the file
+    // responsible. That is the difference between a two-minute fix and an
+    // undiagnosable red, and it is why this residual case is shippable.
+    const root = content({ "docs/assets/search.js": "var x = 1;\n" });
+    const ev = projectSourceEvidence(root);
+    const [refusal] = configAccessViolations(scanConfigAccess(root), {}, "CONFIG-1", true, ev);
+    expect(refusal, "the refusal does not name the file that caused it")
+      .toContain("docs/assets/search.js");
+    expect(refusal, "the refusal does not say the check is blind rather than clean")
+      .toContain("blind rather than satisfied");
+  });
+
+  test("the other control: a pure content project is still waived", () => {
+    // Without this, a walk that found nothing anywhere would satisfy every
+    // case above and CONFIG-1 would waive every project in existence.
+    expect(waived(content())).toBe(true);
+    expect(projectSourceEvidence(content()).found).toBe(false);
   });
 });

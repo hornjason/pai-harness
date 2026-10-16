@@ -9,7 +9,7 @@ import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import { collectSpecFiles } from "./spec-files";
 import { spawnSync } from "child_process";
-import { join, dirname } from "path";
+import { join, dirname, sep } from "path";
 import { fileURLToPath } from "url";
 import { deriveDirectoryName } from "../scripts/split-spec";
 import { readFreshCache } from "./behavioral-cache";
@@ -2886,11 +2886,11 @@ function walkSources(dir: string, rel: string, out: Array<{ path: string; text: 
     const abs = join(dir, e.name);
     const relPath = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) {
-      if (e.name === "test" || e.name === "node_modules") continue;
+      if (TEST_DIRS.has(e.name) || e.name === "node_modules") continue;
       walkSources(abs, relPath, out);
       continue;
     }
-    if (!/\.(ts|js)$/.test(e.name) || /\.test\.ts$/.test(e.name)) continue;
+    if (!/\.(ts|js)$/.test(e.name) || isTestSourceFile(e.name)) continue;
     out.push({ path: relPath, text: readFileSync(abs, "utf-8") });
   }
 }
@@ -3019,13 +3019,28 @@ export function configAccessViolations(
   banked: Record<string, number>,
   label: string,
   requireNonEmpty = true,
+  evidence?: SourceEvidence,
 ): string[] {
   const out: string[] = [];
   if (requireNonEmpty && scan.filesScanned === 0) {
+    // Name the source that made this refusal happen. Without it the consumer
+    // reads "the scan read NO files" on a project they believe has no code,
+    // with nothing pointing at the file responsible — which is the difference
+    // between a two-minute fix and an undiagnosable red. `SourceEvidence`
+    // already collects up to three paths and its docstring has always
+    // promised this; nothing read the field until now.
+    const why = evidence?.found && evidence.examples.length > 0
+      ? ` This project DOES contain source — ${evidence.examples.join(", ")}` +
+        `${evidence.examples.length === 3 ? " (first 3)" : ""} — none of it in the ` +
+        `directories this check reads, so the check is blind rather than satisfied.`
+      : evidence && evidence.unreadable.length > 0
+        ? ` The source walk could not read ${evidence.unreadable.join(", ")}, so ` +
+          `"no code here" could not be established.`
+        : "";
     return [
       `${label}: the scan read NO files. A check that scans nothing reports ` +
         `zero violations and cannot be told from compliance — refusing rather ` +
-        `than reporting clean (ADR-002 D4).`,
+        `than reporting clean (ADR-002 D4).${why}`,
     ];
   }
   if (requireNonEmpty && scan.filesScanned > 0 && scan.bytesScanned === 0) {
@@ -3102,6 +3117,54 @@ const SOURCE_SKIP_DIRS = new Set([
 ]);
 
 /**
+ * Test directories and test files — excluded from BOTH readings, by ADR-002 D4.
+ *
+ * One declaration, consulted by `walkSources` (which produces the scan) and
+ * by `projectSourceEvidence` (which decides whether an empty scan is
+ * believable). **They have to agree.** The evidence walk asks "should the
+ * scan have found something?", so a file the scan would never read is not an
+ * answer to that question.
+ *
+ * The first draft of this fix had them disagree, and the cost was precise:
+ * the scaffold writes `tests/scaffold-conformity.test.ts`, which on a
+ * `--profile=minimal` content project is the ONLY code-extension file in the
+ * tree. The evidence walk saw it, reported source present, and CONFIG-1
+ * refused with "the scan read NO files" — on every scaffolded content
+ * project, unsatisfiably, since the only ways out were adding config-reading
+ * source the project does not want or deleting the suite. **The file that
+ * made the evidence true was the generated suite running the check.** That is
+ * #476's original complaint — a permanently-red check — arriving through the
+ * fix for the fix, measured end-to-end by running the real CLI rather than
+ * reasoned about.
+ */
+const TEST_DIRS = new Set(["test", "tests", "__tests__", "spec", "__mocks__"]);
+export function isTestSourceFile(name: string): boolean {
+  return /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
+}
+
+/**
+ * Tool configuration at the project root is not the project's source.
+ *
+ * `prettier.config.js`, `vite.config.ts`, `jest.config.js`. A policy call,
+ * and it is the one place this walk is deliberately narrower than "any file
+ * with a code extension", so the reasoning is written down rather than
+ * implied:
+ *
+ * The question is "should the scan have read something?" — and the cost of
+ * the two wrong answers is wildly asymmetric. Answering yes wrongly gives
+ * every content project with a prettier config a permanently red, literally
+ * unsatisfiable CONFIG-1, which is the defect #476 was filed about. Answering
+ * no wrongly waives a project whose only direct rungate-config read is inside
+ * a build tool's config file, which is not a thing that happens — these files
+ * configure the tool that loads them and nothing else reads them.
+ *
+ * Root level only. A `src/app.config.ts` is ordinary source and is counted.
+ */
+function isRootToolConfig(rel: string, name: string): boolean {
+  return !rel.includes("/") && /\.config\.[cm]?[jt]s$/.test(name);
+}
+
+/**
  * Whether this project contains code at all, and whether the answer is
  * trustworthy (#476 follow-up).
  *
@@ -3134,6 +3197,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
   // a cycle terminates instead of hanging.
   const seen = new Set<string>();
   const stack: Array<[string, string]> = [[root, ""]];
+  // The walk may not leave the project. A symlink to `$HOME` or `/` would
+  // otherwise make `found` true because of code that is not in this project,
+  // and walk the whole of it to decide that.
+  let rootReal: string;
+  try {
+    rootReal = realpathSync(root);
+  } catch {
+    return { found: false, examples: [], unreadable: ["."] };
+  }
+  const insideProject = (p: string) => p === rootReal || p.startsWith(rootReal + sep);
 
   while (stack.length > 0) {
     const [dir, rel] = stack.pop()!;
@@ -3144,6 +3217,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       unreadable.push(rel || ".");
       continue;
     }
+    if (!insideProject(real)) continue;
     if (seen.has(real)) continue;
     seen.add(real);
 
@@ -3156,6 +3230,13 @@ export function projectSourceEvidence(root: string): SourceEvidence {
     }
     for (const e of entries) {
       if (SOURCE_SKIP_DIRS.has(e.name)) continue;
+      // Tooling lives in dot-directories — `.github/scripts/release.js`,
+      // `.husky/`, `.claude/`. `containsTypeScript` skipped every entry
+      // starting with "." and this walk replaced it, so dropping that was a
+      // silent widening: a release script is not the project's source, and a
+      // content project that has one is not a project CONFIG-1 can measure.
+      if (e.name.startsWith(".")) continue;
+      if (TEST_DIRS.has(e.name)) continue;
       const childRel = rel ? `${rel}/${e.name}` : e.name;
       const abs = join(dir, e.name);
       // `isDirectory()` is false for a symlink, so the stat is what makes a
@@ -3165,13 +3246,25 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         try {
           isDir = statSync(abs).isDirectory();
         } catch {
-          unreadable.push(childRel);
+          // A DANGLING symlink is not unmeasured — it is empty. It resolves
+          // to nothing, so it cannot be hiding source, and counting it would
+          // mean one broken link anywhere in a content project refuses
+          // CONFIG-1 for the rest of the project's life. `unreadable` exists
+          // for the case where source might be behind something we could not
+          // open; that is a permission error on a real directory, not a link
+          // to a file that does not exist.
+          if (existsSync(abs)) unreadable.push(childRel);
           continue;
         }
       }
       if (isDir) {
         stack.push([abs, childRel]);
-      } else if (SOURCE_EXTENSIONS.test(e.name) && !e.name.endsWith(".d.ts")) {
+      } else if (
+        SOURCE_EXTENSIONS.test(e.name)
+        && !e.name.endsWith(".d.ts")
+        && !isTestSourceFile(e.name)
+        && !isRootToolConfig(childRel, e.name)
+      ) {
         if (examples.length < 3) examples.push(childRel);
       }
     }
@@ -3253,6 +3346,8 @@ export function runConfigAccessValidation(root: string) {
         scan,
         readConfigAccessRatchet(root, "sources"),
         "CONFIG-1",
+        true,
+        evidence,
       );
       for (const v of violations) {
         addFinding({
