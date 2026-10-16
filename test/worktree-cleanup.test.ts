@@ -93,10 +93,15 @@ describe("worktree-cleanup", () => {
       removed: ["a", "b"],
       kept: ["c"],
       skipped: ["e"],
+      // #436. Required rather than optional, so a bucket cannot be added to
+      // the classifier and left out of a caller's total — which is #431's
+      // defect, and the reason the summary line reconciles.
+      orphaned: ["f"],
       errors: ["d"],
     };
     expect(result.removed).toEqual(["a", "b"]);
     expect(result.kept).toEqual(["c"]);
+    expect(result.orphaned).toEqual(["f"]);
     expect(result.errors).toEqual(["d"]);
   });
 });

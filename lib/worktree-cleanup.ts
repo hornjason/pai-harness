@@ -9,8 +9,8 @@
  * GitHub issue #564
  */
 
-import { readdirSync, realpathSync, statSync, existsSync } from "fs";
-import { join } from "path";
+import { readdirSync, realpathSync, statSync, existsSync, readFileSync, rmSync } from "fs";
+import { join, isAbsolute } from "path";
 import { spawnSync } from "child_process";
 
 export interface CleanupResult {
@@ -25,12 +25,43 @@ export interface CleanupResult {
    * the gap between two other numbers is a bucket nobody reconciles.
    */
   skipped: string[];
+  /**
+   * Checkouts git has no registration for (#436).
+   *
+   * A directory whose `.git` file names an admin directory that does not
+   * exist. `git worktree remove` cannot touch it — git does not know it is a
+   * worktree — so every pass pushed it to `errors` and moved on. That was the
+   * conservative behaviour and it was also permanent: an error that recurs on
+   * every SessionStart and can never be resolved is indistinguishable from a
+   * log line, which is how a 6.2 MB leftover sat in the report for weeks.
+   *
+   * Its own bucket, so "git could not answer" stays distinct from "there is
+   * nothing to ask git about".
+   */
+  orphaned: string[];
   errors: string[];
 }
 
 export interface CleanupOptions {
   projectRoot: string;
   maxAgeMs?: number;
+  /**
+   * Delete orphaned checkouts rather than only reporting them (#436 SC-5).
+   *
+   * **Default off, and that is the decision rather than an oversight.** This
+   * function's governing asymmetry, already written into the merge check two
+   * hundred lines below, is that treating "not merged" as unsafe costs disk
+   * and treating "merged" as safe can delete work. An orphan is the case
+   * where the question cannot be asked at all: the admin directory is gone,
+   * so `git status` cannot run, and nothing can establish whether the
+   * checkout holds work that exists nowhere else.
+   *
+   * Removing it would therefore be a recursive delete of content this
+   * function has explicitly failed to classify, run unprompted at
+   * SessionStart. So the automatic pass reports; an operator who has looked
+   * passes `removeOrphans: true`. `hooks/StaleTTLCleanup.hook.ts` does not.
+   */
+  removeOrphans?: boolean;
 }
 
 /**
@@ -227,6 +258,59 @@ function realPath(p: string): string {
 }
 
 /**
+ * The admin directory a checkout's `.git` file names, when that directory is
+ * gone — otherwise `null` (#436).
+ *
+ * A linked worktree's `.git` is a FILE reading `gitdir: <path>`. When
+ * `git worktree prune` removes the registration but leaves the checkout, that
+ * path stops existing and every git command run inside the directory fails
+ * with "not a git repository". Nothing else produces that state, which is why
+ * the test is the gitdir rather than the status failure: a status that fails
+ * for any OTHER reason is still an error, because something unexplained
+ * happened and this function has no business deleting anything over it.
+ *
+ * Three things are deliberately NOT orphans:
+ *
+ *   - no `.git` at all — it was never a worktree, and whatever it is, it is
+ *     not this function's to delete;
+ *   - a `.git` DIRECTORY — that is a whole repository someone put here, not a
+ *     linked checkout;
+ *   - a gitdir that exists — the registration is intact and the ordinary
+ *     path applies.
+ *
+ * One exported binding, so there is one thing to mutate.
+ */
+export function orphanedGitdir(worktreePath: string): string | null {
+  const dotGit = join(worktreePath, ".git");
+
+  // ONE decider for "is there a readable `.git` FILE here", and it is this
+  // read. The first draft asked the same question twice more — a `statSync`
+  // whose catch meant "no .git", and an `isFile()` meaning "a real
+  // repository" — and the mutation battery is what showed they were the same
+  // question: dropping `isFile()` measured 0 of 47 red, because a directory
+  // makes this read throw EISDIR and a missing path makes it throw ENOENT,
+  // so the read already returned null for both. Two of the three could be
+  // deleted and no test could tell. See
+  // `.claude/rules/checks-must-be-able-to-fail.md`, fourth shape.
+  //
+  // The direction the catch fails in is the safe one: null means "not an
+  // orphan", and the only thing downstream does with an orphan is offer to
+  // delete it.
+  let contents: string;
+  try {
+    contents = readFileSync(dotGit, "utf-8");
+  } catch {
+    return null; // absent, a directory, or unreadable — none of them is an orphan
+  }
+
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(contents);
+  if (!m) return null; // not the shape git writes; do not guess
+  const gitdir = m[1]!;
+  const resolved = isAbsolute(gitdir) ? gitdir : join(worktreePath, gitdir);
+  return existsSync(resolved) ? null : resolved;
+}
+
+/**
  * Clean up stale git worktrees from .claude/worktrees/.
  *
  * @param opts - Cleanup options with projectRoot and optional maxAgeMs filter
@@ -238,6 +322,7 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     removed: [],
     kept: [],
     skipped: [],
+    orphaned: [],
     errors: [],
   };
 
@@ -303,6 +388,34 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
     const lockReason = lockKeepReason(entry, worktreePath, locked);
     if (lockReason) {
       result.kept.push(lockReason);
+      continue;
+    }
+
+    // #436: git has no registration for this checkout, so every command run
+    // inside it fails and `git worktree remove` cannot touch it. Asked BEFORE
+    // the status call, because the status call is the thing that fails — and
+    // classifying on the failure rather than on the cause would also swallow
+    // every other reason git might refuse.
+    //
+    // The path deleted is the one THIS function built, two lines up, from
+    // `join(worktreesDir, entry)`. Not the gitdir read out of the `.git`
+    // file, which is attacker-controlled in the sense that matters: it is
+    // content, and content must never steer a recursive delete.
+    const missingGitdir = orphanedGitdir(worktreePath);
+    if (missingGitdir !== null) {
+      if (!opts.removeOrphans) {
+        result.orphaned.push(
+          `${entry} (git has no registration — ${missingGitdir} is gone; ` +
+            `nothing can read whether this checkout holds unique work, so it is reported rather than deleted)`,
+        );
+        continue;
+      }
+      try {
+        rmSync(worktreePath, { recursive: true, force: true });
+        result.orphaned.push(`${entry} (removed — git had no registration)`);
+      } catch (err) {
+        result.errors.push(`Failed to remove orphaned ${entry}: ${err}`);
+      }
       continue;
     }
 
@@ -419,13 +532,16 @@ export async function cleanupWorktrees(opts: CleanupOptions): Promise<CleanupRes
   }
 
   // Log summary
-  // All four buckets. `removed + kept + skipped + errors` is the number of
-  // entries examined, which is the property test/worktree-cleanup-orphans
-  // asserts — a summary that cannot be reconciled against the directory is
-  // how 149 worktrees hid behind "144 kept" (#431).
+  // All FIVE buckets. `removed + kept + skipped + orphaned + errors` is the
+  // number of entries examined, which is the property
+  // test/worktree-cleanup-orphans asserts — a summary that cannot be
+  // reconciled against the directory is how 149 worktrees hid behind
+  // "144 kept" (#431). #436 added `orphaned` and this line in the same
+  // change, because a bucket missing from the total is that defect again.
   console.log(
     `Worktree cleanup: ${result.removed.length} removed, ${result.kept.length} kept, ` +
-    `${result.skipped.length} skipped, ${result.errors.length} error(s)`,
+    `${result.skipped.length} skipped, ${result.orphaned.length} orphaned, ` +
+    `${result.errors.length} error(s)`,
   );
 
   return result;
