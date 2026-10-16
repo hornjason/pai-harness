@@ -1720,7 +1720,11 @@ Run the ${gateName} gate and classify any failures:
 ${gateName} gate failed. Category: ${result.category || 'unknown'}
 Failures: ${(result.failures || []).join('\n')}
 Read ${HARNESS_ROOT}/gates/SCHEMA-GUIDE.md. Read ${WORK_DIR}/workflow-state.json.
-Read ${PROJECT_ROOT}/.claude/rungate.json for environment config.
+Read ${WORK_DIR}/resolved-config.json for environment config — that is this run's
+resolved config, written by scripts/resolve-config.ts at setup. Do NOT read the
+project's own config file: it may be in either of two layouts, only one of which
+has the name you would guess, and the keys in it are the authored spellings
+rather than the normalised ones every other instruction here uses.
 ${healContext}
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"

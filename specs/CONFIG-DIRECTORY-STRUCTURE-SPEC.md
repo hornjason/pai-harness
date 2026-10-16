@@ -644,3 +644,83 @@ which is a sentence an operator can act on.
 - [x] SC-1681: test/test-baseline-unmeasured.test.ts contains [an unmeasured reading records no number - the reason cannot sit beside a zero] — the recording half, executed: an honest reading buys nothing if the lines that store it write a `0` anyway, and a `captureTestBaseline` test cannot see that
 - [x] SC-1682: test/test-baseline-unmeasured.test.ts contains [a later measured reading clears the earlier reason - the two keys are exclusive] — both directions over one object, because a recorder that only ever adds leaves a stale reason beside a fresh number and the verify gate gets two answers to pick from
 - [x] SC-1683: test/test-baseline-unmeasured.test.ts contains [the verify gate separates an unmeasured baseline from a measured zero] — they subtract the same nothing, so the arithmetic cannot tell them apart and this decider is the only place that can; the subtraction #599 added is asserted in the same test, clamped
+
+### What was broken to prove it (SC-1672..SC-1683)
+
+Run and counted over `test/test-baseline-unmeasured.test.ts` and
+`test/ship-local-env-clause.test.ts` (17 tests, 0 red). Every count was
+predicted before the mutation ran.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the old reader restored verbatim — the defect | 6 | 6 |
+| `parseTestFailureCount` returns `0` where it returned `null` | 2 | 2 |
+| `recordTestBaseline` writes `0` beside the reason | 1 | 1 |
+| `baselineAdjustment` drops the unmeasured branch | 1 | 1 |
+| `localEnvClause` offers SKIP whether a URL resolved or not | 2 | 2 |
+| `localEnvClause` ignores its `field` argument | 1 | 1 |
+| the measured branch stops clearing a stale reason | 1 | 1 |
+
+No zeros, no misses. None is left in the tree; all were run and reverted.
+
+The first row is the one worth reading. Restoring the old reader turns SIX of
+seventeen red, and five of the six are cases this repo could never have
+produced: a consumer on the directory layout, a consumer spelling the command
+`dev.testCmd`, a runner that is not bun, a project with no config, and a suite
+that exits non-zero. The sixth — a genuinely clean suite — stays GREEN under
+the mutation, because the broken reader and the fixed one agree there. That is
+the whole shape of the defect in one row: the only case rungate's own config
+exercises is the only case the two readers answer the same way.
+
+The last three rows are the propagation, and they exist because the mutation
+battery is what forced them out of an `if/else` inside `executeGate`. An
+inline branch nothing can call scores 0 red — correctly — and a 0 there would
+have been read as "the tripwire costs nothing", rather than as "nothing
+asserts this".
+
+### A heal round that removes a test (#307 SC-A19)
+
+A heal agent is told a gate failed and asked to make it pass. Deleting the
+test is a correct solution to that instruction and an incorrect solution to
+the problem, and nothing downstream can tell the two apart: a suite with the
+failing test removed is green, and green is what it asked for.
+
+Run `wf_5cdce852-1e2` went from 34 tests to 23 across two heal rounds — no
+`skip` recorded, no `todo` recorded, three guards with nothing replacing them,
+and `SECURITY_REVIEW_STALE` was the only thing that noticed, while looking at
+something else. Those three guards are back in
+`test/adr-002-regression-guards.test.ts` (#314). This is the mechanism for the
+fourth.
+
+**Where it lives, and why not in the workflow.** `workflows/ship.js` has no
+filesystem access and could only have asked an agent to check. A guard whose
+subject is an agent's edits cannot be an instruction to an agent. Every heal
+round ends in a gate re-run, so "since the last gate run" and "across a heal"
+are the same window — the census is taken by `gates/gate-executor.ts` on every
+gate and compared to the one the previous run banked.
+
+**Three decisions worth stating, because each is a way the guard could have
+been decorative:**
+
+1. **Declarations, not passing tests.** Running the suite twice per heal round
+   costs this project about thirteen minutes a round, and "the number of
+   passing tests went down" also moves when a heal legitimately fixes a
+   failure. The question actually asked is whether a test stopped existing.
+   `.skip` and `.todo` count, because converting a failing test to `test.todo`
+   removes the check just as thoroughly and is the cheapest way past a count
+   that only looked at live ones. Comments are not stripped, for the same
+   reason.
+2. **The first reading is not a pass.** A run with nothing to compare has not
+   been checked. A verdict that answered `no-regression` there would be the
+   reading nobody took wearing the answer's clothes.
+3. **A refused round does not bank the reduced census.** Banking the tree the
+   deletion produced would make the next round compare against it, find no
+   regression, and clear the refusal — a guard you only have to get past once.
+   The reading stays where it was until the test comes back.
+
+- [x] SC-1684: test/test-census.test.ts contains [skipped and todo tests are counted - converting one is removing it] — `test.todo` is the cheapest way past a counter that only sees live tests, and commented-out is covered by the same decision not to strip comments
+- [x] SC-1685: test/test-census.test.ts contains [a word ending in test is not a test - the counter is anchored] — `subtest(`, `re.test(` and `latest` are asserted at zero while all five declaration forms bun uses are counted in one expression, so narrowing the pattern cannot quietly drop one
+- [x] SC-1686: test/test-census.test.ts contains [a deleted file is a regression of its whole count] — the obvious way past a per-file comparison, since a loop over the later census never visits a file that is gone; both numbers are named because "a file lost tests" is not actionable
+- [x] SC-1687: test/test-census.test.ts contains [the census reads real files on disk - and only test files] — the comparison is pure and could be right over a census nobody took, so this is the arm that says the walk reaches a subdirectory and stops at non-test sources carrying the same token
+- [x] SC-1688: test/test-census.test.ts contains [the first reading of a run is not a pass] — nothing to compare and nothing removed are different verdicts, asserted beside both real answers
+- [x] SC-1689: test/test-census.test.ts contains [a refused round does not bank the reduced census] — and restoring the test clears it, because a guard with no way out gets deleted rather than satisfied

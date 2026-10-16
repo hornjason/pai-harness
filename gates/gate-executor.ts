@@ -14,6 +14,7 @@ import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import { DEFAULT_TEST_TIMEOUT, resolveConfig } from "../lib/config-loader";
+import { censusOf, censusRegressions } from "../lib/test-census";
 import {
   slugExists,
   shouldRebuildContainer,
@@ -232,6 +233,55 @@ export function recordTestBaseline(
     delete baselines.testBaseline;
     baselines.testBaselineUnmeasured = reading.reason;
   }
+}
+
+/** What a gate run does about the tests that existed when it last looked. */
+export type CensusVerdict =
+  | { kind: "first-reading"; files: number }
+  | { kind: "no-regression"; files: number }
+  | { kind: "regression"; regressions: string[] };
+
+/**
+ * Whether tests disappeared since the last gate run (#307 SC-A19).
+ *
+ * Every heal round ends in a gate re-run, so "since the last gate run" and
+ * "across a heal" are the same window. A heal agent is told a gate failed and
+ * asked to make it pass; deleting the test is a correct solution to that
+ * instruction and an incorrect solution to the problem, and nothing
+ * downstream can tell, because a suite with the failing test removed is green
+ * and green is what it asked for. Run `wf_5cdce852-1e2` went from 34 tests to
+ * 23 across two rounds with no `skip` and no `todo` recorded.
+ *
+ * `first-reading` is NOT a pass. There is nothing to compare on the first
+ * gate run of a run, and a verdict that said "no regression" there would be
+ * the reading nobody took wearing the answer's clothes — the whole subject of
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+export function censusVerdict(
+  previous: Record<string, number> | undefined,
+  current: Record<string, number>,
+): CensusVerdict {
+  const files = Object.keys(current).length;
+  if (!previous || Object.keys(previous).length === 0) return { kind: "first-reading", files };
+  const regressions = censusRegressions(previous, current);
+  return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+}
+
+/**
+ * The reading to carry into the next gate run (#307 SC-A19).
+ *
+ * A regression does NOT bank the reduced census. Banking it would make the
+ * next round compare against the tree the deletion produced, so a second
+ * round would find no regression and the refusal would clear itself — a
+ * guard that forgets what it refused is a guard you only have to get past
+ * once.
+ */
+export function nextCensus(
+  previous: Record<string, number> | undefined,
+  current: Record<string, number>,
+  verdict: CensusVerdict,
+): Record<string, number> {
+  return verdict.kind === "regression" ? (previous ?? current) : current;
 }
 
 /** What the verify gate does with whatever scope recorded (#307). */
@@ -1989,6 +2039,37 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // Parse results
   let { passes, fails, warns, results } = parseGateResults(testOutput, earlyResults, earlyFails);
+
+  // Did a heal round delete a test? (#307 SC-A19)
+  //
+  // Runs on every gate, not just verify: a heal round ends in a gate re-run
+  // whichever gate it was healing, and the scope gate heals too.
+  {
+    const current = censusOf(state.projectRoot || process.cwd());
+    state.gateContract = state.gateContract || {};
+    const verdict = censusVerdict(state.gateContract.testCensus, current);
+    state.gateContract.testCensus = nextCensus(state.gateContract.testCensus, current, verdict);
+
+    if (verdict.kind === "regression") {
+      fails++;
+      results.push({
+        check: "test-census: a round removed tests",
+        result: "FAIL" as const,
+        detail:
+          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
+          `is not a gate that passed. Restore the test, or say in the PR which check ` +
+          `replaced it (#307 SC-A19).`,
+      });
+      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
+    } else if (verdict.kind === "first-reading") {
+      // Said out loud rather than passed quietly: a run with nothing to
+      // compare has not been checked, and silence is how that becomes
+      // "checked and clean".
+      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
+    } else {
+      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
+    }
+  }
 
   // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
   if (gate === "verify") {

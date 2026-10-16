@@ -540,6 +540,14 @@ export const WorkflowStateSchema = z.object({
   phaseTimings: z.record(z.string(), z.array(PhaseTimingEntry)).optional(),
 
   gateContract: z.object({
+    /**
+     * How many tests each file declared at the last gate run (#307 SC-A19).
+     *
+     * Carried across gate runs so a heal round that deletes a test is
+     * visible to the re-run that follows it. Not banked when a regression
+     * is found — see `nextCensus`.
+     */
+    testCensus: z.record(z.string(), z.number()).optional(),
     environments: z.any().optional(),
     verdicts: z.any().optional(),
     evidence: z.any().optional(),
