@@ -41,6 +41,8 @@ const shipSource = readFileSync(SHIP, "utf-8");
 
 const START = "// ──── SCOPE-VERDICT-START ────";
 const END = "// ──── SCOPE-VERDICT-END ────";
+const QUALITY_START = "// ──── DRY-RUN-EVIDENCE-QUALITY-START ────";
+const QUALITY_END = "// ──── DRY-RUN-EVIDENCE-QUALITY-END ────";
 
 // ── extraction ───────────────────────────────────────────────
 
@@ -78,6 +80,12 @@ const SITES = {
   declResult: /^let scopeResult = .+$/m,
   gateRan: /^ {2}scopeRan = true$/m,
   verdict: /^const scopeVerdict = scopeVerdictFor\(scopeRan, scopeResult\)$/m,
+  // #59 SC-4 added two statements between the verdict and the refusal, and the
+  // refusal now reads both. They are lifted rather than stubbed for the same
+  // reason everything else here is: a stub would let the refusal's failure list
+  // be wrong without this file noticing.
+  declFailures: /^const scopeFailures = .+$/m,
+  declQuality: /^const evidenceQuality = .+$/m,
   // #232 routed the refusal through terminalFailure, which preserves the
   // run's worktrees before returning. The claim is unchanged; the anchor
   // follows the call.
@@ -86,11 +94,15 @@ const SITES = {
   payload: /^ {4}scopeResult: .+,$/m,
 };
 
-function verdictBlock(source: string): string {
-  const a = source.indexOf(START);
-  const b = source.indexOf(END);
-  if (a < 0 || b <= a) throw new Error("workflows/ship.js is missing the SCOPE-VERDICT markers");
+function markedBlock(source: string, start: string, end: string, label: string): string {
+  const a = source.indexOf(start);
+  const b = source.indexOf(end);
+  if (a < 0 || b <= a) throw new Error(`workflows/ship.js is missing the ${label} markers`);
   return source.slice(a, b);
+}
+
+function verdictBlock(source: string): string {
+  return markedBlock(source, START, END, "SCOPE-VERDICT");
 }
 
 /** The verdict chooser, extracted from its markers and executed. */
@@ -124,11 +136,14 @@ type ScopeOutcome = { logged: string | null } & (
 async function runScopeBlock(source: string, opts: { gateRan: boolean; gateResult?: unknown }): Promise<ScopeOutcome> {
   const parts: Array<{ index: number; code: string }> = [
     { index: source.indexOf(START), code: verdictBlock(source) },
+    { index: source.indexOf(QUALITY_START), code: markedBlock(source, QUALITY_START, QUALITY_END, "DRY-RUN-EVIDENCE-QUALITY") },
   ];
   for (const [key, label] of [
     ["declRan", "the observed-ran declaration"],
     ["declResult", "the scopeResult declaration"],
     ["verdict", "the verdict computation"],
+    ["declFailures", "the scope failure list"],
+    ["declQuality", "the evidence-quality reading"],
     ["refusal", "the SCOPE_FAILED refusal"],
     ["log", "the operator log line"],
   ] as const) {

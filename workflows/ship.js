@@ -96,6 +96,28 @@ const GATE_RESULT_SCHEMA = {
     failures: { type: 'array', items: { type: 'string' } },
     category: { type: 'string', enum: ['STATE', 'CODE', 'DISCOVERY', 'ENVIRONMENT', 'NON_RETRYABLE'] },
     regressionTarget: { type: 'string', enum: ['BUILD', 'DISCOVERY'] },
+    // #59 SC-4 — `state.evidencePrevalidation`, carried out of
+    // workflow-state.json rather than inferred from `result`.
+    //
+    // The scope gate STAMPS this reading (gate-executor.ts:1087) and does not
+    // REFUSE on it: `prevalidationViolations` is behind `isVerifyPlus()`, so
+    // at SCOPE it returns before asserting. A scope PASS therefore carries no
+    // information about whether the ACs' evidence commands run, and a dry-run
+    // report deriving one from the other would be green for a reason that has
+    // nothing to do with the evidence being sound.
+    //
+    // ship.js has no filesystem (#69), so the channel is the agent already
+    // reading workflow-state.json at step 2 of runGateWithHeal — the same
+    // channel `BUILD_RESULT_SCHEMA.worktreePath` uses for the same reason.
+    // Absent reads as UNMEASURED, never as PASS.
+    evidencePrevalidation: {
+      type: 'object',
+      properties: {
+        verdict: { type: 'string', enum: ['PASS', 'FAIL', 'UNMEASURED'] },
+        brokenAcs: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['verdict'],
+    },
   },
   required: ['result'],
 }
@@ -1739,6 +1761,12 @@ Run the ${gateName} gate and classify any failures:
    console.log(JSON.stringify(classifyFailures(f)));
    " 2>&1
 4. Report: result (PASS/FAIL), failures list, category, regressionTarget
+5. Also report evidencePrevalidation, copied from \`state.evidencePrevalidation\`
+   in that same workflow-state.json: {verdict, brokenAcs}, where brokenAcs is
+   the \`id\` of every entry in its \`acs\` array whose \`status\` is "broken".
+   If the key is absent, report verdict "UNMEASURED" and brokenAcs []. Do NOT
+   infer the verdict from whether the gate passed — the scope gate records this
+   reading without refusing on it, so the two are independent (#59).
     `, { label: `${gateName}-${attempt}`, phase: phaseName, schema: GATE_RESULT_SCHEMA })
 
     if (!result || result.result === 'PASS') return gateExit(result)
@@ -2806,6 +2834,100 @@ function scopeVerdictFor(ran, result) {
 }
 // ──── SCOPE-VERDICT-END ────
 
+// ──── DRY-RUN-EVIDENCE-QUALITY-START ────
+/**
+ * What a dry run can honestly say about the quality of its ACs' evidence
+ * (#59 SC-4).
+ *
+ * `prevalidateEvidence` already runs every AC's evidence command against the
+ * tree before anything is implemented (#235), and `prevalidationViolations`
+ * already refuses on the result. What #59 asked for and never got is that
+ * answer reaching the dry run's REPORT — the caller of a dry run gets sizing,
+ * an AC list and a scope verdict, and has to open `workflow-state.json` to
+ * learn whether any of those ACs can be satisfied at all.
+ *
+ * **A scope PASS is NOT evidence that the evidence commands run**, and the
+ * first draft of this function said it was. The scope gate STAMPS the reading
+ * — `stampEvidencePrevalidation(state, "scope")` at gate-executor.ts:1087 —
+ * but the check that REFUSES on it, `prevalidationViolations` in
+ * gates/workflow.test.ts, sits behind `if (!isVerifyPlus()) return`, and
+ * `isVerifyPlus` is `["VERIFY","SHIP","DONE"]`. At SCOPE the check returns
+ * before it asserts anything. So deriving PASS from a scope PASS would have
+ * been a report that passed because of what it never looked at — the defect
+ * this repo names in `.claude/rules/checks-must-be-able-to-fail.md`, written
+ * into the one function whose docstring claimed it had ruled it out.
+ *
+ * The reading is therefore CARRIED, not inferred. `workflows/ship.js` has no
+ * filesystem (#69), so the channel is the gate agent, which already reads
+ * `workflow-state.json` at step 2 of `runGateWithHeal` — the same channel
+ * `BUILD_RESULT_SCHEMA`'s `worktreePath` uses, for the same reason, and for
+ * the same facts-about-a-place-the-sandbox-cannot-see purpose.
+ *
+ * **Absent is UNMEASURED, never PASS.** A gate that reported no reading, a
+ * tier whose scope gate never ran, a verdict this does not recognise: all
+ * UNMEASURED, all carrying a reason saying which. `0`, `{}` and silence are
+ * indistinguishable from success and `UNMEASURED` is not —
+ * `.claude/rules/config-access.md` calls the alternative Silent Default
+ * Substitution.
+ *
+ * The one thing this DOES mirror from `prevalidationViolations` is that a
+ * `PASS` carrying broken ids is a contradiction rather than a pass. Two
+ * deciders answering one question would be the fourth shape in that rules
+ * file, so the shared case is written down as deliberate: this is a report
+ * and that is a refusal, they run at different phases, and the test pins both
+ * against the same input.
+ */
+function dryRunEvidenceQuality(reading, scopeVerdict, failures) {
+  // Any scope failure that names the pre-validation is a blocker in its own
+  // right, independently of what the reading says — at SCOPE nothing produces
+  // one today, but a later phase change that starts refusing here must show
+  // up in the report rather than being filtered out of it.
+  const named = (Array.isArray(failures) ? failures.map(String) : []).filter(l =>
+    l.includes('evidencePrevalidation') || l.includes('evidence pre-validation'))
+  // A gate that refused BY NAME has measured the thing and found it wanting.
+  // That outranks every reading below it, including a reading that says PASS,
+  // and it is checked first so no later branch can return PASS over the top
+  // of a refusal the gate actually issued.
+  if (named.length > 0) return { status: 'FAIL', blockers: named }
+
+  const unmeasured = reason => ({ status: 'UNMEASURED', blockers: [], reason })
+
+  if (scopeVerdict === 'SKIPPED') {
+    return unmeasured('the scope gate did not run on this tier, so nothing pre-validated the ' +
+      "ACs' evidence commands")
+  }
+  if (!reading || typeof reading !== 'object') {
+    return unmeasured('the scope gate reported no evidence pre-validation reading, and the gate ' +
+      'does not refuse on one at SCOPE (the check is behind isVerifyPlus), so nothing else ' +
+      'would have noticed')
+  }
+
+  const broken = (Array.isArray(reading.brokenAcs) ? reading.brokenAcs : []).map(String).filter(Boolean)
+
+  if (reading.verdict === 'FAIL') {
+    return {
+      status: 'FAIL',
+      blockers: broken.length > 0
+        ? [`evidence pre-validation: FAIL — broken evidence commands on ${broken.join(', ')}`]
+        : ['evidence pre-validation: FAIL — but no broken AC ids were reported, so the report ' +
+           'cannot name what to fix'],
+    }
+  }
+  if (reading.verdict === 'PASS') {
+    return broken.length > 0
+      ? {
+          status: 'FAIL',
+          blockers: [
+            `evidence pre-validation: PASS reported alongside broken evidence commands on ${broken.join(', ')}`,
+          ],
+        }
+      : { status: 'PASS', blockers: [] }
+  }
+  return unmeasured(`the evidence pre-validation verdict was ${JSON.stringify(reading.verdict)}, ` +
+    'which is not a measurement of whether the evidence commands run')
+}
+// ──── DRY-RUN-EVIDENCE-QUALITY-END ────
+
 // Whether the scope gate actually ran this run, and what it said. The result
 // starts as `null` and not as a verdict: a value nobody measured must not be
 // reportable (#276).
@@ -2833,18 +2955,30 @@ This validates via Zod at write time — you get immediate error feedback.`)
   scopeRan = true
 }
 const scopeVerdict = scopeVerdictFor(scopeRan, scopeResult)
-if (scopeVerdict === 'FAIL') return await terminalFailure('SCOPE_FAILED', { failures: scopeResult?.failures || [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`] })
+const scopeFailures = scopeResult?.failures || (scopeVerdict === 'FAIL' ? [`scope gate returned no usable verdict: ${JSON.stringify(scopeResult)}`] : [])
+const evidenceQuality = dryRunEvidenceQuality(scopeResult?.evidencePrevalidation, scopeVerdict, scopeFailures)
+
+// A dry run that fails scope never reaches its own report — this return is
+// ABOVE the `if (DRY_RUN)` block, which is the whole reason the reading is
+// attached here too (#59 SC-4). The blockers a dry run most needs to see are
+// exactly the ones that stop it, so a report that only the passing path gets
+// is a report nobody in trouble ever reads.
+if (scopeVerdict === 'FAIL') return await terminalFailure('SCOPE_FAILED', { failures: scopeFailures, evidenceQuality })
 log(`Scope: ${scopeVerdict}`)
 
 if (DRY_RUN) {
   log('DRY RUN — stopping after scope. No agents will be spawned.')
+  log(`Evidence quality: ${evidenceQuality.status}${evidenceQuality.reason ? ` — ${evidenceQuality.reason}` : ''}`)
   return {
     status: 'DRY_RUN_COMPLETE',
     issue: ISSUE, slug: SLUG,
     sizing: discovery.sizing, ceremonyTier: discovery.ceremonyTier,
+    acCount: discovery.acs.length,
     acs: discovery.acs.map(ac => ({ id: ac.id, type: ac.type, statement: ac.statement })),
     priorWork: discovery.priorWork,
     scopeResult: scopeVerdict,
+    evidenceQuality,
+    blockers: evidenceQuality.blockers,
     workDir: WORK_DIR,
   }
 }

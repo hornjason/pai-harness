@@ -6984,3 +6984,110 @@ the same mistake this section is about:
   refusals are placeholders, unfalsifiable claims and a standing table that
   disagrees with the claims, and a document can satisfy either syntax and
   still fail all three.
+## A dry run that reports what its evidence is worth (#59 SC-4, SC-5)
+
+`DRY_RUN` stops `workflows/ship.js` after scope and returns a payload. Before
+this, the payload held sizing, the ceremony tier, the AC list, prior work and
+the scope verdict — and said nothing about whether any of those ACs could be
+satisfied. `lib/evidence-prevalidator.ts` had already run every AC's evidence
+command against the tree (#235, SC-618..620) and the scope gate had already
+stamped the result onto `workflow-state.json`. The answer existed and never
+reached the report. A caller doing a dry run to find out whether an issue was
+shippable had to open the state file to find out.
+
+### The draft derived PASS from the scope verdict, and that was wrong
+
+The first `dryRunEvidenceQuality` took `scopeVerdict === 'PASS'` as proof that
+the pre-validation reading was clean. The reasoning was that
+`prevalidationViolations` refuses an absent reading, an `UNMEASURED` one, a
+`FAIL`, any verdict that is not `PASS`, and a `PASS` carrying broken ids — so a
+scope gate that passed could not be concealing a bad one. Every clause of that
+is true **of the function** and false **of the gate**:
+
+```ts
+test("evidence-prevalidation: AC evidence commands pre-validated before ship", () => {
+  if (!isVerifyPlus()) return;          // ["VERIFY", "SHIP", "DONE"]
+```
+
+At SCOPE the check returns before it asserts anything. The reading is taken
+there — `stampEvidencePrevalidation(state, "scope")`, gate-executor.ts:1087 —
+and refused on two phases later. A scope PASS therefore carries no information
+about the evidence commands at all, and the draft would have reported `PASS`
+for a run whose every AC was unwinnable. That is the defect class in
+`.claude/rules/checks-must-be-able-to-fail.md`, written into the one function
+whose docstring claimed to have ruled it out, and caught only by going to read
+`isVerifyPlus` rather than trusting the refusal list.
+
+It is pinned as a fact about `gates/workflow.test.ts` rather than left as a
+comment. If the scope gate ever does start refusing on the reading, SC-1724
+goes red and whoever makes that change has to decide deliberately whether the
+report may derive anything from the verdict.
+
+### So the reading is carried, not inferred
+
+`workflows/ship.js` has no filesystem (#69), so the channel is the gate agent,
+which already reads `workflow-state.json` at step 2 of `runGateWithHeal`. The
+same channel `BUILD_RESULT_SCHEMA.worktreePath` uses, for the same reason:
+`GATE_RESULT_SCHEMA` gains an optional `evidencePrevalidation: {verdict,
+brokenAcs}`, and the gate prompt asks for it by name with an explicit
+instruction not to infer the verdict from whether the gate passed.
+
+Absent reads as `UNMEASURED` with a reason, never as `PASS`. `0`, `{}` and
+silence are indistinguishable from success and `UNMEASURED` is not — the
+Silent Default Substitution anti-pattern in `.claude/rules/config-access.md`.
+
+The one branch shared with `prevalidationViolations` is that a `PASS` carrying
+broken ids is a contradiction. Two deciders agreeing is the fourth shape in
+`.claude/rules/checks-must-be-able-to-fail.md`, so the split is written down:
+that one REFUSES a run at VERIFY, this one LABELS a report at SCOPE, they read
+different inputs at different phases, and neither can cover the other's case.
+
+### The refusal gets the report too
+
+`if (scopeVerdict === 'FAIL') return await terminalFailure('SCOPE_FAILED', …)`
+sits ABOVE the `if (DRY_RUN)` block. A dry run whose scope gate fails never
+reaches its own report, so the reading is attached to the `SCOPE_FAILED`
+detail as well. A report only the passing path receives is a report nobody in
+trouble ever reads.
+
+### Mutations, predicted before running and measured after
+
+Over `test/dry-run-evidence-quality.test.ts` + `test/ship-scope-verdict.test.ts`
+(35 tests).
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| `dryRunEvidenceQuality` returns `{status:'PASS', blockers: []}` for everything | 4 | **5** |
+| the absent-reading branch returns `PASS` instead of `UNMEASURED` — the draft's bug | 2 | 2 |
+| the `PASS`-with-broken-ids contradiction branch deleted | 1 | 1 |
+| `evidencePrevalidation` dropped from `GATE_RESULT_SCHEMA` | 1 | 1 |
+| the gate prompt stops asking the agent for the reading | 1 | 1 |
+| `evidenceQuality` dropped from the `SCOPE_FAILED` detail | 1 | 1 |
+| `acCount` hard-wired to `2` | 1 | 1 |
+
+None of the seven is left in the tree; all were run and reverted.
+
+**The row that came back high.** The first row was predicted 4 and measured 5,
+and the extra red is SC-1724 — the test this file describes as pinning a fact
+about `gates/workflow.test.ts`. It also carries a behavioural tail
+(`expect(quality(undefined, "PASS", []).status).not.toBe("PASS")`), which is
+the half that makes the source-text half mean anything, and it was filed
+mentally under "source-text test" when the prediction was written. Extra reds
+in cases that genuinely depend on the mutated behaviour means the prediction
+was wrong and the check is better than it looked, not that the mutant is
+broken — the discriminator in
+`.claude/rules/checks-must-be-able-to-fail.md`. All five reds are the five
+behavioural cases of the function, which is the correct set.
+
+### Success criteria
+
+- [x] SC-1721: test/dry-run-evidence-quality.test.ts contains [no reading means UNMEASURED - and a scope PASS does not upgrade it] — eight shapes of silence are each asserted UNMEASURED with a reason, and a real PASS reading still reports PASS so "always UNMEASURED" does not satisfy the row
+- [x] SC-1722: test/dry-run-evidence-quality.test.ts contains [a FAIL reading names the broken ACs - and says so when it cannot] — a FAIL with no ids is still a FAIL carrying a blocker saying it cannot name what to fix, because an empty blocker list reads identically to a clean run
+- [x] SC-1723: test/dry-run-evidence-quality.test.ts contains [a PASS carrying broken ACs is a contradiction - not a pass] — and the branch it shares with `prevalidationViolations` is asserted in both files, with the reason the pair is not one decider written down
+- [x] SC-1724: test/dry-run-evidence-quality.test.ts contains [a scope PASS entails nothing about the evidence - the gate does not check it there] — the reading is stamped at scope and refused on at VERIFY+, so the draft's derivation was unsound; this turns red if that ever changes
+- [x] SC-1725: test/dry-run-evidence-quality.test.ts contains [a gate refusal naming the pre-validation outranks the reading it carries] — and an unrelated scope failure is not a blocker of the evidence
+- [x] SC-1726: test/dry-run-evidence-quality.test.ts contains [the dry-run payload carries sizing - AC count - evidence quality and blockers] — ship.js's own `if (DRY_RUN)` block is executed over a planted run, and the AC count is re-measured against a one-AC discovery so a hard-wired literal fails
+- [x] SC-1727: test/dry-run-evidence-quality.test.ts contains [the reading is attached to the refusal a blocked dry run actually takes] — the `SCOPE_FAILED` return precedes the `DRY_RUN` block, which is asserted by index rather than assumed
+- [x] SC-1728: test/dry-run-evidence-quality.test.ts contains [the gate result schema declares the field the reading crosses on] — `GATE_RESULT_SCHEMA` is evaluated rather than grepped, and the prompt must ask for the reading rather than for an opinion
+- [x] SC-1729: test/dry-run-evidence-quality.test.ts contains [nothing before the dry-run return creates a branch or comments on the issue] — #59 SC-5, enumerated over the executed prefix with a planted positive control
+- [x] SC-1730: test/dry-run-evidence-quality.test.ts contains [each marker appears exactly once and the block runs on every run] — and a duplicated marker is refused rather than silently sliced
