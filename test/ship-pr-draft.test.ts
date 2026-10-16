@@ -373,3 +373,60 @@ describe("#46: CI's verdict decides whether the PR stops being a draft", () => {
     expect(readiness("SHIPPED_AND_PROVEN", OPENED, undefined).action).toBe("LEAVE_DRAFT");
   });
 });
+
+/**
+ * #46 — the undraft is enforced by the shell, not by a reply.
+ *
+ * Covers SC-1776, SC-1777 (HARNESS-STANDARD.md).
+ *
+ * `prReadiness` above decides on a CI reading that reached the workflow as
+ * text an agent typed. A step that answered `{verdict:"PASS"}` without running
+ * anything gets past every branch of it, and nothing downstream could tell —
+ * which would make the CI gate exactly the kind of check #46 was filed to
+ * replace, one layer up.
+ *
+ * `workflows/ship.js` cannot close that itself: no filesystem, no subprocess
+ * (#69). What it can do is make the undraft require a live pass, by chaining
+ * `pr-ready` behind `ci-status` in one shell command. The `&&` is the
+ * enforcement; `prReadiness` is the record.
+ */
+describe("#46: the undraft cannot happen without a live CI pass", () => {
+  const PROVE_TAIL = shipSource.slice(shipSource.indexOf("label: 'ci-verify'"));
+
+  test("SC-1776: pr-ready is chained behind ci-status and never issued alone", () => {
+    const chain = /ci-status[^\n]*\\\s*\n\s*&&\s*bun [^\n]*pr-ready/;
+    expect(PROVE_TAIL, "the ci-status && pr-ready chain is gone").toMatch(chain);
+
+    // Every `pr-ready` invocation in the undraft step is either the chained
+    // one or the no-workflows branch. A third, unchained one would be the
+    // bypass — it reads as a harmless duplicate and undoes the whole thing.
+    const invocations = [...PROVE_TAIL.matchAll(/bun scripts\/github-op\.ts pr-ready/g)];
+    expect(invocations).toHaveLength(2);
+
+    // And the exemption branch is guarded by the workflow count rather than
+    // standing on its own, so "no CI configured" is the only way to reach an
+    // unchained undraft.
+    const exempt = PROVE_TAIL.slice(0, invocations[0]!.index);
+    expect(exempt).toMatch(/if \[ "\$workflows" -eq 0 \]; then\s*\n\s*$/);
+  });
+
+  test("SC-1777: the SHA and the workflow count come from the shell - not from the agent", () => {
+    // Both facts the chain turns on are computed in the command itself. An
+    // agent that supplies either one is supplying the answer to the question
+    // being asked — and `--sha` is the field that decides WHICH commit's CI
+    // is consulted, so a typed value is a stale-reading primitive.
+    const undraft = PROVE_TAIL.slice(PROVE_TAIL.indexOf("Take the PR out of draft"));
+    expect(undraft).toContain("sha=$(git rev-parse HEAD)");
+    expect(undraft).toMatch(/workflows=\$\(ls \.github\/workflows[^\n]*wc -l/);
+    expect(undraft).toContain('--sha "$sha"');
+
+    // The interpolated values that ARE allowed are the ones ship.js knows
+    // first-hand: the repo slug and the PR number it opened. Neither is a
+    // measurement.
+    expect(undraft).not.toMatch(/--sha \$\{/);
+
+    // The instruction says why, because a step that does not know why the
+    // commands are joined will helpfully split them when one fails.
+    expect(undraft).toContain("is not yours to split");
+  });
+});

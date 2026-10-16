@@ -7223,6 +7223,22 @@ const SHIP_STATUS_READY_THRESHOLD = 'SHIPPED_UNPROVEN'
  * all, which is what a bare `rank >= indexOf(...)` would do the moment someone
  * renamed a status — `indexOf` answers -1, and every rank is >= -1.
  */
+/**
+ * Whether CI's verdict blocks taking the PR out of draft (#46).
+ *
+ * **This is the recorded reason, not the enforcement.** The reading reaches
+ * this workflow through a reply an agent typed, and a reply is not a reading:
+ * a step that answered `{verdict:'PASS'}` without running anything would get
+ * past every line below. ship.js cannot close that gap on its own — it has no
+ * filesystem and no subprocess (#69), so every artefact crosses that boundary
+ * through an agent.
+ *
+ * So the undraft itself is chained behind a live `ci-status` in the same shell
+ * command, where the `&&` decides instead of the reply. What this function
+ * does is produce the sentence an operator reads in the log, and refuse early
+ * enough that the run does not go asking to undraft something CI already
+ * failed. If the two ever disagree, the shell is the one that is right.
+ */
 function ciBlocksReadiness(ci) {
   if (!ci || typeof ci !== 'object') {
     return 'CI was not read for this run, and an unread CI is not a passing one'
@@ -7336,7 +7352,12 @@ entirely rather than guessing it.
   required: ['verdict'],
 } }) : null
 // ──── CI-VERIFY-CALL-END ────
-if (ciStep) log(`CI: ${ciStep.verdict}${ciStep.reason ? ` — ${ciStep.reason}` : ''}`)
+// The SHA is logged, not just collected. A reading is about a commit, and a
+// schema field nothing ever reads is a field the run asked for and never
+// observed — the same objection #252 raises about `prDraft` two phases up.
+if (ciStep) {
+  log(`CI: ${ciStep.verdict} on ${ciStep.sha || '<no commit reported>'}${ciStep.reason ? ` — ${ciStep.reason}` : ''}`)
+}
 
 const terminalStatus = shipStatusFor(proveVerdict, suiteReading)
 const prState = prReadiness(terminalStatus, prStep, ciStep)
@@ -7345,19 +7366,38 @@ log(`PR readiness: ${prState.action}${prState.reason ? ` — ${prState.reason}` 
 let prMarkedReady = false
 if (prState.action === 'MARK_READY') {
   const ready = await timedAgent(`
-Take the PR out of draft. Run exactly this one command:
+Take the PR out of draft. Run exactly this one block, unchanged:
 
-cd ${HARNESS_ROOT} && bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+cd ${commitDir}
+sha=$(git rev-parse HEAD)
+workflows=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
+cd ${HARNESS_ROOT}
+if [ "$workflows" -eq 0 ]; then
+  bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+else
+  bun scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 300000 \\
+    && bun scripts/github-op.ts pr-ready --repo ${REPO} --number ${prState.number}
+fi
 
-It prints one JSON object: {"number":N,"isDraft":false}. Set ok to true ONLY if
-it exited zero; on any non-zero exit set ok to false and put stderr in detail.
+The \`&&\` is the whole point and is not yours to split (#46). CI's verdict
+reached this workflow through a reply you typed, and a reply is not a reading:
+a step that answered PASS without running anything would undraft a PR over a
+red build, and nothing downstream could tell. Chained like this the SHELL
+decides — \`ci-status\` exits non-zero on FAIL and on UNMEASURED, so the
+undraft cannot happen without a live pass, whatever any earlier step reported.
+Do NOT run the two commands separately, and do NOT run \`pr-ready\` after
+seeing \`ci-status\` fail.
+
+The last command prints one JSON object: {"number":N,"isDraft":false}. Set ok
+to true ONLY if that command ran AND exited zero. If \`ci-status\` refused,
+set ok to false and put its reason in detail — that is a correct outcome, not
+an error to work around.
 
 This is the last step of a run that passed everything (#252). The PR was opened
 as a draft so that a refusal anywhere upstream would leave it unmergeable by
-default; this converts it because nothing refused. Do NOT run it if the command
-fails — report the failure. A PR left as a draft is a recoverable annoyance; a
-mergeable PR from a run that did not earn one is what this whole mechanism
-exists to prevent.
+default; this converts it because nothing refused. A PR left as a draft is a
+recoverable annoyance; a mergeable PR from a run that did not earn one is what
+this whole mechanism exists to prevent.
   `, { label: 'pr-ready', phase: 'Prove', schema: {
     type: 'object',
     properties: { ok: { type: 'boolean' }, detail: { type: 'string' } },

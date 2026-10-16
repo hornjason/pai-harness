@@ -7555,6 +7555,38 @@ itself. A reading that does not carry the count is refused rather than given
 the benefit of the doubt, because without it "no CI" and "CI not checked" are
 the same value.
 
+### A reading that reached the gate as a typed reply is not a reading
+
+Security review of the first commit named this, and it was right: a verdict
+arriving through an agent's reply can be fabricated. A step that answered
+`{verdict: "PASS"}` without running anything would get past every branch of
+`ciBlocksReadiness`, and nothing downstream could tell — which would make the
+CI gate exactly the check #46 was filed to replace, one layer up.
+
+`workflows/ship.js` cannot close that itself. It has no filesystem and no
+subprocess (#69), so every artefact it sees crossed that boundary through an
+agent, and `prStep.ok` has the same property.
+
+What it can do is make the UNDRAFT require a live pass:
+
+```sh
+bun scripts/github-op.ts ci-status --repo R --sha "$sha" --timeout-ms 300000 \
+  && bun scripts/github-op.ts pr-ready --repo R --number N
+```
+
+The `&&` is the enforcement. `ci-status` exits non-zero on FAIL and on
+UNMEASURED, so the PR cannot leave draft without a live pass whatever any
+earlier step reported — and a fabricated PASS now buys nothing, because the
+undraft is not reached by claiming it. Both facts the chain turns on are
+computed in the command: `sha=$(git rev-parse HEAD)` and a `wc -l` over the
+workflow directory, so neither the commit consulted nor the exemption is a
+value an agent supplied.
+
+`ciBlocksReadiness` stays, as the recorded reason an operator reads in the log
+and as an early refusal so the run does not go asking to undraft something CI
+already failed. It is advisory, which the comment on it says in those words.
+If the two ever disagree, the shell is the one that is right.
+
 ### Success criteria
 
 - [x] SC-1758: test/ci-verification.test.ts contains [a commit CI has never reported on is UNMEASURED - never a pass] — the reason says in words that absence is not success, because in the obvious implementation they are the same value
@@ -7575,3 +7607,5 @@ the same value.
 - [x] SC-1773: test/ship-pr-draft.test.ts contains [no reading at all is not a pass - an unread CI is the default state] — the step never reached, errored or removed, undrafting because nothing said no
 - [x] SC-1774: test/ship-pr-draft.test.ts contains [a project with no workflows has no CI to wait for and is not blocked] — keyed on a count the shell produced, because an agent asked whether a project has CI can answer wrongly in the direction that unblocks itself
 - [x] SC-1775: test/ship-pr-draft.test.ts contains [removing the CI condition undrafts a run CI called red] — and the lenient mutant that accepts an absent reading still catches the red one, so a battery planting only a failure would call it fixed
+- [x] SC-1776: test/ship-pr-draft.test.ts contains [pr-ready is chained behind ci-status and never issued alone] — a third unchained invocation reads as a harmless duplicate and undoes the whole enforcement
+- [x] SC-1777: test/ship-pr-draft.test.ts contains [the SHA and the workflow count come from the shell - not from the agent] — a typed `--sha` decides which commit's CI is consulted and is therefore a stale-reading primitive
