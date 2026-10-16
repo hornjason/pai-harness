@@ -1102,18 +1102,57 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     const msg = unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts") ?? "";
     expect(msg, "the directory holding the config read is not in the message")
       .toContain("build/");
-    expect(e.skipped.some(x => x.startsWith(".git/")), "`.git` can never be project source")
-      .toBe(false);
+    // `.git` and `node_modules` are RECORDED, and that is a reversal.
+    // I dropped them entirely at first, on the grounds that they can never
+    // hold the project's own source. True, and still the wrong move:
+    // sec-485's point is that "I declined 400 entries under node_modules/"
+    // is honest and short, while silence is neither. They collapse to one
+    // counted line in the message, which buys the brevity without the
+    // silence — so the assertion is that they are present in the DATA and
+    // collapsed in the PROSE.
     expect(
       e.skipped.some(x => x.startsWith("node_modules/")),
-      "`node_modules` can never be project source",
-    ).toBe(false);
+      "a declined dependency tree left no trace at all",
+    ).toBe(true);
+    expect(msg, "node_modules was listed individually instead of collapsed")
+      .toContain("dependency or VCS metadata: 2");
     // The TOTAL is always stated, which is what stops truncation hiding the
     // magnitude: a reader who sees "declined 20 entries" and five names
     // knows to go looking. Without it, a tightened cap would silently shrink
     // the message with nothing saying so.
     expect(msg, "the message does not say how many entries were declined")
       .toContain(`declined ${e.skipped.length} entr`);
+  });
+
+  test("N-1: a class with many members collapses, and the rare one stays visible", () => {
+    // sec-485's reason 1, which my first remedy did not touch: on rungate
+    // itself `skipped` is 320 entries of which 310 are test files, so a
+    // cap of eight showed ten test files and hid everything else —
+    // including the extension-less scripts that are the likeliest
+    // explanation for a waiver and the reason the issue was filed.
+    //
+    // Collapsing rather than dropping is the fix: the count is exact, the
+    // data keeps every entry, and the one-of-a-kind entry is not crowded
+    // out by the forty-of-a-kind one.
+    const root = project({ "README.md": "# docs" });
+    mkdirSync(join(root, "test"), { recursive: true });
+    for (let i = 0; i < 40; i++) {
+      writeFileSync(join(root, "test", `t${i}.test.ts`), "export const x = 1;\n");
+    }
+    mkdirSync(join(root, "scripts", "git-hooks"), { recursive: true });
+    writeFileSync(join(root, "scripts", "git-hooks", "pre-commit"), READS_CONFIG);
+
+    const e = projectSourceEvidence(root);
+    const msg = unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts") ?? "";
+
+    expect(e.skipped.length, "the data lost entries to make the message short").toBe(41);
+    expect(msg, "forty test files were listed one by one").toContain("test file: 40");
+    expect(msg, "the rare entry was crowded out by the common one")
+      .toContain("scripts/git-hooks/pre-commit");
+    expect(
+      (msg.match(/\.test\.ts/g) ?? []).length,
+      "the message still names test files individually",
+    ).toBeLessThanOrEqual(3);
   });
 
   test("N-1: an EMPTY declined directory is not recorded at all", () => {
