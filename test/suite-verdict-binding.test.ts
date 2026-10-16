@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { readSuiteMeasurement, suiteMeasurementSha } from "../lib/suite-measurement";
 import { SUITE_MEASUREMENT_FIELDS, WorkflowStateSchema } from "../gates/schema";
-import { REFUSE_EXIT } from "../scripts/record-suite-measurement";
+import { REFUSE_EXIT, shaFromGitOutput } from "../scripts/record-suite-measurement";
 
 /**
  * The suite result and the ship verdict, bound by a commit SHA (#224).
@@ -32,6 +32,17 @@ const SHA = "dd242a62aea9371d788abb58f3d26922d5dd6cbc";
 let DIR = "";
 let STATE = "";
 let MUTANT = "";
+/**
+ * A real repository for the recorder to read a commit out of (#312 SC-A12).
+ *
+ * `--sha` is gone: the measured commit comes from the tree now, so the CLI
+ * cases below cannot assert against the `SHA` literal above and have to
+ * compare with whatever this fixture's HEAD turned out to be. The reader's
+ * tests still use the literal, because they are about a value already in a
+ * state file and have no project to read.
+ */
+let PROJECT = "";
+let HEAD_SHA = "";
 /** Every mutant copy written into scripts/ by this file, cleaned in afterEach. */
 let MUTANTS: string[] = [];
 
@@ -65,6 +76,21 @@ beforeEach(() => {
   DIR = mkdtempSync(join(tmpdir(), "record-suite-measurement-"));
   STATE = join(DIR, "workflow-state.json");
   writeFileSync(STATE, JSON.stringify(baseState(), null, 2));
+
+  PROJECT = join(DIR, "project");
+  mkdirSync(PROJECT, { recursive: true });
+  const git = (...a: string[]) =>
+    spawnSync("git", ["-C", PROJECT, ...a], { encoding: "utf-8" }).stdout ?? "";
+  git("init", "-q", "-b", "main");
+  // Spelled out rather than routed through `git()` above: the #84 guard reads
+  // the argv at the call site and cannot see a wrapper's prepended `-C`, so a
+  // helper here is indistinguishable from a write to the real global config.
+  spawnSync("git", ["-C", PROJECT, "config", "user.email", "t@example.test"]);
+  spawnSync("git", ["-C", PROJECT, "config", "user.name", "T"]);
+  writeFileSync(join(PROJECT, "a.txt"), "a\n");
+  git("add", "-A");
+  git("commit", "-q", "-m", "one");
+  HEAD_SHA = git("rev-parse", "HEAD").trim();
 
   // The mutant lives in scripts/, not in the temp dir, because the script
   // imports `../gates/orchestrator` — AC3 requires it to write through
@@ -219,23 +245,23 @@ describe("#224: the SHA round-trips through the schema", () => {
 
 describe("#224: scripts/record-suite-measurement.ts records what it measured", () => {
   test("zero failures is written as a PASS carrying the SHA", () => {
-    const r = run(["--state", STATE, "--sha", SHA, "--failures", "0"]);
+    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "0"]);
     expect(r.code, r.err).toBe(0);
-    expect(JSON.parse(r.out)).toMatchObject({ ok: true, verdict: "PASS", measuredSha: SHA });
+    expect(JSON.parse(r.out)).toMatchObject({ ok: true, verdict: "PASS", measuredSha: HEAD_SHA });
 
     const state = readState();
-    expect(state.suiteMeasurement).toMatchObject({ verdict: "PASS", failures: 0, measuredSha: SHA });
+    expect(state.suiteMeasurement).toMatchObject({ verdict: "PASS", failures: 0, measuredSha: HEAD_SHA });
     expect(readSuiteMeasurement(state).verdict).toBe("PASS");
   });
 
   test("a failing suite is written as a FAIL the reader can act on", () => {
-    const r = run(["--state", STATE, "--sha", SHA, "--failures", "1"]);
+    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "1"]);
     expect(r.code, r.err).toBe(0);
 
     const reading = readSuiteMeasurement(readState());
     expect(reading.verdict).toBe("FAIL");
     expect(reading.failures).toBe(1);
-    expect(reading.measuredSha).toBe(SHA);
+    expect(reading.measuredSha).toBe(HEAD_SHA);
   });
 
   test("the verdict comes from the count, not from the caller", () => {
@@ -244,7 +270,7 @@ describe("#224: scripts/record-suite-measurement.ts records what it measured", (
     const options = readFileSync(SCRIPT, "utf-8").match(/const OPTIONS = new Set\(\[([^\]]*)\]\)/);
     expect(options, "OPTIONS is no longer a single-line Set literal — this check cannot read it").toBeTruthy();
     expect(options![1]).not.toContain("verdict");
-    expect(run(["--state", STATE, "--sha", SHA, "--failures", "4"]).code).toBe(0);
+    expect(run(["--state", STATE, "--project", PROJECT, "--failures", "4"]).code).toBe(0);
     expect((readState().suiteMeasurement as any).verdict).toBe("FAIL");
   });
 
@@ -257,7 +283,7 @@ describe("#224: scripts/record-suite-measurement.ts records what it measured", (
   });
 
   test("the run is recorded in the changelog", () => {
-    run(["--state", STATE, "--sha", SHA, "--failures", "0"]);
+    run(["--state", STATE, "--project", PROJECT, "--failures", "0"]);
     const changelog = readState().changelog as Array<Record<string, unknown>>;
     expect(changelog.some(e => e.event === "suite-measurement")).toBe(true);
   });
@@ -286,46 +312,99 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
   }
 
   test("no --state", () => {
-    expectRefused("a missing --state", ["--sha", SHA, "--failures", "0"], /--state is required/);
+    expectRefused("a missing --state", ["--project", PROJECT, "--failures", "0"], /--state is required/);
   });
 
-  test("no --sha", () => {
-    expectRefused("a missing --sha", ["--state", STATE, "--failures", "0"], /--sha is required/);
+  test("no --project", () => {
+    expectRefused("a missing --project", ["--state", STATE, "--failures", "0"], /--project is required/);
   });
 
-  test("--sha HEAD", () => {
-    expectRefused("HEAD as the measured commit", ["--state", STATE, "--sha", "HEAD", "--failures", "0"], /not a commit SHA/);
-  });
-
-  test("a --sha carrying shell metacharacters", () => {
+  test("--sha, which this script used to require", () => {
+    // #312 SC-A12. Not "unexpected argument": the flag was in the documented
+    // usage for this script's whole life, so a caller still passing it is
+    // following instructions, not making a typo. The refusal names what
+    // replaced it, and the SHA passed here is the fixture's real HEAD —
+    // a value the recorder would have accepted — so what is refused is the
+    // CALLER choosing the commit, not the commit being wrong.
     expectRefused(
-      "a SHA that is not a SHA",
-      ["--state", STATE, "--sha", "$(touch /tmp/pwned)", "--failures", "0"],
-      /not a commit SHA/,
+      "a caller-supplied SHA",
+      ["--state", STATE, "--project", PROJECT, "--sha", HEAD_SHA, "--failures", "0"],
+      /--sha is no longer accepted/,
+    );
+  });
+
+  test("--result, which the heal prompt used to pass", () => {
+    // The other half of the contradiction #312 found: the prompt on main sent
+    // `--result PASS|FAIL`, which this script never had. A caller-named
+    // verdict is #224 in one argument, so it is refused by name too.
+    expectRefused(
+      "a caller-supplied verdict",
+      ["--state", STATE, "--project", PROJECT, "--result", "PASS"],
+      /--result is not a flag/,
+    );
+  });
+
+  test("a --project with no commit in it", () => {
+    const empty = join(DIR, "empty");
+    mkdirSync(empty, { recursive: true });
+    spawnSync("git", ["-C", empty, "init", "-q", "-b", "main"], { encoding: "utf-8" });
+    // The git on this machine exits non-zero for an unborn HEAD, so this
+    // arrives through the exec failure rather than through the output check.
+    // Which route it takes is a property of the git version, not of the
+    // recorder — `shaFromGitOutput` below is the other route, driven
+    // directly because no fixture here can produce it.
+    expectRefused(
+      "a repository with no commits",
+      ["--state", STATE, "--project", empty, "--failures", "0"],
+      /could not read a commit/,
+    );
+  });
+
+  test("a --project that is not a repository", () => {
+    expectRefused(
+      "a directory that is not a git repository",
+      ["--state", STATE, "--project", join(DIR, "nope"), "--failures", "0"],
+      /could not read a commit/,
     );
   });
 
   test("no --failures", () => {
     // The whole bug: no count recorded, and the record still reads as a result.
-    expectRefused("a missing --failures", ["--state", STATE, "--sha", SHA], /--failures is required/);
+    expectRefused("a missing --failures", ["--state", STATE, "--project", PROJECT], /--failures is required/);
   });
 
   test("a --failures that is not a count", () => {
-    expectRefused("a non-numeric count", ["--state", STATE, "--sha", SHA, "--failures", "none"], /--failures/);
+    expectRefused("a non-numeric count", ["--state", STATE, "--project", PROJECT, "--failures", "none"], /--failures/);
   });
 
   test("a negative --failures", () => {
-    expectRefused("a negative count", ["--state", STATE, "--sha", SHA, "--failures", "-1"], /--failures/);
+    expectRefused("a negative count", ["--state", STATE, "--project", PROJECT, "--failures", "-1"], /--failures/);
+  });
+
+  test("a git that answers with something that is not a commit", () => {
+    // The route the fixtures above cannot produce, driven at the function.
+    // `git rev-parse HEAD` printing the literal `HEAD` and exiting zero is
+    // the historical behaviour for an unborn branch; recording that would be
+    // a measurement whose provenance reads "whatever the checkout happens to
+    // be", which is #224 with a SHA-shaped hole in it.
+    for (const answer of ["HEAD", "", "main", "dd242a", "not-a-sha"]) {
+      expect(
+        () => shaFromGitOutput("/tmp/x", answer),
+        `git answering ${JSON.stringify(answer)} was accepted as a commit`,
+      ).toThrow(/no commit to measure against/);
+    }
+    // And the shape it must accept, so the guard is not simply "throw".
+    expect(shaFromGitOutput("/tmp/x", `  ${SHA.toUpperCase()}\n`)).toBe(SHA);
   });
 
   test("an unknown argument", () => {
-    expectRefused("an unknown flag", ["--state", STATE, "--sha", SHA, "--failures", "0", "--verdict", "PASS"], /unexpected argument/);
+    expectRefused("an unknown flag", ["--state", STATE, "--project", PROJECT, "--failures", "0", "--commit", "x"], /unexpected argument/);
   });
 
   test("a state file that is not there", () => {
     expectRefused(
       "a missing state file",
-      ["--state", join(DIR, "absent.json"), "--sha", SHA, "--failures", "0"],
+      ["--state", join(DIR, "absent.json"), "--project", PROJECT, "--failures", "0"],
       /record-suite-measurement/,
     );
   });
@@ -337,7 +416,7 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
     writeFileSync(STATE, JSON.stringify(baseState({ changelog: [{ ts: "now", event: "x", actor: "robot" }] })));
     expectRefused(
       "a state with an invalid changelog actor",
-      ["--state", STATE, "--sha", SHA, "--failures", "0"],
+      ["--state", STATE, "--project", PROJECT, "--failures", "0"],
       /actor/,
     );
   });
@@ -360,9 +439,9 @@ describe("#224: the properties the mutant depends on", () => {
   test("the mutant is not simply a script that always exits 0", () => {
     // Guards the guard: if the mutant refused nothing AND did nothing, every
     // expectRefused above would pass vacuously.
-    const r = run(["--state", STATE, "--sha", SHA, "--failures", "2"], MUTANT);
+    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "2"], MUTANT);
     expect(r.code).toBe(0);
-    expect((readState().suiteMeasurement as any)).toMatchObject({ verdict: "FAIL", failures: 2, measuredSha: SHA });
+    expect((readState().suiteMeasurement as any)).toMatchObject({ verdict: "FAIL", failures: 2, measuredSha: HEAD_SHA });
   });
 
   test("no mutant is left behind", () => {

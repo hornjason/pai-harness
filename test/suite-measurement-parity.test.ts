@@ -272,7 +272,17 @@ describe("#224: the suite result reaches state through the recorder", () => {
   })();
 
   test("the step runs scripts/record-suite-measurement.ts", () => {
-    expect(testsPassStep).toContain("scripts/record-suite-measurement.ts");
+    // Through `recorderCommand`, which is where the script path now lives
+    // (#312 SC-A13). The flags are a contract with the recorder and this
+    // file could only ever read them as text — on main it asserted at :291
+    // that the prompt must not pass `--sha` while the recorder REQUIRED it,
+    // and both sides stayed green because nothing here runs the command.
+    // `test/recorder-command-executed.test.ts` executes the builder against
+    // the real script; these three remain as a cheap pre-filter.
+    expect(testsPassStep).toContain(
+      "recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)",
+    );
+    expect(shipSource).toContain("scripts/record-suite-measurement.ts");
   });
 
   test("the step does not tell an agent to write environments.local.tests", () => {

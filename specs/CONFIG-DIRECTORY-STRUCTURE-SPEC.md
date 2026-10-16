@@ -1019,3 +1019,90 @@ config while the four gate readers convert it. That asymmetry is deliberate —
 it uses the loader directly and the scope gate is the right place to find out
 a config cannot be parsed — and asserting it is what stops the next person
 making the five consistent from doing it in the quiet direction.
+
+## A command and the script it calls, contradicting each other in writing (#312)
+
+Phase 3 of #307. The scope gate's tests-pass heal step told an agent to run:
+
+```
+--state <…> --result PASS|FAIL --project <…>
+```
+
+`scripts/record-suite-measurement.ts` declared `OPTIONS = {state, sha, failures}`,
+required `--sha`, and required `--failures`. So the FIRST flag was refused as
+an unexpected argument. The command could not succeed on any input, and the
+suite result it exists to record would simply be missing at the verify gate,
+in a run whose entire purpose was to supply it.
+
+### Four green tests over a command that could never run
+
+`test/suite-measurement-parity.test.ts` had four tests on that step. All four
+asserted on prompt TEXT. One of them — "the recorder is not handed a SHA the
+prompt chose" — asserted the prompt must not pass `--sha` while the recorder
+required it, so the two halves of the contract were each pinned by a test and
+the tests agreed with each other and with neither half of reality.
+
+That is the third shape in `.claude/rules/checks-must-be-able-to-fail.md`
+with an extra turn: not a detector narrower than what it detects, but a
+detector pointed at a *description* of the thing rather than the thing. The
+fix is not another assertion. It is to EXECUTE the command.
+
+### What changed
+
+- The command is built by `recorderCommand()` in a marked block in
+  `workflows/ship.js`, so a test can extract and run the function the prompt
+  actually calls rather than re-deriving the string.
+- It emits `--failures`, not `--result`. The verdict is derived from the count
+  and has no other source; a flag naming the verdict is #224 restated as an
+  argument.
+- It emits `--project`, not `--sha`. The measured commit is read from the tree
+  by `measuredSha()`. A SHA a caller types can agree with HEAD by
+  construction, which is the provenance check answering itself.
+- `--sha`, `--result` and `--verdict` are refused **by name** rather than
+  falling through to "unexpected argument". `--sha` was in the documented
+  usage for this script's whole life, so a caller still passing it is
+  following instructions, not making a typo.
+- `gates/SCHEMA-GUIDE.md`'s usage line is updated in the same change — it was
+  the other place the old contract was written down.
+
+### A guard this repo's git cannot reach, split out rather than left inline
+
+`git rev-parse HEAD` historically printed the literal `HEAD` for a repository
+with no commits. The git on this machine exits non-zero instead, so that
+output never reaches the validation — the branch would have been unenterable
+by any fixture, which is the defect the rule above is about.
+
+Deleting it would make the recorder's provenance depend on a git exit code
+staying what it is today. So it is split into `shaFromGitOutput`, driven
+directly over `HEAD`, `""`, `main`, a short hex and a non-hex string, with the
+docblock saying which half the repo cannot see. The empty-repo fixture asserts
+the route it DOES take, and says why the two differ.
+
+- [x] SC-1712: test/recorder-command-executed.test.ts contains [the command the prompt emits is accepted by the real recorder] — the whole point: the built command is run against the real script in a temp git repository, and the recorded SHA is compared to the fixture's HEAD so the commit is proven to come from the tree
+- [x] SC-1713: test/recorder-command-executed.test.ts contains [a failing suite records FAIL - through the same command] — the happy path alone is satisfied by a recorder that writes PASS unconditionally, and a verdict that cannot say FAIL is #224 with extra steps
+- [x] SC-1714: test/recorder-command-executed.test.ts contains [reintroducing --result into the prompt turns this red] — SC-A14 performed rather than promised: the text that was on main, built from a mutated copy of the same marker block and run against the same recorder
+- [x] SC-1715: test/recorder-command-executed.test.ts contains [a caller-supplied SHA is refused by name] — with the SHA passed being the fixture's real HEAD, so what is refused is the caller CHOOSING the commit rather than the commit being wrong, and the state is asserted untouched
+- [x] SC-1716: test/recorder-command-executed.test.ts contains [a project with no commit is refused - not recorded as HEAD] — both routes, an unborn HEAD and a directory that is not a repository at all, because they reach the refusal differently and neither case covers the other
+- [x] SC-1717: test/recorder-command-executed.test.ts contains [the step in the prompt is the command this file ran] — everything above proves the BUILDER is sound and none of it would notice the prompt calling a different one, or inlining the old text beside it
+
+### What was broken to prove it (SC-1712..SC-1717)
+
+Every count predicted before the battery ran, over the 85 tests in
+`test/recorder-command-executed.test.ts`,
+`test/suite-verdict-binding.test.ts` and
+`test/suite-measurement-parity.test.ts`. All five rows came back at their
+prediction; none of the mutations is left in the tree.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `recorderCommand` emits `--result PASS\|FAIL` again — main's text | 4 | 4 |
+| the `RETIRED` map removed, so retired flags read as "unexpected argument" | 4 | 4 |
+| `measuredSha` short-circuited to a fixed valid SHA | 8 | 8 |
+| `shaFromGitOutput` stops validating | 1 | 1 |
+| the prompt inlines the old command text instead of calling the builder | 2 | 2 |
+
+The third row is the one worth reading: eight tests notice a recorder that
+makes up its commit, and they are spread across the executed-command file,
+the refusal battery and the mutant-sanity case. Before this issue the same
+mutation would have been invisible to every test of this step, because the
+only thing any of them looked at was the sentence describing the command.
