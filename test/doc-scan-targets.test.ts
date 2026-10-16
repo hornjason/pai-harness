@@ -25,7 +25,7 @@ import { tmpdir } from "os";
 import { join, relative } from "path";
 import {
   planDocScan, routedDirectories, planSummary,
-  SCAN_EXCLUDE_DIRS, DEFAULT_SCAN_DIRS, MAX_SCAN_DEPTH, MAX_SCAN_ROOTS, ROUTING_RELATIVE_PATH,
+  SCAN_EXCLUDE_DIRS, DEFAULT_SCAN_DIRS, MAX_SCAN_DEPTH, MAX_SCAN_ROOTS, MAX_SCAN_FILES, ROUTING_RELATIVE_PATH,
 } from "../lib/doc-scan-targets";
 import { extractConstraints } from "../scripts/extract-constraints";
 
@@ -189,6 +189,38 @@ describe("SC-1624: the exclusions are one list, and each is proved", () => {
       expect(plan.files.map(f => relative(root, f))).not.toContain(join(excluded, "HIDDEN.md"));
     }
     expect(plan.refused.join(" "), "the refusal was silent").toContain("node_modules");
+  });
+
+  test("SC-1634: a symlink cannot smuggle an excluded directory back in", () => {
+    // Measured before the fix: `docs/vendor -> node_modules` produced
+    // `node_modules/pkg/README.md`. The exclusion was keyed on the entry
+    // NAME, and the name was `vendor`. A detector narrower than the thing it
+    // detects — the second shape in checks-must-be-able-to-fail.md — because
+    // the view it had of the input could silently shrink to a label.
+    routing(["docs"]);
+    doc("docs/KEEP.md");
+    doc(join("node_modules", "pkg", "README.md"));
+    symlinkSync(join(root, "node_modules"), join(root, "docs", "vendor"));
+
+    const plan = planDocScan(root);
+    const files = plan.files.map(f => relative(root, f));
+    expect(files).toContain(join("docs", "KEEP.md"));
+    expect(files, "an excluded directory was reached under another name")
+      .not.toContain(join("node_modules", "pkg", "README.md"));
+    expect(plan.refused.join(" ")).toContain("node_modules");
+  });
+
+  test("SC-1634: the total file count is bounded, not just the roots", () => {
+    // A cap on roots is not a cap on work: twenty roots times six levels of
+    // unbounded fanout is still unbounded. The bound belongs on the thing
+    // that actually grows.
+    routing(["docs"]);
+    for (let i = 0; i < MAX_SCAN_FILES + 10; i++) doc(join("docs", `F${i}.md`));
+
+    const plan = planDocScan(root);
+    expect(plan.files.length).toBeLessThanOrEqual(MAX_SCAN_FILES);
+    expect(plan.reason, "the truncation was silent").toContain("file");
+    expect(MAX_SCAN_FILES).toBeGreaterThanOrEqual(500);
   });
 
   test("SC-1633: the number of declared roots is bounded", () => {

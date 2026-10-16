@@ -6614,7 +6614,25 @@ path and the walk then recursed on the unresolved one. The mutation measured
 **0 of 27** and that is the honest result: using `real` closes a window
 rather than changing behaviour, so no test covers it and none is claimed to.
 
-### What was broken to prove it (SC-1622..1633)
+- [x] SC-1634: test/doc-scan-targets.test.ts contains [a symlink cannot smuggle an excluded directory back in] — the exclusion is keyed on the resolved path, and the total file count is bounded as well as the root count
+
+### A second review round, and the one that was a real hole
+
+**The exclusion was keyed on the entry NAME.** Measured before the fix:
+`docs/vendor -> node_modules` produced `node_modules/pkg/README.md`. The
+guard saw the label `vendor`. That is the second shape in
+`.claude/rules/checks-must-be-able-to-fail.md` exactly — a detector narrower
+than what it detects, because the view it had of the input could silently
+shrink to whatever a symlink was called. `excludedByPath` is now the one
+decider, keyed on the resolved path, used by both the walk and the root
+declaration, so there is one binding to mutate.
+
+**The bound was on the wrong thing.** A cap on roots is not a cap on work:
+twenty roots times six levels of unbounded fanout is still unbounded.
+`MAX_SCAN_FILES` is 2000 and a truncated scan says so; this repo's own scan
+collects 92.
+
+### What was broken to prove it (SC-1622..1634)
 
 Run over `test/doc-scan-targets.test.ts`, baseline 0 fail. Every count
 predicted before the battery ran. The first sixteen were measured over 24
@@ -6647,7 +6665,14 @@ reproduce exactly.
 | `walkMarkdown` stops recursing, re-measured | 4 of 27 — reproduces |
 | containment dropped, re-measured | 3 of 27 — reproduces |
 
-None of the twenty-two is left in the tree; all were run and reverted.
+| `excludedByPath` always false | 4 of 29 |
+| the exclusion keyed on the entry NAME again — the hole verbatim | 1 of 29 |
+| `MAX_SCAN_FILES` raised to 999999 | 1 of 29 |
+| the file truncation reported silently | 1 of 29 |
+| `walkMarkdown` stops recursing, re-measured at 29 | 4 of 29 — reproduces |
+| containment dropped, re-measured at 29 | 3 of 29 — reproduces |
+
+None of the twenty-eight is left in the tree; all were run and reverted.
 
 **The row that came back zero.** The bounded-recursion test built its fixture
 as `MAX_SCAN_DEPTH + 3` levels deep. Raising the constant raised the fixture

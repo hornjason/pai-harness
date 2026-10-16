@@ -69,6 +69,15 @@ export const MAX_SCAN_DEPTH = 6;
  */
 export const MAX_SCAN_ROOTS = 20;
 
+/**
+ * How many files the scan may collect.
+ *
+ * A cap on roots is not a cap on work — twenty roots times six levels of
+ * unbounded fanout is still unbounded — so the bound belongs on the thing
+ * that actually grows. This repo's own scan collects 92.
+ */
+export const MAX_SCAN_FILES = 2000;
+
 export const DEFAULT_SCAN_DIRS: readonly string[] = ["docs", "docs/adr", "specs"];
 
 export const ROUTING_RELATIVE_PATH = join(".claude", "rules", "docs-routing.md");
@@ -115,6 +124,22 @@ export interface DocScanPlan {
  * Containment, not a symlink ban: a link within the repo is ordinary, and
  * refusing it would be a narrower detector than the thing being detected.
  */
+/**
+ * Whether a resolved path lies in or under an excluded directory.
+ *
+ * Keyed on the RESOLVED path, not the entry name. Measured before this was
+ * fixed: `docs/vendor -> node_modules` produced
+ * `node_modules/pkg/README.md`, because the exclusion saw the label
+ * `vendor`. ONE decider for "is this excluded", so there is one binding to
+ * mutate and no second copy that could hold a case up after the first is
+ * broken.
+ */
+function excludedByPath(rootReal: string, real: string): boolean {
+  const rel = relative(rootReal, real);
+  if (rel === "") return false;
+  return rel.split("/").some(seg => SCAN_EXCLUDE_DIRS.includes(seg));
+}
+
 function containedReal(rootReal: string, path: string): string | null {
   let real: string;
   try {
@@ -180,6 +205,7 @@ interface WalkState {
   seen: Set<string>;
   files: string[];
   refused: string[];
+  truncatedFiles: number;
 }
 
 /**
@@ -217,7 +243,6 @@ function walkMarkdown(dir: string, depth: number, st: WalkState): void {
     } catch {
       continue;
     }
-    if (isDir && SCAN_EXCLUDE_DIRS.includes(entry)) continue;
     if (!isDir && !isMarkdown) continue;
 
     const real = containedReal(st.rootReal, path);
@@ -225,8 +250,13 @@ function walkMarkdown(dir: string, depth: number, st: WalkState): void {
       st.refused.push(path);
       continue;
     }
+    if (excludedByPath(st.rootReal, real)) {
+      st.refused.push(real);
+      continue;
+    }
     if (st.seen.has(real)) continue;
     st.seen.add(real);
+    if (!isDir && st.files.length >= MAX_SCAN_FILES) { st.truncatedFiles++; continue; }
 
     // The RESOLVED path is what gets walked and recorded, not the path that
     // was validated a moment ago. Validating one value and using another is
@@ -290,6 +320,7 @@ export function planDocScan(projectPath: string): DocScanPlan {
     seen: new Set<string>(),
     files: [],
     refused: [],
+    truncatedFiles: 0,
   };
 
   const roots: string[] = [];
@@ -300,19 +331,20 @@ export function planDocScan(projectPath: string): DocScanPlan {
     // Applying it only inside the walk left a routing table naming
     // `node_modules/` or `worktrees/` walked outright — the exact case the
     // list exists to stop, reached by the one path the list did not cover.
-    if (dir.split("/").some(seg => SCAN_EXCLUDE_DIRS.includes(seg))) {
-      st.refused.push(join(projectPath, dir));
+    const abs = join(projectPath, dir);
+    const declaredReal = containedReal(st.rootReal, abs);
+    if (declaredReal !== null && excludedByPath(st.rootReal, declaredReal)) {
+      st.refused.push(abs);
       continue;
     }
     if (roots.length >= MAX_SCAN_ROOTS) { truncated++; continue; }
-    const abs = join(projectPath, dir);
     let present: boolean;
     try {
       present = statSync(abs).isDirectory();
     } catch {
       present = false;
     }
-    if (present && containedReal(st.rootReal, abs) === null) {
+    if (present && declaredReal === null) {
       // A routed root that leaves the project is neither walked nor silently
       // treated as missing — "the project does not have this" and "the
       // project points this somewhere I will not follow" are different facts.
@@ -340,6 +372,7 @@ export function planDocScan(projectPath: string): DocScanPlan {
       if (real === null) { st.refused.push(path); continue; }
       if (st.seen.has(real)) continue;
       st.seen.add(real);
+      if (st.files.length >= MAX_SCAN_FILES) { st.truncatedFiles++; continue; }
       st.files.push(anchored(projectPath, st.rootReal, real));
     }
   } catch {
@@ -347,6 +380,12 @@ export function planDocScan(projectPath: string): DocScanPlan {
     // scan — it will show as zero files against a reason that says otherwise.
   }
   for (const dir of roots) walkMarkdown(join(projectPath, dir), 1, st);
+
+  if (st.truncatedFiles > 0) {
+    // Loud, not silent: a scan that quietly stopped reading files reads as
+    // a scan that covered everything it was pointed at.
+    reason += ` — bounded at ${MAX_SCAN_FILES} files, ${st.truncatedFiles} not read`;
+  }
 
   st.files.sort();
   st.refused.sort();
