@@ -656,18 +656,42 @@ describe("#500 review: the walk is not wider than the question it answers", () =
     }
   });
 
-  test("the TEST_DIRS decider, on an input only it reaches", () => {
-    // `tests/scaffold-conformity.test.ts` is caught by BOTH the directory
-    // exclusion and the filename exclusion, so removing either left the other
-    // holding B1 up and each mutation was 0 red — two deciders that agree,
-    // the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`,
-    // found by the count coming back 1 where 3 was predicted.
+  test("a non-test file in a test directory IS project source", () => {
+    // This asserted the opposite until sec-500's review of #500, and the
+    // reversal is deliberate rather than a loosening.
     //
-    // This is the directory decider's own input: a helper inside a test
-    // directory whose NAME is not a test file.
+    // There were two test-related deciders — a DIRECTORY exclusion and the
+    // filename predicate — and `tests/scaffold-conformity.test.ts` (the whole
+    // of sec-476's B1) is caught by both, so each mutation was 0 red: the
+    // fourth shape. The fix I reached for first was to give each decider an
+    // input only it reaches, and this test was the directory one.
+    //
+    // sec-500 showed the directory decider should not exist at all, by
+    // checking rather than arguing: `grep -rnoE '"(test|tests)/..."'
+    // lib/scaffold/*.ts` returns exactly one path, which the filename
+    // predicate already matches. And the project this test described cannot
+    // reach the waiver — a project with test helpers HAS production source,
+    // so `filesScanned > 0` and the waiver is never consulted. The exclusion
+    // was defending a case that does not occur, while waiving a real one:
+    // `tests/helper.ts` holding a live direct config read.
+    //
+    // So the collapsed pair is resolved by DELETING one decider rather than
+    // by feeding it, which is the first of the two options the rubric gives
+    // and the one it prefers.
     const root = content({ "tests/helpers/setup.ts": "export const s = 1;\n" });
-    expect(projectSourceEvidence(root).found, "a test helper counted as project source")
-      .toBe(false);
+    expect(projectSourceEvidence(root).found, "a test helper stopped being project source")
+      .toBe(true);
+  });
+
+  test("B1 still holds: the scaffold's own test file is not project source", () => {
+    // The thing the directory exclusion was added for, asserted against the
+    // predicate that actually carries it. Both spellings, because the
+    // scaffold has used each.
+    for (const f of ["tests/scaffold-conformity.test.ts", "test/scaffold-conformity.test.ts"]) {
+      const root = content({ [f]: "export const s = 1;\n" });
+      expect(projectSourceEvidence(root).found, `${f} counted as project source — B1 reopened`)
+        .toBe(false);
+    }
   });
 
   test("the test-FILE decider, on an input only it reaches", () => {
@@ -808,11 +832,20 @@ describe("#500 re-review: the narrowing did not take enforcement with it", () =>
     }
   });
 
-  test("N1: the EVIDENCE walk still ignores them — the two are not symmetric", () => {
+  test("N1: the EVIDENCE walk and the SCAN are still not symmetric", () => {
     // The other half, stated so a later "tidy-up" cannot collapse them into
-    // one shared exclusion list and reopen N1.
-    const root = project({ "README.md": "# docs", "tests/helpers/setup.ts": "export const s = 1;\n" });
-    expect(projectSourceEvidence(root).found).toBe(false);
+    // one shared exclusion list and reopen N1. The asymmetry is
+    // one-directional: the scan may read MORE than the evidence walk counts,
+    // never less.
+    //
+    // Rewritten with sec-500's reversal: a test HELPER is now counted, so the
+    // input that shows the two lists are still distinct is a test FILE, which
+    // the scan enforces (see the case above this one) and the walk declines.
+    const root = project({ "README.md": "# docs", "lib/sneaky.test.js": READS_CONFIG });
+    expect(
+      projectSourceEvidence(root).found,
+      "a test file counted as evidence — the walk now claims source the scan would skip",
+    ).toBe(false);
   });
 
   test("N2: 'points at nothing' and 'cannot be stat-ed' are different answers", () => {
@@ -913,12 +946,16 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     expect(msg).toContain("dot-directory");
   });
 
-  test("a test directory is declined BY NAME", () => {
-    const msg = waiverFor({ "tests/helper.ts": READ, "README.md": "# docs" });
+  test("a TEST FILE is declined BY NAME", () => {
+    // Was `tests/helper.ts` and a "test directory" decline. sec-500 showed
+    // the directory exclusion should not exist, so a helper is now ordinary
+    // source and there is no waiver to inspect. The surviving test-related
+    // decline is the filename predicate, which is the one that carries B1.
+    const msg = waiverFor({ "src/app.test.ts": READ, "README.md": "# docs" });
     expect(msg).toContain("UNMEASURED");
     expect(msg, "the walk still claims it looked everywhere").not.toContain(FALSE_CLAIM);
-    expect(msg).toContain("tests");
-    expect(msg).toContain("test directory");
+    expect(msg).toContain("src/app.test.ts");
+    expect(msg).toContain("test file");
   });
 
   test("a root tool config is declined BY NAME", () => {
@@ -944,12 +981,13 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     // The message is one reader. A caller that wants to act on the declines
     // — a future FAIL ladder, a report — needs them as data, and asserting
     // only the prose would let the data rot while the sentence stayed right.
-    const root = project({ ".github/scripts/release.js": READ, "tests/helper.ts": READ });
+    const root = project({ ".github/scripts/release.js": READ, "src/app.test.ts": READ });
     const e = projectSourceEvidence(root);
     expect(e.found, "a declined entry was counted as project source").toBe(false);
     expect(e.skipped.some(s => s.startsWith(".github/")), `skipped was ${e.skipped.join(", ")}`)
       .toBe(true);
-    expect(e.skipped.some(s => s.startsWith("tests/"))).toBe(true);
+    expect(e.skipped.some(s => s.startsWith("src/app.test.ts")), `skipped was ${e.skipped.join(", ")}`)
+      .toBe(true);
   });
 
   test("declining does not reopen B1: a scaffolded test file is still not source", () => {
@@ -959,6 +997,91 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     const root = project({ "tests/scaffold-conformity.test.ts": READ, "README.md": "# docs" });
     expect(projectSourceEvidence(root).found, "B1 reopened — a test file counted as source")
       .toBe(false);
+  });
+
+  test("the hole the test-directory skip was costing is closed", () => {
+    // sec-500's measurement: a NON-test file in `tests/`, holding a real
+    // direct config read, scored 0 fail / severity WARN. It was waived.
+    const root = project({ "tests/helper.ts": READS_CONFIG, "README.md": "# docs" });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "tests/helper.ts is waived again").toBe(true);
+    expect(
+      unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts"),
+      "a project with a live config read in tests/ was waived",
+    ).toBeNull();
+  });
+
+  test("an extension-less file in a SCANNED directory is recorded", () => {
+    // sec-500's sharpest case, and this repo ships two of the shape:
+    // `scripts/git-hooks/pre-commit` and `pre-push`. Invisible to
+    // SOURCE_EXTENSIONS, inside a directory CONFIG-1 scans. Not counted as
+    // source — that would make every git hook and CI shim project source —
+    // but no longer silent.
+    const root = project({ "scripts/git-hooks/pre-commit": READS_CONFIG, "README.md": "# d" });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "an extension-less hook became project source").toBe(false);
+    expect(
+      e.skipped.some(x => x.includes("pre-commit")),
+      `skipped was [${e.skipped.join(", ")}]`,
+    ).toBe(true);
+    expect(unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts"))
+      .toContain("pre-commit");
+  });
+
+  test("a symlink pointing outside the project is recorded, not silently dropped", () => {
+    // The containment decision is right and stays. What was wrong is that
+    // `found:false, unreadable:[]` rendered "I chose not to look"
+    // identically to "there was nothing there" — and a pnpm workspace with
+    // `lib/impl -> ../../packages/core` is an ordinary shape.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-outside-"));
+    writeFileSync(join(outside, "core.ts"), READS_CONFIG);
+    const root = project({ "README.md": "# docs" });
+    symlinkSync(join(outside, "core.ts"), join(root, "linked.ts"));
+
+    const e = projectSourceEvidence(root);
+    expect(e.found, "code outside the project was counted as project source").toBe(false);
+    expect(
+      e.skipped.some(x => x.includes("linked.ts")),
+      `the escape was silent; skipped was [${e.skipped.join(", ")}]`,
+    ).toBe(true);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("a symlinked DIRECTORY resolving outside the project is recorded too", () => {
+    // The other containment site. Recorded separately because the two are
+    // different code paths — the directory one is checked when the entry is
+    // popped off the stack, the file one when it is classified — and a
+    // record on only one of them is the same silence in half the cases.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-outside-"));
+    mkdirSync(join(outside, "core"), { recursive: true });
+    writeFileSync(join(outside, "core", "reader.ts"), READS_CONFIG);
+    const root = project({ "README.md": "# docs" });
+    symlinkSync(join(outside, "core"), join(root, "impl"));
+
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a directory outside the project was counted as source").toBe(false);
+    expect(
+      e.skipped.some(x => x.includes("impl")),
+      `the directory escape was silent; skipped was [${e.skipped.join(", ")}]`,
+    ).toBe(true);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("a .d.ts declaration file is declined BY NAME", () => {
+    // Added because the battery said so: mutating the `.d.ts` branch was
+    // 0 red while the other five deciders were 1, 2, 3 and 8. Nothing
+    // reached it. A declarations-only package — `types/`, a DefinitelyTyped
+    // style project — is a real shape, and it was the one skip class with
+    // no case at all.
+    const root = project({ "src/types.d.ts": READ, "README.md": "# docs" });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a .d.ts became project source").toBe(false);
+    expect(
+      e.skipped.some(x => x.includes("types.d.ts")),
+      `skipped was [${e.skipped.join(", ")}]`,
+    ).toBe(true);
+    expect(waiverFor({ "src/types.d.ts": READ, "README.md": "# docs" }))
+      .toContain("type declarations");
   });
 
   test("a real source file is still found, and is NOT a decline", () => {
