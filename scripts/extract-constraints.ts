@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join, relative } from "path";
 import { createHash } from "crypto";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
+import { planDocScan, type DocScanPlan } from "../lib/doc-scan-targets";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -28,6 +29,15 @@ export interface ExtractResult {
     candidatesRemoved: number;
   };
   staleness: StalenessEntry[];
+  /**
+   * What was scanned and what could not be (#440).
+   *
+   * Carried on the result rather than printed, because the thing that went
+   * wrong for four months was a scan silently covering four flat directories
+   * while the project declared eight. A candidate count tells you nothing
+   * about what was never read.
+   */
+  scan: DocScanPlan;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -42,41 +52,9 @@ function surroundingContext(lines: string[], lineIdx: number): string {
   return lines.slice(start, end).join("\n");
 }
 
-function collectScanTargets(projectPath: string): string[] {
-  const targets: string[] = [];
-
-  // Scan all root-level .md files (not just hardcoded names)
-  for (const f of readdirSync(projectPath)) {
-    if (!f.endsWith(".md")) continue;
-    const p = join(projectPath, f);
-    targets.push(p);
-  }
-
-  const docsDir = join(projectPath, "docs");
-  if (existsSync(docsDir)) {
-    for (const f of readdirSync(docsDir)) {
-      if (f === "archive" || !f.endsWith(".md")) continue;
-      targets.push(join(docsDir, f));
-    }
-    const adrDir = join(docsDir, "adr");
-    if (existsSync(adrDir)) {
-      for (const f of readdirSync(adrDir)) {
-        if (!f.endsWith(".md")) continue;
-        targets.push(join(adrDir, f));
-      }
-    }
-  }
-
-  const specsDir = join(projectPath, "specs");
-  if (existsSync(specsDir)) {
-    for (const f of readdirSync(specsDir)) {
-      if (!f.endsWith(".md")) continue;
-      targets.push(join(specsDir, f));
-    }
-  }
-
-  return targets;
-}
+// `collectScanTargets` was four flat `readdirSync` loops and no recursion.
+// `lib/doc-scan-targets.ts` owns this now, and derives the directories from
+// the project's own routing table instead of hardcoding them. See #440.
 
 function extractSignalPhrases(content: string, filePath: string, projectPath: string): Candidate[] {
   const lines = content.split("\n");
@@ -195,7 +173,8 @@ export async function extractConstraints(
   projectPath: string,
   options?: { apply?: boolean }
 ): Promise<ExtractResult> {
-  const scanFiles = collectScanTargets(projectPath);
+  const scan = planDocScan(projectPath);
+  const scanFiles = scan.files;
   const existingConstraints = loadExistingConstraints(projectPath);
   const rejectedHashes = loadRejectedHashes(projectPath);
 
@@ -236,6 +215,7 @@ export async function extractConstraints(
       candidatesRemoved: existingRemoved + rejectedRemoved,
     },
     staleness,
+    scan,
   };
 }
 

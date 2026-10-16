@@ -6499,3 +6499,233 @@ external entries either, so both returned `[]` on exactly the same inputs.
 Mutating the guard below measured **1 against a predicted 4** because the
 early return was quietly holding three cases up. Collapsed to one; the row is
 now 4.
+
+## #440 — the constraint extractor read four flat directories
+
+`collectScanTargets` was four `readdirSync` loops and no recursion: `*.md`,
+`docs/*.md` (skipping `archive`), `docs/adr/*.md`, `specs/*.md`. The list was
+written once and never revisited.
+
+Measured on a consumer project: 84 files scanned, **28 missed**, and every one
+of the 28 sat in a directory that project's own
+`.claude/rules/docs-routing.md` names as a documentation location —
+`docs/specs/` (17), `reference/` (5), `docs/designs/` (3), `docs/agents/` (3).
+
+`docs/specs/` is the headline. Specs are the densest source of hard
+constraints in a repo, and the extractor read `specs/` (2 files) while
+skipping `docs/specs/` (17). Same word, different directory, silently dropped.
+
+Why the existing tests did not catch it: the one scope test was "scans
+arbitrary root-level .md files beyond hardcoded list" — root-level BREADTH
+only. Nothing asserted that any subdirectory was reached. A detector narrower
+than what it detects, with a test narrower still.
+
+`lib/doc-scan-targets.ts` owns the decision now and derives it from the
+project's own routing table, so the scan tracks each project's layout instead
+of a list someone has to remember to update. Scaffold already writes that
+file, so every scaffolded project has one.
+
+### Three decisions, recorded
+
+**The routing table ADDS to the default set; it does not replace it.** This
+repo's own table names `docs/adr/` and `docs/research/` but not `docs/`, so a
+routing-only scan would have dropped every top-level `docs/*.md` the old flat
+code read — fixing a 28-file miss by causing a different one. The defaults are
+a floor. `source` reports whether routing contributed anything, which is a
+different question from whether the file exists: a table naming nothing leaves
+the defaults doing all the work, and reporting `routing` there would claim a
+derivation that did not happen.
+
+**Only the READ table is a documentation table.** `docs-routing.md` has two,
+and the second — "Where to Create Things" — names `src/` and `test/`. Reading
+both pulled 36 files out of `test/fixtures/`, a scaffolded fixture project
+whose documents are props; extracting constraints from them attributes a
+synthetic project's rules to the real one, which is the same error as
+descending into a worktree. The cut is by heading rather than by column
+position, because a parser tied to a column layout reads half a table when the
+layout changes, and a heading is what actually separates the two meanings.
+
+**A routed directory that is not on disk is UNMEASURED, not skipped.** The
+routing table is a claim the project made about itself, and a claim that does
+not hold is a finding. A *default* directory a project simply lacks never made
+that claim and is not reported — otherwise the signal means nothing.
+
+Measured on this repo after the change: 31 files before, 92 after, **0 lost**,
+0 from `test/fixtures/`.
+
+### BUG-440-A — a symlink was a way out of the project
+
+Found by security review of the first implementation, and it is part of the
+fix rather than something the fix found: the old scan was flat, so
+`docs/elsewhere -> /somewhere` was never descended into. Recursion is what
+made it reachable. `extract-constraints` turns every `.md` sentence it reaches
+into a candidate constraint written to `AGENTS.md`, so one symlink in a cloned
+repo would copy markdown from anywhere the process can read into this
+project's rules.
+
+The lexical guards — `startsWith("/")`, `includes("..")` — cannot see a
+symlink. Every candidate path now resolves through `realpathSync` and must be
+contained in the resolved project root.
+
+Containment, not a symlink ban: a link within the repo is ordinary, and
+refusing it outright would be a narrower detector than the thing being
+detected. What containment alone does not fix is that an internal link makes
+one file reachable under two names, which reads as two independent sources
+agreeing — so the de-duplication set is keyed on the RESOLVED path, which
+makes it stop symlink loops and alias double-reads with one binding. Reported
+paths are re-anchored on the caller's spelling of the root, so the output is
+the canonical name regardless of which name `readdirSync` returned first.
+
+Refusals are recorded in `plan.refused` rather than dropped, for the reason
+`unmeasured` exists: a symlinked documentation root that silently contributes
+nothing is indistinguishable from one that was read and happened to be empty.
+
+- [x] SC-1622: test/doc-scan-targets.test.ts contains [scan targets come from the project's routing table] — a directory named by no hardcoded list is reached, the routing table adds to the defaults rather than replacing them, and only the READ table is treated as a documentation table
+- [x] SC-1623: test/doc-scan-targets.test.ts contains [recursion reaches a nested directory nobody named] — `docs/specs/`, `reference/`, `docs/designs/` and `docs/agents/` are each reached, and a directory nobody named is reached beneath one that was
+- [x] SC-1624: test/doc-scan-targets.test.ts contains [the exclusions are one list, and each is proved] — a file is planted under every name in `SCAN_EXCLUDE_DIRS` and none is scanned, and recursion is bounded above as well as below
+- [x] SC-1625: test/doc-scan-targets.test.ts contains [a project with no routing table is told so] — the fallback is exactly the old hardcoded set and the result names it rather than leaving the reader to assume
+- [x] SC-1626: test/doc-scan-targets.test.ts contains [a routed directory that does not exist is UNMEASURED] — drift between the table and the tree is a finding, and a default directory a project simply lacks is not
+- [x] SC-1627: test/doc-scan-targets.test.ts contains [the extractor carries the plan, so a count is interpretable] — a candidate count is uninterpretable without what was scanned and what could not be
+- [x] SC-1628: test/doc-scan-targets.test.ts contains [the same file reached by two routed roots is read once] — counted twice it reads as two independent sources agreeing
+- [x] SC-1629: test/doc-scan-targets.test.ts contains [the old flat behaviour cannot come back unnoticed] — the regression stated as the exact file list a four-directory flat scan would return
+- [x] SC-1630: test/doc-scan-targets.test.ts contains [a symlink is not a way out of the project] — BUG-440-A — a symlinked directory, a symlinked file, and a symlinked routed root are each refused and named
+- [x] SC-1631: test/doc-scan-targets.test.ts contains [a symlink loop terminates] — de-duplication keyed on the resolved path, so a loop ends and a file reachable under two names is collected once
+
+- [x] SC-1632: test/doc-scan-targets.test.ts contains [an excluded name is excluded as a ROOT, not only as an entry] — the exclusion list covers the directories a routing table declares, not only the entries found while walking them
+- [x] SC-1633: test/doc-scan-targets.test.ts contains [the number of declared roots is bounded] — breadth is capped as depth already was, and a truncated scan says so
+
+### Found by security review of the pushed commit
+
+Three findings, all confirmed against the code and all in the same class as
+the issue, so they are fixed here rather than filed.
+
+**The exclusion list was applied to entries and never to roots.** A routing
+table naming `node_modules/` or `worktrees/` was walked outright — the exact
+case the list exists to stop, reached by the one path the list did not cover.
+A guard that covers every door but one is a guard with a door.
+
+**Breadth was unbounded.** `MAX_SCAN_DEPTH` capped how deep a repo-content-
+driven walk could go and nothing capped how wide. `MAX_SCAN_ROOTS` is 20;
+this repo declares six, and a truncated scan appends the count to `reason`
+rather than quietly covering less than it claims.
+
+**The validated value was not the value used.** `containedReal` resolved the
+path and the walk then recursed on the unresolved one. The mutation measured
+**0 of 27** and that is the honest result: using `real` closes a window
+rather than changing behaviour, so no test covers it and none is claimed to.
+
+- [x] SC-1634: test/doc-scan-targets.test.ts contains [a symlink cannot smuggle an excluded directory back in] — the exclusion is keyed on the resolved path, and the total file count is bounded as well as the root count
+
+### A second review round, and the one that was a real hole
+
+**The exclusion was keyed on the entry NAME.** Measured before the fix:
+`docs/vendor -> node_modules` produced `node_modules/pkg/README.md`. The
+guard saw the label `vendor`. That is the second shape in
+`.claude/rules/checks-must-be-able-to-fail.md` exactly — a detector narrower
+than what it detects, because the view it had of the input could silently
+shrink to whatever a symlink was called. `excludedByPath` is now the one
+decider, keyed on the resolved path, used by both the walk and the root
+declaration, so there is one binding to mutate.
+
+**The bound was on the wrong thing.** A cap on roots is not a cap on work:
+twenty roots times six levels of unbounded fanout is still unbounded.
+`MAX_SCAN_FILES` is 2000 and a truncated scan says so; this repo's own scan
+collects 92.
+
+- [x] SC-1635: test/doc-scan-targets.test.ts contains [the exclusion is case-insensitive, because the filesystem may be] — and the file cap stops the walk rather than only the collecting
+
+### A third review round — two of three held
+
+**The exclusion was defeated by changing a letter.** Measured before the
+fix: `docs/vendor -> NODE_MODULES` produced `NODE_MODULES/pkg/README.md`.
+On macOS and Windows that is the same directory the list already names.
+The comparison is now case-insensitive **always**, not "when the filesystem
+is" — the direction this is allowed to be wrong in is toward not scanning,
+because a directory genuinely named `Archive` being excluded costs one
+visible entry in `refused` and the other direction is a silent bypass of
+the whole list.
+
+**The cap was on the wrong accumulator.** `MAX_SCAN_FILES` stopped the push
+and not the walk, so the output was bounded while the traversal and the
+`seen` set kept growing. The cap now returns from `walkMarkdown`, and
+`walked` is on the plan so that is checkable rather than asserted in prose.
+
+**The third did not hold.** A claimed exclusion regression from replacing
+the entry-name check was probed directly — `docs/sub/node_modules/pkg/X.md`
+and `docs/.git/Y.md` are both refused. Reported here because a finding
+checked and found not to apply is worth the same sentence as one that does.
+
+### What was broken to prove it (SC-1622..1635)
+
+Run over `test/doc-scan-targets.test.ts`, baseline 0 fail. Every count
+predicted before the battery ran. The first sixteen were measured over 24
+tests; the review fixes added three, and the three rows re-measured at 27
+reproduce exactly.
+
+| Mutation | Red |
+|---|---|
+| `routedDirectories` returns `[]` | 10 of 24 |
+| the trailing-slash filter dropped, so any backticked token is a directory | 1 of 24 |
+| `walkMarkdown` stops recursing — the defect verbatim | 4 of 24 |
+| `MAX_SCAN_DEPTH` raised to 99 | 1 of 24 — **was 0.** See below |
+| `SCAN_EXCLUDE_DIRS` emptied | 2 of 24 |
+| the flat root scan removed | 1 of 24 |
+| `planDocScan` ignores routing and always uses the defaults | 8 of 24 — predicted 10; see below |
+| `unmeasured` never populated | 2 of 24 |
+| `unmeasured` populated for absent DEFAULT roots too | 2 of 24 |
+| the two-table section cut removed | 2 of 24 |
+| BUG-440-A: containment dropped, any resolvable path accepted | 3 of 24 |
+| BUG-440-A: the resolved-path `seen` set removed | 3 of 24 — the loop case and both alias cases |
+| BUG-440-A: the walk records the traversal path instead of the canonical one | 1 of 24 |
+| BUG-440-A: the walk's refusal never recorded | 2 of 24 |
+| BUG-440-A: the routed root's refusal never recorded | 1 of 24 |
+| BUG-440-A: a routed root that leaves the project is walked rather than skipped | 1 of 24 |
+
+| the root-level exclusion removed | 1 of 27 |
+| `MAX_SCAN_ROOTS` raised to 9999 | 1 of 27 |
+| the truncation reported silently | 1 of 27 |
+| the walk uses the traversal path instead of the validated one | **0 of 27** — hardening, not behaviour; see above |
+| `walkMarkdown` stops recursing, re-measured | 4 of 27 — reproduces |
+| containment dropped, re-measured | 3 of 27 — reproduces |
+
+| `excludedByPath` always false | 4 of 29 |
+| the exclusion keyed on the entry NAME again — the hole verbatim | 1 of 29 |
+| `MAX_SCAN_FILES` raised to 999999 | 1 of 29 |
+| the file truncation reported silently | 1 of 29 |
+| `walkMarkdown` stops recursing, re-measured at 29 | 4 of 29 — reproduces |
+| containment dropped, re-measured at 29 | 3 of 29 — reproduces |
+
+| the exclusion keyed on exact bytes again — the hole verbatim | 1 of 30 |
+| the cap stops the push but not the walk | 1 of 30 |
+| `excludedByPath` always false, re-measured at 30 | 5 of 30 |
+| `walkMarkdown` stops recursing, re-measured at 30 | 5 of 30 — predicted 4; the cap test never trips without recursion |
+| containment dropped, re-measured at 30 | 3 of 30 — reproduces |
+
+None of the thirty-three is left in the tree; all were run and reverted.
+
+**The row that came back zero.** The bounded-recursion test built its fixture
+as `MAX_SCAN_DEPTH + 3` levels deep. Raising the constant raised the fixture
+with it, so the assertion could never catch a raised bound — an assertion that
+holds vacuously, the third shape in
+`.claude/rules/checks-must-be-able-to-fail.md`, arriving through a test that
+derives its input from the thing under test. The fixture is now a literal 12
+and the constant has a ceiling as well as a floor. The row is now 1.
+
+**Two prediction errors worth recording, both mine.** `planDocScan` ignoring
+routing measured 8 where 10 was predicted: the two missing rows are the
+parser's own unit tests, which the planner cannot reach. That makes the
+planner's routing branch a strict subset of the parser's — it has no row of
+its own — which is the correct shape here, because delegating to one decider
+is what the file is for. Separately, two rows were predicted as 2 and measured
+as 1 because several failing assertions sat in one test; a battery counts
+tests, not assertions.
+
+**Two refusal sites, and each has an input only it reaches.** The walk refuses
+entries that resolve outside, and `planDocScan` refuses a declared root that
+does. They are not two deciders agreeing on safety — the walk is the safety
+decider, and a routed root pointing outside yields nothing even with the root
+check removed. The root check exists so the report can distinguish "the
+project does not have this directory" from "the project points this somewhere
+I will not follow", and the mutation rows confirm the split: removing the root
+refusal leaves the walk cases green, and removing the walk refusal leaves the
+root case green.
