@@ -67,6 +67,21 @@ export interface WriteStepOptions {
    * `./profiles.ts`, which carries the reason for each exclusion.
    */
   profile?: ScaffoldProfile;
+  /**
+   * Opt OUT of the mechanical fixes (#42 SC-4). Default on, because a
+   * re-scaffold that reports a gap it could have closed is a worse onboarding
+   * than one that closes it.
+   */
+  autoFix?: boolean;
+  /**
+   * Opt IN to removing consumers the source scan did not find (#42 SC-2).
+   *
+   * Deliberately NOT covered by `autoFix`'s opt-out default — see
+   * `pruneStaleConsumers`. Adding a frontmatter line and deleting a config
+   * entry are not in the same risk class, and one flag governing both would
+   * make the safe default impossible to express.
+   */
+  pruneConsumers?: boolean;
 }
 
 export function runScaffoldWriteSteps(
@@ -75,7 +90,7 @@ export function runScaffoldWriteSteps(
   actions: string[],
   opts: WriteStepOptions = {},
 ): void {
-  const { force = false, commit = false, rehearsing = false, profile = DEFAULT_PROFILE } = opts;
+  const { force = false, commit = false, rehearsing = false, profile = DEFAULT_PROFILE, autoFix = true, pruneConsumers = false } = opts;
 
   // Phase 0: Security and directory setup
   createGitignore(projectPath, actions);
@@ -111,8 +126,14 @@ export function runScaffoldWriteSteps(
   // Validators. These used to run outside the `if (fix)` block with a `{ fix }`
   // flag, which is why `addFrontmatterToSpecs` is the one step audit ever
   // reported anything from.
-  addFrontmatterToSpecs(join(projectPath, "specs"), actions);
-  addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
+  if (autoFix) {
+    addFrontmatterToSpecs(join(projectPath, "specs"), actions);
+    addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions);
+  } else {
+    // Named, not silent. A run that declined to fix and said nothing is
+    // indistinguishable from one that had nothing to fix (#208, SC-819).
+    actions.push("SKIP: auto-fix of spec and ADR frontmatter (--no-auto-fix)");
+  }
   detectOversizedSpecs(join(projectPath, "specs"), actions);
   checkGovernsAlignment(join(projectPath, "specs"), actions);
   detectMisplacedSpecs(projectPath, actions);
@@ -150,7 +171,7 @@ What does this workflow produce?
   // Phase 1.5: Harness config + briefs. Harness-only under `minimal` — see
   // STEPS_NOT_MINIMAL for why each is excluded.
   if (isStepIncluded("generateOrAuditProjectHarness", profile)) {
-    generateOrAuditProjectHarness(projectPath, actions);
+    generateOrAuditProjectHarness(projectPath, actions, { pruneConsumers });
   }
   injectEnvironmentSection(projectPath, actions);
   if (isStepIncluded("generateAgentBriefsStep", profile)) {

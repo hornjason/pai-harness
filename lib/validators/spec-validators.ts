@@ -142,7 +142,7 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
     if (!content.startsWith("---\n")) {
       const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
       writeFileSync(filePath, frontmatter + content);
-      actions.push(`UPDATED: docs/adr/${file} (added frontmatter)`);
+      actions.push(`AUTO-FIXED: docs/adr/${file} (added frontmatter)`);
     } else {
       const fmEnd = content.indexOf("\n---", 4);
       if (fmEnd === -1) continue;
@@ -150,10 +150,38 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
       const missing: string[] = [];
       if (!fm.includes("doc-type:")) missing.push(`doc-type: adr`);
       if (!fm.includes("created:")) missing.push(`created: ${today}`);
-      if (missing.length > 0) {
-        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+
+      // A doc-type that is present but WRONG (#42).
+      //
+      // The fixer used to key on whether the field existed while HYGIENE-10
+      // keys on its VALUE (`lib/conformity.ts`: `fm["doc-type"] !== "adr"`).
+      // So an ADR carrying `doc-type: guide` satisfied `fm.includes` and was
+      // never touched — re-scaffold ran, reported nothing, and the warning
+      // came back every single time. Two readers of one field disagreeing
+      // about what it means is why the auto-fix could not clear the finding
+      // it was written to clear.
+      //
+      // Corrected in place rather than appended: adding a second `doc-type:`
+      // line would leave a document with two, and a parser taking the first
+      // would keep the wrong one forever.
+      const wrongType = fm.match(/^(\s*doc-type:\s*)(.+?)\s*$/m);
+      let corrected = fm;
+      let retyped: string | null = null;
+      if (wrongType && wrongType[2] !== "adr") {
+        retyped = wrongType[2];
+        corrected = fm.replace(/^(\s*doc-type:\s*).+?\s*$/m, `$1adr`);
+      }
+
+      if (missing.length > 0 || retyped !== null) {
+        const newFm = missing.length > 0
+          ? `---\n${corrected}\n${missing.join("\n")}\n---`
+          : `---\n${corrected}\n---`;
         writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
-        actions.push(`UPDATED: docs/adr/${file} (added missing: ${missing.map(m => m.split(":")[0]).join(", ")})`);
+        const what = [
+          ...(missing.length > 0 ? [`added missing: ${missing.map(m => m.split(":")[0]).join(", ")}`] : []),
+          ...(retyped !== null ? [`doc-type was "${retyped}", set to adr`] : []),
+        ];
+        actions.push(`AUTO-FIXED: docs/adr/${file} (${what.join("; ")})`);
       }
     }
   }

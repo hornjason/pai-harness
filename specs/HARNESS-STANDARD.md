@@ -7788,3 +7788,127 @@ was already covered.
 - [x] SC-1784: test/consumer-fixture-gates.test.ts contains [the consumer fixture's OUTCOME ACs need no running server] — asserted on the commands, so an outcome criterion that reaches for a port turns it red
 - [x] SC-1785: test/consumer-fixture-gates.test.ts contains [no fixture names one of the harness's consumers] — the anti-criteria guard cannot see a JSON fixture twice over, and both files in the directory were violations when this was written
 - [x] SC-1786: test/consumer-fixture-gates.test.ts contains [no fixture carries anything shaped like a credential] — the pre-commit scanner's own three patterns, applied to files it only sees on the commit that introduces them
+
+## Auto-fix during re-scaffold, and the one fix that stays opt-in (#42)
+
+Re-scaffold audited conformity gaps and reported them without closing the
+mechanical ones, so a consumer had to fix by hand what the scaffold could have
+fixed itself.
+
+### SC-1 was already built — except for the case the issue was filed from
+
+`addFrontmatterToAdrs` has existed in `lib/validators/spec-validators.ts` and
+been wired into the write phase for some time. Measured against the real
+function on three ADRs before any change:
+
+| ADR | before | after re-scaffold |
+|---|---|---|
+| no frontmatter at all | — | `doc-type: adr` ✅ |
+| frontmatter without the key | `status: draft` | `doc-type: adr` ✅ |
+| frontmatter with the **wrong value** | `doc-type: guide` | `doc-type: guide` ❌ |
+
+**The fixer keyed on the field's presence; the checker keys on its value.**
+The fixer asked `!fm.includes("doc-type:")`; `HYGIENE-10` in
+`lib/conformity.ts` asks `fm["doc-type"] !== "adr"`. So an ADR carrying
+`doc-type: guide` satisfied one and failed the other, and re-scaffold could
+run forever without clearing the warning it was supposed to clear.
+
+Two readers of one field disagreeing about what it means — and the auto-fix
+that could not close its own finding is the specific thing #42 complained
+about. The correction replaces the field rather than appending one: a second
+`doc-type:` line would leave a parser taking the first with the wrong value,
+and the bug would survive its own fix.
+
+### SC-2 is opt-in, against the issue's SC-4, and that is a deliberate refusal
+
+> SC-2: Scaffold auto-removes consumers from rungate.json when source scan confirms they don't exist
+> SC-4: Auto-fix is opt-out (`--no-auto-fix` flag) not opt-in
+
+Together those mean a routine `rungate scaffold .` silently deletes config
+entries by default. The objection is in SC-2's own wording: *"when source scan
+confirms they don't exist"*. **A source scan cannot confirm absence.** It
+reports that it did not find something, and the gap between those two claims
+is where a dynamic import, a generated file, a file type the scanner does not
+read, and a scanner that errored all live.
+
+The costs are asymmetric. A stale entry left in config costs a warning line. A
+live entry deleted costs that consumer its role grading, compliance policy and
+pre-flight checks — silently, in a report nobody reads line by line.
+
+So auto-fix of frontmatter is opt-out, as SC-4 asks, and consumer pruning is
+opt-in behind `--prune-consumers`. One flag governing both would make the safe
+pair impossible to express. Deleting is not in the same risk class as adding.
+
+### The refusal nothing in the issue asked for
+
+A scanner that returns nothing makes **every** declared consumer look stale,
+so one broken scan would empty the list in a single pass with the flag on.
+`pruneStaleConsumers` refuses when the scan found zero consumers overall:
+"the scan found no consumers" and "this project has no consumers" are not the
+same reading, and treating them alike is *Silent Default Substitution*
+(`.claude/rules/config-access.md`).
+
+It refuses on an unreadable config for the same reason it is never rewritten
+from the in-memory copy — that would discard every key the function does not
+know about, a bigger loss than the stale entry it was asked to remove. Both
+refusals are `REFUSED:`, not `SKIP:`, so they reach the exit code.
+
+### What the report now distinguishes
+
+`AUTO-FIXED:` is counted separately from `AUDITED:`. What the scaffold
+CHANGED and what it merely NOTICED are different facts, and a reader who
+cannot tell them apart has to diff the tree to find out which of the reported
+gaps are still gaps. Pruning names every consumer removed rather than a count:
+a removal summarised as a number is one nobody can audit or put back.
+
+### What is out of scope, said rather than dropped
+
+> Only spec is SPEC-TEMPLATE.md with `testable: false` → should prompt or default
+
+Scaffold is non-interactive, so "prompt" is not available, and defaulting
+`testable: true` on a template nobody has written content for would
+manufacture a testable spec with no criteria — a spec that claims measurement
+and measures nothing. Left alone, deliberately.
+
+### Mutations, predicted before running and measured after
+
+Over `test/scaffold-auto-fix.test.ts` (10 tests). **Every anchor was checked
+for uniqueness before the mutation was applied** — #44's battery produced a
+false zero row because `String.replace` took the first of two identical
+anchors and mutated a function the tests did not exercise.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| a wrong `doc-type` is no longer corrected | 3 | 3 |
+| the correction appends instead of replacing | 2 | **3** |
+| an ADR that is already correct is rewritten anyway | 2 | 2 |
+| pruning ignores the opt-in flag | 1 | 1 |
+| a zero-result scan no longer refuses | 1 | 1 |
+| an unreadable config is rewritten from the in-memory copy | 1 | 1 |
+| pruning reports a count instead of the names | 1 | 1 |
+| `AUTO-FIXED` is folded back into the other totals | 1 | 1 |
+| auto-fix becomes opt-in | 1 | 1 |
+| pruning becomes opt-out | 1 | 1 |
+| the rehearsal stops receiving the flags | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+**Ten matched exactly.** The append mutation measured 3 against a predicted 2,
+and the extra red is SC-1787 — which reads the doc-type with a `^...$m` match
+and therefore sees the FIRST one, still `guide`. That is precisely the failure
+the replace-don't-append rule exists to prevent, caught by the row written for
+a different purpose, so the prediction was wrong in the direction that means
+the suite is stronger than it was credited with.
+
+### Success criteria
+
+- [x] SC-1787: test/scaffold-auto-fix.test.ts contains [an ADR whose doc-type is present but wrong is corrected to adr] — the case the fixer and the checker disagreed about, and the only one re-scaffold could never clear
+- [x] SC-1788: test/scaffold-auto-fix.test.ts contains [the correction replaces the field - it does not add a second one] — appending would leave a parser taking the first with the wrong value, so the bug would survive its own fix
+- [x] SC-1789: test/scaffold-auto-fix.test.ts contains [an ADR that is already correct is not rewritten] — byte-identical, because a fixer that rewrote everything would report a change on every run and make the count meaningless
+- [x] SC-1790: test/scaffold-auto-fix.test.ts contains [the three shapes are handled and distinguished in one pass] — the count is the assertion, since "they all say adr now" is also true of a fixer that rewrites unconditionally
+- [x] SC-1791: test/scaffold-auto-fix.test.ts contains [nothing is removed unless pruning was asked for] — and silently, because a run must never both remove something and complain it is there
+- [x] SC-1792: test/scaffold-auto-fix.test.ts contains [with the flag it removes only the stale ones and names every one] — other config keys survive, which rewriting the file from the consumer list alone would not manage
+- [x] SC-1793: test/scaffold-auto-fix.test.ts contains [a scan that found no consumers at all removes nothing] — the worst case nothing in the issue asked about, where one broken scan empties the list in a single pass
+- [x] SC-1794: test/scaffold-auto-fix.test.ts contains [an unreadable or absent config is refused - never rewritten from memory] — discarding every key the function does not know is a bigger loss than the stale entry
+- [x] SC-1795: test/scaffold-auto-fix.test.ts contains [auto-fixes are counted apart from audit findings] — what the scaffold changed and what it noticed are different facts
+- [x] SC-1796: test/scaffold-auto-fix.test.ts contains [the write steps opt OUT of auto-fix and opt IN to pruning] — the polarity of each default, and the rehearsal getting the same flags so an audit reports what a fix would really do

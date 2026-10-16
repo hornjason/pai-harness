@@ -25,13 +25,19 @@ const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
 const fix = args.includes('--fix');
 // #216: both default false — re-scaffold is how a consumer takes an UPDATE.
 const force = args.includes('--force'), commit = args.includes('--commit');
+// #42. Auto-fix is opt-OUT: a re-scaffold that reports a gap it could have
+// closed is a worse onboarding than one that closes it. Pruning consumers is
+// opt-IN and separate — see `pruneStaleConsumers` for why deleting a config
+// entry is not in the same risk class as adding a frontmatter line.
+const autoFix = !args.includes('--no-auto-fix');
+const pruneConsumers = args.includes('--prune-consumers');
 // #449. Orthogonal to --type: that selects WHICH generators run, this selects
 // whether the harness-only ones run at all.
 const profileFlag = args.find(arg => arg.startsWith('--profile='))?.split('=')[1] ||
                  (args.indexOf('--profile') !== -1 ? args[args.indexOf('--profile') + 1] : null);
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project [--type code|content|infra|workflow] [--profile full|minimal] [--fix] [--force] [--commit]");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|content|infra|workflow] [--profile full|minimal] [--fix] [--force] [--commit] [--no-auto-fix] [--prune-consumers]");
   process.exit(1);
 }
 
@@ -74,7 +80,7 @@ console.log(`Profile: ${profile}${profile === "minimal" ? ` — not written: ${[
 console.log("---");
 
 if (fix) {
-  runScaffoldWriteSteps(projectPath, projectType, actions, { force, commit, profile });
+  runScaffoldWriteSteps(projectPath, projectType, actions, { force, commit, profile, autoFix, pruneConsumers });
 } else {
   // Audit does not PREDICT what --fix would do; it does it, against a clone,
   // and reports what the real steps said (#398). The previous audit branch was
@@ -94,7 +100,9 @@ if (fix) {
   }
   try {
     console.log(rehearsalNotice(rehearsal));
-    runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true, profile });
+    // The rehearsal gets the same flags, so an audit reports what --fix would
+    // actually do rather than what it would do with different settings (#398).
+    runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true, profile, autoFix, pruneConsumers });
   } finally {
     discardRehearsal(rehearsal);
   }
