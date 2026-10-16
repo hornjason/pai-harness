@@ -722,22 +722,106 @@ describe("#502 review: the rest", () => {
     expect(actions.join("\n")).toContain("not a regular file");
   });
 
-  test("§7: the non-file check is there, and why a behavioural case cannot prove it", () => {
-    // Removing `isFile()` is 0 red, and that is honest rather than a gap in
-    // the fixtures: for a DIRECTORY the `readFileSync` below it throws
-    // EISDIR and the catch returns the same UNREADABLE, so the two are
-    // behaviourally one decider on every input this suite can build.
+  test("§7: a SYMLINKED SUCCESS.md is UNREADABLE — the input only `isFile()` reaches", () => {
+    // This was a SOURCE assertion defending a claim that was false. The
+    // comment said removing `isFile()` is 0 red and that this was "honest
+    // rather than a gap in the fixtures", because a DIRECTORY throws EISDIR
+    // into the catch below and both paths return UNREADABLE — "behaviourally
+    // one decider on every input this suite can build".
     //
-    // They are not redundant. `readFileSync` on a FIFO BLOCKS waiting for a
-    // writer rather than throwing, so the catch never runs and the scaffold
-    // hangs instead of refusing — and a test that hangs is a test that
-    // cannot report. Scheduling that reliably is not something this suite
-    // can do, so the check is asserted in the source and the limitation is
-    // written down rather than papered over with a case that passes for an
-    // unrelated reason.
-    const src = readFileSync(join(ROOT, "lib", "success-doc.ts"), "utf-8");
-    expect(src, "the non-file guard is gone; a FIFO would block the read")
-      .toContain("if (!stat.isFile()) return UNREADABLE;");
+    // sec-485 built the input. `lstatSync` describes the LINK, so for a
+    // symlink to a real file `isFile()` is false and the guard refuses;
+    // without it `readFileSync` FOLLOWS the link and returns the target's
+    // contents. Measured against a mutant with that one line removed:
+    //
+    //   directory            real=UNREADABLE  mutant=UNREADABLE   same
+    //   symlink->real file   real=UNREADABLE  mutant=content(127b)  DIFFERS
+    //   mode-000 file        real=UNREADABLE  mutant=UNREADABLE   same
+    //
+    // Three lines, deterministic, no scheduling. The reason I gave was true
+    // of the two cases I measured and I then applied it to all cases, which
+    // is `.claude/rules/checks-must-be-able-to-fail.md`'s #199/#479 section
+    // committed inside a file that cites it.
+    //
+    // The FIFO sentence was a real second reason and is kept as a note: a
+    // `readFileSync` on a FIFO BLOCKS rather than throwing, so the catch
+    // never runs and the scaffold hangs instead of refusing. It just was not
+    // doing the work the comment claimed, because a case existed all along.
+    //
+    // THE DECISION, stated rather than inherited: a symlinked SUCCESS.md is
+    // UNREADABLE. It is consistent with `regenerateOwned` and with F2
+    // refusing to write through a link, but consistency is not the same as
+    // having decided, and nobody had. The refusal text now names symlinks,
+    // because a consumer who links SUCCESS.md into a shared docs folder was
+    // being told it "may be a directory, a device, or have permissions that
+    // deny reading" — three things that are all false for their input.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-linktarget-"));
+    const target = join(outside, "real.md");
+    writeFileSync(
+      target,
+      "### Claim 1 — a real claim that is long enough\n"
+        + "**How it fails:** it returns the wrong answer for empty input.\n"
+        + "| 1 | untested |\n",
+    );
+    const root = project({});
+    symlinkSync(target, join(root, "SUCCESS.md"));
+
+    expect(readSuccessDoc(root), "the link was followed instead of refused").toBe(UNREADABLE);
+    const v = successViolations(readSuccessDoc(root), readSuccessTemplate());
+    // The specific clause, not the bare word: the message says "symlink"
+    // twice, so `toContain("symlink")` could not tell the enumeration of
+    // causes from the sentence explaining the policy, and dropping the first
+    // was 0 red. Small instance of the same shape as everything else here.
+    expect(v.violations.join("\n"), "the refusal no longer lists a symlink as a cause")
+      .toContain("may be a symlink");
+    expect(v.unmeasured, "an unreadable document was reported as unmeasured").toBeNull();
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("Q1: placeholder prose in a claim heading or a short line is residue", () => {
+    // sec-485's question 1. The docstring claimed `templateResidue` covers
+    // "a new template section the day it ships"; it did not. Anything in a
+    // heading, a table row, or under thirteen characters was invisible
+    // forever, and on TODAY's template that already hid a real body line
+    // (`"prevent."`, eight characters) and all three claim statements.
+    //
+    // This is a plausible next-version template. The consumer does the one
+    // thing the generator asks — writes a How-it-fails per claim — and
+    // changes nothing else. Before the narrowing it scored residue [] and
+    // ZERO violations while still reading `Describe it.` / `List them.`
+    // with both claims generic. Measured, before the fix was written.
+    const TPL = [
+      "---", "doc-type: reference", "status: active", "owner: TODO-OWNER", "---", "",
+      "# What we are building", "", "## The thing", "", "Describe it.", "",
+      "## Risks", "", "List them.", "", "## The claims", "",
+      "### Claim 1 — the system behaves as intended under normal use", "",
+      "**How it fails:** TODO", "",
+      "### Claim 2 — the system behaves as intended under load", "",
+      "**How it fails:** TODO", "",
+      "## Standing", "", "| Claim | Standing |", "|---|---|",
+      "| 1 | untested |", "| 2 | untested |", "",
+    ].join("\n");
+    const doc = TPL
+      .replace(/^\*\*How it fails:\*\* TODO$/m, "**How it fails:** it drops writes when full")
+      .replace(/^\*\*How it fails:\*\* TODO$/m, "**How it fails:** latency exceeds 1s at 100rps");
+
+    const residue = templateResidue(doc, TPL);
+    expect(residue, "a claim statement left as the template's prose was invisible")
+      .toContain("the system behaves as intended under normal use");
+    expect(residue, "an unwritten section body under 13 chars was invisible")
+      .toContain("Describe it.");
+    expect(successViolations(doc, TPL).violations.length).toBeGreaterThan(0);
+  });
+
+  test("Q1 control: the narrowing did not start refusing the real document", () => {
+    // The direction this must not drift in. Narrowing an exclusion is the
+    // change most likely to produce false refusals, and rungate's own
+    // SUCCESS.md — written four months before the template and the only
+    // real instance of the genre — is the case that would notice.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const real = readFileSync(join(ROOT, "SUCCESS.md"), "utf-8");
+    expect(templateResidue(real, template), "the real document became residue").toEqual([]);
+    expect(successViolations(real, template).violations).toEqual([]);
   });
 
   test("§3: the two seed writers produce the same bytes", () => {
