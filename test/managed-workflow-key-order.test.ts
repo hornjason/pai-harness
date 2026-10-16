@@ -45,7 +45,9 @@
 import { describe, test, expect } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
+
+const REPO = resolve(import.meta.dir, "..");
 
 import {
   mergeManagedWorkflow,
@@ -198,13 +200,35 @@ describe("#482: movement that does happen is named", () => {
     expect(movedTopLevelKeys("a:\n  1\ngone:\n  0\nb:\n  2\n", "a:\n  1\nb:\n  2\n")).toEqual([]);
   });
 
-  test("the live merge reports no movement, and that is a measurement", () => {
-    // After the fix this is empty — which is indistinguishable from a
-    // reporter that never looks. The cases above are what make it a
-    // measurement; this one is what makes the fix observable end to end.
+  test("the live merge moves nothing, and movement would REFUSE rather than warn", () => {
+    // Post-fix the merge's contract is that the consumer's order is the
+    // consumer's, so movement is a bug in the merge rather than news. A
+    // warning for that is a line in a log nobody reads; a refusal is the
+    // asymmetry the incident argues for — an unenumerated edge case costs a
+    // named refusal and `--force`, and not refusing costs a consumer a file
+    // they will misread.
     const write = resolveManagedWrite(CONSUMER, GENERATED);
     expect(write.refusal).toBeNull();
     expect(write.movedKeys, `the merge moved: ${write.movedKeys.map(m => m.key).join(", ")}`).toEqual([]);
+  });
+
+  test("the repo's own workflows move nothing either, which is why refusing is safe", () => {
+    // The fixture above is one shape this test chose. `release.yml` carries
+    // `permissions:` between `on:` and `jobs:` — the exact arrangement that
+    // used to relocate — so this is the arm that says the refusal will not
+    // fire on real files.
+    const stub = "name: X\n\non:\n  push:\n\njobs:\n  test:\n    runs-on: ubuntu-latest\n";
+    let checked = 0;
+    for (const f of ["ci.yml", "gates.yml", "release.yml"]) {
+      const real = readFileSync(join(REPO, ".github", "workflows", f), "utf-8");
+      expect(movedTopLevelKeys(real, mergeManagedWorkflow(real, stub)), f).toEqual([]);
+      checked++;
+    }
+    // Not vacuous: a loop over a directory that had been renamed would assert
+    // nothing at all.
+    expect(checked).toBe(3);
+    expect(topLevelKeyOrder(readFileSync(join(REPO, ".github", "workflows", "release.yml"), "utf-8")))
+      .toContain("permissions");
   });
 });
 

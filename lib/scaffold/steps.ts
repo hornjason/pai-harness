@@ -1944,7 +1944,30 @@ export function resolveManagedWrite(existing: string | null, generated: string):
     };
   }
 
+  // The merge's contract since #482 is that the consumer's top-level ORDER is
+  // the consumer's. So movement is no longer something to report — it is a
+  // bug in the merge, and shipping one is what produced the incident: a
+  // `concurrency:` block 460 lines below the comment introducing it, read as
+  // a deletion, "restored", and the workflow stopped parsing.
+  //
+  // A refusal rather than a warning, because the cost is asymmetric. A
+  // consumer who hits an unenumerated edge case gets a named refusal and
+  // `--force`; a consumer who does not get one gets a file they will
+  // misread. Measured against this repo's three real workflows, including
+  // `release.yml`, whose `permissions:` sits between `on:` and `jobs:` and is
+  // exactly the shape that used to move: zero movement in all three.
   const movedKeys = movedTopLevelKeys(existing, content);
+  if (movedKeys.length > 0) {
+    return {
+      ...unchanged, preservedJobs, droppedJobs: [], overwrittenLines: [], movedKeys, lineDelta,
+      refusal:
+        `${movedKeys.length} top-level key(s) would move: ` +
+        `${movedKeys.slice(0, 3).map(m => `${m.key} (line ${m.from + 1} -> ${m.to + 1})`).join(", ")}` +
+        `${movedKeys.length > 3 ? ` and ${movedKeys.length - 3} more` : ""} — ` +
+        `a key that moves away from the comment introducing it reads as a deletion ` +
+        `(line delta ${signed(lineDelta)})`,
+    };
+  }
 
   // The loss set is LINES, not job names. Every non-blank line the consumer
   // has that the merge did not carry is content the harness is about to drop,
@@ -2057,18 +2080,6 @@ export function writeManagedFile(
       `${over.slice(0, 2).map(l => JSON.stringify(l)).join(", ")}` +
       `${over.length > 2 ? ` and ${over.length - 2} more` : ""}`;
 
-  // The third half of it (#482). A key that moved is not lost and not
-  // overwritten, so neither of the two above says anything — and a reader who
-  // finds a comment stranded above the wrong section has nothing in the log
-  // to check that reading against. Named with both ends, because "1 key
-  // moved" is not something anyone can act on.
-  const moved = resolved.movedKeys;
-  const relocated = moved.length === 0
-    ? ""
-    : `, moved ${moved.length} top-level key(s): ` +
-      `${moved.slice(0, 3).map(m => `${m.key} (line ${m.from + 1} -> ${m.to + 1})`).join(", ")}` +
-      `${moved.length > 3 ? ` and ${moved.length - 3} more` : ""}`;
-
   if (resolved.verb === "SKIP") {
     actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
@@ -2076,7 +2087,7 @@ export function writeManagedFile(
 
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, resolved.content);
-  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote}${relocated})`);
+  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
 }
 
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
