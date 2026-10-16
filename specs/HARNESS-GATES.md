@@ -390,11 +390,124 @@ written as an absence; the positive case is there to stop an arm that records
 ### What this does NOT fix
 
 - **`outcome-evidence-behavioral` and `ac-issue-alignment` still only warn.**
-  Named, reasoned, and ratcheted; not tightened.
+  Named, reasoned, and ratcheted; not tightened. *(Settled by #423 below, in
+  opposite directions.)*
 - **`prod.quinn` has no path to PASS.** Every arm writes `SKIP` with a reason,
   so `prod-quinn-pass` can never report anything else for a configured
   project. Reported, not changed — giving it a real verdict means deciding
-  what measures it.
+  what measures it. *(Settled by #423 below: the thing that measures it
+  already existed.)*
 - **#341 criterion 1 is still unmet.** Only a measured `BEHIND` blocks. The
   fix above restores that block on a path where it had been suppressed; it
   does not widen which outcomes block.
+
+## #423 — the three checks that were counted and could not fail
+
+#183's remainder. Three checks sat in the gate's pass total contributing
+nothing: two that warn where a verdict was promised, and one whose only
+reachable outcome was `SKIP`. All three are settled here, and they do **not**
+all go the same way — which is the point. "Make every warning an assertion"
+is a policy, not an answer; what each one needed was evidence.
+
+### `outcome-evidence-behavioral` — asserts
+
+It was `tsc-pass`'s shape: a name promising a verdict over a body that could
+only `console.warn`, with its sibling two tests above it (`outcome-acs-no-skip`)
+asserting all along. An OUTCOME AC records that a user-visible outcome was
+*observed*; a bare number cannot establish one, and a `0` that reads as success
+is the *Silent Default Substitution* anti-pattern this repo already names.
+
+The reading moved to `outcomeEvidenceViolations` in `lib/ac-quality.ts`, and it
+is **wider than the body it replaces**. The inline `/^\d+$/` read `3` as a bare
+number and `3/3`, `12%`, `0.0` and `-1` as behavioural evidence — the second
+shape in `.claude/rules/checks-must-be-able-to-fail.md`, where a reformat of
+the same non-answer walks straight through. The question is whether the
+evidence contains a *word*, so that is what is asked.
+
+Absent evidence stays out of scope, deliberately: `all-acs-have-evidence`
+exempts OUTCOME ACs from mechanical evidence at ship time by design, and
+answering that question here too would be two deciders on one question.
+
+### `ac-issue-alignment` — stays a warning, on a number
+
+ADR-009 C4 asks that ACs cover the goal's keywords. Measured over the **153**
+`workflow-state.json` files under `~/.rungate` carrying a goal:
+
+| Population | n | Would refuse (<50%) | Median coverage |
+|---|---|---|---|
+| every state with a goal | 153 | 108 (**71%**) | 38% |
+| ACs carry real statements (>80 chars) | 131 | 87 (66%) | 41% |
+| ACs substantial (>300 chars) | 101 | 74 (73%) | 39% |
+| goals with ≥8 keywords | 106 | 75 (71%) | 41% |
+
+The figure does not move under any slice. A check that would refuse two runs
+in three is an outage, not a gate, and a stopword-filtered substring match over
+prose is the same basis #409 Decision #9 already rejected for
+`spec-decision-compliance`. So the `WARN_TIER_CHECKS` entry is rewritten from
+**"#183 — reported, not fixed"** to a decision carrying that measurement, and
+the warn-tier list now holds no deferrals at all — which is itself asserted,
+because a deferral is an honest thing to write once and a bad thing to leave.
+
+### `prod.quinn` — the measurement already existed
+
+Every arm of `workflows/ship.js`'s record-env step wrote `quinn = 'SKIP'`. The
+reasons were honest; the consequence was that `prod-quinn-pass` had no
+reachable path to PASS for any project configuring `prod.rebuild`.
+
+Container Quinn runs in the Verify phase against the rebuilt container,
+returns a `GATE_RESULT_SCHEMA` verdict, and is held in `quinnContainerResult`
+so the ship-phase recommit can report it — while the record-env prompt four
+hundred lines below ignored it and wrote a constant. `prodQuinnRecord` reads
+it, through **`quinnVerdictFor`, the same binding the recommit uses**: two
+functions deciding what one agent's reply said would be two deciders agreeing,
+and the artefact and the recorder could then disagree with nothing to see it.
+
+- [x] SC-1572: test/gate-check-audit.test.ts contains [no entry is still a deferral — every one is a decision] — the replaced assertion counted deferrals and required exactly two, so it could only be satisfied by not fixing them; it is inverted rather than retuned
+- [x] SC-1573: test/gate-check-audit.test.ts contains [the warning that survived on a measurement cites the measurement] — a decision to keep a check warning forever is indistinguishable from never having looked unless it says what blocking would have cost
+- [x] SC-1574: test/gate-check-audit.test.ts contains [outcome-evidence-behavioral is no longer warn-tier] — named from this side too, so re-adding the entry has to argue with the issue rather than with a list length
+- [x] SC-1575: test/ac-quality.test.ts contains [a bare number is refused and behavioral evidence beside it is not] — AC-2's red and green in one shape, and every violating AC is reported rather than the first
+- [x] SC-1576: test/ac-quality.test.ts contains [a reformatted non-answer is still a non-answer] — nine forms the `/^\d+$/` body read as behavioural, with a six-case positive control so a detector that called everything bare could not pass
+- [x] SC-1577: test/ac-quality.test.ts contains [the check looks at OUTCOME ACs that passed, and nothing else] — a CODE AC's evidence IS often a count, and widening to those would turn a fix into an outage
+- [x] SC-1578: test/ac-quality.test.ts contains [outcome-evidence-behavioral is read as asserting by the #183 parser] — asked of `gateChecks` rather than read by hand, so both directions go through one binding
+- [x] SC-1579: test/ac-quality.test.ts contains [the parser reads it as warn-only, which is the decision] — the same binding, asserting the opposite, so one check cannot quietly become the other
+- [x] SC-1580: test/ac-quality.test.ts contains [a goal whose keywords ARE covered scores above the threshold] — AC-3's control: without it a coverage function returning 0 for everything satisfies every firing case
+- [x] SC-1581: test/ac-quality.test.ts contains [nothing to ask is null, which is not the same as zero coverage] — a goal of nothing but short words has not been measured at 0%, it has not been measured
+- [x] SC-1582: test/ac-quality.test.ts contains [the reading is case-insensitive and ignores punctuation, as the goal is prose]
+- [x] SC-1583: test/prod-quinn-record.test.ts contains [a container Quinn PASS records PASS — the arm that did not exist] — and carries no skip reason, because a reason explains an absence
+- [x] SC-1584: test/prod-quinn-record.test.ts contains [a FAIL is a FAIL, and a SKIP from the agent keeps its own reason] — an unusable reply is a FAIL, which comes from the injected `quinnVerdictFor` rather than a reimplementation
+- [x] SC-1585: test/prod-quinn-record.test.ts contains [no container Quinn is a SKIP that says which case it was] — unreachable and unconfigured are different facts and the reasons are asserted distinguishable
+- [x] SC-1586: test/prod-quinn-record.test.ts contains [every reachable record satisfies prod-quinn-pass's contract] — asserted over the whole input matrix with PASS and FAIL both required to occur in it, because "the cases I thought of pass" is the wrong evidence for a check whose defect was that one outcome was reachable
+
+### What was broken to prove it (SC-1572..1586)
+
+Measured over `test/ac-quality.test.ts`, `test/prod-quinn-record.test.ts`,
+`test/gate-check-audit.test.ts`, `test/record-build-commit.test.ts`,
+`gates/workflow.test.ts` and `test/gate-vacuous-checks.test.ts` — 142 tests,
+baseline 0 red. None of the fifteen is left in the tree; all were run and
+reverted.
+
+| Mutation | Red |
+|---|---|
+| nothing is a bare measurement | 3 of 142 — the refusal, the multi-AC report, and the nine reformatted non-answers |
+| everything is a bare measurement | 4 of 142 — the positive controls, which is what they are for: a detector that refused everything satisfies every refusal case above |
+| the detector narrows back to `/^\d+$/` | 1 of 142 — `3/3`, `12%`, `0.0` and `-1` go back to reading as behavioural evidence |
+| every AC is judged, not only OUTCOME ones that passed | 2 of 142 — a CODE AC's count, and an OUTCOME AC that did not pass being reported twice under the wrong reason |
+| absent evidence becomes this check's business too | 1 of 142 — the second decider `all-acs-have-evidence` already owns |
+| `outcome-evidence-behavioral` goes back to warning | 2 of 142 — the parser reads it as warn-only, AND #183's own ratchet fires because it is warning without being on the list. The two halves of the same fact, from both sides |
+| `ac-issue-alignment` starts refusing | 2 of 142 — the parser, and the ratchet's stale-entry direction |
+| goal coverage is never measurable | 3 of 142 — both thresholds and the prose case |
+| goal coverage is always full | 2 of 142 — the under-threshold control and the measured zero |
+| `prod.quinn` is a constant SKIP again — #423 verbatim | 3 of 142 — the PASS arm, the FAIL arm, and the matrix control that requires PASS to occur at all |
+| a SKIP stops carrying a reason | 2 of 142 — `prod-quinn-pass` refuses a SKIP without one |
+| unreachable and unconfigured stop being different facts | 1 of 142 — a reader who cannot tell them apart cannot say which to fix |
+| one record-env arm goes back to a literal | 1 of 142 — the `not contains` half; the count of interpolations is the weaker one and is there so deleting all three cannot read as success |
+| the `ac-issue-alignment` entry goes back to a deferral | 2 of 142 — the no-deferrals assertion and the cites-a-measurement one |
+| `outcome-evidence-behavioral` re-added to the warn-tier list | 2 of 142 — the named case and the generic stale-entry case |
+
+One prediction missed, and it is worth recording because the lesson from #420
+is that a row lower than predicted is a finding until shown otherwise:
+"a SKIP stops carrying a reason" was predicted at 3 and measured 2. The
+no-container reason lives in a different branch than the one the mutation
+emptied, so SC-1585 never saw it. The mutation was narrower than the
+prediction, not the test weaker — confirmed by mutating the other branch,
+which is the row above it.

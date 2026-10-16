@@ -18,6 +18,11 @@ import {
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
+import {
+  outcomeEvidenceViolations,
+  goalKeywordCoverage,
+  GOAL_COVERAGE_WARN_BELOW,
+} from "../lib/ac-quality";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -548,21 +553,23 @@ describe("scope checks", () => {
   });
 
   // ac-issue-alignment: ACs cover issueGoal keywords (ADR-009 C4)
+  //
+  // #423: stays a WARNING, and that is now a decision with a number behind it
+  // rather than a deferral. Measured over the 153 workflow states under
+  // `~/.rungate` carrying a goal, 71% fall under this threshold — 66% of the
+  // 131 whose ACs carry real statements, 73% of the 101 with substantial ones.
+  // A check that would refuse two runs in three is an outage, not a gate. The
+  // reading moved to `goalKeywordCoverage` so the threshold and the vocabulary
+  // can be driven from both sides by a test; what did NOT change is that
+  // nothing here refuses.
   test("ac-issue-alignment: ACs cover goal keywords", () => {
-    const goal = sf("issueGoal");
-    if (!goal || typeof goal !== "string") return;
-    const STOPWORDS = new Set(["the","and","for","that","this","with","from","have","been","will","must","when","into","also","each","than"]);
-    const keywords = goal
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .split(/\s+/)
-      .filter(w => w.length > 4 && !STOPWORDS.has(w));
-    if (keywords.length === 0) return;
-    const acText = (sf("acs") || []).map((ac: any) => (ac.statement || "").toLowerCase()).join(" ");
-    const covered = keywords.filter(kw => acText.includes(kw));
-    const coverage = covered.length / keywords.length;
-    if (coverage < 0.5) {
-      console.warn(`WARN: ac-issue-alignment: only ${Math.round(coverage * 100)}% goal keyword coverage (${covered.length}/${keywords.length})`);
+    const read = goalKeywordCoverage(sf("issueGoal"), sf("acs"));
+    if (read === null) return;
+    if (read.coverage < GOAL_COVERAGE_WARN_BELOW) {
+      console.warn(
+        `WARN: ac-issue-alignment: only ${Math.round(read.coverage * 100)}% goal keyword coverage ` +
+          `(${read.covered.length}/${read.keywords.length})`,
+      );
     }
   });
 
@@ -770,16 +777,21 @@ describe("verify checks", () => {
   });
 
   // 15c. outcome-evidence-behavioral: OUTCOME evidence is not just a grep count (#90 RCA)
+  //
+  // #423: this REFUSES now. It was `tsc-pass`'s shape — a name promising a
+  // verdict over a body that could only `console.warn` — while its sibling
+  // two tests above it has always asserted. An OUTCOME AC records that a
+  // user-visible outcome was observed, and a bare number cannot establish
+  // one; `0` is indistinguishable from success, which is the anti-pattern
+  // `.claude/rules/config-access.md` names as Silent Default Substitution.
   test("outcome-evidence-behavioral: OUTCOME AC evidence is not just a number", () => {
     if (!isShipPlus()) return;
-    const outcomes = (sf("acs") || []).filter((ac: any) => ac.type === "OUTCOME" && ac.verdict === "PASS");
-    const numericOnly = outcomes.filter((ac: any) => {
-      const content = ac.evidence?.content || "";
-      return /^\d+$/.test(content.trim());
-    });
-    if (numericOnly.length > 0) {
-      console.warn(`WARN: ${numericOnly.length} OUTCOME AC(s) have numeric-only evidence — behavioral evidence expected`);
-    }
+    const violations = outcomeEvidenceViolations(sf("acs"));
+    expect(
+      violations,
+      "OUTCOME ACs need evidence a reader can check — a bare measurement says a number " +
+        "was produced, not that the outcome happened (#90 RCA, #423)",
+    ).toEqual([]);
   });
 
   // #339: renamed from the prose title "no FAIL verdicts in DONE". A gate

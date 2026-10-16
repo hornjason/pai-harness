@@ -46,16 +46,16 @@ export const WARN_TIER_CHECKS: Readonly<Record<string, string>> = Object.freeze(
   "spec-decision-compliance: AC language aligns with spec decisions":
     "#409 Decision #9 placed this in the WARN tier explicitly: it matches AC prose against " +
     "regex anti-patterns, and a regex over prose is not a basis for refusing a run.",
-  "outcome-evidence-behavioral: OUTCOME AC evidence is not just a number":
-    "#183 — reported, not fixed. This one is NOT a documented decision like the two above; " +
-    "it is `tsc-pass`'s shape with a console.warn where the assertion should be, and the " +
-    "sibling check `outcome-acs-no-skip` two tests above it does assert. Tightening it is a " +
-    "behaviour change to a live gate and belongs to its own issue.",
   "ac-issue-alignment: ACs cover goal keywords":
-    "#183 — reported, not fixed. Found by this audit, not by #176. ADR-009 C4 asks that ACs " +
-    "cover the goal's keywords; the body computes a coverage ratio and warns under 50%. A " +
-    "stopword-filtered substring match is not a basis for refusing a run, but nothing said " +
-    "so until this entry, which is the whole point of the list.",
+    "#423 Decision — measured, then kept as a warning. ADR-009 C4 asks that ACs cover the " +
+    "goal's keywords and the body warns under 50% coverage. Measured over the 153 " +
+    "workflow-state.json files under ~/.rungate carrying a goal: 71% fall under that " +
+    "threshold, median coverage 38%. Restricted to states whose ACs carry real statements " +
+    "the figure is 66% of 131, median 41%; for substantial ones, 73% of 101. The number does " +
+    "not move, and a check that would refuse two runs in three is an outage rather than a " +
+    "gate. Same basis #409 Decision #9 rejected for spec-decision-compliance: a match over " +
+    "prose is not grounds for refusing a run. The reading is lib/ac-quality.ts's " +
+    "goalKeywordCoverage so the threshold is drivable from both sides by a test.",
 });
 
 /**
