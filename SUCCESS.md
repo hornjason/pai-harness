@@ -160,17 +160,28 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-16)** — tree `0.4.1`, published `rungate@0.4.0`.
+- **Distribution standing (2026-10-16)** — tree `0.4.1`, published `rungate@0.4.1`.
 
-**The gap is open on purpose, and this line is the record of it.** The tree
-was bumped to `0.4.1` in the commit `v0.4.1` tags; the registry still serves
-`0.4.0` until that tag's job publishes. Recording the window rather than
-rounding it off is what lets the release job's own `bun test` run green on a
-tree whose version nobody can install yet — and it is also what makes the
-next edit mandatory: when the registry moves,
-`test/distribution-standing.test.ts` goes red against `0.4.0` and stays red
-until the published number here is updated. That is the same cycle `0.4.0`
-went through on 2026-10-15.
+**The gap is closed, and for the first time the artifact was checked rather
+than the number.** `v0.4.1` was cut on 2026-10-16 and the registry serves it.
+`bun add rungate@0.4.1` into an empty directory carries all four scripts
+`files[]` used to omit, and `import("./node_modules/rungate/lib/conformity.ts")`
+resolves and returns 50 exports — the import that threw on `0.3.0` and
+`0.4.0`. `bunx rungate@0.4.1 --help` prints the command list. That is claim
+5's first measurement taken against something a consumer can install.
+
+**The postflight refused a release that had succeeded — the third time, and
+this run says why.** `npm publish` printed `+ rungate@0.4.1`, signed
+provenance into the sigstore transparency log, and then printed npm's own
+explanation: *"Your package is being processed and may take a few minutes to
+become available."* The postflight read the packument 25 times over 120s and
+gave up at 12:43:10 UTC; the registry served `0.4.1` at 12:43:58 UTC. It
+missed by 48 seconds. #445's fix is working exactly as intended — the refusal
+now reads `RELEASE UNCONFIRMED: UNMEASURED` and names the command that
+settles it instead of asserting a cause it cannot establish — so what is left
+is not a wording problem but a budget guessed against someone else's
+asynchronous pipeline, when that pipeline announces itself in the publish
+step's own output. Filed as #472.
 
 **Why `0.4.1` is a patch.** Both commits past `v0.4.0` are fixes with no
 observable interface change. #446 added four already-existing `scripts/`
