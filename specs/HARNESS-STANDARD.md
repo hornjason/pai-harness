@@ -7254,3 +7254,177 @@ string.
 - [x] SC-1745: test/trajectory.test.ts contains [a gate slot with no verdict prints UNMEASURED - never a pass] — #276's defect in the reporting layer rather than the deciding one
 - [x] SC-1746: test/trajectory.test.ts contains [the timing instruction passes the call site's phase and omits it when there is none] — extracted from ship.js and executed rather than matched
 - [x] SC-1747: test/trajectory.test.ts contains [the artifact the viewer reads is the artifact ship.js writes] — joined by an execution over one file rather than by two string literals that happen to agree
+
+## The workflow, executed with no agents in it (#61)
+
+`workflows/ship.js` is 7,300 lines of orchestration and the only way to find
+out whether a change to it was correct has been to run the pipeline: real
+agents, real model calls, fifteen minutes, and a result that depends on what
+the model said that day. So 98 test files read it as TEXT instead — regexes
+over the source, or regions lifted out of `// ──── NAME-START ────` markers and
+executed in isolation. That is a real mechanism and it has caught real things,
+but it cannot see ORDER, and order is most of what an orchestrator is.
+
+`lib/workflow-test-harness.ts` runs the script. It strips the `meta` export,
+wraps the body in an async function, supplies the globals the Workflow sandbox
+would — `agent`, `phase`, `log`, `parallel`, `pipeline`, `workflow`, `args`,
+`budget` — and records the sequence of what happened.
+
+**Measured: 10 tests, 13 whole executions of ship.js, 58 ms.** #61 asked for
+under a second for one run.
+
+### Why it is this cheap, which is not luck
+
+A workflow script has no filesystem, no subprocess and no imports (#69). Every
+slow thing it does, it does through `agent()`. Stub that one function and
+everything slow is gone by construction — there is nothing else in the file but
+control flow. The property that makes ship.js untestable by ordinary means is
+the same property that makes it instant here.
+
+### What the harness refuses to do, and why each refusal is the point
+
+A mock harness's characteristic failure is measuring itself, so the three
+places this one could have quietly invented data are the three places it
+refuses.
+
+**It will not invent a result for a call site that declares no schema.** `{}`
+is a perfectly good object that answers every property access with `undefined`,
+and a script reading a field off it takes a branch nobody chose — the run looks
+clean and means nothing. Unschemaed calls are REPORTED, by label, in
+`unschemaed`. This surfaced the harness's first finding before any test was
+written: **`brief-preflight-assemble` declares no schema.**
+
+**It populates every optional property, not just the required ones.** A minimal
+object satisfies the schema and exercises only the branches that handle
+absence, so a harness synthesising `{required: …}` would systematically run the
+script's fallbacks and never its mainline. For the same reason an array gets
+ONE element and not zero: `[]` satisfies the schema and makes every downstream
+`.map`, `.length` and `for…of` a no-op.
+
+**It surfaces a thrown error verbatim rather than converting it to a verdict.**
+A harness reporting "the workflow did not complete" is indistinguishable from
+one whose own stubs are wrong.
+
+### Two criteria #61 asked for that are false as written
+
+**"Agent labels are unique" is not a requirement.** A label legitimately
+repeats when a remediation round re-runs a call site, which is why
+`scripts/record-agent-timings.ts` pairs brackets FIFO per label rather than
+collapsing them. A harness enforcing uniqueness would refuse the runs that
+matter most. Dropped, and said so here rather than quietly not implementing it.
+
+**pass^k across five real dry-runs measures two different things at once.**
+Is the ORCHESTRATION deterministic, and is DISCOVERY'S OUTPUT deterministic?
+The first is a property of this tree, is free, and is the half the repo can
+fix — SC-1757 runs it over the call graph, k=5, in milliseconds. The second is
+a property of the model on the day, costs five real pipelines, and is not
+reproducible in CI. Split out and filed with its cost written down.
+
+### The check that was wrong in the loud direction, caught on the first run
+
+The obvious agent-phase check is "flag any agent whose declared phase differs
+from the current one". The harness's very first run reported
+`preload-contexts`, which declares `Discovery` and executes 264 lines before
+`phase('Discovery')` is called.
+
+That is not a defect. `opts.phase` assigns a progress GROUP, and the workflow
+API documents declaring one ahead of the global `phase()` state precisely so
+parallel stages do not race it. Grouping a preload under the phase it prepares
+for is the intended usage. A check that refused it would have been a detector
+wider than what it detects — loud, wrong on correct code, and switched off
+within a week.
+
+`agentPhaseViolations` flags the BACKWARDS direction only: a call site labelled
+for `Goal` executing during `Ship` is work that has escaped its phase, and
+nothing else in the repo can see it, because `phase()` was never called wrongly
+— the AGENT was placed wrongly. SC-1753 pins the narrowing to the live instance
+so that deleting it is a visible decision.
+
+### An unknown phase is a violation, not a pass
+
+Adding a phase to ship.js without adding it to `SHIP_PHASES` means the harness
+has stopped describing the script. Defaulting that to "fine" is exactly how a
+contract check goes blind, so it is reported — by `phaseOrderViolations` and by
+that function only. `agentPhaseViolations` skips it rather than reporting it
+too: two deciders answering one question about one input are behaviourally one
+decider, which is the fourth shape in
+`.claude/rules/checks-must-be-able-to-fail.md`.
+
+### The overrides are the script's own refusals, satisfied
+
+Every entry in the `COHERENT` fixture exists because ship.js refused without
+it: an AC statement under five words is refused by the state schema, an AC
+covering no success criterion is a criterion nobody measures (#251), and a
+`priorWork` reading MET throughout is an already-shipped issue. Each override
+is the smallest edit that makes the synthetic data self-consistent — supplying
+a plausible run, not disabling a check.
+
+The first draft got this wrong in the way worth recording: synthetic strings
+were the single word `"synthetic"`, every ceremony tier stopped at the same
+Discovery refusal, and all three tiers produced identical runs. The harness was
+measuring its own placeholder, and the tier rows would have gone green on a
+comparison between three copies of nothing. `SYNTHETIC_TEXT` is several words
+for that reason.
+
+### What it found about ship.js, beyond the schema gap
+
+A full synthetic run ends `IMPLEMENT_FAILED`. The reason is carried — in
+`buildResult.findings`, not in a `reason` field — on every path except one:
+`workflows/ship.js:3476` returns `{success: false, buildResult}` in the branch
+whose condition includes `!buildResult`, so when the build result is absent the
+terminal object holds `status` and `workDir` and nothing that says why. The log
+line one line above prints `'unknown'` and throws it away. Different defect
+class from #61, so it is filed rather than folded in.
+
+### Mutations, predicted before running and measured after
+
+Over `test/workflow-contracts.test.ts` (10 tests). Every mutation is in
+`lib/workflow-test-harness.ts`, which nothing else imports, so the battery is
+scoped to the one file and a row means what it says.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| an array synthesises as `[]` instead of one element | 6 | 6 |
+| a string synthesises as the single word `synthetic` | 5 | **6** — see below |
+| a schemaless call returns `{}` and is not recorded | 1 | 1 |
+| `phaseOrderViolations` returns `[]` for everything | 2 | 2 |
+| an unknown phase is skipped instead of flagged | 1 | 1 |
+| re-entering a phase counts as going backwards | 1 | 1 |
+| `agentPhaseViolations` flags the forward direction too | 2 | 2 |
+| `agentPhaseViolations` reports unknown phases as well | 1 | 1 |
+| `callGraph` compares labels only, dropping phases | 1 | 1 |
+| `workflowBody` returns the source with `meta` still in it | 8 | 8 |
+| the `maxCalls` cap stops silently instead of refusing | 1 | 1 |
+
+None of the eleven is left in the tree; all were run and reverted.
+
+**The row that came back high.** Ten matched exactly; the one-word-string row
+measured 6 against a predicted 5. A row HIGHER than predicted is either a
+broken mutant or a prediction that was wrong, and the way to tell is to read
+WHICH test went red rather than the count.
+
+The extra red is SC-1752, the unschemaed-call-site row, and it is red for a
+reason worth keeping: with one-word strings the run is refused at Discovery
+and never reaches `brief-preflight-assemble` at all, so `unschemaed` comes back
+`[]`. The finding disappears — not because the call site acquired a schema, but
+because the run stopped before the question was asked. That is a real
+dependency and the check catching it makes it stronger than the prediction
+allowed for, not weaker.
+
+It is also the clearest statement of why `SYNTHETIC_TEXT` is several words.
+The first draft's one-word placeholder produced a green suite, three identical
+ceremony tiers, and an empty findings list — a harness reporting confidently
+on a run that stopped in the first third.
+
+### Success criteria
+
+- [x] SC-1748: test/workflow-contracts.test.ts contains [ship.js runs end to end in well under a second and returns a terminal status] — with a floor on the agent count, because a run that called nothing would satisfy every other assertion
+- [x] SC-1749: test/workflow-contracts.test.ts contains [the meta export is removed by slicing its literal - and a script without one is refused] — the slice is length-checked so a close brace found too late cannot silently eat the script
+- [x] SC-1750: test/workflow-contracts.test.ts contains [each declared tier produces a different run - and a UI project floors LIGHT to STANDARD] — the tiers differ in whether the scope gate runs, which is what makes three tier names more than a field echo
+- [x] SC-1751: test/workflow-contracts.test.ts contains [a dry run stops after scope and a full run reaches Implement] — #59's payload reached by executing the script rather than by lifting the block out of it
+- [x] SC-1752: test/workflow-contracts.test.ts contains [ship.js's unschemaed call sites are named] — reported by label and never defaulted to an empty object, because a script reading a field off `{}` takes a branch nobody chose
+- [x] SC-1753: test/workflow-contracts.test.ts contains [ship.js's real run has no backwards phase - and declaring ahead is not a violation] — pinned to the live call site so narrowing the check stays a visible decision rather than an omission
+- [x] SC-1754: test/workflow-contracts.test.ts contains [a planted backwards phase is caught - and so is a phase the order does not know] — re-entering a phase is not a backwards jump, because a regression path re-runs one
+- [x] SC-1755: test/workflow-contracts.test.ts contains [an agent that has escaped its phase is caught - in the backwards direction only] — an unknown phase is the other function's finding and is deliberately not reported twice
+- [x] SC-1756: test/workflow-contracts.test.ts contains [a planted violation in ship.js itself is caught by the running harness] — the real script edited and executed, with the unedited script through the same path as the control
+- [x] SC-1757: test/workflow-contracts.test.ts contains [five runs with the same inputs produce one identical call graph] — pass^k over the half of #61's criterion this repo controls, with a vacuity floor and a run that must differ
