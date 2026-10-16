@@ -1,6 +1,10 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, basename } from "path";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
+import { tryLoadRungateConfig } from "../lib/config-loader";
+import {
+  classifyContextDocs, contextDocLines, contextDocNotes, type ContextDocVerdict,
+} from "../lib/context-docs";
 
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
 
@@ -42,13 +46,17 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
   const verifyCommands = extractVerifyCommands(acs);
   const scopeOut: string[] = state.scopeOut || [];
 
-  const harness = loadProjectHarness(projectRoot);
-  const projectContextDocs = extractContextDocs(harness);
+  // #439: through the one loader, so a project on the DIRECTORY layout is
+  // read, and so a malformed config THROWS rather than reading as absent.
+  // The previous `catch { return null }` turned a trailing comma into "no
+  // docs declared" — `.claude/rules/config-access.md` names both.
+  const harness = tryLoadRungateConfig(projectRoot);
+  const projectContextDocs = classifyContextDocs(projectRoot, harness?.contextDocs);
   const hasAgents = existsSync(join(projectRoot, "AGENTS.md"));
 
   const sections: string[] = [];
 
-  sections.push(buildContextSection(projectRoot));
+  sections.push(buildContextSection(projectRoot, projectContextDocs));
   sections.push(buildSpecAlignment(state.governingSpec));
   sections.push(buildTaskSection(state.issueGoal, acs));
   if (state.issueType === "bug-fix" || state.issueType === "bug") {
@@ -77,7 +85,8 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
 
   const validated = validateBrief(brief);
 
-  const projectContextCount = projectContextDocs.length + (hasAgents ? 1 : 0);
+  const projectContextCount =
+    projectContextDocs.filter(d => d.kind === "included").length + (hasAgents ? 1 : 0);
 
   return {
     briefPath,
@@ -112,29 +121,13 @@ function extractVerifyCommands(acs: any[]): string[] {
   return commands;
 }
 
-function loadProjectHarness(projectRoot: string): Record<string, any> | null {
-  const harnessPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(harnessPath)) return null;
-  try {
-    return JSON.parse(readFileSync(harnessPath, "utf-8"));
-  } catch {
-    return null;
-  }
-}
+// `loadProjectHarness` and `extractContextDocs` were deleted in #439. The
+// first read `.claude/rungate.json` directly and swallowed parse errors; the
+// second filtered out absolute and traversing paths with no record that it
+// had. `lib/config-loader.ts` and `lib/context-docs.ts` own those now, and
+// each owns it once.
 
-function extractContextDocs(harness: Record<string, any> | null): string[] {
-  if (!harness?.contextDocs) return [];
-  const docs = harness.contextDocs;
-  const raw = Array.isArray(docs) ? docs : typeof docs === "object" ? Object.values(docs) as string[] : [];
-  return raw.filter((p): p is string =>
-    typeof p === "string" &&
-    !p.includes("..") &&
-    !p.startsWith("/") &&
-    p.length > 0
-  );
-}
-
-function buildContextSection(projectRoot: string): string {
+function buildContextSection(projectRoot: string, docs: ContextDocVerdict[]): string {
   const lines = [
     "## Context (read first, in order)",
     `1. ${projectRoot}/CLAUDE.md (if exists)`,
@@ -156,13 +149,10 @@ function buildContextSection(projectRoot: string): string {
     idx++;
   }
 
-  // Include contextDocs from rungate.json
-  const harness = loadProjectHarness(projectRoot);
-  const contextDocs = extractContextDocs(harness);
-  for (const doc of contextDocs) {
-    lines.push(`${idx}. ${projectRoot}/${doc}`);
-    idx++;
-  }
+  // contextDocs, classified rather than filtered: every declared entry either
+  // appears here or is named in the notes below. Nothing is dropped silently.
+  lines.push(...contextDocLines(docs, idx));
+  lines.push(...contextDocNotes(docs));
 
   return lines.join("\n");
 }
