@@ -1155,17 +1155,63 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     ).toBeLessThanOrEqual(3);
   });
 
-  test("N-1: an EMPTY declined directory is not recorded at all", () => {
-    // The other half of the noise fix, and the one that makes the list
-    // mean something: "I declined to look at code that is really there".
-    // A `dist/` with nothing in it is not a fact about this project.
+  test("N-1: the record is a function of the DECISIONS, not of build state", () => {
+    // Reversal, and sec-485 is the reason. The first version of this case
+    // asserted the opposite — an empty `dist/` was filtered out of the
+    // record on the grounds that "I declined to look at code that is really
+    // there" is the only version of the list worth printing. That sentence
+    // is still true about CONTENTS and it was the wrong thing to optimise:
+    // the field is a log of DECISIONS, and the walk took the same decision
+    // either way.
+    //
+    // Measured against the implementation, not argued: one tree, one set of
+    // scan decisions, `dist/` empty and then holding a build artifact. The
+    // filter made the evidence record differ between the two, so a reader
+    // auditing a waiver saw a different list depending on whether CI had
+    // run — on a clean checkout, or with a tracked-but-empty `dist/`, the
+    // decline vanished entirely.
+    //
+    // What the filter did NOT do, which is why this is a reversal and not a
+    // blocker: the verdict never moved. `found` is `true` in both trees.
+    // The whole cost landed on the prose, which is the one field whose
+    // entire job is to let someone audit why a waiver fired.
     const root = project({ "README.md": "# docs" });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "index.ts"), "export const a = 1;\n");
     mkdirSync(join(root, "dist"), { recursive: true });
-    writeFileSync(join(root, "dist", "notes.txt"), "no code here\n");
+
+    const before = projectSourceEvidence(root);
+    writeFileSync(join(root, "dist", "index.js"), "export const a = 1;\n");
+    const after = projectSourceEvidence(root);
+
+    // Not the vacuous shape: these are two DIFFERENT trees, and the claim is
+    // that a difference the walk never looked at leaves no trace.
     expect(
-      projectSourceEvidence(root).skipped,
-      "an empty declined directory was listed as if it hid something",
-    ).toEqual([]);
+      before.skipped,
+      "a declined directory went unrecorded until something built into it",
+    ).toEqual(after.skipped);
+    expect(
+      before.skipped.some(x => x.startsWith("dist/")),
+      `the decline was never recorded at all; skipped was [${before.skipped.join(", ")}]`,
+    ).toBe(true);
+    expect(before.found, "the fixture stopped measuring a project with source").toBe(true);
+  });
+
+  test("N-1: an empty DOT-directory is recorded too, not just an empty build dir", () => {
+    // A separate case rather than another assertion in the one above,
+    // because the two branches are two deciders and a single case cannot
+    // say which one regressed. The content predicate was applied to both;
+    // restoring it to either must turn exactly one of these two red.
+    const root = project({ "README.md": "# docs" });
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "index.ts"), "export const a = 1;\n");
+    mkdirSync(join(root, ".husky"), { recursive: true });
+
+    const e = projectSourceEvidence(root);
+    expect(
+      e.skipped.some(x => x.startsWith(".husky/")),
+      `an empty dot-directory left no trace; skipped was [${e.skipped.join(", ")}]`,
+    ).toBe(true);
   });
 
   test("N-1: the decline list is ordered deterministically, not by readdir", () => {

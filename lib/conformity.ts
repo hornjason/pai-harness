@@ -3246,50 +3246,6 @@ const NEVER_PROJECT_SOURCE = new Set([".git", "node_modules"]);
  */
 const SCRIPT_LIKE = /\.(py|rb|sh|bash|zsh|fish|pl|php|lua|r|go|rs|java|kt|swift|ex|exs)$/i;
 
-/**
- * Does this directory actually contain code?
- *
- * The waiver message lists what the walk declined, and sec-500 measured what
- * that list looks like on a realistic repo: nine entries, of which the five
- * that survived `slice(0, 5)` were `.husky/`, `dist/`, `node_modules/`,
- * `.claude/` and `.github/` — all true of every repo in existence — while
- * `build/`, the one directory actually holding the config read, was inside
- * ", and 4 more". The reader was told everything except the thing that
- * explained their waiver. Worse, the order is `readdir` order, so WHICH five
- * survived differed per machine: a consumer and CI could see different lists.
- *
- * Widening the slice would print more noise. This removes the noise instead:
- * a declined directory is only worth naming if there was something in it to
- * decline. "I declined to look at code that is really there" is the only
- * version of this list worth printing.
- *
- * Bounded, because this runs inside a guard and a guard that walks
- * `node_modules` is its own bug. On exhausting the budget it returns TRUE —
- * recording an uninteresting directory costs a line of output, while
- * skipping an interesting one is the silence this whole field exists to fix.
- */
-function containsSourceFile(dir: string, budget = { reads: 120 }): boolean {
-  const stack = [dir];
-  while (stack.length > 0) {
-    if (budget.reads-- <= 0) return true;
-    const d = stack.pop()!;
-    let entries;
-    try {
-      entries = readdirSync(d, { withFileTypes: true });
-    } catch {
-      return true;
-    }
-    for (const e of entries) {
-      if (e.isDirectory()) {
-        if (!NEVER_PROJECT_SOURCE.has(e.name)) stack.push(join(d, e.name));
-      } else if (SOURCE_EXTENSIONS.test(e.name) || SCRIPT_LIKE.test(e.name)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 export function projectSourceEvidence(root: string): SourceEvidence {
   const examples: string[] = [];
   const unreadable: string[] = [];
@@ -3346,10 +3302,27 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         skipped.push(`${childRelEarly}/ (dependency or VCS metadata)`);
         continue;
       }
+      // Recorded whether or not it holds anything, and that is deliberate.
+      // An earlier cut ran a bounded recursive walk here and recorded the
+      // decline only for directories that turned out to contain source,
+      // on the grounds that an empty `dist/` is not a fact about this
+      // project. sec-485 took it apart and was right: this field is a log
+      // of DECISIONS, and the walk declined either way. Measured against
+      // the implementation — one tree, one set of decisions, `dist/` empty
+      // and then holding a build artifact — the predicate made the evidence
+      // record differ between the two, so a reader auditing a waiver saw a
+      // different list depending on whether CI had run. A tracked-but-empty
+      // `dist/` on a clean checkout is the live shape of that, not a
+      // contrived one.
+      //
+      // What it cost to keep: a recursive walk inside the directories this
+      // function exists specifically not to walk, build-state-dependent
+      // evidence, and a second predicate to keep correct forever. What it
+      // bought, once the message collapses by class: one name inside a
+      // capped sample and one off a count. `test/config-access-conformity
+      // .test.ts`'s "function of the DECISIONS" case holds this line.
       if (SOURCE_SKIP_DIRS.has(e.name)) {
-        if (containsSourceFile(join(dir, e.name))) {
-          skipped.push(`${childRelEarly}/ (build output or dependency)`);
-        }
+        skipped.push(`${childRelEarly}/ (build output or dependency)`);
         continue;
       }
       // Tooling lives in dot-directories — `.github/scripts/release.js`,
@@ -3358,9 +3331,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // silent widening: a release script is not the project's source, and a
       // content project that has one is not a project CONFIG-1 can measure.
       if (e.name.startsWith(".")) {
-        if (containsSourceFile(join(dir, e.name))) {
-          skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
-        }
+        skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
         continue;
       }
       const childRel = childRelEarly;
