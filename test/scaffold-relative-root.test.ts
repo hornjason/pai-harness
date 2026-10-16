@@ -268,6 +268,22 @@ describe("#481: the line the two invocations differ at", () => {
   test("a target that DOES carry a separator still gets its directory made", () => {
     // The positive control, and the case that passed before the fix — which
     // is why a fixture using a nested path could not have caught this.
+    //
+    // **This case belongs to `regenerateOwned`'s own mkdir, and nothing else
+    // in this file does.** Found by a prediction that missed: replacing
+    // `dirname(filePath)` with the constant `"."` was predicted to turn 5 of
+    // 7 red and turned exactly this one. The scaffold never depends on that
+    // mkdir — every directory it writes into has already been made by an
+    // earlier step, which is what `CREATED: .claude/agents/` and
+    // `CREATED: .claude/rungate/` in its own output are. So the step that
+    // makes the directory and the write that would make it are two deciders
+    // answering one question, and no end-to-end case can tell them apart.
+    //
+    // They are kept apart rather than collapsed, because the mkdir is a
+    // one-line fallback for a caller that has no directory-making step, and
+    // deleting it would make the next such caller fail at write time instead
+    // of at a named one. The cost of keeping it is this test: an input only
+    // the fallback can reach, written down as the reason it exists.
     const { code, out } = writeBareName("nested/deeper/thing.json");
     expect(code, out).toBe(0);
     expect(out).toContain("CREATED: nested/deeper/thing.json");
