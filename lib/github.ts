@@ -37,6 +37,16 @@ export interface GitHubClient {
       update: (params: { owner: string; repo: string; pull_number: number; [key: string]: any }) => Promise<{ data: any }>;
       list: (params: { owner: string; repo: string; [key: string]: any }) => Promise<{ data: any[] }>;
     };
+    checks: {
+      /**
+       * Check runs for one ref (#46).
+       *
+       * `ref` is passed a commit SHA and never a branch name. The endpoint
+       * accepts both, and the branch form is the whole defect this gate would
+       * otherwise introduce — see `readCi`.
+       */
+      listForRef: (params: { owner: string; repo: string; ref: string; per_page?: number }) => Promise<{ data: { total_count: number; check_runs: any[] } }>;
+    };
   };
   /**
    * The GraphQL endpoint, for the handful of operations REST does not expose.
@@ -536,4 +546,189 @@ export async function listPRs(client: GitHubClient, repoSlug: string, opts?: Lis
     ...opts,
   });
   return response.data;
+}
+
+// ── CI verification (#46) ────────────────────────────────────
+
+/**
+ * One check run, reduced to the four fields a verdict depends on.
+ *
+ * `headSha` is carried even though the query is already keyed on a SHA. It is
+ * the field `readCi` re-checks, and re-checking it is the point: see below.
+ */
+export interface CheckRunSummary {
+  name: string;
+  /** `queued` | `in_progress` | `completed`, per the checks API. */
+  status: string;
+  /** `null` until the run completes. Never treat null as success. */
+  conclusion: string | null;
+  headSha: string;
+  url?: string;
+}
+
+export interface CiReading {
+  verdict: "PASS" | "FAIL" | "UNMEASURED";
+  /** The commit the verdict is ABOUT. A reading without this is not a reading. */
+  sha: string;
+  /** A sentence naming why, in every branch including PASS. */
+  reason: string;
+  checks: CheckRunSummary[];
+  failed: string[];
+  pending: string[];
+  /** Checks that completed without concluding either way — skipped, neutral. */
+  inconclusive: string[];
+}
+
+/**
+ * Conclusions that mean the check ran and said no.
+ *
+ * `cancelled` is in here deliberately. A cancelled run measured nothing, so
+ * the tempting reading is UNMEASURED — but on this repo's CI a cancellation is
+ * almost always `concurrency: cancel-in-progress` superseding the run, and
+ * calling that "unmeasured" lets a superseded commit's gate pass on a reading
+ * about a commit nobody is shipping. FAIL is the direction that costs a re-run
+ * rather than a bad merge.
+ */
+const CI_FAILURE_CONCLUSIONS = new Set([
+  "failure",
+  "timed_out",
+  "cancelled",
+  "action_required",
+  "startup_failure",
+  "stale",
+]);
+
+/**
+ * Conclusions that completed without answering the question.
+ *
+ * `skipped` is the one that matters. A skipped check is the single most
+ * convincing-looking way for this gate to certify nothing: the run exists, it
+ * completed, it did not fail, and a verdict computed as "no failures" calls it
+ * PASS. It measured nothing, so the reading is UNMEASURED.
+ */
+const CI_INCONCLUSIVE_CONCLUSIONS = new Set(["skipped", "neutral"]);
+
+/**
+ * The verdict for one commit, from the checks recorded against it.
+ *
+ * Pure, and separate from the fetching, because every interesting decision
+ * here is a classification rather than a network call — and the classification
+ * is the part that has to be wrong-proof.
+ *
+ * **There is no branch that arrives at PASS by not finding a failure.** PASS
+ * requires at least one check, every check belonging to this exact commit,
+ * every check `completed`, and every conclusion `success`. Absence, pending,
+ * skipped and null all land elsewhere. That is the whole design: the natural
+ * implementation of "did CI pass" is `!checks.some(failed)`, which returns
+ * true for a commit CI has never heard of.
+ *
+ * **A check whose `headSha` differs is discarded, not counted.** The checks
+ * API accepts a branch name as `ref` and will happily answer about whatever
+ * commit that branch pointed at when CI last ran — so a gate keyed on the
+ * branch certifies the previous push. Filtering here means that even a caller
+ * who passes a branch name gets UNMEASURED rather than a stale PASS.
+ */
+export function readCi(sha: string, checks: CheckRunSummary[]): CiReading {
+  const base = { sha, checks, failed: [] as string[], pending: [] as string[], inconclusive: [] as string[] };
+
+  if (!sha || !/^[0-9a-f]{7,40}$/i.test(sha)) {
+    return { ...base, verdict: "UNMEASURED", reason: `"${sha}" is not a commit SHA, so there is nothing to ask CI about — a ref that is not a SHA would be answered about whatever commit it last pointed at` };
+  }
+
+  const mine = checks.filter(c => c.headSha === sha);
+  const foreign = checks.filter(c => c.headSha !== sha);
+  if (mine.length === 0) {
+    return {
+      ...base,
+      verdict: "UNMEASURED",
+      reason: foreign.length > 0
+        ? `every check found belongs to a different commit (${[...new Set(foreign.map(c => c.headSha))].join(", ")}), not ${sha} — this is the stale reading, not a pass`
+        : `no check has been recorded for ${sha} — CI has not reported on this commit, which is not the same as reporting success`,
+    };
+  }
+
+  const failed = mine.filter(c => c.conclusion !== null && CI_FAILURE_CONCLUSIONS.has(c.conclusion)).map(c => c.name);
+  const pending = mine.filter(c => c.status !== "completed").map(c => c.name);
+  const inconclusive = mine
+    .filter(c => c.status === "completed" && (c.conclusion === null || CI_INCONCLUSIVE_CONCLUSIONS.has(c.conclusion)))
+    .map(c => c.name);
+  const full = { ...base, checks: mine, failed, pending, inconclusive };
+
+  // A failure first, even with others still running. More waiting cannot
+  // un-fail a check, and reporting UNMEASURED here would turn a known red into
+  // "we did not find out".
+  if (failed.length > 0) {
+    return { ...full, verdict: "FAIL", reason: `CI failed on ${sha}: ${failed.join(", ")}` };
+  }
+  if (pending.length > 0) {
+    return { ...full, verdict: "UNMEASURED", reason: `CI has not finished on ${sha} — still running: ${pending.join(", ")}` };
+  }
+  if (inconclusive.length > 0) {
+    return { ...full, verdict: "UNMEASURED", reason: `CI completed on ${sha} without measuring: ${inconclusive.join(", ")} neither passed nor failed` };
+  }
+  return { ...full, verdict: "PASS", reason: `all ${mine.length} check${mine.length === 1 ? "" : "s"} passed on ${sha}: ${mine.map(c => c.name).join(", ")}` };
+}
+
+/** The check runs GitHub has recorded against one commit. */
+export async function listCheckRuns(client: GitHubClient, repoSlug: string, sha: string): Promise<CheckRunSummary[]> {
+  const { owner, repo } = parseOwnerRepo(repoSlug);
+  const response = await client.rest.checks.listForRef({ owner, repo, ref: sha, per_page: 100 });
+  return (response.data?.check_runs ?? []).map((c: any) => ({
+    name: String(c.name ?? "<unnamed>"),
+    status: String(c.status ?? "unknown"),
+    conclusion: c.conclusion === undefined ? null : c.conclusion,
+    headSha: String(c.head_sha ?? ""),
+    url: typeof c.html_url === "string" ? c.html_url : undefined,
+  }));
+}
+
+export interface WaitForCiOptions {
+  timeoutMs: number;
+  intervalMs: number;
+  /** Injected so a test can run the loop without waiting for it. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+/**
+ * Poll until CI has an answer for this commit, or until the wait runs out.
+ *
+ * Polling, and not a webhook, because a local harness has no inbound endpoint
+ * for a webhook to arrive at — the choice is not whether to poll but who does
+ * and whether the wait is bounded. `gh run watch` polls too, and blocks
+ * without a bound.
+ *
+ * **A timeout returns the last reading, which is UNMEASURED.** It never
+ * upgrades to PASS, and it never degrades to FAIL either: running out of
+ * patience is not evidence about the code. The returned reason names what was
+ * still pending, so the operator can see what it was waiting for.
+ */
+export async function waitForCi(
+  client: GitHubClient,
+  repoSlug: string,
+  sha: string,
+  opts: WaitForCiOptions,
+): Promise<CiReading> {
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)));
+  const now = opts.now ?? (() => Date.now());
+  const deadline = now() + Math.max(0, opts.timeoutMs);
+  let reading = readCi(sha, await listCheckRuns(client, repoSlug, sha));
+
+  // Only a pending or absent reading is worth waiting on. A FAIL will not
+  // improve, a PASS will not get better, and an inconclusive check has already
+  // finished — polling those is time spent to reach the same answer.
+  const worthWaiting = (r: CiReading) => r.verdict === "UNMEASURED" && (r.pending.length > 0 || r.checks.length === 0);
+
+  while (worthWaiting(reading) && now() < deadline) {
+    await sleep(Math.min(opts.intervalMs, Math.max(0, deadline - now())));
+    reading = readCi(sha, await listCheckRuns(client, repoSlug, sha));
+  }
+  if (worthWaiting(reading)) {
+    const waited = Math.round(opts.timeoutMs / 1000);
+    return {
+      ...reading,
+      reason: `${reading.reason} — gave up after ${waited}s, which is a statement about the wait and not about the code`,
+    };
+  }
+  return reading;
 }

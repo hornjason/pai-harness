@@ -77,7 +77,7 @@ interface Readiness {
   number: number | null;
   reason: string | null;
 }
-type ReadinessFor = (status: unknown, pr: unknown) => Readiness;
+type ReadinessFor = (status: unknown, pr: unknown, ci?: unknown) => Readiness;
 
 /**
  * Compile one extracted block and hand back its `prReadiness`.
@@ -98,6 +98,16 @@ const readiness = loadReadiness(BLOCK);
 
 /** What the `open-pr` step reports when it opened a PR. */
 const OPENED = { ok: true, prNumber: 250, prUrl: "https://x/pull/250" };
+
+/**
+ * What the `ci-verify` step reports when CI was green (#46).
+ *
+ * Passed explicitly by every case below rather than defaulted inside
+ * `prReadiness`, and that is the whole design: an absent reading means nobody
+ * looked, and the decision treats it as a reason to leave the draft. A default
+ * would make "CI passed" and "CI was never read" the same input.
+ */
+const CI_PASS = { verdict: "PASS", workflowCount: 2, reason: "all 2 checks passed" };
 
 /** The statuses the run can reach its terminal with, weakest first. */
 const TERMINAL_STATUSES = [
@@ -154,13 +164,13 @@ describe("#252: the PR is opened as a draft", () => {
 
 describe("#252: which terminals earn a reviewable PR", () => {
   test.each(READY)("%s marks the PR ready", status => {
-    const r = readiness(status, OPENED);
+    const r = readiness(status, OPENED, CI_PASS);
     expect(r.action).toBe("MARK_READY");
     expect(r.number).toBe(250);
   });
 
   test.each(NOT_READY)("%s leaves it a draft", status => {
-    const r = readiness(status, OPENED);
+    const r = readiness(status, OPENED, CI_PASS);
     expect(r.action).toBe("LEAVE_DRAFT");
     // The reason is reported, not just the action: the criterion asks for
     // WHICH of the two outcomes happened to be recorded, and "LEAVE_DRAFT" with no cause is
@@ -185,7 +195,7 @@ describe("#252: which terminals earn a reviewable PR", () => {
     ["a number", 0],
     ["an object", {}],
   ])("%s leaves it a draft — unrecognised is not earned", (_label, status) => {
-    expect(readiness(status, OPENED).action).toBe("LEAVE_DRAFT");
+    expect(readiness(status, OPENED, CI_PASS).action).toBe("LEAVE_DRAFT");
   });
 });
 
@@ -200,7 +210,7 @@ describe("#252: no PR is not a PR to mark ready", () => {
     ["a string number", { ok: true, prNumber: "250" }],
     ["a number on a failed step", { ok: false, prNumber: 250 }],
   ])("%s reports NO_PR rather than marking something ready", (_label, pr) => {
-    const r = readiness("SHIPPED_AND_PROVEN", pr);
+    const r = readiness("SHIPPED_AND_PROVEN", pr, CI_PASS);
     expect(r.action).toBe("NO_PR");
     expect(r.number).toBeNull();
   });
@@ -223,12 +233,12 @@ describe("#252: the decision can fail", () => {
     // The real source leaves it a draft; the mutant does not. The second half
     // is the point — without it, a case that later passes for an unrelated
     // reason is indistinguishable from one that is genuinely caught.
-    expect(readiness("SHIP_PASSED_SUITE_FAILED", OPENED).action).toBe("LEAVE_DRAFT");
+    expect(readiness("SHIP_PASSED_SUITE_FAILED", OPENED, CI_PASS).action).toBe("LEAVE_DRAFT");
     const mutant = mutate(
       "const SHIP_STATUS_READY_THRESHOLD = 'SHIPPED_UNPROVEN'",
       "const SHIP_STATUS_READY_THRESHOLD = 'SHIP_PASSED_SUITE_FAILED'",
     );
-    expect(mutant("SHIP_PASSED_SUITE_FAILED", OPENED).action).toBe("MARK_READY");
+    expect(mutant("SHIP_PASSED_SUITE_FAILED", OPENED, CI_PASS).action).toBe("MARK_READY");
   });
 
   test("a threshold the scale has never heard of leaves everything a draft", () => {
@@ -240,13 +250,126 @@ describe("#252: the decision can fail", () => {
       "const SHIP_STATUS_READY_THRESHOLD = 'NOT_ON_THE_SCALE'",
     );
     for (const status of TERMINAL_STATUSES) {
-      expect(mutant(status, OPENED).action, `${status} was undrafted by an unrankable threshold`)
+      expect(mutant(status, OPENED, CI_PASS).action, `${status} was undrafted by an unrankable threshold`)
         .toBe("LEAVE_DRAFT");
     }
   });
 
   test("ranking the status at all is load-bearing", () => {
     const mutant = mutate("const rank = ", "const rank = 99; const unusedRank = ");
-    expect(mutant("SHIP_PASSED_SUITE_FAILED", OPENED).action).toBe("MARK_READY");
+    expect(mutant("SHIP_PASSED_SUITE_FAILED", OPENED, CI_PASS).action).toBe("MARK_READY");
+  });
+});
+
+/**
+ * #46 — CI gates the undrafting, and nothing else.
+ *
+ * Covers SC-1771..SC-1774 (HARNESS-STANDARD.md).
+ *
+ * These live beside #252's cases rather than in `test/ci-verification.test.ts`
+ * because `prReadiness` has one owner and extracting the same marked block
+ * twice would be two places to drift. The verdict-building half is over there;
+ * this is what the harness DOES with a verdict.
+ *
+ * The lever is the draft, not the run. `workflows/ship.js` does not merge
+ * anything — it opens a draft PR and marks it ready once nothing is left that
+ * can refuse. So "FAIL the ship gate if CI fails" lands here: a run whose CI
+ * is red has not earned a mergeable PR, and a draft is the state it actually
+ * earned (#252). Failing the whole run instead would throw away the prove
+ * evidence and the PR body for a condition a re-run of CI might clear.
+ */
+describe("#46: CI's verdict decides whether the PR stops being a draft", () => {
+  test("SC-1771: a red CI leaves the PR a draft and names the failure", () => {
+    const r = readiness("SHIPPED_AND_PROVEN", OPENED, {
+      verdict: "FAIL",
+      workflowCount: 2,
+      reason: "CI failed on abc1234: test",
+    });
+    expect(r.action).toBe("LEAVE_DRAFT");
+    expect(r.number).toBe(250);
+    expect(r.reason).toContain("CI failed");
+    expect(r.reason).toContain("test");
+
+    // The control, without which the row above is satisfied by anything that
+    // leaves a draft for any reason at all.
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, CI_PASS).action).toBe("MARK_READY");
+  });
+
+  test("SC-1772: a CI reading that is not a pass is not a pass - however it is malformed", () => {
+    // UNMEASURED is the one worth being careful about: the code may well be
+    // fine and nobody has looked. That is still not a pass, and the PR being
+    // reviewable rather than mergeable costs a click.
+    for (const ci of [
+      { verdict: "UNMEASURED", workflowCount: 2, reason: "still running: gates" },
+      { verdict: "UNMEASURED", workflowCount: 2 },
+      { verdict: "SHIPPED", workflowCount: 2 },
+      { verdict: "pass", workflowCount: 2 },
+      { verdict: "", workflowCount: 2 },
+      { verdict: null, workflowCount: 2 },
+      { workflowCount: 2 },
+      { verdict: "PASS", workflowCount: "2" },
+      { verdict: "PASS" },
+      {},
+    ]) {
+      const r = readiness("SHIPPED_AND_PROVEN", OPENED, ci);
+      expect(r.action, `${JSON.stringify(ci)} earned a mergeable PR`).toBe("LEAVE_DRAFT");
+      expect(r.reason, `${JSON.stringify(ci)} left a draft with no recorded reason`).toBeTruthy();
+    }
+
+    // A lowercase "pass" is in that list deliberately. `verdict === 'PASS'` is
+    // the only accepting comparison, so every other spelling falls through to
+    // the refusal rather than to a looser match somebody adds later.
+  });
+
+  test("SC-1773: no reading at all is not a pass - an unread CI is the default state", () => {
+    // The fail-open this whole issue exists to prevent, in its most likely
+    // form: the step was never reached, errored, or was removed, and the run
+    // undrafts because nothing said no. Every absent shape lands on the same
+    // refusal.
+    for (const ci of [undefined, null, 0, "", "PASS", [], false]) {
+      const r = readiness("SHIPPED_AND_PROVEN", OPENED, ci);
+      expect(r.action, `${JSON.stringify(ci ?? null)} earned a mergeable PR`).toBe("LEAVE_DRAFT");
+      expect(r.reason).toContain("not");
+    }
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, undefined).reason).toContain("CI was not read");
+  });
+
+  test("SC-1774: a project with no workflows has no CI to wait for and is not blocked", () => {
+    // Without this the gate would leave every PR a draft forever for any
+    // consumer who has no GitHub Actions — which is how a correct check gets
+    // switched off within a week.
+    const r = readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: 0, reason: "no check has been recorded" });
+    expect(r.action).toBe("MARK_READY");
+
+    // And the exemption is keyed on a COUNT the shell produced, not on the
+    // verdict. "No workflows" and "workflows that have not reported" are
+    // different facts, and a reading that cannot tell them apart is refused
+    // rather than given the benefit of the doubt.
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", reason: "x" }).action).toBe("LEAVE_DRAFT");
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, { verdict: "UNMEASURED", workflowCount: null }).action).toBe("LEAVE_DRAFT");
+
+    // A count of zero does not rescue a status that was never earned, either
+    // — the two conditions are independent and CI is checked last.
+    expect(readiness("SHIP_PASSED_SUITE_FAILED", OPENED, { verdict: "UNMEASURED", workflowCount: 0 }).action).toBe("LEAVE_DRAFT");
+  });
+
+  test("SC-1775: removing the CI condition undrafts a run CI called red", () => {
+    // The mutation, built from the real block so a rename aborts the file.
+    const mutant = mutate("const ciReason = ciBlocksReadiness(ci)", "const ciReason = null");
+    const red = { verdict: "FAIL", workflowCount: 2, reason: "CI failed on abc1234: test" };
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, red).action).toBe("LEAVE_DRAFT");
+    expect(mutant("SHIPPED_AND_PROVEN", OPENED, red).action).toBe("MARK_READY");
+
+    // And the weaker mutation that the cheapest repair reaches for: treating
+    // an absent reading as acceptable. It leaves the FAIL case working, so a
+    // battery that only planted a red CI would call this fixed.
+    const lenient = mutate(
+      "return 'CI was not read for this run, and an unread CI is not a passing one'",
+      "return null",
+    );
+    expect(lenient("SHIPPED_AND_PROVEN", OPENED, red).action, "the lenient mutant still catches a red CI")
+      .toBe("LEAVE_DRAFT");
+    expect(lenient("SHIPPED_AND_PROVEN", OPENED, undefined).action).toBe("MARK_READY");
+    expect(readiness("SHIPPED_AND_PROVEN", OPENED, undefined).action).toBe("LEAVE_DRAFT");
   });
 });

@@ -7223,7 +7223,29 @@ const SHIP_STATUS_READY_THRESHOLD = 'SHIPPED_UNPROVEN'
  * all, which is what a bare `rank >= indexOf(...)` would do the moment someone
  * renamed a status — `indexOf` answers -1, and every rank is >= -1.
  */
-function prReadiness(status, pr) {
+function ciBlocksReadiness(ci) {
+  if (!ci || typeof ci !== 'object') {
+    return 'CI was not read for this run, and an unread CI is not a passing one'
+  }
+  // A consumer with no workflow files has no CI to wait for, and blocking on
+  // a reading that can never arrive would leave every one of their PRs a
+  // draft forever. The count comes from the shell, not from a judgement: an
+  // agent asked "does this project have CI" can answer wrongly in the
+  // direction that unblocks itself.
+  if (ci.workflowCount === 0) return null
+  if (typeof ci.workflowCount !== 'number') {
+    return 'the CI step did not report how many workflows the project has, so "no CI" and "CI not checked" cannot be told apart'
+  }
+  if (ci.verdict === 'PASS') return null
+  if (ci.verdict === 'FAIL') return `CI failed on the pushed commit — ${ci.reason || 'no detail'}`
+  // UNMEASURED, and everything a malformed reading could be. The PR stays a
+  // draft, which is the state this run actually earned (#252) — not a
+  // refusal of the run, because the code may well be fine and nobody has
+  // looked yet.
+  return `CI has not reported a pass on the pushed commit — ${ci.reason || `verdict was ${JSON.stringify(ci.verdict ?? null)}`}`
+}
+
+function prReadiness(status, pr, ci) {
   const number = pr && pr.ok === true ? pr.prNumber : undefined
   if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
     return {
@@ -7252,12 +7274,72 @@ function prReadiness(status, pr) {
         : `terminal status ${String(status)} ranks below ${SHIP_STATUS_READY_THRESHOLD}`,
     }
   }
+  // Last, and deliberately so: the status scale asks whether THIS RUN stands
+  // behind the work, and CI asks whether the work survives a machine that is
+  // not this one. A run can pass every local gate and still have broken the
+  // build, which is the gap #46 was filed for.
+  const ciReason = ciBlocksReadiness(ci)
+  if (ciReason) return { action: 'LEAVE_DRAFT', number, reason: ciReason }
+
   return { action: 'MARK_READY', number, reason: null }
 }
 // ──── PR-READINESS-END ────
 
+// ──── CI-VERIFY-CALL-START ────
+// Read what CI made of the pushed commit (#46).
+//
+// Here, and not in the Ship phase, for one reason: opening the PR fires
+// `pull_request` and starts CI, and prove runs between there and here. Asking
+// immediately after opening the PR would find nothing recorded and spend the
+// whole timeout waiting for a run that had not been queued yet.
+//
+// Nothing about this step triggers CI. The issue proposed `gh workflow run`,
+// and the generated ci.yml declares no `workflow_dispatch` so the command
+// would fail — and if the trigger were added, a dispatched run and the PR's
+// own run would both exist for the same commit and the gate would have to
+// pick one. An ambiguous input is how a gate ends up satisfied by the
+// convenient half.
+const ciStep = prStep?.ok === true ? await timedAgent(`
+Read CI's verdict on the commit this run pushed. Run exactly these commands in
+${commitDir}:
+
+cd ${commitDir}
+sha=$(git rev-parse HEAD)
+workflows=$(ls .github/workflows/*.yml .github/workflows/*.yaml 2>/dev/null | wc -l | tr -d ' ')
+cd ${HARNESS_ROOT} && bun scripts/github-op.ts ci-status --repo ${REPO} --sha "$sha" --timeout-ms 600000
+
+The SHA comes from git, not from you. Do NOT pass a branch name: the checks
+endpoint accepts one and answers about whatever commit that branch pointed at
+when CI last ran, so a branch-keyed reading certifies the previous push.
+
+The last command prints one JSON object with verdict, sha, reason, failed,
+pending and inconclusive. **Copy its verdict verbatim into your reply.** Do
+NOT derive the verdict from the exit code — FAIL and UNMEASURED both exit 1,
+and they are different facts: one says CI looked and said no, the other says
+nobody has looked yet. Do not retry with gh, and do not re-run the command
+hoping for a better answer.
+
+Set workflowCount to the number $workflows printed. Zero is a real answer —
+a project with no workflow files has no CI to wait for — and it is not the
+same as the command failing. If any command did not run, omit workflowCount
+entirely rather than guessing it.
+`, { label: 'ci-verify', phase: 'Prove', schema: {
+  type: 'object',
+  properties: {
+    verdict: { type: 'string', enum: ['PASS', 'FAIL', 'UNMEASURED'] },
+    sha: { type: 'string' },
+    reason: { type: 'string' },
+    workflowCount: { type: 'number' },
+    failed: { type: 'array', items: { type: 'string' } },
+    pending: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['verdict'],
+} }) : null
+// ──── CI-VERIFY-CALL-END ────
+if (ciStep) log(`CI: ${ciStep.verdict}${ciStep.reason ? ` — ${ciStep.reason}` : ''}`)
+
 const terminalStatus = shipStatusFor(proveVerdict, suiteReading)
-const prState = prReadiness(terminalStatus, prStep)
+const prState = prReadiness(terminalStatus, prStep, ciStep)
 log(`PR readiness: ${prState.action}${prState.reason ? ` — ${prState.reason}` : ''}`)
 
 let prMarkedReady = false
