@@ -20,11 +20,31 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Agent",
         "hooks": [
           {
             "type": "command",
-            "command": "bun /Users/jhorn/Projects/rungate/hooks/BashToolGuard.hook.ts"
+            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/AgentBriefGuard.hook.ts"
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/WorkflowStateGuard.hook.ts"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun ${CLAUDE_PROJECT_DIR}/hooks/SpecSCGuard.hook.ts"
           }
         ]
       }

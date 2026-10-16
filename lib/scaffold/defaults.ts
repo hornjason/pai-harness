@@ -23,9 +23,36 @@ export interface HookRegistration {
   hookFor: string;
   command: string;
   enabled: boolean;
+  /**
+   * Which settings file is supposed to register this hook (#479).
+   *
+   * `user` — machine-wide, registered in `~/.claude/settings.json`, as
+   * `HOOK-ARCHITECTURE-SPEC.md` SC-518 requires for anything that must fire in
+   * sessions rooted outside the project. The repo cannot read that file, so
+   * the reconciler reports these UNMEASURED and never counts them as checked.
+   *
+   * `project` — acts on the current project's own files or agents, registered
+   * in the committed `.claude/settings.json`. Repo-owned, so "is it
+   * registered" is a fact CI can check — which is the half #199 concluded was
+   * impossible, having measured only the user-scoped eleven.
+   *
+   * Required, deliberately. An absent scope defaulting to `user` would excuse
+   * every entry that forgot one, and that is how sixteen entries came to claim
+   * `enabled: true` with five of them inert.
+   */
+  scope: "project" | "user";
   matcher?: string;
   description: string;
   deployToConsumers?: boolean;
+  /**
+   * Why an `enabled: false` entry is off. Required when it is (#479 SC-1662).
+   *
+   * Off and never-registered look identical in a file; the difference is
+   * whether anyone decided. Without the reason, the next person to read the
+   * inventory cannot tell a considered no from an oversight, and the fastest
+   * way to resolve that ambiguity is to flip it back on.
+   */
+  disabledReason?: string;
 }
 
 /**
@@ -89,6 +116,10 @@ export function buildDefaultRoles(): Record<string, Record<string, unknown>> {
  *
  * `${RUNGATE_HOOKS_DIR}` stays unexpanded on disk — deployHooksToConsumers
  * resolves it at deploy time, so the file survives the harness moving.
+ *
+ * Every entry carries a `scope` (#479). It is not decoration: it is the only
+ * thing that tells a reconciler whether "not registered here" is a defect or
+ * a fact about a file the repo does not own.
  */
 export function buildDefaultHooks(): HookRegistration[] {
   return [
@@ -97,6 +128,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
       enabled: true,
+      scope: "user",
       matcher: "Bash",
       description: "Blocks cat/head/tail file reading — agents must use the Read tool",
     },
@@ -105,6 +137,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
       enabled: true,
+      scope: "user",
       matcher: "Bash",
       description: "Blocks a third full test suite run in one session — forces targeted tests",
     },
@@ -113,6 +146,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
       enabled: true,
+      scope: "project",
       matcher: "Agent",
       description: "Validates agent brief templates and enforces the ship-active marker",
     },
@@ -121,6 +155,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "SubagentStop",
       command: "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
       enabled: true,
+      scope: "user",
       description: "Captures agent verdicts and writes them to workflow-state.json",
     },
     {
@@ -128,6 +163,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
       enabled: true,
+      scope: "user",
       matcher: "Agent",
       description: "Nudges the DA to run the verify gate after an agent completes",
     },
@@ -136,6 +172,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
       enabled: true,
+      scope: "user",
       matcher: "Agent",
       description: "Detects uncommitted changes left behind in agent worktrees",
     },
@@ -144,6 +181,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PreToolUse",
       command: "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
       enabled: true,
+      scope: "user",
       matcher: ".*",
       description: "Nags on gate failures and blocks Skill calls after max strikes",
     },
@@ -152,6 +190,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "PostCompact",
       command: "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
       enabled: true,
+      scope: "user",
       description: "Re-injects critical rules after context window compaction",
     },
     {
@@ -159,6 +198,7 @@ export function buildDefaultHooks(): HookRegistration[] {
       hookFor: "SessionStart",
       command: "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
       enabled: true,
+      scope: "user",
       description: "Cleans up stale workflow-state.json and ship-active files",
     },
   ];
