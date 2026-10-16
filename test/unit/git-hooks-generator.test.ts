@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { execFileSync } from 'child_process';
-import { createGitHooks } from '../../lib/scaffold/steps';
+import { createGitHooks, PRE_COMMIT_MANAGED_MARKER } from '../../lib/scaffold/steps';
 
 let root: string;
 let preCommit: string;
@@ -169,3 +169,144 @@ describe('generated pre-commit — behavior', () => {
     expect(code).toBe(1);
   });
 });
+
+/**
+ * Covers SC-1653, SC-1654, SC-1655 (HARNESS-STANDARD.md) — #450.
+ *
+ * The hook ran `update-project-state.ts` and staged its output on every commit
+ * in every worktree. `project-state.json`, `PROJECT-STATE.md` and `SUCCESS.md`
+ * are DA-owned (#296) and the project says so in CLAUDE.md and in
+ * `.claude/rules/key-files.md` — so this was a rule the tooling actively
+ * undid, which is a worse shape than the rule nothing executes that
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about: an agent that
+ * obeyed it perfectly still shipped the violation.
+ *
+ * Both arms are driven by EXECUTING the generated hook against a real linked
+ * worktree, not by reading its source. #397's post-mortem is that a
+ * source-text assertion cannot notice the script's behaviour is impossible.
+ */
+describe('#450: the generated pre-commit leaves DA-owned state alone in a worktree', () => {
+  /**
+   * A primary checkout with one commit, and a linked worktree off it. Plants
+   * the state files UNSTAGED in `where`, runs the hook there, and reports
+   * what ended up in the index.
+   */
+  function runWithStateFiles(where: 'primary' | 'worktree'): { code: number; out: string; staged: string[] } {
+    const primary = mkdtempSync(join(tmpdir(), 'rungate-wtstate-'));
+    const linked = `${primary}-linked`;
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: primary });
+      execFileSync('git', ['config', 'user.email', 't@example.com'], { cwd: primary });
+      execFileSync('git', ['config', 'user.name', 'T'], { cwd: primary });
+      writeFileSync(join(primary, 'seed.txt'), 'seed\n');
+      execFileSync('git', ['add', '-A'], { cwd: primary });
+      execFileSync('git', ['commit', '-q', '--no-verify', '-m', 'seed'], { cwd: primary });
+      execFileSync('git', ['worktree', 'add', '-q', '-b', 'side', linked], { cwd: primary });
+
+      const cwd = where === 'primary' ? primary : linked;
+      // Present on disk, deliberately NOT staged. The only thing that can put
+      // them in the index is the hook's own `git add`.
+      writeFileSync(join(cwd, 'project-state.json'), '{"session": 1}\n');
+      writeFileSync(join(cwd, 'PROJECT-STATE.md'), '# state\n');
+      writeFileSync(join(cwd, 'SUCCESS.md'), '# success\n');
+
+      const sh = join(cwd, '.pre-commit.sh');
+      writeFileSync(sh, script, { mode: 0o755 });
+      let code = 0;
+      let out = '';
+      try {
+        out = execFileSync('sh', [sh], { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+      } catch (e: any) {
+        code = e.status ?? -1;
+        out = String(e.stdout ?? '') + String(e.stderr ?? '');
+      }
+      const staged = execFileSync('git', ['diff', '--cached', '--name-only'], { cwd, encoding: 'utf-8' })
+        .split('\n').filter(Boolean);
+      return { code, out, staged };
+    } finally {
+      rmSync(linked, { recursive: true, force: true });
+      rmSync(primary, { recursive: true, force: true });
+    }
+  }
+
+  it('SC-1653: stages none of the DA-owned state files from a linked worktree', () => {
+    const { code, staged } = runWithStateFiles('worktree');
+    expect(code, 'the hook rejected an ordinary commit').toBe(0);
+    for (const f of ['project-state.json', 'PROJECT-STATE.md', 'SUCCESS.md']) {
+      expect(staged, `${f} was staged from a linked worktree`).not.toContain(f);
+    }
+  });
+
+  it('SC-1654: still stages them in the primary checkout', () => {
+    // The positive control, in the same file as the case above. A guard with
+    // no positive control is indistinguishable from one that never fires,
+    // which is the zero this repo keeps measuring — and a worktree check that
+    // compared the two git dirs as plain strings would read the primary
+    // checkout as a worktree and silently disable the update everywhere.
+    const { code, staged } = runWithStateFiles('primary');
+    expect(code).toBe(0);
+    expect(staged, 'the update never fires at all').toContain('project-state.json');
+    expect(staged).toContain('PROJECT-STATE.md');
+    // SUCCESS.md is DA-owned too and the hook has never staged it. Asserted
+    // so that widening the `git add` later has to be a deliberate change.
+    expect(staged, 'the hook started staging SUCCESS.md').not.toContain('SUCCESS.md');
+  });
+
+  it('SC-1655: the skip is announced rather than silent', () => {
+    // UNMEASURED is not SKIP: a developer who expected the state files to move
+    // must not have to diff the commit to find out they did not.
+    const { out } = runWithStateFiles('worktree');
+    expect(out).toContain('project-state: SKIPPED');
+    expect(out, 'it does not say why').toContain('linked worktree');
+    expect(out, 'it does not say what to do instead').toContain('primary checkout');
+    expect(out, 'the rule it is enforcing is unattributable').toContain('#296');
+
+    // ...and the primary checkout does NOT print it, or the message would be
+    // noise that stops meaning anything.
+    expect(runWithStateFiles('primary').out).not.toContain('project-state: SKIPPED');
+  });
+});
+
+describe('generated pre-commit — redeployment', () => {
+  it('#450: an existing managed hook is overwritten so a fix can reach it', () => {
+    /**
+     * `createGitHooks` wrote pre-commit only `if (!existsSync(preCommit))`, so
+     * every checkout that already had one would keep the version that does the
+     * thing #296 forbids — the fix above would have reached nobody, including
+     * this repo, where #450 was observed. The pre-push hook had exactly this
+     * bug and #85 fixed it the same way: overwrite our own managed hook, leave
+     * a hand-written one alone.
+     */
+    const dir = mkdtempSync(join(tmpdir(), 'rungate-hookredeploy-'));
+    try {
+      mkdirSync(join(dir, '.git', 'hooks'), { recursive: true });
+      const path = join(dir, '.git', 'hooks', 'pre-commit');
+
+      // An old managed hook, carrying the marker and the unconditional update.
+      writeFileSync(path, `#!/bin/sh\n${PRE_COMMIT_MANAGED_MARKER}\ngit add project-state.json\n`);
+      const actions: string[] = [];
+      createGitHooks(dir, actions);
+      const after = readFileSync(path, 'utf-8');
+      expect(after, 'the stale managed hook survived').toContain('project-state: SKIPPED');
+      expect(actions.join('\n')).toContain('UPDATED: .git/hooks/pre-commit');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#450: a hand-written hook is preserved and reported', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rungate-hookmine-'));
+    try {
+      mkdirSync(join(dir, '.git', 'hooks'), { recursive: true });
+      const path = join(dir, '.git', 'hooks', 'pre-commit');
+      writeFileSync(path, '#!/bin/sh\n# mine\nexit 0\n');
+      const actions: string[] = [];
+      createGitHooks(dir, actions);
+      expect(readFileSync(path, 'utf-8'), "someone's own hook was overwritten").toBe('#!/bin/sh\n# mine\nexit 0\n');
+      expect(actions.join('\n')).toContain('SKIP: .git/hooks/pre-commit');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
