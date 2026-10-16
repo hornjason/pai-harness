@@ -7870,6 +7870,36 @@ Scaffold is non-interactive, so "prompt" is not available, and defaulting
 manufacture a testable spec with no criteria — a spec that claims measurement
 and measures nothing. Left alone, deliberately.
 
+### Mutations, predicted before running and measured after
+
+Over `test/scaffold-auto-fix.test.ts` (10 tests). **Every anchor was checked
+for uniqueness before the mutation was applied** — #44's battery produced a
+false zero row because `String.replace` took the first of two identical
+anchors and mutated a function the tests did not exercise.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| a wrong `doc-type` is no longer corrected | 3 | 3 |
+| the correction appends instead of replacing | 2 | **3** |
+| an ADR that is already correct is rewritten anyway | 2 | 2 |
+| pruning ignores the opt-in flag | 1 | 1 |
+| a zero-result scan no longer refuses | 1 | 1 |
+| an unreadable config is rewritten from the in-memory copy | 1 | 1 |
+| pruning reports a count instead of the names | 1 | 1 |
+| `AUTO-FIXED` is folded back into the other totals | 1 | 1 |
+| auto-fix becomes opt-in | 1 | 1 |
+| pruning becomes opt-out | 1 | 1 |
+| the rehearsal stops receiving the flags | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+**Ten matched exactly.** The append mutation measured 3 against a predicted 2,
+and the extra red is SC-1787 — which reads the doc-type with a `^...$m` match
+and therefore sees the FIRST one, still `guide`. That is precisely the failure
+the replace-don't-append rule exists to prevent, caught by the row written for
+a different purpose, so the prediction was wrong in the direction that means
+the suite is stronger than it was credited with.
+
 ### Success criteria
 
 - [x] SC-1787: test/scaffold-auto-fix.test.ts contains [an ADR whose doc-type is present but wrong is corrected to adr] — the case the fixer and the checker disagreed about, and the only one re-scaffold could never clear
