@@ -9,9 +9,17 @@
 # The two guard steps are the point of this file, not the publish step. A release
 # pipeline has a quiet way of doing nothing: a skipped `if:`, a swallowed error,
 # or a duplicate version npm rejects — all of which leave a green job and a real
-# tag. So the registry is read BEFORE (the version must not exist yet) and AFTER
-# (latest must now be this version). Neither reading is sufficient alone; see
-# lib/release-preflight.ts.
+# tag. So the registry's published-versions list is read BEFORE (the version must
+# not be there yet) and AFTER (it must be there now). Neither reading is
+# sufficient alone; see lib/release-preflight.ts.
+#
+# The postflight reads the VERSIONS LIST and not `dist-tags.latest` (#445). A
+# dist-tag is a pointer that moves on its own schedule, and reading it to answer
+# "did the publish take effect" reported both of this project's successful
+# releases as failures. When the postflight cannot see the version inside its
+# budget it exits 2 and prints RELEASE UNCONFIRMED rather than 1 and RELEASE
+# REFUSED: a stale read and a failed publish are indistinguishable from here, so
+# the step stops the job without naming a cause it has not established.
 #
 # Do not add `continue-on-error` to any step here, and do not guard `npm publish`
 # behind a condition. test/release-guard.test.ts asserts both, because either one

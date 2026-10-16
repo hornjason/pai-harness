@@ -1685,7 +1685,7 @@ comment is not. Without that pair the fix would be indistinguishable from
 buying green with blindness.
 
 - [x] SC-828: lib/release-preflight.ts contains [preflightRefusal] — ONE exported function decides whether a release may be cut, so there is one binding to mutate. A duplicate version is refused BEFORE anything irreversible, rather than left for npm to reject into a green job
-- [x] SC-829: lib/release-preflight.ts contains [postflightRefusal] — the half that cannot be satisfied by doing nothing. A skipped, swallowed or silently-failed publish leaves `latest` where it was, and only a reading taken AFTER the publish step can tell
+- [x] SC-829: SUPERSEDED by SC-1647/SC-1648 (#445) — was "lib/release-preflight.ts contains [postflightRefusal]: a skipped, swallowed or silently-failed publish leaves `latest` where it was, and only a reading taken AFTER the publish step can tell". The half is still there and still cannot be satisfied by doing nothing. What was wrong is the clause after the colon: `latest` is a dist-tag, not the fact, so the criterion asked the guard to answer "did the publish take effect" by reading a pointer. It did, and it was wrong on both of the two releases this project has ever cut
 - [x] SC-830: scripts/release-guard.ts contains [export const REFUSE_EXIT] — every refusal travels through one exit code, declared once, so the test can build a mutant copy with it zeroed and run every negative case twice
 - [x] SC-831: .github/workflows/release.yml contains [--phase postflight] — the pipeline actually calls the guard. A decision correct in lib/ that the workflow never consults is the decorative check this repo keeps finding
 - [x] SC-832: test/release-guard.test.ts contains [the comment stripper keeps steps and drops prose] — the workflow checks read executable content, and the boundary is asserted in both directions rather than trusted
@@ -2280,6 +2280,121 @@ scored **0 of 49**. A zero is a finding, and this one was mine, not the
 suite's — the mutation never changed the behaviour. It was rewritten to
 replace the message outright, which is the 4 above. None of the four is left
 in the tree; all were run and reverted.
+
+> **Superseded by #445.** `POSTFLIGHT_ATTEMPTS` no longer exists; the window
+> is one constant, `POSTFLIGHT_BUDGET_MS`. The sentence this section defends
+> — *the refusal says how long it waited* — survives, but the refusal itself
+> does not: exhausting the budget now produces UNMEASURED. The reason is the
+> next section, and it is that this section's fix was a bigger number rather
+> than a different mechanism.
+
+### A guard that stated a cause it had not established (#445)
+
+`v0.4.0` published successfully on 2026-10-15 and the release job went red:
+
+```
+✓ Publish
+X Postflight — the registry actually serves this version
+RELEASE REFUSED: the registry's latest is 0.3.0, not the 0.4.0 this run was
+cutting — the publish step did not take effect — read 10 times over 27s,
+which is long enough that this is not the registry catching up
+```
+
+`npm view rungate dist-tags` returned `{"latest":"0.4.0"}` from the same
+endpoint minutes later. **Both successful releases this project has ever cut
+are recorded in GitHub Actions as failures** — #407 for `v0.3.0`, this for
+`v0.4.0`, one day apart.
+
+**The timeout is the smaller half.** #407 widened the read from one attempt
+to ten over 27 seconds, and the propagation took longer than the new guess. A
+second instance of the same failure one day later is evidence the approach
+does not converge, not that the number needs raising again.
+
+**The larger half is the last clause.** *which is long enough that this is not
+the registry catching up* — the guard cannot know that. It read a stale value;
+"the publish did not take effect" and "the packument has not propagated" are
+indistinguishable from where it stands, and it picked one and reported it as a
+finding. `.claude/rules/config-access.md` already names the right vocabulary:
+a reading that could not be obtained is UNMEASURED, and `0`, `{}`, `null` and
+`SKIP` are all indistinguishable from success while UNMEASURED is not. The
+damage is #397's shape — a confident wrong diagnosis sends the next reader to
+the wrong file, and the time after that, nobody believes the guard at all.
+
+#### Three decisions, each of which could have gone the other way
+
+**`versions`, not `dist-tags.latest`.** They are different facts and #364
+conflated them. A version in `versions` has been published — `npm install
+rungate@0.4.0` resolves — whatever `latest` points at, because a dist-tag is a
+pointer that moves on its own schedule and can be aimed anywhere. So a landed
+publish whose tag has not caught up is now a PASS that says so out loud, where
+before it was a refusal naming a failed publish. This is the arm SC-829 had
+backwards for its whole life.
+
+**One predicate, consulted by both phases.** `registryServes` is the whole of
+the question, and `preflightRefusal` asks it in the opposite direction rather
+than keeping its own `versions.includes`. A second copy would have been the
+fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`: two deciders
+agreeing about the same input are behaviourally one guard, and mutating either
+leaves the other holding the case up. The first draft of this fix had exactly
+that, and the mutation table below is why it does not now.
+
+**An unconfirmed publish still fails the job, with a different exit code.**
+This is the decision SC-6 asked to be recorded, and it is a trade with a loser.
+Against failing: two of two successful releases are recorded as failures and
+that is the state this issue exists about. For failing: the postflight is the
+only half of #364's design that cannot be satisfied by doing nothing, a release
+is irreversible, and GitHub Actions gives a `run:` step no neutral outcome —
+the only way not to fail is `continue-on-error`, which `test/release-guard.test.ts`
+forbids outright because it turns the file back into a job that reports a
+release it never made. So the job still goes red. What changes is that
+`UNMEASURED_EXIT` (2) and `REFUSE_EXIT` (1) are different codes with different
+prefixes — `RELEASE UNCONFIRMED` against `RELEASE REFUSED` — so "we know this
+went wrong" and "we could not tell" stop being the same artefact, and the
+message names `npm view rungate@<version> version` as the one thing to run
+instead of leaving a reader to re-read the log.
+
+- [x] SC-1647: test/release-guard.test.ts contains [a reading that does not carry the version is UNMEASURED and not a finding] — a stale read names both explanations and chooses neither rather than reporting that the publish did not take effect which is a cause the guard has not established and cannot establish from one reading
+- [x] SC-1648: lib/release-preflight.ts contains [export function registryServes] — one predicate decides whether the registry holds the version and both phases consult it so a version present with a lagging dist-tag is a published release rather than a failed publish and there is one binding to mutate
+- [x] SC-1649: test/release-guard.test.ts contains [nothing the guard can say claims the wait was long enough] — the sentence that was wrong on both releases is pinned absent from the source as well as from every message the guard can produce because a message assertion only covers the branches a test happens to drive
+- [x] SC-1650: lib/release-preflight.ts contains [export const POSTFLIGHT_BUDGET_MS] — the whole poll window is one exported constant so widening it is one visible edit and the cadence cannot move it and the exhaustion case is driven on every suite run so widening cannot quietly disable the check
+- [x] SC-1651: lib/release-preflight.ts contains [export function confirmCommand] — an unconfirmed publish names the one command that settles what the guard could not and says the publish may well have succeeded so the reader acts on the registry rather than on the job's colour
+- [x] SC-1652: scripts/release-guard.ts contains [export const UNMEASURED_EXIT] — an unconfirmed publish stops the job through a different exit code than an established refusal so the two states are distinguishable to anything downstream and both are mutated by the harness so neither can pass for the other's reason
+
+#### What was broken to prove it (SC-1647..1652)
+
+Run and counted over `test/release-guard.test.ts` (57 tests):
+
+| Mutation | Red |
+|---|---|
+| `registryServes` always `false` | 14 of 57 — both preflight duplicate cases, every postflight published case, and both script phases |
+| `registryServes` always `true` | 17 of 57 — the other direction: preflight stops refusing duplicates AND every unconfirmed case starts passing |
+| `postflightVerdict` short-circuited to `{published: true}` | 15 of 57 |
+| the `note` arm removed, so a lagging dist-tag says nothing | 3 of 57 |
+| the second explanation dropped from the unmeasured text | 2 of 57 — the guard goes back to naming one cause |
+| `postflightAttempts` short-circuited to `1` | 6 of 57 — the poll collapses to a single read and the window constant stops being a window |
+| the final read error swallowed instead of rethrown | 1 of 57 — a registry that was never reachable starts reporting a verdict |
+| the non-negative budget arm dropped | 1 of 57 — a negative budget buys zero reads and falls out of the loop having measured nothing |
+| `UNMEASURED_EXIT` set equal to `REFUSE_EXIT` | 6 of 57 |
+
+None is left in the tree; all were run and reverted.
+
+**Two predictions were wrong, both high, and both are recorded because the
+discipline is to predict every row before running.**
+
+`registryServes` always `false` was predicted at 13 and measured 14. The row
+missed was *a refusal and an unconfirmed reading do not share an exit code*,
+whose first half drives the PREflight — a test written for SC-6 that also
+depends on the SC-1648 binding, which is the point of having one binding.
+
+`UNMEASURED_EXIT` equal to `REFUSE_EXIT` was predicted at 3 and measured 6.
+The three missed rows are every other test that calls `mutantScript()`: the
+builder now cannot find `export const UNMEASURED_EXIT = 2;` and aborts with
+`could not build the mutant`, which is the harness refusing rather than
+no-opping. That is the property `.claude/rules/checks-must-be-able-to-fail.md`
+asks for, met from a direction I had not counted.
+
+Neither is the fourth shape. That signature is a row LOWER than predicted,
+and a row higher means the binding reaches further than the prediction did.
 
 ### A criterion forbidding a call, ticked over that call (#395)
 
