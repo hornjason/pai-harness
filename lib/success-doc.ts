@@ -412,7 +412,25 @@ export function templateResidue(text: string, template: string): string[] {
   // intended under normal use" scored ZERO violations, because that text
   // lives in a heading. So the prefix is stripped and the STATEMENT is
   // compared.
-  const CLAIM_HEADING = /^(#{1,6}\s+Claim\s+\d+\s*[—–-]\s*)(.*)$/;
+  //
+  // The prefix is matched by SHAPE — a word-run, a number, a separator —
+  // rather than by the literal word `Claim` and the literal em-dash today's
+  // template happens to use. sec-500 measured the narrow version against
+  // four spellings of one statement: `Claim 1 —` and `Claim 1 -` were
+  // caught, `Claim 1:` and `SC 1 —` were INVISIBLE, because a heading that
+  // misses the pattern falls back to being excluded as structural. That is
+  // sec-485's finding surviving for every spelling but one, and a colon is
+  // not an exotic choice, so keying the check to a template detail would
+  // have reopened the hole on the next template edit.
+  //
+  // The cost, named because it is real: this cannot tell `Claim 1 — <a
+  // statement the reader must write>` from `Phase 2 - <a section title the
+  // reader must keep>`, so a template carrying the second gets a false
+  // refusal. Zero instances today — the shipped template has no numbered
+  // heading but its claims, and the widening flags nothing new across all
+  // 227 markdown files in this repo — and `test/success-doc.test.ts`'s
+  // "R1 cost" case fails loudly for whoever adds the first one.
+  const CLAIM_HEADING = /^(#{1,6}\s+\w[\w ]*\d+\s*[—–:-]\s*)(.*)$/;
   const comparable = (l: string) => {
     const m = CLAIM_HEADING.exec(l);
     return m ? m[2].trim() : l;

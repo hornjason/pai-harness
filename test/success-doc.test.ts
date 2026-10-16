@@ -886,6 +886,77 @@ List them.
     expect(successViolations(real, template).violations).toEqual([]);
   });
 
+  /**
+   * R1 — the narrowing must not be keyed to one separator spelling (#485,
+   * sec-500 F-1).
+   *
+   * The fixtures are DERIVED from `NEXT_TEMPLATE` by respelling its claim
+   * headings, for the same reason `ABANDONED` is derived: a hand-written
+   * copy would stop being the template the moment either one is edited, and
+   * the case would pass over a fixture that no longer resembles anything.
+   *
+   * Measured before the widening: `—` and `-` CAUGHT, `:` and `SC 1 —`
+   * INVISIBLE. A heading that misses the pattern falls through to
+   * `startsWith("#")` and is excluded as structural, so the statement goes
+   * back to being permanently invisible — which is sec-485's finding
+   * surviving for every spelling but the one today's template happens to use.
+   */
+  const RESPELLINGS: ReadonlyArray<readonly [string, (s: string) => string]> = [
+    ["em-dash (today's template)", s => s],
+    ["hyphen", s => s.replaceAll("— the system", "- the system")],
+    ["colon", s => s.replaceAll(" — the system", ": the system")],
+    ["a noun other than Claim", s => s.replaceAll("### Claim ", "### SC ")],
+  ];
+
+  for (const [spelling, respell] of RESPELLINGS) {
+    test(`R1: a claim statement is residue however the heading spells its separator — ${spelling}`, () => {
+      const template = respell(NEXT_TEMPLATE);
+      const doc = respell(ABANDONED);
+      // The self-guard the respelling needs: a `replaceAll` that matched
+      // nothing would leave the em-dash fixture in place and the case would
+      // pass for the original reason, testing the respelling of nothing.
+      if (spelling !== "em-dash (today's template)") {
+        expect(template, "the respelling matched nothing").not.toEqual(NEXT_TEMPLATE);
+      }
+      expect(
+        templateResidue(doc, template).join("\n"),
+        "a claim heading the reader never wrote was invisible",
+      ).toContain("the system behaves correctly under load");
+    });
+  }
+
+  test("R1 cost: a numbered NON-claim heading kept verbatim is now reported", () => {
+    // Written down because it is the price of the widening, not because it
+    // is desirable. `\w[\w ]*\d+` cannot tell `Claim 1 — <statement the
+    // reader must write>` from `Phase 2 - <section title the reader must
+    // keep>`, so a future template carrying the second gets a false
+    // refusal. Measured cost on today's tree: zero — the shipped template
+    // has no numbered heading but its claims, and a sweep of all 227
+    // markdown files in the repo flags nothing the un-widened version did
+    // not already flag. This case exists so that the next person to add one
+    // finds out from a red test rather than from a consumer.
+    const tpl = `## The thing\n\nA sentence.\n\n## Phase 2 - Rollout\n\nSomething.\n`;
+    expect(
+      templateResidue(tpl, tpl),
+      "the widening stopped reporting a numbered non-claim heading",
+    ).toContain("Rollout");
+  });
+
+  test("R1 control: the shipped template offers no one-word line to collide with", () => {
+    // sec-500 F-2. Dropping the `length <= 12` floor was right and exposed
+    // what it was hiding: a legitimate document whose prose happens to wrap
+    // onto a single word the template also wraps onto is refused. The base
+    // rate is real — 71 lines across the repo's 227 markdown files are one
+    // lowercase word and a period — so the fix is to stop the template
+    // offering the collision rather than to restore the floor.
+    const oneWord = readFileSync(TEMPLATE, "utf-8")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => /^[a-z][a-z-]*\.$/.test(l));
+    expect(oneWord, "the template wraps onto a bare word that any document might also wrap onto")
+      .toEqual([]);
+  });
+
   test("§3: the two seed writers produce the same bytes", () => {
     // `create-success` substituted owner and date; the scaffold wrote the
     // template raw, so a scaffolded SUCCESS.md kept `owner: TODO-OWNER`
