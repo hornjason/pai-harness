@@ -214,25 +214,68 @@ specific direction: if the feature only runs when some precondition holds,
 every fixture holds it, and **the branch where it does not hold is outside
 the battery's reach entirely.** Not under-tested — unreachable.
 
-This is not the "prove the mutation changed behaviour" case above. There the
-mutant and the original behave identically on the inputs you have; here the
-mutant is fine and the inputs cannot get to it. The arithmetic looks healthy
-either way.
+This is not the "prove the mutation changed behaviour" case above, and it is
+why this is a section rather than a sentence appended to that one. There, the
+mutant and the original behave identically on the inputs you have, and the
+tell is a number. Here **there is no suspicious number to read.** #492's
+battery over `unmeasuredScanReason` was five mutations measuring 1, 1, 1, 1
+and 4, every count predicted before the run and every one matched — a model
+battery by every diagnostic already in this file, measuring nothing about the
+branch one line above itself.
 
-Two instances, found within hours of each other and from opposite directions:
+Two instances, found within hours of each other and from opposite directions.
+Neither was found by its own author: #492's was found by sec-485, varying the
+one precondition two other reviewers had held fixed, and measured by sec-500
+afterwards.
 
 | Where | What every fixture held fixed | What was on the other side |
 |---|---|---|
 | #492 | every waiver fixture had **no** scanned files, because that is the precondition a waiver needs | a *mixed* layout, where `scripts/` makes `filesScanned` non-zero while 390 files in `src/` are never read. CONFIG-1 reports **PASS having scanned 36 of 426**, and the empty-scan refusal cannot fire. Every hardening anyone had done lived downstream of `filesScanned === 0` |
 | #59 | the refusal enumeration was read off `prevalidationViolations`, which refuses an absent, `UNMEASURED`, `FAIL` or self-contradicting reading | the function sits behind `if (!isVerifyPlus()) return`, and `isVerifyPlus` is `["VERIFY","SHIP","DONE"]`. The reading is stamped at SCOPE and refused two phases later, so every clause was true of the function and none of it was true at the phase being reasoned about |
 
-#492's is the sharper one because of the exposure window: 61 files in an
-unscanned directory holding a live config read correctly FAILs on its own, an
-*empty* file in a scanned directory FAILs via `bytesScanned === 0`, and a
-single newline in a scanned directory produces **no FAIL, no WARN, no
-UNMEASURED, nothing in the report at all**. One byte, and the verdict goes
-from loud to silent — strictly worse than every case the batteries did cover,
-because those at least record something.
+**The #59 row has no count beside it on purpose.** It was caught by reading
+`isVerifyPlus` before shipping, not by a battery, and a file whose subject is
+not trusting unmeasured claims should not carry one wearing a number. It is
+recorded because the route is one this file does not otherwise teach: every
+other worked example here is a mutation battery, and this one is *reading
+upward from a function to its call site*. Both routes work and neither finds
+the other's instance.
+
+What makes #59 worth the space is that nothing in the DATA was wrong. The
+reading really is taken at SCOPE — `stampEvidencePrevalidation(state,
+"scope")` — so every artefact a reader checks says the system knows the
+answer at that phase. It does. It just does not refuse on it until VERIFY.
+Not catchable by looking at the state file, because the state file is
+correct and sitting on the wrong side of the line.
+
+The distinguishing input, since the point of a row is to be reproducible: a
+state at `phase: "SCOPE"` carrying `evidencePrevalidation: {verdict: "FAIL",
+acs: [{id: "AC-2", status: "broken"}]}` passes the scope gate; the identical
+state at `phase: "VERIFY"` refuses. One field, opposite verdicts.
+
+#492's is the sharper one because its exposure window is **one byte**,
+measured on `git archive` exports under `/tmp` rather than argued:
+
+| Fixture | `bytesScanned` | Verdict |
+|---|---|---|
+| `src/` only, 61 files, one holding a live config read | 0 | FAIL — *"the scan read NO files"* |
+| + `scripts/empty.ts`, **0 bytes** | 0 | FAIL — *"1 files were walked and none had any content"* |
+| + `scripts/x.ts`, **1 byte** (a newline) | 1 | **0 findings** |
+| + comment-only `gates/g.ts`, 11 bytes | 11 | **0 findings** |
+| + clean `lib/build.ts`, 20 bytes | 20 | **0 findings** |
+
+No FAIL, no WARN, no UNMEASURED, nothing in the report at all — strictly
+worse than every case the batteries did cover, because those at least record
+something. The zero-byte row is the one that makes "one byte" exact: the last
+guard is a byte count, and a single character walks past it.
+
+**And there is a second-order trap in that table worth naming on its own.**
+The refusal states its condition as *"the scan read NO files"* — which one
+byte makes false. So the refusal is **satisfiable by something other than
+fixing the problem**: adding an empty file to a scanned directory silences
+it, and the project is no more scanned than it was. When you word a refusal,
+word it after the property you care about, not after the cheapest proxy you
+had to hand, because a proxy is a thing people can satisfy directly.
 
 **So name the precondition, then go and build the one fixture that does not
 meet it.** In #492's case that is a project with files in both a scanned and
