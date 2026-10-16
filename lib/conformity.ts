@@ -3200,11 +3200,28 @@ export interface SourceEvidence {
   examples: string[];
   /** Directories the walk could not read. Non-empty means `found` is unreliable. */
   unreadable: string[];
+  /**
+   * Entries the walk DECLINED to look at, and why.
+   *
+   * The third state, and #500's own complaint turned on itself. With only
+   * `found` and `unreadable`, a declined entry is indistinguishable from an
+   * absent one, and the waiver went on to assert "no source files of any
+   * kind were found anywhere in the tree" — a sentence the walk never
+   * established and which is FALSE for every skip class below. "True
+   * sentence, wrong inference" was this issue's headline; this was the
+   * sentence becoming untrue.
+   *
+   * Recorded rather than fixed by widening, because most of the skips are
+   * correct: a content project with a `.github/` release script really does
+   * have no project source. What is not correct is saying nothing is there.
+   */
+  skipped: string[];
 }
 
 export function projectSourceEvidence(root: string): SourceEvidence {
   const examples: string[] = [];
   const unreadable: string[] = [];
+  const skipped: string[] = [];
   // Symlinked source directories ARE followed — `packages/core` behind
   // `lib/impl` is an ordinary monorepo shape, and a predicate that cannot see
   // it waives a project full of code. `realpathSync` keys the visited set so
@@ -3218,7 +3235,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
   try {
     rootReal = realpathSync(root);
   } catch {
-    return { found: false, examples: [], unreadable: ["."] };
+    return { found: false, examples: [], unreadable: ["."], skipped: [] };
   }
   const insideProject = (p: string) => p === rootReal || p.startsWith(rootReal + sep);
 
@@ -3243,15 +3260,36 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       continue;
     }
     for (const e of entries) {
-      if (SOURCE_SKIP_DIRS.has(e.name)) continue;
+      const childRelEarly = rel ? `${rel}/${e.name}` : e.name;
+      if (SOURCE_SKIP_DIRS.has(e.name)) {
+        skipped.push(`${childRelEarly}/ (build output or dependency)`);
+        continue;
+      }
       // Tooling lives in dot-directories — `.github/scripts/release.js`,
       // `.husky/`, `.claude/`. `containsTypeScript` skipped every entry
       // starting with "." and this walk replaced it, so dropping that was a
       // silent widening: a release script is not the project's source, and a
       // content project that has one is not a project CONFIG-1 can measure.
-      if (e.name.startsWith(".")) continue;
-      if (TEST_DIRS.has(e.name)) continue;
-      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      if (e.name.startsWith(".")) {
+        skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
+        continue;
+      }
+      // The directory skip stays, but it is RECORDED now. sec-500 argued for
+      // dropping it outright — `isTestSourceFile` already matches
+      // `tests/scaffold-conformity.test.ts`, which was B1's entire motivating
+      // case, so the directory skip buys nothing for it and adds blindness.
+      // The first half of that is true and I measured it. The second half is
+      // what `skipped` fixes: the blindness was that a declined entry was
+      // indistinguishable from an absent one, not that declining was wrong.
+      // Dropping the skip would also make `tests/helpers/setup.ts` count as
+      // project source, which changes which projects pass rather than what
+      // they are told — a bigger call than this finding, and one I would
+      // rather make with its own measurement than fold into a review fix.
+      if (TEST_DIRS.has(e.name)) {
+        skipped.push(`${childRelEarly}/ (test directory)`);
+        continue;
+      }
+      const childRel = childRelEarly;
       const abs = join(dir, e.name);
       // `isDirectory()` is false for a symlink, so the stat is what makes a
       // symlinked directory visible at all.
@@ -3282,6 +3320,12 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       }
       if (isDir) {
         stack.push([abs, childRel]);
+      } else if (SOURCE_EXTENSIONS.test(e.name) && e.name.endsWith(".d.ts")) {
+        skipped.push(`${childRel} (type declarations)`);
+      } else if (SOURCE_EXTENSIONS.test(e.name) && isTestSourceFile(e.name)) {
+        skipped.push(`${childRel} (test file)`);
+      } else if (SOURCE_EXTENSIONS.test(e.name) && isRootToolConfig(childRel, e.name)) {
+        skipped.push(`${childRel} (root tool config)`);
       } else if (
         SOURCE_EXTENSIONS.test(e.name)
         && !e.name.endsWith(".d.ts")
@@ -3306,7 +3350,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       }
     }
   }
-  return { found: examples.length > 0, examples, unreadable };
+  return { found: examples.length > 0, examples, unreadable, skipped };
 }
 
 /**
@@ -3345,9 +3389,22 @@ export function unmeasuredScanReason(
   // There IS code and this check read none of it. That is a blind check, the
   // first row of the table above, and it must refuse.
   if (evidence.found) return null;
+  // What the walk ACTUALLY established, which is narrower than "nothing is
+  // there". It looked outside the scan dirs, found no source it counts, and
+  // declined to look at these. Naming the declines is the whole fix: the
+  // previous sentence asserted "no source files of any kind were found
+  // anywhere in the tree", which is false for every skip class and is this
+  // issue's own headline complaint — a true-sounding sentence the walk never
+  // established — reintroduced in the waiver that #500 added.
+  const declined =
+    evidence.skipped.length > 0
+      ? ` The walk did not count ${evidence.skipped.slice(0, 5).join(", ")}` +
+        `${evidence.skipped.length > 5 ? `, and ${evidence.skipped.length - 5} more` : ""}` +
+        `, so this is "no source this check counts", not "no files here".`
+      : ` The walk found no files of any kind that it counts as source.`;
   return (
-    `UNMEASURED: ${label} read no files because this project has no ${sourceKind}, ` +
-    `and no source files of any kind were found anywhere in the tree. ` +
+    `UNMEASURED: ${label} read no files because this project has no ${sourceKind}.` +
+    `${declined} ` +
     `Nothing was checked, which is NOT the same as nothing being wrong — if this ` +
     `project grows ${sourceKind}, this check starts measuring again on the next run.`
   );
@@ -3457,7 +3514,7 @@ export function runPromptConfigAccessValidation(root: string) {
       // at the point it was read (#476).
       const unmeasured = unmeasuredScanReason(
         scan,
-        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] },
+        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] },
         "CONFIG-2",
         "workflows/ directory",
       );
