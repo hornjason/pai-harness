@@ -18,6 +18,7 @@ import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
 import { isTypeScriptProject, tsconfigVerdict } from "./typescript-project";
+import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -3350,6 +3351,46 @@ export function unmeasuredScanReason(
     `Nothing was checked, which is NOT the same as nothing being wrong — if this ` +
     `project grows ${sourceKind}, this check starts measuring again on the next run.`
   );
+}
+
+/**
+ * SUCCESS-1 — the project states what it is for, falsifiably (#485).
+ *
+ * `CLAUDE.md` calls `SUCCESS.md` the measure and the scaffold never wrote
+ * one, so `specs/HARNESS-STANDARD.md` carried SC-822..824 asserting
+ * properties of a file that did not exist in any consumer.
+ *
+ * Absent is UNMEASURED and present-but-unfilled is a REFUSAL, and the
+ * asymmetry is the point: a project that never opted in has not failed at
+ * anything, while a project that ran the generator and stopped has a
+ * document that every "does it exist" check waves through. The second is
+ * the case this check is for.
+ */
+export function runSuccessDocValidation(root: string) {
+  describe("SUCCESS.md (#485)", () => {
+    test("SUCCESS-1: the project states what it is for, and how each claim fails", () => {
+      const verdict = successViolations(readSuccessDoc(root), readSuccessTemplate());
+      if (verdict.unmeasured) {
+        addFinding({
+          ruleId: "SUCCESS-1",
+          severity: "WARN",
+          file: "SUCCESS.md",
+          message: verdict.unmeasured,
+        });
+        return;
+      }
+      for (const v of verdict.violations) {
+        addFinding({
+          ruleId: "SUCCESS-1",
+          severity: "FAIL",
+          file: "SUCCESS.md",
+          message: v,
+          fixCommand: "Fill in SUCCESS.md — see bunx rungate create-success",
+        });
+      }
+      expect(verdict.violations, verdict.violations.join("\n")).toEqual([]);
+    });
+  });
 }
 
 /**

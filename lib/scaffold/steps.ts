@@ -7,7 +7,7 @@
  * Extracted per SCAFFOLD-DECOMPOSITION-SPEC to keep scaffold-project.ts
  * as orchestrator-only (under 200 lines).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
@@ -31,6 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
+import { readSuccessDoc, seedFromTemplate, successViolations } from "../success-doc";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
   OWNED_FILES,
@@ -129,7 +130,47 @@ export function regenerateOwned(
   actions: string[],
   strategy: WriteStrategy = ownedStrategy(label),
 ): void {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  // `lstatSync`, NOT `existsSync` — BUG-440-A's shape, found by security
+  // review of #502 and PRE-EXISTING: it reaches `project-state.json` and
+  // every other owned file, not just the one that surfaced it.
+  //
+  // `existsSync` RESOLVES a symlink and `writeFileSync` FOLLOWS one, so the
+  // two disagree about exactly one input: a dangling `SUCCESS.md ->
+  // /elsewhere/x` is "absent" to the guard and a live write target to the
+  // writer. Measured: the scaffold created `/tmp/dang/victim/newfile.json`
+  // from a symlink planted at `project-state.json`, outside the project root
+  // entirely, and reported `CREATED: project-state.json`.
+  //
+  // `lstatSync` describes the LINK, so a symlink of either kind is something
+  // that is already there — which is what create-only means by "exists", and
+  // what the regenerate strategies must refuse rather than write through.
+  let link: ReturnType<typeof lstatSync> | null = null;
+  try {
+    link = lstatSync(filePath);
+  } catch {
+    link = null;
+  }
+  if (link?.isSymbolicLink()) {
+    actions.push(
+      `${SCAFFOLD_REFUSE}: ${label} is a symlink, and the generator does not write through ` +
+        `one — the target may be outside this project. Replace it with a real file, or ` +
+        `delete it and re-run.`,
+    );
+    return;
+  }
+  if (link && !link.isFile()) {
+    // A directory (or a device, or a socket) where an owned file belongs.
+    // `readFileSync` throws EISDIR, and that throw ESCAPES the step and
+    // aborts the whole scaffold run mid-way — after some files are written
+    // and before others. A refusal that names the path leaves the tree in a
+    // state someone can reason about; a half-finished run does not.
+    actions.push(
+      `${SCAFFOLD_REFUSE}: ${label} exists but is not a regular file, so the generator ` +
+        `will not read or replace it. Remove it and re-run.`,
+    );
+    return;
+  }
+  const existing = link ? readFileSync(filePath, "utf-8") : null;
   const decision = decideOwnedWrite(strategy, existing, content);
 
   if (decision.action === "preserve") {
@@ -735,7 +776,7 @@ export function generateConformityTest(root?: string): string {
   const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, writeFindingsReport } from "${from}";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -750,6 +791,7 @@ runPackageValidation(ROOT);
 runTsconfigValidation(ROOT);
 runConfigAccessValidation(ROOT);
 runPromptConfigAccessValidation(ROOT);
+runSuccessDocValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
 `;
@@ -1759,6 +1801,76 @@ export function generateProjectState(root: string, actions: string[]): void {
 
   safeWrite(stateJson, JSON.stringify(state, null, 2) + "\n", "project-state.json", actions);
   safeWrite(stateMd, lines.join("\n") + "\n", "PROJECT-STATE.md", actions);
+}
+
+/**
+ * Seed `SUCCESS.md`, then say out loud that the seed is not an answer (#485).
+ *
+ * `CLAUDE.md` opens its rules with "SUCCESS.md is the measure" and the
+ * scaffold never wrote one. rungate's was hand-written once and nothing
+ * reproduced it for anyone else, so a consumer scaffolded a project, read the
+ * generated `AGENTS.md`, and never learned the file was supposed to exist.
+ *
+ * Two halves, and the second is the one that makes this more than a nicety.
+ *
+ * **It is `create-only`.** A project's claims are the one thing the harness
+ * must never regenerate over. `safeWrite` is the single writer for that, and
+ * it is delegated to rather than reimplemented for the reason recorded on
+ * that function: a second copy of the decision absorbs any mutation of the
+ * first.
+ *
+ * **The WARN reads the real checker.** `successViolations` is the same
+ * binding `SUCCESS-1` refuses with, so the scaffold's warning and the
+ * conformity suite's refusal cannot disagree. A second "is it filled in?"
+ * predicate here would be two deciders answering one question — the fourth
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`, which no
+ * behavioural test can tell apart.
+ *
+ * The direction this is deliberately wrong in: a project that runs the
+ * scaffold and stops is now LOUDER than one that never ran it. An unfilled
+ * template is refused; an absent file is only UNMEASURED. That is the point —
+ * an unfilled template is indistinguishable from a considered one to
+ * everything except a reader, so the generator must not make the project
+ * quieter than it found it.
+ */
+export function seedSuccessDoc(root: string, actions: string[]): void {
+  const templatePath = join(dirname(dirname(__dirname)), "templates", "SUCCESS-TEMPLATE.md");
+  if (!existsSync(templatePath)) {
+    // Named, not swallowed. #484 was a documented command that ENOENTed for
+    // every consumer because `files[]` omitted the directory it read from,
+    // and the symptom was a check that reported 21 pass over a library that
+    // could not load its own data.
+    actions.push(
+      "WARN: SUCCESS.md not seeded — templates/SUCCESS-TEMPLATE.md is missing from this " +
+        "rungate installation (see test/package-closure.test.ts)",
+    );
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const owner = process.env.USER || "TODO-OWNER";
+  // The SHARED substitution. Writing the template raw here while
+  // `create-success` substituted meant one seed with two possible byte
+  // sequences, and a scaffolded SUCCESS.md kept `owner: TODO-OWNER` forever.
+  const seeded = seedFromTemplate(readFileSync(templatePath, "utf-8"), owner, today);
+  safeWrite(join(root, "SUCCESS.md"), seeded, "SUCCESS.md", actions);
+
+  const verdict = successViolations(readSuccessDoc(root), readFileSync(templatePath, "utf-8"));
+  if (verdict.unmeasured) {
+    actions.push(`WARN: ${verdict.unmeasured}`);
+    return;
+  }
+  if (verdict.violations.length > 0) {
+    actions.push(
+      // NOT "run create-success" — by the time anyone reads this the file is
+      // already there, so that command refuses and the advice is a dead end.
+      `WARN: SUCCESS.md is not filled in — ${verdict.violations.length} item(s). ` +
+        `The conformity suite REFUSES it in this state, deliberately. Edit ` +
+        `${join(root, "SUCCESS.md")} (or re-seed it with ` +
+        `\`bunx rungate create-success --force\`):`,
+    );
+    for (const v of verdict.violations) actions.push(`  - ${v}`);
+  }
 }
 
 export function createClaudeMdBridge(root: string, actions: string[]): void {
