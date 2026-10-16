@@ -25,16 +25,19 @@
  * indistinguishable from compliance."
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { dirname, join } from "path";
 
 import {
   configAccessViolations,
   readConfigAccessRatchet,
   scanConfigAccess,
   scanPromptConfigAccess,
+  unmeasuredScanReason,
   type ConfigAccessScan,
 } from "../lib/conformity";
+import { isTypeScriptProject } from "../lib/typescript-project";
 
 const REPO = join(import.meta.dir, "..");
 
@@ -247,5 +250,180 @@ describe("SC-1431: the ratchet is data, scoped per check", () => {
     const suite = readFileSync(join(REPO, "test", "scaffold-conformity.test.ts"), "utf-8");
     expect(suite).toContain("runConfigAccessValidation(ROOT);");
     expect(suite).toContain("runPromptConfigAccessValidation(ROOT);");
+  });
+});
+
+/**
+ * #476: a scan that read nothing is two different situations, and the refusal
+ * alone cannot tell them apart.
+ *
+ * `--profile=minimal` (#449) lets a project take rungate's structure without
+ * the ship harness. The first consumer to use it ships a skill, a spec and two
+ * reference files and has no TypeScript at all, so CONFIG-1's empty-scan
+ * refusal fired over a check it could only satisfy by adding source it does
+ * not want: 21 pass, 1 fail, unsatisfiable.
+ *
+ * The fix must not be a blanket waiver. Three cases, and two of them are the
+ * ones a careless fix breaks — case 2 goes red if this is implemented as a
+ * `--type content` exemption, case 3 goes red if the refusal is deleted.
+ *
+ * What was broken to prove it, run and counted rather than asserted, over
+ * `test/config-access-conformity.test.ts` (25 tests):
+ *
+ * | Mutation | Red | Predicted |
+ * |---|---|---|
+ * | `unmeasuredScanReason` short-circuited to `return null` — #476 restored | 3 | 3 |
+ * | short-circuited to always return the reason — the blanket waiver | 5 | 4 |
+ * | the `sourcesPresent` guard removed — every empty scan waived | 3 | 3 |
+ * | the `filesScanned` guard removed — the answer stops depending on the scan | 2 | 2 |
+ * | CONFIG-2's call site reverted to `requireNonEmpty = scan.filesScanned > 0` | 1 | 1 |
+ *
+ * None is left in the tree; all were run and reverted.
+ *
+ * The one row that missed is a counting slip and not a finding: case 4 was
+ * written after the prediction table and never added to that row. Its failure
+ * is for its own reason — a `.js` project is invisible to the TypeScript
+ * predicate and must still be measured — and the five reds are five distinct
+ * questions, which is what the row is for.
+ */
+describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decided", () => {
+  /** A throwaway project tree. Returns its root. */
+  const project = (files: Record<string, string>): string => {
+    const root = mkdtempSync(join(tmpdir(), "rungate-476-"));
+    for (const [rel, body] of Object.entries(files)) {
+      const abs = join(root, rel);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, body);
+    }
+    return root;
+  };
+
+  /** One direct config read, in the syntax `classifyConfigSites` calls a use. */
+  const READS_CONFIG = [
+    'import { join } from "path";',
+    'export const p = join(process.cwd(), ".claude", "rungate.json");',
+  ].join("\n");
+
+  /** CONFIG-1 exactly as `runConfigAccessValidation` composes it. */
+  const config1 = (root: string) => {
+    const scan = scanConfigAccess(root);
+    const unmeasured = unmeasuredScanReason(
+      scan,
+      isTypeScriptProject(root),
+      "CONFIG-1",
+      "hand-written TypeScript",
+    );
+    return {
+      unmeasured,
+      violations: unmeasured ? [] : configAccessViolations(scan, {}, "CONFIG-1"),
+    };
+  };
+
+  test("case 1: a content project with no TypeScript reports UNMEASURED, not a pass", () => {
+    const root = project({
+      "README.md": "# docs",
+      "skills/pov/SKILL.md": "---\nname: pov\n---\n",
+      "specs/SPEC.md": "# spec",
+    });
+    const got = config1(root);
+    expect(got.violations, "a content project is not in violation").toEqual([]);
+    expect(got.unmeasured, "silence is indistinguishable from a pass").not.toBeNull();
+    expect(got.unmeasured).toContain("UNMEASURED");
+    expect(got.unmeasured, "the skip does not say what it skipped over").toContain(
+      "hand-written TypeScript",
+    );
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("case 2: a content project that DOES carry TypeScript is still checked", () => {
+    // The case a `--type content` exemption breaks. One markdown-heavy project
+    // with a single source file that reads the config directly: a waiver keyed
+    // on project type reports this clean.
+    const root = project({
+      "README.md": "# docs",
+      "specs/SPEC.md": "# spec",
+      "lib/loader.ts": READS_CONFIG,
+    });
+    const got = config1(root);
+    expect(got.unmeasured, "a project with TypeScript was skipped").toBeNull();
+    expect(got.violations.join("\n")).toContain("lib/loader.ts");
+    expect(got.violations.join("\n")).toContain("direct config access site(s), 0 allowed");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("case 3: a project with TypeScript the walk never reached still REFUSES", () => {
+    // The case deleting the refusal breaks. `src/` is a TypeScript source
+    // directory and is NOT one of CONFIG_SCAN_DIRS, so the walk comes back
+    // empty over a project that is full of TypeScript. The scan read nothing
+    // and there WAS something to read, which is what the refusal is for.
+    const root = project({ "src/index.ts": READS_CONFIG });
+    const got = config1(root);
+    expect(got.unmeasured, "an unreached source tree was waived as absent").toBeNull();
+    expect(got.violations).toHaveLength(1);
+    expect(got.violations[0]).toContain("read NO files");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("case 4: a JavaScript project the TypeScript predicate cannot see is still checked", () => {
+    // `isTypeScriptProject` is false here and the check still measures, because
+    // the scan reads `.js` too and it came back non-empty. Asking "was there
+    // anything to read" INSTEAD of "did I read anything" would waive a hook
+    // that reaches the config directly.
+    const root = project({ "hooks/notify.js": READS_CONFIG });
+    expect(isTypeScriptProject(root), "the fixture must be invisible to the predicate").toBe(false);
+    const got = config1(root);
+    expect(got.unmeasured, "a scan that read a file was reported as unmeasured").toBeNull();
+    expect(got.violations.join("\n")).toContain("hooks/notify.js");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("the two questions are separate, and the binding needs both answers", () => {
+    // `filesScanned` answers "did I read anything"; `sourcesPresent` answers
+    // "was there anything to read". One decider asked twice could not produce
+    // the middle row, which is the whole of this issue.
+    expect(unmeasuredScanReason(scan({}, 0, 0), false, "CONFIG-1", "x")).toContain("UNMEASURED");
+    expect(unmeasuredScanReason(scan({}, 0, 0), true, "CONFIG-1", "x")).toBeNull();
+    expect(unmeasuredScanReason(scan({}, 9, 100), false, "CONFIG-1", "x")).toBeNull();
+    expect(unmeasuredScanReason(scan({}, 9, 100), true, "CONFIG-1", "x")).toBeNull();
+  });
+
+  test("CONFIG-2's waiver is reachable, which `filesScanned > 0` never was", () => {
+    // The previous waiver read `requireNonEmpty = scan.filesScanned > 0`,
+    // evaluated at the one place `filesScanned === 0` is the whole question.
+    // It required a non-empty scan only when the scan was already non-empty,
+    // so CONFIG-2's empty-scan refusal had never once been able to fire.
+    const empty = scan({}, 0, 0);
+    expect(
+      configAccessViolations(empty, {}, "CONFIG-2", empty.filesScanned > 0),
+      "the old waiver should be provably vacuous",
+    ).toEqual([]);
+
+    // The replacement distinguishes. A project with no workflows/ is waived;
+    // one that has the directory and read nothing out of it refuses.
+    const root = project({ "README.md": "# docs" });
+    expect(
+      unmeasuredScanReason(scanPromptConfigAccess(root), existsSync(join(root, "workflows")), "CONFIG-2", "workflows/ directory"),
+    ).toContain("UNMEASURED");
+
+    mkdirSync(join(root, "workflows"), { recursive: true });
+    const withDir = scanPromptConfigAccess(root);
+    expect(
+      unmeasuredScanReason(withDir, existsSync(join(root, "workflows")), "CONFIG-2", "workflows/ directory"),
+      "an empty workflows/ directory was waived",
+    ).toBeNull();
+    expect(configAccessViolations(withDir, {}, "CONFIG-2")[0]).toContain("read NO files");
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("both checks route their empty scan through the one binding", () => {
+    // A test helper that composes the decision itself is a second decider, and
+    // it would keep passing after the production site stopped calling this.
+    const src = readFileSync(join(REPO, "lib", "conformity.ts"), "utf-8");
+    const calls = src.match(/unmeasuredScanReason\(/g) || [];
+    expect(calls, "CONFIG-1, CONFIG-2 and the declaration").toHaveLength(3);
+    expect(src).toContain('isTypeScriptProject(root),');
+    expect(src).toContain('existsSync(join(root, "workflows")),');
+    // And neither still passes the vacuous waiver.
+    expect(src).not.toContain("scan.filesScanned > 0,");
   });
 });
