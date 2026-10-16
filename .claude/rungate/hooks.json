@@ -4,6 +4,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/BashToolGuard.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Bash",
     "description": "Blocks cat/head/tail file reading — enforces COMP-7 mechanically (Tier 3)"
   },
@@ -12,6 +13,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TestSuiteGuard.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Bash",
     "description": "Blocks a full test suite (bun test) once the worker has spent its rate — enforces DIR-L29 mechanically (Tier 3). The rate lives in lib/test-suite-lock.ts."
   },
@@ -20,6 +22,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AgentBriefGuard.hook.ts",
     "enabled": true,
+    "scope": "project",
     "matcher": "Agent",
     "description": "Validates agent brief templates and enforces ship-active marker"
   },
@@ -28,6 +31,7 @@
     "hookFor": "SubagentStop",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AgentVerdictCapture.hook.ts",
     "enabled": true,
+    "scope": "user",
     "description": "Captures agent verdicts and writes to workflow-state.json"
   },
   {
@@ -35,6 +39,7 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/AutoVerifyGate.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Agent",
     "description": "Nudges DA to run verify gate after agent completion"
   },
@@ -43,6 +48,7 @@
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/CommitEnforcement.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Agent",
     "description": "Detects uncommitted changes and UI file changes in agent worktrees"
   },
@@ -51,6 +57,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/GateEnforcement.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": ".*",
     "description": "Nags on gate failures and blocks Skill calls after max strikes"
   },
@@ -59,6 +66,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/IssueCloseGuard.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Bash",
     "description": "Blocks gh issue close without ship-gate PASS and HMAC validation"
   },
@@ -67,6 +75,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/MergeGuard.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Bash",
     "description": "Early warning on git merge to main without verify-gate passing"
   },
@@ -75,21 +84,25 @@
     "hookFor": "PostCompact",
     "command": "bun ${RUNGATE_HOOKS_DIR}/PostCompact.hook.ts",
     "enabled": true,
+    "scope": "user",
     "description": "Re-injects critical rules after context window compaction"
   },
   {
     "name": "SpecConformityTrigger",
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/SpecConformityTrigger.hook.ts",
-    "enabled": true,
+    "enabled": false,
+    "scope": "project",
     "matcher": "Edit|Write",
-    "description": "Auto-runs conformity when spec files are modified"
+    "description": "Auto-runs conformity when spec files are modified",
+    "disabledReason": "package.json already runs scripts/sync-sc-status.ts as posttest, so this would be a second decider for one question — the fourth shape in .claude/rules/checks-must-be-able-to-fail.md, where a mutation of either leaves the other holding the case up. The two triggers are also not equivalent, and the posttest one is the better of them: it ticks coverage after a suite run, where this one ticks it on a text edit, with no test having been run. #479."
   },
   {
     "name": "SpecSCGuard",
     "hookFor": "PostToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/SpecSCGuard.hook.ts",
     "enabled": true,
+    "scope": "project",
     "matcher": "Edit|Write",
     "description": "Validates new SC lines in spec files have matching patterns"
   },
@@ -98,20 +111,24 @@
     "hookFor": "SessionStart",
     "command": "bun ${RUNGATE_HOOKS_DIR}/StaleTTLCleanup.hook.ts",
     "enabled": true,
+    "scope": "user",
     "description": "Cleans up stale workflow-state.json and ship-active files"
   },
   {
     "name": "TaskCompleted",
     "hookFor": "TaskCompleted",
     "command": "bun ${RUNGATE_HOOKS_DIR}/TaskCompleted.hook.ts",
-    "enabled": true,
-    "description": "Quality gates before task completion (tests, uncommitted changes, conformity)"
+    "enabled": false,
+    "scope": "project",
+    "description": "Quality gates before task completion (tests, uncommitted changes, conformity)",
+    "disabledReason": "checkTests spawns a full bun test with a 120000 ms timeout and this suite measures around 400 s, so the run can never finish — every completion would report a timed-out non-zero exit with no parseable failure count, which the code turns into a warning. It also spawns a CONCURRENT full suite, which is what DIR-L29 and lib/test-suite-lock.ts exist to prevent and what jetsam-killed the machine once already. Re-enable only after the timeout exceeds the measured suite duration and the spawn goes through the suite lock. #479."
   },
   {
     "name": "VerifyPhaseLock",
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/VerifyPhaseLock.hook.ts",
     "enabled": true,
+    "scope": "user",
     "matcher": "Bash",
     "description": "Blocks gh issue create during VERIFY phase"
   },
@@ -120,6 +137,7 @@
     "hookFor": "PreToolUse",
     "command": "bun ${RUNGATE_HOOKS_DIR}/WorkflowStateGuard.hook.ts",
     "enabled": true,
+    "scope": "project",
     "matcher": "Write|Edit",
     "description": "Blocks direct Write/Edit of workflow-state.json"
   }
