@@ -3335,9 +3335,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
     }
     for (const e of entries) {
       const childRelEarly = rel ? `${rel}/${e.name}` : e.name;
-      // Never recorded: these cannot hold the project's own source, so
-      // naming them is pure noise in the waiver message.
-      if (NEVER_PROJECT_SOURCE.has(e.name)) continue;
+      // RECORDED, not dropped. An earlier cut skipped `.git` and
+      // `node_modules` entirely on the grounds that they can never hold the
+      // project's own source — true, and still the wrong move, because
+      // "I declined 400 entries under node_modules/" is honest and short
+      // while silence is neither (sec-485). They collapse to one counted
+      // line in the message, which gets the brevity without the silence.
+      if (NEVER_PROJECT_SOURCE.has(e.name)) {
+        skipped.push(`${childRelEarly}/ (dependency or VCS metadata)`);
+        continue;
+      }
       if (SOURCE_SKIP_DIRS.has(e.name)) {
         if (containsSourceFile(join(dir, e.name))) {
           skipped.push(`${childRelEarly}/ (build output or dependency)`);
@@ -3500,6 +3507,54 @@ export function projectSourceEvidence(root: string): SourceEvidence {
  * narrower than a scanner's filter. Widening a scanner later cannot open a
  * hole in it.
  */
+/**
+ * Collapse the decline list by class, with a count and a capped sample.
+ *
+ * The first cut printed the first eight entries and ", and N more". On
+ * rungate itself the list is 320 entries of which 310 are test files, so
+ * the cap showed ten test files and hid everything else — including the two
+ * extension-less scripts in scanned directories, which are the entries most
+ * likely to explain a waiver and the ones sec-500 filed the issue about.
+ *
+ * Collapsing rather than dropping is sec-485's correction to my first
+ * remedy, and it is the better shape for the reason that applies to this
+ * whole field: **every decline stays distinguishable from an absence**, and
+ * the reader still gets a message they can read. Dropping entries to shorten
+ * the list reintroduces exactly the silence `skipped` exists to remove.
+ *
+ * The class is the parenthetical each decline already carries, and ordering
+ * follows the ranked array, so the classes that can plausibly hold
+ * first-party code come first.
+ */
+function summariseDeclines(skipped: string[], sample = 3): string {
+  const order: string[] = [];
+  const byClass = new Map<string, string[]>();
+  for (const entry of skipped) {
+    const m = /^(.*) \(([^()]*)\)$/.exec(entry);
+    const kind = m ? m[2] : "other";
+    const path = m ? m[1] : entry;
+    if (!byClass.has(kind)) {
+      byClass.set(kind, []);
+      order.push(kind);
+    }
+    byClass.get(kind)!.push(path);
+  }
+  return order
+    .map(kind => {
+      const paths = byClass.get(kind)!;
+      const shown = paths.slice(0, sample).join(", ");
+      // `kind: N (samples)` rather than `N kinds (samples)`. Pluralising
+      // the class prose correctly means handling "test file" -> "test
+      // files" but "dot-directory, tooling" -> "dot-directories, tooling"
+      // and "type declarations" -> unchanged, and a regex that gets that
+      // wrong prints "40 tests file" — which it did. Putting the count
+      // after the label sidesteps the whole problem and reads better in a
+      // list.
+      return `${kind}: ${paths.length}` + (paths.length > sample ? ` (${shown}, …)` : ` (${shown})`);
+    })
+    .join("; ");
+}
+
 export function unmeasuredScanReason(
   scan: ConfigAccessScan,
   evidence: SourceEvidence,
@@ -3522,12 +3577,10 @@ export function unmeasuredScanReason(
   // anywhere in the tree", which is false for every skip class and is this
   // issue's own headline complaint — a true-sounding sentence the walk never
   // established — reintroduced in the waiver that #500 added.
-  const SHOWN = 8;
   const declined =
     evidence.skipped.length > 0
-      ? ` It declined ${evidence.skipped.length} entr${evidence.skipped.length === 1 ? "y" : "ies"}` +
-        ` that do contain code: ${evidence.skipped.slice(0, SHOWN).join(", ")}` +
-        `${evidence.skipped.length > SHOWN ? `, and ${evidence.skipped.length - SHOWN} more` : ""}` +
+      ? ` It declined ${evidence.skipped.length} entr${evidence.skipped.length === 1 ? "y" : "ies"}: ` +
+        summariseDeclines(evidence.skipped) +
         `. So this is "no source this check counts", not "no files here".`
       : ` The walk found no files of any kind that it counts as source.`;
   return (
