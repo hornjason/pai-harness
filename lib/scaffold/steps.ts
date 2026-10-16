@@ -24,6 +24,7 @@ import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, 
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
+import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
@@ -262,7 +263,12 @@ export function injectEnvironmentSection(root: string, actions: string[]): void 
   actions.push("UPDATED: AGENTS.md environment section from rungate.json");
 }
 
-export function generateAgentsMdContent(projectPath: string, type: ProjectType, actions: string[]): string {
+export function generateAgentsMdContent(
+  projectPath: string,
+  type: ProjectType,
+  actions: string[],
+  profile: ScaffoldProfile = DEFAULT_PROFILE,
+): string {
   const pkgPath = join(projectPath, "package.json");
   let pkgDesc = "";
   let pkgName = basename(projectPath);
@@ -552,7 +558,9 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
   // why neither "never overwrite" nor "always overwrite" is the answer.
   const rulesDir = join(projectPath, ".claude", "rules");
   if (!existsSync(rulesDir)) mkdirSync(rulesDir, { recursive: true });
-  const scopedRules = generateScopedRules(scan);
+  // A rule is instructions to an agent, so one naming machinery the profile
+  // did not install is worse than no rule at all. See RULES_NOT_MINIMAL.
+  const scopedRules = generateScopedRules(scan).filter(r => isRuleIncluded(r.filename, profile));
   for (const rule of scopedRules) {
     const rulePath = join(rulesDir, rule.filename);
     const existing = existsSync(rulePath) ? readFileSync(rulePath, "utf-8") : null;
@@ -597,9 +605,14 @@ export function generateAgentsMdContent(projectPath: string, type: ProjectType, 
  * through `updateSpecsTable` and `injectEnvironmentSection` by this point, and
  * rewriting it would undo both.
  */
-export function refreshScopedRulesStep(root: string, type: ProjectType, actions: string[]): void {
+export function refreshScopedRulesStep(
+  root: string,
+  type: ProjectType,
+  actions: string[],
+  profile: ScaffoldProfile = DEFAULT_PROFILE,
+): void {
   const sink: string[] = [];
-  generateAgentsMdContent(root, type, sink);
+  generateAgentsMdContent(root, type, sink, profile);
   // Forward everything except the per-rule lines already reported by the
   // Phase 0.5 pass. Swallowing the rest would hide a warning raised only on
   // the second scan — the fail-open shape .claude/rules/checks-must-be-able-to-fail.md

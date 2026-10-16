@@ -48,6 +48,7 @@ import {
   checkGovernsAlignment, detectMisplacedSpecs, detectUnconvertedSpecs,
 } from "../validators/spec-validators";
 import type { ProjectType } from "../generators/types";
+import { DEFAULT_PROFILE, isStepIncluded, type ScaffoldProfile } from "./profiles";
 
 export interface WriteStepOptions {
   force?: boolean;
@@ -58,6 +59,13 @@ export interface WriteStepOptions {
    * `./rehearsal.ts`, which carries the reason for each.
    */
   rehearsing?: boolean;
+  /**
+   * How much of the harness this project opted into. Orthogonal to
+   * `projectType`, which selects WHICH generators run; this selects whether
+   * the harness-only ones run at all. See `STEPS_NOT_MINIMAL` in
+   * `./profiles.ts`, which carries the reason for each exclusion.
+   */
+  profile?: ScaffoldProfile;
 }
 
 export function runScaffoldWriteSteps(
@@ -66,7 +74,7 @@ export function runScaffoldWriteSteps(
   actions: string[],
   opts: WriteStepOptions = {},
 ): void {
-  const { force = false, commit = false, rehearsing = false } = opts;
+  const { force = false, commit = false, rehearsing = false, profile = DEFAULT_PROFILE } = opts;
 
   // Phase 0: Security and directory setup
   createGitignore(projectPath, actions);
@@ -86,7 +94,7 @@ export function runScaffoldWriteSteps(
   createTsconfig(projectPath, actions);
 
   // Phase 0.5: Generate AGENTS.md
-  const agentsMd = generateAgentsMdContent(projectPath, projectType, actions);
+  const agentsMd = generateAgentsMdContent(projectPath, projectType, actions, profile);
   writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
   actions.push("REGENERATED: AGENTS.md");
   refreshAgentsMd(projectPath, projectType, actions);
@@ -138,10 +146,15 @@ What does this workflow produce?
     safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
   }
 
-  // Phase 1.5: Harness config + briefs for ALL project types
-  generateOrAuditProjectHarness(projectPath, actions);
+  // Phase 1.5: Harness config + briefs. Harness-only under `minimal` — see
+  // STEPS_NOT_MINIMAL for why each is excluded.
+  if (isStepIncluded("generateOrAuditProjectHarness", profile)) {
+    generateOrAuditProjectHarness(projectPath, actions);
+  }
   injectEnvironmentSection(projectPath, actions);
-  generateAgentBriefsStep(projectPath, actions);
+  if (isStepIncluded("generateAgentBriefsStep", profile)) {
+    generateAgentBriefsStep(projectPath, actions);
+  }
 
   // Phase 3: Final setup
   copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
@@ -149,7 +162,10 @@ What does this workflow produce?
   runAuditSpecsFix(projectPath, actions);
   addPaiHarnessDevDep(projectPath, actions);
   createClaudeMdBridge(projectPath, actions);
-  createCiWorkflows(projectPath, actions, { force });
+  // See STEPS_NOT_MINIMAL.
+  if (isStepIncluded("createCiWorkflows", profile)) {
+    createCiWorkflows(projectPath, actions, { force });
+  }
   createGitHooks(projectPath, actions);
 
   // Leaves the tree. See STEPS_NOT_REHEARSED.
@@ -157,7 +173,7 @@ What does this workflow produce?
 
   // Phase 3.5: steps that DESCRIBE the project run last, so they describe the tree this run left (#123).
   reportExternalAdoptionStep(projectPath, actions);
-  refreshScopedRulesStep(projectPath, projectType, actions);
+  refreshScopedRulesStep(projectPath, projectType, actions, profile);
   if (projectType === "code") {
     generateCodeMapStep(projectPath, actions);
   }
