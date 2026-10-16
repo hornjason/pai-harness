@@ -7199,18 +7199,41 @@ Over `test/trajectory.test.ts` + `test/agent-timings.test.ts` (44 tests).
 
 | Mutation | Predicted | Measured |
 |---|---|---|
-| `phaseSpans` returns `[]` for everything | 3 | |
-| `phaseSpans` takes first-and-last-in-file instead of min/max | 1 | |
-| the `NOT_MINE` sentinel removed — a mutation line reads as malformed | 1 | |
-| `readTrajectory` skips an unknown `type` instead of reporting it | 1 | |
-| `readTrajectory` drops malformed lines silently | 2 | |
-| `changedFields` returns `[]` for everything | 2 | |
-| `recordStateWrite` rethrows instead of reporting | 1 | |
-| the missing-artifact branch renders an empty timeline | 1 | |
-| the phase caveat sentence deleted from the viewer | 1 | |
-| `gateLines` defaults an absent `result` to `PASS` | 1 | |
-| `timingInstruction` stops passing `--phase` | 1 | |
-| `--phase` defaults to `'unknown'` instead of being omitted | 1 | |
+| `phaseSpans` returns `[]` for everything | 3 | **2**, then 3 — see below |
+| `phaseSpans` takes last-in-file instead of max | 1 | 1 |
+| the `NOT_MINE` sentinel removed — a mutation line reads as malformed | 1 | 1 |
+| `readTrajectory` skips an unknown `type` instead of reporting it | 1 | 1 |
+| `readTrajectory` drops malformed lines silently | 2 | 2 |
+| `changedFields` returns `[]` for everything | 2 | 2 |
+| `recordStateWrite` rethrows instead of reporting | 1 | 1 |
+| the missing-artifact branch renders an empty timeline | 1 | 1 |
+| the phase caveat sentence deleted from the viewer | 1 | 1 |
+| `gateLines` defaults an absent `result` to `PASS` | 1 | 1 |
+| `timingInstruction` stops passing `--phase` | 1 | 1 |
+| `--phase` defaults to `'unknown'` instead of being omitted | 1 | 1 |
+
+None of the twelve is left in the tree; all were run and reverted.
+
+**The row that came back low, which is the one that mattered.** The first row
+measured 2 where 3 was predicted, and a row LOWER than predicted is the
+signature `.claude/rules/checks-must-be-able-to-fail.md` tells you to chase.
+The missing red was SC-1743, the viewer's phase-list test, which asserted that
+the rendered text contained `Goal` — and was satisfied by the TIMELINE row
+`agent read-issue start [Goal]`. With `phaseSpans` short-circuited it stayed
+green over a report that had no phase list in it at all.
+
+An assertion that holds vacuously, the third shape, in a test file whose
+stated subject is the ways a timeline lies. It was found by the arithmetic and
+by nothing else: the diff reads correctly, the test name describes what it
+meant to do, and the suite was green. The fix slices the `PHASES` section out
+of the rendered lines and asserts on the slice, and adds the
+no-bracket-carried-a-phase branch so the row is load-bearing in both
+directions. Re-measured: 3.
+
+Same family as the #297 self-reference trap and #484's whole-violation-list
+row — **search the slice, not the document.** Three times now in this repo a
+section-scoped claim has been satisfied by a match somewhere else in the same
+string.
 
 ### Success criteria
 
