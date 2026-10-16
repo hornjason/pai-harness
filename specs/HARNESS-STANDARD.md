@@ -6436,30 +6436,61 @@ written to report on.
 - [x] SC-1618: test/context-docs.test.ts contains [a declared doc that is not on disk is INCLUDED and labelled] — the built-ins above it already say "(if exists)"
 - [x] SC-1619: test/context-docs.test.ts contains [both authored shapes survive the schema] — the array form and the object form
 - [x] SC-1620: test/context-docs.test.ts contains [a traversing path reaches the brief, labelled external] — the `..` case the old filter dropped
+- [x] SC-1621: test/context-docs.test.ts contains [a declared path cannot write lines of its own into the brief] — BUG-439-A, and the same predicate guards the AC contextFiles that had no filtering at all
 
 ### What was broken to prove it (SC-1613..1620)
 
 Run over `test/context-docs.test.ts`, `gates/brief-assembler.test.ts` and
-`test/config-access-conformity.test.ts` — 54 tests, baseline 0 fail. Every
+`test/config-access-conformity.test.ts` — 57 tests, baseline 0 fail. Every
 count predicted before the battery ran.
 
 | Mutation | Red |
 |---|---|
-| the not-a-string arm removed | 3 of 54 |
-| the empty arm removed | 2 of 54 |
-| `external` hardcoded false | 3 of 54 |
-| `relative()` replaced by a prefix comparison | 1 of 54 — `/x/project-backup` would read as internal |
-| `missing` hardcoded false | 1 of 54 |
-| `contextDocNotes` returns nothing | 4 of 54 |
-| `contextDocNotes` reports when there is nothing to report | 4 of 54 — **was 1.** See below |
-| `contextDocLines` drops external docs — the old filter, from the other side | 2 of 54 |
-| the assembler reads the monolith directly again — defect (2) verbatim | 9 of 54 — including the CONFIG-1 ratchet, which refuses a file that has no entry; measured standalone at 1 |
-| the loader call wrapped in a `catch` — defect (3) verbatim | 1 of 54 |
-| the schema back to object-only — defect (4) verbatim | 9 of 54 |
-| the schema validates entries too | 2 of 54 — a second decider for what a doc may be, which would make the classifier's own arm unreachable |
-| a non-list `contextDocs` falls through instead of being named | 1 of 54 |
+| the not-a-string arm removed | 3 of 57 |
+| the empty arm removed | 2 of 57 |
+| `external` hardcoded false | 3 of 57 |
+| `relative()` replaced by a prefix comparison | 1 of 57 — `/x/project-backup` would read as internal |
+| `missing` hardcoded false | 1 of 57 |
+| `contextDocNotes` returns nothing | 5 of 57 |
+| `contextDocNotes` reports when there is nothing to report | 4 of 57 — **was 1.** See below |
+| `contextDocLines` drops external docs — the old filter, from the other side | 2 of 57 |
+| the assembler reads the monolith directly again — defect (2) verbatim | 10 of 57 — including the CONFIG-1 ratchet, which refuses a file that has no entry; measured standalone at 1 |
+| the loader call wrapped in a `catch` — defect (3) verbatim | 1 of 57 |
+| the schema back to object-only — defect (4) verbatim | 10 of 57 |
+| the schema validates entries too | 2 of 57 — a second decider for what a doc may be, which would make the classifier's own arm unreachable |
+| a non-list `contextDocs` falls through instead of being named | 1 of 57 |
+| BUG-439-A: `hasBriefUnsafeChars` accepts everything | 3 of 57 |
+| the unsafe class narrowed to a bare newline | 1 of 57 — `\r`, `NUL`, `ESC` and `U+2028` are all line terminators or display controls that `\n`-shaped thinking misses |
+| `buildFilesSection` stops guarding the AC `contextFiles` | 1 of 57 |
 
-None of the thirteen is left in the tree; all were run and reverted.
+None of the sixteen is left in the tree; all were run and reverted.
+
+### BUG-439-A — a path can write lines of its own into a brief
+
+Security review of the first push raised two things about this change.
+
+The first was that removing the `/` and `..` filter is a control regression.
+It is a control removal, and it is the decision recorded above — but the
+premise that it was a path control does not survive checking: the AC
+`contextFiles`, rendered twenty lines further down the same file, were
+**never filtered at all**. Absolute, traversing, anything. The old
+`contextDocs` filter covered one of two doors into the same document.
+
+The second was real and is fixed here. A brief is an agent instruction and a
+path is rendered into it inline, so an entry containing a newline writes
+whatever follows as its own line — in a document whose whole purpose is to be
+obeyed. The old filter did not stop this either: a relative path with no
+leading `/` and no `..` passes it and can still contain `\n`. This is not a
+control #439 removed; it is one neither version had.
+
+`hasBriefUnsafeChars` is the one predicate, and it guards BOTH doors.
+`U+2028` and `U+2029` are in its class because they are line terminators that
+`\n`-shaped thinking misses.
+
+The assertion is per LINE, not per substring. The report quotes the offender
+— it has to, to be actionable — and a JSON-escaped `\n` on one blockquote
+line is not a heading. What must never happen is a line of the brief
+*starting* with text the config supplied.
 
 **The row that came back low.** `contextDocNotes` opened with
 `if (verdicts.length === 0) return []`, and that was a second decider

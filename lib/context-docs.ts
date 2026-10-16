@@ -40,6 +40,31 @@
 import { existsSync } from "fs";
 import { isAbsolute, relative, resolve } from "path";
 
+/**
+ * Characters a path must not carry into a brief (BUG-439-A).
+ *
+ * A brief is an agent instruction and a path is rendered into it inline, so
+ * an entry containing a newline writes whatever follows as its own line, in a
+ * document whose whole purpose is to be obeyed. The old filter did not stop
+ * this: a relative path with no leading `/` and no `..` passed it and could
+ * still contain `\n`. This is not a control #439 removed — it is one neither
+ * version had, found by security review of the first push.
+ *
+ * `\u2028` and `\u2029` are in the class because they are line terminators
+ * that `\n`-shaped thinking misses.
+ */
+const BRIEF_UNSAFE = /[\u0000-\u001f\u007f\u2028\u2029]/;
+
+/**
+ * One predicate, two callers: `contextDocs` here and the AC `contextFiles`
+ * rendered by `gates/brief-assembler.ts`. `contextFiles` had no filtering of
+ * any kind, which is also why the old `contextDocs` filter was never a path
+ * control — it covered one of two doors.
+ */
+export function hasBriefUnsafeChars(value: string): boolean {
+  return BRIEF_UNSAFE.test(value);
+}
+
 export type ContextDocVerdict =
   | {
       kind: "included";
@@ -65,6 +90,13 @@ export function classifyContextDoc(projectRoot: string, declared: unknown): Cont
   const trimmed = declared.trim();
   if (trimmed === "") {
     return { kind: "rejected", declared, reason: "empty" };
+  }
+  if (hasBriefUnsafeChars(trimmed)) {
+    return {
+      kind: "rejected",
+      declared: JSON.stringify(trimmed),
+      reason: "contains a newline or control character, which would write its own lines into the brief",
+    };
   }
 
   const resolved = isAbsolute(trimmed) ? resolve(trimmed) : resolve(projectRoot, trimmed);

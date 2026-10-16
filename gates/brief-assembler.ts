@@ -3,7 +3,8 @@ import { join, basename } from "path";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
 import { tryLoadRungateConfig } from "../lib/config-loader";
 import {
-  classifyContextDocs, contextDocLines, contextDocNotes, type ContextDocVerdict,
+  classifyContextDocs, contextDocLines, contextDocNotes, hasBriefUnsafeChars,
+  type ContextDocVerdict,
 } from "../lib/context-docs";
 
 // ── Gate contract interfaces (SC-373) ─────────────────────────────────────
@@ -210,6 +211,13 @@ function buildFilesSection(contextFiles: Array<{ path: string; reason: string }>
     lines.push("- (no context files specified)");
   } else {
     for (const cf of contextFiles) {
+      // BUG-439-A, and the same predicate `contextDocs` uses. These paths
+      // come from the AC schema and had no filtering of any kind, so a
+      // newline in one wrote its own lines into an agent instruction.
+      if (hasBriefUnsafeChars(cf.path) || hasBriefUnsafeChars(cf.reason ?? "")) {
+        lines.push(`- (REJECTED ${JSON.stringify(cf.path)}: contains a newline or control character)`);
+        continue;
+      }
       lines.push(`- ${cf.path}${cf.reason ? " — " + cf.reason : ""}`);
     }
   }
