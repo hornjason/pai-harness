@@ -225,7 +225,16 @@ describe("#60 SC-3: state writes are recorded at the one door they go through", 
     // write; it must never be able to stop one. `recordStateWrite` is called
     // AFTER `writeState` in gates/orchestrator.ts and cannot throw here even
     // when the destination is impossible.
-    const impossible = join(DIR, "no-such-dir\u0000", "workflow-state.json");
+    //
+    // The impossible destination is a directory path whose parent is a FILE,
+    // so `mkdirSync` throws ENOTDIR. A NUL byte in the path does the same job
+    // and was the first draft — but the thrown message quotes the path, so the
+    // stderr line carries a real NUL, every downstream `grep` over the suite's
+    // output declares the stream binary, and a mutation battery reading its
+    // own counts gets nothing. A test must not corrupt the output of the run
+    // that contains it.
+    writeFileSync(join(DIR, "not-a-dir"), "");
+    const impossible = join(DIR, "not-a-dir", "nested", "workflow-state.json");
     expect(() => recordStateWrite(impossible, { a: 1 }, { a: 2 })).not.toThrow();
     expect(recordStateWrite(impossible, { a: 1 }, { a: 2 })).toBeNull();
 
