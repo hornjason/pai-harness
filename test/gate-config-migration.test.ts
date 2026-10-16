@@ -159,6 +159,19 @@ describe("#311: the gate's config read has three answers - not two", () => {
       // a reader that gave up on the whole block.
       expect(env.devStart).toBe("npm run dev");
       expect(livenessDev(readGateConfig(root))?.apiBase).toBeUndefined();
+
+      // And the arm that makes the two spellings distinguishable at all. A
+      // reader doing `dev.apiBase || ""` produces exactly the same answers as
+      // `apiUrl || ""` for every fixture above — `null || ""` is `""` either
+      // way — so without a top-level `apiUrl`, every assertion in this test
+      // holds just as well against the raw read it exists to forbid.
+      const normalised = directory({
+        ...BODY,
+        apiUrl: "http://localhost:9999",
+        dev: { ...BODY.dev, apiBase: undefined },
+      });
+      expect(proveEnvironment(normalised).apiBase).toBe("http://localhost:9999");
+      cleanup(normalised);
     } finally {
       cleanup(root);
     }
@@ -241,6 +254,9 @@ describe("#311: the gate's config read has three answers - not two", () => {
     // config is worse than one that reports — but none of them may answer
     // the same thing a well-formed empty project answers without saying so.
     const x = broken();
+    const errors: string[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
     try {
       // The reading itself carries the distinction...
       expect(readGateConfig(x).status).toBe("unreadable");
@@ -250,12 +266,24 @@ describe("#311: the gate's config read has three answers - not two", () => {
       expect(() => typeCheckCommand({ projectRoot: x })).not.toThrow();
       expect(() => loadAndValidateHarness(x)).not.toThrow();
 
+      // Not throwing is only half of it. For these three the WARN is the
+      // ENTIRE difference between `unreadable` and `absent` — each returns the
+      // same empty answer either way — so a reading that distinguished them
+      // and a reader that said nothing would be two names for one behaviour,
+      // and no test of the return value could tell them apart.
+      expect(errors.length, "a corrupt config passed three readers in silence").toBe(3);
+      for (const where of ["prove gate environment", "type check", "ceremony overrides"]) {
+        expect(errors.some(e => e.includes(where)), `no WARN named ${where}`).toBe(true);
+      }
+      expect(errors.every(e => e.includes("UNMEASURED"))).toBe(true);
+
       // `shouldRebuildContainer` is the exception and deliberately so: it
       // uses the loader directly, so a corrupt config reaches the scope gate
       // as a throw. ADR-001 D2 — a malformed config is never a missing
       // config — and the scope gate is the right place to find out.
       expect(() => shouldRebuildContainer(x)).toThrow();
     } finally {
+      console.error = realError;
       cleanup(x);
     }
   });
