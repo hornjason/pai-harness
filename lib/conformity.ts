@@ -18,7 +18,7 @@ import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
-import { tsconfigVerdict } from "./typescript-project";
+import { tsconfigVerdict, TS_SOURCE_DIRS } from "./typescript-project";
 import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
 
 // ── Shared utilities ────────────────────────────────────────
@@ -2871,8 +2871,43 @@ export function classifyConfigSites(source: string): ConfigSite[] {
   return sites;
 }
 
-/** Directories CHECK-1 walks. Tests and `test/` are excluded by ADR-002 D4. */
-const CONFIG_SCAN_DIRS = ["lib", "gates", "scripts", "hooks", "generators"];
+/**
+ * `workflows/` is CONFIG-2's, and it is the ONLY directory CONFIG-1 declines
+ * from the set of places this project believes TypeScript lives (#492).
+ *
+ * `readConfigAccessRatchet` scopes the two ratchets separately precisely so
+ * the checks do not demand the removal of each other's entries, so CONFIG-1
+ * walking `workflows/` would make each one's green require the other's red.
+ */
+export const CONFIG_1_DECLINES = new Set(["workflows"]);
+
+/**
+ * Directories CHECK-1 walks. Tests and `test/` are excluded by ADR-002 D4.
+ *
+ * DERIVED from `TS_SOURCE_DIRS` rather than written out again, because the
+ * two lists silently diverged and that is #492. The hand-written version was
+ * `["lib", "gates", "scripts", "hooks", "generators"]` while
+ * `TS_SOURCE_DIRS` was `["src", "lib", "scripts", "gates", "hooks",
+ * "workflows"]`. **`src/` was in the second and not the first**, so a
+ * consumer on the single most common layout outside this repo got a CONFIG-1
+ * that walked zero files over a project that might be full of direct config
+ * reads. Measured on one consumer: PASS, having scanned 36 of 426
+ * TypeScript files, 390 of them in `src/`.
+ *
+ * Deriving it means a directory added to one list cannot fail to reach the
+ * other without someone writing it into `CONFIG_1_DECLINES` and saying why.
+ * `test/config-access-conformity.test.ts` asserts that relationship, because
+ * a derivation nothing checks is a convention.
+ *
+ * **This is not the whole of #492, and on its own it would be the wrong
+ * fix.** A hardcoded list being wrong is the defect; `src/` was only the
+ * instance. The coverage shortfall reported further down is what survives
+ * the next directory nobody thought of, and its fixture deliberately uses a
+ * name no list will ever contain.
+ */
+export const CONFIG_SCAN_DIRS = [
+  ...new Set([...TS_SOURCE_DIRS, "generators"]),
+].filter(d => !CONFIG_1_DECLINES.has(d));
 
 /** The one module allowed to read the config. ADR-002 D1. */
 const CONFIG_LOADER = "lib/config-loader.ts";
@@ -3325,6 +3360,37 @@ export interface SourceEvidence {
    * have no project source. What is not correct is saying nothing is there.
    */
   skipped: string[];
+  /**
+   * Every file the walk counted as project source, not just the first three
+   * (#492).
+   *
+   * `examples` is capped at 3 because a refusal that names four hundred
+   * files is not a message. A COUNT is a different thing and the check
+   * needs both: "CONFIG-1 read 36 files" is uninterpretable on its own.
+   *
+   * It counts ONLY source outside `CONFIG_SCAN_DIRS`, and deliberately does
+   * not try to be a denominator for `filesScanned`. The two walks do not
+   * agree about what source is inside a scanned directory and are not
+   * supposed to: `walkSources` reads `lib/x.test.ts`, `lib/types.d.ts` and
+   * `lib/tests/sneaky.ts`, all of which this walk declines, because the
+   * comment on `walkSources` explains that narrowing the SCAN to match the
+   * walk silently reduced enforcement. So `sourceCount - filesScanned`
+   * would be a subtraction across two definitions, and could go negative.
+   * One number, one walk, no arithmetic between them.
+   */
+  unscannedSourceCount: number;
+  /**
+   * Top-level directories holding source that `CONFIG_SCAN_DIRS` does not
+   * walk — `"."` for a source file at the root (#492).
+   *
+   * This is the half of #492 that survives the fix. Adding `src/` to the
+   * scan list closes the instance; this closes the CLASS, because the defect
+   * is that a hardcoded list can be wrong and nothing notices. A consumer
+   * who keeps their code in `domain/`, `packages/`, `app/` or `internal/`
+   * gets told which directory went unread instead of a PASS that means
+   * "clean in the five places I happened to look".
+   */
+  unscannedDirs: string[];
 }
 
 /**
@@ -3380,6 +3446,9 @@ const SCRIPT_LIKE = /\.(py|rb|sh|bash|zsh|fish|pl|php|lua|r|go|rs|java|kt|swift|
 
 export function projectSourceEvidence(root: string): SourceEvidence {
   const examples: string[] = [];
+  // #492: the COUNT and the WHERE, alongside the capped sample.
+  let unscannedSourceCount = 0;
+  const unscannedDirs = new Set<string>();
   const unreadable: string[] = [];
   const skipped: string[] = [];
   // Symlinked source directories ARE followed — `packages/core` behind
@@ -3395,7 +3464,10 @@ export function projectSourceEvidence(root: string): SourceEvidence {
   try {
     rootReal = realpathSync(root);
   } catch {
-    return { found: false, examples: [], unreadable: ["."], skipped: [] };
+    return {
+      found: false, examples: [], unreadable: ["."], skipped: [],
+      unscannedSourceCount: 0, unscannedDirs: [],
+    };
   }
   const insideProject = (p: string) => p === rootReal || p.startsWith(rootReal + sep);
 
@@ -3580,6 +3652,15 @@ export function projectSourceEvidence(root: string): SourceEvidence {
             continue;
           }
         }
+        // The top-level segment, because CONFIG_SCAN_DIRS is matched at
+        // the top level. `.` is a source file sitting at the root, which
+        // the scan does not walk either — `index.ts` is an ordinary shape
+        // and leaving it out would be the same blind spot one level up.
+        const top = childRel.includes("/") ? childRel.slice(0, childRel.indexOf("/")) : ".";
+        if (!CONFIG_SCAN_DIRS.includes(top)) {
+          unscannedDirs.add(top);
+          unscannedSourceCount++;
+        }
         if (examples.length < 3) examples.push(childRel);
       }
     }
@@ -3613,7 +3694,14 @@ export function projectSourceEvidence(root: string): SourceEvidence {
                              // default on purpose and the truncation cuts it
                              // before anything that could hold code.
   skipped.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-  return { found: examples.length > 0, examples, unreadable, skipped };
+  return {
+    found: examples.length > 0,
+    examples,
+    unreadable,
+    skipped,
+    unscannedSourceCount,
+    unscannedDirs: [...unscannedDirs].sort(),
+  };
 }
 
 /**
@@ -3683,6 +3771,49 @@ function summariseDeclines(skipped: string[], sample = 3): string {
       return `${kind}: ${paths.length}` + (paths.length > sample ? ` (${shown}, …)` : ` (${shown})`);
     })
     .join("; ");
+}
+
+/**
+ * What CONFIG-1 did not read, when it read something (#492).
+ *
+ * `null` when the scan covered every source file the walk found — the
+ * normal case, which must stay silent or the message becomes one more line
+ * nobody reads.
+ *
+ * ## Why this exists on top of adding `src/` to the scan list
+ *
+ * Adding `src/` fixes the INSTANCE. This fixes the class, and the class is
+ * what #492 is actually about: a hardcoded list of directories can be
+ * wrong, and until now nothing noticed. A consumer who keeps their code in
+ * `domain/`, `packages/`, `app/` or `internal/` would have hit the
+ * identical defect the week after `src/` was added, and the only signal
+ * would have been a PASS.
+ *
+ * The regression fixture uses a directory named `domain` for exactly that
+ * reason — a name no list will ever contain, so the case cannot be
+ * satisfied by extending the list. That is the fifth failure shape (#519)
+ * applied in advance: the wrong fix here is "add src and move on", and it
+ * is the cheap one.
+ *
+ * ## Why it reports both numbers
+ *
+ * "CONFIG-1 read 36 files" is uninterpretable. 36 of 426 is the finding.
+ * The directory names are what make it actionable — without them a consumer
+ * knows the check is partial and has nowhere to go.
+ */
+export function coverageShortfall(scan: ConfigAccessScan, evidence: SourceEvidence): string | null {
+  if (scan.filesScanned === 0) return null; // the empty-scan refusal owns this case
+  const unread = evidence.unscannedSourceCount;
+  if (unread === 0) return null;
+  const where = evidence.unscannedDirs.map(d => (d === "." ? "the project root" : `${d}/`)).join(", ");
+  return (
+    `UNMEASURED: CONFIG-1 read ${scan.filesScanned} file(s), and ${unread} more source ` +
+    `file(s) live in directories it does not walk — ${where} — so a direct config read ` +
+    `there is invisible to it. A PASS here means "clean in ` +
+    `${CONFIG_SCAN_DIRS.map(d => `${d}/`).join(", ")}", not "clean". ` +
+    `Nothing is necessarily wrong with this project; the check is partial, and a partial ` +
+    `check reporting a clean result is indistinguishable from a complete one (ADR-002 D4).`
+  );
 }
 
 export function unmeasuredScanReason(
@@ -3776,7 +3907,7 @@ export function runConfigAccessValidation(root: string) {
         scan,
         evidence,
         "CONFIG-1",
-        "TypeScript or JavaScript in lib/, gates/, scripts/, hooks/ or generators/",
+        `TypeScript or JavaScript in ${CONFIG_SCAN_DIRS.map(d => `${d}/`).join(", ")}`,
       );
       if (unmeasured) {
         addFinding({
@@ -3786,6 +3917,23 @@ export function runConfigAccessValidation(root: string) {
           message: unmeasured,
         });
         return;
+      }
+      // #492: the scan read SOME files, and that is where nothing was
+      // looking. Every guard above — the waiver, the source walk, the
+      // decline list — is reached only when `filesScanned === 0`, so ONE
+      // clean file in a scanned directory makes the whole apparatus
+      // unreachable. Measured on one consumer: PASS, having read 36 of 426
+      // TypeScript files, because `scripts/` is non-empty and the 390 files
+      // in `src/` were never walked.
+      //
+      // Recorded rather than failed. The consumer has done nothing wrong —
+      // their layout is ordinary and it is this check that cannot see it —
+      // and a FAIL they cannot act on is a FAIL they will switch off. But
+      // `0`, `{}`, `null` and `SKIP` are indistinguishable from success and
+      // so is a PASS over 8% of a tree, which is why it is not silence.
+      const shortfall = coverageShortfall(scan, evidence);
+      if (shortfall) {
+        addFinding({ ruleId: "CONFIG-1", severity: "WARN", file: "", message: shortfall });
       }
       const violations = configAccessViolationRecords(
         scan,
@@ -3826,7 +3974,7 @@ export function runPromptConfigAccessValidation(root: string) {
       // at the point it was read (#476).
       const unmeasured = unmeasuredScanReason(
         scan,
-        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] },
+        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] },
         "CONFIG-2",
         "workflows/ directory",
       );

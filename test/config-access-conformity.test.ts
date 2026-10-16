@@ -43,6 +43,9 @@ import { dirname, join } from "path";
 import {
   configAccessViolations,
   configAccessViolationRecords,
+  coverageShortfall,
+  CONFIG_SCAN_DIRS,
+  CONFIG_1_DECLINES,
   readConfigAccessRatchet,
   scanConfigAccess,
   projectSourceEvidence,
@@ -50,7 +53,7 @@ import {
   unmeasuredScanReason,
   type ConfigAccessScan,
 } from "../lib/conformity";
-import { isTypeScriptProject } from "../lib/typescript-project";
+import { isTypeScriptProject, TS_SOURCE_DIRS } from "../lib/typescript-project";
 
 const REPO = join(import.meta.dir, "..");
 const CONFORMITY = join(REPO, "lib", "conformity.ts");
@@ -425,9 +428,15 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     expect(got.violations, "a content project is not in violation").toEqual([]);
     expect(got.unmeasured, "silence is indistinguishable from a pass").not.toBeNull();
     expect(got.unmeasured).toContain("UNMEASURED");
-    expect(got.unmeasured, "the skip does not say what it skipped over").toContain(
-      "TypeScript or JavaScript in lib/",
-    );
+    // Asserted against the DERIVED list rather than a hardcoded prefix.
+    // This pinned the literal `TypeScript or JavaScript in lib/`, which
+    // broke the day `src/` joined the scan (#492) — a test pinning the
+    // contents of a list it does not own goes stale on every correct change
+    // to that list, and the thing it means to assert is that the message
+    // names where the check looked.
+    for (const d of CONFIG_SCAN_DIRS) {
+      expect(got.unmeasured, `the skip does not say it skipped over ${d}/`).toContain(`${d}/`);
+    }
     // This asserted the literal sentence `no source files of any kind were
     // found anywhere in the tree`, and sec-500's review of #500 is that the
     // walk never established it: it declines build output, dot directories,
@@ -460,11 +469,21 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
   });
 
   test("case 3: a project with TypeScript the walk never reached still REFUSES", () => {
-    // The case deleting the refusal breaks. `src/` is a TypeScript source
-    // directory and is NOT one of CONFIG_SCAN_DIRS, so the walk comes back
-    // empty over a project that is full of TypeScript. The scan read nothing
-    // and there WAS something to read, which is what the refusal is for.
-    const root = project({ "src/index.ts": READS_CONFIG });
+    // The case deleting the refusal breaks: the scan read nothing and there
+    // WAS something to read, which is what the refusal is for.
+    //
+    // **The fixture moved from `src/` to `domain/`, and the move IS #492
+    // landing.** #492 cited this very case as its reproduction — a project
+    // whose only source is `src/index.ts` got the empty-scan refusal rather
+    // than the violation that was really there. `src/` is now scanned, so
+    // that fixture no longer reaches this branch, and the violation it
+    // should always have reported is asserted by "#492: `src/`
+    // specifically" below.
+    //
+    // Repointed rather than deleted. The branch is still real for any
+    // directory the list does not name, which is the half of #492 that no
+    // list can close.
+    const root = project({ "domain/index.ts": READS_CONFIG });
     const got = config1(root);
     expect(got.unmeasured, "an unreached source tree was waived as absent").toBeNull();
     expect(got.violations).toHaveLength(1);
@@ -485,8 +504,8 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     rmSync(root, { recursive: true, force: true });
   });
 
-  const noCode = { found: false, examples: [], unreadable: [], skipped: [] };
-  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [], skipped: [] };
+  const noCode = { found: false, examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] };
+  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] };
 
   test("the two questions are separate, and the binding needs both answers", () => {
     // `filesScanned` answers "did I read anything"; `sourcesPresent` answers
@@ -513,13 +532,13 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // one that has the directory and read nothing out of it refuses.
     const root = project({ "README.md": "# docs" });
     expect(
-      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
     ).toContain("UNMEASURED");
 
     mkdirSync(join(root, "workflows"), { recursive: true });
     const withDir = scanPromptConfigAccess(root);
     expect(
-      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [], unscannedSourceCount: 0, unscannedDirs: [] }, "CONFIG-2", "workflows/ directory"),
       "an empty workflows/ directory was waived",
     ).toBeNull();
     expect(configAccessViolations(withDir, {}, "CONFIG-2")[0]).toContain("read NO files");
@@ -638,11 +657,16 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
    * one level up, and would pass over any producer at all.
    */
   test("#517: a violation about the SCAN reports no file, not the word `the`", () => {
-    // `src/` is not in CONFIG_SCAN_DIRS, so the scan reads zero files while
-    // the source walk finds code — the project shape #492 is about, and the
-    // only one that reaches this refusal. `filesScanned === 0` with
+    // `domain/` is not in CONFIG_SCAN_DIRS, so the scan reads zero files
+    // while the source walk finds code — the project shape #492 is about,
+    // and the only one that reaches this refusal. `filesScanned === 0` with
     // `found === true` is not waivable, so it falls through to a FAIL.
-    const root = project({ "src/app.ts": READS_CONFIG, "README.md": "# d" });
+    //
+    // This said `src/` until #492 added it to the scan list. `domain/` is a
+    // name no list will ever hold, which is the same reason #492's own
+    // fixtures use it: a case pointed at `src/` is satisfied by the cheap
+    // repair of extending the list, and this one must not be.
+    const root = project({ "domain/app.ts": READS_CONFIG, "README.md": "# d" });
     const got = config1(root);
     expect(got.red, "the refusal did not fire, so there is no finding to inspect").toBe(true);
     expect(got.violations.join("\n"), "a different violation fired").toContain("read NO files");
@@ -830,6 +854,170 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     expect(records.length, "the zero-bytes refusal did not fire").toBe(1);
     expect(records[0].message, "a different refusal fired").toContain("none had any content");
     expect(records[0].file, "the file field holds a count rendered as a path").toBe("");
+  });
+
+  /**
+   * #492: a scan that read SOME files says how many it did not.
+   *
+   * #476 and #500 hardened one branch: `filesScanned === 0`. Everything
+   * there — the waiver, `projectSourceEvidence`, `unreadable`, the decline
+   * list — is reached only when the scan read nothing at all. This block is
+   * the other branch, where nothing asked what FRACTION was read.
+   *
+   * Measured on DailyBriefDashboard: CONFIG-1 reports PASS having scanned 36
+   * of 426 TypeScript files. 390 live in `src/`, which was not in
+   * `CONFIG_SCAN_DIRS`, and the empty-scan refusal never fires because
+   * `scripts/` makes `filesScanned` non-zero.
+   *
+   * Reduced to the trees below the defect is one file wide: the same 61
+   * source files and the same direct config read, and ONE clean file in a
+   * scanned directory turns a correct refusal into zero findings.
+   *
+   * **The fixture deliberately uses `domain/`, not `src/`.** Adding `src` to
+   * the scan list does not make these pass, and that is the point: the
+   * defect is that a hardcoded list can be wrong and nothing notices, so the
+   * directory is a name no list will ever contain. That is #519's fifth
+   * shape applied in advance — the wrong fix here is "add src and move on",
+   * and it is the cheap one.
+   *
+   * Fixture and framing by sec-485, who built it while reproducing the
+   * scan-ratio contrast and parked it rather than guessing at the fix.
+   */
+  describe("#492: a scan that read SOME files says how many it did not", () => {
+    /** A name no scan list will ever contain. See the note above. */
+    const UNSCANNED_DIR = "domain";
+
+    const SRC_ONLY: Record<string, string> = {
+      [`${UNSCANNED_DIR}/config.ts`]: READS_CONFIG,
+      ...Object.fromEntries(
+        Array.from({ length: 60 }, (_, i) => [`${UNSCANNED_DIR}/m${i}.ts`, `export const c${i} = ${i};\n`]),
+      ),
+    };
+    /** One clean file in a directory CONFIG-1 does walk. The whole difference. */
+    const CLEAN_SCANNED = { "scripts/build.ts": "export const ok = 1;\n" };
+    const SRC_COUNT = Object.keys(SRC_ONLY).length;
+    const TOTAL = SRC_COUNT + Object.keys(CLEAN_SCANNED).length;
+
+    /**
+     * An honest ratio carries the denominator. It may say "1 of 62" or
+     * "61 unread" — this must not pin prose, so either number counts and the
+     * directory name is asserted separately.
+     */
+    const namesTheDenominator = (s: string) => s.includes(String(TOTAL)) || s.includes(String(SRC_COUNT));
+
+    test("the fixture is a real attack, and the clean file is really clean", () => {
+      // The self-guard. Every case below goes green if a later edit quietly
+      // fills in what makes this an attack — the violating file stops
+      // violating, or the clean file starts. Then the cases pass over a
+      // check that never improved, which is this repo's defining defect
+      // wearing a fixture.
+      expect(SRC_ONLY[`${UNSCANNED_DIR}/config.ts`], "the violating file stopped violating")
+        .toBe(READS_CONFIG);
+      expect(Object.values(CLEAN_SCANNED).join(""), "the clean file grew a config read")
+        .not.toContain("rungate.json");
+      expect(SRC_COUNT, "the fixture shrank to a size that proves nothing").toBeGreaterThan(10);
+      expect(
+        scanConfigAccess(project({ ...SRC_ONLY, ...CLEAN_SCANNED })).filesScanned,
+        `${UNSCANNED_DIR}/ is being scanned now, so these cases no longer test anything`,
+      ).toBe(1);
+    });
+
+    test("the violation is real: the SAME file in a scanned directory is caught", () => {
+      // The positive control, which makes the fixture an attack by
+      // measurement rather than by assertion. Without it, "the other case is
+      // silent" could mean the file was never a violation at all.
+      const got = config1(project({ ...CLEAN_SCANNED, "lib/config.ts": READS_CONFIG }));
+      expect(got.violations.join("\n"), "the fixture's config read is not detected anywhere")
+        .toContain("lib/config.ts");
+    });
+
+    test("the baseline still holds: no scanned file at all refuses", () => {
+      // `filesScanned === 0`, so #476's refusal fires. This branch was
+      // already correct, and it is here so the next case cannot be read as
+      // "CONFIG-1 refuses nothing".
+      const got = config1(project(SRC_ONLY));
+      expect(got.violations.join("\n") + (got.unmeasured ?? ""), "an unscanned project passed silently")
+        .not.toBe("");
+    });
+
+    test("#492: one clean scanned file must not buy silence", () => {
+      // The defect at its narrowest. Identical to the case above plus
+      // `scripts/build.ts`, which contains nothing. `filesScanned` goes
+      // 0 -> 1, the refusal is never consulted, and 61 files holding a live
+      // config read are never looked at.
+      const got = config1(project({ ...SRC_ONLY, ...CLEAN_SCANNED }));
+      expect(
+        got.violations.length + (got.unmeasured ? 1 : 0),
+        `${SRC_COUNT} unread files holding a config read, and the check recorded nothing`,
+      ).toBeGreaterThan(0);
+    });
+
+    test("#492: and it says what it did not read", () => {
+      // Split from the case above on purpose: "refuses" and "refuses
+      // informatively" are different properties, and a fix that refuses
+      // without a count should turn exactly one of these red, not both.
+      const got = config1(project({ ...SRC_ONLY, ...CLEAN_SCANNED }));
+      const said = got.violations.join("\n") + (got.unmeasured ?? "");
+      expect(namesTheDenominator(said), `the refusal does not say how many of the ${TOTAL} files it read`)
+        .toBe(true);
+      expect(said, "the refusal does not name the directory it never walked")
+        .toContain(UNSCANNED_DIR);
+    });
+
+    test("#492 cost: a project fully inside the scanned directories stays SILENT", () => {
+      // The direction a new warning goes wrong in. A shortfall reported on
+      // a project with no shortfall is a line every consumer learns to
+      // ignore, and then the real one is invisible too.
+      const got = config1(project({ "lib/clean.ts": "export const ok = 1;\n", "README.md": "# d" }));
+      expect(got.unmeasured, `a fully-scanned project was told its scan was partial: ${got.unmeasured}`)
+        .toBeNull();
+      expect(got.violations, "a clean project reported violations").toEqual([]);
+    });
+
+    test("#492: `src/` specifically, because that is the instance that was reported", () => {
+      // Adding `src` to the list is not the whole fix, but it IS half of it,
+      // and the half a consumer feels. A direct read in `src/` must now be
+      // reported as the violation it is, rather than as an empty scan.
+      //
+      // **The first version of this case was vacuous, and the battery is
+      // what said so.** It asserted only `toContain("src/index.ts")`, and
+      // reverting CONFIG_SCAN_DIRS to the hardcoded list left it GREEN —
+      // predicted 2 red, measured 1. The empty-scan refusal names unread
+      // source in its own message ("This project DOES contain source —
+      // src/index.ts — none of it in the directories this check reads"), so
+      // the path was satisfied by the refusal the fix exists to replace.
+      // A fixture reaching the assertion by a route that bypasses the
+      // feature, in the commit removing one.
+      //
+      // So the case now names the VIOLATION and refuses the refusal.
+      const got = config1(project({ "src/index.ts": READS_CONFIG, "README.md": "# d" }));
+      const said = got.violations.join("\n");
+      expect(said, "a direct config read in src/ is still invisible").toContain("src/index.ts");
+      expect(said, "src/ is named, but as unread source rather than as a violation")
+        .toContain("direct config access site(s)");
+      expect(said + (got.unmeasured ?? ""), "src/ is still being reported as an unscanned directory")
+        .not.toContain("read NO files");
+    });
+
+    test("#492: the two directory lists cannot diverge again without saying so", () => {
+      // The guard on the derivation. `src/` fell through because
+      // CONFIG_SCAN_DIRS was written out by hand beside TS_SOURCE_DIRS and
+      // nothing compared them. Now the only way to keep a directory out of
+      // CONFIG-1 is to name it in CONFIG_1_DECLINES, which is one line and
+      // has to be justified in review.
+      const missing = TS_SOURCE_DIRS.filter(
+        d => !CONFIG_SCAN_DIRS.includes(d) && !CONFIG_1_DECLINES.has(d),
+      );
+      expect(missing, `TypeScript lives in ${missing.join(", ")} but CONFIG-1 does not walk it`)
+        .toEqual([]);
+      // And the declension is real rather than empty — `workflows/` is
+      // CONFIG-2's, and CONFIG-1 walking it would make each check's green
+      // require the other's red.
+      expect(CONFIG_SCAN_DIRS, "CONFIG-1 started walking CONFIG-2's territory")
+        .not.toContain("workflows");
+      expect([...CONFIG_1_DECLINES], "the exclusion set was emptied, so the guard asserts nothing")
+        .toEqual(["workflows"]);
+    });
   });
 });
 
@@ -1344,15 +1532,27 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     // reached it. A declarations-only package — `types/`, a DefinitelyTyped
     // style project — is a real shape, and it was the one skip class with
     // no case at all.
-    const root = project({ "src/types.d.ts": READ, "README.md": "# docs" });
+    //
+    // The fixture moved from `src/` to `types/` when #492 put `src/` into
+    // CONFIG_SCAN_DIRS. `walkSources` reads any `.ts`, `.d.ts` included —
+    // deliberately, per its own comment, because narrowing the SCAN to
+    // match this walk silently reduced enforcement. So a `.d.ts` in a
+    // scanned directory now makes `filesScanned` non-zero and the waiver is
+    // never reached, which is correct behaviour and the wrong tree for
+    // asserting how the EVIDENCE walk classifies a declaration file.
+    //
+    // `types/` keeps the case pointed at the question it was written for.
+    // A declarations-only package is the shape it is about, and `types/` is
+    // what one is actually called.
+    const files = { "types/types.d.ts": READ, "README.md": "# docs" };
+    const root = project(files);
     const e = projectSourceEvidence(root);
     expect(e.found, "a .d.ts became project source").toBe(false);
     expect(
       e.skipped.some(x => x.includes("types.d.ts")),
       `skipped was [${e.skipped.join(", ")}]`,
     ).toBe(true);
-    expect(waiverFor({ "src/types.d.ts": READ, "README.md": "# docs" }))
-      .toContain("type declarations");
+    expect(waiverFor(files)).toContain("type declarations");
   });
 
   test("N-1: the entry that explains the waiver is not truncated out by boilerplate", () => {
