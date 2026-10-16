@@ -157,16 +157,26 @@ Measured, with dates. Update this section at the same time as `PROJECT-STATE.md`
 than narrated: `test/distribution-standing.test.ts` reads both versions from
 this line, compares the first to `package.json` and the second to the npm
 registry, and goes red when either drifts. Bumping `package.json` without
-publishing turns it red, which is the state this line records today.
+updating this line turns it red, which is what makes a release a two-commit
+operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-15)** — tree `0.4.0`, published `rungate@0.4.0`.
+- **Distribution standing (2026-10-16)** — tree `0.4.1`, published `rungate@0.4.0`.
 
-**The gap is closed again.** `v0.4.0` was cut on 2026-10-15 and the registry
-serves it; `npm view rungate dist-tags` returns `{"latest":"0.4.0"}`. The
-window between the bump and the publish was recorded in this line rather
-than rounded off, and the guard closed it: the moment the registry moved,
-`test/distribution-standing.test.ts` went red against the stale number and
-stayed red until this edit.
+**The gap is open on purpose, and this line is the record of it.** The tree
+was bumped to `0.4.1` in the commit `v0.4.1` tags; the registry still serves
+`0.4.0` until that tag's job publishes. Recording the window rather than
+rounding it off is what lets the release job's own `bun test` run green on a
+tree whose version nobody can install yet — and it is also what makes the
+next edit mandatory: when the registry moves,
+`test/distribution-standing.test.ts` goes red against `0.4.0` and stays red
+until the published number here is updated. That is the same cycle `0.4.0`
+went through on 2026-10-15.
+
+**Why `0.4.1` is a patch.** Both commits past `v0.4.0` are fixes with no
+observable interface change. #446 added four already-existing `scripts/`
+paths to `files[]`; #445 removed a cause the postflight could not establish
+from its own refusal text. Nothing was added to or removed from the public
+surface, so a patch is what this is.
 
 **What the guard still cannot see, and #446 is the proof.** Version standing
 says the registry serves the same number the tree carries. It says nothing
@@ -179,7 +189,9 @@ modules were unimportable, through two releases, with this line green.
 
 So "tree and registry agree" was true and the distribution was still broken.
 `test/package-closure.test.ts` adds the missing half: every relative import in
-a published file must resolve to another published file.
+a published file must resolve to another published file. `0.4.1` is the first
+release that carries both the fix and the check — until it lands, the newest
+installable rungate is still the broken one.
 
 **Why 0.4.0 is a minor and not a patch.** Three of the 29 commits past
 `v0.3.0` are observable behaviour changes, not fixes. #429/#430 changed
