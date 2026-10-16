@@ -7732,6 +7732,50 @@ second half matters on its own, because a loop that spawns nothing leaves them
 all PENDING and warns, which reads as a clean run to anything counting only
 failures.
 
+### Mutations, predicted before running and measured after
+
+Over `test/consumer-fixture-gates.test.ts` (9 tests). Most of these mutate a
+FIXTURE rather than code, because the thing under test is whether the fixtures
+are load-bearing.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the harness fixture loses `environments.local` | 1 | 1 |
+| a consumer name is re-added to a fixture | 1 | 1 |
+| a token is pasted into a fixture | 1 | 1 |
+| a threshold is weakened back to `>= 1` | 1 | 1 |
+| an OUTCOME AC reaches for a server | 1 | 1 |
+| `proveEnvironment` reads the un-normalised `dev.apiBase` | 1 | 1 |
+| `proveEnvironment` always returns the empty sentinel | 1 | **0**, then 1 — see below |
+| the PENDING reset is removed from the test | 1 | 1 |
+| `EVIDENCE_CWD` no longer points at the built world | 1 | 1 |
+| the AC hash covers verdict and evidence too | 1 | 1 |
+| **the consumer fixture is deleted** | 6 | 6 |
+
+None is left in the tree; all were run and reverted.
+
+**The deletion row is the one that answers the issue.** Removing
+`consumer-directory-layout.json` turns six rows red. Before this change,
+deleting either file in that directory turned nothing red at all.
+
+**The row that came back LOW, which is the one that mattered.** Row seven
+measured 0 against a predicted 1, and a row lower than predicted is the
+signature `.claude/rules/checks-must-be-able-to-fail.md` says to chase rather
+than to accept as good news.
+
+It was a broken mutant, and the reason is worth keeping: the anchor
+`const reading = readGateConfig(projectRoot);` appears **twice** in
+`gates/gate-executor.ts` — at line 475 in `loadAndValidateHarness` and at 513
+in `proveEnvironment` — and a `String.replace` takes the first. The mutation
+landed in a function these tests do not exercise, so a green suite was the
+correct answer to a question nobody had asked.
+
+Re-run against an anchor checked for uniqueness first: predicted 1, measured
+1, SC-1781. **A mutation battery needs its anchors counted, not just found** —
+an ambiguous anchor produces a zero row that reads exactly like missing
+coverage, and the cheapest response to it is to add a test for behaviour that
+was already covered.
+
 ### Success criteria
 
 - [x] SC-1778: test/consumer-fixture-gates.test.ts contains [both fixtures validate against the real state schema] — the drift that had accumulated unseen, now a row that goes red when a fixture stops describing a state the harness would accept
