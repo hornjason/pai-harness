@@ -213,6 +213,13 @@ export interface SuccessVerdict {
  * filesystem.
  */
 export function successViolations(text: string | null, template?: string | null): SuccessVerdict {
+  // Three states, not two. `undefined` means the caller is not asking for a
+  // residue comparison at all — the parser's own unit tests, which have no
+  // template and are not pretending to. `TEMPLATE_MISSING` (or an explicit
+  // `null`, in case a future reader reintroduces one) means a template WAS
+  // looked for and not found, and that is a refusal rather than a quiet skip.
+  const templateAbsent = template === TEMPLATE_MISSING || template === null;
+  const residueTemplate = templateAbsent ? undefined : template;
   if (text === null) {
     return {
       violations: [],
@@ -247,7 +254,7 @@ export function successViolations(text: string | null, template?: string | null)
   // `null` already reports as unmeasured. The refusal is aimed at a document
   // somebody STARTED and left half-written, because that is the state which
   // reads as considered and is not. Any edit at all moves it into that set.
-  if (template && isPristineSeed(text, template)) {
+  if (residueTemplate && isPristineSeed(text, residueTemplate)) {
     return {
       violations: [],
       unmeasured:
@@ -270,10 +277,23 @@ export function successViolations(text: string | null, template?: string | null)
     );
   }
 
+  // The residue check could not run. Reported rather than skipped: without
+  // this branch an installation missing the template reverts to the pre-#502
+  // behaviour exactly, and the document that scored 1 violation scores 0 with
+  // `unmeasured` still null — indistinguishable from a clean document.
+  if (templateAbsent) {
+    out.push(
+      `SUCCESS.md could not be compared against the generator's template — ` +
+        `templates/SUCCESS-TEMPLATE.md is not in this rungate installation, so the check that ` +
+        `catches a document still carrying the template's prose did not run. This is not a ` +
+        `clean result: see test/package-closure.test.ts, which exists to stop exactly this.`,
+    );
+  }
+
   // The backstop the marker check turned out to need. Asked before the
   // per-claim rules so the loudest problem is reported first.
-  if (template) {
-    const residue = templateResidue(text, template);
+  if (residueTemplate) {
+    const residue = templateResidue(text, residueTemplate);
     if (residue.length > 0) {
       out.push(
         `SUCCESS.md still contains ${residue.length} line(s) verbatim from the generator's ` +
@@ -384,10 +404,35 @@ export function templateResidue(text: string, template: string): string[] {
   return out;
 }
 
-/** The template the generator copies, or null if it is not installed. */
-export function readSuccessTemplate(): string | null {
+/**
+ * The installation is missing `templates/SUCCESS-TEMPLATE.md`.
+ *
+ * A distinct value rather than `null`, for the reason `UNREADABLE` is: the
+ * residue check is the half of this validator that catches a document which
+ * deleted the markers and kept the prose, and a falsy template silently
+ * switched it off. Same document, same checker, template absent: **1
+ * violation became 0, with nothing recorded.** That is the first shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — a read failure defaulting
+ * to an empty violation list — and #484 is this repo's standing proof that
+ * "`templates/` is in `files[]`, so it cannot happen" is a thing that has
+ * already happened once while every check stayed green.
+ *
+ * `create-success` and `seedSuccessDoc` both name a missing template loudly.
+ * This makes `successViolations` the third reader of that file rather than
+ * the only one that shrugs.
+ */
+export const TEMPLATE_MISSING = "\u0000rungate:template-missing";
+
+/**
+ * The template the generator copies.
+ *
+ * Never returns `null` — an absent template is `TEMPLATE_MISSING`, which
+ * `successViolations` refuses. Returning a falsy value here is what made the
+ * residue check fail open, so the type no longer permits it.
+ */
+export function readSuccessTemplate(): string {
   const p = join(dirname(fileURLToPath(import.meta.url)), "..", "templates", "SUCCESS-TEMPLATE.md");
-  return existsSync(p) ? readFileSync(p, "utf-8") : null;
+  return existsSync(p) ? readFileSync(p, "utf-8") : TEMPLATE_MISSING;
 }
 
 /** Read the project's SUCCESS.md, or null when there is none. */
