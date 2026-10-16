@@ -32,6 +32,7 @@ import { dirname, join } from "path";
 
 import {
   configAccessViolations,
+  configAccessViolationRecords,
   readConfigAccessRatchet,
   scanConfigAccess,
   projectSourceEvidence,
@@ -382,7 +383,7 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     const r = spawnSync("bun", ["test", file], { cwd: REPO, encoding: "utf-8" });
     const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
     const findings = JSON.parse(out.match(/F:(\[.*\])/)?.[1] ?? "null") as
-      | Array<{ severity: string; message: string }>
+      | Array<{ severity: string; message: string; file: string }>
       | null;
     if (findings === null) throw new Error(`the probe suite never reported findings:\n${out}`);
     const warns = findings.filter(f => f.severity === "WARN");
@@ -392,6 +393,12 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       unmeasured: warns.length > 0 ? warns.map(f => f.message).join("\n") : null,
       /** The FAIL findings CONFIG-1 recorded — its violations, as it reported them. */
       violations: fails.map(f => f.message),
+      /**
+       * The `file` each FAIL finding carries (#517). Read from the recorded
+       * finding and not re-derived here, because re-deriving it in the test
+       * is the defect this exists to catch.
+       */
+      failFiles: fails.map(f => f.file),
       /** Did the check itself pass? A refusal fails the spawned suite. */
       red: /\b[1-9]\d* fail/.test(out),
     };
@@ -598,6 +605,68 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     expect(src).toContain('existsSync(join(root, "workflows")),');
     // And neither still passes the vacuous waiver.
     expect(src.replace(/\s+/g, " ")).not.toMatch(/unmeasuredScanReason\([^)]*scan\.filesScanned > 0/);
+  });
+
+  /**
+   * #517: a finding's `file` is produced with the violation, not parsed back
+   * out of it.
+   *
+   * `file: v.split(": ")[1]?.split(" ")[0] || ""` reads a path out of
+   * `CONFIG-1: lib/scanner.ts has 3 direct reads` correctly, and reads the
+   * word `the` out of `CONFIG-1: the scan read NO files…`. A findings report
+   * renders that under a column headed `file`: it looks like a path, it is a
+   * stopword, and nothing downstream can tell it from a real one.
+   *
+   * The shape, which is why it is worth a case rather than a patch: the
+   * violation string is the HUMAN rendering and `file` is the MACHINE one,
+   * and the producer had the fact all along before formatting it into prose
+   * and re-parsing it. `|| ""` then made "not about a file" and "my parse
+   * failed" the same value.
+   *
+   * These assertions deliberately read `finding.file` as the check recorded
+   * it. Deriving the expected path inside the test would be the same defect
+   * one level up, and would pass over any producer at all.
+   */
+  test("#517: a violation about the SCAN reports no file, not the word `the`", () => {
+    // `src/` is not in CONFIG_SCAN_DIRS, so the scan reads zero files while
+    // the source walk finds code — the project shape #492 is about, and the
+    // only one that reaches this refusal. `filesScanned === 0` with
+    // `found === true` is not waivable, so it falls through to a FAIL.
+    const root = project({ "src/app.ts": READS_CONFIG, "README.md": "# d" });
+    const got = config1(root);
+    expect(got.red, "the refusal did not fire, so there is no finding to inspect").toBe(true);
+    expect(got.violations.join("\n"), "a different violation fired").toContain("read NO files");
+    expect(got.failFiles, `the scan refusal reported a path: ${JSON.stringify(got.failFiles)}`)
+      .toEqual([""]);
+    expect(got.failFiles[0], "the stopword is back").not.toBe("the");
+  });
+
+  test("#517: a violation about a FILE still reports that file", () => {
+    // The control, and the direction that matters more: removing the parse
+    // must not cost the path on the violations that genuinely have one.
+    // Without this, `file: ""` everywhere satisfies the case above.
+    const root = project({ "lib/reader.ts": READS_CONFIG, "README.md": "# d" });
+    const got = config1(root);
+    expect(got.red, "a direct read in lib/ did not fail the check").toBe(true);
+    expect(got.failFiles, `the file in violation was not reported: ${got.violations.join(" | ")}`)
+      .toEqual(["lib/reader.ts"]);
+  });
+
+  test("#517: the message is derived from the records, so the two cannot disagree", () => {
+    // `configAccessViolations` is kept as a projection of
+    // `configAccessViolationRecords`. If it were a second producer it could
+    // drift from the one that supplies `file`, which is the defect wearing
+    // different clothes. Asserted by equality rather than by reading.
+    const s = scan({ "lib/a.ts": 3, "lib/b.ts": 1 });
+    const records = configAccessViolationRecords(s, { "lib/a.ts": 1 }, "CONFIG-1");
+    expect(records.length, "the fixture produced no violations to compare").toBeGreaterThan(1);
+    expect(configAccessViolations(s, { "lib/a.ts": 1 }, "CONFIG-1"))
+      .toEqual(records.map(r => r.message));
+    // And every record about a file names a file that is really in the scan.
+    for (const r of records) {
+      if (r.file === "") continue;
+      expect(Object.keys(s.counts), `${r.file} is not a file the scan saw`).toContain(r.file);
+    }
   });
 });
 
