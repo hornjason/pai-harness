@@ -1,5 +1,5 @@
 /**
- * Covers SC-1672..SC-1677 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #307 SC-A6,
+ * Covers SC-1672..SC-1677 and SC-1681..SC-1683 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #307 SC-A6,
  * SC-A7, SC-A10.
  *
  * `captureTestBaseline` runs the project's suite before any change lands and
@@ -41,9 +41,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
+  baselineAdjustment,
   captureTestBaseline,
   extractTestFailureCount,
   parseTestFailureCount,
+  recordTestBaseline,
 } from "../gates/gate-executor";
 
 /** A suite command that prints bun's summary shape without running a suite. */
@@ -186,6 +188,60 @@ describe("#307: the test baseline says what it measured", () => {
       if (reading.status !== "measured") throw new Error("unreachable");
       expect(reading.failures).toBe(5);
     });
+  });
+});
+
+describe("#307: what the reading does once it is taken", () => {
+  test("SC-1681: an unmeasured reading records no number - the reason cannot sit beside a zero", () => {
+    // The reading being honest buys nothing if the two lines that record it
+    // write a 0 anyway: `?? 0` at the verify gate would read that as a
+    // measured clean tree, which is the defect one field over.
+    const baselines: Record<string, any> = {};
+    recordTestBaseline(baselines, { status: "unmeasured", reason: "no suite configured" });
+
+    expect(baselines.testBaseline, "a number was recorded for a reading that has none").toBeUndefined();
+    expect(baselines.testBaselineUnmeasured).toBe("no suite configured");
+  });
+
+  test("SC-1682: a later measured reading clears the earlier reason - the two keys are exclusive", () => {
+    // Both directions, over the same object, because a recorder that only
+    // ever adds leaves a stale reason beside a fresh number and the verify
+    // gate has two answers to pick from.
+    const baselines: Record<string, any> = {};
+    recordTestBaseline(baselines, { status: "unmeasured", reason: "no suite configured" });
+    recordTestBaseline(baselines, { status: "measured", failures: 4, command: "bun test" });
+
+    expect(baselines.testBaseline).toBe(4);
+    expect(baselines.testBaselineUnmeasured, "the stale reason survived a real measurement").toBeUndefined();
+  });
+
+  test("SC-1683: the verify gate separates an unmeasured baseline from a measured zero", () => {
+    // Both subtract nothing, so the arithmetic cannot tell them apart and
+    // this is the only place that can. Asserted against each other in one
+    // test so they cannot drift into agreeing.
+    expect(baselineAdjustment({ testBaselineUnmeasured: "no suite configured" }, 7)).toEqual({
+      kind: "unmeasured",
+      reason: "no suite configured",
+    });
+    expect(baselineAdjustment({ testBaseline: 0 }, 7)).toEqual({ kind: "none" });
+
+    // A real baseline still subtracts, which is the behaviour #599 added and
+    // this issue must not cost.
+    expect(baselineAdjustment({ testBaseline: 3 }, 7)).toEqual({ kind: "subtract", baseline: 3, fails: 4 });
+    // ...clamped, per subtractTestBaseline.
+    expect(baselineAdjustment({ testBaseline: 9 }, 7)).toEqual({ kind: "subtract", baseline: 9, fails: 0 });
+  });
+
+  test("a run from before this change still reads as none, not as unmeasured", () => {
+    // Durable state written by an older scope gate has `testBaseline: 0` and
+    // no reason key, and a verify gate that WARNed on it would warn on every
+    // in-flight run the moment this lands. Absent baselines likewise.
+    expect(baselineAdjustment({ testBaseline: 0, tscBaseline: 0 }, 2)).toEqual({ kind: "none" });
+    expect(baselineAdjustment(undefined, 2)).toEqual({ kind: "none" });
+    expect(baselineAdjustment({}, 2)).toEqual({ kind: "none" });
+    // ...and an empty reason is not a reason. A `""` written by a future
+    // caller would otherwise WARN with nothing to say.
+    expect(baselineAdjustment({ testBaselineUnmeasured: "" }, 2)).toEqual({ kind: "none" });
   });
 });
 

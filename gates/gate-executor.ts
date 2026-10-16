@@ -209,6 +209,62 @@ export function captureTestBaseline(state: Record<string, any>): TestBaselineRea
   return { status: "measured", failures, command: testCmd };
 }
 
+/**
+ * Write a reading into `gateContract.baselines`, in place (#307).
+ *
+ * Pure and exported so the propagation is EXECUTABLE. The reading being
+ * honest buys nothing if the two lines that record it quietly write a `0`,
+ * and a `captureTestBaseline` test cannot see that.
+ *
+ * The two keys are mutually exclusive, enforced by deleting the other one
+ * each way. A reason sitting beside a number would let `?? 0` keep reading
+ * the run as a measured clean tree — which is the defect the reason exists
+ * to report, reintroduced one field over.
+ */
+export function recordTestBaseline(
+  baselines: Record<string, any>,
+  reading: TestBaselineReading,
+): void {
+  if (reading.status === "measured") {
+    baselines.testBaseline = reading.failures;
+    delete baselines.testBaselineUnmeasured;
+  } else {
+    delete baselines.testBaseline;
+    baselines.testBaselineUnmeasured = reading.reason;
+  }
+}
+
+/** What the verify gate does with whatever scope recorded (#307). */
+export type BaselineAdjustment =
+  | { kind: "subtract"; baseline: number; fails: number }
+  | { kind: "unmeasured"; reason: string }
+  | { kind: "none" };
+
+/**
+ * The verify gate's reading of the recorded baseline (#307).
+ *
+ * `none` and `unmeasured` subtract the same amount — nothing — so the
+ * arithmetic is not what separates them. What `unmeasured` stops is the run
+ * claiming a clean starting tree it never looked at, and the only way to say
+ * that is to have kept the two apart all the way from `captureTestBaseline`.
+ *
+ * A number of `0` is `none`: the suite ran, nothing was failing, there is
+ * nothing to subtract and nothing to report.
+ */
+export function baselineAdjustment(
+  baselines: Record<string, any> | undefined,
+  fails: number,
+): BaselineAdjustment {
+  const b = baselines ?? {};
+  if (typeof b.testBaseline === "number" && b.testBaseline > 0) {
+    return { kind: "subtract", baseline: b.testBaseline, fails: subtractTestBaseline(fails, b.testBaseline) };
+  }
+  if (typeof b.testBaselineUnmeasured === "string" && b.testBaselineUnmeasured.length > 0) {
+    return { kind: "unmeasured", reason: b.testBaselineUnmeasured };
+  }
+  return { kind: "none" };
+}
+
 // ── Gate executor contract interfaces (SC-373, SC-376) ───────────────────
 
 export interface GateExecutorInput {
@@ -815,17 +871,14 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
   const testBaseline = captureTestBaseline(state);
   state.gateContract = state.gateContract || {};
   state.gateContract.baselines = state.gateContract.baselines || {};
+  recordTestBaseline(state.gateContract.baselines, testBaseline);
   if (testBaseline.status === "measured") {
-    state.gateContract.baselines.testBaseline = testBaseline.failures;
-    delete state.gateContract.baselines.testBaselineUnmeasured;
-    if (testBaseline.failures > 0) {
-      console.log(`Test baseline: ${testBaseline.failures} pre-existing failure(s) captured — will be subtracted at verify`);
-    } else {
-      console.log(`Test baseline: 0 pre-existing failures — clean suite`);
-    }
+    console.log(
+      testBaseline.failures > 0
+        ? `Test baseline: ${testBaseline.failures} pre-existing failure(s) captured — will be subtracted at verify`
+        : `Test baseline: 0 pre-existing failures — clean suite`,
+    );
   } else {
-    delete state.gateContract.baselines.testBaseline;
-    state.gateContract.baselines.testBaselineUnmeasured = testBaseline.reason;
     console.error(`Test baseline: UNMEASURED — ${testBaseline.reason}`);
   }
 
@@ -1939,28 +1992,23 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
   if (gate === "verify") {
-    const baselines = state.gateContract?.baselines ?? {};
-    const testBaseline = baselines.testBaseline;
-    if (typeof testBaseline === "number" && testBaseline > 0) {
-      const originalFails = fails;
-      fails = subtractTestBaseline(fails, testBaseline);
-      console.log(`Test baseline subtraction: ${originalFails} total - ${testBaseline} baseline = ${fails} new failure(s)`);
-    } else if (baselines.testBaselineUnmeasured) {
-      // #307. No subtraction happens either way — an unmeasured baseline and
-      // a measured zero both subtract nothing — so the arithmetic is not what
-      // this branch is for. What it stops is the RUN claiming a clean
-      // starting tree it never looked at. WARN, not FAIL: the house precedent
-      // is `dev-server-liveness: UNMEASURED` above, and a probe that could
-      // not run must never become a defect in the code it could not measure.
+    const adjustment = baselineAdjustment(state.gateContract?.baselines, fails);
+    if (adjustment.kind === "subtract") {
+      console.log(`Test baseline subtraction: ${fails} total - ${adjustment.baseline} baseline = ${adjustment.fails} new failure(s)`);
+      fails = adjustment.fails;
+    } else if (adjustment.kind === "unmeasured") {
+      // #307. WARN, not FAIL: the house precedent is
+      // `dev-server-liveness: UNMEASURED` above, and a probe that could not
+      // run must never become a defect in the code it could not measure.
       warns++;
       results.push({
         check: "test-baseline: UNMEASURED",
         result: "WARN" as const,
         detail:
           `no pre-existing-failure count was taken at scope, so every failure below ` +
-          `is attributed to this change — ${baselines.testBaselineUnmeasured}`,
+          `is attributed to this change — ${adjustment.reason}`,
       });
-      console.warn(`Test baseline: UNMEASURED — ${baselines.testBaselineUnmeasured}`);
+      console.warn(`Test baseline: UNMEASURED — ${adjustment.reason}`);
     }
   }
 
