@@ -4,6 +4,56 @@ const SHELL_METACHARACTERS = /[;&|$`\n\r"'\\(){}[\]<>!~*?#]/;
 const PATH_TRAVERSAL = /\.\.($|[/\\])/;
 const NULL_BYTE = /\x00/;
 
+/**
+ * Why a path may not be contributed by an agent, or `null` if it may.
+ *
+ * ONE table, ONE decider (#400). Before this there were two: a regex set here,
+ * checked at staging time, and a segment walk in `workflows/ship.js`'s
+ * `escapesWorktree`, checked at collection time. They agreed on traversal and
+ * on nothing else, so the audit accepted a reported path carrying a shell
+ * metacharacter, a null byte or 500+ characters, declared the run clean, and
+ * staging refused it two phases later with a different message.
+ *
+ * `boundary` separates the two reasons a path can be refused, because they are
+ * different things to tell an operator:
+ *
+ *   true  — the path does not name a location inside the worktree at all.
+ *   false — it does, and still cannot be handled safely.
+ *
+ * "not inside its own worktree" is a wrong sentence to print about
+ * `lib/a;rm.ts`, and an operator who reads it goes looking for a path that is
+ * not there.
+ *
+ * The order is the order the reasons are reported in. Absoluteness first
+ * because it is the least ambiguous, then the segment walk, then the regexes.
+ *
+ * The two traversal rules are deliberately both present and deliberately
+ * separate. `p.split("/").includes("..")` is the real boundary question; the
+ * regex also matches a segment merely ENDING in `..` (`lib/foo..`), which is a
+ * legal filename that staging has always refused. Folding it into the boundary
+ * rule would label a legal file an escape; dropping it would make the audit
+ * permit something staging rejects, which is the whole defect.
+ */
+const CONTRIBUTABLE_PATH_RULES: ReadonlyArray<
+  readonly [rule: string, boundary: boolean, fails: (p: string) => boolean]
+> = [
+  ["an absolute path", true, (p) => p.startsWith("/")],
+  ["a `..` segment", true, (p) => p.split("/").includes("..")],
+  ["a segment ending in `..`", false, (p) => PATH_TRAVERSAL.test(p)],
+  ["a shell metacharacter", false, (p) => SHELL_METACHARACTERS.test(p)],
+  ["a null byte", false, (p) => NULL_BYTE.test(p)],
+  ["over 500 characters", false, (p) => p.length > 500],
+];
+
+export function pathRefusal(
+  p: string,
+): { rule: string; boundary: boolean } | null {
+  for (const [rule, boundary, fails] of CONTRIBUTABLE_PATH_RULES) {
+    if (fails(p)) return { rule, boundary };
+  }
+  return null;
+}
+
 export function buildSafeGitAdd(filesChanged: string[]): string {
   const validated = validateFilePaths(filesChanged);
   if (validated.rejected.length > 0) {
@@ -21,13 +71,7 @@ export function validateFilePaths(
   const valid: string[] = [];
   const rejected: string[] = [];
   for (const p of paths) {
-    if (
-      SHELL_METACHARACTERS.test(p) ||
-      PATH_TRAVERSAL.test(p) ||
-      NULL_BYTE.test(p) ||
-      p.startsWith("/") ||
-      p.length > 500
-    ) {
+    if (pathRefusal(p)) {
       rejected.push(p);
     } else {
       valid.push(p);

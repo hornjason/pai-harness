@@ -217,6 +217,10 @@ type CollectResult = { ok: boolean; collected: number; staged: boolean; detail?:
  */
 function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
   const body = [
+    // #400 gave staging and the claim audit one path-safety decider, and it
+    // lives here. It also carries the real `shellQuote`, which this loader
+    // used to inject a copy of.
+    markedBlock("SECURITY-HELPERS"),
     markedBlock("COLLECT-DESTINATION"),
     markedBlock("COLLECT-CLAIM"),
     // Every refusal preserves the worktrees before returning (#228), so the
@@ -230,7 +234,6 @@ function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
     "WORK_DIR",
     "log",
     "timedAgent",
-    "shellQuote",
     `${body}\nreturn collectAgentWork`,
   )(
     PROJECT,
@@ -238,7 +241,6 @@ function loadCollectAgentWork(agentImpl: (p: string, o: unknown) => unknown) {
     WORK,
     () => {},
     agentImpl,
-    (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`,
   ) as (
     results: unknown,
     intoDir: string,

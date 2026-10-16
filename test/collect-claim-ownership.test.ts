@@ -113,7 +113,14 @@ function block(name: string): string {
 const claimSource = block("COLLECT-CLAIM");
 
 function loadAudit(source: string = claimSource): Audit {
-  return new Function(`${source}\nreturn auditWorktreeClaims`)() as Audit;
+  // SECURITY-HELPERS carries the path-safety decider the audit calls (#400),
+  // and is loaded UNMUTATED even when `source` is a mutant, so a mutant can
+  // never die on a missing `pathRefusal` and read as the mutation working.
+  return new Function(
+    "PROJECT_ROOT",
+    "log",
+    `${block("SECURITY-HELPERS")}\n${source}\nreturn auditWorktreeClaims`,
+  )("/repo", () => {}) as Audit;
 }
 
 const auditWorktreeClaims = loadAudit();

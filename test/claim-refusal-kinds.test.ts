@@ -79,8 +79,18 @@ function block(name: string): string {
 
 const claimSource = block("COLLECT-CLAIM");
 
+// Counting below reads `claimSource` alone, because the row count is tied to
+// the COLLECT-CLAIM block's refusal templates and nothing else. Evaluation
+// needs both blocks: #400 moved the path-safety rules into SECURITY-HELPERS
+// so staging and the audit share one decider, and the audit calls into it.
+const securitySource = block("SECURITY-HELPERS");
+
 function loadAudit(source: string = claimSource): Audit {
-  return new Function(`${source}\nreturn auditWorktreeClaims`)() as Audit;
+  return new Function(
+    "PROJECT_ROOT",
+    "log",
+    `${securitySource}\n${source}\nreturn auditWorktreeClaims`,
+  )("/repo", () => {}) as Audit;
 }
 
 const auditWorktreeClaims = loadAudit();
@@ -114,6 +124,23 @@ const KINDS: Kind[] = [
         worktreePath: WT_A,
         filesChanged: [`${WT_B}/lib/b.ts`, "lib/a.ts"],
         claimedFiles: ["lib/a.ts"],
+      },
+      OTHER_WORK,
+    ],
+  },
+  {
+    // #400: inside the worktree, and still unstageable. Before #400 the audit
+    // had no opinion on this at all — it reported the run clean and staging
+    // refused the path two phases later, under a different message.
+    kind: "unsafe but inside the worktree",
+    named: false,
+    token: "cannot be staged",
+    path: "lib/a;rm.ts",
+    results: [
+      {
+        worktreePath: WT_A,
+        filesChanged: ["lib/a;rm.ts", "lib/a.ts"],
+        claimedFiles: ["lib/a;rm.ts", "lib/a.ts"],
       },
       OTHER_WORK,
     ],
@@ -216,6 +243,7 @@ function shape(detail: string): string {
     [WT_A, "<worktree>"],
     [WT_B, "<worktree>"],
     [ALLOWLISTS, "<path>"],
+    ["lib/a;rm.ts", "<path>"],
     ["gates/workflow.test.ts", "<path>"],
     ["lib/shared.ts", "<path>"],
     ["PROJECT-STATE.md", "<path>"],
@@ -247,6 +275,10 @@ describe("SC-1432: one row per refusal kind, each actually produced", () => {
     // either alone has a hole: a new push site with a reworded message leaves
     // the template count unchanged, and a new arm of an existing ternary
     // leaves the push-site count unchanged.
+    //
+    // #400 is the second reading earning its place: it added a kind without
+    // adding a push site, by splitting the boundary refusal into a ternary.
+    // Templates went 6 → 7, `detail:` sites stayed at 5.
     const detailSites = (claimSource.match(/detail:/g) || []).length;
     const templates = (claimSource.match(/`\$\{wt\} reported /g) || []).length;
     expect(

@@ -236,17 +236,55 @@ const SHELL_METACHARACTERS = /[;&|$`\n\r"'\\(){}[\]<>!~*?#]/
 const PATH_TRAVERSAL = /\.\.($|[/\\])/
 const NULL_BYTE = /\x00/
 
+// Why a path may not be contributed by an agent, or null if it may.
+//
+// ONE table, ONE decider (#400). Before this there were two: these regexes,
+// checked at STAGING time by validateFilePaths, and a segment walk in
+// escapesWorktree, checked at COLLECTION time by auditWorktreeClaims. They
+// agreed on traversal and on nothing else, so the audit accepted a reported
+// path carrying a shell metacharacter, a null byte or 500+ characters,
+// declared the run clean, and staging refused it two phases later with a
+// different message. A guard that refuses less than the thing downstream of
+// it is a guard whose pass means less than it reads.
+//
+// The second column is `boundary`, and it separates the two reasons a path
+// can be refused, because they are different things to tell an operator:
+//   true  — the path does not name a location inside the worktree at all
+//   false — it does, and still cannot be handled safely
+// "not inside its own worktree" is a wrong sentence to print about
+// `lib/a;rm.ts`, and an operator who reads it goes looking for a path that is
+// not there.
+//
+// The two traversal rules are deliberately both present and deliberately
+// separate. `p.split('/').includes('..')` is the real boundary question; the
+// regex also matches a segment merely ENDING in `..` (`lib/foo..`), a legal
+// filename that staging has always refused. Folding it into the boundary rule
+// would label a legal file an escape; dropping it would make the audit permit
+// something staging rejects, which is the whole defect.
+//
+// Mirror of CONTRIBUTABLE_PATH_RULES / pathRefusal in lib/workflow-security.ts
+// — see the note at the top of this block. Change one, change the other.
+const CONTRIBUTABLE_PATH_RULES = [
+  ['an absolute path', true, p => p.startsWith('/')],
+  ['a `..` segment', true, p => p.split('/').includes('..')],
+  ['a segment ending in `..`', false, p => PATH_TRAVERSAL.test(p)],
+  ['a shell metacharacter', false, p => SHELL_METACHARACTERS.test(p)],
+  ['a null byte', false, p => NULL_BYTE.test(p)],
+  ['over 500 characters', false, p => p.length > 500],
+]
+
+function pathRefusal(p) {
+  for (const [rule, boundary, fails] of CONTRIBUTABLE_PATH_RULES) {
+    if (fails(p)) return { rule, boundary }
+  }
+  return null
+}
+
 function validateFilePaths(paths) {
   const valid = []
   const rejected = []
   for (const p of paths) {
-    if (
-      SHELL_METACHARACTERS.test(p) ||
-      PATH_TRAVERSAL.test(p) ||
-      NULL_BYTE.test(p) ||
-      p.startsWith('/') ||
-      p.length > 500
-    ) {
+    if (pathRefusal(p)) {
       rejected.push(p)
     } else {
       valid.push(p)
@@ -3869,7 +3907,7 @@ function claimKey(worktreePath, p) {
   // were each a separate regex; dropping empty and `.` segments is the one
   // rule all three were approximating.
   //
-  // `..` is deliberately NOT dropped. It is REFUSED, by `escapesWorktree`.
+  // `..` is deliberately NOT dropped. It is REFUSED, by `pathRefusal` (#400).
   // Collapsing it textually would reintroduce the very differential this
   // closes: where a component is a symlink, `a/../b` collapses textually to
   // `b` while the collector's `realpathSync` resolves it somewhere else — a
@@ -3878,8 +3916,32 @@ function claimKey(worktreePath, p) {
   // the same path on every filesystem.
   const absolute = s.startsWith('/')
   const segments = s.split('/').filter(seg => seg !== '' && seg !== '.')
-  // An absolute path stays absolute so `escapesWorktree` still refuses it.
+  // An absolute path stays absolute so `pathRefusal` still refuses it.
   return (absolute ? '/' : '') + segments.join('/')
+}
+
+/**
+ * Whether this worktree's report of `key` is permitted by the claim it issued.
+ *
+ * ONE declaration, on one line, because it is the site the #296 mutation
+ * targets — `test/collect-claim-ownership.test.ts` rebuilds this block with
+ * the old `claimant === null ||` fallthrough restored and watches it keep
+ * every file the real block refuses. A second permission path would survive
+ * that mutation and the proof would be decorative.
+ *
+ * The fallthrough was the fail-open. When NO result carries `claimedFiles` the
+ * ownership map is empty, so `claimant` is null for every path and
+ * "nobody claimed it" read as permission — a decomposition that emitted no
+ * claims silently disabled SC-413 for the entire run. An absent claim in a
+ * contested run now permits nothing; the lone-worktree case is handled by
+ * SINGLE_WORKTREE_EXEMPT above, where it belongs, and is the only place an
+ * unclaimed file is collectable.
+ *
+ * `claimant === wt` is still reachable and still right: a worktree that
+ * reports in two parts (#228) can claim in one row and report in the other.
+ */
+function claimPermits(claims, key, claimant, wt) {
+  return Array.isArray(claims) ? claims.includes(key) : claimant === wt
 }
 
 /**
@@ -3923,35 +3985,13 @@ function claimKey(worktreePath, p) {
  * that does not reduce to a location inside the reporting worktree is refused
  * whatever the claim says, because the collector would discard it anyway and
  * a silent discard is how work goes missing.
+ *
+ * #400 replaced `escapesWorktree` here with `pathRefusal` in the
+ * SECURITY-HELPERS block. It was a second copy of two of that table's rules,
+ * and a second copy survives any mutation of the first — so there is now one
+ * decider, asked by staging and by this audit, and `refusal.boundary` is how
+ * this site asks it the narrower question `escapesWorktree` used to answer.
  */
-function escapesWorktree(key) {
-  return key.startsWith('/') || key.split('/').includes('..')
-}
-
-/**
- * Whether this worktree's report of `key` is permitted by the claim it issued.
- *
- * ONE declaration, on one line, because it is the site the #296 mutation
- * targets — `test/collect-claim-ownership.test.ts` rebuilds this block with
- * the old `claimant === null ||` fallthrough restored and watches it keep
- * every file the real block refuses. A second permission path would survive
- * that mutation and the proof would be decorative.
- *
- * The fallthrough was the fail-open. When NO result carries `claimedFiles` the
- * ownership map is empty, so `claimant` is null for every path and
- * "nobody claimed it" read as permission — a decomposition that emitted no
- * claims silently disabled SC-413 for the entire run. An absent claim in a
- * contested run now permits nothing; the lone-worktree case is handled by
- * SINGLE_WORKTREE_EXEMPT above, where it belongs, and is the only place an
- * unclaimed file is collectable.
- *
- * `claimant === wt` is still reachable and still right: a worktree that
- * reports in two parts (#228) can claim in one row and report in the other.
- */
-function claimPermits(claims, key, claimant, wt) {
-  return Array.isArray(claims) ? claims.includes(key) : claimant === wt
-}
-
 function auditWorktreeClaims(results) {
   const violations = []
   const candidates = []
@@ -4004,14 +4044,28 @@ function auditWorktreeClaims(results) {
     for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
       const key = claimKey(wt, raw)
       if (!key) continue
-      // The boundary, checked before any exemption. claimKey only strips the
-      // worktree prefix off paths that are inside it, so anything still
-      // absolute or still carrying a `..` is a path this worktree cannot
-      // contribute — another worktree's copy, or something outside the repo.
-      if (escapesWorktree(key)) {
+      // Path safety, checked before any exemption, and asked of the same
+      // table staging asks (#400). Two outcomes, because they are different
+      // things for an operator to act on:
+      //
+      //   boundary — claimKey only strips the worktree prefix off paths that
+      //              are inside it, so anything still absolute or still
+      //              carrying a `..` segment names somewhere else entirely:
+      //              another worktree's copy, or something outside the repo.
+      //   otherwise — the path IS inside this worktree and still cannot be
+      //              handled: `git add` would refuse it at staging time, and
+      //              before #400 it did, two phases later and under a
+      //              different message, after the audit had reported clean.
+      //
+      // Both name the rule, because "not inside its own worktree" is a wrong
+      // sentence to print about `lib/a;rm.ts`.
+      const refusal = pathRefusal(key)
+      if (refusal) {
         violations.push({
           worktreePath: wt, path: key, claimant: null,
-          detail: `${wt} reported ${key}, which is not inside its own worktree — a worktree may only contribute files beneath its own directory`,
+          detail: refusal.boundary
+            ? `${wt} reported ${key}, which is not inside its own worktree (${refusal.rule}) — a worktree may only contribute files beneath its own directory`
+            : `${wt} reported ${key}, which is inside its worktree but cannot be staged (${refusal.rule}) — git add refuses the path, so collecting it would fail later and in another phase`,
         })
         continue
       }
