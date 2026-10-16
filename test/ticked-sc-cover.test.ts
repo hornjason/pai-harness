@@ -28,8 +28,7 @@ import {
   uncoveredBySpec,
   uncoveredTickedScs,
 } from "../lib/sc-cover";
-import { buildScRegistry, isTemplateSpec, parseScDeclarations } from "../lib/sc-ids";
-import { findTestFilesForSCs, scopedKey } from "../scripts/sync-sc-status";
+import { claimedScKeys, scopedKey } from "../scripts/sync-sc-status";
 
 const REPO = join(import.meta.dir, "..");
 const SPECS = join(REPO, "specs");
@@ -52,22 +51,16 @@ const BANKED: Record<string, number> = {
   "HOOK-ARCHITECTURE-SPEC.md": 1,
 };
 
-function claimedKeys(): Set<string> {
-  const specs = readdirSync(SPECS, { recursive: true, encoding: "utf-8" })
-    .filter(f => f.endsWith(".md"))
-    .map(f => ({ file: f, content: readFileSync(join(SPECS, f), "utf-8") }));
-  const all = specs
-    .filter(s => !isTemplateSpec(s.file))
-    .flatMap(s => parseScDeclarations(s.content, s.file));
-  const credits = findTestFilesForSCs(all, buildScRegistry(specs));
-  return new Set([...credits.values()].flat().map(c => scopedKey(c.specFile, c.id)));
-}
-
 function uncovered() {
+  // `claimedScKeys` is the one owner of the credit rule (#441). This was
+  // written out longhand here, and #441 needed the same set in a second
+  // place — two implementations of the credit rule is how this class of bug
+  // arrives, and it is why `uncoveredTickedScs` takes `claimed` rather than
+  // computing it.
   return uncoveredTickedScs({
     specsDir: SPECS,
     projectRoot: REPO,
-    claimed: claimedKeys(),
+    claimed: claimedScKeys(SPECS),
     scopedKey,
   });
 }
