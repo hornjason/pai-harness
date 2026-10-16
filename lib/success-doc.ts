@@ -402,6 +402,104 @@ export function successViolations(text: string | null, template: string | null):
  * written four months before the template — the only overlap is
  * `doc-type: reference` and `status: active`, both frontmatter.
  */
+/**
+ * Template prose as REFLOW-INVARIANT units: whole sentences, read out of the
+ * template with its line breaks collapsed (#515).
+ *
+ * `templateResidue` compared line against line, so it saw a copy-pasted
+ * paragraph only while the line breaks were byte-identical. `prettier
+ * --prose-wrap`, a different editor width, or one pass of an LLM rewriting
+ * the file moved them without touching a word, and the whole paragraph went
+ * invisible. That is the second shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — *text matching that a
+ * reformat, a line break or a different platform defeats* — and the
+ * docstring above claimed a guarantee it did not have.
+ *
+ * ## Why the unit is a sentence and not a block
+ *
+ * #515 proposed comparing normalized BLOCKS. Measured against the shipped
+ * template, that catches strictly less than the line check it would have
+ * replaced, and it fails the verbatim case it was meant to keep:
+ *
+ * - The template writes `<!-- rungate:placeholder -->` on the line directly
+ *   above the prose it marks, with no blank line between, so the block IS
+ *   the comment plus the prose. A reader who deletes the comment — which
+ *   that comment instructs them to do — no longer matches the block. That
+ *   is the likeliest real shape, and block comparison misses it.
+ * - A reader who keeps one sentence of a four-sentence paragraph no longer
+ *   matches the block either, where the line check matched the lines kept.
+ *
+ * Splitting to sentences fixes both: the unit stops depending on where the
+ * newlines are AND on how much of the paragraph survived. It also drops the
+ * residual false-refusal surface #515 names — a single wrapped word like
+ * `prevent.` is never a sentence, so it stops being a comparable unit at
+ * all, where as a LINE it was one.
+ *
+ * `stripHtmlComments` is applied to BOTH sides, and the battery is the
+ * reason it is still here rather than the argument above. Making it a
+ * no-op was 0 red of 62 on the first pass: every comment the template
+ * carries sits above a `TODO` placeholder that `unfilled()` discards
+ * anyway, so no fixture could tell the two apart. The input that can is a
+ * reader keeping a template sentence and splitting it with a comment —
+ * `test/success-doc.test.ts`'s "an HTML comment interleaved into the prose"
+ * case — which is the reformat-defeats-the-detector shape one layer down.
+ *
+ * `unfilled()` is the floor rather than a fresh number. It is already the
+ * module's answer to "is this string too slight to mean anything", and the
+ * only template unit it removes is the bare `TODO` a claim heading reduces
+ * to — four characters, which as a substring test would match almost every
+ * document in this repo.
+ */
+function templateSentences(template: string): string[] {
+  const out: string[] = [];
+  for (const block of stripHtmlComments(template).split(/\n[ \t]*\n/)) {
+    const prose: string[] = [];
+    for (const line of block.split("\n").map(l => l.trim()).filter(l => l.length > 0)) {
+      const claim = CLAIM_HEADING.exec(line);
+      // A claim heading contributes its STATEMENT and not its prefix, for
+      // the same reason the line path strips it: `### Claim 1 — <text>` is
+      // a heading by syntax and the claim itself by content.
+      if (claim) {
+        if (claim[2].trim()) prose.push(claim[2].trim());
+        continue;
+      }
+      if (structural(line)) continue;
+      prose.push(line);
+    }
+    if (prose.length === 0) continue;
+    // Joined FIRST, then split. Splitting per line would re-introduce the
+    // dependency on where the breaks are, which is the whole defect.
+    for (const sentence of collapseWhitespace(prose.join(" ")).split(SENTENCE_BREAK)) {
+      const u = sentence.trim();
+      if (u.length > 0 && !unfilled(u) && !out.includes(u)) out.push(u);
+    }
+  }
+  return out;
+}
+
+/** After a terminator, before something that can open a sentence. */
+const SENTENCE_BREAK = /(?<=[.!?])\s+(?=[A-Z"`*\[(])/;
+
+/**
+ * ONE binding each, shared by both halves of `templateResidue` (#515).
+ *
+ * They were local to the line matcher. The sentence matcher needs the same
+ * two questions answered the same way, and a second private copy would be
+ * the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`: two
+ * deciders that agree, where mutating either leaves the other holding every
+ * case up and no behavioural test can say which one is dead.
+ */
+const CLAIM_HEADING = /^(#{1,6}\s+\w[\w ]*\d+\s*[—–:-]\s*)(.*)$/;
+const structural = (l: string) =>
+  l.length === 0
+  || /^[\s|:+_*=~-]*$/.test(l)
+  || l.startsWith("|")
+  || l.startsWith("---")
+  || (l.startsWith("#") && !CLAIM_HEADING.test(l))
+  || /^[a-z][a-z-]*:\s/.test(l);
+const collapseWhitespace = (s: string) => s.replace(/\s+/g, " ").trim();
+const stripHtmlComments = (s: string) => s.replace(/<!--[\s\S]*?-->/g, " ");
+
 export function templateResidue(text: string, template: string): string[] {
   // A claim heading is NOT structural. `### Claim 1 — TODO` is a heading by
   // syntax and the claim's whole statement by content, and excluding it
@@ -430,7 +528,6 @@ export function templateResidue(text: string, template: string): string[] {
   // heading but its claims, and the widening flags nothing new across all
   // 227 markdown files in this repo — and `test/success-doc.test.ts`'s
   // "R1 cost" case fails loudly for whoever adds the first one.
-  const CLAIM_HEADING = /^(#{1,6}\s+\w[\w ]*\d+\s*[—–:-]\s*)(.*)$/;
   const comparable = (l: string) => {
     const m = CLAIM_HEADING.exec(l);
     return m ? m[2].trim() : l;
@@ -445,14 +542,6 @@ export function templateResidue(text: string, template: string): string[] {
   // and `List them.`, the entire contents of two sections. A short sentence
   // is still a sentence; what cannot be residue is punctuation and table
   // scaffolding, so that is what this excludes.
-  const structural = (l: string) =>
-    l.length === 0
-    || /^[\s|:+_*=~-]*$/.test(l)
-    || l.startsWith("|")
-    || l.startsWith("---")
-    || (l.startsWith("#") && !CLAIM_HEADING.test(l))
-    || /^[a-z][a-z-]*:\s/.test(l);
-
   const mine = new Set(text.split("\n").map(l => comparable(l.trim())));
   const out: string[] = [];
   for (const raw of template.split("\n")) {
@@ -461,6 +550,32 @@ export function templateResidue(text: string, template: string): string[] {
     const c = comparable(l);
     if (!mine.has(c)) continue;
     if (!out.includes(c)) out.push(c);
+  }
+
+  // UNION, not replacement, and the two halves are kept because each
+  // reaches an input the other cannot (#515).
+  //
+  // This is the arrangement `.claude/rules/checks-must-be-able-to-fail.md`
+  // permits for two deciders — "keep both and give each an input only it
+  // can reach" — rather than the one it warns about, and the inputs are
+  // written down as named cases in `test/success-doc.test.ts`:
+  //
+  // | Input | Caught by |
+  // |---|---|
+  // | the paragraph REFLOWED onto one line | sentences only |
+  // | the paragraph with one word changed mid-sentence | lines only |
+  // | the paragraph verbatim | both |
+  //
+  // The line half is not redundant: a sentence is a coarser unit, so an
+  // edit anywhere inside one destroys the whole match, while the untouched
+  // LINES either side of that edit still match. Dropping it to "simplify"
+  // loses the partial-edit case, which is the lazy-fill this check exists
+  // for. Measured: the union flags nothing new across all 227 markdown
+  // files in this repo — the only file it refuses is the template itself.
+  const normalised = collapseWhitespace(stripHtmlComments(text));
+  for (const sentence of templateSentences(template)) {
+    if (!normalised.includes(sentence)) continue;
+    if (!out.includes(sentence)) out.push(sentence);
   }
   return out;
 }
