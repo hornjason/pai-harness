@@ -781,3 +781,30 @@ present, called, and unable to fire.
 - [x] SC-1691: test/test-census.test.ts contains [a tree with no test file the walk can see is UNMEASURED - not clean] — asserted on the first round as well, since `{}` against `undefined` slipping through as `first-reading` reads as ordinary
 - [x] SC-1692: test/test-census.test.ts contains [an unmeasured round keeps the previous reading - no amnesia] — banking `{}` over a real census would make the round after it compare clean against nothing
 - [x] SC-1693: test/test-census.test.ts contains [the census refusal is counted after the baseline subtraction - not before] — ordering is not something a pure decider can express, so this is a source-position assertion in the shape of the `if (rebuildCmd)` enclosure guard, pinned against the results line at the other end
+
+#### Three more, from a second review pass
+
+The first pass found three ways the guard could not fire; the second found
+three more. Recorded because the pattern is the point: a guard against a
+defect class is written by someone holding that class in mind, and it still
+shipped six instances of it.
+
+4. **The banked census never reached disk, so the guard was permanently
+   dead.** `writeGateResult` does its own `readState(sf)` and writes THAT
+   back, so setting `state.gateContract.testCensus` in memory lands only by
+   accident. Every subsequent run would have found no census, answered
+   `first-reading`, logged a reassuring line, and compared nothing. The
+   write is now explicit, read-modify-write against the file so the gate
+   tests' and the heal agent's edits survive it.
+5. **Every matching file was read with no bound.** A `.spec.js` bundle is
+   read into memory on every gate run for a count that cannot be meaningful.
+   Capped, and the cap is stable so an oversized file is absent from both
+   censuses rather than reading as a deletion.
+6. **The walk followed symlinks.** A dirent for a symlink answers false to
+   `isDirectory()`, so a symlinked directory was skipped — but a symlink to a
+   FILE passed the old `else` and was read. A link named `x.test.ts` pointing
+   at a character device has size 0 and never ends. `isFile()` excludes both.
+
+- [x] SC-1694: test/test-census.test.ts contains [the banked census reaches the state FILE - and clobbers nothing] — a sibling under `gateContract` and unrelated top-level state are asserted to survive, and the persisted value is read back through `censusVerdict` so a census written in an unreadable shape cannot pass
+- [x] SC-1695: test/test-census.test.ts contains [the census block persists before writeGateResult re-reads the file] — the write landing in the right shape is worth nothing if it happens after the read that discards it
+- [x] SC-1696: test/test-census.test.ts contains [a file too large to be a suite is skipped - and a symlink is never read] — both a symlinked file and a symlinked directory are planted, because `isDirectory()` being false for a link is what let the file case through

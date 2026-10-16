@@ -292,6 +292,28 @@ export function censusVerdict(
  * guard that forgets what it refused is a guard you only have to get past
  * once.
  */
+/**
+ * Write the banked census into the state FILE (#307 SC-A19).
+ *
+ * Found by review, and without it the guard was permanently dead. Setting
+ * `state.gateContract.testCensus` in memory reaches disk only by accident:
+ * `writeGateResult` further down does its own `readState(sf)` and writes
+ * THAT back, so the in-memory mutation is discarded. Every subsequent gate
+ * run would have found no census, answered `first-reading`, logged a
+ * reassuring line, and compared nothing — forever.
+ *
+ * Read-modify-write against the file rather than a whole-state write,
+ * because the gate tests and any heal agent have been writing to it since
+ * this process loaded `state`, and clobbering their edits to record a census
+ * trades one silent loss for another.
+ */
+export function persistTestCensus(stateFilePath: string, census: Record<string, number>): void {
+  const fresh = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+  fresh.gateContract = fresh.gateContract || {};
+  fresh.gateContract.testCensus = census;
+  writeFileSync(stateFilePath, JSON.stringify(fresh, null, 2));
+}
+
 export function nextCensus(
   previous: Record<string, number> | undefined,
   current: Record<string, number>,
@@ -2106,6 +2128,10 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     state.gateContract = state.gateContract || {};
     const verdict = censusVerdict(state.gateContract.testCensus, current);
     state.gateContract.testCensus = nextCensus(state.gateContract.testCensus, current, verdict);
+    // To DISK, not just to `state` — `writeGateResult` below re-reads the
+    // file, so an in-memory mutation here never lands and the next run
+    // would find no census to compare against. See `persistTestCensus`.
+    persistTestCensus(sf, state.gateContract.testCensus);
 
     if (verdict.kind === "regression") {
       fails++;

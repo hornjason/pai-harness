@@ -22,11 +22,16 @@
  * agent.
  */
 import { describe, test, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { censusOf, censusRegressions, countTestDeclarations } from "../lib/test-census";
-import { censusVerdict, nextCensus } from "../gates/gate-executor";
+import {
+  censusOf,
+  censusRegressions,
+  countTestDeclarations,
+  MAX_CENSUS_FILE_BYTES,
+} from "../lib/test-census";
+import { censusVerdict, nextCensus, persistTestCensus } from "../gates/gate-executor";
 
 describe("#307: counting what a file declares", () => {
   test("SC-1684: skipped and todo tests are counted - converting one is removing it", () => {
@@ -128,6 +133,38 @@ describe("#307: counting what a file declares", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("SC-1696: a file too large to be a suite is skipped - and a symlink is never read", () => {
+    // Found by review. Unbounded `readFileSync` over every matching name on
+    // every gate run is a cost with nothing behind it, and a symlink named
+    // `x.test.ts` pointing at a character device has size 0 and never ends.
+    //
+    // Skipping the oversized file is safe because the cap is STABLE: it is
+    // absent from both censuses and so never reads as a deletion. The one
+    // case that refuses falsely is a file crossing the cap between rounds,
+    // which is loudly wrong and names the file.
+    const root = mkdtempSync(join(tmpdir(), "rg-census-big-"));
+    try {
+      writeFileSync(join(root, "small.test.ts"), `test("a",0);`);
+      writeFileSync(
+        join(root, "huge.test.ts"),
+        `test("x",0);`.repeat(1) + "/*" + "y".repeat(MAX_CENSUS_FILE_BYTES) + "*/",
+      );
+      // `isFile()` is false for a dirent that is a symlink, in both
+      // directions — no followed directory loop, and no followed file.
+      symlinkSync(join(root, "small.test.ts"), join(root, "link.test.ts"));
+      mkdirSync(join(root, "real"), { recursive: true });
+      writeFileSync(join(root, "real", "r.test.ts"), `it("b",0);`);
+      symlinkSync(join(root, "real"), join(root, "loop"));
+
+      expect(censusOf(root)).toEqual({
+        "small.test.ts": 1,
+        "real/r.test.ts": 1,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#307: what a gate run does about it", () => {
@@ -192,6 +229,62 @@ describe("#307: what a gate run does about it", () => {
     // comparison move forward at all.
     const grown = { "test/a.test.ts": 5 };
     expect(nextCensus(before, grown, censusVerdict(before, grown))).toEqual(grown);
+  });
+
+  test("SC-1694: the banked census reaches the state FILE - and clobbers nothing", () => {
+    // Found by review, and without it the guard was permanently dead.
+    // `writeGateResult` does its own `readState(sf)` and writes THAT back,
+    // so setting `state.gateContract.testCensus` in memory reaches disk only
+    // by accident — and did not. Every subsequent run would have found no
+    // census, answered `first-reading`, logged a reassuring line, and
+    // compared nothing, forever.
+    const dir = mkdtempSync(join(tmpdir(), "rg-persist-"));
+    try {
+      const sf = join(dir, "workflow-state.json");
+      // Other keys, including a sibling under gateContract, because the gate
+      // tests and any heal agent have been writing to this file since the
+      // process loaded its copy. A whole-state write would lose their edits.
+      writeFileSync(
+        sf,
+        JSON.stringify({
+          slug: "x",
+          acs: [{ id: "AC-1" }],
+          gateContract: { baselines: { testBaseline: 3 }, environments: { local: "PASS" } },
+        }),
+      );
+
+      persistTestCensus(sf, { "test/a.test.ts": 7 });
+
+      const after = JSON.parse(readFileSync(sf, "utf-8"));
+      expect(after.gateContract.testCensus).toEqual({ "test/a.test.ts": 7 });
+      expect(after.gateContract.baselines, "a sibling under gateContract was lost").toEqual({
+        testBaseline: 3,
+      });
+      expect(after.gateContract.environments).toEqual({ local: "PASS" });
+      expect(after.acs, "unrelated state was lost").toEqual([{ id: "AC-1" }]);
+
+      // Written in a form the next run can read back, which is the whole
+      // point — a census persisted as `[object Object]` would compare clean
+      // against everything.
+      expect(censusVerdict(after.gateContract.testCensus, { "test/a.test.ts": 4 })).toEqual({
+        kind: "regression",
+        regressions: ["test/a.test.ts: 7 test(s) before, 4 after"],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("SC-1695: the census block persists before writeGateResult re-reads the file", () => {
+    // The ordering half of SC-1694. The write landing in the right shape is
+    // worth nothing if it happens after the read that discards it.
+    const src = readFileSync(join(import.meta.dir, "..", "gates", "gate-executor.ts"), "utf-8");
+    const persist = src.indexOf("persistTestCensus(sf,");
+    const writeResult = src.indexOf("writeGateResult(sf, gate,");
+
+    expect(persist, "the census is no longer persisted").toBeGreaterThan(-1);
+    expect(writeResult, "writeGateResult's call site moved — move this guard with it").toBeGreaterThan(-1);
+    expect(persist, "the census is persisted after writeGateResult re-reads the file").toBeLessThan(writeResult);
   });
 
   test("SC-1693: the census refusal is counted after the baseline subtraction - not before", () => {

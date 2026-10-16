@@ -34,7 +34,7 @@
  * just as thoroughly as deleting it, and that conversion is the cheapest way
  * past a count that only looked at live tests.
  */
-import { existsSync, readdirSync, readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { join } from "path";
 
 /**
@@ -73,6 +73,18 @@ export const CENSUS_SKIP = new Set([
 const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 
 /**
+ * A file this large is not a hand-written suite, and reading it into memory
+ * on every gate run is a cost with no reading behind it.
+ *
+ * Oversized files are skipped, which is safe BECAUSE the cap is stable: a
+ * file over it is absent from both censuses and never reads as a deletion.
+ * The one case that does produce a false refusal is a file crossing the cap
+ * between rounds, and that is the direction to be wrong in — loudly, naming
+ * the file, rather than quietly dropping a test from the comparison.
+ */
+export const MAX_CENSUS_FILE_BYTES = 2_000_000;
+
+/**
  * Declaration forms bun recognises. `test` and `it`, bare or with a modifier.
  *
  * Anchored on a word boundary so `subtest(` and `omit(` do not count, and
@@ -109,8 +121,14 @@ export function censusOf(root: string): Record<string, number> {
       if (e.isDirectory()) {
         if (CENSUS_SKIP.has(e.name) || e.name.startsWith(".")) continue;
         walk(join(dir, e.name), r);
-      } else if (TEST_FILE.test(e.name)) {
-        out[r] = countTestDeclarations(readFileSync(join(dir, e.name), "utf-8"));
+      } else if (e.isFile() && TEST_FILE.test(e.name)) {
+        // `isFile()`, not `!isDirectory()`. A dirent for a symlink answers
+        // false to both, so this walk follows no links in either direction:
+        // no symlinked-directory loop, and no `readFileSync` on a link to a
+        // character device, which has size 0 and never ends.
+        const p = join(dir, e.name);
+        if (statSync(p).size > MAX_CENSUS_FILE_BYTES) continue;
+        out[r] = countTestDeclarations(readFileSync(p, "utf-8"));
       }
     }
   };
