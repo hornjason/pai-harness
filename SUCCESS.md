@@ -225,6 +225,21 @@ the guard has no way to support. A retry budget is a guess about someone
 else's infrastructure, and stating a guess as a finding is how a reader comes
 to distrust a correct refusal later. Filed as #445.
 
+**#445 is fixed, and the fix is not a longer wait.** Two changes, neither of
+them a number. The postflight reads the registry's published-VERSIONS list
+rather than `dist-tags.latest`, so a landed publish whose tag has not caught
+up is a pass that says so — that case had been a refusal naming a failed
+publish for the whole of SC-829's life, and SC-829 is now superseded over it.
+And when the version is genuinely not visible inside the budget, the step
+exits 2 with `RELEASE UNCONFIRMED` instead of 1 with `RELEASE REFUSED`: it
+names both explanations, chooses neither, says the publish may well have
+succeeded, and names `npm view rungate@<version> version` as the one command
+that settles it. The job still goes red, and that is a trade recorded in
+`specs/HARNESS-STANDARD.md` rather than assumed — a release is irreversible
+and a `run:` step has no neutral outcome, so the only alternative is
+`continue-on-error`, which the suite forbids outright. What is gone is the
+guard asserting a cause it had not established.
+
 **Why `0.3.0` and not `0.2.2` (2026-10-14).** The tree carried `0.2.2` from
 2026-09-19 and the first release attempt tagged it, which was wrong and was
 cancelled before it reached the registry. `0.2.2` is a PATCH, and a patch

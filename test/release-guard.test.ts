@@ -1,6 +1,14 @@
 /**
- * Covers SC-828, SC-829, SC-830, SC-831 (HARNESS-STANDARD.md).
+ * Covers SC-828, SC-830, SC-831 (HARNESS-STANDARD.md).
  * Covers SC-1419, SC-1420, SC-1421, SC-1422 (HARNESS-STANDARD.md) — #407.
+ * Covers SC-1647..SC-1652 (HARNESS-STANDARD.md) — #445.
+ *
+ * #445 — the postflight refused `v0.4.0`, which had published, and said *the
+ * publish step did not take effect* while adding that it had waited long
+ * enough for this not to be propagation. It had not established either
+ * claim. Both releases this project has ever cut are recorded as failures.
+ * The fix is not a longer wait: it is reading `versions` rather than a
+ * dist-tag, and reporting UNMEASURED where a cause was being asserted.
  *
  * #364 — rungate had no publish step. npm served `0.2.1` while `main` was 741
  * commits past it, so every mutation count and gate measurement in
@@ -25,11 +33,14 @@ import { tmpdir } from "os";
 import { join } from "path";
 import {
   awaitRegistryServes,
+  confirmCommand,
   NPM_REGISTRY,
-  POSTFLIGHT_ATTEMPTS,
+  POSTFLIGHT_BUDGET_MS,
   POSTFLIGHT_DELAY_MS,
-  postflightRefusal,
+  postflightAttempts,
+  postflightVerdict,
   preflightRefusal,
+  registryServes,
   registryState,
 } from "../lib/release-preflight";
 
@@ -91,34 +102,141 @@ describe("#364 SC-828: a release that was already cut is refused, not repeated",
   });
 });
 
-describe("#364 SC-829: a release that did NOT happen is refused too", () => {
+describe("#445 SC-1647: a release that did NOT happen stops the job too", () => {
+  const read = { attempts: 10, waitedMs: 27_000 };
+
   // Preflight alone passes a pipeline whose publish step never ran. This is
-  // the half that cannot be satisfied by doing nothing.
-  test("an unmoved latest is refused", () => {
-    const no = postflightRefusal("0.2.2", "0.2.1");
-    expect(no, "a skipped publish reported success").not.toBeNull();
-    expect(no).toContain("did not take effect");
+  // the half that cannot be satisfied by doing nothing — and after #445 it
+  // is also the half that declines to say WHY it could not see the version.
+  test("SC-1647: a reading that does not carry the version is UNMEASURED and not a finding", () => {
+    // The exact v0.4.0 reading: the publish had landed, the packument had not.
+    const v = postflightVerdict("rungate", "0.4.0", state(["0.3.0"], "0.3.0"), read);
+    expect(v.published, "an absent version was reported as published").toBe(false);
+    expect(v.unmeasured, "a stale read produced no reading at all").not.toBeNull();
+    expect(v.unmeasured).toContain("UNMEASURED");
+    // Both explanations named, neither chosen. The old text said "the publish
+    // step did not take effect" and was wrong on both of this project's
+    // releases.
+    expect(v.unmeasured, "the failed-publish explanation was dropped")
+      .toContain("the publish did not take effect");
+    expect(v.unmeasured, "the propagation explanation was dropped")
+      .toContain("the packument has not propagated");
+    expect(v.unmeasured, "the guard still picks one of the two")
+      .toContain("nothing available here tells them apart");
   });
 
-  test("a registry with no latest at all is refused", () => {
-    expect(postflightRefusal("0.2.2", null)).toContain("the release did not happen");
+  test("SC-1647: a registry with nothing published at all is UNMEASURED too", () => {
+    // Evidence a publish did not happen, which is still not proof of it: an
+    // unpropagated packument for a brand new package reads identically.
+    const v = postflightVerdict("rungate", "0.4.0", state([], null), read);
+    expect(v.published).toBe(false);
+    expect(v.unmeasured).toContain("absent from the registry's packument");
+    expect(v.unmeasured).toContain("dist-tags.latest is unset");
   });
 
-  test("latest matching the tree version is allowed", () => {
-    expect(postflightRefusal("0.2.2", "0.2.2")).toBeNull();
+  test("SC-1648: a version present with latest unmoved is published - not a failure", () => {
+    // SC-2's second arm, and the distinction #364 did not draw. `latest` is a
+    // pointer; `versions` is the fact. `npm install rungate@0.4.0` resolves
+    // here, so the publish took effect by any definition a consumer has.
+    const v = postflightVerdict("rungate", "0.4.0", state(["0.3.0", "0.4.0"], "0.3.0"), read);
+    expect(v.published, "a landed publish was reported as not having happened").toBe(true);
+    expect(v.unmeasured).toBeNull();
+    expect(v.note, "the lagging dist-tag was not reported at all").not.toBeNull();
+    expect(v.note).toContain("the publish landed and the tag has not");
+    expect(v.note).toContain("not a failed publish");
   });
 
-  test("the two phases disagree about the same reading, which is the point", () => {
-    // One registry state, read before and after. Exactly one of the two
-    // phases may be satisfied by it — if both passed, or neither could, the
-    // pair would not distinguish a release from a no-op.
+  test("SC-1648: a version absent from the packument is the other arm entirely", () => {
+    // The two arms side by side, which is what makes the distinction
+    // observable rather than asserted. Same `latest`, same everything else;
+    // only the versions list differs, and the verdicts invert.
+    const present = postflightVerdict("rungate", "0.4.0", state(["0.3.0", "0.4.0"], "0.3.0"), read);
+    const absent = postflightVerdict("rungate", "0.4.0", state(["0.3.0"], "0.3.0"), read);
+    expect(present.published).toBe(true);
+    expect(absent.published).toBe(false);
+    expect(present.unmeasured).toBeNull();
+    expect(absent.unmeasured).not.toBeNull();
+  });
+
+  test("SC-1648: latest matching the tree version is published and says nothing extra", () => {
+    const v = postflightVerdict("rungate", "0.4.0", state(["0.3.0", "0.4.0"], "0.4.0"), read);
+    expect(v).toEqual({ published: true, note: null, unmeasured: null });
+  });
+
+  test("SC-1648: one predicate answers it, and both phases consult that one", () => {
+    // The fourth shape in .claude/rules/checks-must-be-able-to-fail.md: two
+    // deciders answering the same question are behaviourally one guard. The
+    // postflight's question is `registryServes`, and preflight asks the same
+    // predicate in the opposite direction rather than keeping its own copy.
     const before = state(["0.2.0", "0.2.1"], "0.2.1");
+    expect(registryServes(before, "0.2.2")).toBe(false);
     expect(preflightRefusal("0.2.2", null, before)).toBeNull();
-    expect(postflightRefusal("0.2.2", before.latest)).not.toBeNull();
+    expect(postflightVerdict("rungate", "0.2.2", before, read).published).toBe(false);
 
     const after = state(["0.2.0", "0.2.1", "0.2.2"], "0.2.2");
+    expect(registryServes(after, "0.2.2")).toBe(true);
     expect(preflightRefusal("0.2.2", null, after)).not.toBeNull();
-    expect(postflightRefusal("0.2.2", after.latest)).toBeNull();
+    expect(postflightVerdict("rungate", "0.2.2", after, read).published).toBe(true);
+  });
+
+  test("SC-1649: nothing the guard can say claims the wait was long enough", () => {
+    /**
+     * The specific sentence that was wrong twice:
+     *
+     *   > read 10 times over 27s, which is long enough that this is not the
+     *   > registry catching up
+     *
+     * It was not long enough, on both of the two releases this project has
+     * ever cut. Pinned against the SOURCE as well as the message, because a
+     * message assertion only covers the branches a test happens to drive.
+     */
+    const CLAIMS = [
+      "long enough",
+      "not the registry catching up",
+      "whatever the job's exit code says",
+    ];
+    const src = readFileSync(join(ROOT, "lib", "release-preflight.ts"), "utf-8");
+    for (const claim of CLAIMS) {
+      expect(src.includes(claim), `the guard can still say "${claim}"`).toBe(false);
+    }
+
+    // "the publish did not take effect" survives as ONE OF TWO named
+    // alternatives, which is the opposite of the claim that was wrong. So
+    // the property is not that the words are gone — it is that they never
+    // appear without the alternative beside them.
+    for (const st of [state([], null), state(["0.3.0"], "0.3.0"), state(["0.4.0"], "0.3.0")]) {
+      const v = postflightVerdict("rungate", "0.4.0", st, read);
+      const said = `${v.unmeasured ?? ""}${v.note ?? ""}`;
+      for (const claim of CLAIMS) {
+        expect(said, `the guard said "${claim}"`).not.toContain(claim);
+      }
+      if (said.includes("the publish did not take effect")) {
+        expect(said, "a cause was stated without its alternative")
+          .toContain("the packument has not propagated");
+      }
+    }
+  });
+
+  test("SC-1651: the unconfirmed message names the one command that settles it", () => {
+    // Otherwise the next person reads a wall of log and goes to the Actions
+    // page, which is the artefact that is wrong.
+    const v = postflightVerdict("rungate", "0.4.0", state(["0.3.0"], "0.3.0"), read);
+    expect(confirmCommand("rungate", "0.4.0")).toBe("npm view rungate@0.4.0 version");
+    expect(v.unmeasured).toContain(confirmCommand("rungate", "0.4.0"));
+    expect(v.unmeasured, "it does not say the publish may have worked")
+      .toContain("The publish may well have succeeded");
+    // Both outcomes of running it, or the command is a dead end.
+    expect(v.unmeasured).toContain("the release landed");
+    expect(v.unmeasured).toContain("must be cut again");
+  });
+
+  test("SC-1651: the message says how hard it looked without interpreting it", () => {
+    const v = postflightVerdict("rungate", "0.4.0", state(["0.3.0"], "0.3.0"),
+      { attempts: 25, waitedMs: 120_000 });
+    expect(v.unmeasured).toContain("25 reads over 120s");
+    const once = postflightVerdict("rungate", "0.4.0", state(["0.3.0"], "0.3.0"),
+      { attempts: 1, waitedMs: 0 });
+    expect(once.unmeasured, "the singular is not special-cased").toContain("1 read over 0s");
   });
 });
 
@@ -210,11 +328,12 @@ describe("#407: the postflight tolerates the registry's lag without losing its b
     const clock = recordingSleep();
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: reg.impl,
-      attempts: 10,
+      budgetMs: 27_000,
       delayMs: 3000,
       sleep: clock.sleep,
     });
-    expect(got.refusal, got.refusal ?? undefined).toBeNull();
+    expect(got.verdict.unmeasured, got.verdict.unmeasured ?? undefined).toBeNull();
+    expect(got.verdict.published).toBe(true);
     expect(got.latest).toBe("0.3.0");
     expect(got.attempts, "it did not actually re-read").toBe(4);
     expect(got.waitedMs).toBe(9000);
@@ -223,53 +342,87 @@ describe("#407: the postflight tolerates the registry's lag without losing its b
 
   test("SC-1420: a registry that has it immediately does not sleep at all", async () => {
     // The positive control for the case above. A poll that always slept once
-    // would satisfy it and add 3 seconds to every green release.
+    // would satisfy it and add a delay to every green release.
     const clock = recordingSleep();
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: laggingRegistry("0.3.0", "0.3.0", 0).impl,
       sleep: clock.sleep,
     });
-    expect(got).toMatchObject({ refusal: null, attempts: 1, waitedMs: 0 });
+    expect(got).toMatchObject({ attempts: 1, waitedMs: 0 });
+    expect(got.verdict).toEqual({ published: true, note: null, unmeasured: null });
     expect(clock.slept, "a release that needed no waiting still waited").toEqual([]);
   });
 
   test("SC-1421: a publish that never lands is still refused once attempts run out", async () => {
-    // The half that keeps this from becoming a check that cannot fail.
+    // The half that keeps this from becoming a check that cannot fail, and
+    // SC-4's positive control: widening POSTFLIGHT_BUDGET_MS cannot turn this
+    // off, because exhausting the budget is exactly what it drives.
     const reg = laggingRegistry("0.2.1", "0.2.1", 99);
     const clock = recordingSleep();
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: reg.impl,
-      attempts: 5,
+      budgetMs: 8000,
       delayMs: 2000,
       sleep: clock.sleep,
     });
-    expect(got.refusal, "an unpublished version was waved through").not.toBeNull();
+    expect(got.verdict.published, "an unpublished version was waved through").toBe(false);
+    expect(got.verdict.unmeasured, "exhaustion produced no reading at all").not.toBeNull();
     expect(got.attempts, "it gave up early or looped past its bound").toBe(5);
     expect(reg.reads()).toBe(5);
     expect(clock.slept).toHaveLength(4); // no sleep after the last read
   });
 
-  test("SC-1421: the refusal names the elapsed wait, not just the mismatch", async () => {
-    // Otherwise "it refused" and "it did not wait long enough" read the same
-    // in the log, and the first thing anyone does is raise the number blind.
+  test("SC-1421: the unconfirmed reading names the elapsed wait and names neither cause", async () => {
+    // Otherwise "we could not see it" and "it is not there" read the same in
+    // the log, and the first thing anyone does is raise the number blind —
+    // which is what #407 did, and #445 is the second instance.
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: laggingRegistry("0.2.1", "0.2.1", 99).impl,
-      attempts: 5,
+      budgetMs: 8000,
       delayMs: 2000,
       sleep: async () => {},
     });
-    expect(got.refusal).toContain("read 5 times over 8s");
-    expect(got.refusal, "the underlying mismatch was dropped").toContain("0.2.1");
+    expect(got.verdict.unmeasured).toContain("5 reads over 8s");
+    expect(got.verdict.unmeasured, "the reading it actually got was dropped").toContain("0.2.1");
+    expect(got.verdict.unmeasured).toContain("nothing available here tells them apart");
   });
 
-  test("SC-1421: a package that never published at all is refused too", async () => {
+  test("SC-1421: a package that never published at all is unconfirmed too", async () => {
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: laggingRegistry(null, null, 99).impl,
-      attempts: 2,
+      budgetMs: 1,
       delayMs: 1,
       sleep: async () => {},
     });
-    expect(got.refusal).toContain("the release did not happen");
+    expect(got.verdict.unmeasured).toContain("absent from the registry's packument");
+    expect(got.attempts).toBe(2);
+  });
+
+  test("SC-1650: a lagging dist-tag ends the poll rather than spending the budget", async () => {
+    // The #445 arm, driven through the poll: the version is in `versions` on
+    // the first read while `latest` still points at the previous release. A
+    // guard reading `latest` would burn its whole budget here and then report
+    // a failed publish, which is both of this project's releases.
+    const impl = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          versions: { "0.3.0": {}, "0.4.0": {} },
+          "dist-tags": { latest: "0.3.0" },
+        }),
+      }) as unknown as Response) as unknown as typeof fetch;
+    const clock = recordingSleep();
+    const got = await awaitRegistryServes("rungate", "0.4.0", {
+      fetchImpl: impl,
+      budgetMs: 8000,
+      delayMs: 2000,
+      sleep: clock.sleep,
+    });
+    expect(got.verdict.published).toBe(true);
+    expect(got.attempts, "it kept polling for a dist-tag it does not decide on").toBe(1);
+    expect(clock.slept).toEqual([]);
+    expect(got.verdict.note).toContain("not a failed publish");
   });
 
   // No comma in this title, or SC-1419's and SC-1422's below: the conformity
@@ -291,11 +444,11 @@ describe("#407: the postflight tolerates the registry's lag without losing its b
     }) as unknown as typeof fetch;
     const got = await awaitRegistryServes("rungate", "0.3.0", {
       fetchImpl: flaky,
-      attempts: 5,
+      budgetMs: 4,
       delayMs: 1,
       sleep: async () => {},
     });
-    expect(got.refusal).toBeNull();
+    expect(got.verdict.published).toBe(true);
     expect(got.attempts).toBe(3);
 
     const alwaysDown = (async () => {
@@ -304,7 +457,7 @@ describe("#407: the postflight tolerates the registry's lag without losing its b
     await expect(
       awaitRegistryServes("rungate", "0.3.0", {
         fetchImpl: alwaysDown,
-        attempts: 3,
+        budgetMs: 2,
         delayMs: 1,
         sleep: async () => {},
       }),
@@ -312,57 +465,84 @@ describe("#407: the postflight tolerates the registry's lag without losing its b
     ).rejects.toThrow("ECONNRESET");
   });
 
-  test("SC-1422: a zero-attempt poll throws rather than reporting a pass", async () => {
-    // A loop that runs no iterations would fall out with no refusal — a check
-    // that never ran, reported as a check that was satisfied.
-    await expect(
-      awaitRegistryServes("rungate", "0.3.0", { attempts: 0 }),
-    ).rejects.toThrow("at least one attempt");
+  test("SC-1422: an unbounded or undividable budget throws rather than reporting a pass", async () => {
+    // A poll that never terminates cannot fail, and a loop that runs no
+    // iterations would fall out having measured nothing. Both are the check
+    // that never ran, reported as the check that was satisfied.
+    for (const opts of [
+      { budgetMs: Infinity },
+      { budgetMs: -1 },
+      { budgetMs: Number.NaN },
+      { delayMs: 0 },
+      { delayMs: -5 },
+    ]) {
+      await expect(
+        awaitRegistryServes("rungate", "0.3.0", opts),
+        `${JSON.stringify(opts)} was accepted`,
+      ).rejects.toThrow("finite non-negative budget and a positive delay");
+    }
   });
 
-  test("SC-1419: the defaults allow for npm's observed lag, and are bounded", () => {
-    expect(POSTFLIGHT_ATTEMPTS).toBeGreaterThan(1);
-    expect(POSTFLIGHT_ATTEMPTS).toBeLessThan(60);
+  test("SC-1650: the window is one exported constant and the cadence cannot widen it", () => {
+    // SC-4. #407 shipped the window as attempts × delay, so widening it meant
+    // reasoning about a product and raising whichever number you noticed.
+    expect(POSTFLIGHT_BUDGET_MS).toBeGreaterThanOrEqual(20_000);
+    expect(POSTFLIGHT_BUDGET_MS).toBeLessThanOrEqual(300_000);
     expect(POSTFLIGHT_DELAY_MS).toBeGreaterThanOrEqual(1000);
-    // The window has to clear the lag that produced #407 and still fit inside
-    // a job somebody is watching.
-    const windowMs = (POSTFLIGHT_ATTEMPTS - 1) * POSTFLIGHT_DELAY_MS;
-    expect(windowMs).toBeGreaterThanOrEqual(20_000);
-    expect(windowMs).toBeLessThanOrEqual(120_000);
+    expect(POSTFLIGHT_DELAY_MS).toBeLessThan(POSTFLIGHT_BUDGET_MS);
+
+    // The property that makes it ONE constant: changing the cadence changes
+    // how often it looks and not how long it looks for.
+    for (const delay of [1000, 2500, 5000, 10_000]) {
+      const spent = (postflightAttempts(POSTFLIGHT_BUDGET_MS, delay) - 1) * delay;
+      expect(spent, `a ${delay}ms cadence moved the window`).toBe(POSTFLIGHT_BUDGET_MS);
+    }
+    // The first read costs no wait, so a budget of zero still buys one look.
+    expect(postflightAttempts(0, 5000)).toBe(1);
   });
 
   test("SC-1419: the workflow passes neither test knob - so the release waits for real", () => {
-    // `--attempts` and `--delay-ms` exist for the exhaustion case above. A
+    // `--budget-ms` and `--delay-ms` exist for the exhaustion case above. A
     // workflow that set them could shorten the window to nothing and the
     // bound would be back where #407 found it.
     const src = readFileSync(WORKFLOW, "utf-8");
-    expect(src, "the workflow overrides the postflight attempt count").not.toContain("--attempts");
+    expect(src, "the workflow overrides the postflight budget").not.toContain("--budget-ms");
     expect(src, "the workflow overrides the postflight delay").not.toContain("--delay-ms");
   });
 });
 
 /**
- * Spawn the real script, and spawn a mutant copy with REFUSE_EXIT zeroed.
+ * Spawn the real script, and spawn a mutant copy with every stopping exit
+ * code zeroed.
  *
  * Every negative case runs twice. The second assertion is the whole point:
  * it is the removal of the non-zero exit, performed and observed, so a case
  * that later starts passing for an unrelated reason stops being
  * indistinguishable from one that is genuinely caught.
+ *
+ * Both constants are mutated, not just REFUSE_EXIT (#445). An UNMEASURED
+ * exit that survived the mutation would make the unconfirmed-publish case
+ * below pass on a mutant that still stops the job, which is exactly the
+ * "passing for an unrelated reason" this harness exists to rule out.
  */
+const EXIT_DECLS = ["export const REFUSE_EXIT = 1;", "export const UNMEASURED_EXIT = 2;"];
+
 function mutantScript(): string {
   const src = readFileSync(SCRIPT, "utf-8");
 
-  const DECL = "export const REFUSE_EXIT = 1;";
-  const n = src.split(DECL).length - 1;
-  if (n !== 1) {
-    throw new Error(`could not build the mutant: the exit constant appears ${n} times`);
+  let out = src;
+  for (const decl of EXIT_DECLS) {
+    const n = src.split(decl).length - 1;
+    if (n !== 1) {
+      throw new Error(`could not build the mutant: ${decl} appears ${n} times`);
+    }
+    out = out.replace(decl, decl.replace(/= \d+;$/, "= 0;"));
   }
 
   // The copy runs from a temp directory, so every relative specifier is
   // rewritten to an absolute path. One the rewriter cannot see would make the
   // mutant die on module resolution — a non-zero exit, which would read as
   // the mutation having been rejected on the merits.
-  let out = src.replace(DECL, "export const REFUSE_EXIT = 0;");
   out = out.replace(/from "(\.\.?\/[^"]+)"/g, (_m, spec) => `from ${JSON.stringify(join(ROOT, "scripts", spec))}`);
   const leftover = out.match(/from "\.\.?\//);
   if (leftover) throw new Error("could not build the mutant: a relative import survived rewriting");
@@ -427,16 +607,64 @@ describe("#364 SC-831: every refusal travels through one exit code", () => {
     expect(run(mutantScript(), args).code).toBe(0);
   }, 180_000);
 
-  test("refuses a publish that never landed, and the mutant does not", () => {
+  test("SC-1652: an unconfirmed publish stops the job on its own exit code", () => {
+    // `--budget-ms 0` buys one read and no wait. Without it this case would
+    // spend the real POSTFLIGHT_BUDGET_MS of wall clock on every suite run.
     const args = [
       "--phase", "postflight",
       "--root", fakeRoot("0.2.2"),
+      "--budget-ms", "0",
       "--registry", fakeRegistry({ versions: { "0.2.1": {} }, "dist-tags": { latest: "0.2.1" } }),
     ];
     const real = run(SCRIPT, args);
-    expect(real.code, "a skipped publish reported success").not.toBe(0);
-    expect(real.out).toContain("did not take effect");
+    // SC-6's decision, as a test rather than as prose: it still stops the
+    // job, and it stops it through a DIFFERENT code than an established
+    // refusal, so the two states are distinguishable to anything downstream.
+    expect(real.code, "an unconfirmed publish reported success").toBe(2);
+    expect(real.out).toContain("RELEASE UNCONFIRMED");
+    expect(real.out, "it still narrates a cause it has not established")
+      .not.toContain("RELEASE REFUSED");
+    expect(real.out).toContain("npm view rungate@0.2.2 version");
     expect(run(mutantScript(), args).code).toBe(0);
+  }, 180_000);
+
+  test("SC-1652: a refusal and an unconfirmed reading do not share an exit code", () => {
+    // Two states that exit identically are one state. The preflight refusal
+    // is the established half; the postflight's exhausted budget is not.
+    const refused = run(SCRIPT, [
+      "--phase", "preflight",
+      "--root", fakeRoot("0.2.1"),
+      "--registry", fakeRegistry({ versions: { "0.2.1": {} }, "dist-tags": { latest: "0.2.1" } }),
+    ]);
+    const unconfirmed = run(SCRIPT, [
+      "--phase", "postflight",
+      "--root", fakeRoot("0.2.2"),
+      "--budget-ms", "0",
+      "--registry", fakeRegistry({ versions: { "0.2.1": {} }, "dist-tags": { latest: "0.2.1" } }),
+    ]);
+    expect(refused.code).toBe(1);
+    expect(unconfirmed.code).toBe(2);
+    // Both stop the job, which is the other half of the decision: a release
+    // is irreversible and GitHub Actions gives a `run:` step no neutral
+    // outcome, so "could not tell" cannot be allowed to read as "fine".
+    expect(refused.code).not.toBe(0);
+    expect(unconfirmed.code).not.toBe(0);
+  }, 180_000);
+
+  test("SC-1648: a landed publish whose dist-tag has not moved is allowed and said out loud", () => {
+    const args = [
+      "--phase", "postflight",
+      "--root", fakeRoot("0.4.0"),
+      "--registry", fakeRegistry({
+        versions: { "0.3.0": {}, "0.4.0": {} },
+        "dist-tags": { latest: "0.3.0" },
+      }),
+    ];
+    const real = run(SCRIPT, args);
+    expect(real.code, real.out).toBe(0);
+    expect(real.out).toContain("postflight OK");
+    expect(real.out).toContain("postflight note:");
+    expect(real.out).toContain("not a failed publish");
   }, 180_000);
 
   test("allows a real release in both phases", () => {
@@ -469,12 +697,20 @@ describe("#364 SC-831: every refusal travels through one exit code", () => {
     // that silently no-ops when the constant is renamed is the decorative
     // check this whole rule is about.
     const original = readFileSync(SCRIPT, "utf-8");
-    expect(original.split("export const REFUSE_EXIT = 1;").length - 1,
-      "the exit constant must appear exactly once, or a refusal could bypass the mutation",
-    ).toBe(1);
-    expect(/process\.exit\((?!REFUSE_EXIT)/.test(original),
+    for (const decl of EXIT_DECLS) {
+      expect(original.split(decl).length - 1,
+        `${decl} must appear exactly once, or a stop could bypass the mutation`,
+      ).toBe(1);
+    }
+    expect(/process\.exit\((?!REFUSE_EXIT|UNMEASURED_EXIT)/.test(original),
       "a literal process.exit() would slip past the mutation",
     ).toBe(false);
+    // Every exit the script can take is one of the two, and they differ.
+    // A second constant that happened to equal the first would make the
+    // SC-1652 pair above indistinguishable while both tests stayed green.
+    const codes = EXIT_DECLS.map(d => Number(d.match(/= (\d+);$/)![1]));
+    expect(new Set(codes).size, "two stopping states share one exit code").toBe(codes.length);
+    expect(codes.every(c => c !== 0), "a stopping state exits zero").toBe(true);
   });
 });
 

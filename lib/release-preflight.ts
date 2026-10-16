@@ -151,7 +151,11 @@ export function preflightRefusal(
       `${treeVersion}, so the tag would describe a release that is not the one cut`
     );
   }
-  if (state.versions.includes(treeVersion)) {
+  // `registryServes`, not a second `versions.includes` here (#445). Two
+  // deciders answering the same question about the same input are
+  // behaviourally one guard, and no behavioural test can tell them apart —
+  // the fourth shape in .claude/rules/checks-must-be-able-to-fail.md.
+  if (registryServes(state, treeVersion)) {
     return (
       `rungate@${treeVersion} is already on the registry — publishing it again is ` +
       `rejected by npm, and a job that treats that rejection as success reports a ` +
@@ -162,30 +166,109 @@ export function preflightRefusal(
 }
 
 /**
- * The single place that decides whether a release actually happened. `null`
- * allows.
+ * The ONE question the postflight answers: is the version on the registry?
+ *
+ * The `versions` list, not `dist-tags.latest` (#445). They are different
+ * facts and #364 conflated them. A version that appears in `versions` has
+ * been published — `npm install rungate@0.4.0` resolves — whatever `latest`
+ * currently points at, because a dist-tag is a pointer that moves on its own
+ * schedule and can be aimed anywhere. Reading `latest` to answer "did the
+ * publish take effect" is reading a pointer to answer a question about the
+ * thing pointed at.
+ *
+ * Exported as its own binding so there is exactly one place to mutate.
+ * `preflightRefusal` asks the same predicate in the opposite direction — the
+ * version must NOT be here before, and MUST be here after — which is the
+ * whole of the two-readings design in one field.
+ */
+export function registryServes(state: RegistryState, version: string): boolean {
+  return state.versions.includes(version);
+}
+
+/**
+ * What the postflight established, and what it could not (#445).
+ *
+ * Three states, not two, because `v0.3.0` and `v0.4.0` both published
+ * successfully and both were recorded as failures. The old shape had only
+ * `refusal | null`, so a stale read had nowhere to go but into a refusal, and
+ * the refusal it got said *the publish step did not take effect* — a cause
+ * the guard had not established and could not establish from where it stood.
+ */
+export interface PostflightVerdict {
+  /** `true` only when the registry serves the version being cut. */
+  published: boolean;
+  /**
+   * Set when the release is published but `latest` still points elsewhere.
+   * Reported, never decided on: a lagging dist-tag is propagation, and the
+   * guard calling it a failed publish is the whole of #445.
+   */
+  note: string | null;
+  /**
+   * Set when the version is absent from the packument. Deliberately NOT a
+   * finding — both explanations are named and neither is chosen. See
+   * `.claude/rules/config-access.md`: a reading that could not be obtained is
+   * UNMEASURED, and `0`, `{}`, `null` and `SKIP` are indistinguishable from
+   * success while UNMEASURED is not.
+   */
+  unmeasured: string | null;
+}
+
+/** The command a human runs to settle what this guard cannot. */
+export function confirmCommand(pkg: string, version: string): string {
+  return `npm view ${pkg}@${version} version`;
+}
+
+/**
+ * The single place that decides whether a release actually happened.
  *
  * Run AFTER the publish step, against a freshly read registry. This is the
  * half that cannot be satisfied by doing nothing: a skipped, swallowed or
- * silently-failed publish leaves `latest` where it was.
+ * silently-failed publish leaves the registry without the version.
+ *
+ * What it will not do is say WHY the version is missing. From one stale read
+ * "the publish did not take effect" and "the packument has not propagated"
+ * are the same observation, and #407 answered that by waiting longer, which
+ * is a bigger guess rather than a different mechanism. This answers it by
+ * declining to guess and naming the command that settles it.
  */
-export function postflightRefusal(treeVersion: string, latestAfter: string | null): string | null {
-  if (latestAfter === null) {
-    return (
-      `the registry has no latest version for rungate after the publish step — ` +
-      `the release did not happen, whatever the job's exit code says`
-    );
+export function postflightVerdict(
+  pkg: string,
+  treeVersion: string,
+  state: RegistryState,
+  read: { attempts: number; waitedMs: number },
+): PostflightVerdict {
+  const seconds = Math.round(read.waitedMs / 1000);
+  const reads = `${read.attempts} read${read.attempts === 1 ? "" : "s"} over ${seconds}s`;
+
+  if (registryServes(state, treeVersion)) {
+    return {
+      published: true,
+      note:
+        state.latest === treeVersion
+          ? null
+          : `the registry serves ${pkg}@${treeVersion} while dist-tags.latest is ` +
+            `${state.latest ?? "unset"} — the publish landed and the tag has not ` +
+            `caught up. That is propagation and it is not a failed publish`,
+      unmeasured: null,
+    };
   }
-  if (latestAfter !== treeVersion) {
-    return (
-      `the registry's latest is ${latestAfter}, not the ${treeVersion} this run was ` +
-      `cutting — the publish step did not take effect`
-    );
-  }
-  return null;
+
+  return {
+    published: false,
+    note: null,
+    unmeasured:
+      `UNMEASURED: ${pkg}@${treeVersion} is absent from the registry's packument ` +
+      `after ${reads} (dist-tags.latest is ${state.latest ?? "unset"}). Two ` +
+      `explanations fit this reading and nothing available here tells them apart: ` +
+      `the publish did not take effect, or the packument has not propagated. ` +
+      `The publish may well have succeeded. Settle it with ` +
+      `\`${confirmCommand(pkg, treeVersion)}\` — if that prints ${treeVersion} the ` +
+      `release landed and only this job's result is wrong; if it fails, the publish ` +
+      `did not happen and the release must be cut again.`,
+  };
 }
 
-/** What a postflight poll saw, and how hard it had to look (#407). */
+/** What a postflight poll saw, and how hard it had to look (#407, #445). */
 export interface PostflightReading {
   /** The `latest` dist-tag on the final read. */
   latest: string | null;
@@ -193,13 +276,30 @@ export interface PostflightReading {
   attempts: number;
   /** Time spent sleeping between reads, in ms. */
   waitedMs: number;
-  /** The refusal, or `null` to allow. */
-  refusal: string | null;
+  /** What the final read established. */
+  verdict: PostflightVerdict;
 }
 
-/** Defaults sized for npm's observed read-after-write lag: up to ~30s. */
-export const POSTFLIGHT_ATTEMPTS = 10;
-export const POSTFLIGHT_DELAY_MS = 3_000;
+/**
+ * The whole poll window, as ONE exported constant (#445 SC-4).
+ *
+ * #407 shipped the window as two numbers — ten attempts, three seconds apart
+ * — so widening it meant reasoning about their product, and the next person
+ * to widen it would raise whichever one they noticed. One constant, one edit,
+ * and `POSTFLIGHT_DELAY_MS` below cannot change the window no matter what it
+ * is set to. The positive control in `test/release-guard.test.ts` proves the
+ * guard still refuses an absent version, so widening this cannot quietly turn
+ * the check off.
+ */
+export const POSTFLIGHT_BUDGET_MS = 120_000;
+
+/** How often to re-read inside the budget. A cadence, not a budget knob. */
+export const POSTFLIGHT_DELAY_MS = 5_000;
+
+/** Reads the budget buys at a given cadence. The first read costs no wait. */
+export function postflightAttempts(budgetMs: number, delayMs: number): number {
+  return Math.floor(budgetMs / delayMs) + 1;
+}
 
 /**
  * Poll the registry until it serves `treeVersion`, or give up and refuse (#407).
@@ -218,9 +318,16 @@ export const POSTFLIGHT_DELAY_MS = 3_000;
  * ## The bound is the point
  *
  * Retrying until it goes green would turn this into the defect in the other
- * direction. The loop is bounded, a publish that never lands still refuses,
- * and the refusal says how long it waited — otherwise "it refused" and "it
- * did not wait long enough" are indistinguishable to whoever reads the log.
+ * direction. The loop is bounded, a version that never appears is never
+ * reported as published, and the reading says how many times it looked and
+ * for how long — so a reader can tell a bounded search from an impatient one
+ * without the guard having to interpret the number for them.
+ *
+ * ## What it stopped claiming (#445)
+ *
+ * Exhausting the budget used to produce a refusal naming a cause. It now
+ * produces `verdict.unmeasured`, which names both causes and neither. See
+ * `postflightVerdict`.
  *
  * ## Why an intermediate throw retries and the last one does not
  *
@@ -239,45 +346,46 @@ export async function awaitRegistryServes(
   opts: {
     fetchImpl?: typeof fetch;
     base?: string;
-    attempts?: number;
+    budgetMs?: number;
     delayMs?: number;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<PostflightReading> {
-  const attempts = opts.attempts ?? POSTFLIGHT_ATTEMPTS;
+  const budgetMs = opts.budgetMs ?? POSTFLIGHT_BUDGET_MS;
   const delayMs = opts.delayMs ?? POSTFLIGHT_DELAY_MS;
-  // A zero-attempt poll reads nothing and would fall out of the loop with no
-  // refusal — a check that never runs, reported as a check that passed.
-  if (!Number.isInteger(attempts) || attempts < 1) {
-    throw new Error(`postflight needs at least one attempt, got ${opts.attempts}`);
+  // An unbounded budget is the defect in the other direction — a poll that
+  // retries until it goes green cannot fail — and a zero delay divides the
+  // budget by nothing and never terminates.
+  if (!Number.isFinite(budgetMs) || budgetMs < 0 || !Number.isFinite(delayMs) || delayMs <= 0) {
+    throw new Error(
+      `postflight needs a finite non-negative budget and a positive delay, got ` +
+        `${opts.budgetMs} / ${opts.delayMs}`,
+    );
   }
+  const attempts = postflightAttempts(budgetMs, delayMs);
   const sleep = opts.sleep ?? ((ms: number) => new Promise(r => setTimeout(r, ms)));
 
   let waitedMs = 0;
-  let latest: string | null = null;
-  let refusal: string | null = null;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const last = attempt === attempts;
+    let state: RegistryState;
     try {
-      const state = await registryState(pkg, opts.fetchImpl ?? fetch, opts.base);
-      latest = state.latest;
-      refusal = postflightRefusal(treeVersion, latest);
+      state = await registryState(pkg, opts.fetchImpl ?? fetch, opts.base);
     } catch (e) {
+      // A transient error is exactly what polling is for. The FINAL one
+      // rethrows, because `registryState` throws rather than returning an
+      // empty state precisely so that "could not measure" cannot read as
+      // "nothing wrong", and swallowing it here would put that back.
       if (last) throw e;
-      refusal = `could not read the registry: ${(e as Error).message}`;
+      await sleep(delayMs);
+      waitedMs += delayMs;
+      continue;
     }
 
-    if (refusal === null) return { latest, attempts: attempt, waitedMs, refusal: null };
-    if (last) {
-      return {
-        latest,
-        attempts: attempt,
-        waitedMs,
-        refusal:
-          `${refusal} — read ${attempt} times over ${Math.round(waitedMs / 1000)}s, ` +
-          `which is long enough that this is not the registry catching up`,
-      };
+    const verdict = postflightVerdict(pkg, treeVersion, state, { attempts: attempt, waitedMs });
+    if (verdict.published || last) {
+      return { latest: state.latest, attempts: attempt, waitedMs, verdict };
     }
     await sleep(delayMs);
     waitedMs += delayMs;

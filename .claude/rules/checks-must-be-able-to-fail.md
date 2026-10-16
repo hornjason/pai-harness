@@ -84,6 +84,7 @@ Measured four times in two issues, all four in October 2026:
 | #420 | `waveNeedsIntegration`, asked in the loop AND inside `integrateWave` | the fake recorded every call, so the real early return was never witnessed |
 | #420 | the landed-branch comparison and the refusal re-check below it | **0 of 196.** The case fed `main`, which BOTH catch; the comparison could be deleted outright |
 | #436 | `orphanedGitdir`'s `statSync` catch, its `isFile()`, and the `readFileSync` after them — THREE | **0 of 47.** A `.git` directory throws `EISDIR` and a missing one throws `ENOENT`, so the read already refused both; two of the three were deletable and nothing could say which |
+| #445 | `preflightRefusal`'s own `versions.includes` and the new `registryServes` the postflight asks | caught in the draft, before the battery: both phases ask one question of one field, so a second copy would have survived any mutation of the first. Collapsed to one binding, and mutating it is now 14 red and 17 red in the two directions |
 
 #436 is the first one caught by this section rather than recorded into it, and
 it is worth saying what that cost: one predicted number, written down before
