@@ -546,3 +546,323 @@ where config lives also makes the loader read what the scaffolder wrote.
    is not a field of `DevSchema`; the loader stripped it and the inference
    reached nobody. That is Silent Default Substitution from the writing side.
    It is now `dev.start`, and SC-1558 asserts the round trip.
+
+## A baseline nobody measured, reported as a clean tree (#307 Phase 1)
+
+`captureTestBaseline` runs the project's suite before any change lands so the
+verify gate can subtract pre-existing failures from the ones the change caused.
+It answered `0` for four different facts, and the scope gate printed
+`Test baseline: 0 pre-existing failures — clean suite` for all four:
+
+| What happened | What was recorded |
+|---|---|
+| no `.claude/rungate.json` — the path was built here by hand, so **every consumer on the documented directory layout took this branch** | `0`, clean suite |
+| no `test.command` — including every consumer that authored `dev.testCmd`, the spelling ADR-002 D3 normalises *to* | `0`, clean suite |
+| the suite ran and printed something unparseable — jest, pytest, a Makefile target, a timeout kill | `0`, clean suite |
+| the suite ran and nothing was failing | `0`, clean suite |
+
+Only the last is a clean tree. A fabricated baseline is the worst direction for
+this particular number to be wrong in, because it asserts the strongest claim
+the run can make about the tree it started from, and because nothing downstream
+can tell it from a measurement.
+
+**It worked on rungate the whole time.** This repo's own config carries
+`test.command`, so branch 2 was never taken here, and any fixture shaped like
+this repo is green against the broken code and the fixed code alike. That is
+not a detail about the fixtures — it is the reason the defect survived a year
+of green suites, and it is why SC-A7 of #307 requires the consumer shape
+explicitly.
+
+### Absent, not zero
+
+An unmeasured baseline records **no number**. A `0` beside a reason would leave
+the verify gate's `?? 0` reading the run as a measured clean tree, and the two
+keys would be a second answer to the same question — the fourth shape in
+`.claude/rules/checks-must-be-able-to-fail.md`. Absence is the only encoding a
+default cannot absorb.
+
+The verify gate WARNs rather than FAILs on it. No subtraction happens either
+way — an unmeasured baseline and a measured zero both subtract nothing — so the
+arithmetic is not what the branch is for. What it stops is the run claiming a
+clean starting tree it never looked at. The house precedent is
+`dev-server-liveness: UNMEASURED`: a probe that could not run must never become
+a defect in the code it could not measure.
+
+### The parser gained a nullable sibling rather than a new contract
+
+`extractTestFailureCount` is pinned by `gates/workflow.test.ts`, which #307 is
+forbidden to change, and its contract — "no fail line means zero" — is wrong
+for a baseline and right for the gate's own bun output. So the honest reading
+is a second export, `parseTestFailureCount`, returning `number | null`, and the
+old function became a one-line wrapper over it. One binding, two readings, and
+the two are compared against each other in the test so the wrapper cannot drift
+away from the parser it wraps.
+
+Bun prints ` 0 fail` on a clean run. Output carrying no fail line at all is a
+runner that crashed, timed out, or is not bun.
+
+### The heal prompt sent an agent to find a file the consumer does not have
+
+The scope gate's heal prompt told an agent to read the project's monolith
+config for `apiUrl` and, failing to find the key, to write `SKIP`. Two defects
+in one sentence, and they compound. A consumer on the documented directory
+layout does not have that file, so the agent finds nothing — and the sentence
+tells it what to do about finding nothing. A project serving a live API records
+"this check does not apply", and a skip for *no server here* and a skip for *I
+could not locate the config* are the same two letters in the state file.
+
+The decision was also the agent's to make, when the workflow already knew the
+answer: it resolves the config before any prompt is written and interpolates
+`${testCommand}` from it three lines above. The URL was the one value left for
+an agent to go and find.
+
+So the clause is built by the workflow and the agent is handed a conclusion.
+**When a URL resolved, SKIP is not offered at all** — an agent that cannot
+complete the curl has found a FAIL, which is the asymmetry the gate exists for.
+It lives in a marked block and is EXECUTED by its test, because a prompt test
+that greps for a URL passes against a prompt that mentions the URL and still
+says SKIP.
+
+### The timeout moved, deliberately
+
+This site used `harness.test?.timeout || 300000`; the resolver's default is
+`DEFAULT_TEST_TIMEOUT` (120000), which is the one ship.js already uses. Two
+defaults disagreeing is the defect class, so the resolved value wins and a
+consumer that sets no `test.timeout` now gets the shorter one. The consequence
+of a kill is no longer a fabricated `0`: it is UNMEASURED naming the timeout,
+which is a sentence an operator can act on.
+
+- [x] SC-1672: test/test-baseline-unmeasured.test.ts contains [a project whose only test command is dev.testCmd is measured - not assumed clean] — the consumer shape #307 SC-A7 requires, measured at 3 pre-existing failures where the old reader returned 0; a rungate-shaped fixture is green either way and proves nothing
+- [x] SC-1673: test/test-baseline-unmeasured.test.ts contains [a project on the directory layout is read at all] — the same assertion over `.claude/rungate/`, because a reader that handled only one layout passes the case above
+- [x] SC-1674: test/test-baseline-unmeasured.test.ts contains [a project with no test command anywhere reports UNMEASURED - not zero] — and the reason names BOTH spellings, because "no test command" sends an operator looking for the key they already did not set
+- [x] SC-1675: test/test-baseline-unmeasured.test.ts contains [an absent config is UNMEASURED - a project with no rungate is not a clean tree] — the branch every unscaffolded project took, which reported the strongest available claim about a suite that was never run
+- [x] SC-1676: test/test-baseline-unmeasured.test.ts contains [output the harness cannot parse is UNMEASURED - not a clean suite] — the consumer-facing half: `dev.testCmd` is whatever the project runs and none of jest, pytest or go test prints bun's fail line; the reason quotes what the command actually printed
+- [x] SC-1677: test/test-baseline-unmeasured.test.ts contains [parseTestFailureCount returns null where extractTestFailureCount returns zero] — the two readings asserted against each other on the same input, and agreeing where a count IS stated, so the wrapper cannot drift away from the parser
+- [x] SC-1678: test/ship-local-env-clause.test.ts contains [a resolved URL reaches the prompt and no file is named] — the clause is executed out of its marked block rather than grepped, because a prompt that mentions the URL and still says SKIP passes a grep
+- [x] SC-1679: test/ship-local-env-clause.test.ts contains [SKIP is not offered when a URL resolved] — both fields, and each clause must also say what replaces SKIP; "not SKIP" with no second option is an instruction an agent resolves by picking one anyway
+- [x] SC-1680: test/ship-local-env-clause.test.ts contains [a project with no URL still skips - and says which key it looked for] — the branch that must stay reachable, since rungate sets no `dev.apiBase` and a clause that had stopped being able to skip would turn every self-run red
+- [x] SC-1681: test/test-baseline-unmeasured.test.ts contains [an unmeasured reading records no number - the reason cannot sit beside a zero] — the recording half, executed: an honest reading buys nothing if the lines that store it write a `0` anyway, and a `captureTestBaseline` test cannot see that
+- [x] SC-1682: test/test-baseline-unmeasured.test.ts contains [a later measured reading clears the earlier reason - the two keys are exclusive] — both directions over one object, because a recorder that only ever adds leaves a stale reason beside a fresh number and the verify gate gets two answers to pick from
+- [x] SC-1683: test/test-baseline-unmeasured.test.ts contains [the verify gate separates an unmeasured baseline from a measured zero] — they subtract the same nothing, so the arithmetic cannot tell them apart and this decider is the only place that can; the subtraction #599 added is asserted in the same test, clamped
+
+### What was broken to prove it (SC-1672..SC-1683)
+
+Run and counted over `test/test-baseline-unmeasured.test.ts` and
+`test/ship-local-env-clause.test.ts` (17 tests, 0 red). Every count was
+predicted before the mutation ran.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the old reader restored verbatim — the defect | 6 | 6 |
+| `parseTestFailureCount` returns `0` where it returned `null` | 2 | 2 |
+| `recordTestBaseline` writes `0` beside the reason | 1 | 1 |
+| `baselineAdjustment` drops the unmeasured branch | 1 | 1 |
+| `localEnvClause` offers SKIP whether a URL resolved or not | 2 | 2 |
+| `localEnvClause` ignores its `field` argument | 1 | 1 |
+| the measured branch stops clearing a stale reason | 1 | 1 |
+
+No zeros, no misses. None is left in the tree; all were run and reverted.
+
+The first row is the one worth reading. Restoring the old reader turns SIX of
+seventeen red, and five of the six are cases this repo could never have
+produced: a consumer on the directory layout, a consumer spelling the command
+`dev.testCmd`, a runner that is not bun, a project with no config, and a suite
+that exits non-zero. The sixth — a genuinely clean suite — stays GREEN under
+the mutation, because the broken reader and the fixed one agree there. That is
+the whole shape of the defect in one row: the only case rungate's own config
+exercises is the only case the two readers answer the same way.
+
+The last three rows are the propagation, and they exist because the mutation
+battery is what forced them out of an `if/else` inside `executeGate`. An
+inline branch nothing can call scores 0 red — correctly — and a 0 there would
+have been read as "the tripwire costs nothing", rather than as "nothing
+asserts this".
+
+### A heal round that removes a test (#307 SC-A19)
+
+A heal agent is told a gate failed and asked to make it pass. Deleting the
+test is a correct solution to that instruction and an incorrect solution to
+the problem, and nothing downstream can tell the two apart: a suite with the
+failing test removed is green, and green is what it asked for.
+
+Run `wf_5cdce852-1e2` went from 34 tests to 23 across two heal rounds — no
+`skip` recorded, no `todo` recorded, three guards with nothing replacing them,
+and `SECURITY_REVIEW_STALE` was the only thing that noticed, while looking at
+something else. Those three guards are back in
+`test/adr-002-regression-guards.test.ts` (#314). This is the mechanism for the
+fourth.
+
+**Where it lives, and why not in the workflow.** `workflows/ship.js` has no
+filesystem access and could only have asked an agent to check. A guard whose
+subject is an agent's edits cannot be an instruction to an agent. Every heal
+round ends in a gate re-run, so "since the last gate run" and "across a heal"
+are the same window — the census is taken by `gates/gate-executor.ts` on every
+gate and compared to the one the previous run banked.
+
+**Three decisions worth stating, because each is a way the guard could have
+been decorative:**
+
+1. **Declarations, not passing tests.** Running the suite twice per heal round
+   costs this project about thirteen minutes a round, and "the number of
+   passing tests went down" also moves when a heal legitimately fixes a
+   failure. The question actually asked is whether a test stopped existing.
+   `.skip` and `.todo` count, because converting a failing test to `test.todo`
+   removes the check just as thoroughly and is the cheapest way past a count
+   that only looked at live ones. Comments are not stripped, for the same
+   reason.
+2. **The first reading is not a pass.** A run with nothing to compare has not
+   been checked. A verdict that answered `no-regression` there would be the
+   reading nobody took wearing the answer's clothes.
+3. **A refused round does not bank the reduced census.** Banking the tree the
+   deletion produced would make the next round compare against it, find no
+   regression, and clear the refusal — a guard you only have to get past once.
+   The reading stays where it was until the test comes back.
+
+- [x] SC-1684: test/test-census.test.ts contains [skipped and todo tests are counted - converting one is removing it] — `test.todo` is the cheapest way past a counter that only sees live tests, and commented-out is covered by the same decision not to strip comments
+- [x] SC-1685: test/test-census.test.ts contains [a word ending in test is not a test - the counter is anchored] — `subtest(`, `re.test(` and `latest` are asserted at zero while all five declaration forms bun uses are counted in one expression, so narrowing the pattern cannot quietly drop one
+- [x] SC-1686: test/test-census.test.ts contains [a deleted file is a regression of its whole count] — the obvious way past a per-file comparison, since a loop over the later census never visits a file that is gone; both numbers are named because "a file lost tests" is not actionable
+- [x] SC-1687: test/test-census.test.ts contains [the census reads real files on disk - and only test files] — the comparison is pure and could be right over a census nobody took, so this is the arm that says the walk reaches a subdirectory and stops at non-test sources carrying the same token
+- [x] SC-1688: test/test-census.test.ts contains [the first reading of a run is not a pass] — nothing to compare and nothing removed are different verdicts, asserted beside both real answers
+- [x] SC-1689: test/test-census.test.ts contains [a refused round does not bank the reduced census] — and restoring the test clears it, because a guard with no way out gets deleted rather than satisfied
+
+#### What was broken to prove SC-1684..SC-1697
+
+Re-run against the final tree, over `test/test-census.test.ts` (15 tests),
+with `test/test-baseline-unmeasured.test.ts` and
+`test/ship-local-env-clause.test.ts` alongside for the shared rows (0 red
+before each). Predicted before each run.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the counter ignores `.skip` and `.todo` | 2 | 2 |
+| `censusRegressions` skips the deleted-file case | 1 | 1 |
+| the first reading reports `no-regression` | 2 | 2 |
+| `nextCensus` always banks the current reading | 2 | 2 |
+| the counter drops its lookbehind anchor | 1 | 1 |
+| the walk takes any non-directory, symlinks included | 1 | 1 |
+| the size cap is removed | 1 | 1 |
+| `persistTestCensus` writes the whole in-memory object | 1 | 1 |
+| `readPersistedCensus` accepts an array | 1 | 1 |
+| an empty census reports `first-reading` instead of UNMEASURED | 1 | 1 |
+| `nextCensus` drops its unmeasured arm | 1 | 1 |
+| `nextCensus` drops its regression arm | 1 | 1 |
+| `censusOf` stops recursing | 4 | 4 |
+
+None is left in the tree; all were run and reverted.
+
+**The fourth shape, caught here rather than recorded into the rule.** The
+empty-census row came back ONE where TWO was predicted, which is the
+signature. `nextCensus`'s two arms — regression and unmeasured — were
+behaviourally one decider: the only way to be `unmeasured` is an empty
+census, and an empty census ALSO makes every previously-known file "gone",
+so `censusVerdict(before, {})` short-circuits to `unmeasured` but would fall
+through to `regression`, and `nextCensus` treats the two identically.
+SC-1692 was routing its case through `censusVerdict` and therefore testing
+the regression arm while claiming to test the unmeasured one. Disabling the
+unmeasured branch left it green.
+
+Both arms are kept — they differ in what the operator sees, and that
+difference is the point: `regression` FAILs the gate naming every file as
+deleted, which is exactly the false refusal a polyglot consumer with no JS
+suite would get on its second round. So the fix is the rule's second option:
+each decider gets an input only it reaches, written down as a case saying
+which one it is for. SC-1692 now builds an `unmeasured` verdict literal with
+a NON-empty current census, which nothing but that arm can answer, and keeps
+the shared empty-census case beside it. The two arms now mutate to one red
+each, in different tests.
+
+**And one row higher than predicted, which is the opposite signature.**
+`censusOf` stops recursing was predicted at 2 and measured 4. Two were
+expected — the four-file fixture, and the real-repo arm written as a backstop
+against a walk that reads nothing, which turns out to be load-bearing for
+recursion too (**39 of this project's 309 test files are in subdirectories
+and carry 488 of its 5,299 declarations**, so a flat walk crosses its
+threshold). The other two are the `src/` and symlink fixtures added by the
+review passes, both of which plant a nested file. A higher row means the
+binding reaches further than the prediction did, which is news about the
+prediction and not about the code.
+
+#### Three defects a security review found in the guard itself
+
+All three had the same shape as the thing SC-A19 guards against: the check was
+present, called, and unable to fire.
+
+1. **The refusal was counted where a later step erases it.** The census
+   `fails++` was written ABOVE the verify gate's `subtractTestBaseline`, which
+   cannot tell a census refusal from a suite failure. A run carrying three
+   pre-existing failures would have had the deleted-test refusal subtracted to
+   zero. A baseline is a statement about the SUITE and can say nothing about
+   whether a heal round removed a test, so the census now runs after the
+   subtraction and before the results line.
+2. **It censused the wrong tree.** `state.projectRoot` is the main checkout;
+   on a decomposed run the agent's edits are in a worktree named by
+   `state.treeUnderTest`. The guard would have compared a tree nobody touched
+   against itself — green every round, for the one kind of run it most needs
+   to watch.
+3. **The walk was rungate's own layout.** `["test", "gates"]` means
+   `src/foo.test.ts` — the commonest JavaScript convention there is —
+   censuses to `{}`, and `{}` compares clean against `{}` on every subsequent
+   round. The guard would have been permanently and silently dead for exactly
+   the consumers it exists to protect. The walk is now the whole tree minus
+   `node_modules`, build output and dotfiles, over the `.test`/`.spec` family,
+   and an empty census is UNMEASURED rather than first-reading.
+
+- [x] SC-1690: test/test-census.test.ts contains [a consumer that keeps tests beside its sources is censused too] — `src/*.test.ts` and `src/**/*.spec.tsx` are counted while `node_modules` and `dist` are not, because a dependency's suite and a build copy appearing or vanishing is not this project removing a test
+- [x] SC-1691: test/test-census.test.ts contains [a tree with no test file the walk can see is UNMEASURED - not clean] — asserted on the first round as well, since `{}` against `undefined` slipping through as `first-reading` reads as ordinary
+- [x] SC-1692: test/test-census.test.ts contains [an unmeasured round keeps the previous reading - no amnesia] — banking `{}` over a real census would make the round after it compare clean against nothing
+- [x] SC-1693: test/test-census.test.ts contains [the census refusal is counted after the baseline subtraction - not before] — ordering is not something a pure decider can express, so this is a source-position assertion in the shape of the `if (rebuildCmd)` enclosure guard, pinned against the results line at the other end
+
+#### Three more, from a second review pass
+
+The first pass found three ways the guard could not fire; the second found
+three more. Recorded because the pattern is the point: a guard against a
+defect class is written by someone holding that class in mind, and it still
+shipped six instances of it.
+
+4. **The banked census never reached disk, so the guard was permanently
+   dead.** `writeGateResult` does its own `readState(sf)` and writes THAT
+   back, so setting `state.gateContract.testCensus` in memory lands only by
+   accident. Every subsequent run would have found no census, answered
+   `first-reading`, logged a reassuring line, and compared nothing. The
+   write is now explicit, read-modify-write against the file so the gate
+   tests' and the heal agent's edits survive it.
+5. **Every matching file was read with no bound.** A `.spec.js` bundle is
+   read into memory on every gate run for a count that cannot be meaningful.
+   Capped, and the cap is stable so an oversized file is absent from both
+   censuses rather than reading as a deletion.
+6. **The walk followed symlinks.** A dirent for a symlink answers false to
+   `isDirectory()`, so a symlinked directory was skipped — but a symlink to a
+   FILE passed the old `else` and was read. A link named `x.test.ts` pointing
+   at a character device has size 0 and never ends. `isFile()` excludes both.
+
+- [x] SC-1694: test/test-census.test.ts contains [the banked census reaches the state FILE - and clobbers nothing] — a sibling under `gateContract` and unrelated top-level state are asserted to survive, and the persisted value is read back through `censusVerdict` so a census written in an unreadable shape cannot pass
+- [x] SC-1695: test/test-census.test.ts contains [the census block persists before writeGateResult re-reads the file] — the write landing in the right shape is worth nothing if it happens after the read that discards it
+- [x] SC-1696: test/test-census.test.ts contains [a file too large to be a suite is skipped - and a symlink is never read] — both a symlinked file and a symlinked directory are planted, because `isDirectory()` being false for a link is what let the file case through
+
+#### A third pass, and the limit this guard does not close
+
+7. **The previous census was read off the stale in-memory `state`.** It is
+   loaded when the process starts; the gate tests and any heal agent write
+   the file afterwards. Comparing against the stale copy and then persisting
+   over the fresh one is how a round's reading quietly disappears, and the
+   direction it disappears in is toward not refusing. `readPersistedCensus`
+   reads disk, and rejects an array or unparseable JSON as "nothing banked"
+   rather than handing it to the comparison.
+8. **Oversized files were skipped silently.** The skip is now reported by
+   name on every run. "No test was removed" is a sentence about the files
+   that were read, and a reader is owed the list it is not about.
+
+**What this guard does not do.** The banked census lives in the run's
+`workflow-state.json`, which the heal agent can write. An agent that deleted
+a test AND the census would see `first-reading` next round and pass. This
+raises the cost of an *accidental* deletion — the failure mode that actually
+happened on `wf_5cdce852-1e2` — and is not tamper-evident against a
+deliberate one. `writeWorkflowState`'s Zod validation does not help: an
+absent optional key is valid.
+
+Closing that means putting the reading where the guarded party does not
+write — the witness, or an HMAC over it — and is filed separately rather than
+half-done here. A guard whose limit is written down is a guard somebody can
+finish; one whose limit is implied is one everybody assumes is complete.
+
+- [x] SC-1697: test/test-census.test.ts contains [the previous census is read off disk - not off a stale in-memory copy] — an array, unparseable JSON and a missing file all read as nothing banked, and the `undefined` they produce is asserted to become `first-reading` rather than anything that reads as clean

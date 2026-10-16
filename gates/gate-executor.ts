@@ -13,6 +13,8 @@ import {
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
+import { DEFAULT_TEST_TIMEOUT, resolveConfig } from "../lib/config-loader";
+import { censusOf, censusRegressions } from "../lib/test-census";
 import {
   slugExists,
   shouldRebuildContainer,
@@ -76,13 +78,35 @@ export function parseTestResults(output: string): GateResult[] {
 // ── Test baseline functions (#599) ───────────────────────────────────────
 
 /**
- * Extract the failure count from bun test output.
+ * The failure count a runner's output STATES, or `null` when it states none.
+ *
  * Uses the last "N fail" line (bun may print intermediate summaries).
+ *
+ * The nullable answer is the whole of #307's parser half. Bun prints ` 0 fail`
+ * on a clean run, so output carrying no fail line at all is a runner that
+ * crashed, timed out, or is not bun — and a consumer whose `dev.testCmd` is
+ * jest, pytest or a Makefile target produces exactly that on EVERY run. "The
+ * suite reported zero failures" and "nothing here reports failures" are
+ * different facts and only the first is a clean tree.
+ */
+export function parseTestFailureCount(testOutput: string): number | null {
+  const failMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
+  if (failMatches.length === 0) return null;
+  return parseInt(failMatches[failMatches.length - 1][1]);
+}
+
+/**
+ * Extract the failure count from bun test output, treating "no count stated"
+ * as zero.
+ *
+ * Kept exactly as it was, deliberately: `gates/workflow.test.ts` pins this
+ * contract and #307 is forbidden from changing the gate checks. The honest
+ * reading is `parseTestFailureCount` above, and the two are compared against
+ * each other in `test/test-baseline-unmeasured.test.ts` so this wrapper cannot
+ * drift away from the parser it wraps.
  */
 export function extractTestFailureCount(testOutput: string): number {
-  const failMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
-  if (failMatches.length === 0) return 0;
-  return parseInt(failMatches[failMatches.length - 1][1]);
+  return parseTestFailureCount(testOutput) ?? 0;
 }
 
 /**
@@ -94,32 +118,267 @@ export function subtractTestBaseline(totalFailures: number, baseline: number): n
 }
 
 /**
- * Capture test baseline by running the project test suite at scope time.
- * Returns the number of pre-existing test failures.
+ * What a run can honestly say about the tree it started from (#307 SC-A6).
+ *
+ * `measured` is the only reading that licenses "the suite was clean before
+ * this change". `unmeasured` carries the reason, because a baseline nobody
+ * took is news an operator can act on — usually by setting one key.
  */
-function captureTestBaseline(state: Record<string, any>): number {
+export type TestBaselineReading =
+  | { status: "measured"; failures: number; command: string }
+  | { status: "unmeasured"; reason: string };
+
+/**
+ * Capture the test baseline by running the project's suite at scope time.
+ *
+ * This used to return `0` for four different facts, and the scope gate
+ * printed "0 pre-existing failures — clean suite" for all of them:
+ *
+ *   1. no `.claude/rungate.json` — the path was built here by hand, so every
+ *      consumer on the documented `.claude/rungate/` layout took this branch
+ *   2. no `test.command` — including every consumer that authored
+ *      `dev.testCmd`, which is the canonical spelling ADR-002 D3 normalises TO
+ *   3. the suite ran and printed something unparseable
+ *   4. the suite ran and nothing was failing
+ *
+ * Only the fourth is a clean tree, and a fabricated baseline is the worst
+ * direction for this particular number to be wrong in: it asserts the
+ * strongest claim available about the tree, and the verify gate subtracts
+ * against it.
+ *
+ * It worked on rungate the whole time, which is why nothing caught it — this
+ * repo's own config carries `test.command`, so branch 2 was never taken here.
+ * See `test/test-baseline-unmeasured.test.ts` for the consumer-shaped
+ * fixtures that do take it.
+ *
+ * The timeout now comes from the resolved config rather than from a `|| 300000`
+ * that disagreed with `DEFAULT_TEST_TIMEOUT`. A consumer that sets no
+ * `test.timeout` therefore gets the shorter one — and a suite killed by it
+ * reports UNMEASURED naming the timeout, where before it reported a clean
+ * tree. The failure mode moved from silent and wrong to loud and fixable.
+ */
+export function captureTestBaseline(state: Record<string, any>): TestBaselineReading {
   const projectRoot = state.projectRoot || process.cwd();
-  const harnessPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(harnessPath)) return 0;
 
-  const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-  const testCmd = harness.test?.command;
-  if (!testCmd) return 0;
+  const resolution = resolveConfig(projectRoot);
+  if (resolution.status === "absent") {
+    return {
+      status: "unmeasured",
+      reason: `no rungate config under ${join(projectRoot, ".claude")} — nothing says how to run this project's suite`,
+    };
+  }
 
-  const timeout = harness.test?.timeout || 300000;
+  const testCmd = resolution.config.test?.command;
+  if (!testCmd) {
+    // Both spellings named on purpose. "No test command" sends an operator
+    // looking for the key they already did not set.
+    return {
+      status: "unmeasured",
+      reason:
+        `the ${resolution.source} config at ${resolution.path} sets neither ` +
+        `dev.testCmd nor test.command`,
+    };
+  }
+
+  const timeout = resolution.config.test?.timeout ?? DEFAULT_TEST_TIMEOUT;
   console.log(`Test baseline: running "${testCmd}" to capture pre-existing failures...`);
 
+  let output: string;
   try {
-    const output = execSync(`${testCmd} 2>&1`, {
-      encoding: "utf-8",
-      timeout,
-      cwd: projectRoot,
-    });
-    return extractTestFailureCount(output);
+    output = execSync(`${testCmd} 2>&1`, { encoding: "utf-8", timeout, cwd: projectRoot });
   } catch (e: any) {
-    const stdout = e.stdout || "";
-    return extractTestFailureCount(stdout);
+    // A suite with failures exits non-zero, so the count normally arrives
+    // through here. `e.stdout` is also empty on a timeout kill, which the
+    // parser below turns into UNMEASURED rather than into a clean tree.
+    output = e.stdout || "";
   }
+
+  const failures = parseTestFailureCount(output);
+  if (failures === null) {
+    const tail = output.trim();
+    return {
+      status: "unmeasured",
+      reason:
+        `"${testCmd}" produced no failure count this harness can read ` +
+        `(timeout ${timeout}ms) — ` +
+        (tail.length === 0
+          ? "it printed nothing"
+          : `it printed: ${tail.split("\n").slice(-3).join(" / ")}`),
+    };
+  }
+
+  return { status: "measured", failures, command: testCmd };
+}
+
+/**
+ * Write a reading into `gateContract.baselines`, in place (#307).
+ *
+ * Pure and exported so the propagation is EXECUTABLE. The reading being
+ * honest buys nothing if the two lines that record it quietly write a `0`,
+ * and a `captureTestBaseline` test cannot see that.
+ *
+ * The two keys are mutually exclusive, enforced by deleting the other one
+ * each way. A reason sitting beside a number would let `?? 0` keep reading
+ * the run as a measured clean tree — which is the defect the reason exists
+ * to report, reintroduced one field over.
+ */
+export function recordTestBaseline(
+  baselines: Record<string, any>,
+  reading: TestBaselineReading,
+): void {
+  if (reading.status === "measured") {
+    baselines.testBaseline = reading.failures;
+    delete baselines.testBaselineUnmeasured;
+  } else {
+    delete baselines.testBaseline;
+    baselines.testBaselineUnmeasured = reading.reason;
+  }
+}
+
+/** What a gate run does about the tests that existed when it last looked. */
+export type CensusVerdict =
+  | { kind: "unmeasured"; reason: string }
+  | { kind: "first-reading"; files: number }
+  | { kind: "no-regression"; files: number }
+  | { kind: "regression"; regressions: string[] };
+
+/**
+ * Whether tests disappeared since the last gate run (#307 SC-A19).
+ *
+ * Every heal round ends in a gate re-run, so "since the last gate run" and
+ * "across a heal" are the same window. A heal agent is told a gate failed and
+ * asked to make it pass; deleting the test is a correct solution to that
+ * instruction and an incorrect solution to the problem, and nothing
+ * downstream can tell, because a suite with the failing test removed is green
+ * and green is what it asked for. Run `wf_5cdce852-1e2` went from 34 tests to
+ * 23 across two rounds with no `skip` and no `todo` recorded.
+ *
+ * `first-reading` is NOT a pass. There is nothing to compare on the first
+ * gate run of a run, and a verdict that said "no regression" there would be
+ * the reading nobody took wearing the answer's clothes — the whole subject of
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * Neither is `unmeasured`, and it is the arm that keeps this guard alive on a
+ * project that is not this one. A tree with no recognisable test file
+ * censuses to `{}`, `{}` compares clean against `{}` on every subsequent
+ * round, and the guard would be permanently and silently dead for exactly the
+ * repos it exists to protect — a polyglot consumer, or one whose suite the
+ * walk cannot see. Reported, every run, rather than inferred from silence.
+ */
+export function censusVerdict(
+  previous: Record<string, number> | undefined,
+  current: Record<string, number>,
+): CensusVerdict {
+  const files = Object.keys(current).length;
+  if (files === 0) {
+    return {
+      kind: "unmeasured",
+      reason:
+        "no .test/.spec file in the JS/TS family was found in the tree under test, " +
+        "so a heal round that deleted one could not be seen",
+    };
+  }
+  if (!previous || Object.keys(previous).length === 0) return { kind: "first-reading", files };
+  const regressions = censusRegressions(previous, current);
+  return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
+}
+
+/**
+ * The reading to carry into the next gate run (#307 SC-A19).
+ *
+ * A regression does NOT bank the reduced census. Banking it would make the
+ * next round compare against the tree the deletion produced, so a second
+ * round would find no regression and the refusal would clear itself — a
+ * guard that forgets what it refused is a guard you only have to get past
+ * once.
+ */
+/**
+ * Write the banked census into the state FILE (#307 SC-A19).
+ *
+ * Found by review, and without it the guard was permanently dead. Setting
+ * `state.gateContract.testCensus` in memory reaches disk only by accident:
+ * `writeGateResult` further down does its own `readState(sf)` and writes
+ * THAT back, so the in-memory mutation is discarded. Every subsequent gate
+ * run would have found no census, answered `first-reading`, logged a
+ * reassuring line, and compared nothing — forever.
+ *
+ * Read-modify-write against the file rather than a whole-state write,
+ * because the gate tests and any heal agent have been writing to it since
+ * this process loaded `state`, and clobbering their edits to record a census
+ * trades one silent loss for another.
+ */
+export function persistTestCensus(stateFilePath: string, census: Record<string, number>): void {
+  const fresh = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+  fresh.gateContract = fresh.gateContract || {};
+  fresh.gateContract.testCensus = census;
+  writeFileSync(stateFilePath, JSON.stringify(fresh, null, 2));
+}
+
+/**
+ * The census the last gate run banked, read off DISK (#307 SC-A19).
+ *
+ * Not off the in-memory `state`, which was loaded when the process started:
+ * the gate tests and any heal agent have been writing the file since, and
+ * comparing against a stale copy and then persisting over the fresh one is
+ * how a round's reading quietly disappears. The direction it disappears in
+ * is toward not refusing.
+ *
+ * A file that cannot be read or parsed returns `undefined`, which
+ * `censusVerdict` turns into `first-reading` — said out loud rather than
+ * passed quietly.
+ */
+export function readPersistedCensus(stateFilePath: string): Record<string, number> | undefined {
+  try {
+    const onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+    const census = onDisk?.gateContract?.testCensus;
+    return census && typeof census === "object" && !Array.isArray(census) ? census : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function nextCensus(
+  previous: Record<string, number> | undefined,
+  current: Record<string, number>,
+  verdict: CensusVerdict,
+): Record<string, number> {
+  // `unmeasured` holds the previous reading too. Banking an empty census
+  // over a real one would turn a tree the walk briefly could not read — a
+  // worktree mid-checkout, a `dist` rename — into a permanent amnesia, and
+  // the round after it would compare clean against nothing.
+  if (verdict.kind === "regression" || verdict.kind === "unmeasured") return previous ?? current;
+  return current;
+}
+
+/** What the verify gate does with whatever scope recorded (#307). */
+export type BaselineAdjustment =
+  | { kind: "subtract"; baseline: number; fails: number }
+  | { kind: "unmeasured"; reason: string }
+  | { kind: "none" };
+
+/**
+ * The verify gate's reading of the recorded baseline (#307).
+ *
+ * `none` and `unmeasured` subtract the same amount — nothing — so the
+ * arithmetic is not what separates them. What `unmeasured` stops is the run
+ * claiming a clean starting tree it never looked at, and the only way to say
+ * that is to have kept the two apart all the way from `captureTestBaseline`.
+ *
+ * A number of `0` is `none`: the suite ran, nothing was failing, there is
+ * nothing to subtract and nothing to report.
+ */
+export function baselineAdjustment(
+  baselines: Record<string, any> | undefined,
+  fails: number,
+): BaselineAdjustment {
+  const b = baselines ?? {};
+  if (typeof b.testBaseline === "number" && b.testBaseline > 0) {
+    return { kind: "subtract", baseline: b.testBaseline, fails: subtractTestBaseline(fails, b.testBaseline) };
+  }
+  if (typeof b.testBaselineUnmeasured === "string" && b.testBaselineUnmeasured.length > 0) {
+    return { kind: "unmeasured", reason: b.testBaselineUnmeasured };
+  }
+  return { kind: "none" };
 }
 
 // ── Gate executor contract interfaces (SC-373, SC-376) ───────────────────
@@ -719,15 +978,24 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
     }
   }
 
-  // Capture test baseline — pre-existing failures (#599)
+  // Capture test baseline — pre-existing failures (#599, #307)
+  //
+  // An unmeasured baseline records NO number. Writing 0 beside a reason would
+  // leave `?? 0` at the verify gate reading it as a measured clean tree, and
+  // the two keys would be a second answer to the same question. Absent is the
+  // only encoding a default cannot absorb.
   const testBaseline = captureTestBaseline(state);
   state.gateContract = state.gateContract || {};
   state.gateContract.baselines = state.gateContract.baselines || {};
-  state.gateContract.baselines.testBaseline = testBaseline;
-  if (testBaseline > 0) {
-    console.log(`Test baseline: ${testBaseline} pre-existing failure(s) captured — will be subtracted at verify`);
+  recordTestBaseline(state.gateContract.baselines, testBaseline);
+  if (testBaseline.status === "measured") {
+    console.log(
+      testBaseline.failures > 0
+        ? `Test baseline: ${testBaseline.failures} pre-existing failure(s) captured — will be subtracted at verify`
+        : `Test baseline: 0 pre-existing failures — clean suite`,
+    );
   } else {
-    console.log(`Test baseline: 0 pre-existing failures — clean suite`);
+    console.error(`Test baseline: UNMEASURED — ${testBaseline.reason}`);
   }
 
   // Track pre-existing failures (SC-33)
@@ -1840,11 +2108,101 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
   if (gate === "verify") {
-    const testBaseline = state.gateContract?.baselines?.testBaseline ?? 0;
-    if (testBaseline > 0) {
-      const originalFails = fails;
-      fails = subtractTestBaseline(fails, testBaseline);
-      console.log(`Test baseline subtraction: ${originalFails} total - ${testBaseline} baseline = ${fails} new failure(s)`);
+    const adjustment = baselineAdjustment(state.gateContract?.baselines, fails);
+    if (adjustment.kind === "subtract") {
+      console.log(`Test baseline subtraction: ${fails} total - ${adjustment.baseline} baseline = ${adjustment.fails} new failure(s)`);
+      fails = adjustment.fails;
+    } else if (adjustment.kind === "unmeasured") {
+      // #307. WARN, not FAIL: the house precedent is
+      // `dev-server-liveness: UNMEASURED` above, and a probe that could not
+      // run must never become a defect in the code it could not measure.
+      warns++;
+      results.push({
+        check: "test-baseline: UNMEASURED",
+        result: "WARN" as const,
+        detail:
+          `no pre-existing-failure count was taken at scope, so every failure below ` +
+          `is attributed to this change — ${adjustment.reason}`,
+      });
+      console.warn(`Test baseline: UNMEASURED — ${adjustment.reason}`);
+    }
+  }
+
+  // Did a heal round delete a test? (#307 SC-A19)
+  //
+  // Runs on every gate, not just verify: a heal round ends in a gate re-run
+  // whichever gate it was healing, and the scope gate heals too.
+  //
+  // AFTER the baseline subtraction above, deliberately. This was written
+  // before it and a security review caught the fail-open: a census FAIL
+  // incremented into `fails` is indistinguishable from a suite failure to
+  // `subtractTestBaseline`, so a run carrying three pre-existing failures
+  // would have had the deleted-test refusal subtracted to zero. A baseline
+  // is a statement about the SUITE and can say nothing about whether a heal
+  // round removed a test.
+  //
+  // The census reads `treeUnderTest`, not `projectRoot`. On a decomposed run
+  // the agent's edits are in a worktree, and a census of the main checkout
+  // would compare a tree nobody touched against itself — green every round,
+  // for the one kind of run this guard most needs to watch.
+  {
+    const censusRoot = state.treeUnderTest || state.projectRoot || process.cwd();
+    const censusSkipped: string[] = [];
+    const current = censusOf(censusRoot, censusSkipped);
+    if (censusSkipped.length > 0) {
+      // Reported every run. "No test was removed" is a sentence about the
+      // files that were read, and a reader is owed the list it is not about.
+      console.warn(
+        `Test census: ${censusSkipped.length} file(s) too large to count and excluded from the ` +
+          `comparison: ${censusSkipped.join(", ")}`,
+      );
+    }
+    // The PREVIOUS census comes off disk, not off the in-memory `state`.
+    // `state` was loaded when this process started; the gate tests and any
+    // heal agent have been writing the file since. Comparing against the
+    // stale copy and then persisting over the fresh one is how a round's
+    // reading quietly disappears — and the direction it disappears in is
+    // toward not refusing.
+    const previous = readPersistedCensus(sf);
+    const verdict = censusVerdict(previous, current);
+    const banked = nextCensus(previous, current, verdict);
+    state.gateContract = state.gateContract || {};
+    state.gateContract.testCensus = banked;
+    // To DISK, not just to `state` — `writeGateResult` below re-reads the
+    // file, so an in-memory mutation here never lands and the next run
+    // would find no census to compare against. See `persistTestCensus`.
+    persistTestCensus(sf, banked);
+
+    if (verdict.kind === "regression") {
+      fails++;
+      results.push({
+        check: "test-census: a round removed tests",
+        result: "FAIL" as const,
+        detail:
+          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
+          `is not a gate that passed. Restore the test, or say in the PR which check ` +
+          `replaced it (#307 SC-A19).`,
+      });
+      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
+    } else if (verdict.kind === "unmeasured") {
+      // A WARN rather than silence. An empty census compares clean against
+      // an empty census on every subsequent round, so a guard that said
+      // nothing here would be permanently dead on a polyglot consumer and
+      // would look exactly like a guard that keeps finding nothing wrong.
+      warns++;
+      results.push({
+        check: "test-census: UNMEASURED",
+        result: "WARN" as const,
+        detail: `${verdict.reason} (tree: ${censusRoot})`,
+      });
+      console.warn(`Test census: UNMEASURED — ${verdict.reason}`);
+    } else if (verdict.kind === "first-reading") {
+      // Said out loud rather than passed quietly: a run with nothing to
+      // compare has not been checked, and silence is how that becomes
+      // "checked and clean".
+      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
+    } else {
+      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
     }
   }
 
