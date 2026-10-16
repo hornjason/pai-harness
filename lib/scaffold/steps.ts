@@ -1953,9 +1953,13 @@ export function resolveManagedWrite(existing: string | null, generated: string):
   // A refusal rather than a warning, because the cost is asymmetric. A
   // consumer who hits an unenumerated edge case gets a named refusal and
   // `--force`; a consumer who does not get one gets a file they will
-  // misread. Measured against this repo's three real workflows, including
-  // `release.yml`, whose `permissions:` sits between `on:` and `jobs:` and is
-  // exactly the shape that used to move: zero movement in all three.
+  // misread. Measured against this repo's three real workflow files — one of
+  // which carries a `permissions:` key between `on:` and `jobs:`, exactly the
+  // shape that used to move: zero movement in all three.
+  //
+  // The file is not named here on purpose. `test/anti.test.ts` SC-A1 keeps
+  // the scaffold from naming a workflow it does not own, and a comment is as
+  // nameable as a code path.
   const movedKeys = movedTopLevelKeys(existing, content);
   if (movedKeys.length > 0) {
     return {
