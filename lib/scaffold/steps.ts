@@ -2282,6 +2282,19 @@ export function deployHooksToConsumers(root: string, actions: string[]): void {
   }
 }
 
+/**
+ * The line that marks a pre-commit hook as ours, so a fix can reach one that
+ * already exists (#450).
+ *
+ * The guard here was `if (!existsSync(preCommit))`, which meant every
+ * checkout that already had a hook kept whatever version it was given the
+ * first time — including the one that stages DA-owned state from every
+ * worktree, which is what #450 is about. The pre-push hook had exactly this
+ * bug and #85 fixed it the same way: overwrite our own managed hook, and
+ * leave a hand-written one alone.
+ */
+export const PRE_COMMIT_MANAGED_MARKER = "# Managed by rungate — secret scan + PROJECT-STATE update";
+
 export function createGitHooks(root: string, actions: string[]): void {
   const hooksDir = join(root, ".git", "hooks");
   if (!existsSync(hooksDir)) return;
@@ -2289,9 +2302,12 @@ export function createGitHooks(root: string, actions: string[]): void {
   const { chmodSync } = require("fs");
 
   const preCommit = join(hooksDir, "pre-commit");
-  if (!existsSync(preCommit)) {
+  const existingPreCommit = existsSync(preCommit) ? readFileSync(preCommit, "utf-8") : null;
+  if (existingPreCommit !== null && !existingPreCommit.includes(PRE_COMMIT_MANAGED_MARKER)) {
+    actions.push("SKIP: .git/hooks/pre-commit (hand-written, not overwriting)");
+  } else {
     writeFileSync(preCommit, `#!/bin/sh
-# Managed by rungate — secret scan + PROJECT-STATE update
+${PRE_COMMIT_MANAGED_MARKER}
 #
 # Scans the staged DIFF, not files on disk. This is deliberate and fixes four
 # failure modes the file-list approach had:
@@ -2338,10 +2354,41 @@ if printf '%s\\n' "$staged_diff" \\
   exit 1
 fi
 
-# Update PROJECT-STATE if it exists
+# Update PROJECT-STATE if it exists — but NEVER from a linked worktree (#450).
+#
+# project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned: a single
+# shared state document that several worktrees must not each write their own
+# version of (#296). The rule is written down in CLAUDE.md and in
+# .claude/rules/key-files.md, and this hook used to do the opposite of it on
+# every commit in every worktree — so an agent that obeyed the rule perfectly
+# still shipped the violation, because the staging happened after it had
+# decided not to touch the file. A rule something actively undoes is worse
+# than a rule nothing executes.
+#
+# The hook cannot tell whether it is the DA. It CAN tell whether it is in a
+# linked worktree: --git-dir points at .git/worktrees/<name> there while
+# --git-common-dir points at the shared .git, and in the primary checkout the
+# two are the same answer.
+#
+# The first draft resolved both through a cd-then-pwd-P round trip first, on
+# the theory that one could come back relative and the other absolute. The
+# mutation battery scored that normalisation 0 of 20 — both arms behave
+# identically without it, executed against a real primary checkout and a real
+# linked worktree. An unmeasured guard is indistinguishable from an absent
+# one, so it is absent. git hooks run from the toplevel, and both calls share
+# a cwd, so there was never a case that needed it.
 if [ -f "project-state.json" ]; then
-  bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
-  git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+  gitdir=$(git rev-parse --git-dir)
+  commondir=$(git rev-parse --git-common-dir)
+  if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then
+    bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
+    git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+  else
+    # Announced, not silent. A developer who expected the state files to move
+    # would otherwise be left guessing, and SKIP that says nothing is
+    # indistinguishable from the update having happened.
+    echo "project-state: SKIPPED — linked worktree. project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned (#296); update them from the primary checkout."
+  fi
 fi
 
 # A script's exit status is its last command's. Without this, the [ -f ] test
@@ -2351,7 +2398,11 @@ fi
 exit 0
 `);
     chmodSync(preCommit, 0o755);
-    actions.push("CREATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)");
+    actions.push(
+      existingPreCommit === null
+        ? "CREATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)"
+        : "UPDATED: .git/hooks/pre-commit (secret scan + PROJECT-STATE update)",
+    );
   }
 
   const prePush = join(hooksDir, "pre-push");
