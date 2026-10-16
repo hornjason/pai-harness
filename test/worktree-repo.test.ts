@@ -620,12 +620,46 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
   test("it runs before anything is staged", () => {
     // "Last statement before the collector" is the property that makes this
     // the authorization point rather than one more check.
+    //
+    // #420 added a SECOND staging point — a wave commit, which runs while
+    // this block is still waiting for the decomposition to return. The
+    // original form of this assertion took the FIRST `collectAgentWork(` in
+    // the file and so went red the moment that happened, which was correct
+    // of it: the block's own docblock warns that "a THIRD path added later …
+    // would be committed from without passing either of them". The answer is
+    // not to relax the ordering but to state it per staging point, so a
+    // fourth one cannot be added without either passing the guard or turning
+    // this red.
     const guardAt = shipSource.indexOf("// ──── COLLECT-IDENTITY-START ────");
-    const collectAt = shipSource.indexOf("await collectAgentWork(");
+    const mainCollectAt = shipSource.indexOf(
+      "await collectAgentWork(agentResults, collectInto, 'Commit', 'collect-worktrees')",
+    );
     expect(guardAt).toBeGreaterThan(-1);
-    expect(collectAt, "nothing calls the collector — this ordering measures nothing")
+    expect(mainCollectAt, "nothing calls the collector — this ordering measures nothing")
       .toBeGreaterThan(-1);
-    expect(guardAt, "the guard moved below the first collection").toBeLessThan(collectAt);
+    expect(guardAt, "the guard moved below the main collection").toBeLessThan(mainCollectAt);
+  });
+
+  test("every staging point asks the same question first (#420)", () => {
+    // The wave path stages inside the RUN-REF block, long before the
+    // top-level guard runs. Asserted on the block rather than on the file so
+    // the ordering is read where it actually holds.
+    const a = shipSource.indexOf("// ──── RUN-REF-START ────");
+    const b = shipSource.indexOf("// ──── RUN-REF-END ────");
+    expect(a).toBeGreaterThan(-1);
+    expect(b).toBeGreaterThan(a);
+    const block = shipSource.slice(a, b);
+
+    const asks = block.indexOf("worktreeIdentityViolations(");
+    const stages = block.indexOf("await collectAgentWork(");
+    expect(stages, "the wave path no longer stages — this ordering measures nothing")
+      .toBeGreaterThan(-1);
+    expect(asks, "the wave path stages without asking whose worktree it is")
+      .toBeGreaterThan(-1);
+    expect(asks, "the wave path stages before it asks").toBeLessThan(stages);
+    // The same binding, not a private re-implementation of it: a second
+    // decider would survive any mutation of the first.
+    expect(block).toContain("{ requirePath: true }");
   });
 
   test("a worktree in another repository ends the run", async () => {

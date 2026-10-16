@@ -391,6 +391,9 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
     "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
     "taskSourceRefusal",
+    "establishRunRef",
+    "integrateWave",
+    "waveNeedsIntegration",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -410,6 +413,9 @@ function loadRunDecomposedShip(briefedAgent: BriefedAgentFake) {
     // two above: a stub would let the two copies disagree about what counts
     // as having worked from the brief.
     sliced("BRIEF-PRECEDENCE", "taskSourceRefusal"),
+    async () => ({ branch: "rungate/run-66", refusal: null }),
+    async () => ({ ok: true, integrated: 0 }),
+    sliced("RUN-REF", "waveNeedsIntegration"),
   ) as (subIssues: unknown[]) => Promise<unknown>;
 
   return { runDecomposedShip, logs };

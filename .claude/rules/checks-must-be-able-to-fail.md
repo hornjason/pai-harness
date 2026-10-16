@@ -1,5 +1,9 @@
 ---
 description: A check is only worth what it fails on — prove a guard can go red before trusting it green
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-10-16
 ---
 
 ## The rule
@@ -43,7 +47,9 @@ A failing check announces itself. A check that cannot fail looks exactly like a
 check that is satisfied — and it looks *better* over time, because it never
 flakes and never blocks anyone. The quieter it is, the more it is trusted.
 
-Three shapes to watch for, all taken from the list above:
+Four shapes to watch for. The first three are taken from the list above; the
+fourth is the one that list could not contain, because it is invisible to
+exactly the kind of after-the-fact reading that produced the list.
 
 - **Fail-open error handling.** A `catch` that returns "no problems found", or
   a parse failure that defaults to an empty violation list. Anything that can
@@ -55,6 +61,41 @@ Three shapes to watch for, all taken from the list above:
 - **Assertions that hold vacuously.** Comparing two empty collections, matching
   a pattern against text that was stripped out upstream, asserting a value the
   test itself just set.
+- **Two deciders that agree.** Two guards answering the same question about the
+  same input are behaviourally ONE guard, so no behavioural test can tell them
+  apart — and a mutation of either leaves the other holding the case up. Both
+  read as covered; one of them is dead and nobody can see which.
+
+### On the fourth shape
+
+It is the only one of the four you cannot find by reading. Both deciders are
+real code, both are called, both are correct, and the test that exercises them
+passes for a true reason — just not for the reason it claims. **A mutation
+battery is the only thing that surfaces it**, and only if you predict each
+count before running: the signature is a row that comes back lower than you
+expected, not a row that comes back zero.
+
+Measured four times in two issues, all four in October 2026:
+
+| Where | The pair | What the mutation showed |
+|---|---|---|
+| #415 | `validateFilePaths` and the path refusal | mutating either left the other refusing |
+| #415 | the scaffolder's own pre-check and the config writer's refusal | the scaffolder refused an existing config twice; deleting its check was 0 red |
+| #420 | `waveNeedsIntegration`, asked in the loop AND inside `integrateWave` | the fake recorded every call, so the real early return was never witnessed |
+| #420 | the landed-branch comparison and the refusal re-check below it | **0 of 196.** The case fed `main`, which BOTH catch; the comparison could be deleted outright |
+
+The fix is one of two things, and which one is a design question, not a style
+question. Either **collapse them** — one decider, one binding to mutate — or
+**keep both and give each an input only it can reach**. #420 took the second:
+a commit landing on an ordinary feature branch is something only the
+comparison refuses, and a commit reporting no branch at all is something only
+the re-check can see. Each mutation is now 1 red, and the rows are different
+rows.
+
+What makes the second option honest is that the two inputs are written down as
+separate cases with a comment saying which decider each one is for. Without
+that, the next person to simplify the code deletes a line that has a test and
+watches it stay green.
 
 ## In practice
 
