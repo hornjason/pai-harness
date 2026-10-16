@@ -394,3 +394,162 @@ export async function awaitRegistryServes(
   /* c8 ignore next */
   throw new Error("unreachable: the loop returns on its last attempt");
 }
+
+/**
+ * What `npm publish` said about its own result (#472).
+ *
+ * The postflight has refused three consecutive successful releases — 0.3.0,
+ * 0.4.0, 0.4.1 — and the last missed by 48 seconds. #407 answered that by
+ * widening the budget and #445 by fixing the wording, and both left the same
+ * mechanism in place: a blind poll of an eventually-consistent document,
+ * guessing at how long propagation takes.
+ *
+ * The evidence was already on the page. The publish step's own output says:
+ *
+ * ```
+ * npm notice Your package is being processed and may take a few minutes to become available.
+ * + rungate@0.4.1
+ * ```
+ *
+ * So the registry is not silent about the asynchrony — it states it, in the
+ * step immediately above the one guessing at it, and it issues a RECEIPT. That
+ * receipt is written synchronously at publish time and the packument is not,
+ * which is the entire reason the two readings disagree.
+ */
+export interface PublishReceipt {
+  /** The version on npm's `+ pkg@version` line, or null if there is no such line. */
+  version: string | null;
+  /** npm's own statement that the registry read will lag behind this publish. */
+  propagationWarned: boolean;
+  /** Bytes of log read, so an empty file is distinguishable from a missing line. */
+  bytes: number;
+}
+
+/** Regex-safe form of a package name, which may contain `@`, `/`, `.` and `-`. */
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+}
+
+/**
+ * Read npm's receipt out of the publish step's captured output.
+ *
+ * The `+ name@version` line is npm's statement that the registry ACCEPTED the
+ * publish. Anchored to the start of a line so a version named in prose — and
+ * `npm notice` prints the name and version several times — cannot be mistaken
+ * for the receipt.
+ */
+export function parsePublishReceipt(pkg: string, log: string): PublishReceipt {
+  const m = log.match(new RegExp(`^\\+\\s*${escapeForRegex(pkg)}@(\\S+)\\s*$`, "m"));
+  return {
+    version: m ? m[1] : null,
+    propagationWarned: /being processed and may take/i.test(log),
+    bytes: log.length,
+  };
+}
+
+/** What the postflight concluded, and which exit code says so. */
+export interface PostflightDecision {
+  /** `confirmed` exits 0, `refused` exits REFUSE_EXIT, `unmeasured` exits UNMEASURED_EXIT. */
+  outcome: "confirmed" | "refused" | "unmeasured";
+  /** The whole message, already worded for the reader of a failed release job. */
+  message: string;
+}
+
+/**
+ * The ONE binding that decides whether a release happened (#472).
+ *
+ * Two questions were being asked as one, and only the second of them is slow:
+ *
+ * | Question | Answerable | Evidence |
+ * |---|---|---|
+ * | did npm ACCEPT this publish? | synchronously, at publish time | the `+ pkg@version` receipt |
+ * | does the registry SERVE it? | eventually, minutes later | the packument |
+ *
+ * The postflight exists to catch a pipeline that quietly did nothing — a
+ * skipped `if:`, a swallowed error, a duplicate npm rejected. **The receipt
+ * catches all three and catches them immediately**: a skipped step produces no
+ * output, a swallowed error produces no `+` line, and a rejected duplicate
+ * makes npm exit non-zero with an E403 and no receipt. It is a strictly better
+ * detector for the thing the check is for, and it does not need a budget.
+ *
+ * So propagation stops being fatal — but ONLY when the receipt corroborates
+ * it. With a receipt naming this version, an exhausted budget is a known
+ * propagation delay and the job passes with the delay stated out loud. With
+ * NO receipt available, exhaustion is still `unmeasured` and still stops the
+ * job, which is #445's behaviour unchanged. That fall-back is what keeps this
+ * able to fail if the log capture is ever removed from the workflow.
+ *
+ * **Two deciders, and each has an input only it can reach**
+ * (`.claude/rules/checks-must-be-able-to-fail.md`, fourth shape). The receipt
+ * is the only thing that can see a publish npm rejected while the registry
+ * still serves a previous version; the packument read is the only thing that
+ * can see a receipt for a version the registry never accepted. Neither
+ * subsumes the other, and the test gives each a case the other passes.
+ */
+export function postflightDecision(
+  pkg: string,
+  treeVersion: string,
+  reading: PostflightReading,
+  receipt: PublishReceipt | null,
+): PostflightDecision {
+  // The receipt is checked FIRST and refuses on its own, before the registry
+  // is consulted at all. A publish step that reported no success is an
+  // ESTABLISHED failure, not an ambiguous reading — and checking it after the
+  // registry would let a packument that happens to serve the version (because
+  // it was published last month) wave through a step that did nothing today.
+  if (receipt !== null) {
+    if (receipt.version === null) {
+      return {
+        outcome: "refused",
+        message:
+          `the publish step produced no receipt. npm prints \`+ ${pkg}@${treeVersion}\` ` +
+          `on a successful publish and the captured output (${receipt.bytes} bytes) has ` +
+          `no such line, so the registry did not accept a publish in this job. A skipped ` +
+          `step, a swallowed error and a duplicate version npm rejected all look like ` +
+          `this, and all three are a release that did not happen.`,
+      };
+    }
+    if (receipt.version !== treeVersion) {
+      return {
+        outcome: "refused",
+        message:
+          `the publish step published ${pkg}@${receipt.version}, but this tree is ` +
+          `${treeVersion}. The receipt and package.json must name the same version or ` +
+          `the tag describes something that was never shipped.`,
+      };
+    }
+  }
+
+  if (reading.verdict.published) {
+    return {
+      outcome: "confirmed",
+      message:
+        `the registry serves ${pkg}@${treeVersion} ` +
+        `(read ${reading.attempts} time${reading.attempts === 1 ? "" : "s"}, ` +
+        `waited ${Math.round(reading.waitedMs / 1000)}s)` +
+        (reading.verdict.note ? `\npostflight note: ${reading.verdict.note}` : ""),
+    };
+  }
+
+  // Absent from the packument. With a receipt this is no longer ambiguous:
+  // npm said it accepted the publish, and said in the same breath that the
+  // registry would lag. Passing here is a fail-open and it is deliberate, so
+  // it is LOUD — `.claude/rules/config-access.md` permits the tradeoff and
+  // forbids the silent version.
+  if (receipt !== null && receipt.version === treeVersion) {
+    return {
+      outcome: "confirmed",
+      message:
+        `PROPAGATION PENDING — npm accepted ${pkg}@${treeVersion} and the registry is ` +
+        `not serving it yet after ${reading.attempts} read` +
+        `${reading.attempts === 1 ? "" : "s"} over ${Math.round(reading.waitedMs / 1000)}s. ` +
+        `This is NOT a confirmed read of the registry; it is the publish receipt plus ` +
+        `npm's own statement that the packument lags` +
+        `${receipt.propagationWarned ? "" : " (which this run's output did not print)"}. ` +
+        `The release is treated as landed because the receipt is written synchronously ` +
+        `and the packument is not. Verify with \`${confirmCommand(pkg, treeVersion)}\`.`,
+    };
+  }
+
+  return { outcome: "unmeasured", message: reading.verdict.unmeasured ?? "no reading was taken" };
+}

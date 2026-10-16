@@ -154,9 +154,27 @@ jobs:
       # minted from `id-token: write`, and provenance is produced automatically
       # under it. Adding NODE_AUTH_TOKEN back would silently prefer the token
       # over OIDC and reinstate the January 2027 deadline this removed.
+      # The output is CAPTURED, because npm's `+ rungate@x.y.z` line is the
+      # receipt the postflight reads (#472). `set -o pipefail` keeps npm's own
+      # exit status authoritative through the pipe — without it `tee` succeeds
+      # and a failed publish reads as a clean one, which is this file's whole
+      # subject. `tee` and not `>` so the log still appears in the job output.
       - name: Publish
-        run: npm publish --access public
+        run: |
+          set -euo pipefail
+          npm publish --access public 2>&1 | tee "$RUNNER_TEMP/publish.log"
 
       # The half that cannot be satisfied by doing nothing.
+      #
+      # It now reads TWO things, and they answer different questions (#472).
+      # The receipt says whether npm ACCEPTED the publish and is written
+      # synchronously; the packument says whether the registry SERVES it and
+      # is eventually consistent. Three consecutive releases published fine
+      # and were reported as failures because only the slow one was asked —
+      # 0.4.1 missed its 120s budget by 48 seconds.
+      #
+      # Removing `--publish-log` does not switch the check off: with no
+      # receipt the guard falls back to refusing an unconfirmed read exactly
+      # as it did before, and test/release-guard.test.ts drives both paths.
       - name: Postflight — the registry actually serves this version
-        run: bun scripts/release-guard.ts --phase postflight
+        run: bun scripts/release-guard.ts --phase postflight --publish-log "$RUNNER_TEMP/publish.log"

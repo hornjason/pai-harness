@@ -44,8 +44,11 @@ import { join } from "path";
 import {
   awaitRegistryServes,
   NPM_REGISTRY,
+  parsePublishReceipt,
+  postflightDecision,
   preflightRefusal,
   registryState,
+  type PublishReceipt,
 } from "../lib/release-preflight";
 
 /** The one exit code every established refusal travels through. */
@@ -135,17 +138,26 @@ async function main(): Promise<void> {
   } catch (e) {
     refuse(`could not read the registry: ${(e as Error).message}`);
   }
-  // An exhausted budget is NOT a refusal (#445). The guard does not know
-  // which of the two explanations it is looking at, so it does not pick one.
-  if (reading!.verdict.unmeasured) unmeasured(reading!.verdict.unmeasured);
-  console.log(
-    `postflight OK: the registry serves ${PKG}@${treeVersion!} ` +
-      `(read ${reading!.attempts} time${reading!.attempts === 1 ? "" : "s"}, ` +
-      `waited ${Math.round(reading!.waitedMs / 1000)}s)`,
-  );
-  // Published, but `latest` has not moved. Said out loud because it is the
-  // reading #364 would have called a failed publish.
-  if (reading!.verdict.note) console.log(`postflight note: ${reading!.verdict.note}`);
+  // npm's own receipt for this publish, when the workflow captured it (#472).
+  // An ABSENT flag is `null` and means "no receipt was available", which falls
+  // back to #445's behaviour. An absent FILE is a refusal: the workflow asked
+  // for a reading that could not be taken, and that is not the same as not
+  // asking. Distinguishing the two is the whole of `.claude/rules/config-
+  // access.md`'s Silent Default Substitution.
+  const logPath = arg("publish-log");
+  let receipt: PublishReceipt | null = null;
+  if (logPath !== null) {
+    try {
+      receipt = parsePublishReceipt(PKG, readFileSync(logPath, "utf-8"));
+    } catch (e) {
+      refuse(`--publish-log ${logPath} could not be read: ${(e as Error).message}`);
+    }
+  }
+
+  const decision = postflightDecision(PKG, treeVersion!, reading!, receipt);
+  if (decision.outcome === "refused") refuse(decision.message);
+  if (decision.outcome === "unmeasured") unmeasured(decision.message);
+  console.log(`postflight OK: ${decision.message}`);
 }
 
 await main();
