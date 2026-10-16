@@ -68,6 +68,12 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
     usage: 'rungate create-spec "Title" ["what it governs"] [--sc "statement"]',
     projectRootFlag: true,
   },
+  "create-success": {
+    script: "scripts/create-success.ts",
+    summary: "Seed SUCCESS.md — what this project is for, and the claims that prove it",
+    usage: "rungate create-success [--owner <name>] [--force]",
+    projectRootFlag: true,
+  },
   "create-sc": {
     script: "scripts/create-sc.ts",
     summary: "Generate a matchable success-criterion line from a registered pattern",

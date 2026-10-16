@@ -31,6 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
+import { readSuccessDoc, successViolations } from "../success-doc";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
   OWNED_FILES,
@@ -735,7 +736,7 @@ export function generateConformityTest(root?: string): string {
   const from = root && isHarnessItself(root) ? "../lib/conformity" : "rungate/lib/conformity";
   return `import { resolve } from "path";
 import { afterAll } from "bun:test";
-import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, writeFindingsReport } from "${from}";
+import { runScaffoldConformity, runSpecDiscovery, runSpecDrift, runDocHygiene, runFallowCheck, runAgentFileValidation, runDirectoryValidation, runPackageValidation, runTsconfigValidation, runConfigAccessValidation, runPromptConfigAccessValidation, runSuccessDocValidation, writeFindingsReport } from "${from}";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -750,6 +751,7 @@ runPackageValidation(ROOT);
 runTsconfigValidation(ROOT);
 runConfigAccessValidation(ROOT);
 runPromptConfigAccessValidation(ROOT);
+runSuccessDocValidation(ROOT);
 
 afterAll(() => writeFindingsReport(ROOT));
 `;
@@ -1759,6 +1761,67 @@ export function generateProjectState(root: string, actions: string[]): void {
 
   safeWrite(stateJson, JSON.stringify(state, null, 2) + "\n", "project-state.json", actions);
   safeWrite(stateMd, lines.join("\n") + "\n", "PROJECT-STATE.md", actions);
+}
+
+/**
+ * Seed `SUCCESS.md`, then say out loud that the seed is not an answer (#485).
+ *
+ * `CLAUDE.md` opens its rules with "SUCCESS.md is the measure" and the
+ * scaffold never wrote one. rungate's was hand-written once and nothing
+ * reproduced it for anyone else, so a consumer scaffolded a project, read the
+ * generated `AGENTS.md`, and never learned the file was supposed to exist.
+ *
+ * Two halves, and the second is the one that makes this more than a nicety.
+ *
+ * **It is `create-only`.** A project's claims are the one thing the harness
+ * must never regenerate over. `safeWrite` is the single writer for that, and
+ * it is delegated to rather than reimplemented for the reason recorded on
+ * that function: a second copy of the decision absorbs any mutation of the
+ * first.
+ *
+ * **The WARN reads the real checker.** `successViolations` is the same
+ * binding `SUCCESS-1` refuses with, so the scaffold's warning and the
+ * conformity suite's refusal cannot disagree. A second "is it filled in?"
+ * predicate here would be two deciders answering one question — the fourth
+ * shape in `.claude/rules/checks-must-be-able-to-fail.md`, which no
+ * behavioural test can tell apart.
+ *
+ * The direction this is deliberately wrong in: a project that runs the
+ * scaffold and stops is now LOUDER than one that never ran it. An unfilled
+ * template is refused; an absent file is only UNMEASURED. That is the point —
+ * an unfilled template is indistinguishable from a considered one to
+ * everything except a reader, so the generator must not make the project
+ * quieter than it found it.
+ */
+export function seedSuccessDoc(root: string, actions: string[]): void {
+  const templatePath = join(dirname(dirname(__dirname)), "templates", "SUCCESS-TEMPLATE.md");
+  if (!existsSync(templatePath)) {
+    // Named, not swallowed. #484 was a documented command that ENOENTed for
+    // every consumer because `files[]` omitted the directory it read from,
+    // and the symptom was a check that reported 21 pass over a library that
+    // could not load its own data.
+    actions.push(
+      "WARN: SUCCESS.md not seeded — templates/SUCCESS-TEMPLATE.md is missing from this " +
+        "rungate installation (see test/package-closure.test.ts)",
+    );
+    return;
+  }
+
+  safeWrite(join(root, "SUCCESS.md"), readFileSync(templatePath, "utf-8"), "SUCCESS.md", actions);
+
+  const verdict = successViolations(readSuccessDoc(root));
+  if (verdict.unmeasured) {
+    actions.push(`WARN: ${verdict.unmeasured}`);
+    return;
+  }
+  if (verdict.violations.length > 0) {
+    actions.push(
+      `WARN: SUCCESS.md is not filled in — ${verdict.violations.length} item(s). ` +
+        `The conformity suite REFUSES it in this state, deliberately. Fix with ` +
+        `\`bunx rungate create-success\` and then edit it:`,
+    );
+    for (const v of verdict.violations) actions.push(`  - ${v}`);
+  }
 }
 
 export function createClaudeMdBridge(root: string, actions: string[]): void {

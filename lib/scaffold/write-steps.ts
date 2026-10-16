@@ -35,6 +35,7 @@ import {
   createTsconfig,
   generateProjectState,
   createClaudeMdBridge,
+  seedSuccessDoc,
   createCiWorkflows,
   createGitHooks,
   deployHooksToConsumers,
@@ -159,6 +160,9 @@ What does this workflow produce?
   // Phase 3: Final setup
   copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
   generateProjectState(projectPath, actions);
+  // Both profiles. #485 is about the file existing at all, and `minimal` is
+  // the profile the consumer that found the gap was scaffolded with.
+  seedSuccessDoc(projectPath, actions);
   runAuditSpecsFix(projectPath, actions);
   addPaiHarnessDevDep(projectPath, actions);
   createClaudeMdBridge(projectPath, actions);

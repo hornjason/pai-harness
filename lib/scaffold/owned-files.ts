@@ -129,6 +129,12 @@ export const OWNED_FILES: OwnedFile[] = [
     customize: "DA-owned (#296) — generated from project-state.json by the DA",
     avoid: "Don't edit directly; don't expect re-scaffold to update it",
   },
+  {
+    path: "SUCCESS.md",
+    strategy: "create-only",
+    customize: "Seeded as a template (#485) — fill in the claims; `bunx rungate create-success` re-seeds",
+    avoid: "Don't leave it as the seed; SUCCESS-1 refuses a template, and re-scaffold will not fill it in",
+  },
 ];
 
 /**

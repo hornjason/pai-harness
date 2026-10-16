@@ -6921,3 +6921,66 @@ project does not have this directory" from "the project points this somewhere
 I will not follow", and the mutation rows confirm the split: removing the root
 refusal leaves the walk cases green, and removing the walk refusal leaves the
 root case green.
+
+## SUCCESS.md is seeded, and an unfilled seed is refused (#485)
+
+`CLAUDE.md` opens its rules with "SUCCESS.md is the measure" and no generator,
+template or scaffold step ever wrote one. rungate's was hand-written once in
+`22aa5b20` and nothing reproduced it for anyone else, so a consumer scaffolded
+a project, read the generated `AGENTS.md`, and never learned the file was
+supposed to exist.
+
+The half that makes this more than a nicety is the refusal. **A generator
+alone makes it worse**: a project that ran `create-success` and stopped would
+have a `SUCCESS.md` that every "does it exist" check waves through, and three
+TODO claims that read as deliberate at a glance. So the seed is `create-only`,
+the template's placeholders are marked with a token no prose contains, and
+`SUCCESS-1` refuses while any survive. The intended direction is that a
+project which runs the generator and stops is **louder** than one that never
+ran it: an unfilled template FAILS, an absent file is UNMEASURED.
+
+- [x] SC-1706: lib/success-doc.ts contains [successViolations] — ONE exported function decides whether a SUCCESS.md is real, so there is one binding to mutate. The scaffold's WARN and the conformity suite's refusal read the same binding; a second "is it filled in?" predicate would be two deciders agreeing, which no behavioural test can tell apart
+- [x] SC-1707: test/success-doc.test.ts contains [absence is RECORDED, never silent] — the CALL SITE is driven, not just the decider. Deleting the `if (verdict.unmeasured)` block from `runSuccessDocValidation` leaves `violations` empty, so the assertion below it passes and the check goes green over a project with no SUCCESS.md at all
+- [x] SC-1708: test/success-doc.test.ts contains [the generator's output UNMODIFIED is refused] — the case a naive file-exists check misses, and the one #485 says to write first. A check that only tests existence passes over every project that ran the generator and stopped
+- [x] SC-1709: test/success-doc.test.ts contains [rungate's OWN SUCCESS.md passes the check it ships] — the only real instance of this document predates the validator by four months and is written in a different syntax. A validator whose single real-world example fails it is not strict, it is miscalibrated
+- [x] SC-1710: lib/scaffold/steps.ts contains [seedSuccessDoc] — seeded under BOTH profiles via `safeWrite`, the single `create-only` writer, so a project's own claims are never regenerated over; and the WARN is derived from the real checker rather than a second copy
+
+### What was broken to prove it (SC-1706..1710)
+
+Run over `test/success-doc.test.ts`, 20 tests, baseline 0 fail. Every count
+predicted before the battery ran, and **every one matched**.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `successViolations` short-circuited to a clean verdict | 10 | 10 |
+| the call site: `if (verdict.unmeasured)` block deleted from `runSuccessDocValidation` | 1 | 1 |
+| the placeholder refusal removed | 1 | 1 |
+| `CLAIM_FORMS` narrowed to the heading form, dropping rungate's own | 3 | 3 |
+| the `howItFails === null` refusal removed | 2 | 2 |
+| `expect(violations).toEqual([])` dropped from the call site, `addFinding` kept | 2 | 2 |
+
+None is left in the tree; all were run and reverted.
+
+**The call-site row is the one the battery was built for, and it is 1 on
+purpose.** #476's review found that its test helper reimplemented the
+composition, so deleting the consumer block from the real function was **0 red
+over 9,652 tests** — the guard counted call sites while the mutation removed
+the caller. Here the conformity cases are spawned under `bun test` against
+planted roots, and exactly one case asks what the check WROTE rather than
+whether it failed. Delete that case and the row returns to 0.
+
+**Two defects found by writing the tests rather than by the battery**, both
+the same mistake this section is about:
+
+- The first falsifiability pattern admitted `**How to measure it:**` beside
+  `**How it fails:**`. The fixture for "a claim with no How it fails" deleted
+  the fails line and the claim was still considered falsifiable, because the
+  measurement line matched — a claim could satisfy the rule while saying only
+  how to look. The fixture failing is what surfaced it; one that deleted both
+  lines would have passed and hidden it.
+- The first parser recognised only `### Claim N — ...`, so rungate's own
+  `SUCCESS.md` reported "defines no claims". Both the numbered form and the
+  heading form now parse, which widens the syntax and not what passes — the
+  refusals are placeholders, unfalsifiable claims and a standing table that
+  disagrees with the claims, and a document can satisfy either syntax and
+  still fail all three.
