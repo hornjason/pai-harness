@@ -17,7 +17,7 @@ import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
-import { isTypeScriptProject, tsconfigVerdict } from "./typescript-project";
+import { tsconfigVerdict } from "./typescript-project";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -2886,7 +2886,7 @@ function walkSources(dir: string, rel: string, out: Array<{ path: string; text: 
     const abs = join(dir, e.name);
     const relPath = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) {
-      // NOT `TEST_DIRS`, and not `isTestSourceFile` below. The first draft of
+      // NOT a test-directory skip, and not `isTestSourceFile` below. The first draft of
       // the #500 fix widened both here to match the evidence walk, and that
       // silently REDUCED enforcement: `lib/tests/sneaky.ts`, `lib/spec/y.ts`,
       // `lib/__mocks__/x.ts`, `lib/sneaky.test.js` and `lib/sneaky.spec.ts`
@@ -3150,7 +3150,20 @@ const SOURCE_SKIP_DIRS = new Set([
  * fix for the fix, measured end-to-end by running the real CLI rather than
  * reasoned about.
  */
-const TEST_DIRS = new Set(["test", "tests", "__tests__", "spec", "__mocks__"]);
+// There is deliberately no TEST_DIRECTORY exclusion. `isTestSourceFile`
+// below is the only test-related skip, and sec-500 established that the
+// directory form was never needed: the scaffold writes exactly one file
+// into a test directory (`test/scaffold-conformity.test.ts`, the whole of
+// sec-476's B1), and the filename predicate already matches it.
+//
+// The case the directory skip was defending — `tests/helpers/setup.ts`, a
+// non-test file in a test directory — described a project that cannot
+// exist in the state where it would matter. The waiver is only reached
+// when a project has NO production source, and a project with test
+// helpers has production source, so `filesScanned > 0` and the waiver is
+// never consulted. Meanwhile the skip cost a real hole: a non-test file
+// in `tests/` carrying a live `join(process.cwd(), ".claude", ...)` was
+// waived.
 export function isTestSourceFile(name: string): boolean {
   return /\.(test|spec)\.[cm]?[jt]sx?$/.test(name);
 }
@@ -3247,7 +3260,10 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       unreadable.push(rel || ".");
       continue;
     }
-    if (!insideProject(real)) continue;
+    if (!insideProject(real)) {
+      if (rel) skipped.push(`${rel}/ (directory resolving outside the project)`);
+      continue;
+    }
     if (seen.has(real)) continue;
     seen.add(real);
 
@@ -3271,21 +3287,6 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // content project that has one is not a project CONFIG-1 can measure.
       if (e.name.startsWith(".")) {
         skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
-        continue;
-      }
-      // The directory skip stays, but it is RECORDED now. sec-500 argued for
-      // dropping it outright — `isTestSourceFile` already matches
-      // `tests/scaffold-conformity.test.ts`, which was B1's entire motivating
-      // case, so the directory skip buys nothing for it and adds blindness.
-      // The first half of that is true and I measured it. The second half is
-      // what `skipped` fixes: the blindness was that a declined entry was
-      // indistinguishable from an absent one, not that declining was wrong.
-      // Dropping the skip would also make `tests/helpers/setup.ts` count as
-      // project source, which changes which projects pass rather than what
-      // they are told — a bigger call than this finding, and one I would
-      // rather make with its own measurement than fold into a review fix.
-      if (TEST_DIRS.has(e.name)) {
-        skipped.push(`${childRelEarly}/ (test directory)`);
         continue;
       }
       const childRel = childRelEarly;
@@ -3319,18 +3320,44 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       }
       if (isDir) {
         stack.push([abs, childRel]);
+      } else if (
+        !SOURCE_EXTENSIONS.test(e.name)
+        && !e.name.includes(".")
+        && CONFIG_SCAN_DIRS.some(d => childRel === d || childRel.startsWith(`${d}/`))
+      ) {
+        // An extension-less executable INSIDE a directory this check scans.
+        // sec-500's sharpest case, and not hypothetical: this repo ships two
+        // of them (`scripts/git-hooks/pre-commit`, `scripts/git-hooks/pre-push`).
+        // A node or shell script with no extension reading the config is
+        // invisible to `SOURCE_EXTENSIONS`, so the project reads as having no
+        // code while carrying a live direct read in a scanned directory.
+        //
+        // Recorded, not counted: deciding these are source would make every
+        // git hook, `Makefile` and CI shim project source, which is a much
+        // larger change than this issue. Naming it is what stops the next
+        // reader having to rediscover it.
+        skipped.push(`${childRel} (extension-less file in a scanned directory)`);
       } else if (SOURCE_EXTENSIONS.test(e.name) && e.name.endsWith(".d.ts")) {
         skipped.push(`${childRel} (type declarations)`);
       } else if (SOURCE_EXTENSIONS.test(e.name) && isTestSourceFile(e.name)) {
         skipped.push(`${childRel} (test file)`);
       } else if (SOURCE_EXTENSIONS.test(e.name) && isRootToolConfig(childRel, e.name)) {
         skipped.push(`${childRel} (root tool config)`);
-      } else if (
-        SOURCE_EXTENSIONS.test(e.name)
-        && !e.name.endsWith(".d.ts")
-        && !isTestSourceFile(e.name)
-        && !isRootToolConfig(childRel, e.name)
-      ) {
+      } else if (SOURCE_EXTENSIONS.test(e.name)) {
+        // The three exclusions that used to be repeated here —
+        // `!endsWith(".d.ts")`, `!isTestSourceFile`, `!isRootToolConfig` —
+        // are GONE, and their absence is the point. The `else if` chain
+        // above already consumes each of those files to record the decline,
+        // so re-asking here could never change the outcome: mutating any of
+        // the three was 0 red against a prediction of 3, and the three
+        // branches above were holding all of it up.
+        //
+        // Three collapsed pairs, introduced by the commit that added the
+        // recording and caught by the battery rather than by reading. The
+        // rubric offers two fixes and this is the first one — delete a
+        // decider, do not feed it — because the recording branch has to
+        // exist anyway and a second copy of its question cannot ever
+        // disagree with it.
         // A symlinked FILE is containment-checked too. The directory check
         // above cannot see this case, so `linked.ts -> /outside/x.ts` made
         // `found` true on the strength of code outside the project — which
@@ -3340,7 +3367,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         // property at all.
         if (e.isSymbolicLink()) {
           try {
-            if (!insideProject(realpathSync(abs))) continue;
+            if (!insideProject(realpathSync(abs))) {
+              // Recorded. "I chose not to look" was rendering identically to
+              // "there was nothing there", which is the distinction
+              // `unreadable` exists to preserve — and a pnpm/npm-workspace
+              // monorepo with `lib/impl -> ../../packages/core` is an
+              // ordinary shape, not an attack. The containment decision is
+              // right; the silence was not.
+              skipped.push(`${childRel} (symlink pointing outside the project)`);
+              continue;
+            }
           } catch {
             continue;
           }
