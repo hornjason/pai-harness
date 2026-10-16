@@ -171,8 +171,13 @@ than `0`, so a consumer cannot add an unmeasured run into a clean total.
 Write it with `scripts/record-suite-measurement.ts`, not by hand:
 
 ```
-bun scripts/record-suite-measurement.ts --state <workflow-state.json> --sha <commit sha> --failures <n>
+bun scripts/record-suite-measurement.ts --state <workflow-state.json> --project <project root> --failures <n>
 ```
+
+The commit is read from `--project`, not supplied (#312). A SHA a caller types
+can agree with HEAD by construction, which is the provenance check answering
+itself — so `--sha` is refused by name, as is `--result`: the verdict comes
+from the count and has no other source.
 
 ## evidencePrevalidation
 

@@ -370,6 +370,37 @@ function shellQuote(word) {
   return `'${String(word).replace(/'/g, "'\\''")}'`
 }
 
+// ──── RECORDER-COMMAND-START ────
+/**
+ * The command the tests-pass heal step tells an agent to run (#312 SC-A12).
+ *
+ * This is a function rather than inline prompt text because the flags it
+ * emits are a CONTRACT with `scripts/record-suite-measurement.ts`, and on
+ * main the two sides contradicted each other outright: the prompt passed
+ * `--result PASS|FAIL --project …` and the recorder's option set was
+ * `{state, sha, failures}`, so the first flag was refused as an unexpected
+ * argument. Both sides were green because every test of this step asserted
+ * on prompt TEXT and none ran the command.
+ *
+ * `--failures`, not `--result`: the verdict is derived from the count and has
+ * no other source. A flag naming the verdict lets a caller hand the recorder
+ * the word PASS over a suite that failed, which is #224 restated as an
+ * argument.
+ *
+ * `--project`, not `--sha`: the measured commit comes from the tree. A SHA an
+ * agent typed can agree with HEAD by construction, which is the comparison
+ * quietly answering itself.
+ */
+function recorderCommand(harnessRoot, workDir, projectRoot, quote) {
+  return (
+    `bun ${quote(`${harnessRoot}/scripts/record-suite-measurement.ts`)} \\\n` +
+    `    --state ${quote(`${workDir}/workflow-state.json`)} \\\n` +
+    `    --project ${quote(projectRoot)} \\\n` +
+    `    --failures <number of failing tests the suite printed>`
+  )
+}
+// ──── RECORDER-COMMAND-END ────
+
 // Agents report file paths relative to their own cwd or as absolutes inside a
 // worktree. buildSafeGitAdd rejects absolutes, so rebase them onto the repo first.
 function relativizePaths(files, baseDir) {
@@ -2790,11 +2821,10 @@ in this order, and do NOT edit environments.local.tests by hand — a result
 with no SHA beside it is not evidence, and hand-writing one is how a count
 that predates the final commit got read as a clean suite:
   cd ${PROJECT_ROOT} && ${testCommand}   # timeout: ${testTimeout}
-  cd ${PROJECT_ROOT} && bun ${shellQuote(`${HARNESS_ROOT}/scripts/record-suite-measurement.ts`)} \\
-    --state ${shellQuote(`${WORK_DIR}/workflow-state.json`)} \\
-    --result PASS|FAIL --project ${shellQuote(PROJECT_ROOT)}
-Pass the result the suite actually printed. The recorder reads the commit from
-the project itself; do NOT pass it a SHA you typed.
+  cd ${PROJECT_ROOT} && ${recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)}
+Pass the count the suite actually printed — the verdict is derived from it, so
+there is no flag for the verdict. The recorder reads the commit from the
+project itself; do NOT pass it a SHA you typed.
 For local-api-validated: ${localApiClause}
 For local-ui-validated: ${localUiClause}
 Edit workflow-state.json ONLY via writeWorkflowState():

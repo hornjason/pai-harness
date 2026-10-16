@@ -24,11 +24,20 @@
  * security reviews of this repo's shell surfaces each found a new hole in a
  * filter that tried to clean its input instead of rejecting it.
  *
+ * WHY THERE IS NO --sha. The measured commit is read from the project tree
+ * (#312 SC-A12). A SHA a caller types can agree with HEAD by construction,
+ * which is the comparison quietly answering itself — the same defect as a
+ * caller-supplied verdict, one field over. `--sha` is refused by name rather
+ * than falling through to "unexpected argument", because the flag was in the
+ * documented usage for its whole life and a caller still passing it deserves
+ * to be told what replaced it.
+ *
  * Usage:
  *   bun scripts/record-suite-measurement.ts --state <workflow-state.json> \
- *     --sha <commit sha> --failures <n>
+ *     --project <project root> --failures <n>
  */
 
+import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { writeWorkflowState } from "../gates/orchestrator";
 
@@ -42,8 +51,25 @@ import { writeWorkflowState } from "../gates/orchestrator";
  */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["state", "sha", "failures"]);
+const OPTIONS = new Set(["state", "project", "failures"]);
 const SHA = /^[0-9a-f]{7,40}$/i;
+
+/**
+ * Flags this script used to take, refused by name.
+ *
+ * "unexpected argument --sha" is true and useless: it reads like a typo for
+ * a caller following the usage line that shipped with every previous version
+ * of this file. Both of these were in a live prompt on main.
+ */
+const RETIRED: Record<string, string> = {
+  sha: "--sha is no longer accepted — the measured commit is read from --project. " +
+    "A SHA the caller chose can agree with HEAD by construction, which is the " +
+    "provenance check answering itself.",
+  result: "--result is not a flag — the verdict is derived from --failures and has no " +
+    "other source. PASS means the count was zero; it cannot mean anything else.",
+  verdict: "--verdict is not a flag — the verdict is derived from --failures and has no " +
+    "other source.",
+};
 
 class Refused extends Error {}
 
@@ -51,6 +77,7 @@ function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const m = /^--([A-Za-z][A-Za-z-]*)$/.exec(argv[i]);
+    if (m && RETIRED[m[1]]) throw new Refused(RETIRED[m[1]]);
     if (!m || !OPTIONS.has(m[1])) {
       throw new Refused(`unexpected argument "${String(argv[i]).slice(0, 80)}"`);
     }
@@ -81,6 +108,57 @@ export function failureCount(raw: string | undefined): number {
   return Number(raw.trim());
 }
 
+/**
+ * The commit the suite ran against, read from the tree rather than told.
+ *
+ * Refuses rather than falling back. `git rev-parse` prints `HEAD` back at you
+ * for a repo with no commits, and a non-repo exits non-zero — both would
+ * otherwise become a measurement with no provenance, which is the thing this
+ * script exists to make impossible.
+ */
+export function measuredSha(projectRoot: string | undefined): string {
+  if (!projectRoot) {
+    throw new Refused("--project is required — the measured commit is read from the project tree");
+  }
+  let out: string;
+  try {
+    out = execFileSync("git", ["-C", projectRoot, "rev-parse", "HEAD"], {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+  } catch (e: any) {
+    throw new Refused(
+      `could not read a commit from ${projectRoot}: ${String(e?.stderr || e?.message || e).trim().slice(0, 200)}`,
+    );
+  }
+  return shaFromGitOutput(projectRoot, out);
+}
+
+/**
+ * The validation half of `measuredSha`, split out so it can be driven.
+ *
+ * It is a separate function because the case it guards is **not reachable
+ * through git on this machine**: `git rev-parse HEAD` in a repository with no
+ * commits exits non-zero here, so the exec above throws and the caller never
+ * gets a string. Older gits print the literal `HEAD` on stdout and exit
+ * non-zero, and there is no promise about which future versions do what.
+ *
+ * Leaving the guard inline would have made it a branch no test could enter —
+ * the thing `.claude/rules/checks-must-be-able-to-fail.md` is about — and
+ * deleting it would make the recorder's provenance depend on a git exit code
+ * staying what it is today. Splitting it is the third option: the branch is
+ * exercised directly, and the comment says which half the repo cannot see.
+ */
+export function shaFromGitOutput(projectRoot: string, out: string): string {
+  const trimmed = out.trim();
+  if (!SHA.test(trimmed)) {
+    throw new Refused(
+      `${projectRoot} has no commit to measure against (git answered "${trimmed.slice(0, 80)}")`,
+    );
+  }
+  return trimmed.toLowerCase();
+}
+
 /** The record to persist. PASS means zero failures; it cannot mean anything else. */
 export function buildMeasurement(sha: string, failures: number): Record<string, unknown> {
   return {
@@ -95,15 +173,7 @@ if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
     if (!args.state) throw new Refused("--state is required");
-    if (!args.sha) throw new Refused("--sha is required");
-    if (!SHA.test(args.sha.trim())) {
-      throw new Refused(
-        `--sha "${String(args.sha).slice(0, 80)}" is not a commit SHA (7-40 hex). ` +
-          `A ref name is not accepted: "HEAD" means "whatever the checkout happens to be", ` +
-          `which is the missing provenance this record exists to supply.`,
-      );
-    }
-    const sha = args.sha.trim().toLowerCase();
+    const sha = measuredSha(args.project);
     const failures = failureCount(args.failures);
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
