@@ -7091,3 +7091,166 @@ behavioural cases of the function, which is the correct set.
 - [x] SC-1728: test/dry-run-evidence-quality.test.ts contains [the gate result schema declares the field the reading crosses on] — `GATE_RESULT_SCHEMA` is evaluated rather than grepped, and the prompt must ask for the reading rather than for an opinion
 - [x] SC-1729: test/dry-run-evidence-quality.test.ts contains [nothing before the dry-run return creates a branch or comments on the issue] — #59 SC-5, enumerated over the executed prefix with a planted positive control
 - [x] SC-1730: test/dry-run-evidence-quality.test.ts contains [each marker appears exactly once and the block runs on every run] — and a duplicated marker is refused rather than silently sliced
+
+## The run's trajectory, and the ways a timeline lies (#60)
+
+Diagnosing a failed pipeline run meant reading raw agent transcripts. The
+facts that answer "what happened" were already recorded — and recorded in
+three places that nothing joined: agent brackets in `agent-timings.jsonl`
+(#227, #239), gate results in `workflow-state.json`, and the refusal ledger in
+`workflows/ship.js`'s memory, which exists only until the run ends.
+
+### What #60 asked for that is not available
+
+> **Integration into ship.js** — wrap `agent()` and `phase()` calls with
+> trajectory capture
+
+`workflows/ship.js` runs in the Workflow sandbox: no filesystem, no
+subprocess, no imports, no clock (#69). It cannot write a byte. Every artifact
+it produces crosses that boundary through a script an agent is instructed to
+run, which is exactly what `scripts/record-agent-timings.ts` is.
+
+So #60's design as written **is the design that shipped as #227**, and its
+`<100 ms overhead per agent call` criterion lands on the wrong side of it: the
+existing bracket costs two `bun` process spawns per call, already well over
+100 ms. A budget nobody can meet is not a budget, and the re-scope recorded on
+the issue replaces it with the measurement that is available.
+
+A second JSONL beside the first was the other option and is worse: two sources
+of truth for when an agent ran, which disagree the first time one of them
+loses a line. The trajectory is `agent-timings.jsonl`, widened.
+
+### The compatibility constraint that shapes the record format
+
+An agent bracket carries **no `type` field**. Thousands of them are already on
+disk in in-flight runs, and a reader that called those malformed would be
+reporting a defect it had just introduced. `type` absent ⇒ agent bracket;
+present ⇒ one of the new kinds.
+
+That splits the two readers' jobs, and the split is the interesting part:
+
+- `readTimings` (pre-#60, still the timing reporter) sees a `type` it does not
+  own and **skips** it. Calling a state mutation malformed would have every
+  run print its own writes as corruption.
+- `readTrajectory` (the owner) sees a `type` it does not know and reports it
+  **malformed**. A reader that quietly drops record kinds it has not been
+  taught reports a complete timeline over a file it only partly understood.
+
+Skipped and malformed are different facts, and a single reader returning
+`null` for both is how they get conflated. The sentinel exists so they cannot.
+
+### Phase spans are derived, because nothing can write them
+
+A phase boundary is a `phase('Goal')` call inside the sandbox. The agents
+inside the phase are the only participants that can report, so the phase
+travels on the bracket they already write (`--phase`), and `phaseSpans`
+derives the span as min-start to max-end over the brackets carrying it.
+
+min/max rather than first-and-last-in-file: parallel agents append out of
+order, so the last line of a phase is routinely not its latest event, and file
+order would under-report every fanned-out phase in the pipeline.
+
+**A phase that recorded nothing is ABSENT, not zero.** `0.000s` is
+indistinguishable from "never measured", and the viewer prints a sentence
+saying the timeline reports what recorded rather than what ran. The gap
+between two phases — gate runs, sandbox logic — belongs to neither and is
+visible as a gap.
+
+### The five ways this report could have looked complete
+
+Each of these produces a timeline a reader would trust and plan around. They
+are the subject of the test file, applied to a diagnostic rather than a gate:
+
+| Lie | Refused by |
+|---|---|
+| a phase that recorded nothing, printed at zero seconds | SC-1736, SC-1743 |
+| a missing artifact rendered as an empty run | SC-1742 |
+| lines the reader does not understand, dropped silently | SC-1733, SC-1744 |
+| a state write recorded as having changed nothing | SC-1740 |
+| a gate slot with no verdict, printed as a pass | SC-1745 |
+
+The last is #276's defect in the reporting layer rather than the deciding one.
+A viewer that filled in an empty gate slot would reintroduce it somewhere
+nothing is watching.
+
+### Recording a write must not be able to prevent one
+
+`recordStateWrite` is called AFTER `writeState` in `writeWorkflowState`, and
+cannot throw. A trajectory line is a record OF a state write: losing the line
+costs a row in a timeline, losing the write costs the run. The failure goes to
+stderr rather than being swallowed — there is no channel left to record it on,
+since the thing that failed is the recorder.
+
+The prior state is read BEFORE the write, because afterwards there is nothing
+to diff against. A read that throws yields `null`, which renders as
+`<initial write>` — wrong, but visibly so beside a run that already has rows.
+
+### What "by which agent" honestly resolves to
+
+#60 asked for the actor. `writeWorkflowState` is called from an agent's
+`bun -e` one-liner and nothing in that process knows which call site spawned
+it, so `source` is read from `RUNGATE_AGENT_LABEL` when something sets it and
+omitted otherwise. The viewer prints `unattributed`, which is a different word
+from a name.
+
+### Mutations, predicted before running and measured after
+
+Over `test/trajectory.test.ts` + `test/agent-timings.test.ts` (44 tests).
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| `phaseSpans` returns `[]` for everything | 3 | **2**, then 3 — see below |
+| `phaseSpans` takes last-in-file instead of max | 1 | 1 |
+| the `NOT_MINE` sentinel removed — a mutation line reads as malformed | 1 | 1 |
+| `readTrajectory` skips an unknown `type` instead of reporting it | 1 | 1 |
+| `readTrajectory` drops malformed lines silently | 2 | 2 |
+| `changedFields` returns `[]` for everything | 2 | 2 |
+| `recordStateWrite` rethrows instead of reporting | 1 | 1 |
+| the missing-artifact branch renders an empty timeline | 1 | 1 |
+| the phase caveat sentence deleted from the viewer | 1 | 1 |
+| `gateLines` defaults an absent `result` to `PASS` | 1 | 1 |
+| `timingInstruction` stops passing `--phase` | 1 | 1 |
+| `--phase` defaults to `'unknown'` instead of being omitted | 1 | 1 |
+
+None of the twelve is left in the tree; all were run and reverted.
+
+**The row that came back low, which is the one that mattered.** The first row
+measured 2 where 3 was predicted, and a row LOWER than predicted is the
+signature `.claude/rules/checks-must-be-able-to-fail.md` tells you to chase.
+The missing red was SC-1743, the viewer's phase-list test, which asserted that
+the rendered text contained `Goal` — and was satisfied by the TIMELINE row
+`agent read-issue start [Goal]`. With `phaseSpans` short-circuited it stayed
+green over a report that had no phase list in it at all.
+
+An assertion that holds vacuously, the third shape, in a test file whose
+stated subject is the ways a timeline lies. It was found by the arithmetic and
+by nothing else: the diff reads correctly, the test name describes what it
+meant to do, and the suite was green. The fix slices the `PHASES` section out
+of the rendered lines and asserts on the slice, and adds the
+no-bracket-carried-a-phase branch so the row is load-bearing in both
+directions. Re-measured: 3.
+
+Same family as the #297 self-reference trap and #484's whole-violation-list
+row — **search the slice, not the document.** Three times now in this repo a
+section-scoped claim has been satisfied by a match somewhere else in the same
+string.
+
+### Success criteria
+
+- [x] SC-1731: test/trajectory.test.ts contains [an agent bracket is written without a type field so older readers still parse it] — asserted on the bytes, and the pre-#60 reader still parses it phase and all
+- [x] SC-1732: test/trajectory.test.ts contains [a mutation and a gate are written with a type and read back] — round-tripped through the real writer and the real reader
+- [x] SC-1733: test/trajectory.test.ts contains [the timing reader skips lines it does not own and still reports ones it cannot read] — skipped and malformed are different facts, and the owner reports an unknown `type` as malformed so an unknown kind surfaces exactly once
+- [x] SC-1734: test/trajectory.test.ts contains [a queued record with no readable duration stays malformed - not a zero wait] — #239's rule re-asserted through the new parser
+- [x] SC-1735: test/trajectory.test.ts contains [a mutation that names no changed field is refused rather than recorded empty] — a row saying a write happened with no content reads as "something changed and we lost what"
+- [x] SC-1736: test/trajectory.test.ts contains [a phase that recorded nothing is absent - never a phase at zero seconds] — and the gap between two phases belongs to neither
+- [x] SC-1737: test/trajectory.test.ts contains [a phase is as wide as its earliest and latest event - not its first and last line] — parallel agents append out of order so file order under-reports every fanned-out phase
+- [x] SC-1738: test/trajectory.test.ts contains [brackets with no phase contribute no span and are not invented one] — every bracket written before #60 is phaseless and still appears on the timeline
+- [x] SC-1739: test/trajectory.test.ts contains [the diff names changed top-level fields and one level into the gate containers] — compared by value because callers mutate in place and write the same object back
+- [x] SC-1740: test/trajectory.test.ts contains [a write that changed nothing records nothing] — and one that changed something writes beside the state file
+- [x] SC-1741: test/trajectory.test.ts contains [recording cannot prevent a state write - and says so on stderr when it fails] — the ordering of the write and the record is asserted by index in the orchestrator as well as by behaviour
+- [x] SC-1742: test/trajectory.test.ts contains [a missing artifact is UNMEASURED with its path - not an empty timeline] — and an artifact that exists and holds nothing is a different answer
+- [x] SC-1743: test/trajectory.test.ts contains [the phase list carries the caveat that it reports what recorded] — without the sentence a reader counts the phases listed and concludes the run had that many
+- [x] SC-1744: test/trajectory.test.ts contains [malformed lines are printed verbatim and make the view incomplete] — a reader that drops what it cannot parse reports a complete picture of a file it partly understood
+- [x] SC-1745: test/trajectory.test.ts contains [a gate slot with no verdict prints UNMEASURED - never a pass] — #276's defect in the reporting layer rather than the deciding one
+- [x] SC-1746: test/trajectory.test.ts contains [the timing instruction passes the call site's phase and omits it when there is none] — extracted from ship.js and executed rather than matched
+- [x] SC-1747: test/trajectory.test.ts contains [the artifact the viewer reads is the artifact ship.js writes] — joined by an execution over one file rather than by two string literals that happen to agree

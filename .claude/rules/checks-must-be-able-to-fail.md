@@ -158,6 +158,137 @@ separate cases with a comment saying which decider each one is for. Without
 that, the next person to simplify the code deletes a line that has a test and
 watches it stay green.
 
+### Before you believe a 0, check the instrument (#60)
+
+The section above gives a zero two causes: the mutation was applied and
+nothing caught it, or the mutation was never really applied. Both are about
+the code.
+
+There is a third, and it is worse because it is silent and it is not about the
+code at all: **the measurement stopped reporting.**
+
+Measured on #60. A test forced an error by writing to a path containing a NUL
+byte. The thrown message quotes the path, so the stderr line carried a real
+NUL — and `grep` treats a file with a NUL in it as binary, printing
+`Binary file matches` to a terminal and *nothing at all* through a pipe. The
+battery's `grep -E "^ *[0-9]+ (pass|fail)"` returned empty. Four mutations in
+a row measured as blank lines, with a green suite, a correct mutant, and no
+error anywhere.
+
+The tell is that the BASELINE is also wrong. A real zero has a believable
+baseline beside it; an instrument failure takes the baseline down too, and it
+is the one row nobody checks because nobody mutated anything to produce it.
+
+So: **read your baseline row before you read any mutation row.** If the
+baseline is empty, absent, or not the number you know the suite reports, you
+are not measuring the code. And do not let a test put a NUL in the run's
+output — a test that corrupts the output stream of the suite containing it
+breaks every downstream reader, including CI log greps that have nothing to do
+with it. A directory whose parent is a file throws `ENOTDIR` and forces the
+same error in text.
+
+### Search the slice, not the document (#297, #484, #60)
+
+A claim scoped to one section of a string, asserted against the whole string,
+is satisfied by a match anywhere in it. Three instances, all found by a
+mutation row coming back LOWER than predicted and by nothing else:
+
+| Where | The claim | What satisfied it instead |
+|---|---|---|
+| #297 | a phrase appears in a spec section's PROSE | the section's own SC line, which quotes the phrase it demands |
+| #484 | a new violation case is caught | the live-tree case, which asserted the WHOLE violation list, so two questions were one assertion |
+| #60 | the viewer prints a PHASES list containing `Goal` | the TIMELINE row `agent read-issue start [Goal]`, in the same rendered text |
+
+Each read correctly in the diff, each had a test name describing what it meant
+to do, each was green over code that had stopped doing it. The fix is the same
+every time: cut the region the claim is about out of the string first, assert
+on the cut, and assert that the cut is non-empty — because a slice that fails
+to find its own section is an empty string, and an empty string contains
+nothing, which is indistinguishable from a clean result.
+
+### A battery whose fixtures all meet a precondition measures nothing past it (#492, #59)
+
+Every fixture in a battery is built to exercise the feature. That is what
+makes a battery feel thorough, and it is also what makes it blind in one
+specific direction: if the feature only runs when some precondition holds,
+every fixture holds it, and **the branch where it does not hold is outside
+the battery's reach entirely.** Not under-tested — unreachable.
+
+This is not the "prove the mutation changed behaviour" case above, and it is
+why this is a section rather than a sentence appended to that one. There, the
+mutant and the original behave identically on the inputs you have, and the
+tell is a number. Here **there is no suspicious number to read.** #492's
+battery over `unmeasuredScanReason` was five mutations measuring 1, 1, 1, 1
+and 4, every count predicted before the run and every one matched — a model
+battery by every diagnostic already in this file, measuring nothing about the
+branch one line above itself.
+
+Two instances, found within hours of each other and from opposite directions.
+Neither was found by its own author: #492's was found by sec-485, varying the
+one precondition two other reviewers had held fixed, and measured by sec-500
+afterwards.
+
+| Where | What every fixture held fixed | What was on the other side |
+|---|---|---|
+| #492 | every waiver fixture had **no** scanned files, because that is the precondition a waiver needs | a *mixed* layout, where `scripts/` makes `filesScanned` non-zero while 390 files in `src/` are never read. CONFIG-1 reports **PASS having scanned 36 of 426**, and the empty-scan refusal cannot fire. Every hardening anyone had done lived downstream of `filesScanned === 0` |
+| #59 | the refusal enumeration was read off `prevalidationViolations`, which refuses an absent, `UNMEASURED`, `FAIL` or self-contradicting reading | the function sits behind `if (!isVerifyPlus()) return`, and `isVerifyPlus` is `["VERIFY","SHIP","DONE"]`. The reading is stamped at SCOPE and refused two phases later, so every clause was true of the function and none of it was true at the phase being reasoned about |
+
+**The #59 row has no count beside it on purpose.** It was caught by reading
+`isVerifyPlus` before shipping, not by a battery, and a file whose subject is
+not trusting unmeasured claims should not carry one wearing a number. It is
+recorded because the route is one this file does not otherwise teach: every
+other worked example here is a mutation battery, and this one is *reading
+upward from a function to its call site*. Both routes work and neither finds
+the other's instance.
+
+What makes #59 worth the space is that nothing in the DATA was wrong. The
+reading really is taken at SCOPE — `stampEvidencePrevalidation(state,
+"scope")` — so every artefact a reader checks says the system knows the
+answer at that phase. It does. It just does not refuse on it until VERIFY.
+Not catchable by looking at the state file, because the state file is
+correct and sitting on the wrong side of the line.
+
+The distinguishing input, since the point of a row is to be reproducible: a
+state at `phase: "SCOPE"` carrying `evidencePrevalidation: {verdict: "FAIL",
+acs: [{id: "AC-2", status: "broken"}]}` passes the scope gate; the identical
+state at `phase: "VERIFY"` refuses. One field, opposite verdicts.
+
+#492's is the sharper one because its exposure window is **one byte**,
+measured on `git archive` exports under `/tmp` rather than argued:
+
+| Fixture | `bytesScanned` | Verdict |
+|---|---|---|
+| `src/` only, 61 files, one holding a live config read | 0 | FAIL — *"the scan read NO files"* |
+| + `scripts/empty.ts`, **0 bytes** | 0 | FAIL — *"1 files were walked and none had any content"* |
+| + `scripts/x.ts`, **1 byte** (a newline) | 1 | **0 findings** |
+| + comment-only `gates/g.ts`, 11 bytes | 11 | **0 findings** |
+| + clean `lib/build.ts`, 20 bytes | 20 | **0 findings** |
+
+No FAIL, no WARN, no UNMEASURED, nothing in the report at all — strictly
+worse than every case the batteries did cover, because those at least record
+something. The zero-byte row is the one that makes "one byte" exact: the last
+guard is a byte count, and a single character walks past it.
+
+**And there is a second-order trap in that table worth naming on its own.**
+The refusal states its condition as *"the scan read NO files"* — which one
+byte makes false. So the refusal is **satisfiable by something other than
+fixing the problem**: adding an empty file to a scanned directory silences
+it, and the project is no more scanned than it was. When you word a refusal,
+word it after the property you care about, not after the cheapest proxy you
+had to hand, because a proxy is a thing people can satisfy directly.
+
+**So name the precondition, then go and build the one fixture that does not
+meet it.** In #492's case that is a project with files in both a scanned and
+an unscanned directory; in #59's it is reading the gate at the phase it
+actually runs rather than reading the function. The fixture you have to
+construct deliberately is the one that would never occur to you, because
+every natural example is an example *of the feature*.
+
+The reporting fix generalises too: **a scan that reports a verdict should
+report its own coverage** — how many files it read of how many it could see.
+`36/426` and `426/426` are the same PASS today, and no reader can tell them
+apart from the output.
+
 ### "This cannot be checked" is a claim, and it is checkable (#199, #479)
 
 The cheapest way to ship a check that cannot fail is to not ship it, having

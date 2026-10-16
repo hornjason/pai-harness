@@ -63,6 +63,16 @@ export interface TimingRecord {
   at: number;
   /** Milliseconds waited. Required for `queued`, absent otherwise. */
   waitedMs?: number;
+  /**
+   * The ship.js phase this call site belongs to (#60).
+   *
+   * Optional, and it has to stay optional: every bracket written before #60
+   * is on disk without it, and a reader that rejected those would be
+   * reporting a defect it had just introduced. A phase span is derived from
+   * the brackets that carry one, so a missing phase costs a row's placement
+   * and nothing else.
+   */
+  phase?: string;
 }
 
 export interface TimingEntry {
@@ -107,12 +117,14 @@ export function recordEvent(
   event: TimingEvent,
   at: number = Date.now(),
   waitedMs?: number,
+  phase?: string,
 ): TimingRecord {
   const record: TimingRecord = {
     label,
     event,
     at,
     ...(waitedMs === undefined ? {} : { waitedMs }),
+    ...(phase === undefined || phase === "" ? {} : { phase }),
   };
   mkdirSync(dirname(artifact), { recursive: true });
   // One short line per append: a single write(2) under the pipe-buffer size,
@@ -121,7 +133,16 @@ export function recordEvent(
   return record;
 }
 
-function parseRecord(line: string): TimingRecord | null {
+/**
+ * A line this reader does not own, as distinct from one it could not read.
+ *
+ * A sentinel rather than `null` because the two outcomes have opposite
+ * reporting consequences, and a boolean third return value would be the kind
+ * of thing a later caller drops on the floor.
+ */
+const NOT_MINE = Symbol("not a timing record");
+
+function parseRecord(line: string): TimingRecord | null | typeof NOT_MINE {
   let value: unknown;
   try {
     value = JSON.parse(line);
@@ -129,10 +150,19 @@ function parseRecord(line: string): TimingRecord | null {
     return null;
   }
   if (typeof value !== "object" || value === null) return null;
-  const { label, event, at, waitedMs } = value as Record<string, unknown>;
+  const { label, event, at, waitedMs, phase, type } = value as Record<string, unknown>;
+  // #60 widened this artifact into the run's trajectory: lines carrying a
+  // `type` belong to another record kind and are NOT this reader's business.
+  // They are skipped rather than reported malformed — "a line I do not own"
+  // and "a line nobody can parse" are different facts, and conflating them
+  // would have every run print its own state mutations as corruption.
+  // `lib/trajectory.ts` owns them, and reports a `type` IT does not know as
+  // malformed, so an unknown kind is still surfaced exactly once.
+  if (type !== undefined) return NOT_MINE;
   if (typeof label !== "string" || label.length === 0) return null;
   if (event !== "start" && event !== "end" && event !== "queued") return null;
   if (typeof at !== "number" || !Number.isFinite(at)) return null;
+  const where = typeof phase === "string" && phase.length > 0 ? { phase } : {};
   if (event === "queued") {
     // A queued record with no readable duration is MALFORMED, never a zero
     // wait: reading it as zero would make the one record whose entire job is
@@ -140,9 +170,9 @@ function parseRecord(line: string): TimingRecord | null {
     if (typeof waitedMs !== "number" || !Number.isFinite(waitedMs) || waitedMs < 0) {
       return null;
     }
-    return { label, event, at, waitedMs };
+    return { label, event, at, waitedMs, ...where };
   }
-  return { label, event, at };
+  return { label, event, at, ...where };
 }
 
 export function readTimings(artifact: string): TimingRead {
@@ -153,6 +183,7 @@ export function readTimings(artifact: string): TimingRead {
   for (const line of readFileSync(artifact, "utf-8").split("\n")) {
     if (line.trim() === "") continue;
     const record = parseRecord(line);
+    if (record === NOT_MINE) continue;
     if (record) records.push(record);
     else malformed.push(line);
   }
@@ -272,7 +303,7 @@ function flag(argv: string[], name: string): string | undefined {
 function refuse(message: string): never {
   process.stderr.write(`record-agent-timings: ${message}\n`);
   process.stderr.write(
-    "usage: record-agent-timings.ts <start|end> --label <label> --artifact <path>\n" +
+    "usage: record-agent-timings.ts <start|end> --label <label> --artifact <path> [--phase <phase>]\n" +
       "       record-agent-timings.ts queued --label <label> --waited-ms <ms> --artifact <path>\n" +
       "       record-agent-timings.ts report --artifact <path> [--json]\n",
   );
@@ -287,7 +318,12 @@ export function main(argv: string[]): void {
   if (command === "start" || command === "end") {
     const label = flag(argv, "label");
     if (!label) refuse("--label <label> is required — an unnamed bracket cannot be matched");
-    const written = recordEvent(artifact, label, command);
+    // Optional and NOT refused when absent (#60): thousands of brackets are
+    // written by agents following a prompt, and making a new flag mandatory
+    // would turn every agent that follows the old wording into a hard failure
+    // mid-run. A bracket with no phase is placed on the timeline by its label
+    // alone.
+    const written = recordEvent(artifact, label, command, Date.now(), undefined, flag(argv, "phase"));
     process.stdout.write(`${JSON.stringify(written)}\n`);
     return;
   }
