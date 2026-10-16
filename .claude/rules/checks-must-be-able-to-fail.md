@@ -47,9 +47,11 @@ A failing check announces itself. A check that cannot fail looks exactly like a
 check that is satisfied — and it looks *better* over time, because it never
 flakes and never blocks anyone. The quieter it is, the more it is trusted.
 
-Four shapes to watch for. The first three are taken from the list above; the
+Five shapes to watch for. The first three are taken from the list above. The
 fourth is the one that list could not contain, because it is invisible to
-exactly the kind of after-the-fact reading that produced the list.
+exactly the kind of after-the-fact reading that produced the list. The fifth
+is invisible to the question this whole file asks — *can this check fail?* —
+because the honest answer is yes, today.
 
 - **Fail-open error handling.** A `catch` that returns "no problems found", or
   a parse failure that defaults to an empty violation list. Anything that can
@@ -65,6 +67,10 @@ exactly the kind of after-the-fact reading that produced the list.
   same input are behaviourally ONE guard, so no behavioural test can tell them
   apart — and a mutation of either leaves the other holding the case up. Both
   read as covered; one of them is dead and nobody can see which.
+- **A case that goes green under the WRONG fix.** It fails today, for a true
+  reason, against exactly what it is pointed at. It also stops failing under
+  the cheapest repair somebody reaches for — so it certifies the regression
+  it was written to block, at the moment that regression arrives.
 
 ### On the fourth shape
 
@@ -288,6 +294,59 @@ The reporting fix generalises too: **a scan that reports a verdict should
 report its own coverage** — how many files it read of how many it could see.
 `36/426` and `426/426` are the same PASS today, and no reader can tell them
 apart from the output.
+
+### On the fifth shape: a case that goes green under the wrong fix (#492, #518)
+
+The other four are properties of a check as it stands. This one is a property
+of the check's relationship to a repair that does not exist yet, and that is
+why none of the four catch it: it is not vacuous — it fails today, for a true
+reason; it is not a narrow detector — it sees exactly what it is pointed at;
+it is not fail-open and it is not a pair.
+
+It is also not #500's *"fixture that reached the assertion without the
+feature"*, which is the nearest neighbour. That one is a bypass path **that
+exists now**. This is a bypass a future fix creates.
+
+So the question this file asks — *can this check fail?* — is answered **yes,
+truthfully**, and never asks *under which future*.
+
+Two instances, same afternoon, both measured:
+
+| Where | The case | The cheap repair | What happens |
+|---|---|---|---|
+| #492 | "a one-byte scanned file must not go silent", added to guard against widening the `bytesScanned === 0` guard | widen it to `bytesScanned < 10` | the **new** case goes green; the existing 21-byte case stays red. The case written to block that fix is the case that fix satisfies |
+| #518 | "a dot-file and a dot-directory are declined under different classes" | skip non-directory dot entries instead of classifying them | the lookup returns `undefined` for the deleted entry, the two classes duly "differ", and the case **passes over the exact regression it exists to catch** |
+
+#518 is the sharper one, because `undefined !== "dot-file"` is true and that
+is the whole defect: a comparison where one side has been deleted reads as a
+distinction. The fix is one assertion — **establish presence before
+comparing.**
+
+#492 is the more alarming one, because the asymmetry runs the wrong way. The
+case somebody *added* to reinforce the guard was weaker than the case already
+there, and nothing but the counterfactual says so.
+
+**The test, and it is one line: name the wrong fix, and say whether the case
+survives it.**
+
+That is the same discipline as this file's existing demand — *say in the
+commit what you broke to make it fail* — pointed the other way in time. The
+existing sentence asks what you broke today. This asks what someone will
+plausibly do tomorrow, and whether you would notice.
+
+**Name the CHEAPEST repair, not the correct one.** That is what makes the
+shape findable rather than merely nameable. Both instances above are the
+hurried fix: widen the threshold, delete the entry. "What is the right fix
+here" is a question that produces a right fix; "what would someone do at
+5pm to make this symptom go away" is the question that produces these, and
+both of today's were caught by somebody asking it out loud. Neither was
+caught by reading the code, including by the person who wrote the case.
+
+Found by sec-485, after it bit the same session twice in one afternoon in two
+unrelated issues. Recorded here rather than written by its finder: a reviewer
+editing the rubric they review against is the self-reference trap in
+governance form, and this file has caught that shape in prose four times
+already.
 
 ### "This cannot be checked" is a claim, and it is checkable (#199, #479)
 
