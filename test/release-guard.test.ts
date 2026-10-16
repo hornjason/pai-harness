@@ -1019,17 +1019,21 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
  * pairs for exactly that reason.
  *
  * What was broken to prove it, run and counted rather than asserted, over
- * `test/release-guard.test.ts` (67 tests):
+ * `test/release-guard.test.ts` (69 tests):
  *
  * | Mutation | Red | Predicted |
  * |---|---|---|
- * | `receipt` nulled on entry to `postflightDecision` — #472 restored | 4 | 4 |
+ * | `receipt` nulled on entry to `postflightDecision` — #472 restored | 5 | 5 |
  * | the PROPAGATION PENDING branch removed | 1 | 1 |
  * | the registry consulted BEFORE the receipt | 3 | 1 |
  * | the receipt regex unanchored from the start of a line | 1 | 1 |
  * | an unreadable `--publish-log` swallowed instead of refused | 1 | 1 |
+ * | `propagationWarned` dropped from the waiver condition | 1 | 1 |
+ * | the ANSI strip removed from the receipt parser | 1 | 1 |
  *
- * None is left in the tree; all were run and reverted.
+ * None is left in the tree; all were run and reverted. The last two rows are
+ * the security review's findings on the first commit, and the first row rose
+ * from 4 to 5 because one more case now exercises the receipt path.
  *
  * The ordering row is an impure mutation and the extra two reds are
  * collateral, not coverage: it was performed by returning early with the
@@ -1183,6 +1187,42 @@ describe("#472: the publish receipt answers what the packument cannot", () => {
     // otherwise the fall-back path is itself a check that cannot fail.
     expect(run(SCRIPT, postflight("0.4.1", SERVED)).code, "served").toBe(0);
     expect(run(SCRIPT, postflight("0.4.1", STALE)).code, "absent").toBe(2);
+  }, 180_000);
+
+  test("ANSI colour does not hide the receipt", () => {
+    // npm colourises `+ pkg@version` whenever it believes it is on a TTY, and
+    // plenty of CI images set FORCE_COLOR. With colour the anchor missed, the
+    // guard found no receipt and REFUSED a release that published perfectly —
+    // #472's own symptom arriving through the fix for #472. Found by the
+    // security review of the first commit.
+    const coloured = "\u001b[32m+ rungate@0.4.1\u001b[39m";
+    expect(parsePublishReceipt("rungate", coloured).version).toBe("0.4.1");
+    expect(parsePublishReceipt("rungate", "  + rungate@0.4.1").version,
+      "an indented receipt was unreadable").toBe("0.4.1");
+    // Trailing content is still NOT a receipt: a dry run is a different act.
+    expect(parsePublishReceipt("rungate", "+ rungate@0.4.1 (dry-run)").version).toBeNull();
+    // The lag notice must survive colouring too, since it now decides.
+    expect(parsePublishReceipt("rungate",
+      "\u001b[33mnpm notice\u001b[39m Your package is being processed and may take a few minutes.")
+      .propagationWarned).toBe(true);
+  });
+
+  test("a receipt WITHOUT npm's lag notice does not waive the registry read", () => {
+    // The control the security review found inert. `propagationWarned` was
+    // parsed, carried and printed while deciding nothing, so a receipt alone
+    // waived the registry check — and since the workflow always passes
+    // --publish-log, the live pipeline could no longer fail here at all.
+    const bare = publishLog("+ rungate@0.4.1");
+    const real = run(SCRIPT, postflight("0.4.1", STALE, ["--publish-log", bare]));
+    expect(real.code, "a receipt alone waived the registry read").toBe(2);
+    expect(real.out).toContain("RELEASE UNCONFIRMED");
+    expect(real.out).toContain("did NOT print");
+
+    // ...and WITH the notice the same reading passes. One line apart.
+    const warned = publishLog(
+      "npm notice Your package is being processed and may take a few minutes to become available.\n+ rungate@0.4.1",
+    );
+    expect(run(SCRIPT, postflight("0.4.1", STALE, ["--publish-log", warned])).code).toBe(0);
   }, 180_000);
 
   test("the workflow captures the publish output and hands it to the guard", () => {

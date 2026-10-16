@@ -439,10 +439,20 @@ function escapeForRegex(s: string): string {
  * for the receipt.
  */
 export function parsePublishReceipt(pkg: string, log: string): PublishReceipt {
-  const m = log.match(new RegExp(`^\\+\\s*${escapeForRegex(pkg)}@(\\S+)\\s*$`, "m"));
+  // ANSI is STRIPPED first. npm colourises `+ pkg@version` whenever it
+  // believes it is on a TTY, and `FORCE_COLOR` is set by plenty of CI images
+  // — with colour the anchor never matches, the guard finds no receipt and
+  // REFUSES a release that published perfectly. Fail-closed, but it is #472's
+  // own symptom arriving through the fix for #472. Found by the security
+  // review of the first commit.
+  const plain = log.replace(/\u001b\[[0-9;]*m/g, "");
+  // Leading whitespace is tolerated and TRAILING content is not: an indent
+  // comes from a log wrapper, whereas text after the version is a different
+  // statement — `+ rungate@0.4.1 (dry-run)` must not read as a publish.
+  const m = plain.match(new RegExp(`^[ \\t]*\\+\\s*${escapeForRegex(pkg)}@(\\S+)[ \\t]*$`, "m"));
   return {
     version: m ? m[1] : null,
-    propagationWarned: /being processed and may take/i.test(log),
+    propagationWarned: /being processed and may take/i.test(plain),
     bytes: log.length,
   };
 }
@@ -536,7 +546,19 @@ export function postflightDecision(
   // registry would lag. Passing here is a fail-open and it is deliberate, so
   // it is LOUD — `.claude/rules/config-access.md` permits the tradeoff and
   // forbids the silent version.
-  if (receipt !== null && receipt.version === treeVersion) {
+  // BOTH halves are required, and the second is the one the security review
+  // of the first commit found inert. `propagationWarned` was parsed, carried
+  // and printed while deciding nothing: a receipt alone waived the registry
+  // read whether or not npm had said the registry would lag. That made the
+  // live pipeline unable to fail here at all — the workflow always passes
+  // `--publish-log`, so every real release took this branch — which is the
+  // defect `.claude/rules/checks-must-be-able-to-fail.md` is about, inside
+  // the commit whose subject is that defect.
+  //
+  // Requiring npm's own statement keeps the waiver tied to evidence. If npm
+  // stops printing it the release goes UNMEASURED and someone reads this
+  // comment, which is the fail-closed direction a release gate owes.
+  if (receipt !== null && receipt.version === treeVersion && receipt.propagationWarned) {
     return {
       outcome: "confirmed",
       message:
@@ -544,10 +566,25 @@ export function postflightDecision(
         `not serving it yet after ${reading.attempts} read` +
         `${reading.attempts === 1 ? "" : "s"} over ${Math.round(reading.waitedMs / 1000)}s. ` +
         `This is NOT a confirmed read of the registry; it is the publish receipt plus ` +
-        `npm's own statement that the packument lags` +
-        `${receipt.propagationWarned ? "" : " (which this run's output did not print)"}. ` +
-        `The release is treated as landed because the receipt is written synchronously ` +
-        `and the packument is not. Verify with \`${confirmCommand(pkg, treeVersion)}\`.`,
+        `npm's own statement that the packument lags. The release is treated as landed ` +
+        `because the receipt is written synchronously and the packument is not. ` +
+        `Verify with \`${confirmCommand(pkg, treeVersion)}\`.`,
+    };
+  }
+
+  // A receipt with no lag warning is NOT waived. npm accepted something and
+  // did not say the registry would be slow, so the absence is unexplained and
+  // the guard says so rather than picking the convenient reading.
+  if (receipt !== null && receipt.version === treeVersion) {
+    return {
+      outcome: "unmeasured",
+      message:
+        `UNMEASURED: npm printed a receipt for ${pkg}@${treeVersion} but did NOT print its ` +
+        `"being processed and may take a few minutes" notice, and the registry is still not ` +
+        `serving the version after ${reading.attempts} read` +
+        `${reading.attempts === 1 ? "" : "s"} over ${Math.round(reading.waitedMs / 1000)}s. ` +
+        `A receipt waives the registry read only when npm itself says the read will lag. ` +
+        `Settle it with \`${confirmCommand(pkg, treeVersion)}\`.`,
     };
   }
 
