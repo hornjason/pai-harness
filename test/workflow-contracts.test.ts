@@ -106,6 +106,13 @@ describe("#61 SC-1: the whole workflow executes with no agents", () => {
     // that matters most in a file whose subject is a mock.
     expect(labelsOf(run.calls).length).toBeGreaterThan(10);
     expect(phasesOf(run.calls)).toContain("Implement");
+
+    // And a runaway script fails the harness loudly rather than hanging the
+    // suite or stopping quietly — a quiet stop is indistinguishable from a
+    // short run, which is the reading that would send someone looking at the
+    // script instead of at the cap.
+    const capped = await runWorkflow(SHIP, { args: { ...ARGS }, maxCalls: 3 });
+    expect(capped.error?.message).toMatch(/more than 3 agent calls/);
   });
 
   test("SC-1749: the meta export is removed by slicing its literal - and a script without one is refused", () => {
