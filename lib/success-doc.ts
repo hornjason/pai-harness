@@ -212,7 +212,15 @@ export interface SuccessVerdict {
  * single binding to mutate, and so every case can be driven without a
  * filesystem.
  */
-export function successViolations(text: string | null, template?: string | null): SuccessVerdict {
+export function successViolations(text: string | null, template: string | null): SuccessVerdict {
+  // Three states, not two. `undefined` means the caller is not asking for a
+  // residue comparison at all — the parser's own unit tests, which have no
+  // template and are not pretending to. `TEMPLATE_MISSING` (or an explicit
+  // `null`, in case a future reader reintroduces one) means a template WAS
+  // looked for and not found, and that is a refusal rather than a quiet skip.
+  const templateAbsent = template === TEMPLATE_MISSING || template === null;
+  const residueTemplate =
+    templateAbsent || template === NO_RESIDUE_CHECK ? undefined : template;
   if (text === null) {
     return {
       violations: [],
@@ -227,9 +235,10 @@ export function successViolations(text: string | null, template?: string | null)
   if (text === UNREADABLE) {
     return {
       violations: [
-        `SUCCESS.md exists but could not be read as a file — it may be a directory, a ` +
-          `device, or have permissions that deny reading. That is not the same as having ` +
-          `no SUCCESS.md, and it is not clean: nothing could be measured.`,
+        `SUCCESS.md exists but could not be read as a regular file — it may be a symlink, a ` +
+          `directory, a device, or have permissions that deny reading. A symlink is refused ` +
+          `deliberately, the same way the scaffold refuses to write through one. That is not ` +
+          `the same as having no SUCCESS.md, and it is not clean: nothing could be measured.`,
       ],
       unmeasured: null,
     };
@@ -247,7 +256,7 @@ export function successViolations(text: string | null, template?: string | null)
   // `null` already reports as unmeasured. The refusal is aimed at a document
   // somebody STARTED and left half-written, because that is the state which
   // reads as considered and is not. Any edit at all moves it into that set.
-  if (template && isPristineSeed(text, template)) {
+  if (residueTemplate && isPristineSeed(text, residueTemplate)) {
     return {
       violations: [],
       unmeasured:
@@ -270,10 +279,23 @@ export function successViolations(text: string | null, template?: string | null)
     );
   }
 
+  // The residue check could not run. Reported rather than skipped: without
+  // this branch an installation missing the template reverts to the pre-#502
+  // behaviour exactly, and the document that scored 1 violation scores 0 with
+  // `unmeasured` still null — indistinguishable from a clean document.
+  if (templateAbsent) {
+    out.push(
+      `SUCCESS.md could not be compared against the generator's template — ` +
+        `templates/SUCCESS-TEMPLATE.md is not in this rungate installation, so the check that ` +
+        `catches a document still carrying the template's prose did not run. This is not a ` +
+        `clean result: see test/package-closure.test.ts, which exists to stop exactly this.`,
+    );
+  }
+
   // The backstop the marker check turned out to need. Asked before the
   // per-claim rules so the loudest problem is reported first.
-  if (template) {
-    const residue = templateResidue(text, template);
+  if (residueTemplate) {
+    const residue = templateResidue(text, residueTemplate);
     if (residue.length > 0) {
       out.push(
         `SUCCESS.md still contains ${residue.length} line(s) verbatim from the generator's ` +
@@ -357,8 +379,22 @@ export function successViolations(text: string | null, template?: string | null)
  * `**How to measure it:**`, ...) would be a list that has to stay in sync
  * with the template by hand, and a new template section would silently go
  * unchecked. This asks the question directly instead: **is this document
- * still, in part, the template?** It needs no per-section knowledge and a
- * new template section is covered the day it ships.
+ * still, in part, the template?** It needs no per-section knowledge.
+ *
+ * **What it does NOT cover, stated because the first version of this
+ * sentence claimed otherwise.** It said "a new template section is covered
+ * the day it ships", and sec-485 showed that is false: anything the
+ * template writes as a table row, a non-claim heading, or a structurally
+ * pure line is invisible to this check permanently. The guarantee is
+ * narrower — *template PROSE, and claim statements, are covered the day
+ * they ship*. A future template that puts its placeholder text into table
+ * cells is not covered, and whoever writes one has to think about it.
+ *
+ * Two of the exclusions were narrowed in response rather than merely
+ * documented: claim headings now compare their statement (see below), and
+ * the old flat `length <= 12` floor became a test for structural purity,
+ * because a short sentence is still a sentence. The floor was hiding
+ * `"prevent."` on today's own template.
  *
  * Structural lines are excluded because they are SUPPOSED to match: headings,
  * table rows, frontmatter keys, and anything too short to be instruction
@@ -367,27 +403,112 @@ export function successViolations(text: string | null, template?: string | null)
  * `doc-type: reference` and `status: active`, both frontmatter.
  */
 export function templateResidue(text: string, template: string): string[] {
+  // A claim heading is NOT structural. `### Claim 1 — TODO` is a heading by
+  // syntax and the claim's whole statement by content, and excluding it
+  // outright made every claim statement permanently invisible to this check
+  // — held up only by `unfilled()`, which catches `TODO` and nothing else.
+  // sec-485 demonstrated the consequence on a plausible next-version
+  // template: a document whose two claims still read "the system behaves as
+  // intended under normal use" scored ZERO violations, because that text
+  // lives in a heading. So the prefix is stripped and the STATEMENT is
+  // compared.
+  //
+  // The prefix is matched by SHAPE — a word-run, a number, a separator —
+  // rather than by the literal word `Claim` and the literal em-dash today's
+  // template happens to use. sec-500 measured the narrow version against
+  // four spellings of one statement: `Claim 1 —` and `Claim 1 -` were
+  // caught, `Claim 1:` and `SC 1 —` were INVISIBLE, because a heading that
+  // misses the pattern falls back to being excluded as structural. That is
+  // sec-485's finding surviving for every spelling but one, and a colon is
+  // not an exotic choice, so keying the check to a template detail would
+  // have reopened the hole on the next template edit.
+  //
+  // The cost, named because it is real: this cannot tell `Claim 1 — <a
+  // statement the reader must write>` from `Phase 2 - <a section title the
+  // reader must keep>`, so a template carrying the second gets a false
+  // refusal. Zero instances today — the shipped template has no numbered
+  // heading but its claims, and the widening flags nothing new across all
+  // 227 markdown files in this repo — and `test/success-doc.test.ts`'s
+  // "R1 cost" case fails loudly for whoever adds the first one.
+  const CLAIM_HEADING = /^(#{1,6}\s+\w[\w ]*\d+\s*[—–:-]\s*)(.*)$/;
+  const comparable = (l: string) => {
+    const m = CLAIM_HEADING.exec(l);
+    return m ? m[2].trim() : l;
+  };
+
+  // Structurally pure, rather than merely short.
+  //
+  // This replaced a flat `l.length <= 12` floor, which was the weakest rule
+  // in the check and the only one with no second layer behind it. On today's
+  // template it already hid a real line of body prose — `"prevent."`, eight
+  // characters — and on sec-485's next-version fixture it hid `Describe it.`
+  // and `List them.`, the entire contents of two sections. A short sentence
+  // is still a sentence; what cannot be residue is punctuation and table
+  // scaffolding, so that is what this excludes.
   const structural = (l: string) =>
-    l.length <= 12
-    || l.startsWith("#")
+    l.length === 0
+    || /^[\s|:+_*=~-]*$/.test(l)
     || l.startsWith("|")
     || l.startsWith("---")
+    || (l.startsWith("#") && !CLAIM_HEADING.test(l))
     || /^[a-z][a-z-]*:\s/.test(l);
 
-  const mine = new Set(text.split("\n").map(l => l.trim()));
+  const mine = new Set(text.split("\n").map(l => comparable(l.trim())));
   const out: string[] = [];
   for (const raw of template.split("\n")) {
     const l = raw.trim();
-    if (structural(l) || !mine.has(l)) continue;
-    if (!out.includes(l)) out.push(l);
+    if (structural(l)) continue;
+    const c = comparable(l);
+    if (!mine.has(c)) continue;
+    if (!out.includes(c)) out.push(c);
   }
   return out;
 }
 
-/** The template the generator copies, or null if it is not installed. */
-export function readSuccessTemplate(): string | null {
+/**
+ * The installation is missing `templates/SUCCESS-TEMPLATE.md`.
+ *
+ * A distinct value rather than `null`, for the reason `UNREADABLE` is: the
+ * residue check is the half of this validator that catches a document which
+ * deleted the markers and kept the prose, and a falsy template silently
+ * switched it off. Same document, same checker, template absent: **1
+ * violation became 0, with nothing recorded.** That is the first shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — a read failure defaulting
+ * to an empty violation list — and #484 is this repo's standing proof that
+ * "`templates/` is in `files[]`, so it cannot happen" is a thing that has
+ * already happened once while every check stayed green.
+ *
+ * `create-success` and `seedSuccessDoc` both name a missing template loudly.
+ * This makes `successViolations` the third reader of that file rather than
+ * the only one that shrugs.
+ */
+export const TEMPLATE_MISSING = "\u0000rungate:template-missing";
+
+/**
+ * "I am deliberately not comparing against the template."
+ *
+ * The opt-out the parser's own unit cases need, made explicit. The
+ * parameter used to be optional, so OMITTING it switched the residue check
+ * off silently — and the only thing keeping it on in production was that
+ * nobody had yet written a third call site that forgot the argument.
+ * Nothing asserted it; it was convention.
+ *
+ * sec-485's note, and the same move as `readSuccessTemplate(): string`
+ * applied to the parameter rather than the return: omission is now a type
+ * error, and an opt-out is something a reader sees at the call site.
+ */
+export const NO_RESIDUE_CHECK = "\u0000rungate:no-residue-check";
+
+/**
+ * The template the generator copies.
+ *
+ * Never returns `null` — an absent template is `TEMPLATE_MISSING`, which
+ * `successViolations` refuses. Returning a falsy value here is what made the
+ * residue check fail open, so the type no longer permits it.
+ */
+export function readSuccessTemplate(): string {
   const p = join(dirname(fileURLToPath(import.meta.url)), "..", "templates", "SUCCESS-TEMPLATE.md");
-  return existsSync(p) ? readFileSync(p, "utf-8") : null;
+  return existsSync(p) ? readFileSync(p, "utf-8") : TEMPLATE_MISSING;
 }
 
 /** Read the project's SUCCESS.md, or null when there is none. */

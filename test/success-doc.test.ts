@@ -82,7 +82,17 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
-import { PLACEHOLDER_MARKER, UNREADABLE, parseSuccessDoc, readSuccessDoc, successViolations, templateResidue } from "../lib/success-doc";
+import {
+  PLACEHOLDER_MARKER,
+  NO_RESIDUE_CHECK,
+  TEMPLATE_MISSING,
+  UNREADABLE,
+  parseSuccessDoc,
+  readSuccessDoc,
+  readSuccessTemplate,
+  successViolations,
+  templateResidue,
+} from "../lib/success-doc";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { seedSuccessDoc } from "../lib/scaffold/steps";
 
@@ -97,6 +107,13 @@ afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
 
 let seq = 0;
 /** A project tree described as `relative path -> contents`. */
+/**
+ * Spawn `create-success`. ONE definition: three describes had declared their
+ * own identical copy, and the fourth was about to.
+ */
+const run = (args: string[], cwd = ROOT) =>
+  spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8" });
+
 function project(files: Record<string, string>): string {
   const root = join(scratch, `p${seq++}`);
   mkdirSync(root, { recursive: true });
@@ -278,38 +295,38 @@ describe("SC-1706: `successViolations` is the one place that decides", () => {
       "## The thing",
       `## The thing\n\n<!-- ${PLACEHOLDER_MARKER} -->`,
     );
-    const v = successViolations(withMarker);
+    const v = successViolations(withMarker, NO_RESIDUE_CHECK);
     expect(v.violations).toHaveLength(1);
     expect(v.violations[0]).toContain("placeholder");
     expect(v.violations[0], "the refusal does not say which line").toContain("line(s)");
   });
 
   test("a claim with no falsifiability line is refused", () => {
-    const v = successViolations(FILLED.replace(/\*\*How it fails:\*\*[^\n]*\n[^\n]*\n/, ""));
+    const v = successViolations(FILLED.replace(/\*\*How it fails:\*\*[^\n]*\n[^\n]*\n/, ""), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("How it fails");
     expect(v.violations.join("\n"), "a slogan is not a claim").toContain("slogan");
   });
 
   test("the standing table naming a claim nothing defines is refused", () => {
-    const v = successViolations(FILLED.replace("| 1 | untested | — |", "| 1 | untested | — |\n| 2 | met | 2026-01-01 |"));
+    const v = successViolations(FILLED.replace("| 1 | untested | — |", "| 1 | untested | — |\n| 2 | met | 2026-01-01 |"), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("row for claim 2");
   });
 
   test("a claim with no standing row is refused — the direction that rots quietly", () => {
     // The inverse, and the one nobody notices: a claim added and never given
     // a row reads as met by omission.
-    const v = successViolations(FILLED.replace(/\| 1 \| untested \| — \|\n/, ""));
+    const v = successViolations(FILLED.replace(/\| 1 \| untested \| — \|\n/, ""), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("claim 1 has no row");
     expect(v.violations.join("\n")).toContain("met by omission");
   });
 
   test("a complete document is clean", () => {
-    expect(successViolations(FILLED).violations).toEqual([]);
-    expect(successViolations(FILLED).unmeasured).toBeNull();
+    expect(successViolations(FILLED, NO_RESIDUE_CHECK).violations).toEqual([]);
+    expect(successViolations(FILLED, NO_RESIDUE_CHECK).unmeasured).toBeNull();
   });
 
   test("absent is UNMEASURED and carries no violations — the two are different answers", () => {
-    const v = successViolations(null);
+    const v = successViolations(null, NO_RESIDUE_CHECK);
     expect(v.violations, "absence was reported as a violation").toEqual([]);
     expect(v.unmeasured).toContain("UNMEASURED");
   });
@@ -326,7 +343,7 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     // reported "SUCCESS.md defines no claims". A validator whose single
     // real-world example fails it is not strict, it is miscalibrated, and the
     // repair people reach for is to stop running it.
-    const v = successViolations(readFileSync(join(ROOT, "SUCCESS.md"), "utf-8"));
+    const v = successViolations(readFileSync(join(ROOT, "SUCCESS.md"), "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations, v.violations.join("\n")).toEqual([]);
     expect(v.unmeasured).toBeNull();
   });
@@ -335,21 +352,21 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     // Not a fixture copy. If someone "fixes" the template by filling in its
     // placeholders, the generator starts handing every consumer a document
     // that passes while saying nothing, and this is what notices.
-    const v = successViolations(readFileSync(TEMPLATE, "utf-8"));
+    const v = successViolations(readFileSync(TEMPLATE, "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations.length, "the shipped template is accepted as a real SUCCESS.md")
       .toBeGreaterThan(0);
     expect(v.violations.join("\n")).toContain("placeholder");
   });
 
   test("the numbered form and the heading form are read the same way", () => {
-    const heading = successViolations(FILLED);
+    const heading = successViolations(FILLED, NO_RESIDUE_CHECK);
     const numberedDoc = FILLED
       .replace(
         "### Claim 1 — a spec with no testable criteria is rejected, not silently skipped",
         "1. **a spec with no testable criteria is rejected, not silently skipped**",
       )
       .replace(/\*\*How it fails:\*\*/, "   Check:");
-    const numbered = successViolations(numberedDoc);
+    const numbered = successViolations(numberedDoc, NO_RESIDUE_CHECK);
     expect(numbered.violations, numbered.violations.join("\n")).toEqual([]);
     // Compare the PARSED STRUCTURES, not two violation lists. Both lists are
     // empty here, so `toEqual` between them held vacuously — the third shape
@@ -388,7 +405,7 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     ].join("\n");
     expect(parseSuccessDoc(text).standingRows, "a prose row was counted as a claim")
       .toEqual([1]);
-    expect(successViolations(text).violations, "a prose row was refused as an unknown claim")
+    expect(successViolations(text, NO_RESIDUE_CHECK).violations, "a prose row was refused as an unknown claim")
       .toEqual([]);
   });
 });
@@ -396,9 +413,6 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
 // ── The generator ───────────────────────────────────────────────────────────
 
 describe("SC-1710: `create-success` seeds the structure and refuses to overwrite", () => {
-  const run = (args: string[], cwd = ROOT) =>
-    spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8" });
-
   test("it writes SUCCESS.md from the template and fills in owner and date", () => {
     const root = project({});
     const r = run(["--project-root", root, "--owner", "a-person"]);
@@ -416,7 +430,7 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
     // unmeasured.
     const root = project({});
     expect(run(["--project-root", root]).status).toBe(0);
-    const v = successViolations(readFileSync(join(root, "SUCCESS.md"), "utf-8"));
+    const v = successViolations(readFileSync(join(root, "SUCCESS.md"), "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations.length, "the generator's own output passes its own check")
       .toBeGreaterThan(0);
   });
@@ -473,9 +487,6 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
  * narrower than the thing it guards.
  */
 describe("#502 review: the marker check and the writers were both too narrow", () => {
-  const run = (args: string[]) =>
-    spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd: ROOT, encoding: "utf-8" });
-
   test("F1: deleting the markers is not the same as filling the document in", () => {
     // The review found this by reading what `create-success` PRINTS: "Replace
     // every line marked `rungate:placeholder`". A user who does exactly that,
@@ -503,8 +514,12 @@ describe("#502 review: the marker check and the writers were both too narrow", (
   test("F1: the residue check does NOT fire on the one real document", () => {
     // The control, and the reason the check excludes structural lines. A
     // document legitimately shares headings, table rows and frontmatter keys
-    // with the template; rungate's own SUCCESS.md shares exactly two lines,
-    // `doc-type: reference` and `status: active`, both frontmatter.
+    // with the template. rungate's own SUCCESS.md shares exactly two lines
+    // of RAW text with it, `doc-type: reference` and `status: active`, and
+    // both are frontmatter — so `templateResidue` returns an empty list, not
+    // those two. The distinction matters because the empty list is what this
+    // asserts: sec-485 pointed out that describing the pre-filter overlap
+    // reads as though two lines survive the filter.
     const template = readFileSync(TEMPLATE, "utf-8");
     const real = readFileSync(join(ROOT, "SUCCESS.md"), "utf-8");
     expect(templateResidue(real, template), "the real document was called unwritten").toEqual([]);
@@ -565,10 +580,24 @@ describe("#502 review: the marker check and the writers were both too narrow", (
     // honest behavioural case for it — saying that plainly beats a test that
     // passes for an unrelated reason. What is asserted is that the exclusive
     // flag is still there and that nothing writes the file unguarded.
+    //
+    // The flag and the call are asserted in ONE statement, not as two facts
+    // about one file. sec-485 built the mutant that proves why: move the
+    // literal into a comment and leave the write bare, and a file-level
+    // `toContain` plus a `writeFileSync(` count both still pass over
+    // `writeFileSync(target, body)`. That is #235's lesson verbatim — a
+    // source-text assertion cannot notice it has stopped describing the code.
     const src = readFileSync(CREATE_SUCCESS, "utf-8");
-    expect(src, "the exclusive write flag is gone").toContain('{ flag: "wx" }');
-    expect(src.match(/writeFileSync\(/g) ?? [], "a second, unguarded write was added")
-      .toHaveLength(1);
+    expect(src, "the exclusive flag is no longer on the write itself")
+      .toMatch(/writeFileSync\(\s*target,\s*body,\s*\{\s*flag:\s*"wx"\s*\}\s*\)/);
+    // Widened past `writeFileSync` because the stated job is "nothing writes
+    // this file unguarded", and `appendFileSync`, `Bun.write` and
+    // `createWriteStream` all write a file while leaving a
+    // `writeFileSync`-only count at exactly 1.
+    expect(
+      src.match(/\b(?:writeFileSync|appendFileSync|createWriteStream|Bun\.write)\s*\(/g) ?? [],
+      "a second, unguarded write was added",
+    ).toHaveLength(1);
   });
 
   test("F2: the scaffold's owned-file writer refuses a symlink too", () => {
@@ -607,7 +636,7 @@ describe("#502 review: the rest", () => {
     // `[A-Z]`. Every one of these scored zero violations as BOTH the claim
     // statement and its How-it-fails.
     for (const v of ["todo", "TBD", "FIXME", "???", "xxx", "N/A", "tbd later", "."]) {
-      expect(successViolations(claim(v)).violations.length, `"${v}" passed as a real claim`)
+      expect(successViolations(claim(v), NO_RESIDUE_CHECK).violations.length, `"${v}" passed as a real claim`)
         .toBeGreaterThan(0);
     }
   });
@@ -623,7 +652,7 @@ describe("#502 review: the rest", () => {
     // would measure nothing. This is reachable only by the widened list.
     const long = "tbd — write the real claim here once we have decided what it is";
     expect(long.length, "the fixture is short enough for the floor to catch").toBeGreaterThan(20);
-    expect(successViolations(claim(long)).violations.length, "a long lowercase placeholder passed")
+    expect(successViolations(claim(long), NO_RESIDUE_CHECK).violations.length, "a long lowercase placeholder passed")
       .toBeGreaterThan(0);
   });
 
@@ -631,14 +660,14 @@ describe("#502 review: the rest", () => {
     // And the floor's own: a short statement that is not a placeholder word.
     // "fast" is not in any list and never will be; it is also not a
     // falsifiable claim.
-    expect(successViolations(claim("fast")).violations.length, "a four-letter claim passed")
+    expect(successViolations(claim("fast"), NO_RESIDUE_CHECK).violations.length, "a four-letter claim passed")
       .toBeGreaterThan(0);
   });
 
   test("§5: the control — a real claim of ordinary length passes", () => {
     // The length floor is the half most likely to over-refuse, so the
     // boundary is asserted rather than assumed.
-    expect(successViolations(claim("the parser rejects an empty spec")).violations).toEqual([]);
+    expect(successViolations(claim("the parser rejects an empty spec"), NO_RESIDUE_CHECK).violations).toEqual([]);
   });
 
   test("§6: a falsifiability line cannot be borrowed from a later section", () => {
@@ -654,7 +683,7 @@ describe("#502 review: the rest", () => {
       "",
       "| Claim | Standing |", "|---|---|", "| 1 | untested |",
     ].join("\n");
-    const v = successViolations(doc);
+    const v = successViolations(doc, NO_RESIDUE_CHECK);
     expect(v.violations.join("\n"), "a Check: under another heading was borrowed")
       .toContain("How it fails");
   });
@@ -671,7 +700,7 @@ describe("#502 review: the rest", () => {
       "",
       "| Claim | Standing |", "|---|---|", "| 1 | untested |",
     ].join("\n");
-    expect(successViolations(doc).violations.join("\n"), "a fenced example satisfied a claim")
+    expect(successViolations(doc, NO_RESIDUE_CHECK).violations.join("\n"), "a fenced example satisfied a claim")
       .toContain("How it fails");
   });
 
@@ -685,7 +714,7 @@ describe("#502 review: the rest", () => {
     const root = project({});
     mkdirSync(join(root, "SUCCESS.md"), { recursive: true });
     expect(readSuccessDoc(root), "a directory read as an absent file").toBe(UNREADABLE);
-    const v = successViolations(readSuccessDoc(root));
+    const v = successViolations(readSuccessDoc(root), NO_RESIDUE_CHECK);
     expect(v.violations.length, "an unreadable SUCCESS.md passed").toBe(1);
     expect(v.unmeasured, "unreadable was collapsed into unmeasured").toBeNull();
 
@@ -694,22 +723,238 @@ describe("#502 review: the rest", () => {
     expect(actions.join("\n")).toContain("not a regular file");
   });
 
-  test("§7: the non-file check is there, and why a behavioural case cannot prove it", () => {
-    // Removing `isFile()` is 0 red, and that is honest rather than a gap in
-    // the fixtures: for a DIRECTORY the `readFileSync` below it throws
-    // EISDIR and the catch returns the same UNREADABLE, so the two are
-    // behaviourally one decider on every input this suite can build.
+  test("§7: a SYMLINKED SUCCESS.md is UNREADABLE — the input only `isFile()` reaches", () => {
+    // This was a SOURCE assertion defending a claim that was false. The
+    // comment said removing `isFile()` is 0 red and that this was "honest
+    // rather than a gap in the fixtures", because a DIRECTORY throws EISDIR
+    // into the catch below and both paths return UNREADABLE — "behaviourally
+    // one decider on every input this suite can build".
     //
-    // They are not redundant. `readFileSync` on a FIFO BLOCKS waiting for a
-    // writer rather than throwing, so the catch never runs and the scaffold
-    // hangs instead of refusing — and a test that hangs is a test that
-    // cannot report. Scheduling that reliably is not something this suite
-    // can do, so the check is asserted in the source and the limitation is
-    // written down rather than papered over with a case that passes for an
-    // unrelated reason.
-    const src = readFileSync(join(ROOT, "lib", "success-doc.ts"), "utf-8");
-    expect(src, "the non-file guard is gone; a FIFO would block the read")
-      .toContain("if (!stat.isFile()) return UNREADABLE;");
+    // sec-485 built the input. `lstatSync` describes the LINK, so for a
+    // symlink to a real file `isFile()` is false and the guard refuses;
+    // without it `readFileSync` FOLLOWS the link and returns the target's
+    // contents. Measured against a mutant with that one line removed:
+    //
+    //   directory            real=UNREADABLE  mutant=UNREADABLE   same
+    //   symlink->real file   real=UNREADABLE  mutant=content(127b)  DIFFERS
+    //   mode-000 file        real=UNREADABLE  mutant=UNREADABLE   same
+    //
+    // Three lines, deterministic, no scheduling. The reason I gave was true
+    // of the two cases I measured and I then applied it to all cases, which
+    // is `.claude/rules/checks-must-be-able-to-fail.md`'s #199/#479 section
+    // committed inside a file that cites it.
+    //
+    // The FIFO sentence was a real second reason and is kept as a note: a
+    // `readFileSync` on a FIFO BLOCKS rather than throwing, so the catch
+    // never runs and the scaffold hangs instead of refusing. It just was not
+    // doing the work the comment claimed, because a case existed all along.
+    //
+    // THE DECISION, stated rather than inherited: a symlinked SUCCESS.md is
+    // UNREADABLE. It is consistent with `regenerateOwned` and with F2
+    // refusing to write through a link, but consistency is not the same as
+    // having decided, and nobody had. The refusal text now names symlinks,
+    // because a consumer who links SUCCESS.md into a shared docs folder was
+    // being told it "may be a directory, a device, or have permissions that
+    // deny reading" — three things that are all false for their input.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-linktarget-"));
+    const target = join(outside, "real.md");
+    writeFileSync(
+      target,
+      "### Claim 1 — a real claim that is long enough\n"
+        + "**How it fails:** it returns the wrong answer for empty input.\n"
+        + "| 1 | untested |\n",
+    );
+    const root = project({});
+    symlinkSync(target, join(root, "SUCCESS.md"));
+
+    expect(readSuccessDoc(root), "the link was followed instead of refused").toBe(UNREADABLE);
+    const v = successViolations(readSuccessDoc(root), readSuccessTemplate());
+    // The specific clause, not the bare word: the message says "symlink"
+    // twice, so `toContain("symlink")` could not tell the enumeration of
+    // causes from the sentence explaining the policy, and dropping the first
+    // was 0 red. Small instance of the same shape as everything else here.
+    expect(v.violations.join("\n"), "the refusal no longer lists a symlink as a cause")
+      .toContain("may be a symlink");
+    expect(v.unmeasured, "an unreadable document was reported as unmeasured").toBeNull();
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  /**
+   * sec-485's fixture, verbatim and DERIVED rather than hand-written.
+   *
+   * A plausible NEXT version of SUCCESS-TEMPLATE.md, used only as a residue
+   * fixture — it is not the shipped template and is not meant to become one.
+   * Everything the reader must replace is written as a heading, a table row,
+   * or a line of twelve characters or fewer: the three classes `structural()`
+   * used to exclude. Today's template happens to put its placeholder prose in
+   * long body paragraphs, which is the ONLY reason the check saw it at all.
+   *
+   * Against the tree before the narrowing this scored 1 pass / 3 fail.
+   */
+  const NEXT_TEMPLATE = `---
+doc-type: reference
+status: active
+owner: TODO-OWNER
+updated: TODO-DATE
+---
+
+# What we are building, and how we will know it worked
+
+## The thing
+
+Describe it.
+
+## Risks
+
+List them.
+
+### Claim 1 — the system behaves correctly under load
+
+**How it fails:** TODO
+
+### Claim 2 — the system recovers from a restart without data loss
+
+**How it fails:** TODO
+
+## Standing
+
+| Claim | Standing | Measured |
+|---|---|---|
+| 1 | untested | — |
+| 2 | untested | — |
+`;
+
+  // The attack, DERIVED from the template rather than hand-written: the
+  // reader does the one thing the generator asks — a `How it fails` per
+  // claim — and changes nothing else. The two `.replace()` calls are the
+  // discipline: the fixture cannot drift away from the template, because it
+  // IS the template with two substitutions. Inlining it as a literal for
+  // readability would turn it into an attack on a string that once
+  // resembled the template.
+  const ABANDONED = NEXT_TEMPLATE
+    .replace("**How it fails:** TODO", "**How it fails:** p99 latency exceeds 2s at 500 rps.")
+    .replace("**How it fails:** TODO", "**How it fails:** a restart drops uncommitted writes.");
+
+  test("Q1 fixture self-guard: it is still a real attack", () => {
+    // Not padding. The thing that defeats this kind of fixture is not a
+    // wrong assertion, it is a later edit that accidentally fills the
+    // placeholders in — at which point the three cases below go green over
+    // a check that never improved. I produced that exact failure earlier in
+    // this issue from the other direction, with a mutation fixture the old
+    // code already caught.
+    expect(ABANDONED, "the fixture filled in the section bodies").toContain("Describe it.");
+    expect(ABANDONED, "the fixture filled in the section bodies").toContain("List them.");
+    expect(ABANDONED, "the fixture rewrote the claim statements")
+      .toContain("### Claim 1 — the system behaves correctly under load");
+    expect(ABANDONED, "the fixture substituted the frontmatter").toContain("owner: TODO-OWNER");
+    expect(ABANDONED, "the fixture left a How-it-fails unwritten")
+      .not.toContain("**How it fails:** TODO");
+  });
+
+  test("Q1: a claim statement left at the template's wording is residue", () => {
+    expect(
+      templateResidue(ABANDONED, NEXT_TEMPLATE).join("\n"),
+      "a claim heading the reader never wrote was invisible",
+    ).toContain("the system behaves correctly under load");
+  });
+
+  test("Q1: a section body of twelve characters or fewer is residue", () => {
+    // `Describe it.` is exactly 12 characters and `List them.` is 10, so
+    // the old `length <= 12` floor hid both no matter what the heading rule
+    // did. sec-485 flagged that option 1 alone would leave this case red;
+    // both exclusions were narrowed.
+    const residue = templateResidue(ABANDONED, NEXT_TEMPLATE);
+    expect(residue, "a short template body line was invisible").toContain("Describe it.");
+    expect(residue, "a short template body line was invisible").toContain("List them.");
+  });
+
+  test("Q1: the document as a whole is refused", () => {
+    const v = successViolations(ABANDONED, NEXT_TEMPLATE);
+    expect(v.violations.length, "a document that is still mostly the template passed")
+      .toBeGreaterThan(0);
+    expect(v.unmeasured, "an edited seed was waved through as pristine").toBeNull();
+  });
+
+  test("Q1 control: the narrowing did not start refusing the real document", () => {
+    // The direction this must not drift in. Narrowing an exclusion is the
+    // change most likely to produce false refusals, and rungate's own
+    // SUCCESS.md — written four months before the template and the only
+    // real instance of the genre — is the case that would notice.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const real = readFileSync(join(ROOT, "SUCCESS.md"), "utf-8");
+    expect(templateResidue(real, template), "the real document became residue").toEqual([]);
+    expect(successViolations(real, template).violations).toEqual([]);
+  });
+
+  /**
+   * R1 — the narrowing must not be keyed to one separator spelling (#485,
+   * sec-500 F-1).
+   *
+   * The fixtures are DERIVED from `NEXT_TEMPLATE` by respelling its claim
+   * headings, for the same reason `ABANDONED` is derived: a hand-written
+   * copy would stop being the template the moment either one is edited, and
+   * the case would pass over a fixture that no longer resembles anything.
+   *
+   * Measured before the widening: `—` and `-` CAUGHT, `:` and `SC 1 —`
+   * INVISIBLE. A heading that misses the pattern falls through to
+   * `startsWith("#")` and is excluded as structural, so the statement goes
+   * back to being permanently invisible — which is sec-485's finding
+   * surviving for every spelling but the one today's template happens to use.
+   */
+  const RESPELLINGS: ReadonlyArray<readonly [string, (s: string) => string]> = [
+    ["em-dash (today's template)", s => s],
+    ["hyphen", s => s.replaceAll("— the system", "- the system")],
+    ["colon", s => s.replaceAll(" — the system", ": the system")],
+    ["a noun other than Claim", s => s.replaceAll("### Claim ", "### SC ")],
+  ];
+
+  for (const [spelling, respell] of RESPELLINGS) {
+    test(`R1: a claim statement is residue however the heading spells its separator — ${spelling}`, () => {
+      const template = respell(NEXT_TEMPLATE);
+      const doc = respell(ABANDONED);
+      // The self-guard the respelling needs: a `replaceAll` that matched
+      // nothing would leave the em-dash fixture in place and the case would
+      // pass for the original reason, testing the respelling of nothing.
+      if (spelling !== "em-dash (today's template)") {
+        expect(template, "the respelling matched nothing").not.toEqual(NEXT_TEMPLATE);
+      }
+      expect(
+        templateResidue(doc, template).join("\n"),
+        "a claim heading the reader never wrote was invisible",
+      ).toContain("the system behaves correctly under load");
+    });
+  }
+
+  test("R1 cost: a numbered NON-claim heading kept verbatim is now reported", () => {
+    // Written down because it is the price of the widening, not because it
+    // is desirable. `\w[\w ]*\d+` cannot tell `Claim 1 — <statement the
+    // reader must write>` from `Phase 2 - <section title the reader must
+    // keep>`, so a future template carrying the second gets a false
+    // refusal. Measured cost on today's tree: zero — the shipped template
+    // has no numbered heading but its claims, and a sweep of all 227
+    // markdown files in the repo flags nothing the un-widened version did
+    // not already flag. This case exists so that the next person to add one
+    // finds out from a red test rather than from a consumer.
+    const tpl = `## The thing\n\nA sentence.\n\n## Phase 2 - Rollout\n\nSomething.\n`;
+    expect(
+      templateResidue(tpl, tpl),
+      "the widening stopped reporting a numbered non-claim heading",
+    ).toContain("Rollout");
+  });
+
+  test("R1 control: the shipped template offers no one-word line to collide with", () => {
+    // sec-500 F-2. Dropping the `length <= 12` floor was right and exposed
+    // what it was hiding: a legitimate document whose prose happens to wrap
+    // onto a single word the template also wraps onto is refused. The base
+    // rate is real — 71 lines across the repo's 227 markdown files are one
+    // lowercase word and a period — so the fix is to stop the template
+    // offering the collision rather than to restore the floor.
+    const oneWord = readFileSync(TEMPLATE, "utf-8")
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => /^[a-z][a-z-]*\.$/.test(l));
+    expect(oneWord, "the template wraps onto a bare word that any document might also wrap onto")
+      .toEqual([]);
   });
 
   test("§3: the two seed writers produce the same bytes", () => {
@@ -773,5 +1018,125 @@ describe("#502 review: the rest", () => {
     const body = readFileSync(join(root, "SUCCESS.md"), "utf-8");
     expect(body, "an empty USER left the owner key empty").not.toMatch(/^owner:\s*$/m);
     expect(body).toContain("owner: TODO-OWNER");
+  });
+});
+
+/**
+ * Covers SC-1706, SC-1710 (HARNESS-STANDARD.md).
+ *
+ * sec-485's re-review of `ac4b8d54`. F1 and F2 were confirmed fixed; these
+ * are the findings the FIX introduced or left behind.
+ *
+ * The one that mattered is N1, and it is worth stating plainly because the
+ * shape is this repo's most common defect: the residue check — the half of
+ * the validator that catches a document which deleted the placeholder
+ * markers and kept the template's prose — was guarded by `if (template)`,
+ * and `readSuccessTemplate()` returned `null` when the template was not
+ * installed. Measured on sec-485's own fixture: **1 violation with the
+ * template, 0 without, `unmeasured` still null in both.** An installation
+ * missing `templates/` reverted to the pre-fix behaviour and reported clean.
+ *
+ * `templates/` is in `files[]` today, so this was latent. #484 is the reason
+ * that is not a defence: `config/`, `templates/` and `specs/SPEC-TEMPLATE.md`
+ * were ALL missing from `files[]` through a release cut whose entire purpose
+ * was fixing `files[]`, and the first external consumer reported 21 pass over
+ * a library that could not load its own registry.
+ */
+describe("#502 re-review (sec-485)", () => {
+  /** sec-485's fixture: do exactly what `create-success` instructs, no more. */
+  function followedTheInstructions(template: string): string {
+    return template
+      .split("\n")
+      .filter(l => !l.includes(PLACEHOLDER_MARKER))
+      .join("\n")
+      .replace(/^### Claim (\d+) — TODO$/gm, "### Claim $1 — the scanner names every file it could not read")
+      .replace(/^\*\*How it fails:\*\*.*$/gm, "**How it fails:** an unreadable file is counted as clean")
+      .replace(/^owner: TODO-OWNER$/m, "owner: jhorn")
+      .replace(/^updated: TODO-DATE$/m, "updated: 2026-10-16");
+  }
+
+  test("N1: an installation with no template REFUSES rather than reporting clean", () => {
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const doc = followedTheInstructions(template);
+
+    // The control. Without this the case below could pass over a document
+    // that has nothing wrong with it, which is the vacuous shape.
+    const withTemplate = successViolations(doc, template);
+    expect(withTemplate.violations, "the fixture stopped being a residue case")
+      .toHaveLength(1);
+    expect(withTemplate.violations[0]).toContain("verbatim from the generator's template");
+
+    const absent = successViolations(doc, TEMPLATE_MISSING);
+    expect(absent.violations, "a missing template silently switched the residue check off")
+      .toHaveLength(1);
+    expect(absent.violations[0], "the refusal does not say the check could not run")
+      .toContain("not in this rungate installation");
+  });
+
+  test("N1: an explicit null is refused too, not just the sentinel", () => {
+    // `readSuccessTemplate` cannot return null any more — its type forbids it.
+    // This is the belt for that brace: if a future reader reintroduces a
+    // nullable template, it refuses rather than reopening the fail-open.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const doc = followedTheInstructions(template);
+    expect(successViolations(doc, null).violations.length, "null reopened the hole")
+      .toBeGreaterThan(0);
+  });
+
+  test("N1: an absent template does NOT make the parser's own unit cases refuse", () => {
+    // The third state, and the reason this is not simply "template is
+    // required". `undefined` means the caller is not asking for a residue
+    // comparison — every parse-level case in this file passes one argument.
+    // If `undefined` refused, those cases would all gain a violation and
+    // their counts would stop meaning what they say.
+    const good = [
+      "### Claim 1 — the scanner names every file it could not read",
+      "**How it fails:** an unreadable file is counted as clean",
+      "",
+      "| 1 | untested | — |",
+    ].join("\n");
+    expect(successViolations(good, NO_RESIDUE_CHECK).violations, "undefined started refusing").toEqual([]);
+  });
+
+  test("N1: readSuccessTemplate reports absence as the sentinel, never as falsy", () => {
+    // Asserted on the live tree: the template IS installed here, so this
+    // pins the happy path and the type does the rest. A `null` return would
+    // be caught by the two cases above; this one catches a return that is
+    // falsy in some other way.
+    const t = readSuccessTemplate();
+    expect(t, "the template is not installed in this tree").not.toBe(TEMPLATE_MISSING);
+    expect(t.length, "readSuccessTemplate returned something empty").toBeGreaterThan(100);
+  });
+
+  test("N5: a directory at SUCCESS.md is refused in words, not a stack trace", () => {
+    // `--force` reached `unlinkSync` on a directory and the user got a raw
+    // throw out of create-success.ts. The exit code was right and nothing
+    // else was.
+    const root = project({});
+    mkdirSync(join(root, "SUCCESS.md"));
+
+    const r = run(["--project-root", root, "--force"]);
+    expect(r.status, "a directory at SUCCESS.md was not refused").toBe(1);
+    expect(r.stderr, "the refusal is a raw stack trace").toContain("not a regular file");
+    expect(r.stderr, "the kind of thing in the way is not named").toContain("directory");
+    expect(r.stderr, "an unhandled throw escaped").not.toContain("at /");
+    expect(existsSync(join(root, "SUCCESS.md")), "the directory was removed").toBe(true);
+  });
+
+  test("N4: exactly one expression in lib/ resolves the SUCCESS template path", () => {
+    // Three agreed, and nothing made them agree. `seedSuccessDoc` now calls
+    // `readSuccessTemplate()`, which it already imported from.
+    //
+    // `scripts/create-success.ts` is deliberately NOT counted: it is a CLI
+    // entry point that must name the missing file in its own words before it
+    // can do anything, and it resolves from `PACKAGE_ROOT`, which it uses for
+    // other things too. The invariant being asserted is about the library.
+    const libFiles = ["lib/success-doc.ts", "lib/scaffold/steps.ts"];
+    const resolvers = libFiles.flatMap(f =>
+      (readFileSync(join(ROOT, f), "utf-8").match(/"SUCCESS-TEMPLATE\.md"/g) ?? []).map(() => f),
+    );
+    expect(resolvers, `more than one lib file resolves the template path: ${resolvers.join(", ")}`)
+      .toHaveLength(1);
+    expect(resolvers[0]).toBe("lib/success-doc.ts");
   });
 });

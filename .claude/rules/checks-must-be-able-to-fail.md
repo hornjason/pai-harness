@@ -92,6 +92,59 @@ the battery ran. The row came back 0 where 1 was expected, and the collapse
 took ten minutes. Nothing in the diff, the review, or the green suite would
 have shown it.
 
+### Before you believe a 0, prove the mutation changed behaviour (#485, #297)
+
+Everything above tells you to read a 0 as a finding. There is a second thing
+a 0 means, it looks identical, and the method has no way to tell you which
+one you are looking at:
+
+- **the mutation was applied and nothing caught it** — the finding, and
+- **the mutation was never really applied** — no information at all.
+
+Two instances on 2026-10-16, found independently in two sessions:
+
+| Where | The 0 | What it actually was |
+|---|---|---|
+| #485 | narrowing `UNFILLED` back to uppercase-`TODO`-only was 0 red | the fixture written to isolate the widened word list was `"TODO — write the real claim…"`. The OLD regex matches that too, so the mutant and the original behave identically on every input the suite has. The 0 was reporting that nothing changed |
+| #297 | deleting a required phrase from a spec's prose was 0 red | the search strips SC lines first, and the phrase survived inside the SC line demanding it. The document still answered the question with the thing the mutation removed |
+
+Both read exactly like a collapsed pair. Neither was one.
+
+**The check is one line and it is not optional: before recording a 0, name
+an input on which the mutant and the original differ.** If you cannot, you
+have not run a mutation — you have run the code twice. A fixture that the
+pre-fix code also catches is the most common way this happens, because it is
+the fixture you naturally reach for: you write the example that motivated the
+fix, and the fix was motivated by something the old code already handled in
+part.
+
+The same arithmetic catches the inverse, a row that comes back too HIGH —
+but a high row has two causes and they pull in opposite directions, so the
+count alone does not tell you which you have. **Read which tests went red
+before concluding anything.**
+
+| #485 | "a second unguarded write was added" predicted 1, measured 4 | the mutant used `appendFileSync`, which that script does not import, so it died on a `ReferenceError` and every case that runs it went red. **A mutant that crashes is not a mutant** — it measures that the file still parses. Re-run with a global the file need not import: 1 |
+| #307 | `censusOf stops recursing` predicted 1, measured 2 | the mutant was fine. The extra red was the real-repo control asserting `>5000` test declarations, and a flat walk gives 4811 — 39 of 309 test files are nested and carry 488 of the 5299. **The binding reached further than the prediction did**, and the second red was a real thing the mutation breaks |
+
+The discriminator is the same instrument in both: are the extra reds
+*about* the mutated behaviour?
+
+- extra reds in cases unrelated to the mutation's subject, or every case
+  touching the mutant file goes red → **the mutant is broken.**
+- extra reds in cases that genuinely depend on the mutated behaviour → **the
+  prediction was wrong and the check is better than you thought.** Record
+  why; it is usually a fact about the codebase you did not know.
+
+Getting this backwards is expensive in the direction that matters least
+visibly: treating #307's second red as a broken mutant means hunting a bug
+that does not exist, and leaves behind the lesson that a surprisingly
+thorough check is a smell.
+
+So a battery has three outcomes, not two. Matches prediction; misses low —
+suspect a collapsed pair; misses high — read the extra reds before
+concluding anything, because a crashing mutant and an unexpectedly
+load-bearing binding both come back high and only one of them is a problem.
+
 The fix is one of two things, and which one is a design question, not a style
 question. Either **collapse them** — one decider, one binding to mutate — or
 **keep both and give each an input only it can reach**. #420 took the second:
@@ -351,6 +404,69 @@ What was broken to prove it, run and counted rather than asserted, over
 None is left in the tree; all were run and reverted. The three mutations
 recorded above for SC-618..620 were also re-run against this tree and reproduce
 their counts exactly — 3, 4 and 3 red of 29.
+
+### A fixture that reached the assertion without the feature (#500)
+
+The third shape, and the cheapest version of it to write by accident: a test
+whose fixture satisfies the assertion through a path that does not go through
+the thing under test.
+
+#500 replaced a waiver predicate with `projectSourceEvidence`, a tree walk
+that deliberately **follows symlinked directories** — `readdirSync(withFileTypes)`
+reports a symlink as not-a-directory, so a `statSync` is the only thing that
+makes `packages/core` behind `lib/impl` visible, and a predicate that cannot
+see it waives a monorepo full of code. The test said so by name: *"F6: a
+symlinked source directory is followed, and a cycle terminates."* It planted
+`packages/core/reader.ts`, symlinked `lib-impl` at it, and asserted
+`projectSourceEvidence(root).found`.
+
+`packages/core/reader.ts` is inside the root. The walk reaches it by ordinary
+recursion, without ever traversing the symlink, so the assertion was true
+before the symlink existed and stayed true after the feature was deleted. The
+cycle half had the same defect from the other direction: its fixture's
+`a/x.ts` is found on the first pass, so `found` is true whether or not
+`realpathSync` ever terminates anything.
+
+Measured by sec-500 during the security review of PR #500, on `git archive`
+copies under `/tmp`; the repo was never modified. There is no SC for this
+one, and rather than invent one so a number has somewhere to sit — which is
+`.claude/rules/claiming-sc-coverage.md`'s trap from the other direction — the
+counts live here and nowhere else.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the whole symlinked-directory branch replaced by `continue` — symlinks never followed | **0 of 29** | 1 |
+| the same mutation after a target reachable only through the link was added | **1 of 45** | 1 |
+
+The row came back 0 where 1 was expected, which is the signature the
+fourth-shape section describes, arriving in the third shape. Nothing in the
+diff showed it: the fixture builds a symlink, the test is named after
+symlinks, and the assertion is about symlinks. Only the count disagreed.
+
+**The general form: a fixture must not be able to satisfy the assertion by a
+route that bypasses the feature.** For a symlink test that means the target
+is reachable ONLY through the link — put it outside the walked tree, or
+delete the real path after linking. For a cache test, the backing store has
+to be unreadable on the second call. For a fallback, the primary has to
+actually be gone. The question to ask of any fixture is not "does this
+exercise the feature" but **"what would this test report if the feature were
+deleted"** — and the only honest way to answer it is to delete the feature
+and look.
+
+It recurs. Three more instances in the same two issues, all found by the
+count rather than by reading:
+
+- a determinism test that built the same tree twice and compared the two
+  lists. Removing the sort entirely was 0 red, because two trees built by the
+  same code in the same order give the same `readdir` order. It asserted
+  reproducibility on one machine, which was never in doubt; the property is
+  an ORDER, so the order is what has to be asserted.
+- a `--force`-through-a-symlink test asserting the exclusive write flag with
+  a file-level `toContain('{ flag: "wx" }')`. Moving the literal into a
+  comment and leaving the write bare passed both halves.
+- a refusal asserting `toContain("symlink")` against a message that says
+  "symlink" twice. Deleting the clause that names it as a cause left the
+  sentence explaining the policy, and the row was 0.
 
 ### When the guard is a spawn, not a comparison (#171)
 

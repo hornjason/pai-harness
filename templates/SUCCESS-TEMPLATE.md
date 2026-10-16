@@ -62,8 +62,8 @@ observation above. If nothing produces it, this claim is not yet real.
 
 Where each claim actually stands today, not where it is meant to end up. A
 claim with no evidence is `untested`, which is a legitimate answer; a claim
-recorded as met without a measurement is the thing this whole file exists to
-prevent.
+recorded as met without a measurement is the thing this whole file exists
+to prevent.
 
 | Claim | Standing | Measured |
 |---|---|---|
