@@ -278,6 +278,12 @@ describe("#46: the verdict survives the wire, the flags and the exit code", () =
       [[{ name: "test", status: "completed", conclusion: "failure", head_sha: SHA }], "FAIL"],
       [[], "UNMEASURED"],
       [[{ name: "test", status: "completed", conclusion: "skipped", head_sha: SHA }], "UNMEASURED"],
+      // Over the wire, and not only in the pure function: GitHub sends
+      // `conclusion: null` on a run that has not concluded, and a mapper that
+      // defaulted the absent field to "success" would turn that into a pass
+      // without `readCi` ever seeing a null to refuse.
+      [[{ name: "test", status: "completed", conclusion: null, head_sha: SHA }], "UNMEASURED"],
+      [[{ name: "test", status: "completed", head_sha: SHA }], "UNMEASURED"],
     ];
     for (const [these, verdict] of cases) {
       runs = these;
