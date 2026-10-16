@@ -1,5 +1,5 @@
 /**
- * Covers SC-1706..SC-1711 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #312 SC-A12,
+ * Covers SC-1712..SC-1717 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #312 SC-A12,
  * SC-A13 and SC-A14. Fixes #285.
  *
  * On main the heal prompt and the recorder contradicted each other outright.
@@ -109,7 +109,7 @@ function runBuilt(built: string, cwd: string, failures: string): { code: number;
 }
 
 describe("#312: the heal command is run, not described", () => {
-  test("SC-1706: the command the prompt emits is accepted by the real recorder", () => {
+  test("SC-1712: the command the prompt emits is accepted by the real recorder", () => {
     const s = scenario();
     try {
       const built = recorderCommand(HARNESS_ROOT, s.workDir, join(s.root, "project"), quote);
@@ -128,7 +128,7 @@ describe("#312: the heal command is run, not described", () => {
     }
   });
 
-  test("SC-1707: a failing suite records FAIL - through the same command", () => {
+  test("SC-1713: a failing suite records FAIL - through the same command", () => {
     // Without this the happy path alone would be satisfied by a recorder that
     // writes PASS unconditionally — and a verdict that cannot say FAIL is
     // #224 with extra steps.
@@ -145,11 +145,11 @@ describe("#312: the heal command is run, not described", () => {
     }
   });
 
-  test("SC-1708: reintroducing --result into the prompt turns this red", () => {
+  test("SC-1714: reintroducing --result into the prompt turns this red", () => {
     // SC-A14, performed rather than promised. This is the text that was on
     // main, built by a mutated copy of the same marker block and run against
     // the same recorder. If it passed, the extraction above would not be
-    // reaching the command and SC-1706 would be a test of string formatting.
+    // reaching the command and SC-1712 would be a test of string formatting.
     const mutated = SHIP.replace(
       "`    --failures <number of failing tests the suite printed>`",
       "`    --result PASS|FAIL`",
@@ -168,7 +168,7 @@ describe("#312: the heal command is run, not described", () => {
     }
   });
 
-  test("SC-1709: a caller-supplied SHA is refused by name", () => {
+  test("SC-1715: a caller-supplied SHA is refused by name", () => {
     // `--sha` was in the documented usage for this script's whole life, so
     // "unexpected argument" would read as a typo rather than as a contract
     // change. The refusal has to say what replaced it.
@@ -194,7 +194,7 @@ describe("#312: the heal command is run, not described", () => {
     }
   });
 
-  test("SC-1710: a project with no commit is refused - not recorded as HEAD", () => {
+  test("SC-1716: a project with no commit is refused - not recorded as HEAD", () => {
     // `git rev-parse HEAD` prints the string `HEAD` back for a repo with no
     // commits. Recording that would be a measurement whose provenance field
     // says "whatever the checkout happens to be", which is exactly the hole
@@ -229,7 +229,7 @@ describe("#312: the heal command is run, not described", () => {
     }
   });
 
-  test("SC-1711: the step in the prompt is the command this file ran", () => {
+  test("SC-1717: the step in the prompt is the command this file ran", () => {
     // The cheap half, kept: everything above proves the BUILDER is sound, and
     // none of it would notice the prompt calling a different builder, or
     // inlining the old text beside this one. One assertion ties the executed

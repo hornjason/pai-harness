@@ -1078,14 +1078,14 @@ directly over `HEAD`, `""`, `main`, a short hex and a non-hex string, with the
 docblock saying which half the repo cannot see. The empty-repo fixture asserts
 the route it DOES take, and says why the two differ.
 
-- [x] SC-1706: test/recorder-command-executed.test.ts contains [the command the prompt emits is accepted by the real recorder] — the whole point: the built command is run against the real script in a temp git repository, and the recorded SHA is compared to the fixture's HEAD so the commit is proven to come from the tree
-- [x] SC-1707: test/recorder-command-executed.test.ts contains [a failing suite records FAIL - through the same command] — the happy path alone is satisfied by a recorder that writes PASS unconditionally, and a verdict that cannot say FAIL is #224 with extra steps
-- [x] SC-1708: test/recorder-command-executed.test.ts contains [reintroducing --result into the prompt turns this red] — SC-A14 performed rather than promised: the text that was on main, built from a mutated copy of the same marker block and run against the same recorder
-- [x] SC-1709: test/recorder-command-executed.test.ts contains [a caller-supplied SHA is refused by name] — with the SHA passed being the fixture's real HEAD, so what is refused is the caller CHOOSING the commit rather than the commit being wrong, and the state is asserted untouched
-- [x] SC-1710: test/recorder-command-executed.test.ts contains [a project with no commit is refused - not recorded as HEAD] — both routes, an unborn HEAD and a directory that is not a repository at all, because they reach the refusal differently and neither case covers the other
-- [x] SC-1711: test/recorder-command-executed.test.ts contains [the step in the prompt is the command this file ran] — everything above proves the BUILDER is sound and none of it would notice the prompt calling a different one, or inlining the old text beside it
+- [x] SC-1712: test/recorder-command-executed.test.ts contains [the command the prompt emits is accepted by the real recorder] — the whole point: the built command is run against the real script in a temp git repository, and the recorded SHA is compared to the fixture's HEAD so the commit is proven to come from the tree
+- [x] SC-1713: test/recorder-command-executed.test.ts contains [a failing suite records FAIL - through the same command] — the happy path alone is satisfied by a recorder that writes PASS unconditionally, and a verdict that cannot say FAIL is #224 with extra steps
+- [x] SC-1714: test/recorder-command-executed.test.ts contains [reintroducing --result into the prompt turns this red] — SC-A14 performed rather than promised: the text that was on main, built from a mutated copy of the same marker block and run against the same recorder
+- [x] SC-1715: test/recorder-command-executed.test.ts contains [a caller-supplied SHA is refused by name] — with the SHA passed being the fixture's real HEAD, so what is refused is the caller CHOOSING the commit rather than the commit being wrong, and the state is asserted untouched
+- [x] SC-1716: test/recorder-command-executed.test.ts contains [a project with no commit is refused - not recorded as HEAD] — both routes, an unborn HEAD and a directory that is not a repository at all, because they reach the refusal differently and neither case covers the other
+- [x] SC-1717: test/recorder-command-executed.test.ts contains [the step in the prompt is the command this file ran] — everything above proves the BUILDER is sound and none of it would notice the prompt calling a different one, or inlining the old text beside it
 
-### What was broken to prove it (SC-1706..SC-1711)
+### What was broken to prove it (SC-1712..SC-1717)
 
 Every count predicted before the battery ran, over the 85 tests in
 `test/recorder-command-executed.test.ts`,
