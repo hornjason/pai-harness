@@ -2355,13 +2355,18 @@ fi
 # The hook cannot tell whether it is the DA. It CAN tell whether it is in a
 # linked worktree: --git-dir points at .git/worktrees/<name> there while
 # --git-common-dir points at the shared .git, and in the primary checkout the
-# two are the same directory. Both are resolved with pwd -P before comparing,
-# because one can come back relative and the other absolute depending on
-# where the hook is invoked from — a plain string compare would call the
-# primary checkout a worktree and skip the update everywhere.
+# two are the same answer.
+#
+# The first draft resolved both through a cd-then-pwd-P round trip first, on
+# the theory that one could come back relative and the other absolute. The
+# mutation battery scored that normalisation 0 of 20 — both arms behave
+# identically without it, executed against a real primary checkout and a real
+# linked worktree. An unmeasured guard is indistinguishable from an absent
+# one, so it is absent. git hooks run from the toplevel, and both calls share
+# a cwd, so there was never a case that needed it.
 if [ -f "project-state.json" ]; then
-  gitdir=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
-  commondir=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+  gitdir=$(git rev-parse --git-dir)
+  commondir=$(git rev-parse --git-common-dir)
   if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then
     bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
     git add PROJECT-STATE.md project-state.json 2>/dev/null || true

@@ -2396,6 +2396,83 @@ asks for, met from a direction I had not counted.
 Neither is the fourth shape. That signature is a row LOWER than predicted,
 and a row higher means the binding reaches further than the prediction did.
 
+### A rule the tooling actively undid (#450)
+
+`project-state.json`, `PROJECT-STATE.md` and `SUCCESS.md` are DA-owned (#296),
+and the project says so in `CLAUDE.md` and in `.claude/rules/key-files.md`. The
+generated `.git/hooks/pre-commit` ran `update-project-state.ts` and staged its
+output **on every commit in every worktree**:
+
+```sh
+if [ -f "project-state.json" ]; then
+  bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
+  git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+fi
+```
+
+So the rule was written down twice and the tooling mechanically did the
+opposite. This is a worse shape than the one
+`.claude/rules/checks-must-be-able-to-fail.md` is usually about: **an agent
+that obeyed the rule perfectly still shipped the violation**, because the
+staging happened after it had decided not to touch the file. A rule nothing
+executes is inert; a rule something actively undoes is a trap. Observed while
+committing #399 from a worktree — reverting the file and `--amend`ing rewrote
+and re-staged it, so there was no way to comply short of `--no-verify`.
+
+**The signal is the two git dirs, not a path heuristic.** The hook cannot tell
+whether it is the DA. It can tell whether it is in a linked worktree:
+`--git-dir` points at `.git/worktrees/<name>` there while `--git-common-dir`
+points at the shared `.git`, and in the primary checkout the two are the same
+answer. Both arms are driven by EXECUTING the generated hook against a real
+`git worktree add`, not by reading its source — #397's post-mortem is that a
+source-text assertion cannot notice the script's behaviour is impossible.
+
+**The redeploy half, which the issue did not ask for and the fix is worthless
+without.** `createGitHooks` wrote pre-commit only `if (!existsSync(preCommit))`,
+so every checkout that already had one would keep the version that does the
+forbidden thing — including this repo, where #450 was observed. The fix would
+have reached nobody. The pre-push hook had this exact bug and #85 fixed it the
+same way, so pre-commit now carries `PRE_COMMIT_MANAGED_MARKER` and overwrites
+its own managed hook while leaving a hand-written one alone.
+
+- [x] SC-1653: test/unit/git-hooks-generator.test.ts contains [stages none of the DA-owned state files from a linked worktree] — the generated hook writes and stages none of the three DA-owned files when --git-dir and --git-common-dir disagree and the case runs the hook against a real linked worktree rather than asserting on its text
+- [x] SC-1654: test/unit/git-hooks-generator.test.ts contains [still stages them in the primary checkout] — the positive control sits in the same file as the suppression because a guard with no positive control is indistinguishable from one that never fires and a worktree test that over-matched would disable the update everywhere while staying green
+- [x] SC-1655: test/unit/git-hooks-generator.test.ts contains [the skip is announced rather than silent] — the hook says it skipped and why and what to do instead and the primary checkout stays quiet so the message does not become noise that stops meaning anything
+- [x] SC-1656: lib/scaffold/steps.ts contains [export const PRE_COMMIT_MANAGED_MARKER] — an existing managed pre-commit is overwritten so a fix to the hook reaches a checkout that already has one and a hand-written hook is preserved and reported instead
+
+#### What was broken to prove it (SC-1653..1656)
+
+Run and counted over `test/unit/git-hooks-generator.test.ts` (20 tests):
+
+| Mutation | Red |
+|---|---|
+| the worktree check removed, so the update is unconditional again | 2 of 20 — the suppression and its announcement; the positive control is untouched, which is what makes it a control |
+| the comparison inverted | 3 of 20 — both arms swap, which is the only mutation that moves the positive control |
+| the skip stops announcing itself (`echo` → `:`) | 1 of 20 |
+| a managed hook is never overwritten | 1 of 20 — the fix stops reaching any checkout that already has a hook |
+| the managed-marker check dropped, so any hook is overwritten | 1 of 20 — someone's hand-written hook is destroyed |
+| the primary branch stops staging `PROJECT-STATE.md` | 1 of 20 |
+
+All six predicted correctly before running; none is left in the tree.
+
+**A seventh scored 0 and the code changed because of it.** The first draft
+resolved both git dirs through a `cd`-then-`pwd -P` round trip before
+comparing, on the theory that one could come back relative and the other
+absolute. Dropping the normalisation was **0 of 20** — both arms behave
+identically without it, executed against a real primary checkout and a real
+linked worktree. An unmeasured guard is indistinguishable from an absent one,
+so it was removed rather than kept and explained. git hooks run from the
+toplevel and both calls share a cwd; there was never a case that needed it.
+
+**And the battery corrected a test, which is the other thing a zero is for.**
+The redeploy case originally asserted `toContain('project-state: SKIPPED')`
+on the rewritten file. Two mutations above — making the skip branch
+unreachable, and replacing its `echo` with `:` — leave that phrase sitting in
+the source, so the assertion was a source-text proxy that could not fail for
+its own reason. It now compares the written hook BYTE FOR BYTE against a
+freshly generated one, with a positive control that the fresh copy differs
+from the stale one, and the behaviour is left to the cases that execute it.
+
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the

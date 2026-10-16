@@ -276,20 +276,39 @@ describe('generated pre-commit — redeployment', () => {
      * this repo, where #450 was observed. The pre-push hook had exactly this
      * bug and #85 fixed it the same way: overwrite our own managed hook, leave
      * a hand-written one alone.
+     *
+     * Compared BYTE FOR BYTE against a freshly generated hook rather than
+     * grepped for a phrase the new script happens to contain. The first draft
+     * asserted `toContain('project-state: SKIPPED')`, and the mutation
+     * battery showed why that is worthless here: a mutation that makes the
+     * skip branch unreachable, or replaces `echo` with `:`, leaves the phrase
+     * sitting in the source and the assertion green. What this test is for is
+     * "the stale copy was replaced"; the behaviour is proved by executing the
+     * hook above.
      */
     const dir = mkdtempSync(join(tmpdir(), 'rungate-hookredeploy-'));
+    const fresh = mkdtempSync(join(tmpdir(), 'rungate-hookfresh-'));
     try {
+      mkdirSync(join(fresh, '.git', 'hooks'), { recursive: true });
+      createGitHooks(fresh, []);
+      const expected = readFileSync(join(fresh, '.git', 'hooks', 'pre-commit'), 'utf-8');
+
       mkdirSync(join(dir, '.git', 'hooks'), { recursive: true });
       const path = join(dir, '.git', 'hooks', 'pre-commit');
-
       // An old managed hook, carrying the marker and the unconditional update.
-      writeFileSync(path, `#!/bin/sh\n${PRE_COMMIT_MANAGED_MARKER}\ngit add project-state.json\n`);
+      const stale = `#!/bin/sh\n${PRE_COMMIT_MANAGED_MARKER}\ngit add project-state.json\n`;
+      writeFileSync(path, stale);
       const actions: string[] = [];
       createGitHooks(dir, actions);
-      const after = readFileSync(path, 'utf-8');
-      expect(after, 'the stale managed hook survived').toContain('project-state: SKIPPED');
+
+      expect(readFileSync(path, 'utf-8'), 'the stale managed hook survived').toBe(expected);
+      // Positive control on the comparison itself: `expected` must not be the
+      // stale text, or the assertion above would hold over a hook nothing
+      // rewrote.
+      expect(expected, 'the generator produced the stale hook').not.toBe(stale);
       expect(actions.join('\n')).toContain('UPDATED: .git/hooks/pre-commit');
     } finally {
+      rmSync(fresh, { recursive: true, force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });
