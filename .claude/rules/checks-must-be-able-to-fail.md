@@ -160,10 +160,9 @@ watches it stay green.
 
 ### Before you believe a 0, check the instrument (#60)
 
-A mutation row that comes back zero has two usual causes — the mutation was
-applied and nothing caught it, or the mutation was never really applied — and
-the usual advice is to prove the mutation changed behaviour before concluding
-anything from the number.
+The section above gives a zero two causes: the mutation was applied and
+nothing caught it, or the mutation was never really applied. Both are about
+the code.
 
 There is a third, and it is worse because it is silent and it is not about the
 code at all: **the measurement stopped reporting.**
@@ -206,6 +205,46 @@ every time: cut the region the claim is about out of the string first, assert
 on the cut, and assert that the cut is non-empty — because a slice that fails
 to find its own section is an empty string, and an empty string contains
 nothing, which is indistinguishable from a clean result.
+
+### A battery whose fixtures all meet a precondition measures nothing past it (#492, #59)
+
+Every fixture in a battery is built to exercise the feature. That is what
+makes a battery feel thorough, and it is also what makes it blind in one
+specific direction: if the feature only runs when some precondition holds,
+every fixture holds it, and **the branch where it does not hold is outside
+the battery's reach entirely.** Not under-tested — unreachable.
+
+This is not the "prove the mutation changed behaviour" case above. There the
+mutant and the original behave identically on the inputs you have; here the
+mutant is fine and the inputs cannot get to it. The arithmetic looks healthy
+either way.
+
+Two instances, found within hours of each other and from opposite directions:
+
+| Where | What every fixture held fixed | What was on the other side |
+|---|---|---|
+| #492 | every waiver fixture had **no** scanned files, because that is the precondition a waiver needs | a *mixed* layout, where `scripts/` makes `filesScanned` non-zero while 390 files in `src/` are never read. CONFIG-1 reports **PASS having scanned 36 of 426**, and the empty-scan refusal cannot fire. Every hardening anyone had done lived downstream of `filesScanned === 0` |
+| #59 | the refusal enumeration was read off `prevalidationViolations`, which refuses an absent, `UNMEASURED`, `FAIL` or self-contradicting reading | the function sits behind `if (!isVerifyPlus()) return`, and `isVerifyPlus` is `["VERIFY","SHIP","DONE"]`. The reading is stamped at SCOPE and refused two phases later, so every clause was true of the function and none of it was true at the phase being reasoned about |
+
+#492's is the sharper one because of the exposure window: 61 files in an
+unscanned directory holding a live config read correctly FAILs on its own, an
+*empty* file in a scanned directory FAILs via `bytesScanned === 0`, and a
+single newline in a scanned directory produces **no FAIL, no WARN, no
+UNMEASURED, nothing in the report at all**. One byte, and the verdict goes
+from loud to silent — strictly worse than every case the batteries did cover,
+because those at least record something.
+
+**So name the precondition, then go and build the one fixture that does not
+meet it.** In #492's case that is a project with files in both a scanned and
+an unscanned directory; in #59's it is reading the gate at the phase it
+actually runs rather than reading the function. The fixture you have to
+construct deliberately is the one that would never occur to you, because
+every natural example is an example *of the feature*.
+
+The reporting fix generalises too: **a scan that reports a verdict should
+report its own coverage** — how many files it read of how many it could see.
+`36/426` and `426/426` are the same PASS today, and no reader can tell them
+apart from the output.
 
 ### "This cannot be checked" is a claim, and it is checkable (#199, #479)
 
