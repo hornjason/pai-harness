@@ -518,11 +518,29 @@ describe("#306: the workflow actually consults the deny-list", () => {
     // do. The refusal travels through runDiscovery's existing `return false`.
     expect(shipSource).toContain("if (scopeGuard.refusal) {");
     expect(shipSource).toContain("DISCOVERY REFUSED:");
-    const refusal = shipSource.indexOf("if (scopeGuard.refusal) {");
-    expect(
-      shipSource.slice(refusal, refusal + 220),
-      "the contradiction is logged but the run continues",
-    ).toContain("return false");
+
+    // The BRANCH, by brace matching — not a fixed character window. The
+    // window was 220 characters, and #524 added two lines of comment and one
+    // assignment inside this block, which pushed `return false` out of view
+    // and turned the row red over code that does exactly what it says. A
+    // detector whose view of the input can silently shrink is the second
+    // shape in `.claude/rules/checks-must-be-able-to-fail.md`, and here it
+    // shrank in the direction that cries wolf rather than the one that goes
+    // quiet — but a check that fires on a comment is a check that gets its
+    // assertion loosened by whoever is in a hurry.
+    const open = shipSource.indexOf("if (scopeGuard.refusal) {");
+    let depth = 0;
+    let close = -1;
+    for (let i = shipSource.indexOf("{", open); i < shipSource.length; i++) {
+      if (shipSource[i] === "{") depth++;
+      else if (shipSource[i] === "}" && --depth === 0) { close = i + 1; break; }
+    }
+    expect(close, "the refusal branch has unbalanced braces").toBeGreaterThan(open);
+    const branch = shipSource.slice(open, close);
+    expect(branch, "the contradiction is logged but the run continues").toContain("return false");
+    // The slice is the branch and not the rest of the file: a brace walk that
+    // ran away would contain `return false` from anywhere downstream.
+    expect(branch.length, "the branch slice swallowed the file").toBeLessThan(600);
   });
 
   test("the filter runs inside runDiscovery, so re-discovery is covered", () => {

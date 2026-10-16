@@ -712,6 +712,41 @@ async function preserveSeenWorktrees(phaseName, label) {
   return preserveRefusedWork(paths.map(worktreePath => ({ worktreePath })), phaseName, label)
 }
 
+// ──── TERMINAL-REASON-START ────
+/**
+ * Why a terminal result says the run stopped, or an explicit statement that
+ * nothing said (#524).
+ *
+ * The SHIP_FAILED funnel has had this floor since #252 — `failureSummary`
+ * ends with "the run refused without recording a reason" when the ledger is
+ * empty. The other funnel never got one, so several of its call sites
+ * returned a status, a work directory, and nothing a reader could act on.
+ * Same defect class, one funnel behind.
+ *
+ * Each source is read in the order a reader would: the caller's own `reason`
+ * first, then the shapes the existing call sites already pass. They are not
+ * competing deciders — the list is a search for the one field that is
+ * populated, and the sites that pass a `reason` never reach the rest.
+ *
+ * The fallback NAMES the absence rather than substituting a plausible
+ * default. "nothing recorded why" is a statement about this file; a guessed
+ * reason would be a statement about the work, and they are not the same fact
+ * (`.claude/rules/config-access.md`, Silent Default Substitution).
+ */
+function terminalReason(status, extra) {
+  const e = extra && typeof extra === 'object' ? extra : {}
+  const text = v => (typeof v === 'string' && v.trim() ? v.trim() : '')
+  const list = v => (Array.isArray(v) ? v.map(text).filter(Boolean).join('; ') : '')
+  return text(e.reason)
+    || text(e.message)
+    || list(e.failures)
+    || list(e.buildResult && e.buildResult.findings)
+    || list(e.quinnLocalResult && e.quinnLocalResult.failures)
+    || `the run ended at ${text(status) || 'FAILED'} and nothing recorded why — ` +
+       `that is a gap in this workflow, not a statement about the work`
+}
+// ──── TERMINAL-REASON-END ────
+
 /**
  * End the run on a terminal status, having first given the work a name.
  *
@@ -724,6 +759,10 @@ async function terminalFailure(status, extra = {}) {
   return {
     status,
     ...extra,
+    // After the spread, so a caller that passed one keeps it verbatim —
+    // `terminalReason` returns that same string — and a caller that passed
+    // none gets the floor rather than a missing field (#524).
+    reason: terminalReason(status, extra),
     // Appended rather than replacing: the caller's reason is why the run
     // stopped, and this is where the work went. Losing either one is how an
     // operator ends up with a refusal they cannot act on.
@@ -2144,6 +2183,15 @@ function withoutDenied(files, denied) {
 let acDeferrals = []
 let acCoverage = null
 let discoveryRefusal = null
+/**
+ * Why discovery returned false when it did NOT build a refusal ledger (#524).
+ *
+ * Three of the exits below go through `shipFailed` and carry everything the
+ * run learned. Two did not, and the caller turned both into a bare terminal
+ * status — including the deny-list refusal, whose text was computed, logged,
+ * and then dropped on the floor one line later.
+ */
+let discoveryFailureReason = null
 
 async function runDiscovery(context) {
   phase('Discovery')
@@ -2154,6 +2202,7 @@ async function runDiscovery(context) {
   acDeferrals = []
   acCoverage = null
   discoveryRefusal = null
+  discoveryFailureReason = null
   log(`DISCOVERY${context ? ' (regression: ' + context + ')' : ''}`)
 
   discovery = await briefedAgent(`
@@ -2213,7 +2262,10 @@ For EACH AC, run its evidenceMethod command against the CURRENT code on main. Cl
 Project root: ${PROJECT_ROOT}
   `, { label: `discovery${regressionCount > 0 ? '-r' + regressionCount : ''}`, phase: 'Discovery', role: 'discovery', schema: DISCOVERY_SCHEMA })
 
-  if (!discovery) return false
+  if (!discovery) {
+    discoveryFailureReason = 'the discovery agent returned nothing — no sizing, no ACs, no reply at all'
+    return false
+  }
 
   for (const ac of discovery.acs) {
     if (ac.threshold && typeof ac.threshold.value === 'boolean') ac.threshold.value = String(ac.threshold.value)
@@ -2265,6 +2317,10 @@ Project root: ${PROJECT_ROOT}
   const scopeGuard = applyScopeDenylist(discovery, log, goalData?.issueGoal)
   if (scopeGuard.refusal) {
     log(`DISCOVERY REFUSED: ${scopeGuard.refusal}`)
+    // Carried, not just logged (#524). The log line is the one place this
+    // text existed, and the terminal result the operator actually reads had
+    // no field holding it.
+    discoveryFailureReason = scopeGuard.refusal
     return false
   }
   for (const p of unresolvedProhibitions(goalData?.issueGoal || '')) {
@@ -2593,7 +2649,7 @@ if (!await runDiscovery(null)) {
   // A coverage refusal already went through shipFailed, so it carries every
   // reason this run refused and the PR state (#252). Returning the bare
   // DISCOVERY_FAILED over the top of it would throw that away.
-  return discoveryRefusal || await terminalFailure('DISCOVERY_FAILED')
+  return discoveryRefusal || await terminalFailure('DISCOVERY_FAILED', { reason: discoveryFailureReason })
 }
 
 // ADR-009: Freeze AC definitions at discovery time for cross-gate integrity
@@ -3471,9 +3527,24 @@ what it said rather than omitting the field.
     }
   }
 
+  // The branch #524 was filed on. `'unknown'` was computed, printed to the
+  // log, and thrown away: the returned object carried `buildResult:
+  // undefined`, so the run ended on a terminal status whose payload said
+  // nothing at all. Every other refusal below puts its reason in `findings`,
+  // and this one now does the same.
+  //
+  // Two sentinels, not one. An agent that returned NOTHING and an agent that
+  // reported failure while listing no findings are different facts about
+  // different failures, and collapsing them would lose the only thing
+  // distinguishing a dead spawn from a silent one.
   if (!buildResult || !buildResult.success) {
-    log(`IMPLEMENT FAILED: ${buildResult?.findings?.join(', ') || 'unknown'}`)
-    return { success: false, buildResult }
+    const why = Array.isArray(buildResult?.findings) && buildResult.findings.filter(Boolean).length > 0
+      ? buildResult.findings
+      : [buildResult
+          ? 'the implement phase reported failure and listed no findings, so there is no record of what it attempted'
+          : 'the implement phase returned no build result at all, so there is no record of what it attempted']
+    log(`IMPLEMENT FAILED: ${why.join(', ')}`)
+    return { success: false, buildResult: { ...(buildResult || {}), success: false, findings: why } }
   }
   // #181 — acted on, not narrated. This log line used to be the only
   // reader of `filesChanged`, so an empty implementation printed `0` and
@@ -5093,7 +5164,15 @@ Report: branch name, commit SHA, pushed (true/false), stateRecorded (true/false)
 }})
 
 if (!commitResult?.commitSha) {
-  return await terminalFailure('COMMIT_FAILED')
+  // Two readings, kept apart (#524). An agent that died and an agent that
+  // answered without the one field the schema requires are different
+  // failures, and the bare status told an operator neither.
+  return await terminalFailure('COMMIT_FAILED', {
+    reason: commitResult
+      ? 'the commit step replied but reported no commit SHA, so nothing can confirm the work was committed'
+      : 'the commit step returned nothing at all, so there is no record of whether it ran',
+    commitResult,
+  })
 }
 
 // ──── COMMIT-STATE-GUARD-START ────
@@ -5176,7 +5255,9 @@ if (verifyResult?.result === 'FAIL') {
     log(`Verify DISCOVERY regression #${regressionCount}`)
     if (!await runDiscovery('Verify gate found ACs were wrong: ' + (verifyResult.failures || []).join(', '))) {
       return discoveryRefusal ||
-        await terminalFailure('VERIFY_FAILED', { reason: 'DISCOVERY regression failed' })
+        await terminalFailure('VERIFY_FAILED', {
+          reason: `DISCOVERY regression failed: ${discoveryFailureReason || 'no reason was recorded by the re-run'}`,
+        })
     }
   }
   if (verifyResult.regressionTarget === 'BUILD' && regressionCount < MAX_REGRESSIONS) {
