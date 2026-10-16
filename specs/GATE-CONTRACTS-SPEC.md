@@ -1617,3 +1617,100 @@ them, so the second reading was never load-bearing. The fixture now plants a
 CORRECT tree under test and a SECOND checkout that is wrong, which is the
 shape #218's incident actually had and the only shape in which the
 `worktrees` field earns its place.
+
+## Is a consumer's test-environment-before-production gate expressible in rungate config? (#297)
+
+**Verdict: `PARTIALLY-EXPRESSIBLE`.** The environment is expressible; the
+ORDER is not, and the prohibition is not.
+
+One consumer runs a seeded test container on port **7776** and production on
+port **7777**, with a hard rule that every change reaches 7776 and passes
+before anything promotes it to 7777. This section answers, in writing, how
+much of that rule rungate config can carry, because the alternative is finding
+out during a run.
+
+The question was asked in #274 and the tree has moved since. Each claim below
+is written against the tree as measured, and two of the three things #274
+pointed at are no longer there.
+
+### What IS expressible
+
+The test environment itself, through the `container` block declared by
+`ContainerSchema` in `lib/rungate-schema.ts`:
+
+| Key | What it carries |
+|---|---|
+| `container.port` | the test port |
+| `container.rebuildCommand` | the command that builds and restarts the test container |
+| `container.healthPath` | the path a probe calls to decide it came up |
+| `container.hosts` | where to look for it |
+
+`workflows/ship.js:5627` reads it, and on STANDARD+ runs the rebuild happens
+and container Quinn is pointed at `http://<host>:<port>`. Before the schema
+change the key existed in prompts and in no validator, so a config that went
+through zod lost it — the block was there, and the container path rested on a
+key the validator removed.
+
+### What is NOT expressible, and this is the gap
+
+**1. The ordering constraint has no key.** `container` says a test environment
+exists. Nothing says *production must not be touched until the test
+environment passed*. `ship.js` happens to run container verify in Phase 7 and
+the production record in Phase 8, so the order is right by construction — but
+it is right by construction, not because a consumer declared it, and nothing
+refuses a project that configures `prod.rebuild` with no `container` at all.
+A consumer reading this config cannot tell whether its rule is enforced or
+merely coincidentally satisfied.
+
+**2. "An agent must never run the production rebuild" has no link to
+`prod.rebuild`.** Both halves exist and they do not know about each other.
+`ProdSchema.rebuild` holds the production command; `forbiddenCommands` is the
+list `gates/brief-assembler.ts` writes into an agent's brief. A consumer can
+configure `prod.rebuild: "<cmd>"` and `forbiddenCommands: ["<cmd>"]` at the
+same time and nothing notices the contradiction — the brief tells the agent
+never to run it while the config declares it as this project's rebuild.
+`container.rebuildCommand` is interpolated directly into an agent prompt at
+`ship.js:5640`, so a consumer that puts its production command behind that key
+has armed exactly the thing its own rules forbid, and no check looks.
+
+### The record-env site, which is not where #274 said
+
+#274 named line 4462 of `workflows/ship.js` as it then stood, writing
+`environments.prod.rebuild = 'PASS'` — a gate check about whether a rebuild
+happened, satisfied by a string an agent wrote, for a project whose rules
+forbid the agent from running it.
+
+**That site is gone.** #183 replaced it. All three arms of the production
+record now write `SKIP` with a reason naming what was not measured
+(`ship.js:6646`, `:6649`, `:6657`), the health-check arm says in so many words
+that a 200 means a container answered and not that it was built from this
+commit, and `container-has-fix` compares the image revision against HEAD. The
+honest value #274 asked for is the value the code writes.
+
+### The config-key split, half closed
+
+#294 recorded that the same fact had two key names. ADR-002 D3 closed the
+loader side: `normaliseConfig` resolves `dev.testCmd ?? test.command` into one
+normalised `test.command`, and `captureTestBaseline` reads the normalised
+name.
+
+**The gate checks did not move.** `gates/workflow.test.ts:87` still has its
+own `loadProjectHarness()`, and it is monolith-only — `join(root, ".claude",
+"rungate.json")`, `existsSync`, `null`. Ten checks sit behind it, and
+`tests-pass` at `:859` reads the raw `dev.testCmd`:
+
+```ts
+if (!harness?.dev?.testCmd) return;
+```
+
+A `return` before any assertion. For a consumer on the documented
+`.claude/rungate/` layout that loader answers `null`, so the suite check does
+not run and reports nothing — which is the shape
+`.claude/rules/checks-must-be-able-to-fail.md` exists for, sitting inside the
+file that holds the gate checks. #311 migrated every other gate reader and was
+told explicitly not to touch this file; that instruction is why the split
+survives, and the remainder is recorded here rather than left to be found.
+
+- [x] SC-1718: test/gate-env-expressibility.test.ts contains [the written answer names both ports - the verdict token and the record-env site] — AC-6's four elements, asserted over the prose rather than over a summary of it, because an answer nobody can check is the thing #274 asked for instead of a check
+- [x] SC-1719: test/gate-env-expressibility.test.ts contains [the answer describes the tree it is about - not the tree it was written from] — the two sites #274 named are re-measured against source on every run, so the day one of them moves this section stops being true quietly
+- [x] SC-1720: test/gate-env-expressibility.test.ts contains [the gate checks' own loader is still monolith-only - and the suite check returns before asserting] — the gap the answer records, asserted as a fact about the source so closing it turns this red and whoever closes it has to update the written answer
