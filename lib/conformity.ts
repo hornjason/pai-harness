@@ -2891,8 +2891,8 @@ export const CONFIG_1_DECLINES = new Set(["workflows"]);
  * "workflows"]`. **`src/` was in the second and not the first**, so a
  * consumer on the single most common layout outside this repo got a CONFIG-1
  * that walked zero files over a project that might be full of direct config
- * reads. Measured on one consumer: PASS, having scanned 36 of 426
- * TypeScript files, 390 of them in `src/`.
+ * reads. Measured on one real consumer: PASS, having scanned 36 of 426
+ * TypeScript files, 390 of them in `src/` (#492).
  *
  * Deriving it means a directory added to one list cannot fail to reach the
  * other without someone writing it into `CONFIG_1_DECLINES` and saying why.

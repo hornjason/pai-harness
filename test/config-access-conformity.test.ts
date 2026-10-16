@@ -864,7 +864,7 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
    * list — is reached only when the scan read nothing at all. This block is
    * the other branch, where nothing asked what FRACTION was read.
    *
-   * Measured on DailyBriefDashboard: CONFIG-1 reports PASS having scanned 36
+   * Measured on one real consumer: CONFIG-1 reports PASS having scanned 36
    * of 426 TypeScript files. 390 live in `src/`, which was not in
    * `CONFIG_SCAN_DIRS`, and the empty-scan refusal never fires because
    * `scripts/` makes `filesScanned` non-zero.
