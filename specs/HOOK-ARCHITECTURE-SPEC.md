@@ -123,6 +123,92 @@ hooks are driven as subprocesses rather than matched as text.
 - [x] SC-825: lib/issue-create-override.ts contains [verifyPhaseRefusal] — the VERIFY lock's decision is ONE exported function in lib/, not eight lines in the hook, so there is one binding to mutate and the hook stays the thin trigger SC-371 and SC-372 ask for
 - [x] SC-826: lib/issue-create-override.ts contains [external-audit] — a second override naming an origin outside the ship loop. `follow-up` was the only one, so #362, #363 and #364 all had to claim they were follow-up work from a shipped issue, and they were not
 - [x] SC-827: test/verify-phase-lock.test.ts contains [the override word is in the TITLE] — the bypass the issue named is a table row, and the hook is SPAWNED over a real VERIFY state. A decision correct in lib/ that the hook never consults is the decorative check this repo keeps finding
+- [x] SC-1658: test/hook-registration-reconciler.test.ts contains [a project-scoped hook declared enabled and absent from the repo settings is reported] — the half of the reconciliation CI can run- over `.claude/settings.json`- which the repo owns and commits
+- [x] SC-1659: test/hook-registration-reconciler.test.ts contains [a user-scoped hook is UNMEASURED from the repo - never clean] — a user-scoped entry reports on every run even when it IS registered- because the repo cannot tell those two apart and saying nothing would claim it could
+- [x] SC-1660: test/hook-registration-reconciler.test.ts contains [registered but unresolvable is a different finding from unregistered] — #199's SC-651- as three arms through one reconciler: an unset path variable- a resolved file that is missing- and no registration at all have three different fixes
+- [x] SC-1661: lib/scaffold/defaults.ts contains [disabledReason] — the inventory is generated- so a decision recorded only in `.claude/rungate/hooks.json` is a decision the next scaffold repair overwrites
+- [x] SC-1662: test/hook-registration-reconciler.test.ts contains [an entry that is off must say why] — off and never-registered look identical in a file- and the fastest way to resolve that ambiguity is to turn it back on
+
+### An inventory with no reconciler, half-fixed (#199, #479)
+
+`.claude/rungate/hooks.json` declared sixteen hooks `enabled: true`. Five were
+registered in no settings file and had never fired. #199 filed it, shipped
+`test/hook-registration-reconciler.test.ts`, and closed — with the five still
+inert four weeks later, because the live check its own SC-650 asked for was
+judged impossible and the per-hook decision its AC-3 asked for was never made.
+
+The judgement was half right, and the half that was wrong is the interesting
+one. Reading `~/.claude/settings.json` from a repo test passes on one laptop
+and fails in CI; SC-518 above *requires* machine-wide hooks to live there; so
+registration is machine state and the repo cannot assert it. All true — of the
+eleven. Every one of the five acts on the **current project**: this project's
+agent spawns, this project's `specs/*.md`, this project's
+`workflow-state.json`, `runAllCompletionChecks(process.cwd())`. SC-518 does not
+reach them, project `.claude/settings.json` is committed, and for a
+project-scoped hook "is it registered" is an ordinary repo fact.
+
+What the inventory never recorded is which kind an entry is. With `scope` on
+each one the reconciliation splits, and neither half pretends to be the other:
+
+| scope | measured | reported |
+|---|---|---|
+| `project` | registration in `.claude/settings.json`, and the resolved command's file | enforced — a finding fails the suite |
+| `user` | only whether the repo ALSO registers it (SC-518's double-fire) | UNMEASURED on every run, never counted as checked |
+
+The UNMEASURED row is the rule from `.claude/rules/config-access.md` applied to
+a check rather than to config: `0`, `{}`, `null` and `SKIP` are
+indistinguishable from success. An entry the repo cannot see must say so out
+loud, every run, or the next reader counts sixteen entries as sixteen checks.
+
+**The decision per hook, which is what AC-3 asked for and the measurement
+behind each one.** Three on, two off:
+
+| hook | | why |
+|---|---|---|
+| `AgentBriefGuard` | ON | the only mechanical enforcement of "never spawn Marcus, Quinn or Rook directly". It blocks nothing outside a recognised agent definition, and the two blocking paths are the two the rule names |
+| `WorkflowStateGuard` | ON | `workflow-state.json` is what every gate reads. Twenty modules write it through `writeWorkflowState()` for Zod validation and none of them uses the Write or Edit tool, so the guard's entire blast radius is the hand-edit it exists to stop |
+| `SpecSCGuard` | ON | read-only, in-process, and it enforces a rule the repo already has. PostToolUse cannot undo an edit, only report one |
+| `SpecConformityTrigger` | OFF | `package.json` already runs `scripts/sync-sc-status.ts` as `posttest`. A second trigger is two deciders answering one question — the fourth shape — and it is the worse of the two: it ticks coverage on a text edit, with no suite having run |
+| `TaskCompleted` | OFF | `checkTests` spawns a full `bun test` with a 120 000 ms timeout against a suite that measures ~400 s, so it can never complete; and it spawns a CONCURRENT full suite, which is what DIR-L29 and SC-516 exist to prevent |
+
+Two findings fell out of the files this touched, both measured:
+
+- **`BashToolGuard` was registered twice** — `~/.claude/settings.json` and
+  `.claude/settings.json` — which SC-518 says in as many words fires the hook
+  twice. The project copy is removed; it was a hard-coded absolute path into
+  one developer's home directory, so it had never provided portable coverage
+  to lose. The reconciler now reports this shape as `dual-scope`, which is the
+  one thing about a user-scoped entry the repo *can* check.
+- **`RUNGATE_HOOKS_DIR` resolves to the primary checkout.** A session working
+  in a linked worktree runs `main`'s hook code, not the branch's, so a hook
+  change cannot be exercised by the branch that makes it. The three project
+  registrations use `${CLAUDE_PROJECT_DIR}` instead, which Claude Code binds to
+  the session's own project root. Filed rather than fixed for the eleven.
+
+What was broken to prove it, predicted before the battery ran and measured
+after, over `test/hook-registration-reconciler.test.ts` (24 tests):
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `reconcile` short-circuited to `return []` | 6 | 6 |
+| `resolveCommandPath` stops expanding, returning the command unchanged | 4 | 4 |
+| the absent-scope branch deleted, so a missing scope falls through | 1 | 1 |
+| the three project entries re-tagged `scope: "user"` | 2 | 2 |
+| `unexplainedDisabled` short-circuited to `return []` | 1 | 1 |
+| `AgentBriefGuard`'s registration removed from `.claude/settings.json` | 1 | 1 |
+| `disabledReason` dropped from the `TaskCompleted` entry | 2 | 2 |
+
+None is left in the tree; all were run and reverted. Every row matched its
+prediction, so no pair of deciders is covering for the other.
+
+Two of the rows are worth reading rather than counting. The fourth —
+re-tagging the three back to `user` — is the cheapest way to make a red
+reconciliation green, and it is caught by the vacuity arm rather than by the
+enforcement arm, which would go quiet. And the fifth is only 1 red because
+SC-1662's own assertion **passes vacuously** under it: a reconciler that
+reports nothing satisfies "nothing is unexplained". The unit case over a
+planted reasonless entry is what makes that criterion mean anything, and it is
+the only reason that row is not 0.
 
 ### A guard wider than the thing it guards (#365)
 
