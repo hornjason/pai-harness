@@ -139,7 +139,14 @@ export function regenerateOwned(
     return;
   }
 
-  const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+  // `dirname`, not a hand-rolled slice (#481). `substring(0, lastIndexOf("/"))`
+  // is correct for every path carrying a separator and silently wrong for the
+  // one that does not: `lastIndexOf` returns -1, `substring` CLAMPS a negative
+  // end to zero, and the directory to create becomes `""` — which does not
+  // exist, so the guard admits it, and `mkdirSync("")` throws ENOENT. Every
+  // repo-root owned file hits that under a relative root, which is the form
+  // the harness documents.
+  const dir = dirname(filePath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   writeFileSync(filePath, decision.content!);
   actions.push(`${decision.action === "create" ? "CREATED" : "CHANGED"}: ${label}`);

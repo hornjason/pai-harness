@@ -82,6 +82,18 @@ export interface Rehearsal {
   parent: string;
   /** `clone` when copy-on-write was used, `copy` when it fell back. */
   method: "clone" | "copy";
+  /**
+   * The root the operator actually named, kept so the notice can say what it
+   * was SUBSTITUTED for (#481).
+   *
+   * `dir` always comes from `mkdtemp` and is therefore always absolute. So the
+   * audit takes the absolute code path no matter what the operator typed, and
+   * `bunx rungate scaffold .` was rehearsed as an absolute invocation, passed,
+   * and then threw in the real run on every repo-root owned file. The
+   * rehearsal was not wrong about the steps; it was silent about the input it
+   * had replaced.
+   */
+  source: string;
 }
 
 /**
@@ -232,7 +244,7 @@ export function cloneForRehearsal(root: string): Rehearsal {
     );
   }
 
-  return { dir, parent, method };
+  return { dir, parent, method, source: root };
 }
 
 /**
@@ -323,8 +335,21 @@ export function discardRehearsal(r: Rehearsal): void {
  * The line audit prints so a reader knows the report was produced by running
  * the real thing, not by predicting it — and knows what it did not run.
  */
+/**
+ * What the rehearsal did, and — the half #481 was missing — what it did NOT.
+ *
+ * A rehearsal substitutes one input by construction: the root. Steps run
+ * against `r.dir`, which `mkdtemp` makes absolute, so nothing that depends on
+ * the FORM of the operator's argument is exercised. That is not a bug to fix;
+ * a rehearsal has to run somewhere else or it is not a rehearsal. It is a
+ * thing the notice has to SAY, because an unrehearsed input reported as
+ * rehearsed is `UNMEASURED is not SKIP` wearing a dry run's clothes: the
+ * audit printed `CREATED: project-state.json` for a write that threw.
+ */
 export function rehearsalNotice(r: Rehearsal): string {
   const skipped = [...STEPS_NOT_REHEARSED.keys()].join(", ");
   return `Mode: audit — rehearsed against a ${r.method} of the tree, which was then discarded. ` +
-    `Not rehearsed: ${skipped}. Pass --fix to apply.`;
+    `Not rehearsed: ${skipped}. ` +
+    `Root SUBSTITUTED: the steps ran against ${r.dir}, not ${r.source} — anything that depends ` +
+    `on the form of that argument is UNMEASURED by this audit. Pass --fix to apply.`;
 }

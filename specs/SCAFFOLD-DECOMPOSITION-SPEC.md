@@ -788,6 +788,75 @@ different facts that used to produce the same output.
 - [x] SC-1644: test/external-adoption.test.ts contains [a file that cannot be read is reported, not called a non-match] — measured once by permission and once by a dangling symlink, which no user can bypass
 - [x] SC-1645: test/external-adoption.test.ts contains [scaffold reports proposals without applying them] — the step is invoked by the scaffold run, writes nothing, and surfaces unmeasured sources
 - [x] SC-1646: test/external-adoption.test.ts contains [an empty externalSources list is a recorded decision] — the reason is stated, and a scan that ran and matched nothing names the aliases it tried
+- [x] SC-1663: test/scaffold-relative-root.test.ts contains [a target with no directory separator resolves to the current directory] — `dirname`- not a slice whose negative end `substring` clamps to zero
+- [x] SC-1664: test/scaffold-relative-root.test.ts contains [the scaffold is invoked with a relative root and completes] — the real CLI with the real argument- because the defect was never visible at the line- only in the argument
+- [x] SC-1665: test/scaffold-relative-root.test.ts contains [the relative and absolute invocations produce byte-identical trees] — both runs over the SAME directory restored from a pristine copy- so there is no root string to normalise and no normaliser for a difference to hide behind
+- [x] SC-1666: lib/scaffold/rehearsal.ts contains [Root SUBSTITUTED] — the audit names the input it replaced- because an unrehearsed input reported as rehearsed is `UNMEASURED is not SKIP` wearing a dry run's clothes
+
+### The argument no unit test chooses the way a user does (#481)
+
+`bunx rungate scaffold . --fix` threw on every repo-root owned file. The same
+command with an absolute root completed cleanly.
+
+```ts
+const dir = filePath.substring(0, filePath.lastIndexOf("/"));
+if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+```
+
+`"project-state.json".lastIndexOf("/")` is -1; `substring` **clamps a negative
+end to zero**, so the directory to create is `""`; `existsSync("")` is false,
+so the guard admits it; `mkdirSync("")` throws ENOENT. The fix is `dirname`.
+
+Three things about this are worth more than the one-line fix.
+
+**The rehearsal could not have caught it, and said nothing about that.**
+`scripts/scaffold-project.ts:97` hands the steps `rehearsal.dir`, which comes
+from `mkdtemp` and is therefore always absolute. The audit takes the
+absolute branch no matter what the operator typed, so it printed
+`CREATED: project-state.json` for a write that threw seconds later under
+`--fix`. That is not a bug in the rehearsal — a rehearsal has to run somewhere
+else or it is not a rehearsal. It is something the notice has to SAY, and
+SC-1666 makes it say it. Generalised: **anything the real invocation controls
+and the rehearsal substitutes is invisible to the rehearsal by construction**,
+and the form of the root argument is the obvious member of that set.
+
+**The fixture needs a spec carrying an SC, and finding that out is half the
+work.** `generateProjectState` SKIPs a project with no SCs — "SKIP:
+PROJECT-STATE.md (no SCs found in specs)" — so a fixture without one never
+reaches the write and the crash does not reproduce. The first version of the
+test was green against a broken tree for exactly that reason.
+
+**A prediction missed, and the miss was the fourth shape.** Replacing
+`dirname(filePath)` with the constant `"."` was predicted to turn 5 of 7 red.
+It turned 1. The scaffold never depends on that `mkdir`: every directory it
+writes into has already been made by an earlier step, which is what
+`CREATED: .claude/agents/` and `CREATED: .claude/rungate/` in its own output
+are. The directory-making step and the write's own fallback are two deciders
+answering one question, and no end-to-end case can tell them apart.
+
+They are kept apart rather than collapsed — the fallback is one line and
+protects a future caller that has no directory-making step — so the rule's
+second option applies, and its condition with it: the input only the fallback
+can reach is written down as a case with a comment saying which decider it is
+for. Without that, the next person to simplify deletes a line that has a test
+and watches it stay green.
+
+What was broken to prove it, predicted before the battery and measured after,
+over `test/scaffold-relative-root.test.ts` (7 tests):
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `dirname` reverted to the clamping slice — the defect verbatim | 4 | 4 |
+| `dirname` replaced by the constant `"."` | 5 | **1** |
+| the `Root SUBSTITUTED` sentence removed from the notice | 1 | 1 |
+| the notice names the clone on both sides of the substitution | 1 | 1 |
+| the fixture loses its SC-bearing spec | 1 | 1 |
+
+None is left in the tree; all were run and reverted. The last row is worth
+reading: a fixture that loses its SC is caught by ONE test — "the repo-root
+owned files are actually on disk afterwards" — and neither SC-1664 nor
+SC-1665 notices. An exit code and a tree comparison are both satisfied by a
+scaffold that correctly skipped the file that crashes.
 
 ### What was broken to prove it (SC-1641..1646)
 
