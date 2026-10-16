@@ -8,6 +8,7 @@
 import { test, expect, describe } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
 import { join } from "path";
+import { scaffoldPipelineSource } from "./helpers/scaffold-fixture";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -29,9 +30,20 @@ describe("AC-1: scaffold-project.ts is orchestrator-only (<=200 lines)", () => {
     expect(content).toMatch(/from\s+["']\.\.\/lib\/scaffold/);
   });
 
-  test("scaffold-project.ts imports from lib/validators/", () => {
+  test("the scaffold write pipeline imports from lib/validators/", () => {
+    // Asserted against the pipeline, not the CLI. #398 moved the write body
+    // out of scripts/scaffold-project.ts so audit could run the same steps
+    // against a clone; the orchestrator now imports the pipeline and the
+    // pipeline imports the validators. Pinning the CLI would re-assert the
+    // layering this split removed.
+    expect(scaffoldPipelineSource()).toMatch(/from\s+["']\.\.\/validators/);
+  });
+
+  test("the orchestrator delegates to the pipeline rather than inlining it", () => {
+    // The other half, and the one that keeps the test above honest: a
+    // pipeline nothing calls would still import validators.
     const content = readFileSync(scaffoldPath, "utf-8");
-    expect(content).toMatch(/from\s+["']\.\.\/lib\/validators/);
+    expect(content).toMatch(/runScaffoldWriteSteps\(/);
   });
 
   test("scaffold-project.ts contains no function definitions longer than 30 lines", () => {

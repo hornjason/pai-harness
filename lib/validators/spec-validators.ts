@@ -44,12 +44,16 @@ export function checkGovernsAlignment(specsDir: string, actions: string[]): void
 /**
  * Add or complete frontmatter on spec files.
  * Injects doc-type, testable, governs fields if missing.
- * When opts.fix is false, reports gaps without modifying files.
+ *
+ * Always writes. The `opts.fix` parameter and its gap-reporting branch were
+ * removed in #398: audit no longer predicts what this would do, it runs this
+ * against a throwaway clone, so a second non-writing code path has nothing
+ * left to serve. Unreachable from the only caller for its whole life, and an
+ * unreachable branch reporting gaps is a report nothing can contradict.
  */
-export function addFrontmatterToSpecs(specsDir: string, actions: string[], opts?: { fix?: boolean }): void {
+export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void {
   if (!existsSync(specsDir)) return;
 
-  const fixMode = opts?.fix ?? true;
   const today = new Date().toISOString().split("T")[0];
 
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
@@ -57,13 +61,9 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[], opts?
     const content = readFileSync(filePath, "utf-8");
 
     if (!content.startsWith("---\n")) {
-      if (fixMode) {
-        const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
-        writeFileSync(filePath, frontmatter + content);
-        actions.push(`UPDATED: specs/${file} (added frontmatter)`);
-      } else {
-        actions.push(`GAP: specs/${file} missing frontmatter — run with --fix to add`);
-      }
+      const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: specs/${file} (added frontmatter)`);
     } else {
       // Validate existing frontmatter has required fields
       const fmEnd = content.indexOf("\n---", 4);
@@ -74,13 +74,9 @@ export function addFrontmatterToSpecs(specsDir: string, actions: string[], opts?
       if (!fm.includes("created:")) missing.push(`created: ${today}`);
       if (!fm.includes("governs:")) missing.push(`governs: TODO`);
       if (missing.length > 0) {
-        if (fixMode) {
-          const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
-          writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
-          actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
-        } else {
-          actions.push(`GAP: specs/${file} missing fields: ${missing.map(m => m.split(":")[0]).join(", ")} — run with --fix to add`);
-        }
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: specs/${file} (added missing frontmatter fields: ${missing.map(m => m.split(":")[0]).join(", ")})`);
       }
       // SC-269: WARN for specs with missing or TODO governs
       const governsMatch = fm.match(/governs:\s*(.+)/);
@@ -130,12 +126,13 @@ export function detectUnconvertedSpecs(specsDir: string, actions: string[]): voi
 /**
  * Add or complete frontmatter on ADR files.
  * Injects doc-type, created fields if missing.
- * When opts.fix is false, reports gaps without modifying files.
+ *
+ * Always writes — see `addFrontmatterToSpecs` for why the non-fix branch is
+ * gone (#398).
  */
-export function addFrontmatterToAdrs(adrDir: string, actions: string[], opts?: { fix?: boolean }): void {
+export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
   if (!existsSync(adrDir)) return;
 
-  const fixMode = opts?.fix ?? true;
   const today = new Date().toISOString().split("T")[0];
 
   for (const file of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
@@ -143,13 +140,9 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[], opts?: {
     const content = readFileSync(filePath, "utf-8");
 
     if (!content.startsWith("---\n")) {
-      if (fixMode) {
-        const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
-        writeFileSync(filePath, frontmatter + content);
-        actions.push(`UPDATED: docs/adr/${file} (added frontmatter)`);
-      } else {
-        actions.push(`GAP: docs/adr/${file} missing frontmatter — run with --fix to add`);
-      }
+      const frontmatter = `---\ndoc-type: adr\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\n---\n\n`;
+      writeFileSync(filePath, frontmatter + content);
+      actions.push(`UPDATED: docs/adr/${file} (added frontmatter)`);
     } else {
       const fmEnd = content.indexOf("\n---", 4);
       if (fmEnd === -1) continue;
@@ -158,13 +151,9 @@ export function addFrontmatterToAdrs(adrDir: string, actions: string[], opts?: {
       if (!fm.includes("doc-type:")) missing.push(`doc-type: adr`);
       if (!fm.includes("created:")) missing.push(`created: ${today}`);
       if (missing.length > 0) {
-        if (fixMode) {
-          const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
-          writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
-          actions.push(`UPDATED: docs/adr/${file} (added missing: ${missing.map(m => m.split(":")[0]).join(", ")})`);
-        } else {
-          actions.push(`GAP: docs/adr/${file} missing fields: ${missing.map(m => m.split(":")[0]).join(", ")} — run with --fix to add`);
-        }
+        const newFm = `---\n${fm}\n${missing.join("\n")}\n---`;
+        writeFileSync(filePath, newFm + content.substring(fmEnd + 4));
+        actions.push(`UPDATED: docs/adr/${file} (added missing: ${missing.map(m => m.split(":")[0]).join(", ")})`);
       }
     }
   }

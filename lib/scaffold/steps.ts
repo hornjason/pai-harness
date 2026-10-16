@@ -1298,17 +1298,15 @@ function writeDirectoryStructure(
  * so no later scaffold ever corrected it. Running this step last is what makes
  * that skip safe — the content it preserves is now right from run 1.
  */
-export function generateCodeMapStep(root: string, actions: string[], opts?: { fix?: boolean; dryRun?: boolean }): void {
-  const fixMode = opts?.fix ?? !opts?.dryRun;
+export function generateCodeMapStep(root: string, actions: string[]): void {
+  // No dry-run branch. It reported `GAP: CODE-MAP.md missing` and nothing
+  // else — one of the four `existsSync` checks that stood in for twenty-five
+  // write steps and made audit report 0 changes on a tree `--fix` rewrote in
+  // 28 places. #398 replaced prediction with rehearsal: audit runs THIS,
+  // against a throwaway clone, and reports `GENERATED: CODE-MAP.md` because
+  // that is what happened. Reachable from one caller, which has always passed
+  // fix mode, so the branch was dead as well as wrong.
   const codeMapPath = join(root, "CODE-MAP.md");
-
-  // In dry-run/non-fix mode, only report gaps
-  if (!fixMode) {
-    if (!existsSync(codeMapPath)) {
-      actions.push("GAP: CODE-MAP.md missing — run with --fix to generate");
-    }
-    return;
-  }
 
   // Check staleness
   if (existsSync(codeMapPath)) {
@@ -2544,6 +2542,45 @@ function dirtyPaths(root: string, generated: string[]): string[] {
  * steps, it does not implement them. The caller decides what a refusal costs;
  * this only counts them, so it stays callable from a test.
  */
+/**
+ * The path a report line says scaffold WROTE, or null if it wrote nothing.
+ *
+ * One binding, because two callers now depend on the same judgement and a
+ * second copy would let them disagree about the same line. `postScaffoldCommit`
+ * uses it to decide what to stage — a verb it fails to recognise leaves a
+ * generated file uncommitted — and #398's audit/fix agreement check uses it to
+ * compare what audit NAMED against what `--fix` actually wrote.
+ *
+ * Deliberately excludes SKIP / GAP / WARN / AUDIT / UNCHANGED / REFUSED: all
+ * of them are lines about a write that did not happen. Getting that wrong in
+ * the permissive direction would make audit and fix "agree" by both
+ * over-reporting, which is agreement for the wrong reason — see
+ * `.claude/rules/checks-must-be-able-to-fail.md` on assertions that hold
+ * vacuously. `test/scaffold-audit-agreement.test.ts` pins both directions.
+ *
+ * **The verb list had drifted from the verbs scaffold emits, and #398's
+ * agreement check is what found it.** `REGENERATED`, `REFRESHED` and
+ * `REPAIRED` are all writes and none of them was here, so for as long as they
+ * have existed `postScaffoldCommit --commit` has quietly failed to stage
+ * `AGENTS.md` (REGENERATED, `write-steps.ts`), `.claude/rules/` (REFRESHED,
+ * `steps.ts:611`) and any seeded config (REPAIRED, `steps.ts:1181`). The
+ * comment above this list used to say missing a verb "silently leaves
+ * generated files uncommitted", which was exactly right and exactly what was
+ * happening.
+ *
+ * A prose warning did not keep the list current, so there is now a test that
+ * greps the sources for emitted write verbs and fails when one is not here.
+ */
+export const WRITE_VERBS: readonly string[] = [
+  "CREATED", "UPDATED", "REPLACED", "GENERATED", "REGENERATED",
+  "REFRESHED", "REPAIRED", "DEPLOYED", "SPLIT",
+];
+
+export function writtenPath(line: string): string | null {
+  const m = line.trim().match(new RegExp(`^(?:${WRITE_VERBS.join("|")}): ([^\\s(]+)`));
+  return m?.[1] ?? null;
+}
+
 export function reportScaffoldActions(actions: string[]): number {
   console.log("\n=== Scaffold Report ===");
   for (const action of actions) console.log(`  ${action}`);
@@ -2575,10 +2612,7 @@ export function postScaffoldCommit(
     // already existed, the real commit then had to be an amend.
     const generated = [...new Set(
       actions
-        // Verbs that mean "scaffold wrote this path". Deliberately excludes
-        // SKIP / GAP / WARN / AUDIT (no write happened) — and all of them,
-        // because missing one silently leaves generated files uncommitted.
-        .map(a => a.trim().match(/^(?:CREATED|UPDATED|REPLACED|GENERATED|DEPLOYED|SPLIT): ([^\s(]+)/)?.[1])
+        .map(writtenPath)
         .filter((p): p is string => Boolean(p))
         // .git/ contents are not tracked; hooks live there.
         // .git/ contents are never tracked. Directories are kept — scaffold

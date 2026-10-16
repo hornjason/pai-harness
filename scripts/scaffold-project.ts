@@ -7,39 +7,12 @@
  * Orchestrator-only: calls scanner, passes data to generators, writes output.
  * All logic lives in lib/scaffold/steps.ts and lib/validators/spec-validators.ts.
  */
-import { existsSync, statSync, writeFileSync } from "fs";
-import { join, basename } from "path";
+import { existsSync, statSync } from "fs";
+import { basename } from "path";
 import { detectProjectType } from "../lib/scanner";
-import {
-  safeDir,
-  safeWrite,
-  regenerateOwned,
-  generateAgentsMdContent,
-  refreshScopedRulesStep,
-  refreshAgentsMd,
-  updateSpecsTable,
-  injectEnvironmentSection,
-  generateConformityTest,
-  generateAgentBriefsStep,
-  generateOrAuditProjectHarness,
-  generateCodeMapStep,
-  copySpecTemplateIfEmpty,
-  createGitignore,
-  createTsconfig,
-  generateProjectState,
-  createClaudeMdBridge,
-  createCiWorkflows,
-  createGitHooks,
-  deployHooksToConsumers,
-  addPaiHarnessDevDep,
-  runAuditSpecsFix,
-  postScaffoldCommit,
-  reportScaffoldActions,
-} from "../lib/scaffold/steps";
-import {
-  addFrontmatterToSpecs, addFrontmatterToAdrs, detectOversizedSpecs,
-  checkGovernsAlignment, detectMisplacedSpecs, detectUnconvertedSpecs,
-} from "../lib/validators/spec-validators";
+import { reportScaffoldActions } from "../lib/scaffold/steps";
+import { runScaffoldWriteSteps } from "../lib/scaffold/write-steps";
+import { cloneForRehearsal, discardRehearsal, rehearsalNotice } from "../lib/scaffold/rehearsal";
 import type { ProjectType } from "../lib/generators/types";
 
 // ── CLI argument parsing ───────────────────────────────────────
@@ -82,115 +55,32 @@ const projectName = basename(projectPath);
 console.log(`Detected project type: ${projectType}`);
 console.log(`Project: ${projectName}`);
 console.log(`Path: ${projectPath}`);
-if (!fix) console.log(`Mode: audit (pass --fix to apply changes)`);
 console.log("---");
 
 if (fix) {
-  // Phase 0: Security and directory setup
-  createGitignore(projectPath, actions);
-  safeDir(join(projectPath, "specs"), "specs", actions);
-  safeDir(join(projectPath, "reference"), "reference", actions);
-  safeDir(join(projectPath, ".github"), ".github", actions);
-  safeDir(join(projectPath, ".github", "workflows"), ".github/workflows", actions);
-  safeDir(join(projectPath, "scripts"), "scripts", actions);
-  safeDir(join(projectPath, "docs"), "docs", actions);
-  safeDir(join(projectPath, "docs", "adr"), "docs/adr", actions);
-
-  const testDirName = existsSync(join(projectPath, "test")) ? "test" : "tests";
-  safeDir(join(projectPath, testDirName), testDirName, actions);
-
-  // Before Phase 0.5 and before createCiWorkflows on purpose (#72): both decide
-  // whether to emit a type check by looking for tsconfig.json on disk.
-  createTsconfig(projectPath, actions);
-
-  // Phase 0.5: Generate AGENTS.md
-  const agentsMd = generateAgentsMdContent(projectPath, projectType, actions);
-  writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
-  actions.push("REGENERATED: AGENTS.md");
-  refreshAgentsMd(projectPath, projectType, actions);
-  updateSpecsTable(join(projectPath, "AGENTS.md"), actions);
-
-  // Phase 0.6: Create copilot instructions
-  const copilotInstructions = `# Copilot Instructions\n\nRead [AGENTS.md](../AGENTS.md) for project context, key files, specs, and workflow.\n\nAll project knowledge lives in AGENTS.md. Start there.\n`;
-  safeWrite(join(projectPath, ".github", "copilot-instructions.md"), copilotInstructions, ".github/copilot-instructions.md", actions);
-
-  // Phase 0.7: regenerate the conformity test. Strategy passed, not looked up — the label carries the project's own test dir, which may not be `test/` (#208).
-  regenerateOwned(join(projectPath, testDirName, "scaffold-conformity.test.ts"), generateConformityTest(projectPath), `${testDirName}/scaffold-conformity.test.ts`, actions, "regenerate");
-}
-
-// Validators always run — only write when --fix is passed
-addFrontmatterToSpecs(join(projectPath, "specs"), actions, { fix });
-addFrontmatterToAdrs(join(projectPath, "docs", "adr"), actions, { fix });
-detectOversizedSpecs(join(projectPath, "specs"), actions);
-checkGovernsAlignment(join(projectPath, "specs"), actions);
-detectMisplacedSpecs(projectPath, actions);
-detectUnconvertedSpecs(join(projectPath, "specs"), actions);
-
-if (fix) {
-  // Phase 0.8: Workflow project setup
-  if (projectType === "workflow") {
-    const workflowDef = `---
-doc-type: spec
-testable: no
-governs: workflow-definition
----
-
-# Workflow Definition
-
-## Trigger
-
-When should this workflow run?
-
-## Inputs
-
-What inputs does this workflow require?
-
-## Process
-
-What steps does this workflow perform?
-
-## Output
-
-What does this workflow produce?
-`;
-    safeWrite(join(projectPath, "specs", "WORKFLOW-DEFINITION.md"), workflowDef, "specs/WORKFLOW-DEFINITION.md", actions);
-  }
-
-  // Phase 1.5: Harness config + briefs for ALL project types
-  generateOrAuditProjectHarness(projectPath, actions);
-  injectEnvironmentSection(projectPath, actions);
-  generateAgentBriefsStep(projectPath, actions);
-
-  // Phase 3: Final setup
-  copySpecTemplateIfEmpty(join(projectPath, "specs"), actions);
-  generateProjectState(projectPath, actions);
-  runAuditSpecsFix(projectPath, actions);
-  addPaiHarnessDevDep(projectPath, actions);
-  createClaudeMdBridge(projectPath, actions);
-  createCiWorkflows(projectPath, actions, { force });
-  createGitHooks(projectPath, actions);
-  deployHooksToConsumers(projectPath, actions);
-
-  // Phase 3.5: steps that DESCRIBE the project run last, so they describe the tree this run left (#123).
-  refreshScopedRulesStep(projectPath, projectType, actions);
-  if (projectType === "code") {
-    generateCodeMapStep(projectPath, actions);
-  }
-
-  postScaffoldCommit(projectPath, actions, { commit });
+  runScaffoldWriteSteps(projectPath, projectType, actions, { force, commit });
 } else {
-  // Dry-run: report gaps for items that --fix would generate
-  if (projectType === "code" && !existsSync(join(projectPath, "CODE-MAP.md"))) {
-    actions.push("GAP: CODE-MAP.md missing — run with --fix to generate");
+  // Audit does not PREDICT what --fix would do; it does it, against a clone,
+  // and reports what the real steps said (#398). The previous audit branch was
+  // four existsSync checks against twenty-five write steps and reported 0
+  // changes on a tree --fix rewrote in 28 places.
+  //
+  // A rehearsal that cannot be set up safely REFUSES rather than falling
+  // back to the old guesswork. An audit that reports nothing because it
+  // could not look is indistinguishable from an audit that found nothing,
+  // and that is the defect, not a lesser version of it.
+  let rehearsal;
+  try {
+    rehearsal = cloneForRehearsal(projectPath);
+  } catch (err) {
+    console.error(`ERROR: ${(err as Error).message}`);
+    process.exit(1);
   }
-  if (!existsSync(join(projectPath, ".claude", "rules", "docs-routing.md"))) {
-    actions.push("GAP: .claude/rules/docs-routing.md missing — run with --fix to generate");
-  }
-  if (!existsSync(join(projectPath, "AGENTS.md"))) {
-    actions.push("GAP: AGENTS.md missing — run with --fix to generate");
-  }
-  if (!existsSync(join(projectPath, "specs"))) {
-    actions.push("GAP: specs/ directory missing — run with --fix to create");
+  try {
+    console.log(rehearsalNotice(rehearsal));
+    runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true });
+  } finally {
+    discardRehearsal(rehearsal);
   }
 }
 
