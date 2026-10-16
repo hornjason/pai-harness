@@ -16,17 +16,37 @@
  */
 
 import { existsSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "fs";
-import { dirname, join } from "path";
+import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
+import { seedFromTemplate } from "../lib/success-doc";
 
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+/**
+ * A flag's value, refusing the next FLAG as a value.
+ *
+ * `--project-root --force` returned `"--force"` and the script then ENOENTed
+ * with a raw stack on `--force/SUCCESS.md` — in a file whose own comment
+ * says "Named rather than swallowed" about exactly this class of failure,
+ * one argv slot away.
+ */
 function arg(name: string): string | null {
   const i = process.argv.indexOf(`--${name}`);
-  return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : null;
+  if (i === -1 || i + 1 >= process.argv.length) return null;
+  const value = process.argv[i + 1];
+  if (value.startsWith("--")) {
+    console.error(`create-success: --${name} needs a value, but the next argument is ${value}.`);
+    process.exit(1);
+  }
+  return value;
 }
 
-const root = arg("project-root") ?? process.cwd();
+// `resolve`, so the path reported back is the one actually written. A
+// relative or `..`-bearing root is the user's to choose — this is a local
+// CLI and they can write anywhere they can write — but it must be VISIBLE,
+// and `join` normalising traversal silently is how a mistyped root lands
+// somewhere nobody notices.
+const root = resolve(arg("project-root") ?? process.cwd());
 const force = process.argv.includes("--force");
 const target = join(root, "SUCCESS.md");
 
@@ -68,12 +88,26 @@ if (!existsSync(templatePath)) {
   process.exit(1);
 }
 
-const owner = arg("owner") ?? process.env.USER ?? "TODO-OWNER";
+// `||`, not `??`. `??` guards null and undefined only, so `USER=""` — an
+// empty environment, a container, a cron job — produced a bare `owner:`.
+const owner = arg("owner") || process.env.USER || "TODO-OWNER";
+// The owner goes into YAML frontmatter verbatim, so a newline or a colon
+// lets it introduce keys: `--owner $'evil\nstatus: deprecated\ndoc-type: spec'`
+// wrote a duplicate `status` and an attacker-chosen `doc-type` into a file
+// other tooling parses. Refused rather than quoted — a SUCCESS.md owner with
+// a colon in it is a typo every time.
+if (/[\r\n:]/.test(owner)) {
+  console.error(
+    `create-success: --owner may not contain a newline or a colon (got ${JSON.stringify(owner)}).\n` +
+      `It is written into YAML frontmatter, where either one would introduce a new key.`,
+  );
+  process.exit(1);
+}
 const today = new Date().toISOString().slice(0, 10);
 
-const body = readFileSync(templatePath, "utf-8")
-  .replace("owner: TODO-OWNER", `owner: ${owner}`)
-  .replace("updated: TODO-DATE", `updated: ${today}`);
+// The SHARED substitution, so this and the scaffold's seed step cannot
+// produce different bytes for the same logical seed.
+const body = seedFromTemplate(readFileSync(templatePath, "utf-8"), owner, today);
 
 // `--force` means "restart THIS project's SUCCESS.md", never "write through
 // whatever this path points at". Unlinking first turns a symlink into an
@@ -97,7 +131,7 @@ try {
   process.exit(1);
 }
 
-console.log(`Created SUCCESS.md (from templates/SUCCESS-TEMPLATE.md)
+console.log(`Created ${target} (from templates/SUCCESS-TEMPLATE.md)
 
 It is a TEMPLATE and the conformity suite REFUSES it in this state, on purpose.
 Replace every line marked \`rungate:placeholder\`:

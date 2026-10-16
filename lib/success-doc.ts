@@ -39,7 +39,7 @@
  * UNMEASURED and a present-but-unfilled one produces a refusal.
  */
 
-import { existsSync, readFileSync } from "fs";
+import { existsSync, lstatSync, readFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -107,8 +107,26 @@ const FALSIFIABILITY = /^(?:\*\*How it fails:\*\*|Check:)\s*(.*)$/;
  */
 const STANDING_ROW = /^\|\s*(\d+)\s*(?:[—–-][^|]*)?\|/;
 
-/** Text that means the author stopped at the template. */
-const UNFILLED = /^(TODO\b|-+$|—$)/;
+/**
+ * Text that means the author stopped at the template.
+ *
+ * The first version was `/^(TODO\b|-+$|—$)/` — uppercase `TODO` only — and a
+ * review walked straight through it: `todo`, `TBD`, `FIXME`, `???`, `xxx`,
+ * `N/A` and a one-character `.` all scored zero violations as both the claim
+ * statement AND its `How it fails`. A detector narrower than what it detects,
+ * and the narrowing was a `[A-Z]`.
+ *
+ * The length floor catches the rest of the family without needing to
+ * enumerate it. Ten characters is below any real claim and above every
+ * placeholder anyone writes; a claim shorter than that is not a falsifiable
+ * statement whatever words are in it.
+ */
+const UNFILLED = /^(TODO|TBD|FIXME|XXX|N\/?A)\b|^(\?+|-+|—|\.+)$/i;
+const MIN_MEANINGFUL = 10;
+function unfilled(text: string): boolean {
+  const t = text.trim();
+  return t.length < MIN_MEANINGFUL || UNFILLED.test(t);
+}
 
 export interface SuccessClaim {
   number: number;
@@ -133,9 +151,15 @@ export function parseSuccessDoc(text: string): SuccessDoc {
   const lines = text.split("\n");
 
   let current: SuccessClaim | null = null;
+  let fenced = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
     if (line.includes(PLACEHOLDER_MARKER)) placeholderLines.push(i + 1);
+    if (fenced) continue;
 
     let heading: RegExpExecArray | null = null;
     for (const form of CLAIM_FORMS) {
@@ -153,10 +177,20 @@ export function parseSuccessDoc(text: string): SuccessDoc {
     // the template's own prose mentions the phrase above the first claim.
     // FIRST one wins, so a claim's refusal always quotes the line a reader
     // would look at rather than whichever duplicate came last.
+    //
+    // `current` is cleared at the next heading and the scan skips fenced
+    // regions, both for the same reason: without them the first matching
+    // line ANYWHERE below a claim satisfied it. A `Check:` six lines down
+    // under `## Appendix` counted, and so did one inside a ```markdown block
+    // — so a SUCCESS.md that documents its own format handed every claim
+    // below the example a falsifiability line for free.
     if (fails && current && current.howItFails === null) {
       current.howItFails = fails[1].trim();
       continue;
     }
+    // Any heading ends the previous claim's scope, so a falsifiability line
+    // under a later section cannot be borrowed by an earlier claim.
+    if (/^#{1,6}\s/.test(line)) current = null;
     const row = STANDING_ROW.exec(line.trim());
     if (row) standingRows.push(Number(row[1]));
   }
@@ -187,6 +221,40 @@ export function successViolations(text: string | null, template?: string | null)
         `building or which claims would prove it works. That is not a failure and it is not ` +
         `clean either — nothing here can be measured against a target that was never written ` +
         `down. Run \`bunx rungate create-success\` to seed one.`,
+    };
+  }
+
+  if (text === UNREADABLE) {
+    return {
+      violations: [
+        `SUCCESS.md exists but could not be read as a file — it may be a directory, a ` +
+          `device, or have permissions that deny reading. That is not the same as having ` +
+          `no SUCCESS.md, and it is not clean: nothing could be measured.`,
+      ],
+      unmeasured: null,
+    };
+  }
+
+  // The generator's seed, untouched, is UNMEASURED rather than a failure.
+  //
+  // The scaffold now seeds this file whether or not the project asked, so a
+  // consumer who re-scaffolds to take an unrelated update would otherwise go
+  // from a green suite to a hard FAIL over a document they never wrote, with
+  // no way back — deleting it is undone by the next re-scaffold.
+  //
+  // And it is the honest verdict: a pristine seed carries exactly as much
+  // information about this project as no file at all, which is the thing
+  // `null` already reports as unmeasured. The refusal is aimed at a document
+  // somebody STARTED and left half-written, because that is the state which
+  // reads as considered and is not. Any edit at all moves it into that set.
+  if (template && isPristineSeed(text, template)) {
+    return {
+      violations: [],
+      unmeasured:
+        `UNMEASURED: SUCCESS.md is the generator's template, unmodified, so this project ` +
+        `has not yet stated what it is building or which claims would prove it works. ` +
+        `Nothing here is failing — nothing has been claimed yet. Edit it and this check ` +
+        `starts measuring; every placeholder you leave behind then becomes a refusal.`,
     };
   }
 
@@ -226,7 +294,7 @@ export function successViolations(text: string | null, template?: string | null)
   }
 
   for (const claim of doc.claims) {
-    if (claim.statement === "" || UNFILLED.test(claim.statement)) {
+    if (unfilled(claim.statement)) {
       out.push(`SUCCESS.md claim ${claim.number} has no statement — it still reads "${claim.statement}".`);
     }
     if (claim.howItFails === null) {
@@ -234,7 +302,7 @@ export function successViolations(text: string | null, template?: string | null)
         `SUCCESS.md claim ${claim.number} has no "**How it fails:**" (or "Check:") line. A ` +
           `claim nothing can falsify is a slogan — make it measurable or delete it.`,
       );
-    } else if (claim.howItFails === "" || UNFILLED.test(claim.howItFails)) {
+    } else if (unfilled(claim.howItFails)) {
       out.push(
         `SUCCESS.md claim ${claim.number}'s "How it fails" is still the template's placeholder ` +
           `("${claim.howItFails}"), so nothing states what would prove the claim false.`,
@@ -323,7 +391,55 @@ export function readSuccessTemplate(): string | null {
 }
 
 /** Read the project's SUCCESS.md, or null when there is none. */
+export const UNREADABLE = "\u0000rungate:unreadable";
+
 export function readSuccessDoc(root: string): string | null {
   const p = join(root, "SUCCESS.md");
-  return existsSync(p) ? readFileSync(p, "utf-8") : null;
+  // `existsSync` is true for a DIRECTORY, and `readFileSync` then throws
+  // EISDIR. The throw escaped `seedSuccessDoc` and aborted the whole scaffold
+  // run mid-way — after some files were written and before others — which is
+  // a worse outcome than any verdict this function can return.
+  //
+  // It returns a distinct UNREADABLE rather than `null`, because "the file is
+  // there and I could not read it" and "there is no file" are different
+  // answers and collapsing them is the SKIP-is-indistinguishable-from-success
+  // shape. UNREADABLE refuses; absent is unmeasured.
+  let stat;
+  try {
+    stat = lstatSync(p);
+  } catch {
+    return null;
+  }
+  if (!stat.isFile()) return UNREADABLE;
+  try {
+    return readFileSync(p, "utf-8");
+  } catch {
+    return UNREADABLE;
+  }
+}
+
+/**
+ * Fill the template's owner and date. ONE substitution, two callers.
+ *
+ * `create-success` did this and `seedSuccessDoc` wrote the template raw, so
+ * the same logical seed produced different bytes depending on which path
+ * created it — a scaffolded SUCCESS.md kept `owner: TODO-OWNER` and
+ * `updated: TODO-DATE` forever, and nothing checked frontmatter.
+ */
+export function seedFromTemplate(template: string, owner: string, date: string): string {
+  return template
+    .replace("owner: TODO-OWNER", `owner: ${owner}`)
+    .replace("updated: TODO-DATE", `updated: ${date}`);
+}
+
+/**
+ * Is this document the generator's seed, untouched?
+ *
+ * Owner and date are normalised out, because those are the two things the
+ * generator itself fills in — a seed with them substituted is still a seed.
+ */
+export function isPristineSeed(text: string, template: string): boolean {
+  const norm = (t: string) =>
+    t.replace(/^owner:.*$/m, "owner:").replace(/^updated:.*$/m, "updated:").trim();
+  return norm(text) === norm(template);
 }

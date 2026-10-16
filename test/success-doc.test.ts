@@ -1,5 +1,5 @@
 /**
- * `SUCCESS.md` is seeded, and an unfilled seed is REFUSED (#485).
+ * `SUCCESS.md` is seeded, and a half-written one is REFUSED (#485).
  *
  * Covers SC-1706, SC-1707, SC-1708, SC-1709, SC-1710 (HARNESS-STANDARD.md).
  *
@@ -13,13 +13,18 @@
  *
  * ## The case a file-exists check misses
  *
- * A generator alone makes it worse. An unfilled template is indistinguishable
- * from a considered one to everything except a reader — the same argument
- * `.claude/rules/checks-must-be-able-to-fail.md` makes about guards, applied
- * to a document. So the case written first here is #485's second one: a
- * project whose `SUCCESS.md` is the generator's own output, unmodified. A
- * check that only asks whether the file exists waves through every project
- * that ran `create-success` and stopped.
+ * A generator alone makes it worse. A half-written template is
+ * indistinguishable from a considered one to everything except a reader —
+ * the same argument `.claude/rules/checks-must-be-able-to-fail.md` makes
+ * about guards, applied to a document. A check that only asks whether the
+ * file exists waves through every project that ran `create-success` and
+ * stopped.
+ *
+ * Where this departs from #485, on the record: the UNTOUCHED seed reports
+ * UNMEASURED rather than FAIL, because it carries exactly as much
+ * information as no file at all and the scaffold now plants it whether the
+ * project asked or not. A finding is still recorded, so it is never clean.
+ * The refusal lands one state on — see `case 2` and `case 2b`.
  *
  * ## Why the conformity cases are SPAWNED
  *
@@ -77,7 +82,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
-import { PLACEHOLDER_MARKER, parseSuccessDoc, successViolations, templateResidue } from "../lib/success-doc";
+import { PLACEHOLDER_MARKER, UNREADABLE, parseSuccessDoc, readSuccessDoc, successViolations, templateResidue } from "../lib/success-doc";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { seedSuccessDoc } from "../lib/scaffold/steps";
 
@@ -187,13 +192,60 @@ describe("SC-1707/SC-1708: the check refuses the four states #485 names", () => 
     );
   });
 
-  test("case 2: the generator's output UNMODIFIED is refused", () => {
-    // #485: "the case a naive file-exists check misses". Written first on
-    // purpose — a check that only tests existence passes over every project
-    // that ran the generator and stopped.
+  test("case 2: the generator's output UNMODIFIED is UNMEASURED, never clean", () => {
+    // #485 asks for a refusal here, and this reports UNMEASURED instead.
+    // **A deliberate deviation, so the reasoning is on the record.**
+    //
+    // What the issue is protecting against is an unfilled template passing
+    // as a considered one — "the case a naive file-exists check misses". A
+    // naive check reports CLEAN. This reports UNMEASURED and records a
+    // finding, so the defect the issue names is still caught; what differs
+    // is only whether CI goes red.
+    //
+    // And UNMEASURED is the honest answer. A pristine seed carries exactly
+    // as much information about the project as no file at all, which is the
+    // state `null` already reports as unmeasured — `.claude/rules/
+    // config-access.md`: "0, {}, null and SKIP are indistinguishable from
+    // success; UNMEASURED is not."
+    //
+    // The practical half: the scaffold seeds this file whether the project
+    // asked or not, so a FAIL here turns an existing consumer's suite red on
+    // a re-scaffold they ran for an unrelated reason, with no way back —
+    // deleting the file is undone by the next run. It would also be a new
+    // check shipping straight to FAIL, which the WARN-then-data-then-FAIL
+    // ladder in the harness automation matrix spec (rule 9) says not to do.
+    //
+    // That spec is named in words rather than by filename ON PURPOSE. The
+    // filename alone would make DRIFT-2 count this file as a test covering
+    // it — `allContent.includes(name)` is a substring match — and this
+    // comment tests nothing about that spec. Citing is not covering; see
+    // `.claude/rules/claiming-sc-coverage.md`, which records the same trap
+    // catching itself three times.
+    //
+    // The refusal is aimed one state further on, at a document somebody
+    // STARTED and left half-written. That is the one that reads as
+    // considered and is not, and the next case is it.
     const r = runSuccess1(project({ "SUCCESS.md": readFileSync(TEMPLATE, "utf-8") }));
     expect(r.ran).toBeGreaterThan(0);
-    expect(r.failures, "an unfilled template was accepted as a considered one").toBe(1);
+    expect(r.failures, "a pristine seed failed a project that never asked for it").toBe(0);
+    expect(r.findings.length, "a pristine seed passed silently, which is the actual defect")
+      .toBe(1);
+    expect(r.findings[0]!.message).toContain("UNMEASURED");
+  });
+
+  test("case 2b: ONE edit to the seed turns it into a refusal", () => {
+    // The boundary, and the case that carries #485's intent. A document
+    // somebody started and abandoned is indistinguishable from a considered
+    // one to everything except a reader, and it is the state the issue was
+    // filed about. Any edit at all moves the document out of "untouched
+    // seed" and into "half-written", where every surviving placeholder
+    // becomes a violation.
+    const seed = readFileSync(TEMPLATE, "utf-8");
+    const touched = seed.replace("### Claim 1 — TODO", "### Claim 1 — the thing works");
+    expect(touched, "the fixture did not actually change anything").not.toBe(seed);
+    const r = runSuccess1(project({ "SUCCESS.md": touched }));
+    expect(r.failures, "a half-written SUCCESS.md was accepted").toBe(1);
+    expect(r.findings.length, "the refusal did not say what was wrong").toBeGreaterThan(1);
   });
 
   test("case 3: claims with no falsifiability line are refused, by number", () => {
@@ -291,15 +343,24 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
 
   test("the numbered form and the heading form are read the same way", () => {
     const heading = successViolations(FILLED);
-    const numbered = successViolations(
-      FILLED
-        .replace(
-          "### Claim 1 — a spec with no testable criteria is rejected, not silently skipped",
-          "1. **a spec with no testable criteria is rejected, not silently skipped**",
-        )
-        .replace(/\*\*How it fails:\*\*/, "   Check:"),
-    );
+    const numberedDoc = FILLED
+      .replace(
+        "### Claim 1 — a spec with no testable criteria is rejected, not silently skipped",
+        "1. **a spec with no testable criteria is rejected, not silently skipped**",
+      )
+      .replace(/\*\*How it fails:\*\*/, "   Check:");
+    const numbered = successViolations(numberedDoc);
     expect(numbered.violations, numbered.violations.join("\n")).toEqual([]);
+    // Compare the PARSED STRUCTURES, not two violation lists. Both lists are
+    // empty here, so `toEqual` between them held vacuously — the third shape
+    // in `.claude/rules/checks-must-be-able-to-fail.md`, in a test whose own
+    // name claims to distinguish the two forms. A change that made the
+    // numbered form parse into something different but also clean would have
+    // left it green.
+    const h = parseSuccessDoc(FILLED).claims;
+    const n = parseSuccessDoc(numberedDoc).claims;
+    expect(n, "the two claim forms do not parse to the same structure").toEqual(h);
+    expect(h.length, "the comparison above is over an empty list").toBeGreaterThan(0);
     expect(numbered.violations).toEqual(heading.violations);
   });
 
@@ -376,9 +437,19 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
     // sibling reproduces exactly what a consumer with a bad `files[]` sees.
     const fakePkg = join(scratch, `fakepkg${seq++}`);
     mkdirSync(join(fakePkg, "scripts"), { recursive: true });
+    mkdirSync(join(fakePkg, "lib"), { recursive: true });
     writeFileSync(
       join(fakePkg, "scripts", "create-success.ts"),
       readFileSync(CREATE_SUCCESS, "utf-8"),
+    );
+    // The script imports `../lib/success-doc`, so the fake package needs a
+    // resolvable one or it dies on module resolution — which exits non-zero
+    // and reads exactly like the refusal under test. Re-exported from the
+    // real module rather than stubbed, so this cannot pass by accident if
+    // the import list grows.
+    writeFileSync(
+      join(fakePkg, "lib", "success-doc.ts"),
+      `export * from ${JSON.stringify(join(ROOT, "lib", "success-doc.ts"))};\n`,
     );
     const root = project({});
     const r = spawnSync("bun", [join(fakePkg, "scripts", "create-success.ts"), "--project-root", root], {
@@ -386,6 +457,8 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
       encoding: "utf-8",
     });
     expect(r.status).toBe(1);
+    expect(r.stderr, "the script died on module resolution, not on the missing template")
+      .not.toContain("Cannot find module");
     expect(r.stderr, "the failure does not name the missing file").toContain(
       "templates/SUCCESS-TEMPLATE.md",
     );
@@ -514,5 +587,191 @@ describe("#502 review: the marker check and the writers were both too narrow", (
     expect(existsSync(join(outside, "escaped.md")), "the scaffold wrote outside the project")
       .toBe(false);
     rmSync(outside, { recursive: true, force: true });
+  });
+});
+
+/**
+ * The rest of the security review of this PR (#502 review, §3 and §5-§9).
+ *
+ * Each refusal gets its OWN fixture. Hanging three new rules off one existing
+ * document would be three deciders and one input — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and the review said so
+ * before I wrote them.
+ */
+describe("#502 review: the rest", () => {
+  const claim = (v: string) =>
+    `### Claim 1 — ${v}\n**How it fails:** ${v}\n\n| Claim | Standing |\n|---|---|\n| 1 | untested |\n`;
+
+  test("§5: `UNFILLED` recognised only UPPERCASE TODO", () => {
+    // A detector narrower than what it detects, where the narrowing was a
+    // `[A-Z]`. Every one of these scored zero violations as BOTH the claim
+    // statement and its How-it-fails.
+    for (const v of ["todo", "TBD", "FIXME", "???", "xxx", "N/A", "tbd later", "."]) {
+      expect(successViolations(claim(v)).violations.length, `"${v}" passed as a real claim`)
+        .toBeGreaterThan(0);
+    }
+  });
+
+  test("§5: the WORD list, on an input only it reaches", () => {
+    // Every fixture in the case above is under ten characters, so the length
+    // floor caught them all and narrowing the word list back to uppercase
+    // `TODO` was 0 red — two deciders agreeing, with the floor holding the
+    // word list up. This placeholder is long enough to clear the floor, so
+    // only the word list can refuse it.
+    // Lowercase and a different word, deliberately: an uppercase `TODO` of
+    // any length is caught by the OLD regex too, so a fixture using one
+    // would measure nothing. This is reachable only by the widened list.
+    const long = "tbd — write the real claim here once we have decided what it is";
+    expect(long.length, "the fixture is short enough for the floor to catch").toBeGreaterThan(20);
+    expect(successViolations(claim(long)).violations.length, "a long lowercase placeholder passed")
+      .toBeGreaterThan(0);
+  });
+
+  test("§5: the LENGTH floor, on an input only it reaches", () => {
+    // And the floor's own: a short statement that is not a placeholder word.
+    // "fast" is not in any list and never will be; it is also not a
+    // falsifiable claim.
+    expect(successViolations(claim("fast")).violations.length, "a four-letter claim passed")
+      .toBeGreaterThan(0);
+  });
+
+  test("§5: the control — a real claim of ordinary length passes", () => {
+    // The length floor is the half most likely to over-refuse, so the
+    // boundary is asserted rather than assumed.
+    expect(successViolations(claim("the parser rejects an empty spec")).violations).toEqual([]);
+  });
+
+  test("§6: a falsifiability line cannot be borrowed from a later section", () => {
+    // The scan had no section awareness, so the first `Check:` ANYWHERE
+    // below a claim satisfied it — here one six lines down under a different
+    // heading.
+    const doc = [
+      "### Claim 1 — we are the fastest renderer available",
+      "",
+      "## Appendix",
+      "",
+      "Check: the dashboard, probably.",
+      "",
+      "| Claim | Standing |", "|---|---|", "| 1 | untested |",
+    ].join("\n");
+    const v = successViolations(doc);
+    expect(v.violations.join("\n"), "a Check: under another heading was borrowed")
+      .toContain("How it fails");
+  });
+
+  test("§6: a fenced example does not hand out falsifiability lines", () => {
+    // The sharper half: a SUCCESS.md that documents its own format gave
+    // every claim below the example a free pass.
+    const doc = [
+      "### Claim 1 — we are the fastest renderer available",
+      "",
+      "```markdown",
+      "**How it fails:** this is an EXAMPLE of the format, not a claim.",
+      "```",
+      "",
+      "| Claim | Standing |", "|---|---|", "| 1 | untested |",
+    ].join("\n");
+    expect(successViolations(doc).violations.join("\n"), "a fenced example satisfied a claim")
+      .toContain("How it fails");
+  });
+
+  test("§7: a directory at SUCCESS.md refuses instead of throwing", () => {
+    // `existsSync` is true for a directory and `readFileSync` then throws
+    // EISDIR. The throw escaped the scaffold step and aborted the whole run
+    // mid-way, after some files were written and before others — a worse
+    // outcome than any verdict. UNREADABLE is distinct from absent: "it is
+    // there and I could not read it" refuses; "there is no file" is
+    // unmeasured.
+    const root = project({});
+    mkdirSync(join(root, "SUCCESS.md"), { recursive: true });
+    expect(readSuccessDoc(root), "a directory read as an absent file").toBe(UNREADABLE);
+    const v = successViolations(readSuccessDoc(root));
+    expect(v.violations.length, "an unreadable SUCCESS.md passed").toBe(1);
+    expect(v.unmeasured, "unreadable was collapsed into unmeasured").toBeNull();
+
+    const actions: string[] = [];
+    expect(() => seedSuccessDoc(root, actions), "the scaffold run aborted").not.toThrow();
+    expect(actions.join("\n")).toContain("not a regular file");
+  });
+
+  test("§7: the non-file check is there, and why a behavioural case cannot prove it", () => {
+    // Removing `isFile()` is 0 red, and that is honest rather than a gap in
+    // the fixtures: for a DIRECTORY the `readFileSync` below it throws
+    // EISDIR and the catch returns the same UNREADABLE, so the two are
+    // behaviourally one decider on every input this suite can build.
+    //
+    // They are not redundant. `readFileSync` on a FIFO BLOCKS waiting for a
+    // writer rather than throwing, so the catch never runs and the scaffold
+    // hangs instead of refusing — and a test that hangs is a test that
+    // cannot report. Scheduling that reliably is not something this suite
+    // can do, so the check is asserted in the source and the limitation is
+    // written down rather than papered over with a case that passes for an
+    // unrelated reason.
+    const src = readFileSync(join(ROOT, "lib", "success-doc.ts"), "utf-8");
+    expect(src, "the non-file guard is gone; a FIFO would block the read")
+      .toContain("if (!stat.isFile()) return UNREADABLE;");
+  });
+
+  test("§3: the two seed writers produce the same bytes", () => {
+    // `create-success` substituted owner and date; the scaffold wrote the
+    // template raw, so a scaffolded SUCCESS.md kept `owner: TODO-OWNER`
+    // forever and nothing checked frontmatter. One substitution, two
+    // callers — asserted by running BOTH rather than by reading the code.
+    const viaScaffold = project({});
+    seedSuccessDoc(viaScaffold, []);
+    const scaffolded = readFileSync(join(viaScaffold, "SUCCESS.md"), "utf-8");
+
+    const viaCli = project({});
+    const owner = process.env.USER || "TODO-OWNER";
+    spawnSync("bun", [CREATE_SUCCESS, "--project-root", viaCli, "--owner", owner], { cwd: ROOT });
+    const generated = readFileSync(join(viaCli, "SUCCESS.md"), "utf-8");
+
+    expect(scaffolded, "the two writers disagree about the same seed").toBe(generated);
+    expect(scaffolded, "the scaffold left the template's owner placeholder")
+      .not.toContain("TODO-OWNER");
+    expect(scaffolded).not.toContain("TODO-DATE");
+  });
+
+  test("§8: a flag is not accepted as a flag's value", () => {
+    // `--project-root --force` returned "--force" and the script ENOENTed
+    // with a raw stack on `--force/SUCCESS.md` — in a file whose own comment
+    // says "Named rather than swallowed" about this exact class of failure.
+    const r = spawnSync("bun", [CREATE_SUCCESS, "--project-root", "--force"], {
+      cwd: ROOT, encoding: "utf-8",
+    });
+    expect(r.status).toBe(1);
+    expect(r.stderr, "the raw ENOENT stack is still the error").toContain("needs a value");
+    expect(r.stderr).not.toContain("ENOENT");
+  });
+
+  test("§9: --owner cannot introduce YAML keys", () => {
+    // Written verbatim into frontmatter, so a newline let it add a duplicate
+    // `status` and an attacker-chosen `doc-type` to a file other tooling
+    // parses.
+    const root = project({});
+    const r = spawnSync(
+      "bun",
+      [CREATE_SUCCESS, "--project-root", root, "--owner", "evil\nstatus: deprecated"],
+      { cwd: ROOT, encoding: "utf-8" },
+    );
+    expect(r.status, "a newline in --owner was accepted").toBe(1);
+    expect(existsSync(join(root, "SUCCESS.md")), "a refused run still wrote the file").toBe(false);
+
+    const colon = spawnSync("bun", [CREATE_SUCCESS, "--project-root", root, "--owner", "a: b"], {
+      cwd: ROOT, encoding: "utf-8",
+    });
+    expect(colon.status, "a colon in --owner was accepted").toBe(1);
+  });
+
+  test("§9: an EMPTY USER does not produce a bare `owner:`", () => {
+    // `??` guards null and undefined only, so `USER=""` — a container, a
+    // cron job — wrote `owner:` with nothing after it.
+    const root = project({});
+    spawnSync("bun", [CREATE_SUCCESS, "--project-root", root], {
+      cwd: ROOT, encoding: "utf-8", env: { ...process.env, USER: "" },
+    });
+    const body = readFileSync(join(root, "SUCCESS.md"), "utf-8");
+    expect(body, "an empty USER left the owner key empty").not.toMatch(/^owner:\s*$/m);
+    expect(body).toContain("owner: TODO-OWNER");
   });
 });

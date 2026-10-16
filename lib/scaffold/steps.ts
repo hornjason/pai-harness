@@ -31,7 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
-import { readSuccessDoc, successViolations } from "../success-doc";
+import { readSuccessDoc, seedFromTemplate, successViolations } from "../success-doc";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
   OWNED_FILES,
@@ -155,6 +155,18 @@ export function regenerateOwned(
       `${SCAFFOLD_REFUSE}: ${label} is a symlink, and the generator does not write through ` +
         `one — the target may be outside this project. Replace it with a real file, or ` +
         `delete it and re-run.`,
+    );
+    return;
+  }
+  if (link && !link.isFile()) {
+    // A directory (or a device, or a socket) where an owned file belongs.
+    // `readFileSync` throws EISDIR, and that throw ESCAPES the step and
+    // aborts the whole scaffold run mid-way — after some files are written
+    // and before others. A refusal that names the path leaves the tree in a
+    // state someone can reason about; a half-finished run does not.
+    actions.push(
+      `${SCAFFOLD_REFUSE}: ${label} exists but is not a regular file, so the generator ` +
+        `will not read or replace it. Remove it and re-run.`,
     );
     return;
   }
@@ -1835,7 +1847,13 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
     return;
   }
 
-  safeWrite(join(root, "SUCCESS.md"), readFileSync(templatePath, "utf-8"), "SUCCESS.md", actions);
+  const today = new Date().toISOString().slice(0, 10);
+  const owner = process.env.USER || "TODO-OWNER";
+  // The SHARED substitution. Writing the template raw here while
+  // `create-success` substituted meant one seed with two possible byte
+  // sequences, and a scaffolded SUCCESS.md kept `owner: TODO-OWNER` forever.
+  const seeded = seedFromTemplate(readFileSync(templatePath, "utf-8"), owner, today);
+  safeWrite(join(root, "SUCCESS.md"), seeded, "SUCCESS.md", actions);
 
   const verdict = successViolations(readSuccessDoc(root), readFileSync(templatePath, "utf-8"));
   if (verdict.unmeasured) {
@@ -1844,9 +1862,12 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
   }
   if (verdict.violations.length > 0) {
     actions.push(
+      // NOT "run create-success" — by the time anyone reads this the file is
+      // already there, so that command refuses and the advice is a dead end.
       `WARN: SUCCESS.md is not filled in — ${verdict.violations.length} item(s). ` +
-        `The conformity suite REFUSES it in this state, deliberately. Fix with ` +
-        `\`bunx rungate create-success\` and then edit it:`,
+        `The conformity suite REFUSES it in this state, deliberately. Edit ` +
+        `${join(root, "SUCCESS.md")} (or re-seed it with ` +
+        `\`bunx rungate create-success --force\`):`,
     );
     for (const v of verdict.violations) actions.push(`  - ${v}`);
   }
