@@ -31,7 +31,13 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
-import { readSuccessDoc, seedFromTemplate, successViolations } from "../success-doc";
+import {
+  readSuccessDoc,
+  readSuccessTemplate,
+  seedFromTemplate,
+  successViolations,
+  TEMPLATE_MISSING,
+} from "../success-doc";
 import { TS_SOURCE_DIRS, typeScriptSourceDirs, typecheckDecision } from "../typescript-project";
 import {
   OWNED_FILES,
@@ -1834,8 +1840,12 @@ export function generateProjectState(root: string, actions: string[]): void {
  * quieter than it found it.
  */
 export function seedSuccessDoc(root: string, actions: string[]): void {
-  const templatePath = join(dirname(dirname(__dirname)), "templates", "SUCCESS-TEMPLATE.md");
-  if (!existsSync(templatePath)) {
+  // `readSuccessTemplate()` rather than a fourth expression resolving the
+  // same path. There were three — here, `lib/success-doc.ts` and
+  // `scripts/create-success.ts` — agreeing today and with nothing making them
+  // agree tomorrow.
+  const template = readSuccessTemplate();
+  if (template === TEMPLATE_MISSING) {
     // Named, not swallowed. #484 was a documented command that ENOENTed for
     // every consumer because `files[]` omitted the directory it read from,
     // and the symptom was a check that reported 21 pass over a library that
@@ -1852,10 +1862,10 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
   // The SHARED substitution. Writing the template raw here while
   // `create-success` substituted meant one seed with two possible byte
   // sequences, and a scaffolded SUCCESS.md kept `owner: TODO-OWNER` forever.
-  const seeded = seedFromTemplate(readFileSync(templatePath, "utf-8"), owner, today);
+  const seeded = seedFromTemplate(template, owner, today);
   safeWrite(join(root, "SUCCESS.md"), seeded, "SUCCESS.md", actions);
 
-  const verdict = successViolations(readSuccessDoc(root), readFileSync(templatePath, "utf-8"));
+  const verdict = successViolations(readSuccessDoc(root), template);
   if (verdict.unmeasured) {
     actions.push(`WARN: ${verdict.unmeasured}`);
     return;

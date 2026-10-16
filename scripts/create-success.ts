@@ -61,10 +61,28 @@ const target = join(root, "SUCCESS.md");
 //
 // `lstatSync` describes the LINK, so both kinds count as "already there".
 let present = true;
+let stat: ReturnType<typeof lstatSync> | null = null;
 try {
-  lstatSync(target);
+  stat = lstatSync(target);
 } catch {
   present = false;
+}
+
+// A DIRECTORY at `SUCCESS.md` is neither "replace it" nor "absent". Without
+// this, `--force` reached `unlinkSync` on a directory and the user got a raw
+// stack trace out of `scripts/create-success.ts:82` — the right exit code
+// with none of the information. `--force` means "restart this project's
+// SUCCESS.md", and there is no reading of that which includes removing a
+// directory tree, so it refuses rather than guessing.
+if (present && stat && !stat.isFile() && !stat.isSymbolicLink()) {
+  console.error(
+    `create-success: ${target} is not a regular file (it is a ${
+      stat.isDirectory() ? "directory" : "special file"
+    }).\n` +
+      `Neither --force nor a plain run will remove it — move or delete it yourself if you ` +
+      `meant that, so the removal is something you did rather than something this did.`,
+  );
+  process.exit(1);
 }
 
 if (present && !force) {

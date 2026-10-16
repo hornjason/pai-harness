@@ -82,7 +82,16 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
-import { PLACEHOLDER_MARKER, UNREADABLE, parseSuccessDoc, readSuccessDoc, successViolations, templateResidue } from "../lib/success-doc";
+import {
+  PLACEHOLDER_MARKER,
+  TEMPLATE_MISSING,
+  UNREADABLE,
+  parseSuccessDoc,
+  readSuccessDoc,
+  readSuccessTemplate,
+  successViolations,
+  templateResidue,
+} from "../lib/success-doc";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { seedSuccessDoc } from "../lib/scaffold/steps";
 
@@ -97,6 +106,13 @@ afterAll(() => { rmSync(scratch, { recursive: true, force: true }); });
 
 let seq = 0;
 /** A project tree described as `relative path -> contents`. */
+/**
+ * Spawn `create-success`. ONE definition: three describes had declared their
+ * own identical copy, and the fourth was about to.
+ */
+const run = (args: string[], cwd = ROOT) =>
+  spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8" });
+
 function project(files: Record<string, string>): string {
   const root = join(scratch, `p${seq++}`);
   mkdirSync(root, { recursive: true });
@@ -396,9 +412,6 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
 // ── The generator ───────────────────────────────────────────────────────────
 
 describe("SC-1710: `create-success` seeds the structure and refuses to overwrite", () => {
-  const run = (args: string[], cwd = ROOT) =>
-    spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd, encoding: "utf-8" });
-
   test("it writes SUCCESS.md from the template and fills in owner and date", () => {
     const root = project({});
     const r = run(["--project-root", root, "--owner", "a-person"]);
@@ -473,9 +486,6 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
  * narrower than the thing it guards.
  */
 describe("#502 review: the marker check and the writers were both too narrow", () => {
-  const run = (args: string[]) =>
-    spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd: ROOT, encoding: "utf-8" });
-
   test("F1: deleting the markers is not the same as filling the document in", () => {
     // The review found this by reading what `create-success` PRINTS: "Replace
     // every line marked `rungate:placeholder`". A user who does exactly that,
@@ -503,8 +513,12 @@ describe("#502 review: the marker check and the writers were both too narrow", (
   test("F1: the residue check does NOT fire on the one real document", () => {
     // The control, and the reason the check excludes structural lines. A
     // document legitimately shares headings, table rows and frontmatter keys
-    // with the template; rungate's own SUCCESS.md shares exactly two lines,
-    // `doc-type: reference` and `status: active`, both frontmatter.
+    // with the template. rungate's own SUCCESS.md shares exactly two lines
+    // of RAW text with it, `doc-type: reference` and `status: active`, and
+    // both are frontmatter — so `templateResidue` returns an empty list, not
+    // those two. The distinction matters because the empty list is what this
+    // asserts: sec-485 pointed out that describing the pre-filter overlap
+    // reads as though two lines survive the filter.
     const template = readFileSync(TEMPLATE, "utf-8");
     const real = readFileSync(join(ROOT, "SUCCESS.md"), "utf-8");
     expect(templateResidue(real, template), "the real document was called unwritten").toEqual([]);
@@ -565,10 +579,24 @@ describe("#502 review: the marker check and the writers were both too narrow", (
     // honest behavioural case for it — saying that plainly beats a test that
     // passes for an unrelated reason. What is asserted is that the exclusive
     // flag is still there and that nothing writes the file unguarded.
+    //
+    // The flag and the call are asserted in ONE statement, not as two facts
+    // about one file. sec-485 built the mutant that proves why: move the
+    // literal into a comment and leave the write bare, and a file-level
+    // `toContain` plus a `writeFileSync(` count both still pass over
+    // `writeFileSync(target, body)`. That is #235's lesson verbatim — a
+    // source-text assertion cannot notice it has stopped describing the code.
     const src = readFileSync(CREATE_SUCCESS, "utf-8");
-    expect(src, "the exclusive write flag is gone").toContain('{ flag: "wx" }');
-    expect(src.match(/writeFileSync\(/g) ?? [], "a second, unguarded write was added")
-      .toHaveLength(1);
+    expect(src, "the exclusive flag is no longer on the write itself")
+      .toMatch(/writeFileSync\(\s*target,\s*body,\s*\{\s*flag:\s*"wx"\s*\}\s*\)/);
+    // Widened past `writeFileSync` because the stated job is "nothing writes
+    // this file unguarded", and `appendFileSync`, `Bun.write` and
+    // `createWriteStream` all write a file while leaving a
+    // `writeFileSync`-only count at exactly 1.
+    expect(
+      src.match(/\b(?:writeFileSync|appendFileSync|createWriteStream|Bun\.write)\s*\(/g) ?? [],
+      "a second, unguarded write was added",
+    ).toHaveLength(1);
   });
 
   test("F2: the scaffold's owned-file writer refuses a symlink too", () => {
@@ -773,5 +801,125 @@ describe("#502 review: the rest", () => {
     const body = readFileSync(join(root, "SUCCESS.md"), "utf-8");
     expect(body, "an empty USER left the owner key empty").not.toMatch(/^owner:\s*$/m);
     expect(body).toContain("owner: TODO-OWNER");
+  });
+});
+
+/**
+ * Covers SC-1706, SC-1710 (HARNESS-STANDARD.md).
+ *
+ * sec-485's re-review of `ac4b8d54`. F1 and F2 were confirmed fixed; these
+ * are the findings the FIX introduced or left behind.
+ *
+ * The one that mattered is N1, and it is worth stating plainly because the
+ * shape is this repo's most common defect: the residue check — the half of
+ * the validator that catches a document which deleted the placeholder
+ * markers and kept the template's prose — was guarded by `if (template)`,
+ * and `readSuccessTemplate()` returned `null` when the template was not
+ * installed. Measured on sec-485's own fixture: **1 violation with the
+ * template, 0 without, `unmeasured` still null in both.** An installation
+ * missing `templates/` reverted to the pre-fix behaviour and reported clean.
+ *
+ * `templates/` is in `files[]` today, so this was latent. #484 is the reason
+ * that is not a defence: `config/`, `templates/` and `specs/SPEC-TEMPLATE.md`
+ * were ALL missing from `files[]` through a release cut whose entire purpose
+ * was fixing `files[]`, and the first external consumer reported 21 pass over
+ * a library that could not load its own registry.
+ */
+describe("#502 re-review (sec-485)", () => {
+  /** sec-485's fixture: do exactly what `create-success` instructs, no more. */
+  function followedTheInstructions(template: string): string {
+    return template
+      .split("\n")
+      .filter(l => !l.includes(PLACEHOLDER_MARKER))
+      .join("\n")
+      .replace(/^### Claim (\d+) — TODO$/gm, "### Claim $1 — the scanner names every file it could not read")
+      .replace(/^\*\*How it fails:\*\*.*$/gm, "**How it fails:** an unreadable file is counted as clean")
+      .replace(/^owner: TODO-OWNER$/m, "owner: jhorn")
+      .replace(/^updated: TODO-DATE$/m, "updated: 2026-10-16");
+  }
+
+  test("N1: an installation with no template REFUSES rather than reporting clean", () => {
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const doc = followedTheInstructions(template);
+
+    // The control. Without this the case below could pass over a document
+    // that has nothing wrong with it, which is the vacuous shape.
+    const withTemplate = successViolations(doc, template);
+    expect(withTemplate.violations, "the fixture stopped being a residue case")
+      .toHaveLength(1);
+    expect(withTemplate.violations[0]).toContain("verbatim from the generator's template");
+
+    const absent = successViolations(doc, TEMPLATE_MISSING);
+    expect(absent.violations, "a missing template silently switched the residue check off")
+      .toHaveLength(1);
+    expect(absent.violations[0], "the refusal does not say the check could not run")
+      .toContain("not in this rungate installation");
+  });
+
+  test("N1: an explicit null is refused too, not just the sentinel", () => {
+    // `readSuccessTemplate` cannot return null any more — its type forbids it.
+    // This is the belt for that brace: if a future reader reintroduces a
+    // nullable template, it refuses rather than reopening the fail-open.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const doc = followedTheInstructions(template);
+    expect(successViolations(doc, null).violations.length, "null reopened the hole")
+      .toBeGreaterThan(0);
+  });
+
+  test("N1: an absent template does NOT make the parser's own unit cases refuse", () => {
+    // The third state, and the reason this is not simply "template is
+    // required". `undefined` means the caller is not asking for a residue
+    // comparison — every parse-level case in this file passes one argument.
+    // If `undefined` refused, those cases would all gain a violation and
+    // their counts would stop meaning what they say.
+    const good = [
+      "### Claim 1 — the scanner names every file it could not read",
+      "**How it fails:** an unreadable file is counted as clean",
+      "",
+      "| 1 | untested | — |",
+    ].join("\n");
+    expect(successViolations(good).violations, "undefined started refusing").toEqual([]);
+  });
+
+  test("N1: readSuccessTemplate reports absence as the sentinel, never as falsy", () => {
+    // Asserted on the live tree: the template IS installed here, so this
+    // pins the happy path and the type does the rest. A `null` return would
+    // be caught by the two cases above; this one catches a return that is
+    // falsy in some other way.
+    const t = readSuccessTemplate();
+    expect(t, "the template is not installed in this tree").not.toBe(TEMPLATE_MISSING);
+    expect(t.length, "readSuccessTemplate returned something empty").toBeGreaterThan(100);
+  });
+
+  test("N5: a directory at SUCCESS.md is refused in words, not a stack trace", () => {
+    // `--force` reached `unlinkSync` on a directory and the user got a raw
+    // throw out of create-success.ts. The exit code was right and nothing
+    // else was.
+    const root = project({});
+    mkdirSync(join(root, "SUCCESS.md"));
+
+    const r = run(["--project-root", root, "--force"]);
+    expect(r.status, "a directory at SUCCESS.md was not refused").toBe(1);
+    expect(r.stderr, "the refusal is a raw stack trace").toContain("not a regular file");
+    expect(r.stderr, "the kind of thing in the way is not named").toContain("directory");
+    expect(r.stderr, "an unhandled throw escaped").not.toContain("at /");
+    expect(existsSync(join(root, "SUCCESS.md")), "the directory was removed").toBe(true);
+  });
+
+  test("N4: exactly one expression in lib/ resolves the SUCCESS template path", () => {
+    // Three agreed, and nothing made them agree. `seedSuccessDoc` now calls
+    // `readSuccessTemplate()`, which it already imported from.
+    //
+    // `scripts/create-success.ts` is deliberately NOT counted: it is a CLI
+    // entry point that must name the missing file in its own words before it
+    // can do anything, and it resolves from `PACKAGE_ROOT`, which it uses for
+    // other things too. The invariant being asserted is about the library.
+    const libFiles = ["lib/success-doc.ts", "lib/scaffold/steps.ts"];
+    const resolvers = libFiles.flatMap(f =>
+      (readFileSync(join(ROOT, f), "utf-8").match(/"SUCCESS-TEMPLATE\.md"/g) ?? []).map(() => f),
+    );
+    expect(resolvers, `more than one lib file resolves the template path: ${resolvers.join(", ")}`)
+      .toHaveLength(1);
+    expect(resolvers[0]).toBe("lib/success-doc.ts");
   });
 });
