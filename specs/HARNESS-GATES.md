@@ -299,7 +299,7 @@ exists to prevent — so both were fixed rather than recorded:
   rather than on its name; a name filter would be the hand-kept list that
   comment already rejects.
 
-- [ ] SC-1471: lib/ci-checkout.ts contains [originUrl] — the modelled checkout ends with the source's own remote rather than the temp path it cloned from so a test cannot pass in CI and fail in the model
+- [x] SC-1471: lib/ci-checkout.ts contains [originUrl] — the modelled checkout ends with the source's own remote rather than the temp path it cloned from so a test cannot pass in CI and fail in the model
 
 ### Shape 1 — checks with no assertion
 
@@ -359,11 +359,11 @@ reason is acceptable; PASS without a measurement is not.* The arm now records
 `rebuild = 'SKIP'` with a reason naming what was and was not measured, and
 leaves `smoke = 'PASS'`, which is the one thing the curl does establish.
 
-- [ ] SC-1466: test/gate-check-audit.test.ts contains [no check warns without being on the list, no name on the list has quietly gained an assertion] — the warn-tier list fails in both directions so it cannot outlive what it describes
-- [ ] SC-1467: lib/gate-check-audit.ts contains [WARN_TIER_CHECKS, STANDALONE_STUB_NAME] — one binding for the list and a separate category for the placeholder stub whose emptiness is asserted rather than assumed
-- [ ] SC-1468: test/gate-check-audit.test.ts contains [the parse count matches the number of test( lines] — the positive control: a parser returning nothing would satisfy the whole audit vacuously
-- [ ] SC-1469: workflows/ship.js not contains [s.environments.prod.rebuild = 'PASS'] — a container that answers a health check is recorded as SKIP with a reason rather than as a rebuild that happened
-- [ ] SC-1470: test/gate-check-audit.test.ts contains [the same reading does NOT block when the rebuild says PASS] — the suppression the false verdict was switching off is executed from both sides
+- [x] SC-1466: test/gate-check-audit.test.ts contains [no check warns without being on the list, no name on the list has quietly gained an assertion] — the warn-tier list fails in both directions so it cannot outlive what it describes
+- [x] SC-1467: lib/gate-check-audit.ts contains [WARN_TIER_CHECKS, STANDALONE_STUB_NAME] — one binding for the list and a separate category for the placeholder stub whose emptiness is asserted rather than assumed
+- [x] SC-1468: test/gate-check-audit.test.ts contains [the parse count matches the number of test( lines] — the positive control: a parser returning nothing would satisfy the whole audit vacuously
+- [x] SC-1469: workflows/ship.js not contains [s.environments.prod.rebuild = 'PASS'] — a container that answers a health check is recorded as SKIP with a reason rather than as a rebuild that happened
+- [x] SC-1470: test/gate-check-audit.test.ts contains [the same reading does NOT block when the rebuild says PASS] — the suppression the false verdict was switching off is executed from both sides
 
 ### What was broken to prove it
 

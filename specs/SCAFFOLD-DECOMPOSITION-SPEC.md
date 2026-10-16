@@ -580,11 +580,11 @@ that happens to report the baseline count is indistinguishable from a pinned
 one that does. Measured: 0 errors under both 7.0.2 and the pinned 5.9.3, so the
 baseline carries over unchanged.
 
-- [ ] SC-1479: lib/typescript-project.ts contains [tsconfigVerdict] — ONE predicate answers "does this project need a tsconfig.json". It returns a reason rather than a boolean, because a check that skips has to be able to say what it skipped over
-- [ ] SC-1480: lib/conformity.ts contains [tsconfigVerdict] — TSC-1 fails for a project with TypeScript source and no tsconfig and records a WARN finding for a project with neither. Both arms are EXECUTED under a spawned `bun test`: a direct call cannot tell a conditional check from one whose assertion never ran
-- [ ] SC-1481: lib/typescript-project.ts contains [typecheckDecision] — one ladder produces the CI step the AGENTS.md row and `dev.typeCheck`. A project's own `scripts.typecheck` wins which is the only branch a consumer can reach; `dev.typeCheck` is null rather than a command the verify gate can only fail
-- [ ] SC-1482: scripts/typecheck.ts contains [node_modules] — the ratchet spawns the pinned compiler and REFUSES when it is absent rather than falling back to whatever the registry resolves
-- [ ] SC-1483: test/typescript-project.test.ts contains [SOURCE_DIR_DECIDERS] — the singleton is MECHANICAL. It scans lib/ for a second definition of the predicate or the directory list and proves the scan sees a planted one rather than passing over an empty result
+- [x] SC-1479: lib/typescript-project.ts contains [tsconfigVerdict] — ONE predicate answers "does this project need a tsconfig.json". It returns a reason rather than a boolean, because a check that skips has to be able to say what it skipped over
+- [x] SC-1480: lib/conformity.ts contains [tsconfigVerdict] — TSC-1 fails for a project with TypeScript source and no tsconfig and records a WARN finding for a project with neither. Both arms are EXECUTED under a spawned `bun test`: a direct call cannot tell a conditional check from one whose assertion never ran
+- [x] SC-1481: lib/typescript-project.ts contains [typecheckDecision] — one ladder produces the CI step the AGENTS.md row and `dev.typeCheck`. A project's own `scripts.typecheck` wins which is the only branch a consumer can reach; `dev.typeCheck` is null rather than a command the verify gate can only fail
+- [x] SC-1482: scripts/typecheck.ts contains [node_modules] — the ratchet spawns the pinned compiler and REFUSES when it is absent rather than falling back to whatever the registry resolves
+- [x] SC-1483: test/typescript-project.test.ts contains [SOURCE_DIR_DECIDERS] — the singleton is MECHANICAL. It scans lib/ for a second definition of the predicate or the directory list and proves the scan sees a planted one rather than passing over an empty result
 
 ### What was broken to prove these can fail
 

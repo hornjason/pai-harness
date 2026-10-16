@@ -5469,11 +5469,11 @@ writing. A grouping can be sound and the body still describe something else
 dropped one. Both are refusals, never repairs: a decomposition the harness
 quietly fixes is an acceptance criterion nobody reviewed (#217).
 
-- [ ] SC-1484: lib/phase2-decomposition.ts contains [decompositionRefusal] — the split is refused when an AC is in Phase 1 AND deferred (#79 AC-3) when it is in neither when two groups claim it or when an id nothing produced appears. Every problem is reported rather than the first
-- [ ] SC-1485: lib/phase2-decomposition.ts contains [phase2BodyViolations] — a body is compared to its ACs statement by statement after whitespace collapsing. #75's real body is the fixture and the test states that an id-only check passes it
-- [ ] SC-1486: scripts/verify-phase2-bodies.ts contains [readSplitPlan] — the comparison's reference side is written by the harness and the grouping by the agent so the two sides have different authors. The issue is read back from GitHub and an unreadable one is a violation not a pass
-- [ ] SC-1487: workflows/ship.js contains [PHASE2-DECOMPOSITION-START] — the inline copy is held to the library on a shared matrix and the prompt both lists the ACs verbatim and runs the verifier
-- [ ] SC-1488: test/phase2-decomposition.test.ts contains [REFUSE_EXIT] — the script's refusal is routed through ONE exported exit-code constant and every negative case runs twice: the real script which must refuse and a mutant with the constant zeroed which must not
+- [x] SC-1484: lib/phase2-decomposition.ts contains [decompositionRefusal] — the split is refused when an AC is in Phase 1 AND deferred (#79 AC-3) when it is in neither when two groups claim it or when an id nothing produced appears. Every problem is reported rather than the first
+- [x] SC-1485: lib/phase2-decomposition.ts contains [phase2BodyViolations] — a body is compared to its ACs statement by statement after whitespace collapsing. #75's real body is the fixture and the test states that an id-only check passes it
+- [x] SC-1486: scripts/verify-phase2-bodies.ts contains [readSplitPlan] — the comparison's reference side is written by the harness and the grouping by the agent so the two sides have different authors. The issue is read back from GitHub and an unreadable one is a violation not a pass
+- [x] SC-1487: workflows/ship.js contains [PHASE2-DECOMPOSITION-START] — the inline copy is held to the library on a shared matrix and the prompt both lists the ACs verbatim and runs the verifier
+- [x] SC-1488: test/phase2-decomposition.test.ts contains [REFUSE_EXIT] — the script's refusal is routed through ONE exported exit-code constant and every negative case runs twice: the real script which must refuse and a mutant with the constant zeroed which must not
 
 ### What was broken to prove it
 
@@ -5559,9 +5559,9 @@ than assumed:
 So the authenticated-and-still-failing case is the one real invocations hit,
 and it is the one that now blocks.
 
-- [ ] SC-1489: lib/prove-label-gate.ts contains [proveLabelGateVerdict] — an authenticated read that fails REFUSES and names the read failure as the reason. "No blocking label" and "could not find out" produce different text so a blocked ship can be debugged
-- [ ] SC-1490: test/prove-label-gate.test.ts contains [throwingClient] — the failure branch is EXERCISED by a client whose read rejects rather than argued about and the token-less case is asserted to be UNMEASURED rather than ALLOW
-- [ ] SC-1491: test/prove-label-gate.test.ts contains [TEST_WORK_DIR] — the gate check is SPAWNED over planted state in both environments. The token-less run emits its UNMEASURED report and does not block; the same unreadable issue with a token present refuses
+- [x] SC-1489: lib/prove-label-gate.ts contains [proveLabelGateVerdict] — an authenticated read that fails REFUSES and names the read failure as the reason. "No blocking label" and "could not find out" produce different text so a blocked ship can be debugged
+- [x] SC-1490: test/prove-label-gate.test.ts contains [throwingClient] — the failure branch is EXERCISED by a client whose read rejects rather than argued about and the token-less case is asserted to be UNMEASURED rather than ALLOW
+- [x] SC-1491: test/prove-label-gate.test.ts contains [TEST_WORK_DIR] — the gate check is SPAWNED over planted state in both environments. The token-less run emits its UNMEASURED report and does not block; the same unreadable issue with a token present refuses
 
 ### The contract test the fix turned red, and why that was the fix working
 
@@ -5690,8 +5690,8 @@ would reject real branches. The fix belongs in which candidates
 only issue numbers below the fan-out width, and a test asserts the
 limitation so the next reader finds it stated.
 
-- [ ] SC-1499: lib/prior-branch.ts contains [word-boundary matching] — the reference bound is a word boundary so a generated run id is not read as an issue number
-- [ ] SC-1500: test/prior-branch-reference.test.ts contains [issueReference] — every accepted and rejected form is stated as a fixture rather than discovered from the live repository, and the residual fan-out-index limit is asserted rather than described
+- [x] SC-1499: lib/prior-branch.ts contains [word-boundary matching] — the reference bound is a word boundary so a generated run id is not read as an issue number
+- [x] SC-1500: test/prior-branch-reference.test.ts contains [issueReference] — every accepted and rejected form is stated as a fixture rather than discovered from the live repository, and the residual fan-out-index limit is asserted rather than described
 
 ### What was broken to prove it
 
@@ -5768,12 +5768,12 @@ which are a local transport alias and not a statement about which project
 this is. A developer mirroring GitHub internally has not changed what they
 are shipping, and reading the rewritten value would refuse their every push.
 
-- [ ] SC-1492: lib/verified-push.ts contains [ref-mismatch] — a push whose target ref is not the branch's own name is refused and the remote is not written. The refusal names the branch and the ref it would have written
-- [ ] SC-1493: test/verified-push-ref-mismatch.test.ts contains [origin/main] — the upstream inheritance is produced by a real `git checkout -b <name> origin/main` against a real remote and asserted as the premise, not hand-written into a config
-- [ ] SC-1494: lib/verified-push.ts contains [OUTCOMES_LEAVING_WORK_LOCAL] — every new outcome joins the local-work set in the same commit that adds it. A kind nobody listed would default to "fine"
-- [ ] SC-1495: lib/verified-push.ts contains [repo-mismatch] — a push is refused when the caller's expected repository is not the one the working tree's origin names. An unreadable origin refuses too
-- [ ] SC-1496: gates/orchestrator.ts contains [expectRepo] — the gate tells verifiedPush which repository it believes it is shipping, so a fixture issueRepo cannot push a real checkout
-- [ ] SC-1497: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — the matching-repo control uses an origin that parses as a slug and resolves locally, so "the check allowed it" is distinguishable from "the check could not parse the URL"
+- [x] SC-1492: lib/verified-push.ts contains [ref-mismatch] — a push whose target ref is not the branch's own name is refused and the remote is not written. The refusal names the branch and the ref it would have written
+- [x] SC-1493: test/verified-push-ref-mismatch.test.ts contains [origin/main] — the upstream inheritance is produced by a real `git checkout -b <name> origin/main` against a real remote and asserted as the premise, not hand-written into a config
+- [x] SC-1494: lib/verified-push.ts contains [OUTCOMES_LEAVING_WORK_LOCAL] — every new outcome joins the local-work set in the same commit that adds it. A kind nobody listed would default to "fine"
+- [x] SC-1495: lib/verified-push.ts contains [repo-mismatch] — a push is refused when the caller's expected repository is not the one the working tree's origin names. An unreadable origin refuses too
+- [x] SC-1496: gates/orchestrator.ts contains [expectRepo] — the gate tells verifiedPush which repository it believes it is shipping, so a fixture issueRepo cannot push a real checkout
+- [x] SC-1497: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — the matching-repo control uses an origin that parses as a slug and resolves locally, so "the check allowed it" is distinguishable from "the check could not parse the URL"
 
 ### Two holes the background security review found in the first fix
 
@@ -5811,7 +5811,7 @@ are the same slug here. Hardcoding `github.com` would bind the harness to
 one forge for a check about repository identity. A test pins the limit so
 it cannot be assumed away.
 
-- [ ] SC-1498: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — a rewrite that redirects the push is refused rather than approved, a blank expectation refuses rather than skipping, and the host limit is asserted rather than described
+- [x] SC-1498: test/gate-push-repo-mismatch.test.ts contains [insteadOf] — a rewrite that redirects the push is refused rather than approved, a blank expectation refuses rather than skipping, and the host limit is asserted rather than described
 
 ### What was broken to prove it
 
@@ -5889,9 +5889,9 @@ and the gap was invisible because nothing was supposed to add up. There is
 now a `skipped` bucket, all four are printed, and a test asserts the sum
 equals the entries examined.
 
-- [ ] SC-1501: lib/worktree-cleanup.ts contains [removalKeepReason] — one decider answers merged and unpushed together so the weaker proxy cannot short-circuit the stronger property. A repo with no origin falls back to merged
-- [ ] SC-1502: lib/worktree-cleanup.ts contains [lockKeepReason] — a locked worktree is kept with its reason and an unreadable lock listing keeps everything. Paths are compared resolved on both sides
-- [ ] SC-1503: lib/worktree-cleanup.ts contains [skipped] — removed + kept + skipped + errors equals the number of entries examined, asserted by a test and printed in the summary
+- [x] SC-1501: lib/worktree-cleanup.ts contains [removalKeepReason] — one decider answers merged and unpushed together so the weaker proxy cannot short-circuit the stronger property. A repo with no origin falls back to merged
+- [x] SC-1502: lib/worktree-cleanup.ts contains [lockKeepReason] — a locked worktree is kept with its reason and an unreadable lock listing keeps everything. Paths are compared resolved on both sides
+- [x] SC-1503: lib/worktree-cleanup.ts contains [skipped] — removed + kept + skipped + errors equals the number of entries examined, asserted by a test and printed in the summary
 
 ### What was broken to prove it
 
