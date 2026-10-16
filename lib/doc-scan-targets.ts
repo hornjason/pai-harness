@@ -59,6 +59,16 @@ export const MAX_SCAN_DEPTH = 6;
  * table sees no change in behaviour — the fallback is the old code, named and
  * reported rather than assumed.
  */
+/**
+ * How many directories may be walked.
+ *
+ * Depth was bounded from the start; breadth was not, and the roots come from
+ * a file in the repo — so a table naming thousands of directories is still a
+ * walk driven by repo content with no ceiling. Twenty is well past anything
+ * observed: this repo declares six.
+ */
+export const MAX_SCAN_ROOTS = 20;
+
 export const DEFAULT_SCAN_DIRS: readonly string[] = ["docs", "docs/adr", "specs"];
 
 export const ROUTING_RELATIVE_PATH = join(".claude", "rules", "docs-routing.md");
@@ -218,7 +228,10 @@ function walkMarkdown(dir: string, depth: number, st: WalkState): void {
     if (st.seen.has(real)) continue;
     st.seen.add(real);
 
-    if (isDir) walkMarkdown(path, depth + 1, st);
+    // The RESOLVED path is what gets walked and recorded, not the path that
+    // was validated a moment ago. Validating one value and using another is
+    // a window, however narrow, and using `real` closes it for free.
+    if (isDir) walkMarkdown(real, depth + 1, st);
     else st.files.push(anchored(st.projectPath, st.rootReal, real));
   }
 }
@@ -281,7 +294,17 @@ export function planDocScan(projectPath: string): DocScanPlan {
 
   const roots: string[] = [];
   const unmeasured: string[] = [];
+  let truncated = 0;
   for (const dir of declared) {
+    // The exclusion list has to cover the roots as well as the entries.
+    // Applying it only inside the walk left a routing table naming
+    // `node_modules/` or `worktrees/` walked outright — the exact case the
+    // list exists to stop, reached by the one path the list did not cover.
+    if (dir.split("/").some(seg => SCAN_EXCLUDE_DIRS.includes(seg))) {
+      st.refused.push(join(projectPath, dir));
+      continue;
+    }
+    if (roots.length >= MAX_SCAN_ROOTS) { truncated++; continue; }
     const abs = join(projectPath, dir);
     let present: boolean;
     try {
@@ -301,6 +324,12 @@ export function planDocScan(projectPath: string): DocScanPlan {
     // project made about itself, and a claim that does not hold is a finding.
     if (present) roots.push(dir);
     else if (source === "routing" && !DEFAULT_SCAN_DIRS.includes(dir)) unmeasured.push(dir);
+  }
+
+  if (truncated > 0) {
+    // Loud, not silent: a scan that quietly stopped at twenty directories
+    // reads as a scan that covered everything.
+    reason += ` — bounded at ${MAX_SCAN_ROOTS} roots, ${truncated} not walked`;
   }
 
   try {

@@ -25,7 +25,7 @@ import { tmpdir } from "os";
 import { join, relative } from "path";
 import {
   planDocScan, routedDirectories, planSummary,
-  SCAN_EXCLUDE_DIRS, DEFAULT_SCAN_DIRS, MAX_SCAN_DEPTH, ROUTING_RELATIVE_PATH,
+  SCAN_EXCLUDE_DIRS, DEFAULT_SCAN_DIRS, MAX_SCAN_DEPTH, MAX_SCAN_ROOTS, ROUTING_RELATIVE_PATH,
 } from "../lib/doc-scan-targets";
 import { extractConstraints } from "../scripts/extract-constraints";
 
@@ -170,6 +170,39 @@ describe("SC-1624: the exclusions are one list, and each is proved", () => {
     }
     expect(SCAN_EXCLUDE_DIRS.length, "the list emptied out, so the loop above asserts nothing")
       .toBeGreaterThanOrEqual(5);
+  });
+
+  test("SC-1632: an excluded name is excluded as a ROOT, not only as an entry", () => {
+    // Found by security review of the pushed commit, and correct: the
+    // exclusion was applied to entries inside the walk and never to the
+    // directories the routing table declares. A table naming `node_modules/`
+    // or `worktrees/` was walked outright, which is the exact case the list
+    // exists to stop — reached by the one path the list did not cover.
+    routing(["docs", ...SCAN_EXCLUDE_DIRS]);
+    doc("docs/KEEP.md");
+    for (const excluded of SCAN_EXCLUDE_DIRS) doc(join(excluded, "HIDDEN.md"));
+
+    const plan = planDocScan(root);
+    expect(plan.files.map(f => relative(root, f))).toContain(join("docs", "KEEP.md"));
+    for (const excluded of SCAN_EXCLUDE_DIRS) {
+      expect(plan.roots, `${excluded} was declared and walked`).not.toContain(excluded);
+      expect(plan.files.map(f => relative(root, f))).not.toContain(join(excluded, "HIDDEN.md"));
+    }
+    expect(plan.refused.join(" "), "the refusal was silent").toContain("node_modules");
+  });
+
+  test("SC-1633: the number of declared roots is bounded", () => {
+    // Breadth was the one dimension left unbounded. Depth is capped and the
+    // roots come from a file in the repo, so a table naming thousands of
+    // directories is a walk driven by repo content with no ceiling.
+    routing(Array.from({ length: MAX_SCAN_ROOTS + 20 }, (_, i) => `d${i}`));
+    for (let i = 0; i < MAX_SCAN_ROOTS + 20; i++) doc(join(`d${i}`, "F.md"));
+
+    const plan = planDocScan(root);
+    expect(plan.roots.length).toBeLessThanOrEqual(MAX_SCAN_ROOTS);
+    expect(plan.reason, "the truncation was silent").toContain("bounded");
+    expect(MAX_SCAN_ROOTS).toBeGreaterThanOrEqual(8);
+    expect(MAX_SCAN_ROOTS, "high enough that the fixture above cannot catch a raise").toBeLessThan(100);
   });
 
   test("a worktree under .claude is not a second copy of the repo's constraints", () => {

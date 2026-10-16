@@ -6591,10 +6591,35 @@ nothing is indistinguishable from one that was read and happened to be empty.
 - [x] SC-1630: test/doc-scan-targets.test.ts contains [a symlink is not a way out of the project] — BUG-440-A — a symlinked directory, a symlinked file, and a symlinked routed root are each refused and named
 - [x] SC-1631: test/doc-scan-targets.test.ts contains [a symlink loop terminates] — de-duplication keyed on the resolved path, so a loop ends and a file reachable under two names is collected once
 
-### What was broken to prove it (SC-1622..1631)
+- [x] SC-1632: test/doc-scan-targets.test.ts contains [an excluded name is excluded as a ROOT, not only as an entry] — the exclusion list covers the directories a routing table declares, not only the entries found while walking them
+- [x] SC-1633: test/doc-scan-targets.test.ts contains [the number of declared roots is bounded] — breadth is capped as depth already was, and a truncated scan says so
 
-Run over `test/doc-scan-targets.test.ts` — 24 tests, baseline 0 fail. Every
-count predicted before the battery ran.
+### Found by security review of the pushed commit
+
+Three findings, all confirmed against the code and all in the same class as
+the issue, so they are fixed here rather than filed.
+
+**The exclusion list was applied to entries and never to roots.** A routing
+table naming `node_modules/` or `worktrees/` was walked outright — the exact
+case the list exists to stop, reached by the one path the list did not cover.
+A guard that covers every door but one is a guard with a door.
+
+**Breadth was unbounded.** `MAX_SCAN_DEPTH` capped how deep a repo-content-
+driven walk could go and nothing capped how wide. `MAX_SCAN_ROOTS` is 20;
+this repo declares six, and a truncated scan appends the count to `reason`
+rather than quietly covering less than it claims.
+
+**The validated value was not the value used.** `containedReal` resolved the
+path and the walk then recursed on the unresolved one. The mutation measured
+**0 of 27** and that is the honest result: using `real` closes a window
+rather than changing behaviour, so no test covers it and none is claimed to.
+
+### What was broken to prove it (SC-1622..1633)
+
+Run over `test/doc-scan-targets.test.ts`, baseline 0 fail. Every count
+predicted before the battery ran. The first sixteen were measured over 24
+tests; the review fixes added three, and the three rows re-measured at 27
+reproduce exactly.
 
 | Mutation | Red |
 |---|---|
@@ -6615,7 +6640,14 @@ count predicted before the battery ran.
 | BUG-440-A: the routed root's refusal never recorded | 1 of 24 |
 | BUG-440-A: a routed root that leaves the project is walked rather than skipped | 1 of 24 |
 
-None of the sixteen is left in the tree; all were run and reverted.
+| the root-level exclusion removed | 1 of 27 |
+| `MAX_SCAN_ROOTS` raised to 9999 | 1 of 27 |
+| the truncation reported silently | 1 of 27 |
+| the walk uses the traversal path instead of the validated one | **0 of 27** — hardening, not behaviour; see above |
+| `walkMarkdown` stops recursing, re-measured | 4 of 27 — reproduces |
+| containment dropped, re-measured | 3 of 27 — reproduces |
+
+None of the twenty-two is left in the tree; all were run and reverted.
 
 **The row that came back zero.** The bounded-recursion test built its fixture
 as `MAX_SCAN_DEPTH + 3` levels deep. Raising the constant raised the fixture
