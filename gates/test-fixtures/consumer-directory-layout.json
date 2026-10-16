@@ -1,0 +1,90 @@
+{
+  "_comment": "Covers #44. A consumer-shaped workflow state, NOT this harness's shape. Every field that differs from valid-standard.json differs because it broke a gate on the first real consumer run, and the difference is the point: a gate change that works on the harness shape and fails on this one must turn a row red. Executed by test/consumer-fixture-gates.test.ts \u2014 if nothing reads this file it is decoration, which is what both fixtures in this directory were until #44.",
+  "schemaVersion": 2,
+  "issue": 1452,
+  "repo": "example-org/example-dashboard",
+  "issueRepo": "example-org/example-dashboard",
+  "projectRoot": "/tmp/rungate-consumer-fixture",
+  "slug": "consumer-directory-layout",
+  "phase": "VERIFY",
+  "issueGoal": "A consumer-shaped run on the directory config layout, with outcome criteria and healed acceptance criteria",
+  "sizing": {
+    "predicted": "M",
+    "ceremonyTier": "STANDARD"
+  },
+  "acs": [
+    {
+      "id": "AC-1",
+      "type": "CODE",
+      "statement": "The changed module exports the new reader",
+      "threshold": {
+        "op": "contains",
+        "value": "export function readThing"
+      },
+      "evidenceMethod": {
+        "type": "grep",
+        "command": "true"
+      },
+      "verdict": "PENDING"
+    },
+    {
+      "id": "AC-2",
+      "type": "OUTCOME",
+      "statement": "A report generated from an empty input names the absence rather than printing zero",
+      "threshold": {
+        "op": "contains",
+        "value": "UNMEASURED"
+      },
+      "evidenceMethod": {
+        "type": "COMMAND",
+        "command": "true"
+      },
+      "verdict": "PENDING"
+    },
+    {
+      "id": "AC-3",
+      "type": "OUTCOME",
+      "statement": "The healed criterion was rewritten after scope stamped its hash",
+      "threshold": {
+        "op": ">=",
+        "value": 2,
+        "unit": "rows"
+      },
+      "evidenceMethod": {
+        "type": "COMMAND",
+        "command": "true"
+      },
+      "verdict": "PENDING",
+      "_healed": "statement and threshold were rewritten by a heal agent after the scope gate stamped acHash \u2014 see test/consumer-fixture-gates.test.ts"
+    }
+  ],
+  "gates": {
+    "scope": {
+      "result": "PASS",
+      "attempt": 1,
+      "failures": [],
+      "acHash": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  },
+  "environments": {
+    "prod": {
+      "rebuild": "SKIP",
+      "smoke": "SKIP",
+      "quinn": "SKIP"
+    }
+  },
+  "agents": {
+    "marcus": {
+      "spawned": true,
+      "verdict": "PASS",
+      "branch": "1452-fix",
+      "commitSha": "deadbee"
+    },
+    "quinn": {
+      "spawned": false
+    }
+  },
+  "buildCommit": "deadbee",
+  "changelog": [],
+  "bootstrappedFrom": "ship-workflow"
+}

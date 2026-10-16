@@ -7652,3 +7652,139 @@ on the re-read to terminate at all. Replaced with a narrower edit to
 - [x] SC-1775: test/ship-pr-draft.test.ts contains [removing the CI condition undrafts a run CI called red] — and the lenient mutant that accepts an absent reading still catches the red one, so a battery planting only a failure would call it fixed
 - [x] SC-1776: test/ship-pr-draft.test.ts contains [pr-ready is chained behind ci-status and never issued alone] — a third unchained invocation reads as a harmless duplicate and undoes the whole enforcement
 - [x] SC-1777: test/ship-pr-draft.test.ts contains [the SHA and the workflow count come from the shell - not from the agent] — a typed `--sha` decides which commit's CI is consulted and is therefore a stale-reading primitive
+
+## A fixture directory four scanners were told to ignore (#44)
+
+The pipeline was only ever tested on this harness. The first real consumer run
+found eight gate failures from untested assumptions, all fixed reactively, and
+#44 asked for a fixture so the next eight would be found here instead.
+
+Its SC-2 said the gate suite should run against a consumer fixture *"in
+addition to rungate fixture"*. There was no rungate fixture in any sense that
+matters.
+
+### What was actually in gates/test-fixtures/
+
+Two JSON files, and **nothing read either of them.** Every reference to the
+directory in the tree is one of two things:
+
+| Where | What it is |
+|---|---|
+| `test/anti.test.ts:137` | `if (e.name === "node_modules" \|\| e.name === "test-fixtures") continue` |
+| `test/dev-liveness.test.ts:385` | the same skip |
+| `lib/transcript-checker.ts:144` | the same skip |
+| `lib/test-census.ts:76` | `"test-fixtures"` in the ignore list |
+| `reference/migration-manifest.json:152` | a record that both files were copied in from `~/.claude/gates/test-fixtures/` |
+
+Four scanners told to look away, each for a defensible reason, composing into
+a directory nobody measures. Adding a second inert file to it would have been
+worse than doing nothing: a fixture directory with a consumer fixture in it
+reads as consumer coverage, and the next person to ask gets a yes from the
+filesystem.
+
+### What the directory had quietly accumulated
+
+Three things, none of which could have been found without executing it:
+
+**It named two consumers.** `valid-standard.json` carried both
+`"hornjason/asaCommandCenter"` and a `projectRoot` under a consumer's project
+directory; the other fixture carried both as well. `test/anti.test.ts` refuses
+exactly those two strings — and could not see these, twice over: its walk
+collects `.ts` files only, *and* skips `test-fixtures`. The consumer-naming
+guard was green for the whole life of the violation, which is the
+first shape in `.claude/rules/checks-must-be-able-to-fail.md` — a check that
+passed because of what it never looked at — reached by an exemption list
+rather than by a bug.
+
+**It had drifted out of the state schema.** Two separate breakages:
+`threshold: {op: ">=", value: 1}` is refused as "effectively always passes",
+and `environments.local` held HTTP status strings where the schema now wants
+`PASS | FAIL | SKIP`. A fixture representing a valid state had not been a
+valid state for some time.
+
+**Its evidence commands referenced a file that does not exist.** The harness
+fixture greps `test/unit/canary.test.ts`. Run as-is, grep exits 2, the error
+branch warns, and the AC stays PENDING — so a test that merely called
+`autoPopulateACs` over it would have been driving the error handler and
+reporting a clean run. The test builds the world the fixture describes.
+
+### Two criteria changed
+
+**SC-5 is struck, because it is already true.** CI's `test` job runs
+`bun test`, which runs every file under `test/`. A new file there is run on
+every PR the moment it is committed. Keeping it as a criterion would mean
+ticking a box for work nobody did.
+
+**SC-2 is reordered.** The first deliverable is a test that executes a
+fixture at all; the consumer fixture is second, and cheap once there is
+something for it to be added to.
+
+### The vacuous pass that was in the first draft of the test
+
+Worth recording because it is the same shape as everything above.
+`autoPopulateACs` begins with `continue` for any AC that already has a
+verdict, and the harness fixture's ACs are all `PASS` on disk. So the first
+version — run the loop, assert *something* has a verdict — skipped every
+iteration and passed on the fixture's own stored state.
+
+The fix is two changes, not one: reset every AC to `PENDING` before the call,
+and assert **every** criterion came back decided rather than at least one. The
+second half matters on its own, because a loop that spawns nothing leaves them
+all PENDING and warns, which reads as a clean run to anything counting only
+failures.
+
+### Mutations, predicted before running and measured after
+
+Over `test/consumer-fixture-gates.test.ts` (9 tests). Most of these mutate a
+FIXTURE rather than code, because the thing under test is whether the fixtures
+are load-bearing.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the harness fixture loses `environments.local` | 1 | 1 |
+| a consumer name is re-added to a fixture | 1 | 1 |
+| a token is pasted into a fixture | 1 | 1 |
+| a threshold is weakened back to `>= 1` | 1 | 1 |
+| an OUTCOME AC reaches for a server | 1 | 1 |
+| `proveEnvironment` reads the un-normalised `dev.apiBase` | 1 | 1 |
+| `proveEnvironment` always returns the empty sentinel | 1 | **0**, then 1 — see below |
+| the PENDING reset is removed from the test | 1 | 1 |
+| `EVIDENCE_CWD` no longer points at the built world | 1 | 1 |
+| the AC hash covers verdict and evidence too | 1 | 1 |
+| **the consumer fixture is deleted** | 6 | 6 |
+
+None is left in the tree; all were run and reverted.
+
+**The deletion row is the one that answers the issue.** Removing
+`consumer-directory-layout.json` turns six rows red. Before this change,
+deleting either file in that directory turned nothing red at all.
+
+**The row that came back LOW, which is the one that mattered.** Row seven
+measured 0 against a predicted 1, and a row lower than predicted is the
+signature `.claude/rules/checks-must-be-able-to-fail.md` says to chase rather
+than to accept as good news.
+
+It was a broken mutant, and the reason is worth keeping: the anchor
+`const reading = readGateConfig(projectRoot);` appears **twice** in
+`gates/gate-executor.ts` — at line 475 in `loadAndValidateHarness` and at 513
+in `proveEnvironment` — and a `String.replace` takes the first. The mutation
+landed in a function these tests do not exercise, so a green suite was the
+correct answer to a question nobody had asked.
+
+Re-run against an anchor checked for uniqueness first: predicted 1, measured
+1, SC-1781. **A mutation battery needs its anchors counted, not just found** —
+an ambiguous anchor produces a zero row that reads exactly like missing
+coverage, and the cheapest response to it is to add a test for behaviour that
+was already covered.
+
+### Success criteria
+
+- [x] SC-1778: test/consumer-fixture-gates.test.ts contains [both fixtures validate against the real state schema] — the drift that had accumulated unseen, now a row that goes red when a fixture stops describing a state the harness would accept
+- [x] SC-1779: test/consumer-fixture-gates.test.ts contains [both fixtures drive autoPopulateACs to a verdict on every criterion] — reset to PENDING first, because the loop skips decided ACs and the harness fixture's are all stored as PASS
+- [x] SC-1780: test/consumer-fixture-gates.test.ts contains [the consumer fixture has no environments.local - and the harness fixture does] — the two fixtures differ on exactly the field whose absence broke the first consumer run
+- [x] SC-1781: test/consumer-fixture-gates.test.ts contains [a consumer's dev.* config resolves to the flat names the prove gate reads] — driven through the gate's own reader on the directory layout, which is the layout a migrated consumer is on
+- [x] SC-1782: test/consumer-fixture-gates.test.ts contains [a base URL authored as null is absent - not the string null] — and an absent config is a different answer from a config that says nothing, which collapsing the two would lose
+- [x] SC-1783: test/consumer-fixture-gates.test.ts contains [the consumer fixture's acHash does not match its healed ACs] — with both controls: a changed verdict must not move the hash and a changed statement must
+- [x] SC-1784: test/consumer-fixture-gates.test.ts contains [the consumer fixture's OUTCOME ACs need no running server] — asserted on the commands, so an outcome criterion that reaches for a port turns it red
+- [x] SC-1785: test/consumer-fixture-gates.test.ts contains [no fixture names one of the harness's consumers] — the anti-criteria guard cannot see a JSON fixture twice over, and both files in the directory were violations when this was written
+- [x] SC-1786: test/consumer-fixture-gates.test.ts contains [no fixture carries anything shaped like a credential] — the pre-commit scanner's own three patterns, applied to files it only sees on the commit that introduces them
