@@ -5183,6 +5183,91 @@ rather than argued: the refusal is not decoration on top of a scheduler that
 would otherwise cope, it is the only thing standing between a cyclic
 `dependsOn` and a hung run.
 
+## #420 — the ordering half shipped; wave N's output was still invisible
+
+#189 made wave N+1 wait for wave N to SUCCEED. It did not make wave N's code
+READABLE, so a consumer sub-issue still wrote against an API it had only been
+told about in prose — `wf_92dbb346-949`'s two `harnessRootFor`s with opposite
+contracts, with only the cheaper variant prevented.
+
+**Why the other half was left out, and why that was right at the time.**
+Worktrees are spawned with `isolation: 'worktree'` against `PROJECT_ROOT` and
+the harness takes no base parameter, so the only lever on where a wave-2
+worktree starts is **where `PROJECT_ROOT`'s HEAD points when the harness
+creates it**. Making wave 1 visible therefore means committing mid-run, and
+mid-run committing is #267/#136 — on 2026-10-11 it left 907 lines of
+unreviewed agent output staged on `main`.
+
+So the difference between the defect and the fix is the ref, and the ref is
+established and named before anything spawns:
+
+| | |
+|---|---|
+| **Run ref** | `rungate/run-<issue>`, created only when the plan has a barrier. A single wave hands its output to nobody, and establishing a ref for it would move an operator's checkout off their branch to no purpose. |
+| **On a default branch** | The checkout is switched onto the run ref rather than refused. The end-of-run commit step ALREADY requires a non-default branch, so a run that starts on `main` was always going to die after burning every agent. |
+| **Detached HEAD** | Refuses, with its own message. "There is no branch" and "the branch is main" are different facts and a caller that cannot tell them apart cannot say which to fix. |
+| **Rejected output** | Never integrated. A failed wave commits nothing, not even the siblings that succeeded — the next wave is not starting, so the only thing a commit would achieve is putting half a wave on the ref. |
+| **Last wave** | Not integrated. It is handed to the end-of-run collect, which is where it already went. |
+
+### The guard that predicted this change
+
+`COLLECT-IDENTITY` describes itself as "the last statement before anything is
+staged" and warns that "a THIRD path added later — or a result that reached
+`agentResults` by any other route — would be committed from without passing
+either of them."
+
+The wave commit is that third path: it stages while that block is still
+waiting for the decomposition to return. Its own ordering assertion (SC-1448)
+went red the moment the first `collectAgentWork` moved above it, which was
+correct of it. The answer is not to relax the ordering but to ask the SAME
+binding at the new staging boundary — `worktreeIdentityViolations(…,
+{ requirePath: true })`, before the collector, not after it — and to state
+the ordering per staging point, so a fourth one cannot be added without
+either passing the guard or turning the assertion red.
+
+- [x] SC-1560: test/wave-integration.test.ts contains [a default branch and a detached HEAD refuse, and say different things] — three refusals and a two-branch positive control, so a decider that refused everything could not pass
+- [x] SC-1561: test/wave-integration.test.ts contains [only a wave with a successor is integrated] — the predicate is a pure function with one binding, and the single-wave case is the one that must not move an operator's checkout
+- [x] SC-1562: test/wave-integration.test.ts contains [wave 1's file is in wave 2's checkout, and absent without the commit] — executed over a real repository with real worktrees, and the CONTROL is taken BEFORE the commit, so the positive case cannot be satisfied by a file that was in the base all along
+- [x] SC-1563: test/wave-integration.test.ts contains [a wave with no accepted output is not collected or committed] — rejected work never reaches the ref every later wave is built from (AC-4)
+- [x] SC-1564: test/wave-integration.test.ts contains [a wave with a successor is collected and committed, and not pushed] — the shell guard against the default branch is in the prompt, there is no `git push`, and the ref stays local until the end-of-run commit step
+- [x] SC-1565: test/wave-integration.test.ts contains [a commit that lands on another ref is a failure, not a success] — the branch is re-read from the reply and compared to the ref the run established, because an answer that disagrees is the interesting case (#218). Three cases, one per decider: an ordinary feature branch, which only the comparison can catch; a default branch, which only the refusal can; and a reply with no branch at all, which only the refusal can reach
+- [x] SC-1566: test/wave-integration.test.ts contains [a collect that moved nothing does not produce an empty commit] — an empty commit would make the next wave's base indistinguishable from this one's
+- [x] SC-1567: test/wave-integration.test.ts contains [each wave but the last is integrated, with only its accepted output] — asserted on the recorded integration calls, so a loop that integrated everything or nothing fails
+- [x] SC-1568: test/wave-integration.test.ts contains [a failed wave integrates nothing, and so does a single wave] — carries the positive control in the same test: both independent sub-issues must still be SPAWNED before either returns, so a design that serialised everything to get visibility cannot pass (AC-5)
+- [x] SC-1569: test/wave-integration.test.ts contains [a wave that cannot be integrated fails the run rather than dispatching on] — the consumer never starts, because it would have branched from a checkout without the foundation, which is the whole defect
+- [x] SC-1570: test/wave-integration.test.ts contains [a checkout the run may not commit onto refuses before anything spawns] — the refusal text comes from the real decider and the spawn list is asserted EMPTY, which is AC-3 over the dispatch path rather than over the happy case
+- [x] SC-1571: test/wave-integration.test.ts contains [a wave carrying a foreign worktree is not staged at all] — the identity guard is asked at the new staging boundary, and asked BEFORE the collector: nothing is collected and nothing is committed
+
+### What was broken to prove it (SC-1560..1571)
+
+Measured over `test/wave-integration.test.ts`, `test/decomposition-waves.test.ts`,
+`test/decomposed-ship-dispatch.test.ts`, `test/implement-empty-result.test.ts`,
+`test/implement-brief-precedence.test.ts` and `test/worktree-repo.test.ts` —
+198 tests, baseline 0 red. None of the thirteen is left in the tree; all were
+run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `waveNeedsIntegration` returns `false` — #420 reintroduced verbatim | 3 of 198 — the predicate, the recorded integration calls, and the failure the consumer's missing foundation produces |
+| `waveNeedsIntegration` returns `true`, so the last wave is integrated too | 3 of 198 — the predicate, and both the two-wave and single-wave dispatch cases |
+| `runRefRefusal` returns `null` for every branch | 3 of 198 — the decider, the no-branch commit case, and the pre-dispatch refusal |
+| the detached-HEAD branch of `runRefRefusal` deleted | 2 of 198 — an empty branch name is not in `DEFAULT_BRANCHES`, so it falls through to `null` and a commit with no branch is accepted |
+| the dispatcher stops establishing a run ref | 1 of 198 — nothing refuses a checkout the run may not commit onto, and the sub-issues spawn |
+| the wave staging point stops refusing a foreign worktree | 1 of 198 — the behavioural case; the source-order assertion still passes, because the call is still there, which is why the behavioural case exists |
+| `{ requirePath: true }` dropped from the wave staging point | 1 of 198 — only the per-staging-point source assertion, which is what it is for: a row with no path is silently skipped and no behaviour changes |
+| the wave commit is not compared against the run ref | 1 of 198 — and **0 of 196 before SC-1565's feature-branch case was added.** Written with `main`, the case was held red by the `runRefRefusal` re-check two lines below, not by the comparison: two deciders agreeing, so no behavioural test could witness which was load-bearing |
+| the landed ref is not re-asked whether it may carry a commit | 1 of 198 — the inverse of the row above. The only input the comparison cannot reach is a reply with no branch at all, and that case exists so this line is not one no test can turn red |
+| a collect that moved nothing commits anyway | 1 of 198 — an empty commit would make the next wave's base indistinguishable from this one's |
+| a failed wave is integrated anyway | 1 of 198 — rejected output reaches the ref every later wave is built from (AC-4) |
+| a failed integration no longer fails the wave | 1 of 198 — the consumer dispatches from a checkout without the foundation, which is the whole defect |
+| the wave commit prompt gains a `git push` | 1 of 198 — the ref is local until the end-of-run commit step |
+
+The eighth row is the finding this battery existed to produce, and it is the
+same shape as both of #415's: **two deciders that agree are behaviourally one,
+so no behavioural test can witness the duplication, and a mutation of one
+leaves the other unreachable.** Predicting each count before running is what
+surfaced it — a 1 where two were expected is a finding exactly as a 0 is.
+
 ### What this does NOT fix, stated rather than implied
 
 **AC-2's second clause is not delivered.** The issue asks that a dependent

@@ -89,6 +89,15 @@ function loadRunDecomposedShip(deps: {
     `${shipSource.slice(precStart, precEnd)}\nreturn taskSourceRefusal;`,
   )();
 
+  // #420's predicate, injected for the reason the three above are.
+  const refStart = shipSource.indexOf("// ──── RUN-REF-START ────");
+  const refEnd = shipSource.indexOf("// ──── RUN-REF-END ────");
+  if (refStart === -1 || refEnd === -1) {
+    throw new Error("ship.js is missing the RUN-REF-START/END markers");
+  }
+  const sliced = (_name: string, fn: string) =>
+    new Function(`${shipSource.slice(refStart, refEnd)}\nreturn ${fn};`)();
+
   const factory = new Function(
     "log",
     "briefedAgent",
@@ -102,6 +111,9 @@ function loadRunDecomposedShip(deps: {
     "worktreeIdentity",
     "REPO",
     "taskSourceRefusal",
+    "establishRunRef",
+    "integrateWave",
+    "waveNeedsIntegration",
     `${block}\nreturn runDecomposedShip;`,
   );
 
@@ -120,6 +132,9 @@ function loadRunDecomposedShip(deps: {
     // #180 guard, injected from its own markers rather than stubbed — the
     // same reason the two above are.
     taskSourceRefusal,
+    async () => ({ branch: "rungate/run-66", refusal: null }),
+    async () => ({ ok: true, integrated: 0 }),
+    sliced("RUN-REF", "waveNeedsIntegration"),
   );
 
   return { runDecomposedShip, logs };

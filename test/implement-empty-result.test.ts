@@ -183,6 +183,16 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     const pEnd = shipSource.indexOf("// ──── BRIEF-PRECEDENCE-END ────");
     if (pStart === -1 || pEnd === -1) throw new Error("missing BRIEF-PRECEDENCE markers");
     const taskSource = new Function(`${shipSource.slice(pStart, pEnd)}\nreturn taskSourceRefusal;`)();
+    // #420's predicate, from its own markers. The run ref and the wave commit
+    // are faked — this file is about an empty implement result — but a stub
+    // for the predicate would let the loop and the block disagree about which
+    // waves hand output forward, and nothing would notice.
+    const rStart = shipSource.indexOf("// ──── RUN-REF-START ────");
+    const rEnd = shipSource.indexOf("// ──── RUN-REF-END ────");
+    if (rStart === -1 || rEnd === -1) throw new Error("ship.js is missing the RUN-REF markers");
+    const waveNeedsIntegration = new Function(
+      `${shipSource.slice(rStart, rEnd)}\nreturn waveNeedsIntegration;`,
+    )();
     const logs: string[] = [];
     const factory = new Function(
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
@@ -190,6 +200,7 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
     "worktreeIdentity",
     "REPO",
       "taskSourceRefusal",
+    "establishRunRef", "integrateWave", "waveNeedsIntegration",
       `${shipSource.slice(bStart, bEnd)}\nreturn runDecomposedShip;`,
     );
     const run = factory(
@@ -202,6 +213,9 @@ describe("#181 SC-855 (AC-3): the decomposed path ACTS on the refusal, it does n
       identity,
       "owner/project",
       taskSource,
+      async () => ({ branch: "rungate/run-181", refusal: null }),
+      async () => ({ ok: true, integrated: 0 }),
+      waveNeedsIntegration,
     );
     return { run, logs };
   }

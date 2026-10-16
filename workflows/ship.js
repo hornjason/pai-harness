@@ -3300,6 +3300,205 @@ what it said rather than omitting the field.
   }
 }
 
+// ──── RUN-REF-START ────
+/**
+ * Making wave N's output VISIBLE to wave N+1 (#420).
+ *
+ * #189 shipped the ordering half of dependency waves and deliberately left
+ * this half out. Worktrees are spawned with `isolation: 'worktree'` against
+ * `PROJECT_ROOT`, so each one branches from that checkout's HEAD at spawn
+ * time. There is no base parameter to pass: **the only lever on where a
+ * wave-2 worktree starts is where `PROJECT_ROOT`'s HEAD is pointing when the
+ * harness creates it.** So wave N's accepted output has to be committed to
+ * the project checkout before wave N+1 is dispatched.
+ *
+ * Which is exactly the manoeuvre that produced #267 and #136 — on 2026-10-11
+ * it left 907 lines of unreviewed agent output staged on `main`. The
+ * difference between that and this is the ref: a run that commits onto a
+ * branch it established for itself is doing what the end-of-run commit step
+ * already does, five minutes earlier. A run that commits onto `main` is the
+ * old defect. So the ref is established, and named, before anything spawns.
+ */
+const DEFAULT_BRANCHES = new Set(['main', 'master'])
+
+/** The branch this run commits waves onto. Deterministic, so a re-run resumes. */
+function runRefName(issue) {
+  return `rungate/run-${issue}`
+}
+
+/**
+ * Why this checkout cannot carry a wave commit, or null if it can.
+ *
+ * The single binding the mutation harness collapses. A detached HEAD refuses
+ * for its own reason rather than being folded into the default-branch case:
+ * "there is no branch" and "the branch is main" are different facts and a
+ * caller that cannot tell them apart cannot say which one to fix.
+ */
+function runRefRefusal(branch) {
+  const name = String(branch || '').trim()
+  if (!name) {
+    return 'the project checkout reported no branch — a detached HEAD has nothing for ' +
+      'wave 1 to commit onto and nothing wave 2 could branch from (#420)'
+  }
+  if (DEFAULT_BRANCHES.has(name)) {
+    return `the project checkout is on ${name}, and a wave commit there would put ` +
+      'unreviewed agent output on the default branch — the #267/#136 defect, which ' +
+      'on 2026-10-11 left 907 lines of it staged on main (#420)'
+  }
+  return null
+}
+
+/** A wave hands its output forward only when there is a wave to hand it to. */
+function waveNeedsIntegration(waveIndex, totalWaves) {
+  return waveIndex + 1 < totalWaves
+}
+
+/**
+ * Put the project checkout on a ref this run may commit onto, and say which.
+ *
+ * Creates one when the checkout is on a default branch rather than refusing:
+ * the end-of-run commit step ALREADY requires a non-default branch, so a run
+ * that starts on `main` is one that was always going to die after burning
+ * every agent. Switching costs the operator a `git switch -` and is never
+ * pushed from here.
+ */
+async function establishRunRef() {
+  const ref = runRefName(ISSUE)
+  const reply = await timedAgent(`
+Run exactly this in ${shellQuote(PROJECT_ROOT)} and report what it prints.
+
+cd ${shellQuote(PROJECT_ROOT)}
+branch=$(git branch --show-current)
+case "$branch" in
+  ""|main|master)
+    git switch -c ${shellQuote(ref)} 2>/dev/null || git switch ${shellQuote(ref)} ;;
+esac
+git branch --show-current
+
+Report the LAST line as branch — the branch the checkout is on after the
+command, not the one it was on before, and not the one the command asked for.
+Do not create, delete or push any other ref, and do not switch again.
+  `, { label: 'run-ref', phase: 'Implement', schema: {
+    type: 'object',
+    properties: { branch: { type: 'string' } },
+    required: ['branch'],
+  } })
+
+  const branch = reply && typeof reply.branch === 'string' ? reply.branch.trim() : ''
+  const refusal = runRefRefusal(branch)
+  return { branch, refusal }
+}
+
+/**
+ * Commit one wave's ACCEPTED output onto the run ref, so the next wave's
+ * worktrees branch from a checkout that contains it.
+ *
+ * Accepted only (SC-4). A sub-issue whose output was rejected has its files
+ * left where they are; collecting them here would put work the run has
+ * already refused onto the ref every later wave is built from, and the
+ * end-of-run review would never see it arrive.
+ */
+async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
+  // Whether this wave has a successor is the LOOP's decision, asked once with
+  // `waveNeedsIntegration` — not asked again here. A second copy of it would
+  // make the loop's copy unreachable, and an unreachable guard measures as
+  // load-bearing while nothing depends on it (#415).
+  const results = accepted.map(r => r && r.buildResult).filter(Boolean)
+  if (results.length === 0) {
+    return { ok: true, integrated: 0, reason: 'no accepted output in this wave' }
+  }
+
+  // The COLLECT-IDENTITY block below calls itself "the last statement before
+  // anything is staged", and warns that "a THIRD path added later … would be
+  // committed from without passing either of them". This is that third path:
+  // a wave commit stages agent output while that block is still waiting for
+  // the decomposition to return. So the SAME binding is asked here, at the
+  // new staging boundary — not a second copy of the decision, the same
+  // function at a place it did not previously reach (#218, #414, #420).
+  //
+  // `requirePath: true` for the reason it gives there: every row is about to
+  // be committed from, so a row with no path is not "nothing to check", it is
+  // a row claiming files with no checkable origin.
+  const identity = worktreeIdentityViolations(
+    results.map(r => ({
+      worktreePath: r.worktreePath || '',
+      worktreeRepo: r.worktreeRepo || '',
+      filesChanged: r.filesChanged || [],
+    })),
+    REPO,
+    { requirePath: true },
+  )
+  if (identity.length > 0) {
+    return {
+      ok: false,
+      integrated: 0,
+      detail: `wave ${waveIndex + 1} cannot be staged: ${identity.join('; ')}`,
+    }
+  }
+
+  const collected = await collectAgentWork(
+    results, PROJECT_ROOT, 'Implement', `collect-wave-${waveIndex + 1}`,
+  )
+  if (!collected.ok) {
+    return { ok: false, integrated: 0, detail: collected.detail || 'collect failed' }
+  }
+  if (collected.collected === 0) {
+    // Every accepted sub-issue already worked in the project root. Nothing
+    // moved, so nothing needs committing, and an empty commit would make the
+    // next wave's base indistinguishable from this one's.
+    return { ok: true, integrated: 0, reason: 'every accepted worktree was the project root' }
+  }
+
+  const reply = await timedAgent(`
+Commit wave ${waveIndex + 1}'s collected output. Run exactly this:
+
+cd ${shellQuote(PROJECT_ROOT)}
+branch=$(git branch --show-current)
+case "$branch" in main|master) echo "REFUSING: on $branch"; exit 1;; esac
+git commit -m ${shellQuote(`wip(#${ISSUE}): wave ${waveIndex + 1} of ${totalWaves}`)}
+git rev-parse --short HEAD
+
+The branch check is not a formality and it is not the same check ship.js
+already made. ship.js asked before wave 1; this asks now, in the directory
+the commit runs in. If it refuses, stop and report it — do NOT switch
+branches, do NOT push, and do NOT commit anywhere else (#136, #267).
+
+Do not push. This ref stays local until the end-of-run commit step.
+
+Report: committed (true only if git commit exited zero), sha, and the branch.
+  `, { label: `commit-wave-${waveIndex + 1}`, phase: 'Implement', schema: {
+    type: 'object',
+    properties: {
+      committed: { type: 'boolean' },
+      sha: { type: 'string' },
+      branch: { type: 'string' },
+    },
+    required: ['committed'],
+  } })
+
+  if (!reply || reply.committed !== true) {
+    return { ok: false, integrated: 0, detail: 'the wave commit did not report success' }
+  }
+  // The branch is re-read from the reply rather than assumed, for the reason
+  // #218 gives about worktree identity: the run asked where it was, and an
+  // answer that disagrees with what it established is the interesting case.
+  const landedOn = typeof reply.branch === 'string' ? reply.branch.trim() : ''
+  if (landedOn && landedOn !== runRef) {
+    return {
+      ok: false,
+      integrated: 0,
+      detail: `wave ${waveIndex + 1} committed onto ${landedOn}, not the run ref ${runRef} (#420)`,
+    }
+  }
+  const stillRefused = runRefRefusal(landedOn || runRef)
+  if (stillRefused) return { ok: false, integrated: 0, detail: stillRefused }
+
+  log(`Wave ${waveIndex + 1} integrated onto ${runRef} at ${reply.sha || 'unknown'} — ` +
+    `wave ${waveIndex + 2}'s worktrees branch from it (#420)`)
+  return { ok: true, integrated: collected.collected, sha: reply.sha || '' }
+}
+// ──── RUN-REF-END ────
+
 // ──── DECOMPOSED-SHIP-START ────
 // ── M-size sub-issue shipping: disjoint sub-issues run concurrently, overlapping ones serialize ──
 // ──── WAVE-DISPATCH-START ────
@@ -3489,6 +3688,31 @@ directory (#218) — not the repo named in your brief, the one your checkout has
       }
     }
 
+    // #420 — the ref wave N commits onto, established BEFORE the first spawn.
+    // Not after wave 1: a worktree branches from HEAD at spawn time, so a ref
+    // created once wave 1 is already running is a ref wave 1 never saw, and
+    // the run would have no base to put its output on.
+    //
+    // Only when the schedule actually has a barrier. A single wave hands its
+    // output to nobody, and establishing a ref for it would move an operator's
+    // checkout off their branch to no purpose.
+    let runRef = ''
+    if (plan.waves.length > 1) {
+      const established = await establishRunRef()
+      if (established.refusal) {
+        return {
+          success: false,
+          completed: [],
+          failed: subIssues.map(sub => ({ title: sub.title, buildResult: null })),
+          buildResult: { success: false, filesChanged: [], worktreePath: PROJECT_ROOT, agentResults: [] },
+          refusal: `refusing to dispatch ${plan.waves.length} dependency waves: ${established.refusal}`,
+        }
+      }
+      runRef = established.branch
+      log(`Run ref for this decomposition: ${runRef} — each wave commits onto it ` +
+        `so the next wave's worktrees contain what the last one built (#420)`)
+    }
+
     const settled = []
     let waveFailed = false
     for (let w = 0; w < plan.waves.length; w++) {
@@ -3512,7 +3736,40 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         const r = waveResults[k]
         settled.push(r || { subIssue: batchIssues[wave[k]], buildResult: null, ok: false })
       }
-      if (waveResults.some(r => !r || !r.ok)) waveFailed = true
+      if (waveResults.some(r => !r || !r.ok)) {
+        waveFailed = true
+        // Nothing is integrated out of a failed wave, not even the siblings
+        // that succeeded. The next wave is not going to start, so the only
+        // thing a commit would achieve is putting half a wave on the ref.
+        continue
+      }
+      // #420 AC-2 — hand this wave's accepted output forward. The next wave's
+      // worktrees are created from PROJECT_ROOT's HEAD, so this commit is the
+      // whole of "visible in its worktree". A wave with no successor hands it
+      // to nobody and is left for the end-of-run collect.
+      if (!waveNeedsIntegration(w, plan.waves.length)) continue
+      const integrated = await integrateWave(waveResults, w, plan.waves.length, runRef)
+      if (!integrated.ok) {
+        waveFailed = true
+        log(`Wave ${w + 1} could not be integrated: ${integrated.detail} — ` +
+          `the next wave would branch from a checkout without it (#420)`)
+        for (let k = 0; k < wave.length; k++) {
+          const at = settled.length - wave.length + k
+          const prior = settled[at]
+          settled[at] = {
+            ...prior,
+            ok: false,
+            buildResult: {
+              ...(prior && prior.buildResult ? prior.buildResult : { filesChanged: [] }),
+              success: false,
+              findings: [
+                `wave ${w + 1} built successfully but could not be integrated onto the run ` +
+                `ref: ${integrated.detail} (#420)`,
+              ],
+            },
+          }
+        }
+      }
     }
 
     // D-4 — no work is lost: report completed siblings even when one fails, so a

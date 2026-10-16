@@ -372,6 +372,11 @@ function loadRunDecomposedShip(
     "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
     "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
     "taskSourceRefusal",
+    // #420 added three free names to the block. The run ref and the wave
+    // commit are faked — this file is about brief precedence — but the
+    // predicate comes from its own markers, for the reason the guards above
+    // do: a stub would let the two copies disagree and nothing would notice.
+    "establishRunRef", "integrateWave", "waveNeedsIntegration",
     `${block}\nreturn runDecomposedShip;`,
   )(
     (m: string) => logs.push(String(m)),
@@ -383,6 +388,9 @@ function loadRunDecomposedShip(
     guard("WORKTREE-IDENTITY", "worktreeIdentity"),
     "owner/project",
     guard("BRIEF-PRECEDENCE", "taskSourceRefusal"),
+    async () => ({ branch: "rungate/run-180", refusal: null }),
+    async () => ({ ok: true, integrated: 0 }),
+    guard("RUN-REF", "waveNeedsIntegration"),
   ) as (subIssues: unknown[]) => Promise<unknown>;
 
   return { run, logs };
