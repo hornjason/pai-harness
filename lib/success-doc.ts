@@ -234,9 +234,10 @@ export function successViolations(text: string | null, template?: string | null)
   if (text === UNREADABLE) {
     return {
       violations: [
-        `SUCCESS.md exists but could not be read as a file — it may be a directory, a ` +
-          `device, or have permissions that deny reading. That is not the same as having ` +
-          `no SUCCESS.md, and it is not clean: nothing could be measured.`,
+        `SUCCESS.md exists but could not be read as a regular file — it may be a symlink, a ` +
+          `directory, a device, or have permissions that deny reading. A symlink is refused ` +
+          `deliberately, the same way the scaffold refuses to write through one. That is not ` +
+          `the same as having no SUCCESS.md, and it is not clean: nothing could be measured.`,
       ],
       unmeasured: null,
     };
@@ -377,8 +378,22 @@ export function successViolations(text: string | null, template?: string | null)
  * `**How to measure it:**`, ...) would be a list that has to stay in sync
  * with the template by hand, and a new template section would silently go
  * unchecked. This asks the question directly instead: **is this document
- * still, in part, the template?** It needs no per-section knowledge and a
- * new template section is covered the day it ships.
+ * still, in part, the template?** It needs no per-section knowledge.
+ *
+ * **What it does NOT cover, stated because the first version of this
+ * sentence claimed otherwise.** It said "a new template section is covered
+ * the day it ships", and sec-485 showed that is false: anything the
+ * template writes as a table row, a non-claim heading, or a structurally
+ * pure line is invisible to this check permanently. The guarantee is
+ * narrower — *template PROSE, and claim statements, are covered the day
+ * they ship*. A future template that puts its placeholder text into table
+ * cells is not covered, and whoever writes one has to think about it.
+ *
+ * Two of the exclusions were narrowed in response rather than merely
+ * documented: claim headings now compare their statement (see below), and
+ * the old flat `length <= 12` floor became a test for structural purity,
+ * because a short sentence is still a sentence. The floor was hiding
+ * `"prevent."` on today's own template.
  *
  * Structural lines are excluded because they are SUPPOSED to match: headings,
  * table rows, frontmatter keys, and anything too short to be instruction
@@ -387,19 +402,46 @@ export function successViolations(text: string | null, template?: string | null)
  * `doc-type: reference` and `status: active`, both frontmatter.
  */
 export function templateResidue(text: string, template: string): string[] {
+  // A claim heading is NOT structural. `### Claim 1 — TODO` is a heading by
+  // syntax and the claim's whole statement by content, and excluding it
+  // outright made every claim statement permanently invisible to this check
+  // — held up only by `unfilled()`, which catches `TODO` and nothing else.
+  // sec-485 demonstrated the consequence on a plausible next-version
+  // template: a document whose two claims still read "the system behaves as
+  // intended under normal use" scored ZERO violations, because that text
+  // lives in a heading. So the prefix is stripped and the STATEMENT is
+  // compared.
+  const CLAIM_HEADING = /^(#{1,6}\s+Claim\s+\d+\s*[—–-]\s*)(.*)$/;
+  const comparable = (l: string) => {
+    const m = CLAIM_HEADING.exec(l);
+    return m ? m[2].trim() : l;
+  };
+
+  // Structurally pure, rather than merely short.
+  //
+  // This replaced a flat `l.length <= 12` floor, which was the weakest rule
+  // in the check and the only one with no second layer behind it. On today's
+  // template it already hid a real line of body prose — `"prevent."`, eight
+  // characters — and on sec-485's next-version fixture it hid `Describe it.`
+  // and `List them.`, the entire contents of two sections. A short sentence
+  // is still a sentence; what cannot be residue is punctuation and table
+  // scaffolding, so that is what this excludes.
   const structural = (l: string) =>
-    l.length <= 12
-    || l.startsWith("#")
+    l.length === 0
+    || /^[\s|:+_*=~-]*$/.test(l)
     || l.startsWith("|")
     || l.startsWith("---")
+    || (l.startsWith("#") && !CLAIM_HEADING.test(l))
     || /^[a-z][a-z-]*:\s/.test(l);
 
-  const mine = new Set(text.split("\n").map(l => l.trim()));
+  const mine = new Set(text.split("\n").map(l => comparable(l.trim())));
   const out: string[] = [];
   for (const raw of template.split("\n")) {
     const l = raw.trim();
-    if (structural(l) || !mine.has(l)) continue;
-    if (!out.includes(l)) out.push(l);
+    if (structural(l)) continue;
+    const c = comparable(l);
+    if (!mine.has(c)) continue;
+    if (!out.includes(c)) out.push(c);
   }
   return out;
 }
