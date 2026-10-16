@@ -23,6 +23,10 @@
     "scripts/audit-specs.ts",
     "scripts/create-spec.ts",
     "scripts/create-sc.ts",
+    "scripts/split-spec.ts",
+    "scripts/sync-sc-status.ts",
+    "scripts/audit-transcript.ts",
+    "scripts/detect-sc-drift.ts",
     "package.json"
   ],
   "exports": {

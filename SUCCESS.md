@@ -168,6 +168,19 @@ than rounded off, and the guard closed it: the moment the registry moved,
 `test/distribution-standing.test.ts` went red against the stale number and
 stayed red until this edit.
 
+**What the guard still cannot see, and #446 is the proof.** Version standing
+says the registry serves the same number the tree carries. It says nothing
+about whether the artifact that number names can be imported. Published
+`0.3.0` and `0.4.0` both shipped a `lib/conformity.ts` whose top-level import
+of `../scripts/split-spec` resolved against nothing, because `files[]`
+enumerates `scripts/` one path at a time and omitted it — along with
+`sync-sc-status`, `audit-transcript` and `detect-sc-drift`. Four published
+modules were unimportable, through two releases, with this line green.
+
+So "tree and registry agree" was true and the distribution was still broken.
+`test/package-closure.test.ts` adds the missing half: every relative import in
+a published file must resolve to another published file.
+
 **Why 0.4.0 is a minor and not a patch.** Three of the 29 commits past
 `v0.3.0` are observable behaviour changes, not fixes. #429/#430 changed
 `verifiedPush`'s signature and added `ref-mismatch` and `repo-mismatch` to
