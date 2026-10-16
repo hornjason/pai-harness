@@ -17,7 +17,7 @@ import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
-import { tsconfigVerdict } from "./typescript-project";
+import { isTypeScriptProject, tsconfigVerdict } from "./typescript-project";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -3059,6 +3059,56 @@ export function configAccessViolations(
 }
 
 /**
+ * Why an empty scan is UNMEASURED rather than a refusal — or `null` when it is
+ * a refusal after all (#476).
+ *
+ * `configAccessViolations`'s empty-scan refusal is correct and stays. What it
+ * cannot do on its own is tell two situations apart, because both reach it as
+ * `filesScanned === 0`:
+ *
+ * | Situation | Verdict |
+ * |---|---|
+ * | a code project whose file walk broke | **refuse** — this is what the refusal is for |
+ * | a content project that has no sources of that kind | UNMEASURED, and say so |
+ *
+ * `--profile=minimal` (#449) exists so a project can take rungate's structure
+ * without the ship harness, and the first consumer to use it — a Claude Code
+ * plugin shipping a skill, a spec and two reference files, with deliberately
+ * no executable surface — got a conformity suite with one permanently-red
+ * check it could only satisfy by adding TypeScript it does not want.
+ *
+ * **Two questions, not one decider asked twice.** `scan.filesScanned` answers
+ * "did I read anything"; `sourcesPresent` answers "was there anything to
+ * read", over a different directory list and a different traversal
+ * (`lib/typescript-project.ts`, #87's one decider for that fact). A project
+ * with TypeScript the walk failed to reach still refuses, which is case 3.
+ *
+ * It returns a REASON, never a bare boolean: `0`, `{}`, `null` and `SKIP` are
+ * all indistinguishable from success and `UNMEASURED` is not
+ * (`.claude/rules/config-access.md`). A check that skips has to be able to say
+ * what it skipped over.
+ *
+ * The waiver this replaces was `requireNonEmpty = scan.filesScanned > 0`,
+ * which required a non-empty scan only when the scan was already non-empty —
+ * a blanket disable wearing a conditional's clothes, so CONFIG-2's empty-scan
+ * refusal had never been reachable.
+ */
+export function unmeasuredScanReason(
+  scan: ConfigAccessScan,
+  sourcesPresent: boolean,
+  label: string,
+  sourceKind: string,
+): string | null {
+  if (scan.filesScanned > 0) return null;
+  if (sourcesPresent) return null;
+  return (
+    `UNMEASURED: ${label} read no files because this project has no ${sourceKind}. ` +
+    `Nothing was checked, which is NOT the same as nothing being wrong — if this ` +
+    `project grows ${sourceKind}, this check starts measuring again on the next run.`
+  );
+}
+
+/**
  * CHECK-1 — direct config access in TypeScript sources (ADR-002 D4).
  *
  * FAILS; does not warn. `DEPTH-1` and `ABSENCE-1` only `console.warn`, and
@@ -3068,6 +3118,21 @@ export function runConfigAccessValidation(root: string) {
   describe("Config access (ADR-002 D1)", () => {
     test("CONFIG-1: only the loader reads the rungate config", () => {
       const scan = scanConfigAccess(root);
+      const unmeasured = unmeasuredScanReason(
+        scan,
+        isTypeScriptProject(root),
+        "CONFIG-1",
+        "hand-written TypeScript",
+      );
+      if (unmeasured) {
+        addFinding({
+          ruleId: "CONFIG-1",
+          severity: "WARN",
+          file: "",
+          message: unmeasured,
+        });
+        return;
+      }
       const violations = configAccessViolations(
         scan,
         readConfigAccessRatchet(root, "sources"),
@@ -3098,13 +3163,29 @@ export function runPromptConfigAccessValidation(root: string) {
   describe("Config access in workflows (ADR-002 D4)", () => {
     test("CONFIG-2: no workflow reaches the rungate config, prompts included", () => {
       const scan = scanPromptConfigAccess(root);
-      // A project with no workflows/ directory is not in violation; the
-      // empty-scan refusal above is for a scan that should have found files.
+      // A project with no workflows/ directory is not in violation. A project
+      // that HAS one and read nothing out of it still refuses — the previous
+      // waiver here was `scan.filesScanned > 0`, which could never be false
+      // at the point it was read (#476).
+      const unmeasured = unmeasuredScanReason(
+        scan,
+        existsSync(join(root, "workflows")),
+        "CONFIG-2",
+        "workflows/ directory",
+      );
+      if (unmeasured) {
+        addFinding({
+          ruleId: "CONFIG-2",
+          severity: "WARN",
+          file: "",
+          message: unmeasured,
+        });
+        return;
+      }
       const violations = configAccessViolations(
         scan,
         readConfigAccessRatchet(root, "workflows"),
         "CONFIG-2",
-        scan.filesScanned > 0,
       );
       for (const v of violations) {
         addFinding({
