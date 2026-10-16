@@ -918,6 +918,30 @@ ADR-001 D2's caller table is a decision per call site, not a default:
 - **the four gate readers** — `readGateConfig`, because a gate's job includes
   *saying* which of the three cases it hit.
 
+#### Where the ADR's caller table and a shipped criterion disagree
+
+ADR-001 D2's table assigns `gates/brief-assembler.ts` the **throwing**
+loader, and #311 SC-A9 restates it by file and line. It is not used, and the
+conflict is recorded here rather than settled quietly in a diff.
+
+Making the change turns three of #439's criteria red — SC-1614 (absent config
+still assembles a brief), SC-1617 (the call pinned in source text), SC-1621
+(the predicate guarding `contextFiles`). #439 is the later decision and it
+shipped SC-1614 as *two separately asserted halves* — malformed throws,
+absent does not — for the stated reason that a single test covering one half
+would not notice them being conflated. Throwing here conflates them again
+from the opposite direction, which is the corollary ADR-001 exists to defend.
+
+The concern behind SC-A9 is real: a brief whose context section is silently
+empty reads exactly like a project that declared no docs. Throwing does not
+answer it — it replaces a quiet brief with a crash. Answering it means the
+brief **saying** there was no config, which is a question about brief content
+and is filed as #497 rather than decided here.
+
+`shouldRebuildContainer` keeps `tryLoadRungateConfig` on the same reasoning:
+malformed still throws, and the scope gate is where an unparseable config
+should surface.
+
 ### Base URLs come off the normalised fields
 
 `proveEnvironment` reads `config.apiUrl` / `config.uiUrl`, not `dev.apiBase`.
