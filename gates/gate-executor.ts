@@ -13,7 +13,7 @@ import {
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
-import { DEFAULT_TEST_TIMEOUT, resolveConfig } from "../lib/config-loader";
+import { DEFAULT_TEST_TIMEOUT, resolveConfig, type ResolvedConfig } from "../lib/config-loader";
 import { censusOf, censusRegressions } from "../lib/test-census";
 import {
   slugExists,
@@ -412,23 +412,116 @@ export interface GateExecutorResult {
 
 // ── State + harness loading ──────────────────────────────────────────────
 
-function loadAndValidateHarness(projectRoot: string): ProjectHarness | null {
-  const projectHarnessPath = projectRoot
-    ? join(projectRoot, ".claude", "rungate.json")
-    : "";
-  if (projectHarnessPath && existsSync(projectHarnessPath)) {
-    const rawHarness = JSON.parse(readFileSync(projectHarnessPath, "utf-8"));
-    const result = safeParseProjectHarness(rawHarness);
-    if (!result.success) {
-      console.warn(`WARN: rungate.json schema validation failed:`);
-      for (const err of result.error.issues) {
-        console.warn(`  - ${err.path.join(".")}: ${err.message}`);
-      }
-      return null;
-    }
-    return result.data;
+/**
+ * What a gate can say about the project's config (#311 SC-A8).
+ *
+ * THREE outcomes, not two. Four readers in this file built
+ * `.claude/rungate.json` by hand and branched on `existsSync`, which
+ * collapses "this project has no rungate" and "this project is on the
+ * documented directory layout" into one answer — and a third case,
+ * "configured and unreadable", into the same one again via a bare `catch`.
+ *
+ * The cost of that collapse is specific and was never a warning: a consumer
+ * on `.claude/rungate/` got its ceremony overrides switched off (#310), its
+ * type check skipped, its dev-server liveness unprobed and its prove-gate
+ * environment empty, and each of those looks exactly like a project that
+ * configured none of them.
+ *
+ * `unreadable` exists because a gate must not crash on a corrupt config and
+ * must not call it absent either. ADR-001 D2's corollary — a malformed
+ * config is never a missing config — survives the conversion from a throw to
+ * a value, which is the shape SC-1453 established for the one other site
+ * whose throw crosses into a gate.
+ */
+export type GateConfigReading =
+  | { status: "resolved"; config: ResolvedConfig; source: "directory" | "monolith"; path: string }
+  | { status: "absent" }
+  | { status: "unreadable"; reason: string };
+
+/** The single config read for this file. One binding, so one thing to mutate. */
+export function readGateConfig(projectRoot: string): GateConfigReading {
+  if (!projectRoot) return { status: "absent" };
+  try {
+    const resolution = resolveConfig(projectRoot);
+    return resolution.status === "resolved"
+      ? {
+          status: "resolved",
+          config: resolution.config,
+          source: resolution.source,
+          path: resolution.path,
+        }
+      : { status: "absent" };
+  } catch (e: any) {
+    return { status: "unreadable", reason: e?.message || String(e) };
   }
-  return null;
+}
+
+/**
+ * Say an unreadable config out loud, once, wherever it is hit.
+ *
+ * Returning `null` quietly is what every one of these sites used to do, and
+ * the whole point of the three-way reading is that one of the three is news.
+ */
+function reportUnreadable(where: string, reading: GateConfigReading): void {
+  if (reading.status === "unreadable") {
+    console.error(
+      `WARN: ${where} could not read the rungate config — ${reading.reason}. ` +
+        `This is UNMEASURED, not an unconfigured project.`,
+    );
+  }
+}
+
+export function loadAndValidateHarness(projectRoot: string): ProjectHarness | null {
+  const reading = readGateConfig(projectRoot);
+  reportUnreadable("ceremony overrides", reading);
+  if (reading.status !== "resolved") return null;
+
+  const result = safeParseProjectHarness(reading.config);
+  if (!result.success) {
+    console.warn(`WARN: rungate config schema validation failed (${reading.path}):`);
+    for (const err of result.error.issues) {
+      console.warn(`  - ${err.path.join(".")}: ${err.message}`);
+    }
+    return null;
+  }
+  return result.data;
+}
+
+/**
+ * The URLs and commands the prove gate probes (#311 SC-A8).
+ *
+ * `apiBase` and `uiBase` come off the NORMALISED names. ADR-002 D3 resolves
+ * `dev.apiBase` to `apiUrl` and collapses an authored `null` — what a
+ * greenfield scaffold writes for a base URL it could not detect — into the
+ * same absence an omitted key gives. Reading `dev.apiBase` raw here would
+ * reintroduce the second spelling of "not set" that the normaliser exists to
+ * remove, and `if (apiBase)` would then be deciding on a `null` the rest of
+ * the harness has already agreed to treat as absent.
+ *
+ * Extracted from the prove block so it can be run against a fixture: every
+ * field below was empty for every consumer on the directory layout, and the
+ * symptom was a liveness probe that silently did not happen.
+ */
+export function proveEnvironment(projectRoot: string): {
+  apiBase: string;
+  uiBase: string;
+  devStart: string;
+  devHealthPath: string;
+  prodCfg: { apiBase?: string; healthPath?: string };
+} {
+  const empty = { apiBase: "", uiBase: "", devStart: "", devHealthPath: "", prodCfg: {} };
+  const reading = readGateConfig(projectRoot);
+  reportUnreadable("prove gate environment", reading);
+  if (reading.status !== "resolved") return empty;
+
+  const c = reading.config;
+  return {
+    apiBase: c.apiUrl || "",
+    uiBase: c.uiUrl || "",
+    devStart: c.dev?.start || "",
+    devHealthPath: c.dev?.healthPath || "",
+    prodCfg: { apiBase: c.prod?.apiBase || "", healthPath: c.prod?.healthPath || "" },
+  };
 }
 
 /**
@@ -699,20 +792,8 @@ async function runProveReproducer(state: Record<string, any>, issue: number, iss
   }
 
   const projectRoot = state.projectRoot || "";
-  const harnessPath = join(projectRoot, ".claude", "rungate.json");
-  let apiBase = "";
-  let uiBase = "";
-  let devStart = "";
-  let devHealthPath = "";
-  let prodCfg: { apiBase?: string; healthPath?: string } = {};
-  if (existsSync(harnessPath)) {
-    const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-    apiBase = harness.dev?.apiBase || "";
-    uiBase = harness.dev?.uiBase || "";
-    devStart = harness.dev?.start || "";
-    devHealthPath = harness.dev?.healthPath || "";
-    prodCfg = { apiBase: harness.prod?.apiBase || "", healthPath: harness.prod?.healthPath || "" };
-  }
+  const proveEnv = proveEnvironment(projectRoot);
+  const { apiBase, uiBase, devStart, devHealthPath, prodCfg } = proveEnv;
 
   // #304. This used to curl `${apiBase}/api/admin/health` and `process.exit(1)`
   // on failure — the worst of the three copies of that route, because the
@@ -1256,10 +1337,25 @@ function runVerifyPreflights(state: Record<string, any>): void {
 
 // ── Type check ──────────────────────────────────────────────────────────
 
+export function typeCheckCommand(state: Record<string, any>): string | null {
+  // State first, config second — unchanged. What changed is that the config
+  // half can now see a directory-layout project, which it could not, so a
+  // consumer that configured `dev.typeCheck` and got no type check and no
+  // message is no longer a reachable state (#311 SC-A8).
+  //
+  // `null` is a real authored value here: #87 made `typeCheck` nullable so
+  // the scaffold can record "we looked and there is nothing to type-check",
+  // which is a different fact from nobody configuring it. Both end in "do
+  // not run a command", so this returns `null` for both and the caller does
+  // not have to know which.
+  const reading = readGateConfig(state.projectRoot || process.cwd());
+  reportUnreadable("type check", reading);
+  const fromConfig = reading.status === "resolved" ? reading.config.dev?.typeCheck : undefined;
+  return state.dev?.typeCheck || fromConfig || null;
+}
+
 function runTypeCheck(state: Record<string, any>): void {
-  const harnessPath = join(state.projectRoot || process.cwd(), ".claude", "rungate.json");
-  const harnessConfig = existsSync(harnessPath) ? JSON.parse(readFileSync(harnessPath, "utf-8")) : null;
-  const typeCheckCmd = state.dev?.typeCheck || harnessConfig?.dev?.typeCheck;
+  const typeCheckCmd = typeCheckCommand(state);
   if (typeCheckCmd) {
     try {
       execSync(typeCheckCmd, { encoding: "utf-8", timeout: 30000, cwd: state.projectRoot || process.cwd() });
@@ -1472,20 +1568,40 @@ function spawnB1AdversaryAtScope(state: Record<string, any>, workDir: string, ha
  *                    its stated remedy is to start something already running.
  *   probe          — exactly one http(s) URL, argv-form, no shell.
  */
+/**
+ * The `dev` shape `livenessPlan` asks about, off the normalised names (#311).
+ *
+ * `apiBase` is `apiUrl`, for `proveEnvironment`'s reason: the normaliser
+ * collapses an authored `null` into absence, and a raw read would put the
+ * second spelling of "not set" back in front of a probe that treats the two
+ * differently.
+ */
+export function livenessDev(
+  reading: GateConfigReading,
+): { apiBase?: string; healthPath?: string; start?: string } | undefined {
+  if (reading.status !== "resolved") return undefined;
+  const c = reading.config;
+  return {
+    apiBase: c.apiUrl || undefined,
+    healthPath: c.dev?.healthPath ?? undefined,
+    start: c.dev?.start,
+  };
+}
+
 function checkDevServerLiveness(state: Record<string, any>, results: GateResult[]): number {
   let addedFails = 0;
   if (!state.projectRoot) return 0;
-  const harnessPath = join(state.projectRoot, ".claude", "rungate.json");
-  let harness: any = null;
-  if (existsSync(harnessPath)) {
-    try {
-      harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-    } catch {
-      harness = null;
-    }
-  }
 
-  const plan = livenessPlan(state.acs, harness?.dev);
+  // The `catch { harness = null }` that was here is the instance
+  // `.claude/rules/config-access.md` names by rule: it converted corruption
+  // into absence, and absence into a probe that does not happen. Now the
+  // three readings are distinct, and the unreadable one is said out loud
+  // before being treated the way absence is — because the ALTERNATIVE for a
+  // liveness probe with no target is reporting DOWN on a healthy server,
+  // which is #304 and is worse (#311 SC-A8).
+  const reading = readGateConfig(state.projectRoot);
+  reportUnreadable("dev-server liveness", reading);
+  const plan = livenessPlan(state.acs, livenessDev(reading));
   if (plan.kind === "not-applicable") return 0;
 
   if (plan.kind === "unmeasured") {

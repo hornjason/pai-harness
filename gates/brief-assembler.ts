@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join, basename } from "path";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
-import { tryLoadRungateConfig } from "../lib/config-loader";
+import { loadRungateConfig } from "../lib/config-loader";
 import {
   classifyContextDocs, contextDocLines, contextDocNotes, hasBriefUnsafeChars,
   type ContextDocVerdict,
@@ -51,7 +51,14 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
   // read, and so a malformed config THROWS rather than reading as absent.
   // The previous `catch { return null }` turned a trailing comma into "no
   // docs declared" — `.claude/rules/config-access.md` names both.
-  const harness = tryLoadRungateConfig(projectRoot);
+  //
+  // #311 SC-A9: the THROWING loader, per ADR-001 D2's caller table. A brief
+  // assembled without config is not a degraded brief, it is a brief whose
+  // `contextDocs` section is silently empty — and an agent handed a brief
+  // with no context behaves like an agent whose project declared none. The
+  // two are indistinguishable downstream, and only one of them is a project
+  // someone should be shipping from.
+  const harness = loadRungateConfig(projectRoot);
   const projectContextDocs = classifyContextDocs(projectRoot, harness?.contextDocs);
   const hasAgents = existsSync(join(projectRoot, "AGENTS.md"));
 
