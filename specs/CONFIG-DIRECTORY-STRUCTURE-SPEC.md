@@ -954,3 +954,44 @@ the file would notice.
 - [x] SC-1703: test/gate-config-migration.test.ts contains [a configured rebuild is seen on both layouts] — the `SKIP (prod.rebuild is null)` sentence, driven from both layouts and from a config that omits the key, so the `true` is a decision and not a reader that says yes to everything
 - [x] SC-1704: test/gate-config-migration.test.ts contains [a corrupt config is not silently treated as unconfigured] — the readers convert the throw and report it; `shouldRebuildContainer` deliberately lets it propagate, and that asymmetry is asserted rather than left to be discovered by whoever next makes them consistent
 - [x] SC-1705: test/gate-config-migration.test.ts contains [ceremony overrides survive the round trip on both layouts] — #310 by name, and a tier control that silently does nothing is exactly *Silent Default Substitution*
+
+### What was broken to prove it (SC-1698..SC-1705)
+
+Every count predicted before the battery ran, over the eight tests in
+`test/gate-config-migration.test.ts`. All eight rows came back at their
+prediction; none of the mutations is left in the tree.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `readGateConfig` reads only `.claude/rungate.json` — the defect itself | 6 | 6 |
+| `readGateConfig`'s `catch` returns `absent` instead of `unreadable` | 2 | 2 |
+| `reportUnreadable` short-circuited to a no-op | 1 | 1 |
+| `shouldRebuildContainer` reads only the monolith | 1 | 1 |
+| `shouldRebuildContainer` short-circuited to `return false` | 2 | 2 |
+| `proveEnvironment` reads `c.dev?.apiBase` raw instead of `c.apiUrl` | 1 | 1 |
+| `typeCheckCommand` lets config win over state | 1 | 1 |
+| `livenessDev` always returns `undefined` | 1 | 1 |
+
+Two of those rows only exist because the first draft could not produce them,
+and both are the fourth shape — two things that were one thing:
+
+- **`proveEnvironment` reading the raw key was 0 red.** `dev.apiBase || ""`
+  and `apiUrl || ""` answer identically for every fixture a reflex writes:
+  `null || ""` is `""` either way, and a present string is itself either way.
+  The normaliser's `parsed.apiUrl ?? parsed.dev?.apiBase` is the only place
+  they diverge, so SC-1700 now also drives a config authoring a top-level
+  `apiUrl` with no `dev.apiBase` — an input only the normalised read reaches.
+  Without it the test forbade exactly the read that satisfied it.
+- **`reportUnreadable` as a no-op was 0 red.** For `proveEnvironment`,
+  `typeCheckCommand` and `loadAndValidateHarness`, `unreadable` and `absent`
+  return the same empty answer; the WARN is the entire behavioural
+  difference. A three-way reading whose third case nothing observes is a
+  two-way reading with a longer type. SC-1704 now captures all three WARNs by
+  name.
+
+The `return false` row is worth one line of its own: it is 2 rather than 1
+because SC-1704 asserts `shouldRebuildContainer` *does* throw on a corrupt
+config while the four gate readers convert it. That asymmetry is deliberate —
+it uses the loader directly and the scope gate is the right place to find out
+a config cannot be parsed — and asserting it is what stops the next person
+making the five consistent from doing it in the quiet direction.
