@@ -6374,3 +6374,128 @@ tests did not contain rather than a defect in the code:
    relaxed to `includes` — two deciders that agree, provably identical on every
    input, with the delete still on the end of them. Collapsed into one anchored
    match. The anchors are now separately mutable and separately caught.
+
+## contextDocs reports what it did with every entry (#439)
+
+Reported from a consumer project's session as "a dead config key". It is
+not dead — `gates/brief-assembler.ts` consumes it — and what was wrong is
+worse than inert, because the key looked like it worked. Three defects stacked
+in one twenty-line region, and a fourth surfaced while fixing them.
+
+| # | Defect | The rule it broke |
+|---|---|---|
+| 1 | every entry starting with `/` or containing `..` was filtered out silently | *Silent Default Substitution* — an empty list and a list whose entries were all refused were the same value |
+| 2 | the config was read straight from `.claude/rungate.json` | *Never read only the monolith* — a project on the directory layout got nothing regardless of the filter |
+| 3 | `catch { return null }` around the read | *Never `catch {}` around a config read* — a trailing comma became "no docs" |
+| 4 | the schema declared `contextDocs` as an OBJECT while the consumer and its own tests used the array form | invisible until (2) was fixed, because the consumer parsed the file itself and never reached the validator |
+
+### The decision about paths outside the project root
+
+They are **allowed, and the brief says so.**
+
+The old filter's instinct was right — an unvalidated path from config into an
+agent brief is worth thinking about — but the thing it was protecting is not
+what it looked like. A brief NAMES files; it does not read them. The config is
+written by the operator whose session the agent runs in, so a path they
+declared is not an escalation: they could have put the file in the repo, or
+pointed the agent at it in a sentence.
+
+What is worth protecting is a reader's ability to SEE that a brief reaches
+outside the repository. So an external doc is included and labelled `external
+to this project`, a missing one is included and labelled rather than dropped,
+and an unusable one is named with its reason. Nothing declared disappears
+without a line saying what happened to it.
+
+The inside/outside test is `relative()`, not `startsWith()`:
+`/x/project-backup` starts with `/x/project` and is a different directory, so
+a prefix comparison would label it internal — wrong in the dangerous
+direction.
+
+### One decider, and why the schema stops short of the entries
+
+`contextDocs` entries are typed `unknown` in `lib/rungate-schema.ts`, which is
+the only place in that schema where that is true. `lib/context-docs.ts` is the
+single decider for what a declared doc becomes, and it reports per entry:
+`docs/x.md: not a string` names the offender, where a schema throw would
+refuse the whole brief and name only the key.
+
+Validating entries in the schema as well would be a second decider agreeing
+with the first — and the first would then be **unreachable in production**,
+its "not a string" arm unable to fire, with no test able to tell. That is the
+fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`, caught before
+it shipped because the strict schema threw on a fixture the classifier was
+written to report on.
+
+### Success Criteria
+
+- [x] SC-1613: test/context-docs.test.ts contains [contextDocs is read through the one loader] — a project on the DIRECTORY layout gets its docs, with the fixture asserting no monolith exists
+- [x] SC-1614: test/context-docs.test.ts contains [malformed config throws; absent config does not] — asserted as two cases, because the point is that they stop being one outcome
+- [x] SC-1615: test/context-docs.test.ts contains [a rejected entry is reported, not dropped] — naming the path and the reason, and the two briefs compared directly
+- [x] SC-1616: test/context-docs.test.ts contains [a path outside the project root is a recorded decision] — included and labelled, with the prefix-versus-relative boundary asserted
+- [x] SC-1617: test/context-docs.test.ts contains [each arm of the classifier, with a positive control] — every arm plus a valid relative path that still reaches the brief
+- [x] SC-1618: test/context-docs.test.ts contains [a declared doc that is not on disk is INCLUDED and labelled] — the built-ins above it already say "(if exists)"
+- [x] SC-1619: test/context-docs.test.ts contains [both authored shapes survive the schema] — the array form and the object form
+- [x] SC-1620: test/context-docs.test.ts contains [a traversing path reaches the brief, labelled external] — the `..` case the old filter dropped
+- [x] SC-1621: test/context-docs.test.ts contains [a declared path cannot write lines of its own into the brief] — BUG-439-A, and the same predicate guards the AC contextFiles that had no filtering at all
+
+### What was broken to prove it (SC-1613..1620)
+
+Run over `test/context-docs.test.ts`, `gates/brief-assembler.test.ts` and
+`test/config-access-conformity.test.ts` — 57 tests, baseline 0 fail. Every
+count predicted before the battery ran.
+
+| Mutation | Red |
+|---|---|
+| the not-a-string arm removed | 3 of 57 |
+| the empty arm removed | 2 of 57 |
+| `external` hardcoded false | 3 of 57 |
+| `relative()` replaced by a prefix comparison | 1 of 57 — `/x/project-backup` would read as internal |
+| `missing` hardcoded false | 1 of 57 |
+| `contextDocNotes` returns nothing | 5 of 57 |
+| `contextDocNotes` reports when there is nothing to report | 4 of 57 — **was 1.** See below |
+| `contextDocLines` drops external docs — the old filter, from the other side | 2 of 57 |
+| the assembler reads the monolith directly again — defect (2) verbatim | 10 of 57 — including the CONFIG-1 ratchet, which refuses a file that has no entry; measured standalone at 1 |
+| the loader call wrapped in a `catch` — defect (3) verbatim | 1 of 57 |
+| the schema back to object-only — defect (4) verbatim | 10 of 57 |
+| the schema validates entries too | 2 of 57 — a second decider for what a doc may be, which would make the classifier's own arm unreachable |
+| a non-list `contextDocs` falls through instead of being named | 1 of 57 |
+| BUG-439-A: `hasBriefUnsafeChars` accepts everything | 3 of 57 |
+| the unsafe class narrowed to a bare newline | 1 of 57 — `\r`, `NUL`, `ESC` and `U+2028` are all line terminators or display controls that `\n`-shaped thinking misses |
+| `buildFilesSection` stops guarding the AC `contextFiles` | 1 of 57 |
+
+None of the sixteen is left in the tree; all were run and reverted.
+
+### BUG-439-A — a path can write lines of its own into a brief
+
+Security review of the first push raised two things about this change.
+
+The first was that removing the `/` and `..` filter is a control regression.
+It is a control removal, and it is the decision recorded above — but the
+premise that it was a path control does not survive checking: the AC
+`contextFiles`, rendered twenty lines further down the same file, were
+**never filtered at all**. Absolute, traversing, anything. The old
+`contextDocs` filter covered one of two doors into the same document.
+
+The second was real and is fixed here. A brief is an agent instruction and a
+path is rendered into it inline, so an entry containing a newline writes
+whatever follows as its own line — in a document whose whole purpose is to be
+obeyed. The old filter did not stop this either: a relative path with no
+leading `/` and no `..` passes it and can still contain `\n`. This is not a
+control #439 removed; it is one neither version had.
+
+`hasBriefUnsafeChars` is the one predicate, and it guards BOTH doors.
+`U+2028` and `U+2029` are in its class because they are line terminators that
+`\n`-shaped thinking misses.
+
+The assertion is per LINE, not per substring. The report quotes the offender
+— it has to, to be actionable — and a JSON-escaped `\n` on one blockquote
+line is not a heading. What must never happen is a line of the brief
+*starting* with text the config supplied.
+
+**The row that came back low.** `contextDocNotes` opened with
+`if (verdicts.length === 0) return []`, and that was a second decider
+agreeing with the guard below it: an empty list has no rejected, missing or
+external entries either, so both returned `[]` on exactly the same inputs.
+Mutating the guard below measured **1 against a predicted 4** because the
+early return was quietly holding three cases up. Collapsed to one; the row is
+now 4.

@@ -1,5 +1,4 @@
 {
-  "gates/brief-assembler.ts": 1,
   "gates/gate-executor.ts": 5,
   "gates/ship-orchestrator.ts": 1,
   "lib/scaffold/steps.ts": 9,

@@ -162,7 +162,29 @@ export const ProjectHarnessSchema = z.object({
   forbiddenCommands: z.array(z.string()).optional(),
   consumers: z.array(z.string()).optional(),
   promptKeywords: z.record(z.array(z.string())).optional(),
-  contextDocs: z.record(z.string().nullable()).optional(),
+  /**
+   * Both authored shapes, because both have always been consumed (#439).
+   *
+   * This was `z.record(...)` — object only — while `gates/brief-assembler.ts`
+   * read `Array.isArray(docs) ? docs : Object.values(docs)` and
+   * `gates/brief-assembler.test.ts` tested the array form explicitly. The
+   * contradiction was invisible because the assembler parsed the file itself
+   * with `JSON.parse` and never reached the validator. Routing it through
+   * the loader is what made the schema and the consumer meet.
+   *
+   * The ENTRIES are `unknown` on purpose, which is the only place in this
+   * schema that is true. `lib/context-docs.ts` is the single decider for what
+   * a declared doc becomes, and it reports per entry — "docs/x.md: not a
+   * string" names the offender, where a schema throw would refuse the whole
+   * brief and name the key. Validating the entries here as well would be a
+   * second decider agreeing with the first, and the first would then be
+   * unreachable in production: its "not a string" arm could never fire, and
+   * no test could tell. See `.claude/rules/checks-must-be-able-to-fail.md`.
+   */
+  contextDocs: z.union([
+    z.record(z.unknown()),
+    z.array(z.unknown()),
+  ]).optional(),
   mcp: z.array(McpServerSchema).optional(),
   research: z.array(ResearchToolSchema).optional(),
   roles: z.record(RoleSchema).optional(),
