@@ -411,8 +411,17 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     expect(got.unmeasured, "the skip does not say what it skipped over").toContain(
       "TypeScript or JavaScript in lib/",
     );
+    // This asserted the literal sentence `no source files of any kind were
+    // found anywhere in the tree`, and sec-500's review of #500 is that the
+    // walk never established it: it declines build output, dot directories,
+    // test directories, test files, root tool configs and `.d.ts`, and said
+    // nothing about any of them. For THIS project the old sentence happened
+    // to be true — it really is empty — which is precisely why the assertion
+    // did not catch the overreach. The intent is preserved (the message must
+    // state what it looked at tree-wide, not just in the scan dirs); the
+    // claim is narrowed to one the walk can support.
     expect(got.unmeasured, "the skip does not say the whole tree was checked").toContain(
-      "no source files of any kind were found anywhere",
+      "found no files of any kind that it counts as source",
     );
     rmSync(root, { recursive: true, force: true });
   });
@@ -459,8 +468,8 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     rmSync(root, { recursive: true, force: true });
   });
 
-  const noCode = { found: false, examples: [], unreadable: [] };
-  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [] };
+  const noCode = { found: false, examples: [], unreadable: [], skipped: [] };
+  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [], skipped: [] };
 
   test("the two questions are separate, and the binding needs both answers", () => {
     // `filesScanned` answers "did I read anything"; `sourcesPresent` answers
@@ -487,13 +496,13 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // one that has the directory and read nothing out of it refuses.
     const root = project({ "README.md": "# docs" });
     expect(
-      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] }, "CONFIG-2", "workflows/ directory"),
     ).toContain("UNMEASURED");
 
     mkdirSync(join(root, "workflows"), { recursive: true });
     const withDir = scanPromptConfigAccess(root);
     expect(
-      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] }, "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [], skipped: [] }, "CONFIG-2", "workflows/ directory"),
       "an empty workflows/ directory was waived",
     ).toBeNull();
     expect(configAccessViolations(withDir, {}, "CONFIG-2")[0]).toContain("read NO files");
@@ -849,5 +858,116 @@ describe("#500 re-review: the narrowing did not take enforcement with it", () =>
     const root = project({ "README.md": "# docs", "packages/core/a.ts": READS_CONFIG });
     symlinkSync(join(root, "packages", "core", "a.ts"), join(root, "lib.ts"));
     expect(projectSourceEvidence(root).found, "an in-project symlink was rejected").toBe(true);
+  });
+});
+
+/**
+ * Covers SC-1428 (HARNESS-STANDARD.md).
+ *
+ * sec-500's independent review of #500. Its finding is #500's own headline
+ * complaint — "true sentence, wrong inference" — committed by #500's own
+ * waiver, with the sentence this time actually untrue.
+ *
+ * The waiver said:
+ *
+ * > ...this project has no TypeScript or JavaScript in lib/, gates/,
+ * > scripts/, hooks/ or generators/, **and no source files of any kind were
+ * > found anywhere in the tree.**
+ *
+ * The second clause is a claim about the whole tree that the walk never
+ * established. It declines five classes of entry — build output, dot
+ * directories, test directories, test files, root tool configs and `.d.ts`
+ * — and said nothing about any of them. sec-500 measured twelve layouts
+ * carrying a real direct config read that the waiver called an empty
+ * project, three of which (`.github/scripts/release.js`, `tests/helper.ts`,
+ * `vite.config.ts`) refused one commit earlier.
+ *
+ * The fix is a third state, not a wider walk. Most of the skips are
+ * correct — a content project with a release script really does have no
+ * project source — so the defect is the silence, not the declining. `0`,
+ * `{}`, `null` and `SKIP` are indistinguishable from success; a decline
+ * nobody records is the same shape.
+ */
+describe("#500 re-review (sec-500): a decline is recorded, not asserted away", () => {
+  const READ = 'const p = join(process.cwd(), ".claude", "rungate.json");\n';
+
+  /** The waiver sentence, verbatim, that the walk could not support. */
+  const FALSE_CLAIM = "no source files of any kind were found anywhere in the tree";
+
+  function waiverFor(files: Record<string, string>): string | null {
+    const root = project(files);
+    const evidence = projectSourceEvidence(root);
+    return unmeasuredScanReason(
+      scanConfigAccess(root),
+      evidence,
+      "CONFIG-1",
+      "TypeScript or JavaScript",
+    );
+  }
+
+  test("a dot-directory script is declined BY NAME, not called absent", () => {
+    const msg = waiverFor({ ".github/scripts/release.js": READ, "README.md": "# docs" });
+    expect(msg, "the project was not waived at all").toContain("UNMEASURED");
+    expect(msg, "the walk still claims it looked everywhere").not.toContain(FALSE_CLAIM);
+    expect(msg, "the declined entry is not named").toContain(".github");
+    expect(msg).toContain("dot-directory");
+  });
+
+  test("a test directory is declined BY NAME", () => {
+    const msg = waiverFor({ "tests/helper.ts": READ, "README.md": "# docs" });
+    expect(msg).toContain("UNMEASURED");
+    expect(msg, "the walk still claims it looked everywhere").not.toContain(FALSE_CLAIM);
+    expect(msg).toContain("tests");
+    expect(msg).toContain("test directory");
+  });
+
+  test("a root tool config is declined BY NAME", () => {
+    const msg = waiverFor({ "vite.config.ts": READ, "README.md": "# docs" });
+    expect(msg).toContain("UNMEASURED");
+    expect(msg, "the walk still claims it looked everywhere").not.toContain(FALSE_CLAIM);
+    expect(msg).toContain("vite.config.ts");
+    expect(msg).toContain("root tool config");
+  });
+
+  test("a genuinely empty project says so, and says it DIFFERENTLY", () => {
+    // The control, and the case the old sentence was written for. Without
+    // this the three cases above could pass over a message that simply never
+    // claims anything, which would trade a false sentence for an empty one.
+    const msg = waiverFor({ "README.md": "# docs", "notes.txt": "hello" });
+    expect(msg).toContain("UNMEASURED");
+    expect(msg, "an empty project should not be reporting declines")
+      .toContain("found no files of any kind that it counts as source");
+    expect(msg, "a project with nothing skipped still listed skips").not.toContain("did not count");
+  });
+
+  test("the evidence itself carries the declines, not just the message", () => {
+    // The message is one reader. A caller that wants to act on the declines
+    // — a future FAIL ladder, a report — needs them as data, and asserting
+    // only the prose would let the data rot while the sentence stayed right.
+    const root = project({ ".github/scripts/release.js": READ, "tests/helper.ts": READ });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a declined entry was counted as project source").toBe(false);
+    expect(e.skipped.some(s => s.startsWith(".github/")), `skipped was ${e.skipped.join(", ")}`)
+      .toBe(true);
+    expect(e.skipped.some(s => s.startsWith("tests/"))).toBe(true);
+  });
+
+  test("declining does not reopen B1: a scaffolded test file is still not source", () => {
+    // sec-476's BLOCKER, which is what the skips were added for. The
+    // direction this must not drift in: recording a decline must not turn
+    // into counting it.
+    const root = project({ "tests/scaffold-conformity.test.ts": READ, "README.md": "# docs" });
+    expect(projectSourceEvidence(root).found, "B1 reopened — a test file counted as source")
+      .toBe(false);
+  });
+
+  test("a real source file is still found, and is NOT a decline", () => {
+    // The other direction, and the one that matters most: none of this may
+    // make an ordinary project waivable.
+    const root = project({ "src/app.ts": READ });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a real source file stopped being found").toBe(true);
+    expect(unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts"), "a project with source was waived")
+      .toBeNull();
   });
 });
