@@ -110,7 +110,7 @@ describe("#524: the terminal funnel always has a reason to give", () => {
     expect(terminalReason(undefined, {})).not.toContain("undefined");
   });
 
-  test("SC-1801: the funnel puts it on the result, and never over a real one", async () => {
+  test("SC-1801: the funnel puts it on the result - and never over a real one", async () => {
     // Executed rather than grepped. `reason: terminalReason(...)` sitting
     // BEFORE the `...extra` spread would be overwritten by any caller
     // passing the field, and the source reads identically either way.

@@ -1645,7 +1645,7 @@ The test environment itself, through the `container` block declared by
 | `container.healthPath` | the path a probe calls to decide it came up |
 | `container.hosts` | where to look for it |
 
-`workflows/ship.js:5775` reads it, and on STANDARD+ runs the rebuild happens
+`workflows/ship.js:5856` reads it, and on STANDARD+ runs the rebuild happens
 and container Quinn is pointed at `http://<host>:<port>`. Before the schema
 change the key existed in prompts and in no validator, so a config that went
 through zod lost it — the block was there, and the container path rested on a
@@ -1670,7 +1670,7 @@ configure `prod.rebuild: "<cmd>"` and `forbiddenCommands: ["<cmd>"]` at the
 same time and nothing notices the contradiction — the brief tells the agent
 never to run it while the config declares it as this project's rebuild.
 `container.rebuildCommand` is interpolated directly into an agent prompt at
-`ship.js:5788`, so a consumer that puts its production command behind that key
+`ship.js:5869`, so a consumer that puts its production command behind that key
 has armed exactly the thing its own rules forbid, and no check looks.
 
 ### The record-env site, which is not where #274 said
@@ -1682,7 +1682,7 @@ forbid the agent from running it.
 
 **That site is gone.** #183 replaced it. All three arms of the production
 record now write `SKIP` with a reason naming what was not measured
-(`ship.js:6794`, `:6797`, `:6805`), the health-check arm says in so many words
+(`ship.js:6875`, `:6878`, `:6886`), the health-check arm says in so many words
 that a 200 means a container answered and not that it was built from this
 commit, and `container-has-fix` compares the image revision against HEAD. The
 honest value #274 asked for is the value the code writes.

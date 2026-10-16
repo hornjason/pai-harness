@@ -7912,3 +7912,108 @@ the suite is stronger than it was credited with.
 - [x] SC-1794: test/scaffold-auto-fix.test.ts contains [an unreadable or absent config is refused - never rewritten from memory] — discarding every key the function does not know is a bigger loss than the stale entry
 - [x] SC-1795: test/scaffold-auto-fix.test.ts contains [auto-fixes are counted apart from audit findings] — what the scaffold changed and what it noticed are different facts
 - [x] SC-1796: test/scaffold-auto-fix.test.ts contains [the write steps opt OUT of auto-fix and opt IN to pruning] — the polarity of each default, and the rehearsal getting the same flags so an audit reports what a fix would really do
+
+## A terminal status that says nothing about why (#524)
+
+Found by `lib/workflow-test-harness.ts` while executing `workflows/ship.js`
+with stubbed agents — the first defect the harness surfaced in the script it
+was built to test.
+
+`ship.js` has two funnels for a bad ending. #252 gave one of them a reason
+floor: `failureSummary` ends with "the run refused without recording a
+reason" when the refusal ledger is empty, so a SHIP_FAILED result always has
+a sentence in it. The other funnel never got one, and three of its call sites
+returned a status, a work directory, and nothing else.
+
+The sharpest of the three is the implement phase with no build result at all.
+The run computed `'unknown'`, printed it to the log, and threw it away: the
+object that came back carried `buildResult: undefined`. The one place that
+knew the answer was the line that discarded it.
+
+The other two had the reason sitting in a local variable one line earlier.
+Discovery's deny-list refusal was logged — `DISCOVERY REFUSED: …` — and then
+`return false` dropped the text, and the caller turned that into a bare
+status. The commit step with no SHA never had a reason at all, which is the
+most expensive one to be told nothing about: everything upstream succeeded,
+the work exists in a worktree, and the operator's next question is whether
+the commit agent ran.
+
+### Why a floor AND three call-site fixes
+
+The cheapest repair is the floor alone. It makes every exit carry a sentence
+and reads as fixed — and every one of those three exits would then say the
+same generic thing, which is a statement about `ship.js` rather than about
+what happened to the run. So the floor's fallback deliberately says so:
+*"nothing recorded why — that is a gap in this workflow, not a statement
+about the work"*. A plausible-sounding reason in that position would send an
+operator looking for a problem in their own code, which is *Silent Default
+Substitution* with better prose (`.claude/rules/config-access.md`).
+
+The behavioural rows therefore name the SPECIFIC sentence each exit should
+produce, and assert the floor's sentinel is **not** what came back. The
+floor-only repair fails them.
+
+Two sentinels where there could have been one, in two of the three. An agent
+that returned nothing and an agent that answered without the field it was
+asked for are different failures — a dead spawn and a live one that would not
+say — and they send an operator to different places.
+
+### What the harness could and could not reach
+
+Four of the nine rows execute the whole script. Reaching the Implement phase
+at all needs two overrides, and both are properties of the harness rather
+than of `ship.js`: `syntheticFromSchema` fills every enum with its first
+value, so every prior-work AC comes back `MET` and the run correctly reports
+the issue as already shipped; and it fills every string with one placeholder,
+so the issue's criteria and the ACs' `coversCriteria` never match and #251's
+coverage refusal fires. Both guards are working. They are named here because
+an override list that looks like a workaround usually is one.
+
+A reply reaching the implement failure branch also has to survive the
+worktree-identity check above it (#218). Without a reply naming the run's own
+repo, that row measures #218's refusal and never reaches the branch it is
+about — a fixture satisfying its assertion through a path that bypasses the
+feature.
+
+### Mutations, predicted before running and measured after
+
+Over `test/terminal-failure-reason.test.ts` (9 tests). Every anchor was
+checked for uniqueness before being applied.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the floor's fallback returns an empty string | 4 | 4 |
+| the funnel stops putting `reason` on the result | 5 | **3** |
+| the string reader stops trimming and type-checking | 2 | 2 |
+| the absent-build-result sentence is dropped | 1 | 1 |
+| the two implement sentinels are collapsed into one | 1 | 1 |
+| the deny-list refusal is logged but not carried | 1 | 1 |
+| the discovery exit stops passing its reason | 1 | 1 |
+| the two commit sentences are collapsed into one | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+**Seven matched exactly, and the eighth is the useful row.** Removing the
+floor from the funnel turned SC-1801, SC-1802 and SC-1803 red and left
+SC-1804 and SC-1805 green — because those two exits pass their reason in the
+payload, which the funnel spreads onto the result whether or not the floor
+exists. They are measuring the call-site fixes, which is what they are for;
+they cannot see the floor, and I had counted them as though they could.
+
+That is not a collapsed pair. The spread carries the whole payload and the
+floor fills a gap in it; for a caller that passed a reason they agree by
+construction, because the floor reads that same field first. The floor's own
+binding is proved by SC-1801 directly, and by SC-1802 and SC-1803 through
+`buildResult.findings`, which nothing but the floor reads.
+
+### Success criteria
+
+- [x] SC-1797: test/terminal-failure-reason.test.ts contains [a caller's own reason comes back verbatim] — and whitespace-only is not a reason, because a blank field is the same silence wearing a field name
+- [x] SC-1798: test/terminal-failure-reason.test.ts contains [each shape the existing call sites pass is read] — every one is what a live call site hands the funnel today, not an invented shape
+- [x] SC-1799: test/terminal-failure-reason.test.ts contains [an empty list is absence - not an empty reason] — a key with nothing behind it is worse than no key, since a reader concludes the run was asked and had nothing to say
+- [x] SC-1800: test/terminal-failure-reason.test.ts contains [with nothing at all it names the absence and blames this file] — a reason that read like a finding would send an operator looking for a problem in their own code
+- [x] SC-1801: test/terminal-failure-reason.test.ts contains [the funnel puts it on the result - and never over a real one] — executed, because the floor placed before the payload spread would be overwritten and the source reads the same either way
+- [x] SC-1802: test/terminal-failure-reason.test.ts contains [an implement phase that returned nothing says so] — the filed case, driven through the real control flow, asserting the sentence rather than the presence of a field
+- [x] SC-1803: test/terminal-failure-reason.test.ts contains [an implement phase that failed silently is a different sentence] — a dead spawn and a live agent that would not say are different failures
+- [x] SC-1805: test/terminal-failure-reason.test.ts contains [a commit step with no SHA says which of the two things happened] — the most expensive exit to be told nothing about, since everything upstream succeeded
+- [x] SC-1804: test/terminal-failure-reason.test.ts contains [the deny-list refusal reaches the result instead of only the log] — the text was computed and logged and dropped one line later, so nothing but the console ever had it
