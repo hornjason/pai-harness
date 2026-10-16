@@ -158,6 +158,55 @@ separate cases with a comment saying which decider each one is for. Without
 that, the next person to simplify the code deletes a line that has a test and
 watches it stay green.
 
+### Before you believe a 0, check the instrument (#60)
+
+A mutation row that comes back zero has two usual causes — the mutation was
+applied and nothing caught it, or the mutation was never really applied — and
+the usual advice is to prove the mutation changed behaviour before concluding
+anything from the number.
+
+There is a third, and it is worse because it is silent and it is not about the
+code at all: **the measurement stopped reporting.**
+
+Measured on #60. A test forced an error by writing to a path containing a NUL
+byte. The thrown message quotes the path, so the stderr line carried a real
+NUL — and `grep` treats a file with a NUL in it as binary, printing
+`Binary file matches` to a terminal and *nothing at all* through a pipe. The
+battery's `grep -E "^ *[0-9]+ (pass|fail)"` returned empty. Four mutations in
+a row measured as blank lines, with a green suite, a correct mutant, and no
+error anywhere.
+
+The tell is that the BASELINE is also wrong. A real zero has a believable
+baseline beside it; an instrument failure takes the baseline down too, and it
+is the one row nobody checks because nobody mutated anything to produce it.
+
+So: **read your baseline row before you read any mutation row.** If the
+baseline is empty, absent, or not the number you know the suite reports, you
+are not measuring the code. And do not let a test put a NUL in the run's
+output — a test that corrupts the output stream of the suite containing it
+breaks every downstream reader, including CI log greps that have nothing to do
+with it. A directory whose parent is a file throws `ENOTDIR` and forces the
+same error in text.
+
+### Search the slice, not the document (#297, #484, #60)
+
+A claim scoped to one section of a string, asserted against the whole string,
+is satisfied by a match anywhere in it. Three instances, all found by a
+mutation row coming back LOWER than predicted and by nothing else:
+
+| Where | The claim | What satisfied it instead |
+|---|---|---|
+| #297 | a phrase appears in a spec section's PROSE | the section's own SC line, which quotes the phrase it demands |
+| #484 | a new violation case is caught | the live-tree case, which asserted the WHOLE violation list, so two questions were one assertion |
+| #60 | the viewer prints a PHASES list containing `Goal` | the TIMELINE row `agent read-issue start [Goal]`, in the same rendered text |
+
+Each read correctly in the diff, each had a test name describing what it meant
+to do, each was green over code that had stopped doing it. The fix is the same
+every time: cut the region the claim is about out of the string first, assert
+on the cut, and assert that the cut is non-empty — because a slice that fails
+to find its own section is an empty string, and an empty string contains
+nothing, which is indistinguishable from a clean result.
+
 ### "This cannot be checked" is a claim, and it is checkable (#199, #479)
 
 The cheapest way to ship a check that cannot fail is to not ship it, having
