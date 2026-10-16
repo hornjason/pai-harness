@@ -119,6 +119,12 @@ export function stripStringsAndComments(
       i++;
       while (i < src.length) {
         if (src[i] === "\\") {
+          // Carry the escape through verbatim under `keepStringContents`.
+          // Dropping both characters turned `"a\"b"` into `ab`, which is not
+          // a shorter version of the segment — it is a DIFFERENT path, and a
+          // caller resolving it would report a file the code never reads.
+          // Silently wrong beats loudly wrong only in the wrong direction.
+          if (keepStringContents) out += src.slice(i, i + 2);
           i += 2;
           continue;
         }

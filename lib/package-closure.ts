@@ -72,6 +72,14 @@ export function publishedFiles(root: string, patterns: string[]): Set<string> {
   for (const pattern of patterns) {
     const clean = pattern.replace(/^\.\//, "").replace(/\/$/, "");
     const abs = join(root, clean);
+    // A files[] entry that climbs out of the package is never legitimate, and
+    // this function walks directories recursively — so an unchecked `../..`
+    // would enumerate the filesystem above the project. Refuse rather than
+    // normalise: npm would not publish it either, and silently reading it as
+    // the directory it resolves to would hide a malformed manifest.
+    if (relative(root, abs).startsWith("..")) {
+      throw new Error(`package.json files[] entry "${pattern}" escapes the package root`);
+    }
     if (!existsSync(abs)) continue;
     if (statSync(abs).isDirectory()) addDir(clean);
     else out.add(clean);
@@ -147,7 +155,15 @@ function splitArgs(argText: string): string[] {
   return args;
 }
 
-const STRING_LITERAL = /^["'`]([^"'`]*)["'`]$/;
+/**
+ * A segment the scanner is willing to resolve.
+ *
+ * No backslash: an escaped character means the written text and the runtime
+ * string differ, and resolving the text would name a path the code does not
+ * read. Such a segment falls through to `unresolved`, where it is reported,
+ * rather than being turned into a plausible wrong answer.
+ */
+const STRING_LITERAL = /^["'`]([^"'`\\]*)["'`]$/;
 
 /**
  * Every `join(<this module's directory>, ...literals)` in a source file.
@@ -240,6 +256,33 @@ export function packageClosureViolations(root: string, published: Set<string>): 
   for (const file of published) {
     if (!SOURCE_EXT.test(file)) continue;
     const source = readFileSync(join(root, file), "utf-8");
+
+    // A module-relative path the scanner could not resolve statically is
+    // UNMEASURED, and unmeasured is not clean. The first draft of this module
+    // exported `unresolvedModuleRelativeJoins`, tested it in isolation, and
+    // never called it from here — so its own docstring claimed these were
+    // "NOT silently dropped" while the only path that produces violations
+    // dropped them. Found by the push security review, in the same commit
+    // that adds a section about exactly this to
+    // `.claude/rules/checks-must-be-able-to-fail.md`.
+    //
+    // Enforced strictly because the live tree has zero: there is no migration
+    // window to ratchet through, so a new one fails immediately.
+    for (const expression of unresolvedModuleRelativeJoins(source)) {
+      violations.push(
+        `${file} builds ${expression} from its own directory and the segments are not all literal — ` +
+          `the scanner cannot say what it reads, so whether it ships is UNMEASURED`,
+      );
+    }
+
+    // `join` resolved by identifier. An aliased import would be invisible, so
+    // it is refused rather than missed — the blind spot is small, and the
+    // point is that entering it cannot be silent.
+    if (/\bimport\s*\{[^}]*\bjoin\s+as\s+\w/.test(source)) {
+      violations.push(
+        `${file} imports join under an alias, which this scanner resolves by name and would not see`,
+      );
+    }
 
     // #484. A path built from the module's own location and read at runtime
     // asks the same question an import does, so it is answered here and not

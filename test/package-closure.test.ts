@@ -57,6 +57,45 @@
  * the bug at all. The three synthetic CLOSURE-7 cases are the only thing
  * standing between this scanner and #454's mistake, and that is the whole
  * argument for not deleting them as redundant with the live-tree check.
+ *
+ * ## Four findings from the push security review (CLOSURE-10)
+ *
+ * The first is the one worth reading, because of where it was found: **a
+ * fail-open, in the commit that adds a section about fail-opens to
+ * `.claude/rules/checks-must-be-able-to-fail.md`.**
+ *
+ * `unresolvedModuleRelativeJoins` was exported, unit-tested, and never called
+ * by `packageClosureViolations`. The module docstring said unresolvable reads
+ * were "NOT silently dropped" while the only path that produces violations
+ * dropped all of them. The unit test asserted the counter WORKED. Nothing
+ * asserted the counter was CONSULTED, and those are different claims.
+ *
+ * The other three, each now a case:
+ *
+ * - The tokenizer dropped `\` and the character after it under
+ *   `keepStringContents`, so `"a\"b"` came back as the segment `ab`. Not a
+ *   truncated answer — a different path, which the checker would then name in
+ *   a violation. Such a segment is now unresolvable, and therefore reported.
+ * - `join` is resolved by identifier, so `import { join as j }` was invisible.
+ *   Refused outright rather than missed; the blind spot is narrow and the
+ *   point is that entering it cannot be silent.
+ * - `publishedFiles` walked `files[]` entries with no containment check, and
+ *   it recurses. `files: ["../../etc"]` would have enumerated the filesystem
+ *   above the project. It throws.
+ *
+ * Measured over 53 tests, predicted first:
+ *
+ * | Mutation | Predicted | Red |
+ * |---|---|---|
+ * | unresolved joins not reported | 2 | **1** |
+ * | alias refusal removed | 1 | 1 |
+ * | traversal guard removed | 1 | 1 |
+ *
+ * The first missed because the escaped-character case asks
+ * `unresolvedModuleRelativeJoins` directly rather than going through
+ * `packageClosureViolations` — the scanner's classification and the reporting
+ * of it are two questions, and they have a case each. The six rows above were
+ * re-measured against this tree and reproduce exactly: 1, 1, 1, 8, 3, 8.
  */
 import { describe, expect, test, afterAll } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
@@ -337,6 +376,68 @@ describe("#484 CLOSURE-8: the live tree is closed for reads as well as imports",
     writeFileSync(join(dir, "lib", "s.ts"), 'const d = join(__dirname, "..", "nowhere", "x.json");\n');
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["lib/"] }));
     expect(packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)))).toEqual([]);
+  });
+});
+
+/**
+ * Four findings from the push security review of the first #484 commit. Each
+ * one is a case here, and the first is the reason the rest got written: it was
+ * a fail-open in the commit that adds a section about fail-opens.
+ */
+describe("#484 CLOSURE-10: what the scanner cannot read, it refuses", () => {
+  test("an unresolvable module-relative join is a violation, not a silence", () => {
+    // THE FINDING. `unresolvedModuleRelativeJoins` was exported, unit-tested,
+    // and never called by `packageClosureViolations` — so the docstring said
+    // these were "NOT silently dropped" while the only path that produces
+    // violations dropped every one of them. The unit test asserted the
+    // counter worked; nothing asserted the counter was consulted.
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "s.ts"), 'const p = join(__dirname, "..", someDir, "r.json");\n');
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["lib/"] }));
+    const v = packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)));
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain("UNMEASURED");
+  });
+
+  test("an escaped character makes a segment unresolvable rather than wrong", () => {
+    // The tokenizer dropped `\` and the character after it, so `"a\"b"` came
+    // back as the segment `ab` — not a truncated answer but a different path,
+    // which the checker would then report on by name. A wrong answer stated
+    // confidently is worse here than no answer.
+    const src = String.raw`join(__dirname, "a\"b", "c.json")`;
+    expect(runtimeReads(src)).toEqual([]);
+    expect(unresolvedModuleRelativeJoins(src)).toHaveLength(1);
+  });
+
+  test("an aliased join import is refused, because the scanner resolves by name", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(
+      join(dir, "lib", "s.ts"),
+      'import { join as j } from "path";\nconst p = j(__dirname, "..", "config", "r.json");\n',
+    );
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["lib/"] }));
+    const v = packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)));
+    expect(v.some(x => x.includes("alias"))).toBe(true);
+  });
+
+  test("a files[] entry that climbs out of the package throws", () => {
+    // publishedFiles walks directories recursively. An unchecked `../..`
+    // would enumerate the filesystem above the project.
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["../../etc"] }));
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).toThrow("escapes the package root");
+  });
+
+  test("the live tree has nothing unresolved, which is why this is strict", () => {
+    // Enforcement is absolute rather than ratcheted because the count is zero
+    // today. If this ever needs a banked number, that is a decision to make
+    // deliberately, not a default to slide into.
+    const published = publishedFiles(ROOT, readPackageFiles(ROOT));
+    const unmeasured = packageClosureViolations(ROOT, published).filter(v => v.includes("UNMEASURED"));
+    expect(unmeasured, unmeasured.join("\n")).toEqual([]);
   });
 });
 
