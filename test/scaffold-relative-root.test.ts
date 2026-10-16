@@ -92,7 +92,7 @@ function snapshot(dir: string, base = dir, out = new Map<string, string>()): Map
   return out;
 }
 
-function scaffold(root: string, cwd: string): { code: number; out: string } {
+function scaffold(root: string, cwd: string, writeMode = true): { code: number; out: string } {
   const proc = Bun.spawnSync({
     // `--fix` is the writing mode. Without it the run REHEARSES against a
     // clone and discards it — and the clone's path comes from `mkdtemp`, so
@@ -100,7 +100,7 @@ function scaffold(root: string, cwd: string): { code: number; out: string } {
     // is the rehearsal-fidelity gap this issue names, confirmed from the code
     // rather than inferred: `scripts/scaffold-project.ts:97` hands
     // `rehearsal.dir` to the steps, never `projectPath`.
-    cmd: ["bun", SCAFFOLD, root, "--fix"],
+    cmd: ["bun", SCAFFOLD, root, ...(writeMode ? ["--fix"] : [])],
     cwd,
     stdout: "pipe",
     stderr: "pipe",
@@ -204,6 +204,32 @@ describe("#481: the documented invocation", () => {
     for (const f of [".claude/rungate/config.json", "CODE-MAP.md"]) {
       expect(normalise(f, fromAbsolute.get(f)!).length, `${f} normalised to nothing`).toBeGreaterThan(200);
     }
+  });
+});
+
+describe("#481: the audit says which input it substituted", () => {
+  test("SC-1666: the rehearsal notice names the root it ran against and the one it did not", () => {
+    // The audit cannot avoid substituting the root — a rehearsal has to run
+    // somewhere else or it is not a rehearsal. What it can do is say so.
+    // Without this line the audit reported `CREATED: project-state.json` for
+    // a write that threw seconds later under --fix, and nothing in its output
+    // distinguished "we checked this" from "we checked something adjacent".
+    const { code, out } = scaffold(".", project, false);
+    expect(code, out).toBe(0);
+    expect(out).toContain("Root SUBSTITUTED");
+    expect(out).toContain("UNMEASURED");
+    // Both ends of the substitution, named. One without the other is a
+    // sentence the reader cannot act on.
+    expect(out, "the notice does not name the root the operator typed").toMatch(/not \.(\s|,|—)/);
+    expect(out).toMatch(/ran against \/[^\s,]+/);
+  });
+
+  test("the notice still names the steps it did not rehearse", () => {
+    // The pre-existing half. Appending to a sentence is the easiest way to
+    // drop what was already in it.
+    const { out } = scaffold(".", project, false);
+    expect(out).toContain("Not rehearsed:");
+    expect(out).toContain("postScaffoldCommit");
   });
 });
 
