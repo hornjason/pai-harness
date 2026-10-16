@@ -534,10 +534,10 @@ stale the moment a rule is edited. The map stays as the fallback for v1
 entries, because a reader that only used recorded text would label every
 pre-#116 trend line with a bare id.
 
-- [ ] SC-1475: test/compliance-history-evidence.test.ts contains [the round trip keeps all three] — rule, evidence and category survive a write/read through the history for every graded rule and not only the violated ones
-- [ ] SC-1476: lib/compliance-report.ts contains [COMPLIANCE_HISTORY_SCHEMA] — each entry records its shape so records written before and after the change are distinguishable without guessing from their contents
-- [ ] SC-1477: lib/compliance-report.ts contains [entryVerdicts] — one reader handles the old flat map and the new records so the four v1 lines already on disk still trend
-- [ ] SC-1478: test/compliance-history-evidence.test.ts contains [the LIVE writer carries all three from grade file to history file] — persistCompliance itself is run over a grade file and the three fields are read back out of the history file rather than out of a fixture this test wrote
+- [x] SC-1475: test/compliance-history-evidence.test.ts contains [the round trip keeps all three] — rule, evidence and category survive a write/read through the history for every graded rule and not only the violated ones
+- [x] SC-1476: lib/compliance-report.ts contains [COMPLIANCE_HISTORY_SCHEMA] — each entry records its shape so records written before and after the change are distinguishable without guessing from their contents
+- [x] SC-1477: lib/compliance-report.ts contains [entryVerdicts] — one reader handles the old flat map and the new records so the four v1 lines already on disk still trend
+- [x] SC-1478: test/compliance-history-evidence.test.ts contains [the LIVE writer carries all three from grade file to history file] — persistCompliance itself is run over a grade file and the three fields are read back out of the history file rather than out of a fixture this test wrote
 
 ### What was broken to prove it
 
