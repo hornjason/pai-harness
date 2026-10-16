@@ -178,14 +178,25 @@ describe("contract: STANDARD tier", () => {
     // cannot be authored would put the fixture straight back to unreadable.
     const g = (args: string) =>
       execSync(`git -c user.email=t@t -c user.name=t ${args}`, { cwd: STANDARD_PROJECT, stdio: "ignore" });
+    // #414: `origin` carries the project's IDENTITY and `mirror` carries the
+    // push. They were one remote until now, pointing at a local bare path,
+    // and that is the #174 defect in this same fixture repeating itself one
+    // check along: `repoSlug` cannot read `/tmp/.../standard-remote.git` as
+    // owner/name, so `worktree-repo` was unreadable rather than satisfied.
+    //
+    // A real project's origin IS its push target, and a fixture cannot reach
+    // GitHub — so the two are split rather than the parser widened. Widening
+    // it to accept a local path would buy this test green by making the check
+    // blind to the string it exists to read.
     const remote = join(TEST_BASE, "standard-remote.git");
     rmSync(remote, { recursive: true, force: true });
     execSync(`git init --bare -b main ${remote}`, { stdio: "ignore" });
     g("init -b main");
     g("add -A");
     g('commit -m "fixture"');
-    g(`remote add origin ${remote}`);
-    g("push -u origin main");
+    g("remote add origin https://github.com/test/repo.git");
+    g(`remote add mirror ${remote}`);
+    g("push -u mirror main");
     writeFileSync(join(dir, "workflow-state.json"), JSON.stringify({
       schemaVersion: 2, issue: 9998, repo: "test/repo", issueRepo: "test/repo",
       projectRoot: STANDARD_PROJECT, slug: "standard", phase: "DONE",

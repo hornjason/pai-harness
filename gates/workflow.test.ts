@@ -17,6 +17,7 @@ import {
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
+import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -217,6 +218,61 @@ export function codeCommittedViolations(
     `code-committed: ${dirty.length} uncommitted change(s) in the tree under test${where}: ` +
       `${shown}${dirty.length > 10 ? ` … and ${dirty.length - 10} more` : ""}`,
   ];
+}
+
+/**
+ * #414 — the worktree-repository check, read from the disk rather than from
+ * the agent standing in it.
+ *
+ * #218 refuses a worktree whose `origin` does not match the run's repo, and
+ * the remote it compares is SELF-REPORTED: `workflows/ship.js` has no
+ * subprocess (#69), so the only remote it can see is the one the agent said
+ * it read. An agent that answers from its brief rather than from
+ * `git remote get-url origin` produces a reply indistinguishable from a
+ * correct one, and `lib/worktree-repo.ts` has exported the unforgeable half
+ * since #218 with nothing able to call it. A gate can: gates run as real
+ * subprocesses with the worktree on disk.
+ *
+ * Exported as the single binding this check's refusal is routed through, so
+ * `return []` is one edit and the mutation in
+ * `test/suite-binding-mutation.test.ts` is a measurement rather than a claim
+ * in a PR body. Keep it one function with one body — a second refusal path
+ * for the same fact would survive that mutation.
+ *
+ * AN EMPTY LIST REFUSES. Every run this fires on has at least a tree under
+ * test, so zero entries means the state stopped naming them, and a check that
+ * scans nothing reports nothing and is indistinguishable from compliance.
+ */
+export function worktreeRepoViolations(entries: unknown, expectedRepo: unknown, read?: (p: string) => RemoteReading): string[] {
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return [
+      "worktree-repo: the workflow state names no worktree to read, so no checkout " +
+        "was compared against this run's repository. This is UNMEASURED, not PASS — " +
+        "every run reaches this gate with at least a tree under test, so an empty " +
+        "list means the state stopped recording them (#414).",
+    ];
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of entries) {
+    const e = (raw ?? {}) as { path?: unknown; reportedRepo?: unknown };
+    const path = typeof e.path === "string" ? e.path.trim() : "";
+    // One worktree, one reading. A worktree that reported in two parts (#228)
+    // appears twice, and two identical refusals for it is noise an operator
+    // has to deduplicate by hand. Keyed on the empty string too, so a run of
+    // pathless rows refuses once.
+    if (seen.has(path)) continue;
+    seen.add(path);
+    const reported = typeof e.reportedRepo === "string" ? e.reportedRepo : null;
+    const got = worktreeDiskIdentity(
+      path,
+      typeof expectedRepo === "string" ? expectedRepo : null,
+      reported,
+      read,
+    );
+    if (got.refusal) out.push(`worktree-repo: ${got.refusal}`);
+  }
+  return out;
 }
 
 /** The tree to run commands in, or null when the state does not name one. */
@@ -883,6 +939,28 @@ describe("verify checks", () => {
       root,
     );
     const violations = codeCommittedViolations(result, { configured, paths });
+    expect(violations, violations.join("\n")).toEqual([]);
+  });
+
+  // 22b. worktree-repo (#414, follow-up to #218)
+  test("worktree-repo: every worktree is a checkout of this run's repository", () => {
+    if (!isShipPlus()) return;
+    // The entries, not just `treeUnderTest`: a decomposed run has one
+    // worktree per sub-issue and #218's incident was a SECOND agent landing
+    // in the wrong checkout while the first was correct. Checking only the
+    // tree under test would read the right answer off the wrong worktree.
+    //
+    // `treeUnderTest` is included because it is the tree every other check in
+    // this file measures — if it is a worktree of another repository then
+    // tsc-pass, code-committed and code-pushed all measured that repository,
+    // and said PASS.
+    const named = Array.isArray(sf("worktrees")) ? sf("worktrees") : [];
+    const tree = sf("treeUnderTest");
+    const entries = [
+      ...(typeof tree === "string" && tree.trim() ? [{ path: tree }] : []),
+      ...named,
+    ];
+    const violations = worktreeRepoViolations(entries, sf("repo"));
     expect(violations, violations.join("\n")).toEqual([]);
   });
 

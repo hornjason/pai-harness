@@ -64,6 +64,7 @@ let gate = "";
 let slug = "";
 let issue = 0;
 let treeUnderTest = "";
+let worktreesJson = "";
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === "--gate" && args[i + 1]) gate = args[++i];
@@ -75,6 +76,13 @@ for (let i = 0; i < args.length; i++) {
   // here rather than inferred. Inferring it would be guessing at exactly the
   // fact the gates were previously wrong about.
   if (args[i] === "--tree-under-test" && args[i + 1]) treeUnderTest = args[++i];
+  // #414 — every worktree the run built in, as JSON, for the same reason
+  // `--tree-under-test` is threaded rather than inferred: ship.js owns the
+  // list and the Workflow sandbox cannot write the state file. One tree is
+  // not enough, because a decomposed run has one worktree per sub-issue and
+  // #218's incident was a SECOND agent landing in the wrong checkout while
+  // the first was correct.
+  if (args[i] === "--worktrees" && args[i + 1]) worktreesJson = args[++i];
 }
 
 if (!gate || !["scope", "verify", "ship", "merge", "prove", "gaps"].includes(gate)) {
@@ -107,6 +115,34 @@ if (treeUnderTest) {
   state.treeUnderTest = treeUnderTest;
 } else {
   delete state.treeUnderTest;
+}
+
+// #414 — the same write-or-clear rule, for the same reason. A list left
+// behind by an earlier gate would be inherited by a later one that named
+// none, and by the Ship phase those worktrees may have been collected away;
+// the gate would then refuse on paths that are correctly gone, or — worse —
+// read a stale path that still exists and report a repository nobody built
+// in. Absent has to mean absent.
+//
+// Unparseable REFUSES rather than clearing. "the caller sent nothing" and
+// "the caller sent something this cannot read" are different facts, and
+// treating the second as the first switches the check off at exactly the
+// moment its input is suspect.
+if (worktreesJson) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(worktreesJson);
+  } catch (e) {
+    console.error(`BLOCKED — --worktrees is not valid JSON: ${(e as Error).message}`);
+    process.exit(1);
+  }
+  if (!Array.isArray(parsed) || parsed.some(w => !w || typeof (w as { path?: unknown }).path !== "string")) {
+    console.error("BLOCKED — --worktrees must be an array of { path, reportedRepo? }");
+    process.exit(1);
+  }
+  state.worktrees = parsed;
+} else {
+  delete state.worktrees;
 }
 writeFileSync(SF, JSON.stringify(state, null, 2));
 

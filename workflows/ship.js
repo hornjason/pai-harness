@@ -840,6 +840,42 @@ function worktreeIdentityViolations(reports, expectedRepo, opts = {}) {
   }
   return out
 }
+
+/**
+ * The agent results, as the list of worktrees a gate must read off the disk
+ * (#414).
+ *
+ * A function rather than an inline `.map()` at the call site so a test can
+ * EXECUTE it. The gate half of #414 is a check keyed on `state.worktrees`,
+ * and a check keyed on a field nothing authors is #315 exactly — that one sat
+ * green on every run this repository has ever made because `codeCommittedPaths`
+ * did not exist. Both ends of the binding have to be driven, not just the
+ * reader (#235).
+ *
+ * Redacted HERE rather than at the gate, because the result is interpolated
+ * into an agent prompt and a CI checkout's origin is
+ * `https://x-access-token:TOKEN@host/owner/name`. `redactRemote` replaces the
+ * credential and leaves the host and the slug, so the comparison the gate
+ * makes is unaffected — asserted, not assumed, in test/worktree-repo.test.ts.
+ *
+ * Rows with no path are dropped rather than carried as empty strings: the
+ * gate refuses a pathless entry, and a non-isolated spawn legitimately has no
+ * worktree. The gate still reads `treeUnderTest`, so dropping them is not a
+ * run that goes unchecked.
+ */
+function worktreeRecords(agentResults) {
+  if (!Array.isArray(agentResults)) return []
+  const out = []
+  for (const r of agentResults) {
+    const path = String((r && r.worktreePath) || '').trim()
+    if (!path) continue
+    out.push({
+      path,
+      ...(r && r.worktreeRepo ? { reportedRepo: redactRemote(String(r.worktreeRepo)) } : {}),
+    })
+  }
+  return out
+}
 // ──── WORKTREE-IDENTITY-END ────
 
 // ──── BRIEF-PRECEDENCE-START ────
@@ -1613,6 +1649,25 @@ async function shipFailed(phaseName, immediateReason, extra = {}) {
 
 /** Set by the PR step. Declared here so every refusal site can read it. */
 let openedPr = null
+
+/**
+ * Every worktree this run built in, for the gates to read off the disk (#414).
+ *
+ * Set by the collection step, below. Declared here because `runGateWithHeal`
+ * is defined before it and threads the list into `gates/run-gate.ts` — the
+ * same shape `--tree-under-test` uses, and for the same reason: ship.js owns
+ * the value and the Workflow sandbox cannot write the state file.
+ *
+ * The identity check in the COLLECT-IDENTITY block above compares what the
+ * AGENT reported. This list is what lets a gate compare the CHECKOUT, which
+ * no self-report can forge — an agent answering from its brief rather than
+ * from `git remote get-url origin` produces a reply indistinguishable from a
+ * correct one, and that is the half #218 scoped out and #414 closes.
+ *
+ * Empty until collection, and empty on a non-isolated run. The gate reads
+ * `treeUnderTest` as well, so an empty list is not an unchecked run.
+ */
+let runWorktrees = []
 // ──── FAILURE-LEDGER-END ────
 
 // ── Helper: run gate with self-heal + error classification ──
@@ -1621,6 +1676,13 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
   const gateCwd = gateOpts.cwd || PROJECT_ROOT
   const cdPrefix = gateCwd !== PROJECT_ROOT ? `cd ${gateCwd} && ` : ''
   const evidenceEnv = gateCwd !== PROJECT_ROOT ? `EVIDENCE_CWD=${gateCwd} ` : ''
+  // #414 — shellQuote because these paths originate in agent replies (#155)
+  // and this string is pasted into a command. Omitted entirely when the run
+  // built in no worktree, so run-gate.ts clears a stale list rather than
+  // inheriting one from an earlier gate.
+  const worktreesFlag = runWorktrees.length > 0
+    ? ` --worktrees ${shellQuote(JSON.stringify(runWorktrees))}`
+    : ''
   /**
    * Every exit from this function goes through here, so the ledger sees each
    * gate's FINAL outcome and nothing else (#252). Recording at the point of
@@ -1636,7 +1698,7 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
     const result = await timedAgent(`
 Run the ${gateName} gate and classify any failures:
 
-1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd} 2>&1
+1. Run: ${cdPrefix}${evidenceEnv}TEST_WORK_DIR=${WORK_DIR} bun run ${HARNESS_ROOT}/gates/run-gate.ts --gate ${gateName} --slug ${SLUG} --issue ${ISSUE} --tree-under-test ${gateCwd}${worktreesFlag} 2>&1
 2. Read ${WORK_DIR}/workflow-state.json for gate result
 3. If FAIL, classify failures: bun -e "
    import {classifyFailures} from '${HARNESS_ROOT}/gates/error-classifier.ts';
@@ -3570,6 +3632,10 @@ if (preCollectIdentity.length > 0) {
     })),
   })
 }
+
+// The reply passed. Record where it came from so the gates can ask the same
+// question of the disk, which is the half a reply cannot answer (#414).
+runWorktrees = worktreeRecords(implementResult.buildResult?.agentResults)
 // ──── COLLECT-IDENTITY-END ────
 
 // Capture Marcus's worktree path so Quinn and fix iterations validate the same code

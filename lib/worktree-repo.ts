@@ -37,6 +37,7 @@
  */
 
 import { spawnSync } from "child_process";
+import { existsSync } from "fs";
 
 /** Returned by `readWorktreeRemote`, so a failure carries its own reason. */
 export interface RemoteReading {
@@ -258,6 +259,170 @@ export function worktreeIdentity(
       `${where} is a worktree of ${actual}, but this run targets ${expected} — ` +
       `an isolated agent resolved its worktree from ambient cwd rather than the run's projectRoot. ` +
       `Work done there would be written into the wrong repository (#218).`,
+  };
+}
+
+/**
+ * What a reading of the DISK can say, beyond what a reply can (#414).
+ *
+ * `worktreeIdentity` above compares a remote an agent REPORTED. Reading the
+ * checkout adds two answers a reply cannot produce:
+ *
+ *   missing — the worktree is not there at gate time. A removed worktree and
+ *             a matching one must not give the same answer; "nothing to read"
+ *             read as "nothing to report" is the fail-open
+ *             `.claude/rules/checks-must-be-able-to-fail.md` is about.
+ *   forged  — the reply named the RIGHT repository and the checkout is a
+ *             different one. This is the case #218 structurally cannot see,
+ *             because the only remote it has is the one being contradicted,
+ *             and it is the whole reason #414 exists.
+ *
+ * `forged` is not an accusation of intent. An agent answering from its brief
+ * rather than from `git remote get-url origin` produces exactly this, and so
+ * does a worktree that moved after the reply. Both have the same consequence
+ * — the run's identity check passed on a string nothing checked — and a
+ * different remedy from an ordinary mismatch, which is why it is its own
+ * verdict rather than a flavour of one.
+ */
+export type DiskVerdict = IdentityVerdict | "missing" | "forged";
+
+export interface DiskIdentityResult {
+  verdict: DiskVerdict;
+  /** The slug the CHECKOUT has, when one could be read. */
+  actual: string | null;
+  /** The slug the run expects. */
+  expected: string | null;
+  /** The slug the agent REPORTED, when it reported anything parseable. */
+  reported: string | null;
+  /** Null when the verdict is `match`; otherwise an operator-facing sentence. */
+  refusal: string | null;
+}
+
+/**
+ * Which repository is this worktree, according to the worktree?
+ *
+ * `read` is injectable so a test can plant a reading git cannot produce. It
+ * defaults to the real reader, and that default is asserted: a gate whose
+ * default reader is a stub is the check that never looked.
+ *
+ * Every refusal names the path and both slugs, and every refusal says
+ * `read from the checkout` and `#414`, because the operator's first question
+ * is which of the two readings refused. ship.js's refusal comes from the
+ * reply; this one comes from the disk; they have different causes and
+ * different fixes, and a shared sentence would make them one fact.
+ *
+ * Paths are redacted on the way into a refusal for the same reason remotes
+ * are: a worktree path is attacker-adjacent data (#155) and a CI path can
+ * carry a token in it.
+ */
+export function worktreeDiskIdentity(
+  worktreePath: string,
+  expectedRepo: string | null | undefined,
+  reportedRepo: string | null | undefined,
+  read: (p: string) => RemoteReading = readWorktreeRemote,
+): DiskIdentityResult {
+  const expected = repoSlug(expectedRepo);
+  const reported = repoSlug(reportedRepo);
+  const path = typeof worktreePath === "string" ? worktreePath.trim() : "";
+  const where = redactRemote(path || "(no path reported)");
+
+  if (!path) {
+    return {
+      verdict: "unreported",
+      actual: null,
+      expected,
+      reported,
+      refusal:
+        `a result row named no worktree, so there is nothing to read from the checkout — ` +
+        `a row with no path is not a row with nothing to check, it is a row whose origin ` +
+        `cannot be established (#414)`,
+    };
+  }
+
+  if (!expected) {
+    return {
+      verdict: "unreported",
+      actual: null,
+      expected: null,
+      reported,
+      refusal:
+        `${where} could not be checked against the checkout — the run did not state a ` +
+        `repository to compare against ` +
+        `(repo was ${JSON.stringify(expectedRepo == null ? null : redactRemote(String(expectedRepo)))}), ` +
+        `so a worktree in any repository would pass (#414)`,
+    };
+  }
+
+  if (!existsSync(path)) {
+    // Before the read, not after: `git -C <gone>` fails with a message about
+    // the directory, which is indistinguishable from a dozen other failures
+    // and would land every removed worktree in `unreadable`.
+    return {
+      verdict: "missing",
+      actual: null,
+      expected,
+      reported,
+      refusal:
+        `${where} is named by this run but does not exist at gate time, so its origin ` +
+        `could not be read from the checkout. A worktree that is gone is not a worktree ` +
+        `that matched — whatever was built there was measured against nothing (#414)`,
+    };
+  }
+
+  const reading = read(path);
+  if (reading.error || !reading.url) {
+    return {
+      verdict: "unreadable",
+      actual: null,
+      expected,
+      reported,
+      refusal:
+        `${where} exists but its origin could not be read from the checkout ` +
+        `(${reading.error || "git printed no url"}), so it cannot be compared against ` +
+        `${expected}. A reading that failed is not a checkout that matched (#414)`,
+    };
+  }
+
+  const actual = repoSlug(reading.url);
+  if (!actual) {
+    return {
+      verdict: "unreadable",
+      actual: null,
+      expected,
+      reported,
+      refusal:
+        `${where} has an origin this run cannot read as owner/name ` +
+        `(${JSON.stringify(redactRemote(reading.url.trim()))}), read from the checkout, ` +
+        `so it cannot be compared against ${expected} (#414)`,
+    };
+  }
+
+  if (actual === expected) {
+    return { verdict: "match", actual, expected, reported, refusal: null };
+  }
+
+  if (reported && reported === expected) {
+    return {
+      verdict: "forged",
+      actual,
+      expected,
+      reported,
+      refusal:
+        `${where} reported ${reported}, which is this run's repository, but the checkout ` +
+        `read from the checkout is ${actual}. The reply and the disk disagree, so the ` +
+        `self-reported check in the ship workflow passed on a string nothing verified — ` +
+        `send the agent back rather than moving the worktree (#414, follow-up to #218).`,
+    };
+  }
+
+  return {
+    verdict: "mismatch",
+    actual,
+    expected,
+    reported,
+    refusal:
+      `${where} is a worktree of ${actual}, read from the checkout, but this run targets ` +
+      `${expected}. Work done there would be written into the wrong repository (#414).`,
   };
 }
 
