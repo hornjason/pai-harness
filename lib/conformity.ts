@@ -18,7 +18,7 @@ import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
 import { isTypeScriptProject, tsconfigVerdict } from "./typescript-project";
-import { readSuccessDoc, successViolations } from "./success-doc";
+import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
 
 // ── Shared utilities ────────────────────────────────────────
 
@@ -3125,7 +3125,7 @@ export function unmeasuredScanReason(
 export function runSuccessDocValidation(root: string) {
   describe("SUCCESS.md (#485)", () => {
     test("SUCCESS-1: the project states what it is for, and how each claim fails", () => {
-      const verdict = successViolations(readSuccessDoc(root));
+      const verdict = successViolations(readSuccessDoc(root), readSuccessTemplate());
       if (verdict.unmeasured) {
         addFinding({
           ruleId: "SUCCESS-1",

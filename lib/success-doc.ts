@@ -40,7 +40,8 @@
  */
 
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
+import { fileURLToPath } from "url";
 
 /**
  * The token the template puts on every line a human must replace.
@@ -177,7 +178,7 @@ export interface SuccessVerdict {
  * single binding to mutate, and so every case can be driven without a
  * filesystem.
  */
-export function successViolations(text: string | null): SuccessVerdict {
+export function successViolations(text: string | null, template?: string | null): SuccessVerdict {
   if (text === null) {
     return {
       violations: [],
@@ -199,6 +200,21 @@ export function successViolations(text: string | null): SuccessVerdict {
         `indistinguishable from a considered one to everything except a reader, which is why ` +
         `this refuses rather than counting the file as present.`,
     );
+  }
+
+  // The backstop the marker check turned out to need. Asked before the
+  // per-claim rules so the loudest problem is reported first.
+  if (template) {
+    const residue = templateResidue(text, template);
+    if (residue.length > 0) {
+      out.push(
+        `SUCCESS.md still contains ${residue.length} line(s) verbatim from the generator's ` +
+          `template, so this document is partly unwritten: ` +
+          residue.slice(0, 3).map(l => JSON.stringify(l.slice(0, 70))).join(", ") +
+          `${residue.length > 3 ? `, and ${residue.length - 3} more` : ""}. ` +
+          `Deleting the placeholder markers is not the same as replacing the text they mark.`,
+      );
+    }
   }
 
   if (doc.claims.length === 0) {
@@ -246,6 +262,64 @@ export function successViolations(text: string | null): SuccessVerdict {
   }
 
   return { violations: out, unmeasured: null };
+}
+
+/**
+ * Lines the project still shares, verbatim, with the template it came from.
+ *
+ * ## Why the placeholder markers were not enough
+ *
+ * The first version of this check rested entirely on `PLACEHOLDER_MARKER`,
+ * and a security review found the hole by reading what the generator PRINTS:
+ * `create-success` tells the user "Replace every line marked
+ * `rungate:placeholder`". A user who does exactly that — deletes the five
+ * marker lines, names the claims, writes a `How it fails` for each, and stops
+ * — produced **seven surviving `TODO`s and zero violations**. `## The thing`
+ * was still the template's instruction text, every `**How to measure it:**`
+ * still read `TODO`, and `owner:`/`updated:` were still `TODO-OWNER` and
+ * `TODO-DATE`.
+ *
+ * One `grep -v` cleared the entire guard. That is the second shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — a detector narrower than
+ * what it detects — and the narrowing was *instructed by our own output*.
+ *
+ * ## Why this shape rather than more rules
+ *
+ * Adding a rule per section (require a filled `## The thing`, require a
+ * `**How to measure it:**`, ...) would be a list that has to stay in sync
+ * with the template by hand, and a new template section would silently go
+ * unchecked. This asks the question directly instead: **is this document
+ * still, in part, the template?** It needs no per-section knowledge and a
+ * new template section is covered the day it ships.
+ *
+ * Structural lines are excluded because they are SUPPOSED to match: headings,
+ * table rows, frontmatter keys, and anything too short to be instruction
+ * prose. Measured against the one real instance — rungate's own SUCCESS.md,
+ * written four months before the template — the only overlap is
+ * `doc-type: reference` and `status: active`, both frontmatter.
+ */
+export function templateResidue(text: string, template: string): string[] {
+  const structural = (l: string) =>
+    l.length <= 12
+    || l.startsWith("#")
+    || l.startsWith("|")
+    || l.startsWith("---")
+    || /^[a-z][a-z-]*:\s/.test(l);
+
+  const mine = new Set(text.split("\n").map(l => l.trim()));
+  const out: string[] = [];
+  for (const raw of template.split("\n")) {
+    const l = raw.trim();
+    if (structural(l) || !mine.has(l)) continue;
+    if (!out.includes(l)) out.push(l);
+  }
+  return out;
+}
+
+/** The template the generator copies, or null if it is not installed. */
+export function readSuccessTemplate(): string | null {
+  const p = join(dirname(fileURLToPath(import.meta.url)), "..", "templates", "SUCCESS-TEMPLATE.md");
+  return existsSync(p) ? readFileSync(p, "utf-8") : null;
 }
 
 /** Read the project's SUCCESS.md, or null when there is none. */

@@ -15,7 +15,7 @@
  * seed is a thing people want to restart.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
 
@@ -30,7 +30,24 @@ const root = arg("project-root") ?? process.cwd();
 const force = process.argv.includes("--force");
 const target = join(root, "SUCCESS.md");
 
-if (existsSync(target) && !force) {
+// `lstatSync`, NOT `existsSync`. BUG-440-A's shape: `existsSync` RESOLVES a
+// symlink and `writeFileSync` FOLLOWS one, so a dangling
+// `SUCCESS.md -> /elsewhere/x` reads as absent to the guard and as a live
+// target to the writer. Measured before this line existed: the command
+// reported "Created SUCCESS.md" and wrote 2,007 bytes to
+// `/tmp/symprobe/victim/absent.md`, outside the project entirely. With
+// `--force` and a symlink to a REAL file it destroyed a 26-byte hand-written
+// note the same way, exit 0, refusal never reached.
+//
+// `lstatSync` describes the LINK, so both kinds count as "already there".
+let present = true;
+try {
+  lstatSync(target);
+} catch {
+  present = false;
+}
+
+if (present && !force) {
   console.error(
     `create-success: ${target} already exists.\n` +
       `This file is the project's own, and regenerating over it would discard the ` +
@@ -58,7 +75,27 @@ const body = readFileSync(templatePath, "utf-8")
   .replace("owner: TODO-OWNER", `owner: ${owner}`)
   .replace("updated: TODO-DATE", `updated: ${today}`);
 
-writeFileSync(target, body);
+// `--force` means "restart THIS project's SUCCESS.md", never "write through
+// whatever this path points at". Unlinking first turns a symlink into an
+// absent path, so the `wx` write below creates a real file here rather than
+// following the link somewhere else.
+if (force && present) unlinkSync(target);
+
+// `wx` is `O_CREAT|O_EXCL`: it refuses an existing path AND refuses a
+// symlink, dangling or not, at the syscall rather than in a check above it.
+// That also closes the window between the `lstatSync` and this line — a
+// guard-then-write is a TOCTOU by construction, and the flag makes the
+// refusal atomic instead of merely early.
+try {
+  writeFileSync(target, body, { flag: "wx" });
+} catch (e) {
+  console.error(
+    `create-success: refused to write ${target} — ${(e as Error).message}\n` +
+      `Something is at that path that was not there a moment ago, or it is a ` +
+      `symlink. The generator will not write through either.`,
+  );
+  process.exit(1);
+}
 
 console.log(`Created SUCCESS.md (from templates/SUCCESS-TEMPLATE.md)
 

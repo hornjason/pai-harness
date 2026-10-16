@@ -72,13 +72,14 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 
-import { PLACEHOLDER_MARKER, parseSuccessDoc, successViolations } from "../lib/success-doc";
+import { PLACEHOLDER_MARKER, parseSuccessDoc, successViolations, templateResidue } from "../lib/success-doc";
 import { extractTestFailureCount } from "../gates/gate-executor";
+import { seedSuccessDoc } from "../lib/scaffold/steps";
 
 const ROOT = join(import.meta.dir, "..");
 const CONFORMITY = join(ROOT, "lib", "conformity.ts");
@@ -389,5 +390,129 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
       "templates/SUCCESS-TEMPLATE.md",
     );
     expect(existsSync(join(root, "SUCCESS.md")), "a failed run left a partial file").toBe(false);
+  });
+});
+
+/**
+ * What the security review of this PR found, and what it cost (#502 review).
+ *
+ * Both findings are the same mistake in different places: a guard that was
+ * narrower than the thing it guards.
+ */
+describe("#502 review: the marker check and the writers were both too narrow", () => {
+  const run = (args: string[]) =>
+    spawnSync("bun", [CREATE_SUCCESS, ...args], { cwd: ROOT, encoding: "utf-8" });
+
+  test("F1: deleting the markers is not the same as filling the document in", () => {
+    // The review found this by reading what `create-success` PRINTS: "Replace
+    // every line marked `rungate:placeholder`". A user who does exactly that,
+    // names the claims, writes a How-it-fails for each and stops, left SEVEN
+    // TODOs and scored ZERO violations — `## The thing` still the template's
+    // instruction text, every measurement line still TODO, owner and date
+    // still TODO-OWNER and TODO-DATE. One `grep -v` cleared the whole guard,
+    // and our own output told the user to run it.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    let doc = template.split("\n").filter(l => !l.includes(PLACEHOLDER_MARKER)).join("\n");
+    doc = doc.replace(/### Claim (\d) — TODO/g, "### Claim $1 — the thing works");
+    doc = doc.replace(/\*\*How it fails:\*\* TODO[^\n]*\n[^\n]*\n/g, "**How it fails:** it returns the wrong answer.\n");
+    doc = doc.replace(/\*\*How it fails:\*\* TODO/g, "**How it fails:** it returns the wrong answer.");
+
+    expect(doc, "the fixture no longer reproduces the finding").not.toContain(PLACEHOLDER_MARKER);
+    expect(doc.match(/TODO/g)?.length, "the fixture should still be substantively unfilled")
+      .toBeGreaterThan(0);
+
+    const v = successViolations(doc, template);
+    expect(v.violations.length, "a document that is still mostly the template passed")
+      .toBeGreaterThan(0);
+    expect(v.violations.join("\n")).toContain("verbatim from the generator's template");
+  });
+
+  test("F1: the residue check does NOT fire on the one real document", () => {
+    // The control, and the reason the check excludes structural lines. A
+    // document legitimately shares headings, table rows and frontmatter keys
+    // with the template; rungate's own SUCCESS.md shares exactly two lines,
+    // `doc-type: reference` and `status: active`, both frontmatter.
+    const template = readFileSync(TEMPLATE, "utf-8");
+    const real = readFileSync(join(ROOT, "SUCCESS.md"), "utf-8");
+    expect(templateResidue(real, template), "the real document was called unwritten").toEqual([]);
+    expect(successViolations(real, template).violations).toEqual([]);
+  });
+
+  test("F2: --force does not write through a symlink to a file outside the project", () => {
+    // The worst outcome in the diff, and it needed no --force bypass: the
+    // refusal used `existsSync`, which RESOLVES a symlink, while
+    // `writeFileSync` FOLLOWS one. Measured before the fix: a 26-byte
+    // hand-written note outside the project was replaced with 2,007 bytes of
+    // template, exit 0.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-victim-"));
+    const victim = join(outside, "notes.md");
+    writeFileSync(victim, "hand-written, do not clobber\n");
+    const root = project({});
+    symlinkSync(victim, join(root, "SUCCESS.md"));
+
+    expect(run(["--project-root", root, "--force"]).status).toBe(0);
+    expect(readFileSync(victim, "utf-8"), "a file outside the project was destroyed")
+      .toBe("hand-written, do not clobber\n");
+    expect(lstatSync(join(root, "SUCCESS.md")).isSymbolicLink(), "the symlink survived the write")
+      .toBe(false);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("F2: a DANGLING symlink is 'already exists', not 'absent'", () => {
+    // The input the two functions disagreed about. `existsSync` says absent
+    // because the target is gone; `writeFileSync` creates the target.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-victim-"));
+    const root = project({});
+    symlinkSync(join(outside, "absent.md"), join(root, "SUCCESS.md"));
+
+    const r = run(["--project-root", root]);
+    expect(r.status, "a dangling symlink was treated as an absent file").toBe(1);
+    expect(existsSync(join(outside, "absent.md")), "the write escaped the project").toBe(false);
+    // The MESSAGE is asserted, not just the exit code, and that is what makes
+    // this case distinguish `lstatSync` from the `wx` flag below it. Both
+    // refuse this input — `O_EXCL` fails on a dangling symlink too — so with
+    // only the exit code asserted, reverting to `existsSync` was 0 red and
+    // the presence check was dead code nothing could see. With `existsSync`
+    // the user gets a raw EEXIST; with `lstatSync` they get the sentence that
+    // tells them what to do.
+    expect(r.stderr, "the refusal is the raw write error, not the guard's")
+      .toContain("already exists");
+    expect(r.stderr).toContain("--force");
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("F2: the write is exclusive, which is the half a check cannot do", () => {
+    // `lstatSync` then `writeFileSync` is a TOCTOU by construction: the path
+    // can change between the two. `wx` is `O_CREAT|O_EXCL`, so the refusal
+    // happens in the syscall and is atomic.
+    //
+    // This is a SOURCE assertion, deliberately, and it is weaker than the
+    // rest of this file. The race needs the filesystem to change between two
+    // adjacent statements, which this suite cannot schedule, so there is no
+    // honest behavioural case for it — saying that plainly beats a test that
+    // passes for an unrelated reason. What is asserted is that the exclusive
+    // flag is still there and that nothing writes the file unguarded.
+    const src = readFileSync(CREATE_SUCCESS, "utf-8");
+    expect(src, "the exclusive write flag is gone").toContain('{ flag: "wx" }');
+    expect(src.match(/writeFileSync\(/g) ?? [], "a second, unguarded write was added")
+      .toHaveLength(1);
+  });
+
+  test("F2: the scaffold's owned-file writer refuses a symlink too", () => {
+    // PRE-EXISTING and wider than this PR: `regenerateOwned` is the writer
+    // for every owned file, so the same planted symlink made the scaffold
+    // create `project-state.json`'s content outside the project root and
+    // report CREATED. Asserted through SUCCESS.md because that is this PR's
+    // file, but the fix is in the shared writer.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-victim-"));
+    const root = project({});
+    symlinkSync(join(outside, "escaped.md"), join(root, "SUCCESS.md"));
+
+    const actions: string[] = [];
+    seedSuccessDoc(root, actions);
+    expect(actions.join("\n"), "the writer followed the symlink").toContain("is a symlink");
+    expect(existsSync(join(outside, "escaped.md")), "the scaffold wrote outside the project")
+      .toBe(false);
+    rmSync(outside, { recursive: true, force: true });
   });
 });

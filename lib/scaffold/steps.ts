@@ -7,7 +7,7 @@
  * Extracted per SCAFFOLD-DECOMPOSITION-SPEC to keep scaffold-project.ts
  * as orchestrator-only (under 200 lines).
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync, readdirSync, statSync } from "fs";
 import { join, basename, dirname } from "path";
 import { auditSpecs } from "../../scripts/audit-specs";
 import { generateAgentsMd as buildAgentsMdContent, generateScopedRules } from "../generators/agents-md";
@@ -130,7 +130,35 @@ export function regenerateOwned(
   actions: string[],
   strategy: WriteStrategy = ownedStrategy(label),
 ): void {
-  const existing = existsSync(filePath) ? readFileSync(filePath, "utf-8") : null;
+  // `lstatSync`, NOT `existsSync` — BUG-440-A's shape, found by security
+  // review of #502 and PRE-EXISTING: it reaches `project-state.json` and
+  // every other owned file, not just the one that surfaced it.
+  //
+  // `existsSync` RESOLVES a symlink and `writeFileSync` FOLLOWS one, so the
+  // two disagree about exactly one input: a dangling `SUCCESS.md ->
+  // /elsewhere/x` is "absent" to the guard and a live write target to the
+  // writer. Measured: the scaffold created `/tmp/dang/victim/newfile.json`
+  // from a symlink planted at `project-state.json`, outside the project root
+  // entirely, and reported `CREATED: project-state.json`.
+  //
+  // `lstatSync` describes the LINK, so a symlink of either kind is something
+  // that is already there — which is what create-only means by "exists", and
+  // what the regenerate strategies must refuse rather than write through.
+  let link: ReturnType<typeof lstatSync> | null = null;
+  try {
+    link = lstatSync(filePath);
+  } catch {
+    link = null;
+  }
+  if (link?.isSymbolicLink()) {
+    actions.push(
+      `${SCAFFOLD_REFUSE}: ${label} is a symlink, and the generator does not write through ` +
+        `one — the target may be outside this project. Replace it with a real file, or ` +
+        `delete it and re-run.`,
+    );
+    return;
+  }
+  const existing = link ? readFileSync(filePath, "utf-8") : null;
   const decision = decideOwnedWrite(strategy, existing, content);
 
   if (decision.action === "preserve") {
@@ -1809,7 +1837,7 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
 
   safeWrite(join(root, "SUCCESS.md"), readFileSync(templatePath, "utf-8"), "SUCCESS.md", actions);
 
-  const verdict = successViolations(readSuccessDoc(root));
+  const verdict = successViolations(readSuccessDoc(root), readFileSync(templatePath, "utf-8"));
   if (verdict.unmeasured) {
     actions.push(`WARN: ${verdict.unmeasured}`);
     return;
