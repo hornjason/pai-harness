@@ -92,6 +92,59 @@ the battery ran. The row came back 0 where 1 was expected, and the collapse
 took ten minutes. Nothing in the diff, the review, or the green suite would
 have shown it.
 
+### Before you believe a 0, prove the mutation changed behaviour (#485, #297)
+
+Everything above tells you to read a 0 as a finding. There is a second thing
+a 0 means, it looks identical, and the method has no way to tell you which
+one you are looking at:
+
+- **the mutation was applied and nothing caught it** — the finding, and
+- **the mutation was never really applied** — no information at all.
+
+Two instances on 2026-10-16, found independently in two sessions:
+
+| Where | The 0 | What it actually was |
+|---|---|---|
+| #485 | narrowing `UNFILLED` back to uppercase-`TODO`-only was 0 red | the fixture written to isolate the widened word list was `"TODO — write the real claim…"`. The OLD regex matches that too, so the mutant and the original behave identically on every input the suite has. The 0 was reporting that nothing changed |
+| #297 | deleting a required phrase from a spec's prose was 0 red | the search strips SC lines first, and the phrase survived inside the SC line demanding it. The document still answered the question with the thing the mutation removed |
+
+Both read exactly like a collapsed pair. Neither was one.
+
+**The check is one line and it is not optional: before recording a 0, name
+an input on which the mutant and the original differ.** If you cannot, you
+have not run a mutation — you have run the code twice. A fixture that the
+pre-fix code also catches is the most common way this happens, because it is
+the fixture you naturally reach for: you write the example that motivated the
+fix, and the fix was motivated by something the old code already handled in
+part.
+
+The same arithmetic catches the inverse, a row that comes back too HIGH —
+but a high row has two causes and they pull in opposite directions, so the
+count alone does not tell you which you have. **Read which tests went red
+before concluding anything.**
+
+| #485 | "a second unguarded write was added" predicted 1, measured 4 | the mutant used `appendFileSync`, which that script does not import, so it died on a `ReferenceError` and every case that runs it went red. **A mutant that crashes is not a mutant** — it measures that the file still parses. Re-run with a global the file need not import: 1 |
+| #307 | `censusOf stops recursing` predicted 1, measured 2 | the mutant was fine. The extra red was the real-repo control asserting `>5000` test declarations, and a flat walk gives 4811 — 39 of 309 test files are nested and carry 488 of the 5299. **The binding reached further than the prediction did**, and the second red was a real thing the mutation breaks |
+
+The discriminator is the same instrument in both: are the extra reds
+*about* the mutated behaviour?
+
+- extra reds in cases unrelated to the mutation's subject, or every case
+  touching the mutant file goes red → **the mutant is broken.**
+- extra reds in cases that genuinely depend on the mutated behaviour → **the
+  prediction was wrong and the check is better than you thought.** Record
+  why; it is usually a fact about the codebase you did not know.
+
+Getting this backwards is expensive in the direction that matters least
+visibly: treating #307's second red as a broken mutant means hunting a bug
+that does not exist, and leaves behind the lesson that a surprisingly
+thorough check is a smell.
+
+So a battery has three outcomes, not two. Matches prediction; misses low —
+suspect a collapsed pair; misses high — read the extra reds before
+concluding anything, because a crashing mutant and an unexpectedly
+load-bearing binding both come back high and only one of them is a problem.
+
 The fix is one of two things, and which one is a design question, not a style
 question. Either **collapse them** — one decider, one binding to mutate — or
 **keep both and give each an input only it can reach**. #420 took the second:
