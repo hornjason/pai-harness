@@ -10,6 +10,7 @@ import {
   isSafeBranchName,
   resolveEvidencePath,
   validateEvidenceCommand,
+  pathRefusal,
 } from "../lib/workflow-security";
 
 const REPO_ROOT = join(import.meta.dir, "..");
@@ -46,6 +47,7 @@ function loadShipSecurityHelpers(projectRoot: string) {
        relativizePaths, safeGitAddCommand, safeSSHCommand,
        buildSafeGitAdd, buildSafeSSHCommand, isSafeBranchName,
        resolveEvidencePath, validateEvidenceCommand, validateFilePaths,
+       pathRefusal,
      };`,
   );
   const helpers = factory(projectRoot, (m: string) => logs.push(m));
@@ -109,13 +111,15 @@ describe("prove.js heredocSafe (#137)", () => {
 });
 
 describe("AC-1: lib/workflow-security.ts exported surface", () => {
-  test("exports exactly eight security functions", () => {
+  test("exports exactly nine security functions", () => {
+    // Nine since #400 added `pathRefusal`, the single path-safety decider
+    // that `validateFilePaths` and ship.js's claim audit both call.
     const source = readFileSync(
       join(REPO_ROOT, "lib", "workflow-security.ts"),
       "utf-8",
     );
     const exported = source.match(/^export function /gm) || [];
-    expect(exported.length).toBe(8);
+    expect(exported.length).toBe(9);
   });
 });
 
@@ -288,6 +292,35 @@ describe("AC-4 (#69): inlined helpers match lib/workflow-security.ts", () => {
         }
       };
       expect(run(ship.buildSafeGitAdd)).toEqual(run(buildSafeGitAdd));
+    });
+  }
+
+  // #400: the inlined copy of the path-safety decider is the one ship.js's
+  // claim audit calls, so a drift here is a drift in what the audit permits —
+  // not merely in what staging refuses. Driven over the same corpus
+  // test/claim-path-safety-parity.test.ts uses, plus the rows that only
+  // matter to the mirror.
+  const REFUSAL_CASES = [
+    "lib/a.ts",
+    "a.ts",
+    "x".repeat(500),
+    "x".repeat(501),
+    "/etc/passwd",
+    "../outside.ts",
+    "a/../../b.ts",
+    "..",
+    "lib/foo..",
+    "lib/a;rm.ts",
+    "lib/$(whoami).ts",
+    "lib/it's.ts",
+    "lib/a*.ts",
+    "lib/a\u0000b.ts",
+    "",
+  ];
+
+  for (const [i, p] of REFUSAL_CASES.entries()) {
+    test(`pathRefusal parity #${i}: ${JSON.stringify(p).slice(0, 40)}`, () => {
+      expect(ship.pathRefusal(p)).toEqual(pathRefusal(p));
     });
   }
 

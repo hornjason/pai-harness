@@ -83,19 +83,36 @@ function block(name: string): string {
 function loadClaimAudit(): {
   auditWorktreeClaims: (results: unknown) => ClaimAudit;
   claimKey: (worktreePath: string, p: unknown) => string;
-  escapesWorktree: (key: string) => boolean;
+  pathRefusal: (key: string) => { rule: string; boundary: boolean } | null;
 } {
+  // Both blocks. #400 gave staging and the audit one path-safety decider, and
+  // it lives in SECURITY-HELPERS because that is the half mirrored by
+  // lib/workflow-security.ts. Loading COLLECT-CLAIM alone would throw on the
+  // first call — which is the structural proof that the audit really reaches
+  // into the shared table rather than keeping a second copy of two of its rules.
   return new Function(
-    `${block("COLLECT-CLAIM")}\nreturn { auditWorktreeClaims, claimKey, escapesWorktree }`,
-  )();
+    "PROJECT_ROOT",
+    "log",
+    `${block("SECURITY-HELPERS")}\n${block("COLLECT-CLAIM")}\nreturn { auditWorktreeClaims, claimKey, pathRefusal }`,
+  )("/repo", () => {});
 }
 
-// `escapesWorktree` is exported alongside the other two because #229's fix
+// `pathRefusal` is exported alongside the other two because #229's fix
 // changes claimKey's normalisation and the refusal reads the same segments.
 // Asserting the two together is the point: "the key still looks absolute" and
 // "the boundary still refuses it" are different claims, and only the second
 // one is the property that matters.
-const { auditWorktreeClaims, claimKey, escapesWorktree } = loadClaimAudit();
+//
+// #400 replaced `escapesWorktree` with the shared decider. `.boundary` is the
+// field that predicate returns, not a comparison rebuilt here — a test that
+// re-implemented the branch would pass against a predicate that had stopped
+// making it.
+const { auditWorktreeClaims, claimKey, pathRefusal } = loadClaimAudit();
+
+function escapesWorktree(key: string): boolean {
+  const refusal = pathRefusal(key);
+  return refusal !== null && refusal.boundary;
+}
 
 /**
  * `collectAgentWork` with its collaborators injected, so the refusal can be
@@ -111,7 +128,12 @@ function loadCollectAgentWork(
 ) {
   const calls: Array<{ prompt: string; label: string }> = [];
   const logs: string[] = [];
+  // SECURITY-HELPERS first: #400 put the path-safety decider there, and
+  // COLLECT-CLAIM calls it. It also carries the real `shellQuote`, which this
+  // loader used to inject a copy of — the copy is gone, so the quoting these
+  // tests assert on is the quoting ship.js performs.
   const body = [
+    block("SECURITY-HELPERS"),
     block("COLLECT-DESTINATION"),
     block("COLLECT-CLAIM"),
     block("PRESERVE-REFUSED"),
@@ -121,7 +143,6 @@ function loadCollectAgentWork(
   const collectAgentWork = new Function(
     "log",
     "timedAgent",
-    "shellQuote",
     "WORK_DIR",
     "PROJECT_ROOT",
     "HARNESS_ROOT",
@@ -134,7 +155,6 @@ function loadCollectAgentWork(
         ? (agentReply as (p: string) => unknown)(prompt)
         : agentReply;
     },
-    (s: string) => `'${String(s).replace(/'/g, `'\\''`)}'`,
     "/tmp/work",
     PROJECT,
     HARNESS,
@@ -592,7 +612,14 @@ describe("#228 / AC-5: the single-worktree exemption is mutated and watched", ()
         "could not build the mutant: no `SINGLE_WORKTREE_EXEMPT = true` in the COLLECT-CLAIM block of ship.js",
       );
     }
-    return new Function(`${mutated}\nreturn auditWorktreeClaims`)() as (r: unknown) => ClaimAudit;
+    // SECURITY-HELPERS unmutated alongside it: the mutation targets the
+    // exemption, and a mutant that died on a missing `pathRefusal` would
+    // refuse everything and read as the mutation having worked (#400).
+    return new Function(
+      "PROJECT_ROOT",
+      "log",
+      `${block("SECURITY-HELPERS")}\n${mutated}\nreturn auditWorktreeClaims`,
+    )("/repo", () => {}) as (r: unknown) => ClaimAudit;
   }
 
   test("the flag is declared exactly once, so the mutation cannot be half-applied", () => {

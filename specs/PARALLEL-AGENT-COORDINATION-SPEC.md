@@ -137,3 +137,110 @@ its target appeared exactly once before writing:
 The last two are one apiece by design and are reported rather than hidden:
 each is a single named property, and a mutation that turned several tests red
 would mean the table's rows were not independent.
+
+## Two validators answered "is this path safe" and agreed only on traversal (#400, 2026-10-15)
+
+Found while verifying SC-3 of #229 before ticking it. SC-3 is satisfied as
+written — it asks about *traversal* rejection, and on traversal the two
+agreed. The rest of the divergence is this section.
+
+`workflows/ship.js` carried two answers to one question, in two phases:
+
+| | shape | input | checked |
+|---|---|---|---|
+| `validateFilePaths` | regex set | the raw reported string | STAGING, by `buildSafeGitAdd` |
+| `escapesWorktree` | segment walk | a `claimKey`-normalised key | COLLECTION, by `auditWorktreeClaims` |
+
+So the audit accepted a reported path carrying a shell metacharacter, a null
+byte, or 500+ characters, reported the run clean, and staging refused it
+afterwards — late, in a different phase, with a different message. Nobody was
+misled while staging still refused; the cost is that the audit's verdict could
+not be relied on, and the next caller to trust it instead of re-validating
+inherits the hole. A guard that refuses less than the thing downstream of it
+is a guard whose pass means less than it reads.
+
+There is now one table, `CONTRIBUTABLE_PATH_RULES`, and one decider,
+`pathRefusal`, in the SECURITY-HELPERS block — the half mirrored by
+`lib/workflow-security.ts`, so the mirror keeps covering it. `escapesWorktree`
+is gone: it was a second copy of two of that table's rules, and a second copy
+survives any mutation of the first.
+
+Three things this had to get right, and the first is the one a naive version
+gets wrong:
+
+- **Parity alone is vacuous once the predicate is shared.** With both phases
+  calling one decider, removing a rule makes them permissive *together* and a
+  pure parity assertion stays green. So every corpus row carries a LITERAL
+  expected verdict, written out by hand and derived from nothing, and is
+  asserted three times: staging against the literal, the audit against the
+  literal, and the two against each other. That is the "red in both
+  directions" SC-1535 asks for. It is also #397's and #399's lesson a third
+  time — a test parameterised by the thing it checks cannot check it.
+- **The corpus is compared on KEYS, not on raw reports.** `claimKey` strips
+  the worktree prefix before the audit looks, so `/tmp/wt-a/lib/a.ts` is
+  absolute to staging and relative to the audit. That divergence is correct
+  and by design (`relativizePaths` exists for it), and comparing those two
+  would fail for a reason this is not about. Every row asserts
+  `claimKey(wt, p) === p` first, so a row that normalises is caught as a
+  corpus bug rather than discovered as a confusing failure.
+- **The refusal says which rule, and whether the path is even outside.**
+  "not inside its own worktree" is a wrong sentence to print about
+  `lib/a;rm.ts`, and an operator who reads it goes looking for a path that is
+  not there. The table's second column is `boundary`, and the two refusals it
+  selects are a seventh and distinct kind in `test/claim-refusal-kinds.test.ts`.
+
+The two traversal rules are deliberately both present and deliberately
+separate. `p.split('/').includes('..')` is the real boundary question; the
+regex `/\.\.($|[/\\])/` also matches a segment merely ENDING in `..`
+(`lib/foo..`), a legal filename that staging has always refused. Folding it
+into the boundary rule would label a legal file an escape; dropping it would
+make the audit permit something staging rejects, which is the whole defect.
+
+- [x] SC-1530: test/claim-path-safety-parity.test.ts contains [the corpus is canonical, so the two phases see one string] — every row asserts claimKey leaves it alone, because the audit checks a normalised key and staging checks the raw string and a row that normalises would compare two different strings
+- [x] SC-1531: test/claim-path-safety-parity.test.ts contains [staging and the audit refuse the same paths] — one corpus, three assertions per row, two of them against a hand-written literal so a shared predicate that stopped refusing cannot satisfy the parity by making both sides permissive together
+- [x] SC-1532: test/claim-path-safety-parity.test.ts contains [a refused path is told which rule refused it] — the refusal names the rule and distinguishes outside-the-worktree from inside-and-unstageable, asserted in both directions so neither sentence can be printed about the other's paths
+- [x] SC-1533: test/claim-path-safety-parity.test.ts contains [one predicate, reached by both phases] — the table and the decider are each declared exactly once and the collection block is read for a call into the security block, because a second copy would survive any mutation of the first and the parity would go green for the wrong reason
+- [x] SC-1534: test/claim-refusal-kinds.test.ts contains [unsafe but inside the worktree] — the new refusal is a seventh row in the kinds table, so it inherits the pairwise distinctness, containment and discriminator checks #300 built rather than being asserted on its own
+- [x] SC-1535: test/workflow-security-integration.test.ts contains [pathRefusal parity] — the inlined decider is driven against the library's over the same corpus, because ship.js cannot import (#69) and a drift in the copy is now a drift in what the audit permits, not only in what staging refuses
+
+### What was broken to prove it (SC-1530..1535)
+
+Run and counted over `test/claim-path-safety-parity.test.ts`,
+`test/claim-refusal-kinds.test.ts`, `test/collect-claim-enforcement.test.ts`,
+`test/collect-claim-ownership.test.ts`, `test/ship-remediation-commits.test.ts`
+and `test/workflow-security-integration.test.ts` (290 tests). None is left in
+the tree; all were applied and reverted, and every mutation asserted its
+target appeared exactly once before writing.
+
+| Mutation | Red |
+|---|---|
+| `pathRefusal` refuses nothing | 68 of 290 |
+| the audit asks its own narrower question again — #400 restored verbatim | 32 of 290 |
+| the shell-metacharacter rule dropped | 28 of 290 |
+| the absolute-path boundary rule dropped | 17 of 290 |
+| the `..`-segment boundary rule dropped | 9 of 290 |
+| the null-byte rule dropped | 7 of 290 |
+| the 500-character rule dropped | 7 of 290 |
+| the segment-ending-in-`..` rule dropped | 6 of 290 |
+| the absolute rule stops being a boundary | 6 of 290 |
+| the library mirror drops the shell-metacharacter rule | 6 of 290 |
+| both audit refusals collapsed to the boundary sentence | 4 of 290 |
+| the library mirror drops the 500-character rule | 2 of 290 |
+| `validateFilePaths` in the library keeps its own rule chain | 1 of 290 |
+
+Each rule-dropping row is red on **both** sides — the staging assertion and
+the audit assertion for every corpus path that rule covered, plus the mirror
+case. That is SC-1535's "both directions", and it is only measurable because
+the expected verdicts are literals: had they been read from the predicate,
+every one of those rows would be a zero.
+
+The last row is the one worth reading. It is this issue's own defect, met
+inside this issue's fix: the first draft added the table and the decider to
+`lib/workflow-security.ts` and left `validateFilePaths` *there* still running
+its original regex chain, so the file whose subject is "there was more than
+one decider" shipped with two. No test could see it — the chain and the table
+agreed on every corpus row, so the ship-versus-library parity stayed green.
+It surfaced only because the mirror's 500-character mutation scored 1 where
+the model predicted 2, and the gap was chased rather than written down. The
+guard added for it is a source property, because a behavioural one cannot
+exist: two deciders that agree are behaviourally one.
