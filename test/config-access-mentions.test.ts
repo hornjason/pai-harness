@@ -1,5 +1,6 @@
 /**
  * Covers SC-1550..SC-1559 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #415.
+ * Covers SC-1657 (CONFIG-DIRECTORY-STRUCTURE-SPEC.md), #454.
  *
  * CONFIG-1 counted a config path MENTIONED in a sentence the same way it
  * counted one PASSED TO `readFileSync`. Seven of the banked sites — and, once
@@ -154,6 +155,63 @@ describe("#415 — a config path mentioned is not a config path read", () => {
     expect(uses).toBeGreaterThan(0);
     expect(mentions).toBeGreaterThan(0);
     expect(readConfigAccessRatchet(REPO, "sources")["lib/scaffold/steps.ts"]).toBe(uses);
+  });
+
+  test("SC-1657: a reason-carrying map may name the config and an assembled path beside it still counts", () => {
+    /**
+     * #454, and it is the house pattern rather than a hypothetical. The repo
+     * pairs a key with a sentence saying why the key is excluded in at least
+     * two places — `STEPS_NOT_REHEARSED` (`lib/scaffold/rehearsal.ts:61`,
+     * #398) and the exclusion maps #452 added — and a sentence that explains
+     * why a step does NOT touch the config is, to a text matcher,
+     * indistinguishable from the touch. That is the self-reference trap in
+     * `.claude/rules/checks-must-be-able-to-fail.md` arriving from the
+     * documentation side: before #415 it cost two red tests, CONFIG-1 and the
+     * ratchet, for a file that reads no config at all.
+     *
+     * #415 fixed the classifier and this case was never driven. Pinned here
+     * because the pattern is spreading and the next narrowing of the rule is
+     * what would take it away.
+     *
+     * Both arms in ONE file, so neither can hold vacuously: the scan that
+     * excuses the sentence is the same pass that counts the `join`.
+     */
+    const root = scratch();
+    try {
+      writeSource(
+        root,
+        "lib/reasons.ts",
+        [
+          `import { readFileSync } from "fs";`,
+          `import { join } from "path";`,
+          ``,
+          `export const NOT_REHEARSED: ReadonlyMap<string, string> = new Map([`,
+          `  ["deployHooksToConsumers", "writes outside the tree and never reads ${MONOLITH}"],`,
+          `  ["postScaffoldCommit", "commits, so ${DIR_CONFIG} is left to the loader"],`,
+          `]);`,
+          ``,
+          `export function realRead(root: string): string {`,
+          `  return readFileSync(join(root, "${DOT_DIR}", "${CFG}.json"), "utf-8");`,
+          `}`,
+        ].join("\n"),
+      );
+
+      // The sentences are excused; the assembled path is not. One counted
+      // site, not three.
+      expect(scanConfigAccess(root).counts["lib/reasons.ts"]).toBe(1);
+
+      // ...and the scan read all three, so "1" is a decision rather than a
+      // pass that saw less of the file. Without this, deleting the map
+      // entirely would produce the same number.
+      const sites = classifyConfigSites(
+        readFileSync(join(root, "lib/reasons.ts"), "utf-8"),
+      );
+      expect(sites.length).toBe(3);
+      expect(sites.filter(s => s.kind === "mention").length).toBe(2);
+      expect(sites.filter(s => s.kind === "use").length).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("SC-1554: the documentation and writer sites are gone from the ratchet", () => {
