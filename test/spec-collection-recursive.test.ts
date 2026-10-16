@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "fs";
 import { join } from "path";
 import { collectSpecFiles } from "../lib/spec-files";
@@ -21,7 +21,15 @@ import { collectSpecFiles } from "../lib/spec-files";
  */
 
 const ROOT = join(import.meta.dir, "..");
-const SCRATCH = mkdtempSync(join(ROOT, ".spec-collection-scratch-"));
+/** Created in `beforeAll`, not at module scope — see #437. */
+let SCRATCH = "";
+
+beforeAll(() => {
+  SCRATCH = mkdtempSync(join(ROOT, ".spec-collection-scratch-"));
+});
+afterAll(() => {
+  if (SCRATCH) rmSync(SCRATCH, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   rmSync(SCRATCH, { recursive: true, force: true });

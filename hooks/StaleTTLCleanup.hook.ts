@@ -52,6 +52,20 @@ if (PROJECT_ROOT) try {
   }
 } catch (e) { log(`WORKTREE cleanup error: ${e}`); }
 
+// Scratch cleanup — test fixtures the suite leaked into the repo root (#437).
+// Reported alongside worktree cleanup deliberately: both are resources created
+// by tooling that only get cleaned on the happy path, and 34 of these
+// accumulated because each one had to be found by eye.
+if (PROJECT_ROOT) try {
+  const { cleanupScratchDirs } = await import('../lib/scratch-cleanup.ts');
+  const sr = cleanupScratchDirs({ repoRoot: PROJECT_ROOT });
+  if (sr.removed.length) {
+    deletedCount += sr.removed.length;
+    log(`SCRATCH cleanup [${PROJECT_ROOT}]: removed ${sr.removed.length} leaked test scratch dirs`);
+  }
+  for (const e of sr.errors) log(`SCRATCH cleanup error: ${e}`);
+} catch (e) { log(`SCRATCH cleanup error: ${e}`); }
+
 // Branch cleanup
 if (PROJECT_ROOT) try {
   const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts');

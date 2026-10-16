@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -38,10 +38,19 @@ const SHA = "dd242a62aea9371d788abb58f3d26922d5dd6cbc";
  * unrelated temp directory a resolution failure exits non-zero, which reads as
  * "the type error was caught" no matter what the file contains.
  */
-const SCRATCH = mkdtempSync(join(REPO_ROOT, ".gate-vacuous-test-"));
+/** Created in `beforeAll`, not at module scope — see #437. */
+let SCRATCH = "";
 
 let WORK = "";
 let PROJECT = "";
+
+beforeAll(() => {
+  SCRATCH = mkdtempSync(join(REPO_ROOT, ".gate-vacuous-test-"));
+});
+
+afterAll(() => {
+  if (SCRATCH) rmSync(SCRATCH, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   rmSync(SCRATCH, { recursive: true, force: true });

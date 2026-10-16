@@ -18,13 +18,15 @@
  *
  * Covers SC-750 of GATE-CONTRACTS-SPEC.md.
  */
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { generateOrAuditProjectHarness } from "../lib/scaffold/steps";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const SCRATCH = mkdtempSync(join(REPO_ROOT, ".scaffold-make-targets-"));
+/** Created in `beforeAll`, not at module scope — see #437. */
+let SCRATCH = "";
+beforeAll(() => { SCRATCH = mkdtempSync(join(REPO_ROOT, ".scaffold-make-targets-")); });
 afterAll(() => rmSync(SCRATCH, { recursive: true, force: true }));
 
 let n = 0;
