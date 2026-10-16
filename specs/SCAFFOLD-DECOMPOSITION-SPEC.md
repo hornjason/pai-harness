@@ -793,6 +793,97 @@ different facts that used to produce the same output.
 - [x] SC-1665: test/scaffold-relative-root.test.ts contains [the relative and absolute invocations produce byte-identical trees] — both runs over the SAME directory restored from a pristine copy- so there is no root string to normalise and no normaliser for a difference to hide behind
 - [x] SC-1666: lib/scaffold/rehearsal.ts contains [Root SUBSTITUTED] — the audit names the input it replaced- because an unrehearsed input reported as rehearsed is `UNMEASURED is not SKIP` wearing a dry run's clothes
 
+- [x] SC-1667: test/managed-workflow-key-order.test.ts contains [a consumer-only top-level key keeps its position relative to jobs] — the merge walks the CONSUMER's sections- so the order in the file is the order the consumer wrote
+- [x] SC-1668: test/managed-workflow-key-order.test.ts contains [a comment above a relocated key travels with it] — the comment is the artefact the reader acts on- and one describing a block 460 lines away is a false deletion signal
+- [x] SC-1669: lib/scaffold/managed-workflow.ts contains [export function topLevelKeyOrder] — ONE reader of a file's key order- so the movement check and the duplicate check cannot disagree about what a top-level key is
+- [x] SC-1670: test/managed-workflow-key-order.test.ts contains [a key that changes position is reported by name and by where it went] — movement is a change of RANK among the keys both versions have- not of line number- so an inserted key does not report every key below it
+- [x] SC-1671: test/managed-workflow-key-order.test.ts contains [the merge refuses rather than writing a workflow that cannot parse] — a top-level key declared twice is a workflow GitHub Actions rejects- and the realistic way one appears is the correction this issue is about
+
+### A report that was accurate and still misled (#482)
+
+The job-preserving merge carried a consumer's non-`jobs:` top-level keys
+forward and appended them BELOW `jobs:`, while the comment introducing them
+stayed where it was. YAML top-level keys are order-independent, so the file
+meant what it meant, and `lostLines` was correct to stay quiet: **nothing was
+lost.**
+
+What moved was the evidence. On a real consumer a reader saw
+
+```yaml
+# When multiple pushes to main land quickly, cancel in-progress runs
+jobs:
+  test:
+```
+
+concluded the `concurrency:` block had been deleted, and restored it by hand.
+The original was still there, 460 lines down. The committed result declared
+`concurrency:` twice and stopped parsing — `Map keys must be unique at line
+493` — so GitHub Actions rejected the workflow.
+
+The harness lost nothing and produced a diff whose most natural reading is
+that it lost something, and the correction broke the file. **That is worse
+than the deletion would have been, because a deletion fails loudly.** The
+report said `UPDATED`, 0 refusals, jobs preserved — every word true, every
+word about the dimension that did not change.
+
+`.claude/rules/checks-must-be-able-to-fail.md` is about checks that cannot
+fail. This is the neighbour: a report that cannot be wrong and still cannot be
+relied on, because "nothing was lost" and "everything is where you left it"
+are different claims and only the first was being made.
+
+**The fix is not a better report.** The merge now walks the CONSUMER's
+sections rather than the generated ones, so the consumer's order is the order
+and the comment never detaches. Movement is then not news — it is a bug in
+the merge — so it REFUSES rather than warning. The asymmetry is the argument:
+a consumer who hits an unenumerated edge case gets a named refusal and
+`--force`, and a consumer who does not get one gets a file they will misread.
+Measured against this repo's three real workflows, including `release.yml`,
+whose `permissions:` sits between `on:` and `jobs:` and is exactly the shape
+that used to move: zero movement in all three.
+
+A second refusal covers the correction itself: a top-level key declared twice,
+in the existing file or in the merged output, is a workflow that will not run,
+and the next re-scaffold is the first thing that can say so.
+
+What was broken to prove it, predicted before the battery and measured after,
+over `test/managed-workflow-key-order.test.ts` (14 tests):
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| consumer-only keys pushed back to the end — the defect verbatim | 5 | 5 |
+| `duplicateTopLevelKeys` short-circuited to `return []` | 3 | 3 |
+| `movedTopLevelKeys` short-circuited to `return []` | 1 | 1 |
+| movement compared by line index instead of rank | 1 | **2** |
+| the movement refusal removed | 0 | **0** |
+| the two above together — what the refusal is worth | 4 | 4 |
+
+None is left in the tree; all were run and reverted.
+
+Three rows need reading rather than counting.
+
+**The line-index row came back 2, not 1** — higher than predicted, which is
+not the fourth shape but is worth knowing why. The expected red was the
+inserted-key case. The second was the real-workflows case: merging `ci.yml`
+with a short stub replaces the harness's long managed banner, every
+subsequent key's line number shifts, and a line-index comparison reports all
+of them as moved. Rank reports none. The design is right for a reason that
+only showed up on real files.
+
+**Removing the movement refusal is 0 red on its own, and that is the honest
+number.** With the merge correct, nothing moves, so deleting the tripwire
+changes nothing — which by this repo's standard makes it indistinguishable
+from decoration. The last row is what answers that: with the merge regressed,
+the refusal is worth exactly one test. Its proof is the mutation, not a
+fixture, and that is the only form available for a guard whose job is to
+catch a future regression in the code beside it.
+
+**One process note, because it cost real work.** The battery reverts with
+`git checkout --`, and the first thing the loop does is revert. Uncommitted
+edits in the mutated files are destroyed before the first mutation runs, and
+every measured number then describes the committed tree rather than the one
+being predicted for. That is how this battery's first run produced a
+confident-looking 3-of-5 miss that meant nothing. Commit, then mutate.
+
 ### The argument no unit test chooses the way a user does (#481)
 
 `bunx rungate scaffold . --fix` threw on every repo-root owned file. The same
