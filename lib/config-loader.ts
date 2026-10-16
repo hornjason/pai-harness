@@ -48,6 +48,14 @@ export interface ComplianceConfig {
     fileTypes: string[];
     artifactClassification: Record<string, string>;
     externalSources: OrganizeExternalSource[];
+    /**
+     * Names a cross-project document may call this project by (#442).
+     *
+     * Optional: the directory name and the GitHub slug are derived from the
+     * tree, so this is only for what a human knows — the abbreviation, the
+     * product name, the thing the team says out loud.
+     */
+    aliases?: string[];
   };
 }
 

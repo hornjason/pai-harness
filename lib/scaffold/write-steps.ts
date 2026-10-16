@@ -39,6 +39,7 @@ import {
   createGitHooks,
   deployHooksToConsumers,
   addPaiHarnessDevDep,
+  reportExternalAdoptionStep,
   runAuditSpecsFix,
   postScaffoldCommit,
 } from "./steps";
@@ -155,6 +156,7 @@ What does this workflow produce?
   if (!rehearsing) deployHooksToConsumers(projectPath, actions);
 
   // Phase 3.5: steps that DESCRIBE the project run last, so they describe the tree this run left (#123).
+  reportExternalAdoptionStep(projectPath, actions);
   refreshScopedRulesStep(projectPath, projectType, actions);
   if (projectType === "code") {
     generateCodeMapStep(projectPath, actions);

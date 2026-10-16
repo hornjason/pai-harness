@@ -378,9 +378,27 @@ describe("SC-1512: one binding decides what counts as a written path", () => {
     // judgement cannot be derived — but it can no longer land in neither.
     // #426 added KEPT: it announces that an SC line was DELIBERATELY not
     // rewritten, which is the absence of a write by definition.
-    const NON_WRITE = new Set(["SKIP", "GAP", "WARN", "AUDIT", "AUDITED", "UNCHANGED", "REFUSED", "ERROR", "NOTE", "KEPT"]);
+    // #442 added PROPOSED and UNMEASURED: one announces a write that was
+    // deliberately NOT performed, the other announces that something could
+    // not be looked at. Both are absences of a write by definition.
+    const NON_WRITE = new Set(["SKIP", "GAP", "WARN", "AUDIT", "AUDITED", "UNCHANGED", "REFUSED", "ERROR", "NOTE", "KEPT", "PROPOSED", "UNMEASURED", "OK",
+      // PRESERVED announces a file deliberately NOT overwritten, so it
+      // needs no staging. It has been emitted since long before #442 and
+      // was in neither list the whole time — the widened detector above is
+      // what surfaced it, which is the argument for widening.
+      "PRESERVED"]);
     const emitted = new Set<string>();
-    for (const m of sources.matchAll(/actions\.push\([`"']([A-Z]{3,12}): /g)) emitted.add(m[1]!);
+    // Two narrownesses, both found by #442 planting a verb and watching
+    // this guard not notice — the third shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md`, where the guard's
+    // view of its input silently shrinks:
+    //
+    //   - `{3,12}` could not see a two-letter verb at all.
+    //   - requiring the quote IMMEDIATELY after `push(` could not see a
+    //     MULTI-LINE push, which is how long report lines are written. The
+    //     one this issue added was invisible for exactly that reason, so
+    //     the suite went green over a verb in neither list.
+    for (const m of sources.matchAll(/actions\.push\(\s*[`"']([A-Z]{2,12}): /g)) emitted.add(m[1]!);
 
     const unclassified = [...emitted].filter(v => !NON_WRITE.has(v) && !WRITE_VERBS.includes(v));
     expect(
