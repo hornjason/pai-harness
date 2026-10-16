@@ -103,14 +103,14 @@ describe("SC-1454: a line inside a code fence is not a criterion", () => {
   });
 
   test("indented code is stripped but a nested checkbox is not", () => {
-    const indented = ["## Success Criteria", "", "    - [ ] SC-N: fake", "", "- [ ] SC-900: real"].join("\n");
-    expect(extractSuccessCriteria(indented).criteria).toEqual(["SC-900: real"]);
+    const indented = ["## Success Criteria", "", "    - [ ] SC-N: fake", "", "- [ ] SC-9441: real"].join("\n");
+    expect(extractSuccessCriteria(indented).criteria).toEqual(["SC-9441: real"]);
 
     // Four-space indentation is also how a nested checkbox is written. This
     // is the whole reason indented-code detection is list-aware: treating it
     // as code would delete real criteria to catch a rare fake one.
-    const nested = ["## Success Criteria", "", "- [ ] SC-901: parent", "    - [ ] SC-902: child"].join("\n");
-    expect(extractSuccessCriteria(nested).criteria).toEqual(["SC-901: parent", "SC-902: child"]);
+    const nested = ["## Success Criteria", "", "- [ ] SC-9442: parent", "    - [ ] SC-9443: child"].join("\n");
+    expect(extractSuccessCriteria(nested).criteria).toEqual(["SC-9442: parent", "SC-9443: child"]);
   });
 
   test("stripping preserves line count so section boundaries do not move", () => {

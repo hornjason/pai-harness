@@ -141,6 +141,46 @@ export function isIssueShaped(id: string): boolean {
 }
 
 /**
+ * Ids at or above this number are reserved for test fixtures and will never
+ * be allocated to a real criterion (#399).
+ *
+ * **The namespace has two halves and only one of them was ever guarded.**
+ * `nextSCNumber`, `crossSpecCollisions`, `crossFormCollisions` and
+ * `requiresQualification` all reason over `specs/` — correctly, and blind to
+ * the other half. A test file that writes `- [ ] SC-9441: AGENTS.md exists`
+ * inside a string literal has put a checkbox declaration into the live
+ * namespace where no guard can see it, so the allocator proposes 900 as free,
+ * every collision detector agrees it is free, and the number collides with a
+ * literal the suite depends on. That is
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s second shape: a detector
+ * narrower than what it detects.
+ *
+ * **It is not hypothetical.** `test/stale-issue-scanner.test.ts` plants
+ * `SC-379` and `SC-380` as fixtures, and
+ * `specs/CONFIG-DRIVEN-TESTING-SPEC.md:77-78` declares both as real tracked
+ * criteria. The collision #399 was filed to prevent had already landed.
+ *
+ * 9000 rather than 9900, which is what the issue proposed: the convention the
+ * tree already follows is 9000+, measured — 209 fixture mentions sit at
+ * 9001..9902 across eight files, against 24 strays below. Picking the floor
+ * the repo converged on costs no migrations that were not already needed, and
+ * `test/sc-claim-forms.test.ts` argued for the convention first.
+ */
+export const FIXTURE_SC_FLOOR = 9000;
+
+/**
+ * Is this id reserved for fixtures?
+ *
+ * ONE exported predicate, consulted by the allocator and by the stray guard,
+ * so there is a single binding to mutate rather than a convention each caller
+ * reimplements — which is what the four spec-only guards above already are.
+ */
+export function isFixtureScId(id: string): boolean {
+  const n = Number(id.replace(/^SC-/, ""));
+  return Number.isInteger(n) && n >= FIXTURE_SC_FLOOR;
+}
+
+/**
  * The registry: which spec files declare each id.
  *
  * TWO maps, because "may this be ticked" and "does this id name one
@@ -341,4 +381,115 @@ export function isQualifiedBy(source: string, at: number, specFile: string): boo
     .slice(Math.max(0, at - QUALIFIER_WINDOW_BEFORE), at + QUALIFIER_WINDOW_AFTER)
     .toLowerCase();
   return qualifierTokens(specFile).some(t => window.includes(t.toLowerCase()));
+}
+
+// ── The other half of the namespace: ids spelled in source ──
+
+/** Directories whose sources can spell an SC id. */
+export const SC_SOURCE_DIRS: readonly string[] = ["test", "lib", "scripts", "gates"];
+
+/** One mention of an SC id in a source file. */
+export interface ScMentionInSource {
+  id: string;
+  file: string;
+  /** True when the mention sits in a comment rather than in code. */
+  inComment: boolean;
+}
+
+/**
+ * Every numeric SC id spelled anywhere under `SC_SOURCE_DIRS`.
+ *
+ * Deliberately NOT restricted to declaring forms. The allocator's question is
+ * "could handing out this number break something", and a fixture spelled in
+ * any position — a string literal, an array of ids, a `-t` filter — breaks
+ * the same way once a spec claims the number. `commentClaimForm` draws the
+ * narrower line for CREDIT, and that line is settled and must not move
+ * (`.claude/rules/claiming-sc-coverage.md`); this is a different question
+ * asked for a different purpose, and widening it here cannot credit anything.
+ */
+export function scMentionsInSource(root: string): ScMentionInSource[] {
+  const { readdirSync, readFileSync } = require("fs") as typeof import("fs");
+  const { join } = require("path") as typeof import("path");
+  const { commentMask } = require("./strip-js-comments") as typeof import("./strip-js-comments");
+  const out: ScMentionInSource[] = [];
+
+  const walk = (dir: string): void => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;   // a source dir this consumer does not have
+    }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name === ".git") continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!e.name.endsWith(".ts") && !e.name.endsWith(".js")) continue;
+      const src = readFileSync(p, "utf-8");
+      if (!src.includes("SC-")) continue;
+      const mask = commentMask(src);
+      for (const m of src.matchAll(/SC-(\d+)(?!\d)/g)) {
+        out.push({ id: m[0], file: p.slice(root.length + 1), inComment: mask[m.index!] === true });
+      }
+    }
+  };
+  for (const d of SC_SOURCE_DIRS) walk(join(root, d));
+  return out;
+}
+
+/** Ids spelled in source, with the files that spell them. */
+export function scIdsSpelledInSource(root: string): Map<string, string[]> {
+  const found = new Map<string, string[]>();
+  for (const m of scMentionsInSource(root)) {
+    const files = found.get(m.id) ?? [];
+    if (!files.includes(m.file)) files.push(m.file);
+    found.set(m.id, files);
+  }
+  return found;
+}
+
+/**
+ * Fixture ids living in the live namespace: spelled in source, declared by
+ * no spec, and below `FIXTURE_SC_FLOOR`.
+ *
+ * "Declared by no spec" is what makes it a fixture rather than a coverage
+ * claim. `// covers SC-640` names a real criterion and must not be moved;
+ * `{ id: "SC-9441", done: true }` names nothing and is a number the
+ * allocator is free to hand out tomorrow. The difference is in the registry,
+ * not in the spelling, which is why this takes one.
+ *
+ * ## What this deliberately does NOT catch, and why
+ *
+ * A fixture reusing an id a spec ALREADY declares is invisible here, and
+ * that case is real — two instances, both found by hand rather than by any
+ * guard:
+ *
+ * - `test/stale-issue-scanner.test.ts` plants `SC-379`/`SC-380`, both
+ *   declared in `specs/CONFIG-DRIVEN-TESTING-SPEC.md:77-78`.
+ * - `test/sync-sc-status-matching.test.ts` planted `SC-91`/`SC-92`/`SC-93`,
+ *   all declared in `specs/bootstrap-data-flow/success-criteria.md`, under a
+ *   comment reading "with IDs this repo does not use so the file does not
+ *   claim them" — true when written, false by the time it mattered, and
+ *   nothing could notice.
+ *
+ * **Catching those by POSITION was tried and is wrong.** "In a comment it is
+ * a citation, in code it is a fixture" reports 338 violations on this tree,
+ * because `test("SC-1504: …")` is a test TITLE — a claim form
+ * `.claude/rules/claiming-sc-coverage.md` lists as valid and settled. And a
+ * planted fixture string containing `test("SC-91: …")` is textually
+ * identical to a real title, so no position rule separates them. Widening
+ * here would have swapped a guard that misses two cases for one that
+ * misreports three hundred, which is the worse trade in the direction this
+ * repo has already chosen: toward NOT reporting.
+ *
+ * The residue is filed rather than hidden. See #399's PR.
+ */
+export function strayFixtureIds(root: string, reg: ScRegistry): Map<string, string[]> {
+  const stray = new Map<string, string[]>();
+  for (const [id, files] of scIdsSpelledInSource(root)) {
+    if (reg.declaredById.has(id)) continue;
+    if (isFixtureScId(id)) continue;
+    stray.set(id, files);
+  }
+  return stray;
 }

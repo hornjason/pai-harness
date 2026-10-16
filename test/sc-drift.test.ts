@@ -31,8 +31,8 @@ doc-type: spec
 
 ## Success Criteria
 
-- [ ] SC-001: lib/nonexistent-file.ts exists
-- [ ] SC-002: scripts/also-fake.ts contains [someKeyword]
+- [ ] SC-9410: lib/nonexistent-file.ts exists
+- [ ] SC-9411: scripts/also-fake.ts contains [someKeyword]
 `;
     writeFileSync(join(TEMP_SPECS, "test-drift.md"), specContent);
 
@@ -45,8 +45,8 @@ doc-type: spec
 
     const driftedSCs = result.drifted.get("test-drift.md")!;
     expect(driftedSCs.length).toBeGreaterThanOrEqual(2);
-    expect(driftedSCs.some(d => d.scId === "SC-001")).toBe(true);
-    expect(driftedSCs.some(d => d.scId === "SC-002")).toBe(true);
+    expect(driftedSCs.some(d => d.scId === "SC-9410")).toBe(true);
+    expect(driftedSCs.some(d => d.scId === "SC-9411")).toBe(true);
   });
 
   test("passes when SC references existing file", () => {

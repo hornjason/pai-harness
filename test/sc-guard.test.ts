@@ -126,28 +126,28 @@ describe("validateNewSCs — strict mode", () => {
 describe("validateNewSCs — behavioral suffix", () => {
   test("rejects unmatchable SC without (behavioral) suffix", () => {
     const newSCs = [
-      { id: "SC-600", statement: "agent always follows the rules" },
+      { id: "SC-9430", statement: "agent always follows the rules" },
     ];
 
     const results = validateNewSCs(newSCs, "strict");
     expect(results).toHaveLength(1);
     expect(results[0].blocked).toBe(true);
-    expect(results[0].scId).toBe("SC-600");
+    expect(results[0].scId).toBe("SC-9430");
   });
 
   test("accepts unmatchable SC with explicit (behavioral) suffix", () => {
     const newSCs = [
-      { id: "SC-601", statement: "agent always follows the rules (behavioral)" },
+      { id: "SC-9431", statement: "agent always follows the rules (behavioral)" },
     ];
 
     const results = validateNewSCs(newSCs, "strict");
-    const sc601 = results.find(r => r.scId === "SC-601");
+    const sc601 = results.find(r => r.scId === "SC-9431");
     expect(sc601).toBeUndefined(); // allowed because of (behavioral) suffix
   });
 
   test("does not silently relabel unmatchable SCs as behavioral", () => {
     const newSCs = [
-      { id: "SC-602", statement: "some unmatchable requirement" },
+      { id: "SC-9432", statement: "some unmatchable requirement" },
     ];
 
     const results = validateNewSCs(newSCs, "strict");

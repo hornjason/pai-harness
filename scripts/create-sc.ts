@@ -17,6 +17,11 @@ import {
   formatSCLine,
 } from "../lib/create-sc";
 import { readScRegistry } from "./sync-sc-status";
+import { scIdsSpelledInSource } from "../lib/sc-ids";
+import { join } from "path";
+
+/** Same resolution sync-sc-status uses, so both halves read one tree. */
+const ROOT = join(import.meta.dir, "..");
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -73,7 +78,16 @@ try {
     // The whole namespace, not just this file: SC ids are global, and
     // allocating from one spec's content is what produced ten collisions
     // (#392). A spec outside specs/ still gets the local answer.
-    const scNumber = nextSCNumber(content, readScRegistry());
+    //
+    // BOTH halves of it (#399). The registry is specs only, and test fixtures
+    // spell SC ids in the same namespace without appearing in any registry,
+    // so an allocation that consults only the registry can mint a criterion
+    // out of a number a fixture already depends on.
+    const scNumber = nextSCNumber(
+      content,
+      readScRegistry(),
+      scIdsSpelledInSource(ROOT).keys(),
+    );
     const scLine = formatSCLine(scNumber, statement);
 
     // Append SC line to the end of the file

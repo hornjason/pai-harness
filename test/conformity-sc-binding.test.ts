@@ -90,12 +90,26 @@ const CHECKED_SC_BASELINE = 261;
  * the registry still cannot express a refusal.
  *
  * Rewriting them to bind would mean asserting that `lib/scaffold/rehearsal.ts`
- * contains some string, which is the source-text assertion #397's own
+ * contains some string, which is the source-text assertion #397 own
  * post-mortem names as the thing that let a hook ship unable to pass. The
  * number goes up and says why, for the second issue running.
+ *
+ * 252 → 258 by #399, which is the third. All six of SC-1520..1525 are
+ * unmatched and all six are executed, in `test/sc-fixture-namespace.test.ts`.
+ * They are claims about an ALLOCATOR behaviour — "never returns a number any
+ * source file spells" — and about the ABSENCE of a thing across two
+ * directory trees. Neither is a state of one file, which is all the
+ * vocabulary has.
+ *
+ * **258 is the SUM, and that is the whole point of this note.** #398 and
+ * #399 were in flight together and each raised 242 on its own branch, to 252
+ * and 248. A rebase that takes either side wholesale resolves cleanly, goes
+ * green, and silently drops one issue criteria from the count — a ratchet
+ * reading lower than the truth is a ratchet that will refuse the next honest
+ * issue for the wrong reason. Three issues running now; whoever is fourth
+ * should expect to add rather than choose.
  */
-const UNMATCHED_CHECKED_RATCHET = 252;
-
+const UNMATCHED_CHECKED_RATCHET = 258;
 function specFiles(): string[] {
   return readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
 }

@@ -9,6 +9,7 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import type { ScRegistry } from "./sc-ids";
+import { isFixtureScId } from "./sc-ids";
 import { tryLoadRungateConfig } from "./config-loader";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -243,18 +244,44 @@ export function listPatterns(): string {
  * that has no registry to hand; silently changing that would be a different
  * bug. It is the wrong answer in a shared namespace, which is why
  * `scripts/create-sc.ts` passes one.
+ *
+ * ## The namespace has a second half, and #392 only fixed the first
+ *
+ * Consulting the registry stopped two specs minting the same number. It did
+ * nothing about test fixtures, which spell SC ids inside the SAME namespace
+ * and appear in no registry: `test/sync-sc-status.test.ts:61` is literally
+ * `- [ ] SC-9441: AGENTS.md exists`, a checkbox declaration in a string
+ * literal. Allocating 900 would mint a criterion out of a scratch number and
+ * hand a live claim to a fixture — the shape #392 closed, arriving from the
+ * side nothing looks at.
+ *
+ * So `spelledInSource` is the other half — and only there is the reserved
+ * range ignored. The 9000s exist to be safe for fixtures, so counting a
+ * FIXTURE at 9450 as taken would push every future criterion past 9000 and
+ * destroy the reservation it was built on. That is the one case where a
+ * higher number is the wrong answer.
+ *
+ * A SPEC declaration is authoritative at any number, reserved or not. If a
+ * spec has already claimed 9150 then 9150 is claimed, whatever the
+ * convention says it should have been, and allocating it again is the
+ * collision this function exists to prevent. The reservation is enforced
+ * against specs by SC-1524, not by making the allocator pretend.
  */
-export function nextSCNumber(specContent: string, reg?: ScRegistry): number {
+export function nextSCNumber(
+  specContent: string,
+  reg?: ScRegistry,
+  spelledInSource?: Iterable<string>,
+): number {
   const ids: number[] = [];
+  const take = (raw: string): void => {
+    const n = Number(raw.replace(/^SC-[A-Z]?/, ""));
+    if (Number.isFinite(n)) ids.push(n);
+  };
   const pattern = /SC-(\d+)/g;
   let match;
-  while ((match = pattern.exec(specContent)) !== null) {
-    ids.push(parseInt(match[1]));
-  }
-  for (const id of reg?.declaredById.keys() ?? []) {
-    const n = Number(id.replace(/^SC-[A-Z]?/, ""));
-    if (Number.isFinite(n)) ids.push(n);
-  }
+  while ((match = pattern.exec(specContent)) !== null) take(match[0]);
+  for (const id of reg?.declaredById.keys() ?? []) take(id);
+  for (const id of spelledInSource ?? []) if (!isFixtureScId(id)) take(id);
   if (ids.length === 0) return 1;
   return Math.max(...ids) + 1;
 }

@@ -635,3 +635,117 @@ Reviewed 2026-09-21 by Architect, Engineer, Skeptic (3 rounds). See `docs/counci
 - Sequencing reversed: phase-2/3/5 first, phase-0 last
 - Phase-0 circular dependency acknowledged
 - Strict mode (D-5) deferred until behavioral classification complete
+
+## #399 — test fixtures spell SC ids inside the live namespace
+
+`nextSCNumber` reads the spec registry — `declaredById` over `specs/` — and
+cannot see a fixture. So it proposes a number that looks free, is free as far
+as every guard in the repo is concerned, and collides with a string literal
+the suite depends on. Found while renumbering GATE-CONTRACTS-SPEC.md's
+headings (#392 follow-up): the next free number was 896, and allocating the
+ten-heading block at 896..905 would have been wrong, because four of those
+numbers were already in use as planted fixtures. The renumbering went to
+1400..1409 to step over the whole occupied run.
+
+**The collision this was filed to prevent had already happened.**
+`test/stale-issue-scanner.test.ts` plants `SC-379` and `SC-380` as fixture
+ids; this spec declares both at lines 77-78 as real tracked criteria. Two
+different things wear the same id, and nothing in the tree reports it.
+
+Several strays were spelled in a declaring form. `test/sync-sc-status.test.ts`
+contained literally `- [ ] SC-900: AGENTS.md exists` — a checkbox
+declaration, in a string literal, inside a test file. If a spec had ever
+declared SC-900 that fixture would have become a claim on a real criterion,
+which is the shape #392 closed arriving from the other direction.
+
+### Why this is the same class and not a tidy-up
+
+`.claude/rules/checks-must-be-able-to-fail.md` names it: a detector narrower
+than what it detects. Every guard in this area — `crossSpecCollisions`,
+`crossFormCollisions`, `nextSCNumber`, `requiresQualification` — reasons over
+`specs/` only. They are all correct about the question they ask and all blind
+to half the namespace, and nothing reported that the blindness existed.
+
+### Why the floor is 9000 and not 9900
+
+The issue proposed 9900, following `test/sc-claim-forms.test.ts`. Measured on
+the tree, the convention that already exists is **9000+**: 209 fixture
+mentions sit at 9001..9902 across eight files, against 24 strays below. A
+floor at 9900 would have declared 209 settled fixture ids to be violations
+and required migrating them for no benefit. The floor goes where the repo
+converged, which is also the only choice that makes the stray count a measure
+of the problem rather than of the rule.
+
+- [x] SC-1520: One exported predicate decides what is reserved for fixtures, and both the allocator and the stray guard consult it rather than comparing against the number
+- [x] SC-1521: `nextSCNumber` never returns a number any source file spells, driven over the real tree rather than a planted pair, while the reserved range itself does not drag the allocation up and the one-argument answer is unchanged
+- [x] SC-1522: No fixture id sits below the floor, with the scanner's reach asserted so the count cannot be zero because nothing was read, and a declared criterion cited in a test proven not to be a stray
+- [x] SC-1523: The scanner reads every directory it claims to, so a silently skipped source tree cannot report a clean namespace
+- [x] SC-1525: `scripts/create-sc.ts` passes the source half to the allocator, driven as a subprocess against the real CLI — a decider being right is not the same as the caller asking it
+- [x] SC-1524: No spec declares a criterion at or above the floor, so the range fixtures are told is safe actually is — the allocator treats a spec declaration as authoritative at any number, and this is what makes that safe
+
+### What was broken to prove it (SC-1520..1525)
+
+Run and counted over `test/sc-fixture-namespace.test.ts`,
+`test/sc-id-namespace.test.ts`, `test/create-sc.test.ts` and
+`test/sync-sc-status-matching.test.ts` (87 tests). None is left in the tree;
+all were run and reverted.
+
+| Mutation | Red |
+|---|---|
+| `isFixtureScId` always says no | 6 |
+| `isFixtureScId` always says yes | 6 |
+| the floor moves to 9900, as the issue originally proposed | 3 |
+| the allocator stops reading the source half (the #399 bug, restored) | 2 |
+| the allocator counts reserved-range fixtures as taken | 2 |
+| a fixture planted back below the floor at an UNDECLARED number | 2 |
+| the CLI stops passing the source half | 1 |
+| the stray scan short-circuited to an empty map | 1 |
+| the scanner skips `gates/` silently | 1 |
+| the trailing-digit boundary dropped from the scan regex | **0 — no-op, see below** |
+| a fixture planted back at a number a spec DECLARES | **0 — known limitation, see below** |
+
+Five rows were zero on the first battery and four were the tests' fault:
+
+- **The dir-coverage case derived its expected set from `SC_SOURCE_DIRS`,**
+  so dropping `gates` from the list dropped it from the test too. A test
+  parameterised by the thing it checks cannot check it — #397 paid for this
+  exact lesson once already, and it recurred within a day. The expected set
+  is now a literal, with the list asserted against it separately.
+- **The stray guard asserted `size === 0`,** which an empty map satisfies.
+  It now runs the real `strayFixtureIds` over a planted tree.
+- **Nothing exercised the CLI's call site,** so removing the allocator's
+  third argument there scored 0 — SC-1509's distinction again, a decider
+  being right is not the same as the caller asking it. The case now plants a
+  fixture above every declared number so the two answers differ, and drives
+  the real CLI as a subprocess.
+- **The prefix pair was not a prefix pair.** `FLOOR+141` and `FLOOR+14` are
+  9141 and 9014, which share no prefix, so the boundary case proved nothing.
+
+The two remaining zeros are different from each other and neither is a test
+defect:
+
+- **The trailing-digit lookahead is a no-op.** `/SC-(\d+)/` is greedy, so
+  `\d+` already consumes every digit and `(?!\d)` cannot change an answer.
+  Measured directly rather than assumed. It is kept because it matches
+  `scMentionPattern`'s house form and states the intent, but it guards
+  nothing and the table says so rather than carrying a row that looks proven.
+- **A fixture reusing an id a spec already declares is out of reach,** and
+  that is a deliberate boundary. Catching it by POSITION — "in a comment it
+  is a citation, in code it is a fixture" — was implemented and measured at
+  **338 violations on this tree**, because `test("SC-1504: …")` is a test
+  TITLE, a claim form `.claude/rules/claiming-sc-coverage.md` lists as valid
+  and settled. A planted fixture string containing `test("SC-91: …")` is
+  textually identical to a real title, so no position rule separates them.
+  Widening would swap a guard that misses two cases for one that misreports
+  three hundred, in the direction this repo has already chosen against.
+
+Both already-landed collisions were found by hand and are recorded here
+rather than left implicit: `SC-379`/`SC-380`
+(`test/stale-issue-scanner.test.ts` against this spec's lines 77-78) and
+`SC-91`/`SC-92`/`SC-93` (`test/sync-sc-status-matching.test.ts` against
+`specs/bootstrap-data-flow/success-criteria.md`). The second sat under a
+comment reading "with IDs this repo does not use so the file does not claim
+them" — true when written, false by the time it mattered, and nothing could
+notice. Those three are moved; the two in `stale-issue-scanner` are left for
+the follow-up that closes the detector gap, because moving them without a
+guard just resets the clock.

@@ -133,7 +133,7 @@ describe("AC-2: create-spec validation uses merged registry", () => {
 
     const { isMatchablePattern } = await import("../../lib/conformity");
     const sc = {
-      id: "SC-999",
+      id: "SC-9461",
       statement: "GET /api/health returns 200",
       specFile: "test.md",
     };
@@ -150,7 +150,7 @@ describe("AC-2: create-spec validation uses merged registry", () => {
   test("isMatchablePattern returns true for built-in patterns regardless of projectRoot", async () => {
     const { isMatchablePattern } = await import("../../lib/conformity");
     const sc = {
-      id: "SC-999",
+      id: "SC-9461",
       statement: "AGENTS.md exists",
       specFile: "test.md",
     };

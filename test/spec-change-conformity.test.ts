@@ -54,7 +54,7 @@ describe('spec-change-conformity', () => {
       mkdirSync(specsDir, { recursive: true });
       writeFileSync(
         join(specsDir, 'TEST-SPEC.md'),
-        '# Test Spec\n\n- [x] SC-900: Already checked\n'
+        '# Test Spec\n\n- [x] SC-9441: Already checked\n'
       );
 
       const result = runSpecChangeConformity(tempDir);
@@ -71,7 +71,7 @@ describe('spec-change-conformity', () => {
       // file-exists regex: ^(\S+)\s+exists?\b — backtick-wrapped path, then "exists"
       writeFileSync(
         join(specsDir, 'TEST-SPEC.md'),
-        '# Test Spec\n\n- [ ] SC-999: `specs/TEST-SPEC.md` exists\n'
+        '# Test Spec\n\n- [ ] SC-9461: `specs/TEST-SPEC.md` exists\n'
       );
 
       const result = runSpecChangeConformity(tempDir);
@@ -87,14 +87,14 @@ describe('spec-change-conformity', () => {
       // Use file-exists pattern with a file that doesn't exist
       writeFileSync(
         join(specsDir, 'TEST-SPEC.md'),
-        '# Test Spec\n\n- [ ] SC-998: `nonexistent/file.ts` exists\n'
+        '# Test Spec\n\n- [ ] SC-9460: `nonexistent/file.ts` exists\n'
       );
 
       const result = runSpecChangeConformity(tempDir);
       expect(result.triggered).toBe(true);
       expect(result.flippedCount).toBe(0);
-      // SC-998 should be in failing or unmatchable (not passing)
-      expect(result.passing).not.toContain('SC-998');
+      // SC-9460 should be in failing or unmatchable (not passing)
+      expect(result.passing).not.toContain('SC-9460');
     });
   });
 });
