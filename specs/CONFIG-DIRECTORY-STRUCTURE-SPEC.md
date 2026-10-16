@@ -1084,3 +1084,25 @@ the route it DOES take, and says why the two differ.
 - [x] SC-1709: test/recorder-command-executed.test.ts contains [a caller-supplied SHA is refused by name] — with the SHA passed being the fixture's real HEAD, so what is refused is the caller CHOOSING the commit rather than the commit being wrong, and the state is asserted untouched
 - [x] SC-1710: test/recorder-command-executed.test.ts contains [a project with no commit is refused - not recorded as HEAD] — both routes, an unborn HEAD and a directory that is not a repository at all, because they reach the refusal differently and neither case covers the other
 - [x] SC-1711: test/recorder-command-executed.test.ts contains [the step in the prompt is the command this file ran] — everything above proves the BUILDER is sound and none of it would notice the prompt calling a different one, or inlining the old text beside it
+
+### What was broken to prove it (SC-1706..SC-1711)
+
+Every count predicted before the battery ran, over the 85 tests in
+`test/recorder-command-executed.test.ts`,
+`test/suite-verdict-binding.test.ts` and
+`test/suite-measurement-parity.test.ts`. All five rows came back at their
+prediction; none of the mutations is left in the tree.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `recorderCommand` emits `--result PASS\|FAIL` again — main's text | 4 | 4 |
+| the `RETIRED` map removed, so retired flags read as "unexpected argument" | 4 | 4 |
+| `measuredSha` short-circuited to a fixed valid SHA | 8 | 8 |
+| `shaFromGitOutput` stops validating | 1 | 1 |
+| the prompt inlines the old command text instead of calling the builder | 2 | 2 |
+
+The third row is the one worth reading: eight tests notice a recorder that
+makes up its commit, and they are spread across the executed-command file,
+the refusal battery and the mutant-sanity case. Before this issue the same
+mutation would have been invisible to every test of this step, because the
+only thing any of them looked at was the sentence describing the command.
