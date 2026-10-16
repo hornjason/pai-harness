@@ -6632,7 +6632,30 @@ twenty roots times six levels of unbounded fanout is still unbounded.
 `MAX_SCAN_FILES` is 2000 and a truncated scan says so; this repo's own scan
 collects 92.
 
-### What was broken to prove it (SC-1622..1634)
+- [x] SC-1635: test/doc-scan-targets.test.ts contains [the exclusion is case-insensitive, because the filesystem may be] — and the file cap stops the walk rather than only the collecting
+
+### A third review round — two of three held
+
+**The exclusion was defeated by changing a letter.** Measured before the
+fix: `docs/vendor -> NODE_MODULES` produced `NODE_MODULES/pkg/README.md`.
+On macOS and Windows that is the same directory the list already names.
+The comparison is now case-insensitive **always**, not "when the filesystem
+is" — the direction this is allowed to be wrong in is toward not scanning,
+because a directory genuinely named `Archive` being excluded costs one
+visible entry in `refused` and the other direction is a silent bypass of
+the whole list.
+
+**The cap was on the wrong accumulator.** `MAX_SCAN_FILES` stopped the push
+and not the walk, so the output was bounded while the traversal and the
+`seen` set kept growing. The cap now returns from `walkMarkdown`, and
+`walked` is on the plan so that is checkable rather than asserted in prose.
+
+**The third did not hold.** A claimed exclusion regression from replacing
+the entry-name check was probed directly — `docs/sub/node_modules/pkg/X.md`
+and `docs/.git/Y.md` are both refused. Reported here because a finding
+checked and found not to apply is worth the same sentence as one that does.
+
+### What was broken to prove it (SC-1622..1635)
 
 Run over `test/doc-scan-targets.test.ts`, baseline 0 fail. Every count
 predicted before the battery ran. The first sixteen were measured over 24
@@ -6672,7 +6695,13 @@ reproduce exactly.
 | `walkMarkdown` stops recursing, re-measured at 29 | 4 of 29 — reproduces |
 | containment dropped, re-measured at 29 | 3 of 29 — reproduces |
 
-None of the twenty-eight is left in the tree; all were run and reverted.
+| the exclusion keyed on exact bytes again — the hole verbatim | 1 of 30 |
+| the cap stops the push but not the walk | 1 of 30 |
+| `excludedByPath` always false, re-measured at 30 | 5 of 30 |
+| `walkMarkdown` stops recursing, re-measured at 30 | 5 of 30 — predicted 4; the cap test never trips without recursion |
+| containment dropped, re-measured at 30 | 3 of 30 — reproduces |
+
+None of the thirty-three is left in the tree; all were run and reverted.
 
 **The row that came back zero.** The bounded-recursion test built its fixture
 as `MAX_SCAN_DEPTH + 3` levels deep. Raising the constant raised the fixture

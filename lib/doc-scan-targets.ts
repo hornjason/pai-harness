@@ -108,6 +108,14 @@ export interface DocScanPlan {
    * indistinguishable from one that was read and happened to be empty.
    */
   refused: string[];
+  /**
+   * How many directories the walk entered.
+   *
+   * On the plan so that the file cap stopping the WALK is checkable rather
+   * than asserted in prose — a cap that only stops pushing bounds the output
+   * while the traversal keeps costing.
+   */
+  walked: number;
 }
 
 /**
@@ -137,7 +145,12 @@ export interface DocScanPlan {
 function excludedByPath(rootReal: string, real: string): boolean {
   const rel = relative(rootReal, real);
   if (rel === "") return false;
-  return rel.split("/").some(seg => SCAN_EXCLUDE_DIRS.includes(seg));
+  // Case-insensitive, always — not "when the filesystem is". On macOS and
+  // Windows `NODE_MODULES` and `node_modules` are one directory, and keying
+  // on the exact bytes let the whole list be bypassed by changing a letter.
+  // Measured before this: `docs/vendor -> NODE_MODULES` was scanned.
+  const lowered = SCAN_EXCLUDE_DIRS.map(d => d.toLowerCase());
+  return rel.split("/").some(seg => lowered.includes(seg.toLowerCase()));
 }
 
 function containedReal(rootReal: string, path: string): string | null {
@@ -206,6 +219,7 @@ interface WalkState {
   files: string[];
   refused: string[];
   truncatedFiles: number;
+  walked: number;
 }
 
 /**
@@ -228,6 +242,11 @@ function anchored(projectPath: string, rootReal: string, real: string): string {
 
 function walkMarkdown(dir: string, depth: number, st: WalkState): void {
   if (depth > MAX_SCAN_DEPTH) return;
+  // The cap stops the WALK. Stopping only the push bounds `files` while the
+  // traversal and `st.seen` keep growing, which caps the output and not the
+  // work.
+  if (st.files.length >= MAX_SCAN_FILES) { st.truncatedFiles++; return; }
+  st.walked++;
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -257,6 +276,7 @@ function walkMarkdown(dir: string, depth: number, st: WalkState): void {
     if (st.seen.has(real)) continue;
     st.seen.add(real);
     if (!isDir && st.files.length >= MAX_SCAN_FILES) { st.truncatedFiles++; continue; }
+
 
     // The RESOLVED path is what gets walked and recorded, not the path that
     // was validated a moment ago. Validating one value and using another is
@@ -321,6 +341,7 @@ export function planDocScan(projectPath: string): DocScanPlan {
     files: [],
     refused: [],
     truncatedFiles: 0,
+    walked: 0,
   };
 
   const roots: string[] = [];
@@ -389,7 +410,10 @@ export function planDocScan(projectPath: string): DocScanPlan {
 
   st.files.sort();
   st.refused.sort();
-  return { source, reason, roots, unmeasured, files: st.files, refused: st.refused };
+  return {
+    source, reason, roots, unmeasured,
+    files: st.files, refused: st.refused, walked: st.walked,
+  };
 }
 
 /** Relative paths, for a report that a human reads. */

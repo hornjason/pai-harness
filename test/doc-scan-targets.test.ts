@@ -210,16 +210,52 @@ describe("SC-1624: the exclusions are one list, and each is proved", () => {
     expect(plan.refused.join(" ")).toContain("node_modules");
   });
 
+  test("SC-1635: the exclusion is case-insensitive, because the filesystem may be", () => {
+    // Measured before the fix: `docs/vendor -> NODE_MODULES` produced
+    // `NODE_MODULES/pkg/README.md`. On a case-insensitive filesystem — macOS
+    // and Windows, which is most of where this runs — that is the same
+    // directory the list already names, reached by changing its case.
+    //
+    // Always case-insensitive, not "insensitive when the filesystem is".
+    // The direction this is allowed to be wrong in is toward not scanning:
+    // a directory genuinely named `Archive` being excluded costs one entry
+    // in `refused`, which is visible, and the other direction is a silent
+    // bypass of the whole list.
+    routing(["docs"]);
+    doc("docs/KEEP.md");
+    doc(join("NODE_MODULES", "pkg", "README.md"));
+    symlinkSync(join(root, "NODE_MODULES"), join(root, "docs", "vendor"));
+
+    const plan = planDocScan(root);
+    const files = plan.files.map(f => relative(root, f));
+    expect(files).toContain(join("docs", "KEEP.md"));
+    expect(files, "the exclusion was defeated by changing the case")
+      .not.toContain(join("NODE_MODULES", "pkg", "README.md"));
+  });
+
   test("SC-1634: the total file count is bounded, not just the roots", () => {
     // A cap on roots is not a cap on work: twenty roots times six levels of
     // unbounded fanout is still unbounded. The bound belongs on the thing
     // that actually grows.
+    //
+    // SC-1635: and the cap stops the WALK, not just the collecting. A cap
+    // that only stops pushing bounds the output while the traversal and the
+    // `seen` set keep growing — the accumulator that actually costs
+    // something is not the one that was capped. `walked` is on the plan so
+    // that is checkable rather than asserted in prose.
     routing(["docs"]);
-    for (let i = 0; i < MAX_SCAN_FILES + 10; i++) doc(join("docs", `F${i}.md`));
+    // Enough files to trip the cap with the walk well short of the last
+    // directory, so "the walk stopped" is a margin and not a rounding.
+    const dirs = 60;
+    const per = 50;
+    for (let d = 0; d < dirs; d++) {
+      for (let i = 0; i < per; i++) doc(join("docs", `d${d}`, `F${i}.md`));
+    }
 
     const plan = planDocScan(root);
     expect(plan.files.length).toBeLessThanOrEqual(MAX_SCAN_FILES);
     expect(plan.reason, "the truncation was silent").toContain("file");
+    expect(plan.walked, "the walk continued past the cap").toBeLessThan(dirs);
     expect(MAX_SCAN_FILES).toBeGreaterThanOrEqual(500);
   });
 
