@@ -866,3 +866,156 @@ half-done here. A guard whose limit is written down is a guard somebody can
 finish; one whose limit is implied is one everybody assumes is complete.
 
 - [x] SC-1697: test/test-census.test.ts contains [the previous census is read off disk - not off a stale in-memory copy] — an array, unparseable JSON and a missing file all read as nothing banked, and the `undefined` they produce is asserted to become `first-reading` rather than anything that reads as clean
+
+## Five readers that each knew where the config lives (#311)
+
+The gates were the last region building `.claude/rungate.json` by hand. Four
+sites in `gates/gate-executor.ts` and one in `gates/ship-orchestrator.ts` did
+`existsSync(join(projectRoot, ".claude", "rungate.json"))` and treated a false
+as "this project has no rungate config". A sixth, `gates/brief-assembler.ts`,
+had been migrated in #439 but to the *forgiving* loader.
+
+What that cost is specific per site, and none of it was ever a warning. For a
+consumer on the documented `.claude/rungate/` layout:
+
+| Site | Reported | Actually |
+|---|---|---|
+| ceremony overrides | tier defaults | the project's overrides, ignored (#310) |
+| type check | nothing to check | `dev.typeCheck`, never run |
+| dev-server liveness | no dev server declared | `dev.start` + `dev.apiBase`, never probed |
+| prove-gate environment | `apiBase = ""`, so `if (apiBase)` false | both base URLs, no probe |
+| container rebuild | `SKIP (prod.rebuild is null)` | a configured rebuild command |
+
+That last line is the one worth keeping: the gate printed a sentence naming a
+key it had not looked at. A reader cannot tell that from a key it read and
+found empty, and the whole of ADR-001 D2 is that distinction.
+
+### Three answers, because there are three facts
+
+`readGateConfig` returns `resolved` / `absent` / `unreadable`, and the
+third is the one the `existsSync` shape could not express. A malformed config
+reaching these gates previously arrived as a throw out of `resolveConfig` in
+one site and as nothing at all in the four that never called it — and the one
+site that did call it had `catch { harness = null }` around it, which is the
+live instance `.claude/rules/config-access.md` names. That catch is gone.
+`unreadable` is reported as a WARN naming the site and the parse error, and
+the gate continues with no config rather than with a config it invented.
+
+### Which loader each caller gets, and why it is not one answer
+
+ADR-001 D2's caller table is a decision per call site, not a default:
+
+- **`shouldRebuildContainer`** — `tryLoadRungateConfig`. It runs in
+  `runScopePreflights` on every run, and an unscaffolded project genuinely has
+  no rebuild to do. A malformed config still throws, and the scope gate is the
+  right place to find out.
+- **`assembleBrief`** — `loadRungateConfig`, the throwing one, changed in this
+  issue from `tryLoad`. A brief assembled without config is not a degraded
+  brief; it is a brief whose context section is silently empty, and an agent
+  handed one behaves exactly like an agent whose project declared no docs. The
+  two are indistinguishable downstream and only one of them is a project
+  anybody should be shipping from.
+- **the four gate readers** — `readGateConfig`, because a gate's job includes
+  *saying* which of the three cases it hit.
+
+#### Where the ADR's caller table and a shipped criterion disagree
+
+ADR-001 D2's table assigns `gates/brief-assembler.ts` the **throwing**
+loader, and #311 SC-A9 restates it by file and line. It is not used, and the
+conflict is recorded here rather than settled quietly in a diff.
+
+Making the change turns three of #439's criteria red — SC-1614 (absent config
+still assembles a brief), SC-1617 (the call pinned in source text), SC-1621
+(the predicate guarding `contextFiles`). #439 is the later decision and it
+shipped SC-1614 as *two separately asserted halves* — malformed throws,
+absent does not — for the stated reason that a single test covering one half
+would not notice them being conflated. Throwing here conflates them again
+from the opposite direction, which is the corollary ADR-001 exists to defend.
+
+The concern behind SC-A9 is real: a brief whose context section is silently
+empty reads exactly like a project that declared no docs. Throwing does not
+answer it — it replaces a quiet brief with a crash. Answering it means the
+brief **saying** there was no config, which is a question about brief content
+and is filed as #497 rather than decided here.
+
+`shouldRebuildContainer` keeps `tryLoadRungateConfig` on the same reasoning:
+malformed still throws, and the scope gate is where an unparseable config
+should surface.
+
+### Base URLs come off the normalised fields
+
+`proveEnvironment` reads `config.apiUrl` / `config.uiUrl`, not `dev.apiBase`.
+`normaliseConfig` collapses an authored `null` — what a greenfield scaffold
+writes for a URL it could not detect — into the same absence an omitted key
+gives. Reading the raw key would put the second spelling of "not set" back in
+front of `if (apiBase)`, which is the branch deciding whether a probe runs at
+all. SC-1700 is that case and it is the only one in this group that passes
+against the *fixed* hand-built reader too, which is why it is written out.
+
+### Both ratchet entries deleted, not decremented
+
+`gates/gate-executor.ts` (4) and `gates/ship-orchestrator.ts` (1) are removed
+from `.claude/config-access-ratchet.json` entirely. CONFIG-1 refuses in both
+directions, so a file at zero with an entry still present fails the suite —
+clearing a file means deleting its line in the same commit that earns it.
+
+### Every case is authored twice
+
+Rungate carries both layouts, so the monolith arm of each of these passes
+against the broken code. `captureTestBaseline` in #307 is the worked example of
+what that does to a suite: the fixture anyone writes by reflex is the one the
+defect cannot be seen in. Each reader is therefore driven against a monolith
+project AND a directory project, and the two answers are compared **to each
+other** before being compared to a literal — a reader that handled neither
+layout satisfies a pair of literals written to match it, and nothing else in
+the file would notice.
+
+- [x] SC-1698: test/gate-config-migration.test.ts contains [absent - unreadable and resolved are distinct readings] — the three-way reading itself, including the `source` field, because "resolved" with no layout named cannot tell an operator which of their two files the gate read
+- [x] SC-1699: test/gate-config-migration.test.ts contains [the prove gate's environment is the same on both layouts] — all five fields were `""` for a directory consumer and the symptom was a probe that silently did not happen; compared across layouts first, since two readers that both return empty also agree
+- [x] SC-1700: test/gate-config-migration.test.ts contains [an authored null base URL stays absent - not the string null] — the normalisation ADR-002 D3 specified, asserted at the reader rather than at the loader, because this is the branch where a second spelling of "not set" turns into a skipped probe
+- [x] SC-1701: test/gate-config-migration.test.ts contains [the type check command is found on both layouts] — with the state-over-config precedence pinned in the same test, so the migration cannot quietly reverse it, and an authored `null` asserted to mean no command rather than a crash
+- [x] SC-1702: test/gate-config-migration.test.ts contains [the liveness probe sees a dev block on both layouts] — absent must stay `undefined` so `livenessPlan` reports UNMEASURED rather than DOWN, which is the #304 asymmetry this migration must not spend
+- [x] SC-1703: test/gate-config-migration.test.ts contains [a configured rebuild is seen on both layouts] — the `SKIP (prod.rebuild is null)` sentence, driven from both layouts and from a config that omits the key, so the `true` is a decision and not a reader that says yes to everything
+- [x] SC-1704: test/gate-config-migration.test.ts contains [a corrupt config is not silently treated as unconfigured] — the readers convert the throw and report it; `shouldRebuildContainer` deliberately lets it propagate, and that asymmetry is asserted rather than left to be discovered by whoever next makes them consistent
+- [x] SC-1705: test/gate-config-migration.test.ts contains [ceremony overrides survive the round trip on both layouts] — #310 by name, and a tier control that silently does nothing is exactly *Silent Default Substitution*
+
+### What was broken to prove it (SC-1698..SC-1705)
+
+Every count predicted before the battery ran, over the eight tests in
+`test/gate-config-migration.test.ts`. All eight rows came back at their
+prediction; none of the mutations is left in the tree.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `readGateConfig` reads only `.claude/rungate.json` — the defect itself | 6 | 6 |
+| `readGateConfig`'s `catch` returns `absent` instead of `unreadable` | 2 | 2 |
+| `reportUnreadable` short-circuited to a no-op | 1 | 1 |
+| `shouldRebuildContainer` reads only the monolith | 1 | 1 |
+| `shouldRebuildContainer` short-circuited to `return false` | 2 | 2 |
+| `proveEnvironment` reads `c.dev?.apiBase` raw instead of `c.apiUrl` | 1 | 1 |
+| `typeCheckCommand` lets config win over state | 1 | 1 |
+| `livenessDev` always returns `undefined` | 1 | 1 |
+
+Two of those rows only exist because the first draft could not produce them,
+and both are the fourth shape — two things that were one thing:
+
+- **`proveEnvironment` reading the raw key was 0 red.** `dev.apiBase || ""`
+  and `apiUrl || ""` answer identically for every fixture a reflex writes:
+  `null || ""` is `""` either way, and a present string is itself either way.
+  The normaliser's `parsed.apiUrl ?? parsed.dev?.apiBase` is the only place
+  they diverge, so SC-1700 now also drives a config authoring a top-level
+  `apiUrl` with no `dev.apiBase` — an input only the normalised read reaches.
+  Without it the test forbade exactly the read that satisfied it.
+- **`reportUnreadable` as a no-op was 0 red.** For `proveEnvironment`,
+  `typeCheckCommand` and `loadAndValidateHarness`, `unreadable` and `absent`
+  return the same empty answer; the WARN is the entire behavioural
+  difference. A three-way reading whose third case nothing observes is a
+  two-way reading with a longer type. SC-1704 now captures all three WARNs by
+  name.
+
+The `return false` row is worth one line of its own: it is 2 rather than 1
+because SC-1704 asserts `shouldRebuildContainer` *does* throw on a corrupt
+config while the four gate readers convert it. That asymmetry is deliberate —
+it uses the loader directly and the scope gate is the right place to find out
+a config cannot be parsed — and asserting it is what stops the next person
+making the five consistent from doing it in the quiet direction.

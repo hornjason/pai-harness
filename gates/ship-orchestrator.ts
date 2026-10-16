@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import { join } from "path";
 import { execFileSync } from "child_process";
+import { tryLoadRungateConfig } from "../lib/config-loader";
 
 export const MAX_ITERATIONS = 3;
 
@@ -229,11 +230,24 @@ export function slugExists(issue: number): string | null {
 
 // ── Container rebuild (null check) ─────────────────────────────────
 
+/**
+ * Whether this project declares a production rebuild (#311 SC-A9).
+ *
+ * Through the loader. The hand-built monolith path meant a consumer on the
+ * documented `.claude/rungate/` layout answered `false` — "no rebuild
+ * configured" — for a rebuild it had configured, and the scope gate printed
+ * `Container rebuild: SKIP (prod.rebuild is null)`, which is a sentence
+ * about a key the reader never looked at.
+ *
+ * `tryLoadRungateConfig`, not the throwing one: this is called from
+ * `runScopePreflights` on every run, and an unscaffolded project genuinely
+ * has no rebuild to do. A malformed config still throws, which is the
+ * distinction ADR-001 D2 exists for — and the scope gate is the right place
+ * to find out that a config cannot be parsed.
+ */
 export function shouldRebuildContainer(projectRoot: string): boolean {
-  const configPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(configPath)) return false;
-  const config = JSON.parse(readFileSync(configPath, "utf-8"));
-  return config.prod?.rebuild != null;
+  const config = tryLoadRungateConfig(projectRoot);
+  return config?.prod?.rebuild != null;
 }
 
 // ── Post-verify scaffold refresh ───────────────────────────────────

@@ -51,6 +51,23 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
   // read, and so a malformed config THROWS rather than reading as absent.
   // The previous `catch { return null }` turned a trailing comma into "no
   // docs declared" — `.claude/rules/config-access.md` names both.
+  //
+  // #311 SC-A9 asks for the THROWING loader here, per ADR-001 D2's caller
+  // table ("a gate run without config is meaningless, not degraded"). It is
+  // NOT used, and the conflict is recorded rather than resolved quietly.
+  //
+  // ADR-001 predates #439, which shipped SC-1614 — *malformed config throws;
+  // absent config does not* — with the two halves asserted separately
+  // precisely so nobody could conflate them again. Throwing here conflates
+  // them from the other direction: an unscaffolded project and a project with
+  // a trailing comma would once more produce one outcome, which is the
+  // corollary ADR-001 itself exists to defend. SC-1617 pins this call in
+  // source text for the same reason.
+  //
+  // The worry behind SC-A9 is real — a silently empty context section reads
+  // like a project that declared no docs. It is not answered by throwing; it
+  // is answered by the brief SAYING so, which is #497's question and not
+  // this issue's.
   const harness = tryLoadRungateConfig(projectRoot);
   const projectContextDocs = classifyContextDocs(projectRoot, harness?.contextDocs);
   const hasAgents = existsSync(join(projectRoot, "AGENTS.md"));
