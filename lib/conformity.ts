@@ -6,7 +6,7 @@
  *   runScaffoldConformity(import.meta.dir + "/..");
  */
 import { describe, test, expect } from "bun:test";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import { collectSpecFiles } from "./spec-files";
 import { spawnSync } from "child_process";
 import { join, dirname } from "path";
@@ -3093,16 +3093,131 @@ export function configAccessViolations(
  * a blanket disable wearing a conditional's clothes, so CONFIG-2's empty-scan
  * refusal had never been reachable.
  */
+/** Anything that can carry code. Deliberately WIDER than any scanner's filter. */
+const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+
+/** Directories that hold code nobody wrote, or output nobody edits. */
+const SOURCE_SKIP_DIRS = new Set([
+  "node_modules", ".git", "dist", "build", "coverage", ".next", ".output", "vendor",
+]);
+
+/**
+ * Whether this project contains code at all, and whether the answer is
+ * trustworthy (#476 follow-up).
+ *
+ * `found` is deliberately BROADER than what any individual check scans —
+ * every code extension, every directory, the whole tree. That direction is
+ * the whole point. The question it answers is "is this a project with code
+ * in it", and a narrower answer turns a blind check into a clean one.
+ *
+ * `unreadable` exists because "there is no code" and "I could not look" are
+ * different facts that a swallowed `readdirSync` makes identical. Before the
+ * waiver existed, swallowing was harmless: a failed walk left `filesScanned`
+ * at zero and the refusal fired. With a waiver reading the same silence, two
+ * fail-opens point the same way and a chmod turns a FAIL into a green run.
+ */
+export interface SourceEvidence {
+  /** The project contains at least one source file somewhere. */
+  found: boolean;
+  /** Up to three paths, so a refusal can name what went unscanned. */
+  examples: string[];
+  /** Directories the walk could not read. Non-empty means `found` is unreliable. */
+  unreadable: string[];
+}
+
+export function projectSourceEvidence(root: string): SourceEvidence {
+  const examples: string[] = [];
+  const unreadable: string[] = [];
+  // Symlinked source directories ARE followed — `packages/core` behind
+  // `lib/impl` is an ordinary monorepo shape, and a predicate that cannot see
+  // it waives a project full of code. `realpathSync` keys the visited set so
+  // a cycle terminates instead of hanging.
+  const seen = new Set<string>();
+  const stack: Array<[string, string]> = [[root, ""]];
+
+  while (stack.length > 0) {
+    const [dir, rel] = stack.pop()!;
+    let real: string;
+    try {
+      real = realpathSync(dir);
+    } catch {
+      unreadable.push(rel || ".");
+      continue;
+    }
+    if (seen.has(real)) continue;
+    seen.add(real);
+
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      unreadable.push(rel || ".");
+      continue;
+    }
+    for (const e of entries) {
+      if (SOURCE_SKIP_DIRS.has(e.name)) continue;
+      const childRel = rel ? `${rel}/${e.name}` : e.name;
+      const abs = join(dir, e.name);
+      // `isDirectory()` is false for a symlink, so the stat is what makes a
+      // symlinked directory visible at all.
+      let isDir = e.isDirectory();
+      if (!isDir && e.isSymbolicLink()) {
+        try {
+          isDir = statSync(abs).isDirectory();
+        } catch {
+          unreadable.push(childRel);
+          continue;
+        }
+      }
+      if (isDir) {
+        stack.push([abs, childRel]);
+      } else if (SOURCE_EXTENSIONS.test(e.name) && !e.name.endsWith(".d.ts")) {
+        if (examples.length < 3) examples.push(childRel);
+      }
+    }
+  }
+  return { found: examples.length > 0, examples, unreadable };
+}
+
+/**
+ * Why an empty scan is UNMEASURED rather than a refusal — or `null` when it is
+ * a refusal after all (#476).
+ *
+ * THREE conditions, not two, and the second and third were both missing from
+ * the first version of this. A security review found five project layouts
+ * carrying a real direct config read that flipped from FAIL to green:
+ * `lib/loader.mjs`, `lib/loader.cjs`, `src/app.js`, `bin/cli.ts` and a
+ * root-level `index.ts`. The waiver asked `isTypeScriptProject`, which
+ * matches `.tsx?` under `TS_SOURCE_DIRS`, while the scan reads `.ts` AND
+ * `.js` under a different list — so wherever the scan's reach exceeded the
+ * predicate's, a blind check reported clean. `lib/loader.mjs` is the
+ * sharpest: the file sits in the FIRST directory CONFIG-1 walks, and the
+ * waiver told the consumer the project had no TypeScript. True sentence,
+ * wrong inference.
+ *
+ * The replacement cannot have that defect by construction: `found` is
+ * answered over every code extension in the whole tree, so it can never be
+ * narrower than a scanner's filter. Widening a scanner later cannot open a
+ * hole in it.
+ */
 export function unmeasuredScanReason(
   scan: ConfigAccessScan,
-  sourcesPresent: boolean,
+  evidence: SourceEvidence,
   label: string,
   sourceKind: string,
 ): string | null {
+  // Something was read, so the check measured. Asked first: a non-empty scan
+  // is never waived no matter what else is true.
   if (scan.filesScanned > 0) return null;
-  if (sourcesPresent) return null;
+  // The walk could not complete. "No code here" and "I could not look" are
+  // the same silence, and only one of them is a reason to waive.
+  if (evidence.unreadable.length > 0) return null;
+  // There IS code and this check read none of it. That is a blind check, the
+  // first row of the table above, and it must refuse.
+  if (evidence.found) return null;
   return (
-    `UNMEASURED: ${label} read no files because this project has no ${sourceKind}. ` +
+    `UNMEASURED: ${label} read no files because this project has no ${sourceKind}, ` +
+    `and no source files of any kind were found anywhere in the tree. ` +
     `Nothing was checked, which is NOT the same as nothing being wrong — if this ` +
     `project grows ${sourceKind}, this check starts measuring again on the next run.`
   );
@@ -3118,11 +3233,12 @@ export function runConfigAccessValidation(root: string) {
   describe("Config access (ADR-002 D1)", () => {
     test("CONFIG-1: only the loader reads the rungate config", () => {
       const scan = scanConfigAccess(root);
+      const evidence = projectSourceEvidence(root);
       const unmeasured = unmeasuredScanReason(
         scan,
-        isTypeScriptProject(root),
+        evidence,
         "CONFIG-1",
-        "hand-written TypeScript",
+        "TypeScript or JavaScript in lib/, gates/, scripts/, hooks/ or generators/",
       );
       if (unmeasured) {
         addFinding({
@@ -3169,7 +3285,7 @@ export function runPromptConfigAccessValidation(root: string) {
       // at the point it was read (#476).
       const unmeasured = unmeasuredScanReason(
         scan,
-        existsSync(join(root, "workflows")),
+        { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] },
         "CONFIG-2",
         "workflows/ directory",
       );

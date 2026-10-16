@@ -24,8 +24,9 @@
  * that silently scans zero files reports zero violations and is
  * indistinguishable from compliance."
  */
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 
@@ -33,6 +34,7 @@ import {
   configAccessViolations,
   readConfigAccessRatchet,
   scanConfigAccess,
+  projectSourceEvidence,
   scanPromptConfigAccess,
   unmeasuredScanReason,
   type ConfigAccessScan,
@@ -40,6 +42,11 @@ import {
 import { isTypeScriptProject } from "../lib/typescript-project";
 
 const REPO = join(import.meta.dir, "..");
+const CONFORMITY = join(REPO, "lib", "conformity.ts");
+const scratch: string[] = [];
+afterAll(() => {
+  for (const d of scratch.splice(0)) rmSync(d, { recursive: true, force: true });
+});
 
 /** A scan with the bookkeeping filled in, so cases say only what they vary. */
 const scan = (counts: Record<string, number>, files = 50, bytes = 100_000): ConfigAccessScan => ({
@@ -270,7 +277,38 @@ describe("SC-1431: the ratchet is data, scoped per check", () => {
  * What was broken to prove it, run and counted rather than asserted, over
  * `test/config-access-conformity.test.ts` (25 tests):
  *
- * | Mutation | Red | Predicted |
+ * ## The second pass (security review of the merged commit)
+ *
+ * A review of `0362a59f` found the fix both wrong and untested, and both
+ * halves were reproduced here before being fixed:
+ *
+ * - Five layouts carrying a real direct config read flipped FAIL -> green:
+ *   `lib/loader.mjs`, `lib/loader.cjs`, `src/app.js`, `bin/cli.ts` and a
+ *   root-level `index.ts`. The waiver asked `isTypeScriptProject` (`.tsx?`
+ *   under TS_SOURCE_DIRS) while the scan reads `.ts` AND `.js` under a
+ *   different list, so wherever the scan's reach exceeded the predicate's a
+ *   blind check reported clean.
+ * - Deleting the entire `if (unmeasured) { addFinding(...); return; }` block
+ *   — #476 reintroduced outright — was **0 red over 9,652 tests**, because
+ *   every case ran through a helper that reimplemented the composition. The
+ *   guard written against that exact risk counted call sites, which the
+ *   mutation leaves intact: it deletes the consumer, not the call.
+ *
+ * `projectSourceEvidence` replaces the predicate and cannot have the first
+ * defect by construction — it answers over every code extension in the whole
+ * tree, so it can never be narrower than a scanner's filter. `config1` no
+ * longer composes anything: it spawns a suite that runs the real
+ * `runConfigAccessValidation` and reads `getFindings()`.
+ *
+ * | Mutation (second pass) | Red | Was |
+ * |---|---|---|
+ * | the whole UNMEASURED block deleted from CONFIG-1 | 1 | **0** |
+ * | only the `addFinding` deleted, leaving a silent return | 1 | **0** |
+ * | `SOURCE_EXTENSIONS` narrowed back to `.tsx?` | 1 | — |
+ * | the `unreadable` guard removed | 1 | — |
+ * | the `found` guard removed — the fail-open itself | 4 | — |
+ *
+ * | Mutation (first pass) | Red | Predicted |
  * |---|---|---|
  * | `unmeasuredScanReason` short-circuited to `return null` — #476 restored | 3 | 3 |
  * | short-circuited to always return the reason — the blanket waiver | 5 | 4 |
@@ -304,18 +342,53 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     'export const p = join(process.cwd(), ".claude", "rungate.json");',
   ].join("\n");
 
-  /** CONFIG-1 exactly as `runConfigAccessValidation` composes it. */
+  /**
+   * CONFIG-1 by RUNNING IT — `runConfigAccessValidation` in a spawned suite,
+   * reading the findings it actually recorded.
+   *
+   * The first version of this helper reimplemented the composition, and a
+   * security review showed what that bought: deleting the entire
+   * `if (unmeasured) { addFinding(...); return; }` block from the production
+   * check — #476 reintroduced outright — was **0 red over 9,652 tests**.
+   * Every case here passed because every case was exercising the helper. The
+   * file's own guard named that exact risk and then counted
+   * `unmeasuredScanReason(` call sites, which the mutation leaves untouched
+   * because it deletes the CONSUMER and not the call.
+   *
+   * So the composition is no longer written here at all. The pattern is
+   * `test/typescript-project.test.ts`'s `runTsc1`: a generated suite imports
+   * the real validator, runs it against a planted project and prints what
+   * `getFindings()` holds, because findings are recorded while the suite runs
+   * and can only be read from a test declared after it.
+   */
   const config1 = (root: string) => {
-    const scan = scanConfigAccess(root);
-    const unmeasured = unmeasuredScanReason(
-      scan,
-      isTypeScriptProject(root),
-      "CONFIG-1",
-      "hand-written TypeScript",
+    const file = join(mkdtempSync(join(tmpdir(), "rungate-476-run-")), "probe.test.ts");
+    scratch.push(dirname(file));
+    writeFileSync(
+      file,
+      `import { test } from "bun:test";\n` +
+        `import { runConfigAccessValidation, getFindings, clearFindings } from ${JSON.stringify(CONFORMITY)};\n` +
+        `clearFindings();\n` +
+        `runConfigAccessValidation(${JSON.stringify(root)});\n` +
+        `test("zz-report", () => {\n` +
+        `  console.log("F:" + JSON.stringify(getFindings().filter(f => f.ruleId === "CONFIG-1")));\n` +
+        `});\n`,
     );
+    const r = spawnSync("bun", ["test", file], { cwd: REPO, encoding: "utf-8" });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const findings = JSON.parse(out.match(/F:(\[.*\])/)?.[1] ?? "null") as
+      | Array<{ severity: string; message: string }>
+      | null;
+    if (findings === null) throw new Error(`the probe suite never reported findings:\n${out}`);
+    const warns = findings.filter(f => f.severity === "WARN");
+    const fails = findings.filter(f => f.severity === "FAIL");
     return {
-      unmeasured,
-      violations: unmeasured ? [] : configAccessViolations(scan, {}, "CONFIG-1"),
+      /** The UNMEASURED message CONFIG-1 recorded, or null if it recorded none. */
+      unmeasured: warns.length > 0 ? warns.map(f => f.message).join("\n") : null,
+      /** The FAIL findings CONFIG-1 recorded — its violations, as it reported them. */
+      violations: fails.map(f => f.message),
+      /** Did the check itself pass? A refusal fails the spawned suite. */
+      red: /\b[1-9]\d* fail/.test(out),
     };
   };
 
@@ -326,11 +399,15 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       "specs/SPEC.md": "# spec",
     });
     const got = config1(root);
+    expect(got.red, "a content project failed the suite").toBe(false);
     expect(got.violations, "a content project is not in violation").toEqual([]);
     expect(got.unmeasured, "silence is indistinguishable from a pass").not.toBeNull();
     expect(got.unmeasured).toContain("UNMEASURED");
     expect(got.unmeasured, "the skip does not say what it skipped over").toContain(
-      "hand-written TypeScript",
+      "TypeScript or JavaScript in lib/",
+    );
+    expect(got.unmeasured, "the skip does not say the whole tree was checked").toContain(
+      "no source files of any kind were found anywhere",
     );
     rmSync(root, { recursive: true, force: true });
   });
@@ -377,14 +454,17 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     rmSync(root, { recursive: true, force: true });
   });
 
+  const noCode = { found: false, examples: [], unreadable: [] };
+  const hasCode = { found: true, examples: ["lib/x.ts"], unreadable: [] };
+
   test("the two questions are separate, and the binding needs both answers", () => {
     // `filesScanned` answers "did I read anything"; `sourcesPresent` answers
     // "was there anything to read". One decider asked twice could not produce
     // the middle row, which is the whole of this issue.
-    expect(unmeasuredScanReason(scan({}, 0, 0), false, "CONFIG-1", "x")).toContain("UNMEASURED");
-    expect(unmeasuredScanReason(scan({}, 0, 0), true, "CONFIG-1", "x")).toBeNull();
-    expect(unmeasuredScanReason(scan({}, 9, 100), false, "CONFIG-1", "x")).toBeNull();
-    expect(unmeasuredScanReason(scan({}, 9, 100), true, "CONFIG-1", "x")).toBeNull();
+    expect(unmeasuredScanReason(scan({}, 0, 0), noCode, "CONFIG-1", "x")).toContain("UNMEASURED");
+    expect(unmeasuredScanReason(scan({}, 0, 0), hasCode, "CONFIG-1", "x")).toBeNull();
+    expect(unmeasuredScanReason(scan({}, 9, 100), noCode, "CONFIG-1", "x")).toBeNull();
+    expect(unmeasuredScanReason(scan({}, 9, 100), hasCode, "CONFIG-1", "x")).toBeNull();
   });
 
   test("CONFIG-2's waiver is reachable, which `filesScanned > 0` never was", () => {
@@ -402,17 +482,96 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     // one that has the directory and read nothing out of it refuses.
     const root = project({ "README.md": "# docs" });
     expect(
-      unmeasuredScanReason(scanPromptConfigAccess(root), existsSync(join(root, "workflows")), "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(scanPromptConfigAccess(root), { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] }, "CONFIG-2", "workflows/ directory"),
     ).toContain("UNMEASURED");
 
     mkdirSync(join(root, "workflows"), { recursive: true });
     const withDir = scanPromptConfigAccess(root);
     expect(
-      unmeasuredScanReason(withDir, existsSync(join(root, "workflows")), "CONFIG-2", "workflows/ directory"),
+      unmeasuredScanReason(withDir, { found: existsSync(join(root, "workflows")), examples: [], unreadable: [] }, "CONFIG-2", "workflows/ directory"),
       "an empty workflows/ directory was waived",
     ).toBeNull();
     expect(configAccessViolations(withDir, {}, "CONFIG-2")[0]).toContain("read NO files");
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test("F1: an extension the scan reads but the old predicate could not see", () => {
+    // Five layouts a security review found flipping FAIL -> green. The old
+    // waiver asked `isTypeScriptProject`, which matches `.tsx?` under
+    // TS_SOURCE_DIRS, while the scan reads `.ts` AND `.js` under a different
+    // list. `lib/loader.mjs` is the sharpest: it is in the FIRST directory
+    // CONFIG-1 walks, and the waiver told the consumer the project had no
+    // TypeScript. True sentence, wrong inference.
+    for (const rel of ["lib/loader.mjs", "lib/loader.cjs", "src/app.js", "bin/cli.ts", "index.ts"]) {
+      const root = project({ [rel]: READS_CONFIG });
+      const got = config1(root);
+      expect(got.unmeasured, `${rel}: a project full of code was waived as having none`).toBeNull();
+      expect(got.red, `${rel}: a blind check reported clean`).toBe(true);
+    }
+  });
+
+  test("F5: a directory the walk could not READ is not a directory with no code", () => {
+    // Both walks swallowed readdirSync errors. Harmless before the waiver
+    // existed — a failed walk left filesScanned at zero and the refusal
+    // fired. With a waiver reading the same silence, two fail-opens point
+    // the same way and a chmod turns a FAIL into a green run.
+    const root = project({ "lib/reader.ts": READS_CONFIG });
+    expect(projectSourceEvidence(root).found, "the fixture has no code in it").toBe(true);
+    chmodSync(join(root, "lib"), 0o000);
+    try {
+      const ev = projectSourceEvidence(root);
+      // Some environments (root, certain CI sandboxes) ignore the mode. Only
+      // assert when the chmod actually took, so this cannot pass vacuously.
+      if (ev.unreadable.length > 0) {
+        expect(ev.found, "an unreadable tree reported code it never saw").toBe(false);
+        expect(
+          unmeasuredScanReason(scan({}, 0, 0), ev, "CONFIG-1", "x"),
+          "a walk that could not look was waived as a walk that found nothing",
+        ).toBeNull();
+      } else {
+        expect(ev.found, "the chmod did not take, so the tree is still readable").toBe(true);
+      }
+    } finally {
+      chmodSync(join(root, "lib"), 0o755);
+    }
+  });
+
+  test("F6: a symlinked source directory is followed, and a cycle terminates", () => {
+    // `packages/core` behind `lib/impl` is an ordinary monorepo shape, and
+    // `withFileTypes` reports a symlink as not-a-directory, so a predicate
+    // that does not stat it waives a project full of code.
+    const root = project({ "packages/core/reader.ts": READS_CONFIG });
+    symlinkSync(join(root, "packages", "core"), join(root, "lib-impl"), "dir");
+    const ev = projectSourceEvidence(root);
+    expect(ev.found, "a symlinked source directory was invisible").toBe(true);
+
+    // A cycle must terminate rather than hang. `realpathSync` keys the
+    // visited set, so the second arrival at the same inode stops.
+    const looped = project({ "a/x.ts": "export const x = 1;" });
+    symlinkSync(join(looped, "a"), join(looped, "a", "self"), "dir");
+    expect(projectSourceEvidence(looped).found).toBe(true);
+  });
+
+  test("the predicate is WIDER than any scanner, which is the property that matters", () => {
+    // The old defect was a predicate narrower than the scan. This asserts
+    // the direction rather than a list, so widening a scanner later cannot
+    // reopen the hole: anything `scanConfigAccess` reads, the evidence walk
+    // must also have seen.
+    const root = project({
+      "lib/a.ts": "export const a = 1;",
+      "gates/b.js": "export const b = 1;",
+      "scripts/c.ts": "export const c = 1;",
+      "hooks/d.js": "export const d = 1;",
+      "generators/e.ts": "export const e = 1;",
+    });
+    expect(scanConfigAccess(root).filesScanned).toBe(5);
+    expect(projectSourceEvidence(root).found).toBe(true);
+
+    // ...and the one direction that must still waive: no code at all.
+    const content = project({ "README.md": "# docs", "specs/S.md": "# s", "data.json": "{}" });
+    expect(scanConfigAccess(content).filesScanned).toBe(0);
+    expect(projectSourceEvidence(content).found, "a content project reported code").toBe(false);
+    expect(projectSourceEvidence(content).unreadable).toEqual([]);
   });
 
   test("both checks route their empty scan through the one binding", () => {
@@ -421,9 +580,9 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
     const src = readFileSync(join(REPO, "lib", "conformity.ts"), "utf-8");
     const calls = src.match(/unmeasuredScanReason\(/g) || [];
     expect(calls, "CONFIG-1, CONFIG-2 and the declaration").toHaveLength(3);
-    expect(src).toContain('isTypeScriptProject(root),');
+    expect(src).toContain('projectSourceEvidence(root);');
     expect(src).toContain('existsSync(join(root, "workflows")),');
     // And neither still passes the vacuous waiver.
-    expect(src).not.toContain("scan.filesScanned > 0,");
+    expect(src.replace(/\s+/g, " ")).not.toMatch(/unmeasuredScanReason\([^)]*scan\.filesScanned > 0/);
   });
 });
