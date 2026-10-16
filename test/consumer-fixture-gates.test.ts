@@ -91,9 +91,16 @@ describe("#44: the fixtures are executed by real gate code, not merely present",
     // iteration and still satisfy "something has a verdict". That is the
     // vacuous pass this file exists to rule out, and it was in the first
     // draft of this very test.
+    const SENTINEL = "this evidence was never replaced by an execution";
     for (const ac of state.acs) {
       ac.verdict = "PENDING";
-      delete ac.evidence;
+      // A sentinel, not a delete. Resetting the verdict alone is not
+      // checkable: if the reset were removed, the harness fixture's stored
+      // PASS verdicts would make the loop `continue` over every AC and the
+      // "all decided" assertion below would be satisfied by the fixture's own
+      // stored state. The sentinel can only be gone if something wrote over
+      // it, so it is the row that notices.
+      ac.evidence = { type: "command-output", content: SENTINEL };
     }
 
     withTemp(dir => {
@@ -134,6 +141,12 @@ describe("#44: the fixtures are executed by real gate code, not merely present",
     expect(
       undecided.map((ac: any) => ac.id),
       `${name}: autoPopulateACs left these undecided — the loop did not reach them`,
+    ).toEqual([]);
+
+    const untouched = state.acs.filter((ac: any) => ac.evidence?.content === SENTINEL);
+    expect(
+      untouched.map((ac: any) => ac.id),
+      `${name}: these ACs still carry the sentinel, so nothing executed for them`,
     ).toEqual([]);
    }
   });
@@ -177,6 +190,23 @@ describe("#44: the consumer shape differs where it actually broke a gate", () =>
       expect(env.devStart).toBe("make dev");
       expect(env.devHealthPath).toBe("/api/health");
       expect(env.prodCfg.apiBase).toBe("http://127.0.0.1:7777");
+    });
+
+    // The flat spelling on its own, with no `dev` block at all. Without this
+    // case, a reader that went back to `c.dev?.apiBase` raw would still pass
+    // every assertion above — the nested value is present there, so reading
+    // the un-normalised name happens to give the right answer. This is the
+    // case where the two readers disagree.
+    withTemp(dir => {
+      const cfgDir = join(dir, ".claude", "rungate");
+      mkdirSync(cfgDir, { recursive: true });
+      writeFileSync(join(cfgDir, "config.json"), JSON.stringify({
+        apiUrl: "http://127.0.0.1:8001",
+        uiUrl: "http://127.0.0.1:8002",
+      }));
+      const env = proveEnvironment(dir);
+      expect(env.apiBase, "the flat apiUrl spelling did not reach the prove gate").toBe("http://127.0.0.1:8001");
+      expect(env.uiBase).toBe("http://127.0.0.1:8002");
     });
   });
 
