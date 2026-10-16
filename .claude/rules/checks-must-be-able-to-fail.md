@@ -83,6 +83,13 @@ Measured four times in two issues, all four in October 2026:
 | #415 | the scaffolder's own pre-check and the config writer's refusal | the scaffolder refused an existing config twice; deleting its check was 0 red |
 | #420 | `waveNeedsIntegration`, asked in the loop AND inside `integrateWave` | the fake recorded every call, so the real early return was never witnessed |
 | #420 | the landed-branch comparison and the refusal re-check below it | **0 of 196.** The case fed `main`, which BOTH catch; the comparison could be deleted outright |
+| #436 | `orphanedGitdir`'s `statSync` catch, its `isFile()`, and the `readFileSync` after them — THREE | **0 of 47.** A `.git` directory throws `EISDIR` and a missing one throws `ENOENT`, so the read already refused both; two of the three were deletable and nothing could say which |
+
+#436 is the first one caught by this section rather than recorded into it, and
+it is worth saying what that cost: one predicted number, written down before
+the battery ran. The row came back 0 where 1 was expected, and the collapse
+took ten minutes. Nothing in the diff, the review, or the green suite would
+have shown it.
 
 The fix is one of two things, and which one is a design question, not a style
 question. Either **collapse them** — one decider, one binding to mutate — or

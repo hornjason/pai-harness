@@ -6147,3 +6147,97 @@ the same for both: their call sites are unreachable from a working `cp`.**
 `UNMEASURED is not SKIP` applies to a mutation battery as much as to a config
 read: a row quietly dropped from the table because it scored 0 is a table
 that cannot report its own reach.
+
+## #436 — a checkout git has no registration for, reported as an error forever
+
+The #431 sweep worked: 41 worktrees removed, 737 MB reclaimed. It left one
+entry it could never act on.
+
+```
+Failed to check git status for wf_db8e9fce-bed-15: fatal: not a git repository:
+  /Users/jhorn/Projects/rungate/.git/worktrees/wf_db8e9fce-bed-15
+```
+
+`.claude/worktrees/wf_db8e9fce-bed-15` is a 6.2 MB checkout whose `.git` file
+reads `gitdir: …/.git/worktrees/wf_db8e9fce-bed-15`, and that admin directory
+does not exist. `git worktree prune` removed the registration and left the
+files behind, so git does not know it is a worktree and `git worktree remove`
+cannot touch it.
+
+Pushing it to `errors` was the correct conservative behaviour **and** it was
+permanent. The same line on every SessionStart, which nothing can resolve, is
+indistinguishable from a log line.
+
+### The test is the gitdir, not the status failure
+
+A linked worktree's `.git` is a file naming an admin directory. When that
+directory is gone, every git command run inside the checkout fails with "not
+a git repository", and nothing else produces that state. Classifying on the
+*failure* instead would swallow every other reason git might refuse — so
+`orphanedGitdir` asks the narrow question and three things are deliberately
+not orphans: no `.git` at all (never a worktree), a `.git` **directory** (a
+whole repository someone put there), and a gitdir that exists.
+
+The first two are decided by **one** binding, and that was not the first
+draft. The draft asked the same question three times — a `statSync` whose
+catch meant "no `.git`", an `isFile()` meaning "a real repository", and the
+`readFileSync` that follows them. Deleting `isFile()` measured **0 of 47**
+red, because a `.git` directory makes the read throw `EISDIR` and a missing
+one makes it throw `ENOENT`, so the read already returned null for both. Two
+of the three deciders could be deleted and no test could tell which. That is
+the fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`, and it was
+found the only way it can be: by predicting the count before running and
+noticing a row come back lower than predicted. Both `SC-1598` cases now land
+on the surviving binding — 3 red where there had been 0.
+
+### Removal is off by default, and that is the decision
+
+This function's governing asymmetry, already written into its merge check, is
+that treating "not merged" as unsafe costs disk while treating "merged" as
+safe can delete work. An orphan is the case where the question **cannot be
+asked**: the admin directory is gone, so `git status` cannot run, and nothing
+can establish whether the checkout holds work that exists nowhere else.
+
+Removing it automatically would be a recursive delete of content the function
+has explicitly failed to classify, run unprompted at SessionStart. So the
+automatic pass reports and `hooks/StaleTTLCleanup.hook.ts` does not opt in;
+an operator who has looked passes `removeOrphans: true`.
+
+When it does remove, the path is the one the function built from
+`join(worktreesDir, entry)` — **never** the gitdir read out of the `.git`
+file. That is content, and content must not steer a recursive delete.
+
+- [x] SC-1597: test/worktree-cleanup-orphan-gitdir.test.ts contains [a checkout git has no registration for is ORPHANED] — driven against a planted fixture, and the missing gitdir is named so a reader knows what went missing
+- [x] SC-1598: test/worktree-cleanup-orphan-gitdir.test.ts contains [a directory with no .git at all is NOT an orphan] — and nor is a `.git` directory: the predicate gates a recursive delete, so it must be narrow
+- [x] SC-1599: test/worktree-cleanup-orphan-gitdir.test.ts contains [a gitdir that EXISTS is not an orphan, however broken git is] — the positive control, plus a `.git` file in a shape git does not write, which is not guessed at
+- [x] SC-1600: test/worktree-cleanup-orphan-gitdir.test.ts contains [an orphan lands in its own bucket and NOT in errors] — the defect stated as an assertion
+- [x] SC-1601: test/worktree-cleanup-orphan-gitdir.test.ts contains [reporting is the default — the checkout is still there] — the recorded decision, asserted rather than left in a docblock
+- [x] SC-1602: test/worktree-cleanup-orphan-gitdir.test.ts contains [removal reaches only what is under the worktrees directory] — a `.git` naming somewhere else entirely leaves that somewhere untouched, with a bystander file asserted intact
+- [x] SC-1603: test/worktree-cleanup-orphan-gitdir.test.ts contains [the buckets still sum, with five of them] — #431's property re-asserted, because a new bucket left out of the total is that defect again
+
+### What was broken to prove it (SC-1597..1603)
+
+Run over `test/worktree-cleanup-orphan-gitdir.test.ts`,
+`test/worktree-cleanup.test.ts`, `test/worktree-cleanup-orphans.test.ts` and
+`test/unit/worktree-cleanup-merge.test.ts` — 47 tests, baseline 0 fail. Every
+count was predicted before the battery ran; the two rows where the prediction
+missed are called out, because a row lower than predicted is a finding and a
+row higher is a reasoning error worth recording.
+
+| Mutation | Red |
+|---|---|
+| `orphanedGitdir` returns null always — #436's defect verbatim | 6 of 47 — predicted 5; the relative-gitdir case asserts both halves and I had only counted one |
+| it returns the resolved gitdir always, so everything is an orphan | 9 of 47 — reaches #68's and SC-1503's fixtures too, which is what a shared classifier means |
+| the read's catch returns the path instead of refusing | 3 of 47 — **predicted 9.** The over-prediction was mine: #68's and SC-1503's fixtures carry readable `.git` files, so they never reach the catch |
+| the read's catch removed entirely, so it throws out of the function | 3 of 47 — the same three; refusing and exploding are not distinguishable to a caller that only reads buckets, so both SC-1598 cases assert the bucket |
+| ~~the `isFile()` check dropped~~ | **0 of 47 — the finding.** Three deciders agreeing; collapsed to one, and the two rows above are that one being mutated |
+| the existence test inverted (`existsSync ? resolved : null`) | 14 of 47 — every live worktree in every fixture becomes an orphan |
+| a relative gitdir left unresolved against the checkout | 1 of 47 |
+| `removeOrphans` ignored and orphans always removed | 1 of 47 — SC-1601, the recorded decision, is the only thing standing between an unclassifiable checkout and an unprompted recursive delete |
+| `removeOrphans` ignored and orphans never removed | 2 of 47 |
+| the delete follows the gitdir read out of the `.git` file | 2 of 47 — the orphan survives and the bystander directory does too, which is SC-1602 from both sides |
+| an orphan pushed to `errors` instead of `orphaned` | 2 of 47 — the defect reintroduced, caught by the bucket and by the sum |
+| the summary line drops the orphan count | 1 of 47 |
+
+None is left in the tree; all were run and reverted, and the collapse that
+row five prompted is in `lib/worktree-cleanup.ts`.
