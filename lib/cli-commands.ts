@@ -60,7 +60,7 @@ export const CLI_COMMANDS: Record<string, CliCommand> = {
   scaffold: {
     script: "scripts/scaffold-project.ts",
     summary: "Generate or refresh a project's agent files, rules and conformity suite",
-    usage: "rungate scaffold <path> [--type code|workflow] [--fix] [--force] [--commit]",
+    usage: "rungate scaffold <path> [--type code|workflow] [--fix] [--force] [--commit] [--no-auto-fix] [--prune-consumers]",
   },
   "create-spec": {
     script: "scripts/create-spec.ts",

@@ -944,7 +944,7 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
 
 // ── Harness config generation/audit ────────────────────────────
 
-export function generateOrAuditProjectHarness(root: string, actions: string[]): void {
+export function generateOrAuditProjectHarness(root: string, actions: string[], opts: { pruneConsumers?: boolean } = {}): void {
   const harnessPath = join(root, ".claude", "rungate.json");
 
   const detectedHealthPath = detectHealthPath(root);
@@ -1090,7 +1090,7 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
     // files #75 only ever fixed for greenfield projects (#121).
     const existing = JSON.parse(readFileSync(join(rungateDir, "config.json"), "utf-8"));
     repairEmptySidecars(rungateDir, actions);
-    auditExistingConfig(existing, scannedPages, scannedConsumers, actions, rungateDir);
+    auditExistingConfig(existing, scannedPages, scannedConsumers, actions, rungateDir, opts.pruneConsumers === true);
   } else if (existsSync(harnessPath)) {
     // Monolith exists — split into directory structure
     const existing = JSON.parse(readFileSync(harnessPath, "utf-8"));
@@ -1100,6 +1100,8 @@ export function generateOrAuditProjectHarness(root: string, actions: string[]): 
       splitMonolithToDirectory(root, existing, actions);
     } else {
       // Simple monolith without split-worthy content — audit only
+      // No rungateDir on this path (the monolith layout), so pruning has
+      // nowhere to write and is not offered rather than silently not happening.
       auditExistingConfig(existing, scannedPages, scannedConsumers, actions);
     }
   } else {
@@ -1256,12 +1258,84 @@ function repairEmptySidecars(rungateDir: string, actions: string[]): void {
   }
 }
 
+/**
+ * Remove consumers the source scan did not find — only when asked (#42).
+ *
+ * **Opt-in, against the issue's own SC-4, and the asymmetry is the reason.**
+ * SC-2 says to remove them "when source scan confirms they don't exist". A
+ * source scan cannot confirm absence; it reports that it did not find
+ * something, and the gap between those two claims is where a dynamic import,
+ * a generated file, a file type the scanner does not read, and a scanner that
+ * errored all live. A stale entry left in config costs a warning line. A live
+ * entry deleted costs that consumer its role grading, compliance policy and
+ * pre-flight checks — silently, in a report nobody reads line by line.
+ *
+ * So adding a frontmatter field stays opt-out as SC-4 asks, and this one
+ * operation does not: deleting is not in the same risk class as adding.
+ *
+ * Returns true when it pruned, so the caller reports the finding only when it
+ * did not — a run must never both remove something and complain it is there.
+ */
+export function pruneStaleConsumers(
+  existing: any,
+  scannedConsumers: string[],
+  stale: string[],
+  actions: string[],
+  rungateDir: string | undefined,
+  prune: boolean,
+): boolean {
+  if (!prune) return false;
+
+  // The refusal that matters most, and the one nothing in #42 asked for: a
+  // scanner that returns nothing makes EVERY declared consumer look stale, so
+  // one broken scan would empty the list in a single pass. "The scan found no
+  // consumers" and "this project has no consumers" are not the same reading,
+  // and treating them alike is Silent Default Substitution
+  // (`.claude/rules/config-access.md`).
+  if (scannedConsumers.length === 0) {
+    actions.push(
+      `REFUSED: --prune-consumers (the source scan found no consumers at all, so all ${stale.length} ` +
+        `look stale — a scan that found nothing is a broken scan, not an empty project)`,
+    );
+    return false;
+  }
+
+  if (!rungateDir || !existsSync(join(rungateDir, "config.json"))) {
+    actions.push(
+      "REFUSED: --prune-consumers (no .claude/rungate/config.json to write — " +
+        "refusing rather than guessing which file holds the consumer list)",
+    );
+    return false;
+  }
+
+  const configPath = join(rungateDir, "config.json");
+  let config: any;
+  try {
+    config = JSON.parse(readFileSync(configPath, "utf-8"));
+  } catch (err) {
+    // A corrupt config is never an empty config. Rewriting it from `existing`
+    // would discard every key this function does not know about.
+    actions.push(`REFUSED: --prune-consumers (config.json is unreadable: ${(err as Error).message})`);
+    return false;
+  }
+
+  config.consumers = (config.consumers || []).filter((c: string) => !stale.includes(c));
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  existing.consumers = config.consumers;
+
+  // Every name, not a count. A removal the report summarises as a number is
+  // one nobody can audit or put back.
+  actions.push(`AUTO-FIXED: .claude/rungate/config.json (pruned ${stale.length} stale consumers: ${stale.join(", ")})`);
+  return true;
+}
+
 function auditExistingConfig(
   existing: any,
   scannedPages: Record<string, string>,
   scannedConsumers: string[],
   actions: string[],
-  rungateDir?: string
+  rungateDir?: string,
+  prune = false,
 ): void {
   const issues: string[] = [];
 
@@ -1294,7 +1368,10 @@ function auditExistingConfig(
   if (declaredConsumers.length > 0) {
     const staleConsumers = declaredConsumers.filter((c: string) => !scannedConsumers.includes(c));
     if (staleConsumers.length > 0) {
-      issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+      const pruned = pruneStaleConsumers(existing, scannedConsumers, staleConsumers, actions, rungateDir, prune);
+      if (!pruned) {
+        issues.push(`CONSUMERS: ${staleConsumers.length} stale consumers in rungate.json not found in source: ${staleConsumers.slice(0, 5).join(", ")}`);
+      }
     }
   }
 
@@ -3152,7 +3229,11 @@ export function reportScaffoldActions(actions: string[]): number {
   console.log("\n=== Scaffold Report ===");
   for (const action of actions) console.log(`  ${action}`);
   const count = (verb: string) => actions.filter(a => a.startsWith(verb)).length;
-  console.log(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("SKIP")} skipped, ${count("REFUSED")} refused`);
+  // AUTO-FIXED is reported separately from AUDITED on purpose (#42 SC-3).
+  // What the scaffold CHANGED and what it merely NOTICED are different facts,
+  // and a reader who cannot tell them apart has to diff the tree to find out
+  // which of the reported gaps are still gaps.
+  console.log(`\nTotal: ${count("CREATED")} created, ${count("REPLACED")} replaced, ${count("AUTO-FIXED")} auto-fixed, ${count("SKIP")} skipped, ${count("REFUSED")} refused`);
   return count("REFUSED");
 }
 
