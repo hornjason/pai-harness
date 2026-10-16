@@ -44,7 +44,7 @@
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
-import { isBehavioralSC, matchPattern } from "./conformity";
+import { collectTestableSpecs, isBehavioralSC, matchPattern, planSCTests } from "./conformity";
 import { buildScRegistry, isTemplateSpec, parseScDeclarations, type ScDeclaration } from "./sc-ids";
 
 export interface UncoveredSc {
@@ -147,4 +147,95 @@ export function ratchetViolations(
     }
   }
   return out.sort();
+}
+
+/**
+ * The two halves of "checked, and the engine can build no assertion" (#441).
+ *
+ * `UNMATCHED_CHECKED_RATCHET` was one number counting both, and its docblock
+ * read it as debt: SCs marked done that carry no assertion and are therefore
+ * wishes. That reading was right at 54. It stopped being right once the repo
+ * started writing criteria about REFUSALS, because the registry's whole
+ * vocabulary — file-exists, content-contains, count-threshold — is claims
+ * about the state of the tree, and there is no state of a tree that expresses
+ * "X refuses, and says which of two things happened".
+ *
+ * So the number rose on #397, #398 and #399 for criteria that are all covered
+ * by executed tests, and the only way to lower it would have been to rewrite
+ * them as weaker claims about file contents. A ratchet that rises whenever an
+ * issue writes a good behavioural criterion is measuring the matcher's
+ * vocabulary, not the project's honesty.
+ *
+ * - `unclaimed` — no test file declares it. The wish the old docblock meant.
+ * - `claimed` — a test file declares it per
+ *   `.claude/rules/claiming-sc-coverage.md`, and the engine still cannot
+ *   build the assertion. A measure of the vocabulary.
+ *
+ * `SUPERSEDED` ticks are excluded from BOTH, matching `uncoveredTickedScs`.
+ * A tick that points at its replacement is not a criterion anybody owes a
+ * test for, and leaving it in would have put one criterion in `unclaimed`
+ * that the census next door deliberately drops — a disagreement between two
+ * numbers about the same tree, arrived at by accident.
+ */
+export interface UnmatchedSplit {
+  unclaimed: UncoveredSc[];
+  claimed: UncoveredSc[];
+}
+
+export function splitUnmatchedChecked(opts: {
+  projectRoot: string;
+  claimed: Set<string>;
+  scopedKey: (specFile: string, id: string) => string;
+}): UnmatchedSplit {
+  const { projectRoot, claimed, scopedKey } = opts;
+  const out: UnmatchedSplit = { unclaimed: [], claimed: [] };
+
+  for (const [specFile, meta] of collectTestableSpecs(projectRoot)) {
+    for (const entry of planSCTests(meta.scs)) {
+      if (entry.kind !== "unmatched") continue;
+      if (isSuperseded(entry.sc.statement)) continue;
+      const row = { id: entry.sc.id, specFile, statement: entry.sc.statement };
+      if (claimed.has(scopedKey(specFile, entry.sc.id))) out.claimed.push(row);
+      else out.unclaimed.push(row);
+    }
+  }
+  return out;
+}
+
+/**
+ * Where the unclaimed half disagrees with the uncovered census next door.
+ *
+ * Measured before this existed: of 155 unclaimed criteria, **154** were
+ * already in `uncoveredTickedScs`'s census, which
+ * `test/ticked-sc-cover.test.ts` ratchets per spec, both directions, naming
+ * the ids. Banking the unclaimed count as a SECOND global number would have
+ * been two deciders answering one question — the fourth shape in
+ * `.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+ * would have left the other holding every case up.
+ *
+ * So this returns the DIFFERENCE rather than a count, and the test asserts
+ * the difference is exactly what is explained below. The per-spec ratchet
+ * stays the one place a new untested criterion is refused; this is the
+ * relationship between the two populations, checked rather than assumed.
+ *
+ * The two known residues, both of them the other function behaving correctly
+ * and this one being narrower:
+ *
+ * - `collectTestableSpecs` skips a spec whose frontmatter says
+ *   `testable: no`, and `readSpecs` does not. `DA-COMPLIANCE-SPEC.md` is one.
+ * - `uncoveredTickedScs` also counts a criterion whose matcher MATCHES and
+ *   then FAILS, which is not `unmatched` and so is invisible here.
+ */
+export function unclaimedCensusResidue(opts: {
+  unclaimed: UncoveredSc[];
+  census: UncoveredSc[];
+  scopedKey: (specFile: string, id: string) => string;
+}): { onlyUnclaimed: string[]; onlyCensus: string[] } {
+  const { scopedKey } = opts;
+  const a = new Set(opts.unclaimed.map(u => scopedKey(u.specFile, u.id)));
+  const b = new Set(opts.census.map(u => scopedKey(u.specFile, u.id)));
+  return {
+    onlyUnclaimed: [...a].filter(k => !b.has(k)).sort(),
+    onlyCensus: [...b].filter(k => !a.has(k)).sort(),
+  };
 }

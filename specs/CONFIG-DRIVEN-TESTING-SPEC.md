@@ -749,3 +749,160 @@ them" — true when written, false by the time it mattered, and nothing could
 notice. Those three are moved; the two in `stale-issue-scanner` are left for
 the follow-up that closes the detector gap, because moving them without a
 guard just resets the clock.
+
+## #441 — the unmatched ratchet measured the matcher's vocabulary
+
+`UNMATCHED_CHECKED_RATCHET` in `test/conformity-sc-binding.test.ts` counted
+checked SCs whose statement binds to no entry in
+`config/matcher-registry.json`, and its docblock read that number as debt:
+*"SCs are marked done, carry no assertion the engine can build, and are
+therefore wishes by this project's own rule."*
+
+That reading was right at 54. It stopped being right once the repo started
+writing criteria about REFUSALS. The registry's whole vocabulary —
+`file-exists`, `dir-exists`, `content-contains`, `content-not-contains`,
+`count-threshold`, `json-field-equals`, `section-exists`, `regex-match`,
+`source-contains`, `frontmatter-field`, `command-output` — is claims about
+the **state of the tree**. No state of a tree expresses *"X refuses, and says
+which of two things happened"*, and a refusal is what most of this project's
+recent criteria are about, because `.claude/rules/checks-must-be-able-to-fail.md`
+pushes everyone to write them.
+
+So 239 → 242 → 252 → 258 across #397, #398 and #399. Every rise was for
+criteria covered by executed tests, and the only route down was to rewrite
+them as weaker claims about file contents — lowering the number by making the
+spec say less. The number was measuring the matcher's vocabulary and being
+read as the project's honesty.
+
+### The split, measured
+
+| | count |
+|---|---|
+| unmatched, and **no test file declares it** | 154 |
+| unmatched, and **a test file does** | 100 |
+| `SUPERSEDED` ticks, excluded from both | 3 |
+
+The first is the wish the old docblock meant. The second is the vocabulary
+gap, and it does not fail the suite.
+
+### The thing this nearly became: a second decider
+
+Before any of it was written, the unclaimed half was measured against the
+census `uncoveredTickedScs` already produces, which
+`test/ticked-sc-cover.test.ts` ratchets **per spec, both directions, naming
+the ids**. **154 of 155 were the same criteria.**
+
+Banking the unclaimed count as a new global ratchet would therefore have been
+two guards answering one question about one input — the fourth shape in
+`.claude/rules/checks-must-be-able-to-fail.md` — and a mutation of either
+would have left the other holding every case up. Both would have read as
+covered and one of them would have been dead.
+
+So the per-spec ratchet stays the one place a new untested criterion is
+refused, and this split asserts its RELATIONSHIP to that census rather than
+re-deciding it: no unclaimed criterion may be outside the census, and the
+census residue must be exactly the two `testable: no` criteria that
+`collectTestableSpecs` skips and `readSpecs` does not. The two numbers cannot
+drift apart without a test going red.
+
+The one criterion that was outside the census turned out to be
+`GITHUB-API-MIGRATION-SPEC.md::SC-499`, a `SUPERSEDED` tick — the census
+drops those and the first draft of the split did not. A tick that points at
+its replacement is not a criterion anybody owes a test for, and that
+disagreement was arrived at by accident, which is exactly what the
+relationship assertion exists to catch.
+
+### The decision: a refusal-shaped matcher, and why not yet
+
+The only honest route that lowers 100 is a matcher shape the registry does
+not have. Recorded here with a worked example so the next person evaluates a
+design rather than rediscovering the gap.
+
+Take SC-1506, from #397:
+
+> A suite that could not run — missing file, unresolvable import, no tests
+> declared, or dependencies that could not be installed — is reported as
+> UNMEASURED and is distinguishable in the hook's output from a conformity
+> FAIL
+
+A `refuses` matcher would need three parameters no existing shape carries: a
+command to run, a planted input that should provoke the refusal, and the
+distinguishing text. Something like:
+
+```json
+{
+  "pattern": "is reported as (?<state>[A-Z]+) and is distinguishable",
+  "kind": "refuses",
+  "command": "bun hooks/PrePush.hook.ts",
+  "provoke": "fixtures/suite-that-cannot-run",
+  "expect": { "exitNonZero": true, "says": "UNMEASURED" }
+}
+```
+
+**Not built, and the reason is a cost this spec already paid once.** Every
+existing matcher is a pure read of the tree: it cannot fail for an
+environmental reason, so a red assertion means the criterion is false. A
+`refuses` matcher SPAWNS, and a spawn fails when a dependency is missing, a
+port is taken, or CI is slower than a timeout. The engine runs every checked
+matchable SC on every suite run — 150+ of them — so one flaky spawn shape
+makes the whole conformity run untrustworthy, and the first response to a
+flaky gate is to loosen it, which is how a check that cannot fail gets built.
+
+The precondition is a fixture harness with the properties
+`test/suite-binding-mutation.test.ts` already demonstrates: the spawn is
+observed to have run (`ran === 1`), a mutant of the refusal is spawned the
+same way over the same planted input, and a failure to load is distinguished
+from a refusal. Until a matcher can assert all three, 100 is the right number
+to report and the wrong number to ratchet.
+
+- [x] SC-1636: test/sc-binding-split.test.ts contains [unmatched checked SCs are split by whether a test claims them] — each row carries the spec and statement, so a rise names what to act on
+- [x] SC-1637: test/sc-binding-split.test.ts contains [the unclaimed count is the ratchet and may only fall] — a ticked criterion with no test raises it and fails the suite
+- [x] SC-1638: test/sc-binding-split.test.ts contains [the claimed-but-unbindable count is tracked, not refused] — bounded in both directions so a move is noticed and banked, never silent
+- [x] SC-1639: test/sc-binding-split.test.ts contains [the split does not become a second decider] — every unclaimed criterion is one the per-spec census already governs, and the residue is named
+- [x] SC-1640: test/sc-binding-split.test.ts contains [both halves are proved against a planted spec and test] — one planted criterion, one difference, asserted in both directions
+
+### What was broken to prove it (SC-1636..1640)
+
+Run over `test/sc-binding-split.test.ts` — 12 tests, baseline 0 fail. Every
+count predicted before the battery ran.
+
+| Mutation | Red |
+|---|---|
+| every unmatched SC lands in `unclaimed` | 7 of 12 |
+| every unmatched SC lands in `claimed` | 5 of 12 |
+| the `SUPERSEDED` skip removed | 5 of 12 |
+| `claimedScKeys` returns nothing — the credit rule, upstream | 6 of 12 |
+| `unclaimedCensusResidue` reports no difference either way | 1 of 12 |
+| `UNCLAIMED_RATCHET` raised to 9999 | 1 of 12 |
+| `CLAIMED_UNBINDABLE` raised to 9999 | 1 of 12 |
+| the split reads unchecked SCs too | 4 of 12 |
+
+None of the eight is left in the tree; all were run and reverted.
+
+**The rows that differed, and they are all one mistake.** Four came back
+exactly +1 and one exactly −1 against prediction, and the cause is the same
+in every case: the predictions were written against the test list as it stood
+before the headroom test was added, and that test goes red whenever the
+unclaimed count moves at all. The −1 is its mirror — raising
+`UNCLAIMED_RATCHET` to 9999 was predicted to turn the ratchet red too, but a
+`<=` ratchet cannot notice its own constant rising, which is precisely why
+the headroom test exists. No code defect in any of the five; one systematic
+prediction error, recorded rather than quietly re-fitted.
+
+**The row that was genuinely informative.** Breaking the CLASSIFIER measures
+7 and breaking the CREDIT RULE upstream measures 6, and the extra row is the
+residue test. Under the upstream mutation both populations move together —
+the census is computed from the same empty claimed set — so the difference
+between them stays empty and the residue test passes. Under the classifier
+mutation only one population moves and the residue test catches it. The two
+mutations are therefore distinguishable, which is the "give each decider an
+input only it can reach" property the fourth-shape section asks for, arrived
+at by construction rather than by design.
+
+**Why the residue is asserted in both directions.** A single
+"the difference is empty" assertion cannot tell *no difference* from *a
+differ that returns nothing*: mutation 5 makes `unclaimedCensusResidue`
+report `[]` for both lists and the subset test passes vacuously. The
+`onlyCensus` assertion, which names the two `testable: no` criteria exactly,
+is the one that catches it — 1 of 12, and that 1 is the whole reason the
+second direction is written out.

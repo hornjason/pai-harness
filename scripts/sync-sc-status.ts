@@ -28,6 +28,7 @@ import {
   isQualifiedBy,
   isTemplateSpec,
   oneScMentionPattern,
+  parseScDeclarations,
   requiresQualification,
   scDeclarationPattern,
   scMentionPattern as scIdMentionPattern,
@@ -409,6 +410,31 @@ export interface ConformityResult {
  */
 export function scopedKey(specFile: string, id: string): string {
   return `${specFile}::${id}`;
+}
+
+/**
+ * Every `specFile::id` a test file declares, per
+ * `.claude/rules/claiming-sc-coverage.md` (#441).
+ *
+ * ONE owner. This was written out longhand in `test/ticked-sc-cover.test.ts`
+ * and #441 needed the same set in a second place; copying it would have put
+ * two implementations of the credit rule in the tree, which is the way this
+ * class of bug arrives and the reason `uncoveredTickedScs` takes `claimed`
+ * as a parameter rather than computing it.
+ *
+ * It lives here rather than in `lib/` because the credit rule lives here —
+ * `findTestFilesForSCs` and `commentClaimForm` are what decide, and a `lib/`
+ * module reaching back into `scripts/` would invert the dependency.
+ */
+export function claimedScKeys(specsDir: string, testDir?: string): Set<string> {
+  const specs = readdirSync(specsDir, { recursive: true, encoding: "utf-8" })
+    .filter((f): f is string => typeof f === "string" && f.endsWith(".md"))
+    .map(f => ({ file: f, content: readFileSync(join(specsDir, f), "utf-8") }));
+  const declarations = specs
+    .filter(s => !isTemplateSpec(s.file))
+    .flatMap(s => parseScDeclarations(s.content, s.file));
+  const credits = findTestFilesForSCs(declarations, buildScRegistry(specs), testDir);
+  return new Set([...credits.values()].flat().map(c => scopedKey(c.specFile, c.id)));
 }
 
 /**

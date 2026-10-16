@@ -41,75 +41,28 @@ const SPECS_DIR = join(ROOT, "specs");
 const CHECKED_SC_BASELINE = 261;
 
 /**
- * Checked SCs whose statement matches no pattern in the matcher registry, so
- * no assertion can be built for them. This is a ratchet, not a target: it may
- * fall freely, and any rise means a new SC was written in prose that the
- * engine cannot bind to.
+ * `UNMATCHED_CHECKED_RATCHET` lived here and is gone (#441).
  *
- * 54 on the day checked SCs were first collected (#209). Raised to 239 by
- * #225, and the rise is not a regression — it is the previous number being
- * wrong. The spec collectors read `specs/` without descending, so
- * `specs/bootstrap-data-flow/` — six specs, 254 SCs — was invisible to every
- * one of them. 185 of those SCs are checked `[x]` and match no pattern: they
- * were counted as nothing because they were never looked at.
+ * It counted checked SCs the engine can build no assertion for, and read
+ * that as debt: marked done, no assertion, therefore wishes. True at 54.
+ * It stopped being true once the repo started writing criteria about
+ * REFUSALS, because the registry's vocabulary — file-exists,
+ * content-contains, count-threshold, json-field-equals — is claims about
+ * the STATE OF THE TREE, and no state of a tree expresses "X refuses, and
+ * says which of two things happened".
  *
- * Read this number as the debt it is. These SCs are marked done, carry no
- * assertion the ENGINE can build, and are therefore wishes to the extent
- * nothing else covers them. The honest way down is a matcher that binds them
- * or an SC rewritten in a form that binds — not unchecking them, which the
- * CHECKED_SC_BASELINE above exists to catch.
+ * 239 → 242 → 252 → 258 across #397, #398 and #399, every rise for criteria
+ * covered by executed tests, and the only route down was to rewrite them as
+ * weaker claims about file contents. The number was measuring the matcher's
+ * vocabulary and being read as the project's honesty.
  *
- * 239 → 242 by #397, and that rise is worth reading carefully, because it is
- * the first one that is neither a correction nor a wish.
- *
- * #397 added six checked SCs and all six are unmatched. Every one is covered
- * by an executed test in `test/pre-push-hook.test.ts`, and each is a claim
- * about BEHAVIOUR — "a suite that could not run is distinguishable in the
- * hook's output from one that failed". The registry's vocabulary is
- * file-exists, content-contains, count-threshold, json-field-equals: shapes
- * about the state of the tree. It has no way to express a refusal, so the
- * only way to make these six bind would be to rewrite them as weaker claims
- * about file contents — which would lower this number by making the spec say
- * less. That is the wrong trade, so the number goes up instead and says why.
- *
- * The structural problem this exposes is filed separately (#441): a ratchet
- * that rises whenever an issue writes a well-formed behavioural criterion is
- * measuring the matcher's vocabulary, not the project's honesty, and it will
- * be raised by every future issue that does the same thing. Three of the six
- * fitted in the headroom that existed; three did not.
- *
- * 242 → 252 by #398, and it is the prediction above coming true one issue
- * later. All ten of SC-1510..1519 are unmatched and all ten are executed, in
- * `test/scaffold-rehearsal-safety.test.ts`,
- * `test/scaffold-audit-agreement.test.ts` and
- * `test/unit/scaffold-project.test.ts`. They are also the least bindable
- * shape yet: the headline criterion is that two MODES AGREE — "every path
- * `--fix` writes is named by audit" — which is a claim about the relation
- * between two program runs. There is no state of the tree that expresses it,
- * so there is no `content-contains` that could. The rest are refusals, and
- * the registry still cannot express a refusal.
- *
- * Rewriting them to bind would mean asserting that `lib/scaffold/rehearsal.ts`
- * contains some string, which is the source-text assertion #397 own
- * post-mortem names as the thing that let a hook ship unable to pass. The
- * number goes up and says why, for the second issue running.
- *
- * 252 → 258 by #399, which is the third. All six of SC-1520..1525 are
- * unmatched and all six are executed, in `test/sc-fixture-namespace.test.ts`.
- * They are claims about an ALLOCATOR behaviour — "never returns a number any
- * source file spells" — and about the ABSENCE of a thing across two
- * directory trees. Neither is a state of one file, which is all the
- * vocabulary has.
- *
- * **258 is the SUM, and that is the whole point of this note.** #398 and
- * #399 were in flight together and each raised 242 on its own branch, to 252
- * and 248. A rebase that takes either side wholesale resolves cleanly, goes
- * green, and silently drops one issue criteria from the count — a ratchet
- * reading lower than the truth is a ratchet that will refuse the next honest
- * issue for the wrong reason. Three issues running now; whoever is fourth
- * should expect to add rather than choose.
+ * `test/sc-binding-split.test.ts` carries both halves now, and the
+ * replacement is strictly tighter rather than a ratchet deleted for green:
+ * 154 unclaimed bounded above, plus 100 claimed-but-unbindable bounded in
+ * BOTH directions — 254 against the 258 this allowed, with the half that
+ * used to rise freely now pinned exactly.
  */
-const UNMATCHED_CHECKED_RATCHET = 258;
+const UNMATCHED_BACKSTOP = 300;
 function specFiles(): string[] {
   return readdirSync(SPECS_DIR).filter(f => f.endsWith(".md"));
 }
@@ -219,12 +172,17 @@ describe("AC-4: every checked, matchable SC in specs/ passes its assertion", () 
     expect(failures).toEqual([]);
   });
 
-  test("unmatched checked SCs do not exceed the ratchet", () => {
+  test("unmatched checked SCs are bounded by the split, not by one number", () => {
+    // The bound moved to `test/sc-binding-split.test.ts`, which separates
+    // "nothing tests this" from "the registry has no shape for this". Kept
+    // here as a loose backstop so deleting that file cannot silently remove
+    // every bound at once — it is deliberately above both halves summed, so
+    // it refuses only a collapse, never an honest criterion.
     let unmatched = 0;
     for (const [, meta] of collectTestableSpecs(ROOT)) {
       unmatched += planSCTests(meta.scs).filter(e => e.kind === "unmatched").length;
     }
-    expect(unmatched).toBeLessThanOrEqual(UNMATCHED_CHECKED_RATCHET);
+    expect(unmatched).toBeLessThanOrEqual(UNMATCHED_BACKSTOP);
   });
 });
 
