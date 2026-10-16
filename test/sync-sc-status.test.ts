@@ -58,25 +58,25 @@ doc-type: spec
 testable: true
 ---
 # Test Spec
-- [ ] SC-900: AGENTS.md exists
-- [ ] SC-901: README.md exists
-- [ ] SC-902: NONEXISTENT.md exists
+- [ ] SC-9441: AGENTS.md exists
+- [ ] SC-9442: README.md exists
+- [ ] SC-9443: NONEXISTENT.md exists
 `
     );
 
     const unchecked: UncheckedSC[] = [
-      { id: "SC-900", statement: "AGENTS.md exists", specFile: "TEST-SPEC.md" },
-      { id: "SC-901", statement: "README.md exists", specFile: "TEST-SPEC.md" },
-      { id: "SC-902", statement: "NONEXISTENT.md exists", specFile: "TEST-SPEC.md" },
+      { id: "SC-9441", statement: "AGENTS.md exists", specFile: "TEST-SPEC.md" },
+      { id: "SC-9442", statement: "README.md exists", specFile: "TEST-SPEC.md" },
+      { id: "SC-9443", statement: "NONEXISTENT.md exists", specFile: "TEST-SPEC.md" },
     ];
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
 
-    // SC-900 and SC-901 should pass (files exist), SC-902 should fail — scoped by spec file
-    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-900"))).toBe(true);
-    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-901"))).toBe(true);
-    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-902"))).toBe(false);
-    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-902"))).toBe(true);
+    // SC-9441 and SC-9442 should pass (files exist), SC-9443 should fail — scoped by spec file
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-9441"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-9442"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-9443"))).toBe(false);
+    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-9443"))).toBe(true);
   });
 
   test("AC-3: flipCheckboxes flips conformity-passing SCs", () => {
@@ -87,17 +87,17 @@ doc-type: spec
 testable: true
 ---
 # Test Spec
-- [ ] SC-900: AGENTS.md exists
-- [x] SC-899: Already checked
+- [ ] SC-9441: AGENTS.md exists
+- [x] SC-9440: Already checked
 `
     );
 
-    const flipped = flipCheckboxes("TEST-SPEC.md", ["SC-900"], FIXTURE_SPECS);
+    const flipped = flipCheckboxes("TEST-SPEC.md", ["SC-9441"], FIXTURE_SPECS);
     expect(flipped).toBe(1);
 
     const content = readFileSync(join(FIXTURE_SPECS, "TEST-SPEC.md"), "utf-8");
-    expect(content).toContain("- [x] SC-900:");
-    expect(content).toContain("- [x] SC-899:");
+    expect(content).toContain("- [x] SC-9441:");
+    expect(content).toContain("- [x] SC-9440:");
   });
 
   test("AC-4: --report flag produces per-spec coverage output", () => {
@@ -176,37 +176,37 @@ doc-type: spec
 testable: true
 ---
 # Strict Spec
-- [ ] SC-910: AGENTS.md exists
-- [ ] SC-911: DOES-NOT-EXIST.md exists
-- [ ] SC-912: ALSO-MISSING.md exists
+- [ ] SC-9450: AGENTS.md exists
+- [ ] SC-9451: DOES-NOT-EXIST.md exists
+- [ ] SC-9452: ALSO-MISSING.md exists
 `
     );
 
     const unchecked: UncheckedSC[] = [
-      { id: "SC-910", statement: "AGENTS.md exists", specFile: "STRICT-SPEC.md" },
-      { id: "SC-911", statement: "DOES-NOT-EXIST.md exists", specFile: "STRICT-SPEC.md" },
-      { id: "SC-912", statement: "ALSO-MISSING.md exists", specFile: "STRICT-SPEC.md" },
+      { id: "SC-9450", statement: "AGENTS.md exists", specFile: "STRICT-SPEC.md" },
+      { id: "SC-9451", statement: "DOES-NOT-EXIST.md exists", specFile: "STRICT-SPEC.md" },
+      { id: "SC-9452", statement: "ALSO-MISSING.md exists", specFile: "STRICT-SPEC.md" },
     ];
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
 
-    // Only SC-910 passes (AGENTS.md exists) — scoped keys
-    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-910"))).toBe(true);
-    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-911"))).toBe(false);
-    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-912"))).toBe(false);
-    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-911"))).toBe(true);
-    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-912"))).toBe(true);
+    // Only SC-9450 passes (AGENTS.md exists) — scoped keys
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-9450"))).toBe(true);
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-9451"))).toBe(false);
+    expect(result.passing.has(scopedKey("STRICT-SPEC.md", "SC-9452"))).toBe(false);
+    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-9451"))).toBe(true);
+    expect(result.failing.has(scopedKey("STRICT-SPEC.md", "SC-9452"))).toBe(true);
   });
 
   test("checkConformitySCs returns unmatchable SCs separately", () => {
     const unchecked: UncheckedSC[] = [
-      { id: "SC-999", statement: "some behavioral thing that no pattern matches", specFile: "TEST-SPEC.md" },
+      { id: "SC-9461", statement: "some behavioral thing that no pattern matches", specFile: "TEST-SPEC.md" },
     ];
 
     const result = checkConformitySCs(unchecked, FIXTURE_ROOT);
-    expect(result.unmatchable.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(true);
-    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(false);
-    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-999"))).toBe(false);
+    expect(result.unmatchable.has(scopedKey("TEST-SPEC.md", "SC-9461"))).toBe(true);
+    expect(result.passing.has(scopedKey("TEST-SPEC.md", "SC-9461"))).toBe(false);
+    expect(result.failing.has(scopedKey("TEST-SPEC.md", "SC-9461"))).toBe(false);
   });
 
   test("cross-spec isolation: same SC ID in two specs doesn't bleed", () => {

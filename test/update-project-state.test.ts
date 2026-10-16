@@ -50,13 +50,13 @@ describe("update-project-state", () => {
       updated: "2026-01-01",
       priorities: ["Do the thing"],
       phases: [{ name: "Phase 0 — Test", scs: [
-        { id: "SC-900", what: "Test SC", done: true }
+        { id: "SC-9441", what: "Test SC", done: true }
       ]}],
       sessions: []
     });
     const md = run();
     expect(md).toContain("# Project State");
-    expect(md).toContain("| ✅ | SC-900 | Test SC |");
+    expect(md).toContain("| ✅ | SC-9441 | Test SC |");
     expect(md).toContain("Do the thing");
   });
 
@@ -64,8 +64,8 @@ describe("update-project-state", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [{ name: "Phase 0 — Done", scs: [
-        { id: "SC-900", what: "A", done: true },
-        { id: "SC-901", what: "B", done: true }
+        { id: "SC-9441", what: "A", done: true },
+        { id: "SC-9442", what: "B", done: true }
       ]}],
       sessions: []
     });
@@ -77,8 +77,8 @@ describe("update-project-state", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [{ name: "Phase 0 — Mixed", scs: [
-        { id: "SC-900", what: "A", done: true },
-        { id: "SC-901", what: "B", done: false }
+        { id: "SC-9441", what: "A", done: true },
+        { id: "SC-9442", what: "B", done: false }
       ]}],
       sessions: []
     });
@@ -90,7 +90,7 @@ describe("update-project-state", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [{ name: "Phase 1 — Empty", scs: [
-        { id: "SC-900", what: "A", done: false }
+        { id: "SC-9441", what: "A", done: false }
       ]}],
       sessions: []
     });
@@ -102,10 +102,10 @@ describe("update-project-state", () => {
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [
-        { name: "Phase 0 — Done", scs: [{ id: "SC-900", what: "A", done: true }] },
+        { name: "Phase 0 — Done", scs: [{ id: "SC-9441", what: "A", done: true }] },
         { name: "Phase 1 — Next", scs: [
-          { id: "SC-901", what: "B", done: false },
-          { id: "SC-902", what: "C", done: false }
+          { id: "SC-9442", what: "B", done: false },
+          { id: "SC-9443", what: "C", done: false }
         ]}
       ],
       sessions: []
@@ -115,20 +115,20 @@ describe("update-project-state", () => {
   });
 
   test("promote-only: spec [x] promotes SC, spec [ ] does not demote", () => {
-    writeFileSync(join(SPECS_DIR, "test-promote.md"), `- [x] SC-900: promoted\n- [ ] SC-901: still open in spec`);
+    writeFileSync(join(SPECS_DIR, "test-promote.md"), `- [x] SC-9441: promoted\n- [ ] SC-9442: still open in spec`);
     writeTestJson({
       updated: "2026-01-01", priorities: [],
       phases: [{ name: "Phase 0", scs: [
-        { id: "SC-900", what: "Should promote", done: false },
-        { id: "SC-901", what: "Should stay done", done: true }
+        { id: "SC-9441", what: "Should promote", done: false },
+        { id: "SC-9442", what: "Should stay done", done: true }
       ]}],
       sessions: []
     });
     run();
     const json = JSON.parse(readFileSync(STATE_JSON, "utf-8"));
     const scs = json.phases[0].scs;
-    expect(scs.find((s: any) => s.id === "SC-900").done).toBe(true);
-    expect(scs.find((s: any) => s.id === "SC-901").done).toBe(true);
+    expect(scs.find((s: any) => s.id === "SC-9441").done).toBe(true);
+    expect(scs.find((s: any) => s.id === "SC-9442").done).toBe(true);
     rmSync(join(SPECS_DIR, "test-promote.md"));
   });
 
@@ -173,9 +173,9 @@ describe("update-project-state", () => {
       notes: "Session 11 — stuff happened.\nSuite: 1264 pass, 0 fail. 28/56 SCs done.\nMore stuff.",
       phases: [
         { name: "Phase 0", scs: [
-          { id: "SC-900", what: "A", done: true },
-          { id: "SC-901", what: "B", done: true },
-          { id: "SC-902", what: "C", done: false }
+          { id: "SC-9441", what: "A", done: true },
+          { id: "SC-9442", what: "B", done: true },
+          { id: "SC-9443", what: "C", done: false }
         ]}
       ],
       sessions: []
@@ -197,8 +197,8 @@ describe("update-project-state", () => {
       notes: "Session 11 — no counts here.",
       phases: [
         { name: "Phase 0", scs: [
-          { id: "SC-900", what: "A", done: true },
-          { id: "SC-901", what: "B", done: false }
+          { id: "SC-9441", what: "A", done: true },
+          { id: "SC-9442", what: "B", done: false }
         ]}
       ],
       sessions: []
@@ -217,7 +217,7 @@ describe("update-project-state", () => {
       priorities: [],
       phases: [
         { name: "Phase 0", scs: [
-          { id: "SC-900", what: "A", done: true }
+          { id: "SC-9441", what: "A", done: true }
         ]}
       ],
       sessions: []

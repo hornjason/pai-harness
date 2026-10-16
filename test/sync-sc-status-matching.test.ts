@@ -79,30 +79,39 @@ function fixtureTestDir(name: string, body: string): string {
 
 describe("#148: an SC ID matches as a whole token", () => {
   test("a test naming a longer ID does not count as a test for the shorter one", () => {
-    // The exact collision that ticked the template, with IDs this repo does
-    // not use so the file does not claim them. Before the fix this returned
-    // the fixture file.
-    const dir = fixtureTestDir("longer-id", 'test("SC-9144: something else", () => {});');
-    const found = findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir);
+    // The exact collision that ticked the template. The pair is SC-9014 and
+    // SC-90141 — one is the other plus a digit, which is the whole point.
+    //
+    // It used to be SC-91 / SC-9144, and SC-91 is a REAL criterion declared
+    // in specs/bootstrap-data-flow/success-criteria.md. The comment here
+    // claimed "with IDs this repo does not use so the file does not claim
+    // them", which was true when written and stopped being true without
+    // anything being able to notice (#399). Both are now in the reserved
+    // fixture range, where no spec may declare.
+    const dir = fixtureTestDir("longer-id", 'test("SC-90141: something else", () => {});');
+    const found = findTestFilesForSCs(wanted(["SC-9014"]), fixtureReg(["SC-9014"]), dir);
     expect([...found.keys()]).toEqual([]);
   });
 
   test("a test naming the ID exactly still counts", () => {
     // Positive control. A fix that returns nothing for everything would pass
     // the assertion above and break the tool; this is what stops that.
-    const dir = fixtureTestDir("exact-id", 'test("SC-91: the real one", () => {});');
-    const found = findTestFilesForSCs(wanted(["SC-91"]), fixtureReg(["SC-91"]), dir);
-    expect(creditedIds(found)).toEqual(["SC-91"]);
+    const dir = fixtureTestDir("exact-id", 'test("SC-9014: the real one", () => {});');
+    const found = findTestFilesForSCs(wanted(["SC-9014"]), fixtureReg(["SC-9014"]), dir);
+    expect(creditedIds(found)).toEqual(["SC-9014"]);
   });
 
   test("the boundary is the trailing digit, not the punctuation around it", () => {
     // IDs appear bare in prose, in comma lists, in parentheses and before a
     // colon. All of those are the ID. The only thing that makes a mention a
     // different criterion is another digit after it.
-    const dir = fixtureTestDir("punctuation", "// covers SC-910: and SC-92, and (SC-93)\n");
-    const ids = ["SC-91", "SC-92", "SC-93", "SC-910"];
+    const dir = fixtureTestDir("punctuation", "// covers SC-90140: and SC-9015, and (SC-9016)\n");
+    const ids = ["SC-9014", "SC-9015", "SC-9016", "SC-90140"];
     const found = findTestFilesForSCs(wanted(ids), fixtureReg(ids), dir);
-    expect(creditedIds(found).sort()).toEqual(["SC-910", "SC-92", "SC-93"]);
+    // Lexicographic, so SC-90140 sorts before SC-9015 — the sibling's extra
+    // digit changes the order as well as the identity, which is the thing
+    // under test looked at from one more angle.
+    expect(creditedIds(found).sort()).toEqual(["SC-90140", "SC-9015", "SC-9016"]);
   });
 
   test("against the real test directory, every credited file names the ID", () => {

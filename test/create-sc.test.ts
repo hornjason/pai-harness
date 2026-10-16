@@ -200,7 +200,7 @@ testable: true
         expect(scMatch).not.toBeNull();
 
         const statement = scMatch![2].trim();
-        const sc: ParsedSC = { id: "SC-999", statement, specFile: "test.md" };
+        const sc: ParsedSC = { id: "SC-9461", statement, specFile: "test.md" };
         const assertion = matchPattern(sc);
         expect(assertion).not.toBeNull();
       });

@@ -239,15 +239,15 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-600: This SC is too vague to rewrite automatically
-- [ ] SC-601: AGENTS.md exists
+- [ ] SC-9430: This SC is too vague to rewrite automatically
+- [ ] SC-9431: AGENTS.md exists
 `);
       const { auditSpecs } = await importAuditSpecs();
       auditSpecs(FIXTURE_ROOT, { fix: true });
 
       const content = readFileSync(join(FIXTURE_ROOT, "specs", "AMBIGUOUS.md"), "utf-8");
 
-      // SC-600 should have a REVIEW comment since it's too ambiguous
+      // SC-9430 should have a REVIEW comment since it's too ambiguous
       expect(content).toContain("<!-- REVIEW:");
     });
   });
@@ -331,8 +331,8 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-900: The file AGENTS.md should exist at project root
-- [ ] SC-901: AGENTS.md exists
+- [ ] SC-9441: The file AGENTS.md should exist at project root
+- [ ] SC-9442: AGENTS.md exists
 `);
       const { auditSpecs } = await importAuditSpecs();
       const result = auditSpecs(FIXTURE_ROOT, { fix: true });
@@ -342,8 +342,8 @@ governs: test
 
       // After fix, the file should contain matchable patterns
       const content = readFileSync(join(FIXTURE_ROOT, "specs", "FIX-TARGET.md"), "utf-8");
-      // SC-900 should have been rewritten to a matchable form
-      expect(content).toContain("SC-900:");
+      // SC-9441 should have been rewritten to a matchable form
+      expect(content).toContain("SC-9441:");
     });
   });
 
@@ -455,8 +455,8 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1000: AGENTS.md exists
-- [ ] SC-1001: This is an unmatched freeform SC that nobody can parse
+- [ ] SC-9470: AGENTS.md exists
+- [ ] SC-9471: This is an unmatched freeform SC that nobody can parse
 `);
       writeSpec("PERMISSIVE-SPEC.md", `---
 doc-type: spec
@@ -470,8 +470,8 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1002: AGENTS.md exists
-- [ ] SC-1003: Another unmatched freeform SC nobody can parse
+- [ ] SC-9472: AGENTS.md exists
+- [ ] SC-9473: Another unmatched freeform SC nobody can parse
 `);
       const { auditSpecs } = await importAuditSpecs();
       const result = auditSpecs(FIXTURE_ROOT);
@@ -495,7 +495,7 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1100: AGENTS.md exists
+- [ ] SC-9480: AGENTS.md exists
 `);
       writeSpec("COMP-PERMISSIVE.md", `---
 doc-type: spec
@@ -509,7 +509,7 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1101: AGENTS.md exists
+- [ ] SC-9481: AGENTS.md exists
 `);
       const { auditSpecs } = await importAuditSpecs();
       const result = auditSpecs(FIXTURE_ROOT);
@@ -532,7 +532,7 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1200: AGENTS.md exists
+- [ ] SC-9490: AGENTS.md exists
 `);
       const { auditSpecs } = await importAuditSpecs();
       const result = auditSpecs(FIXTURE_ROOT);
@@ -568,7 +568,7 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1300: AGENTS.md exists
+- [ ] SC-9495: AGENTS.md exists
 `);
       // Also create a normal spec in specs/
       writeSpec("LOCAL-SPEC.md", `---
@@ -583,7 +583,7 @@ governs: test
 
 ## Success Criteria
 
-- [ ] SC-1301: AGENTS.md exists
+- [ ] SC-9496: AGENTS.md exists
 `);
 
       const { auditSpecs } = await importAuditSpecs();

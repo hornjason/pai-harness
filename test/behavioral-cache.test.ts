@@ -39,16 +39,16 @@ describe("behavioral-cache: readCache and writeCache", () => {
     const { writeCache, readCache } = require("../lib/behavioral-cache") as typeof import("../lib/behavioral-cache");
     const now = new Date().toISOString();
     const data = {
-      "SC-999": { passed: true, evidence: "test evidence", timestamp: now },
+      "SC-9461": { passed: true, evidence: "test evidence", timestamp: now },
     };
     writeCache(CACHE_PATH, data);
     expect(existsSync(CACHE_PATH)).toBe(true);
 
     const raw = JSON.parse(readFileSync(CACHE_PATH, "utf-8"));
-    expect(raw["SC-999"]).toBeDefined();
-    expect(raw["SC-999"].passed).toBe(true);
-    expect(raw["SC-999"].evidence).toBe("test evidence");
-    expect(raw["SC-999"].timestamp).toBe(now);
+    expect(raw["SC-9461"]).toBeDefined();
+    expect(raw["SC-9461"].passed).toBe(true);
+    expect(raw["SC-9461"].evidence).toBe("test evidence");
+    expect(raw["SC-9461"].timestamp).toBe(now);
   });
 
   test("AC-1: readCache returns empty object for missing file", () => {
@@ -61,13 +61,13 @@ describe("behavioral-cache: readCache and writeCache", () => {
     const { writeCache, readCache } = require("../lib/behavioral-cache") as typeof import("../lib/behavioral-cache");
     const now = new Date().toISOString();
     const data = {
-      "SC-999": { passed: true, evidence: "round-trip test", timestamp: now },
+      "SC-9461": { passed: true, evidence: "round-trip test", timestamp: now },
       "SC-100": { passed: false, evidence: "failed check", timestamp: now },
     };
     writeCache(CACHE_PATH, data);
     const result = readCache(CACHE_PATH);
     expect(Object.keys(result)).toHaveLength(2);
-    expect(result["SC-999"].passed).toBe(true);
+    expect(result["SC-9461"].passed).toBe(true);
     expect(result["SC-100"].passed).toBe(false);
   });
 
@@ -133,9 +133,9 @@ describe("behavioral-cache: behavioralPattern integration", () => {
     const { behavioralPattern } = require("../lib/conformity") as typeof import("../lib/conformity");
     const now = new Date().toISOString();
     writeCache(CACHE_PATH, {
-      "SC-999": { passed: true, evidence: "test pass", timestamp: now },
+      "SC-9461": { passed: true, evidence: "test pass", timestamp: now },
     });
-    const sc = { id: "SC-999", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
+    const sc = { id: "SC-9461", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
     const assertion = behavioralPattern(sc, CACHE_PATH);
     expect(assertion).not.toBeNull();
     // Assertion should not throw for passing cached result
@@ -147,9 +147,9 @@ describe("behavioral-cache: behavioralPattern integration", () => {
     const { behavioralPattern } = require("../lib/conformity") as typeof import("../lib/conformity");
     const now = new Date().toISOString();
     writeCache(CACHE_PATH, {
-      "SC-999": { passed: false, evidence: "test fail", timestamp: now },
+      "SC-9461": { passed: false, evidence: "test fail", timestamp: now },
     });
-    const sc = { id: "SC-999", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
+    const sc = { id: "SC-9461", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
     const assertion = behavioralPattern(sc, CACHE_PATH);
     expect(assertion).not.toBeNull();
     expect(() => assertion!("/tmp")).toThrow();
@@ -157,7 +157,7 @@ describe("behavioral-cache: behavioralPattern integration", () => {
 
   test("AC-2: behavioralPattern returns null when no cached result exists", () => {
     const { behavioralPattern } = require("../lib/conformity") as typeof import("../lib/conformity");
-    const sc = { id: "SC-999", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
+    const sc = { id: "SC-9461", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
     const assertion = behavioralPattern(sc, join(FIXTURE_ROOT, "nonexistent.json"));
     expect(assertion).toBeNull();
   });
@@ -167,9 +167,9 @@ describe("behavioral-cache: behavioralPattern integration", () => {
     const { behavioralPattern } = require("../lib/conformity") as typeof import("../lib/conformity");
     const stale = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
     writeCache(CACHE_PATH, {
-      "SC-999": { passed: true, evidence: "stale pass", timestamp: stale },
+      "SC-9461": { passed: true, evidence: "stale pass", timestamp: stale },
     });
-    const sc = { id: "SC-999", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
+    const sc = { id: "SC-9461", statement: "Test statement (behavioral)", specFile: "TEST-SPEC.md" };
     const assertion = behavioralPattern(sc, CACHE_PATH);
     expect(assertion).toBeNull();
   });

@@ -132,7 +132,7 @@ describe("#181 SC-855 (AC-3): both implement paths consult the guard", () => {
     const fn = shipSource.slice(shipSource.indexOf("async function runImplement()"));
     const body = fn.slice(0, fn.indexOf("\n}\n"));
     expect(body, "runImplement does not call the guard").toContain("implementRefusal(");
-    // SC-422's negative half: the count must be acted on, not narrated. The
+    // SC-9420's negative half: the count must be acted on, not narrated. The
     // log line may stay — it is useful — but it can no longer be the only
     // reader of the field.
     expect(body).toMatch(/return \{ success: false/);
