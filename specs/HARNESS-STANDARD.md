@@ -6315,34 +6315,62 @@ threshold is one hour, and the direction to be wrong in is leaving litter.
 - [x] SC-1609: test/scratch-cleanup.test.ts contains [a scratch directory young enough to be in use is kept] — with the file case and the dry run alongside it
 - [x] SC-1610: test/scratch-cleanup.test.ts contains [no suite in test/ creates a filesystem path at module scope] — asserted on the source AND by importing the five repaired suites for real
 - [x] SC-1611: test/scratch-cleanup.test.ts contains [the sweep runs where worktree cleanup already runs] — a cleaner nobody invokes is a function, not a cleaner
+- [x] SC-1612: test/scratch-cleanup.test.ts contains [a short derived prefix cannot reach .claude or .github] — BUG-437-A: the allowlist is derived from file content, so the entry must match the full name mkdtempSync writes, not merely start with a prefix
 
 ### What was broken to prove it (SC-1604..1611)
 
 Run over `test/scratch-cleanup.test.ts` and `test/scratch-paths-unique.test.ts`
-— 22 tests, baseline 0 fail. Every count predicted before the battery ran.
+— 24 tests, baseline 0 fail. Every count predicted before the battery ran.
 
 | Mutation | Red |
 |---|---|
-| `scratchPrefixes` derives nothing, so the allowlist is always empty | 5 of 22 — the fail-safe direction, and the reason SC-1605 measures the real tree: an empty allowlist sweeps nothing, which reads as nothing having leaked |
-| `isScratchEntry` accepts everything | 4 of 22 |
-| the suffix requirement dropped, so a bare prefix is swept | 2 of 22 — **was 1.** See below |
-| `startsWith` relaxed to `includes` | 2 of 22 — **was 1.** Same gap, same fix |
-| the age guard removed | 1 of 22 — a scratch directory 30 seconds old is swept out from under a live suite |
-| the age comparison inverted, so only live scratch is swept | 3 of 22 |
-| `dryRun` ignored, so a report deletes | 1 of 22 |
-| the fixture file no longer excluded from the derivation | 1 of 22 — `.x-`, a string literal written to prove a detector fires, enters a deletion allowlist |
-| the parse back to `const`-only, blind to the assignment form | 2 of 22 — #437's own fix writes `let S = ""` plus a later assignment, so this is the hole the fix would have opened |
-| `moduleScopeCreations` finds nothing | 1 of 22 |
-| `sc-drift.test.ts` creates its scratch at module scope again — the defect verbatim | 2 of 22 — the source position AND the executed import |
-| the SessionStart hook stops calling the sweeper | 1 of 22 |
-| the module-scope detector stops stripping comments | 1 of 22 — it then reports this file's own docblock, the self-reference trap again |
+| `scratchPrefixes` derives nothing, so the allowlist is always empty | 5 of 24 — the fail-safe direction, and the reason SC-1605 measures the real tree: an empty allowlist sweeps nothing, which reads as nothing having leaked |
+| `isScratchEntry` accepts everything | 6 of 24 |
+| BUG-437-A verbatim — back to "starts with a prefix and is longer" | 3 of 24 |
+| the opening anchor dropped, so a prefix becomes a substring | 1 of 24 — measured standalone twice; inside the batched runner this row reported a truncated `1 of 7`, so the number here is the standalone one |
+| the closing anchor dropped, so anything may follow the suffix | 2 of 24 |
+| the suffix relaxed from exactly six characters to one-or-more | 3 of 24 |
+| the prefix no longer escaped before it reaches a `RegExp` | 1 of 24 — an unescaped `.` is "any character" |
+| the age guard removed | 1 of 24 — a scratch directory 30 seconds old is swept out from under a live suite |
+| the age comparison inverted, so only live scratch is swept | 3 of 24 |
+| `dryRun` ignored, so a report deletes | 1 of 24 |
+| the fixture file no longer excluded from the derivation | 1 of 24 — `.x-`, a literal written to prove a detector fires, enters a deletion allowlist |
+| the parse back to `const`-only, blind to the assignment form | 2 of 24 — #437's own fix writes `let S = ""` plus a later assignment, so this is the hole the fix would have opened |
+| `moduleScopeCreations` finds nothing | 1 of 24 |
+| `sc-drift.test.ts` creates its scratch at module scope again — the defect verbatim | 2 of 24 — the source position AND the executed import |
+| the SessionStart hook stops calling the sweeper | 1 of 24 |
+| the hook's scope gate removed | 1 of 24 |
+| the module-scope detector stops stripping comments | 1 of 24 — it then reports this file's own docblock, the self-reference trap again |
 
-Two rows came back at 1 against a predicted 2, and they were the same gap:
-the behavioural near-miss list had `.tree-under-test-scratch` — the prefix
-**minus its trailing separator** — where the case that matters is the prefix
-*exactly*, which `mkdtempSync` cannot produce and a person can. So the branch
-`entry.length > p.length` guards was covered only by the unit test on the
-predicate, and `startsWith` versus `includes` was not covered behaviourally at
-all. Both cases are now in the list and both rows measure 2.
+None of the seventeen is left in the tree; all were run and reverted.
 
-None of the thirteen is left in the tree; all were run and reverted.
+### BUG-437-A — the allowlist was the hole, not the paths
+
+Security review of the first push said the delete was content-steered. It was
+right, and running it confirmed the exact case: `isScratchEntry(".claude",
+[".c"])` returned **true**. The prefix list is derived from `test/*.ts`, so a
+future suite writing `mkdtempSync(join(REPO_ROOT, ".c"))` — a plausible typo,
+never mind anything hostile — would have armed a SessionStart hook to delete
+`.claude/` recursively.
+
+The paths were never the hole; the sweeper builds those itself. The
+**allowlist** was, and an allowlist derived from file content steers a
+recursive delete just as surely as a path would. The predicate now matches the
+full name `mkdtempSync` writes — a prefix followed by exactly six characters
+from `[A-Za-z0-9]`, measured over 200 calls rather than read off the
+documentation.
+
+### Three gaps the predictions found
+
+Each is a row that came back lower than predicted, and each was a case the
+tests did not contain rather than a defect in the code:
+
+1. The near-miss list had the prefix *minus its trailing separator* where the
+   case that matters is the prefix *exactly* — so `entry.length > p.length` was
+   guarded only by a unit test.
+2. The list had near misses of the PREFIX and none of the SUFFIX, so relaxing
+   "exactly six characters" to "one or more" went half-unnoticed.
+3. `startsWith(p)` beside a slice at `p.length` measured **0 of 24** when
+   relaxed to `includes` — two deciders that agree, provably identical on every
+   input, with the delete still on the end of them. Collapsed into one anchored
+   match. The anchors are now separately mutable and separately caught.

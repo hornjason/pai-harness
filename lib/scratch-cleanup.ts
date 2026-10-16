@@ -93,16 +93,48 @@ export function scratchPrefixes(repoRoot: string): string[] {
 }
 
 /**
+ * Exactly what `mkdtempSync` appends: six characters from this alphabet.
+ *
+ * Measured over 200 calls rather than read off the documentation — the
+ * lengths set came back `[6]` and the alphabet came back `[A-Za-z0-9]`.
+ */
+const MKDTEMP_SUFFIX = "[A-Za-z0-9]{6}";
+
+/** A prefix is data; it reaches a RegExp, so it is escaped rather than trusted. */
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
  * Whether `entry` is a name `mkdtempSync` could have produced from `prefixes`.
  *
- * The prefix list is a deletion allowlist, so this is written as one: the
- * entry must START with a prefix and carry a suffix after it, which is the
- * shape `mkdtempSync` guarantees. A bare prefix with nothing after it is NOT
- * matched — that would be a directory someone created deliberately with the
- * same name, and this function cannot tell the difference, so it declines.
+ * The prefix list is a deletion allowlist, so this is written as one, and the
+ * first version was written as a weaker one. It asked only that the entry
+ * start with a prefix and be longer — and since the prefixes are DERIVED from
+ * `test/*.ts`, a suite writing `mkdtempSync(join(REPO_ROOT, ".c"))` would have
+ * armed a SessionStart hook to recursively delete `.claude/`.
+ * `isScratchEntry(".claude", [".c"])` returned true; it was found by a
+ * security review of the first push and confirmed by running it (BUG-437-A).
+ *
+ * The paths were never the hole — the sweeper builds those itself. The
+ * ALLOWLIST was, and an allowlist derived from file content is content
+ * steering a recursive delete just as surely as a path would be.
+ *
+ * So the test is the full shape, not a prefix test: the entry must be a
+ * prefix followed by EXACTLY the suffix `mkdtempSync` produces. A bare prefix
+ * with nothing after it is a directory someone made deliberately, and
+ * anything else is not a name this repo's tooling can have written.
+ *
+ * ONE anchored match, not a `startsWith` beside a slice at `p.length`. Those
+ * two are behaviourally identical on every input — relaxing `startsWith` to
+ * `includes` measured **0 of 24**, because the fixed offset refuses whatever
+ * the substring match would have let through. Two deciders that agree, with
+ * the delete still on the end of them. See
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
  */
 export function isScratchEntry(entry: string, prefixes: string[]): boolean {
-  return prefixes.some(p => p.length > 1 && entry.startsWith(p) && entry.length > p.length);
+  return prefixes.some(p =>
+    p.length > 1 && new RegExp(`^${escapeRegex(p)}${MKDTEMP_SUFFIX}$`).test(entry));
 }
 
 /**

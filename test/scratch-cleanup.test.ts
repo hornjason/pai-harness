@@ -158,6 +158,16 @@ describe("SC-1607: the sweeper removes the leak and nothing else", () => {
       // between `startsWith` and `includes`, which was also unguarded
       // behaviourally.
       "x.tree-under-test-scratch-ab12",
+      // A real mkdtemp name with something appended. Only the closing anchor
+      // refuses this one, and without it the row measured 0.
+      ".tree-under-test-scratch-ab12cd-copy",
+      // The planted prefix EXACTLY, with a suffix that is the wrong length in
+      // each direction. `mkdtempSync` appends six characters and only six, so
+      // neither of these is a name this repo's tooling wrote. Added after the
+      // suffix-relaxation mutation measured 2 against a predicted 3: the list
+      // had near misses of the PREFIX and none of the SUFFIX.
+      ".tree-under-test-scratch-ab12",
+      ".tree-under-test-scratch-ab12cde",
       ".tree_under_test_scratch-ab12",   // underscores, not the planted name
       ".Tree-under-test-scratch-ab12",   // case
     ];
@@ -215,11 +225,48 @@ describe("SC-1607: the sweeper removes the leak and nothing else", () => {
     expect(existsSync(leaked), "a dry run deleted something").toBe(true);
   });
 
+  test("SC-1612: a short derived prefix cannot reach .claude or .github", () => {
+    // BUG-437-A, found by security review of the first push and confirmed by
+    // running it: `isScratchEntry(".claude", [".c"])` was TRUE.
+    //
+    // The prefix list is derived from `test/*.ts`, so a future suite writing
+    // `mkdtempSync(join(REPO_ROOT, ".c"))` — a plausible typo, never mind
+    // anything hostile — would arm a SessionStart hook to recursively delete
+    // `.claude/`. The sweeper's paths were safe (it builds them itself); its
+    // ALLOWLIST was not, and the PR said "content must not steer a recursive
+    // delete" while content steered the allowlist.
+    //
+    // The fix is to require the shape `mkdtempSync` actually produces:
+    // exactly six characters from [A-Za-z0-9], measured over 200 samples.
+    plantSuites([".c", ".g", ".cl"]);
+    const precious = [".claude", ".github", ".git", "node_modules", ".vscode"].map(n => plantDir(n));
+
+    const result = cleanupScratchDirs({ repoRoot: root });
+
+    expect(result.removed, `the sweeper reached ${result.removed.join(", ")}`).toEqual([]);
+    for (const p of precious) expect(existsSync(p), `${p} was deleted`).toBe(true);
+    expect(isScratchEntry(".claude", [".c"]), "a 1-char prefix still reaches .claude").toBe(false);
+  });
+
+  test("SC-1612: only the six-character mkdtemp suffix is accepted", () => {
+    const P = ".scratch-";
+    expect(isScratchEntry(`${P}ab12CD`, [P]), "a real mkdtemp name was refused").toBe(true);
+    expect(isScratchEntry(`${P}ab12C`, [P])).toBe(false);   // five
+    expect(isScratchEntry(`${P}ab12CDE`, [P])).toBe(false); // seven
+    expect(isScratchEntry(`${P}ab-2CD`, [P])).toBe(false);  // not the alphabet
+    expect(isScratchEntry(`${P}ab12CD/x`, [P])).toBe(false); // no path separators
+  });
+
   test("the predicate is callable alone, so the allowlist is testable alone", () => {
-    expect(isScratchEntry(".a-b12", [".a-"])).toBe(true);
-    expect(isScratchEntry(".a-", [".a-"])).toBe(false);   // bare prefix, no suffix
-    expect(isScratchEntry(".a-b12", [])).toBe(false);     // empty allowlist
-    expect(isScratchEntry("x.a-b12", [".a-"])).toBe(false); // must be a prefix, not a substring
+    expect(isScratchEntry(".a-b12cd9", [".a-"])).toBe(true);
+    expect(isScratchEntry(".a-", [".a-"])).toBe(false);       // bare prefix, no suffix
+    expect(isScratchEntry(".a-b12cd9", [])).toBe(false);      // empty allowlist
+    expect(isScratchEntry("x.a-b12cd9", [".a-"])).toBe(false); // a prefix, not a substring
+    // The prefix reaches a RegExp, so it is escaped rather than trusted. An
+    // unescaped `.` is "any character", which would let a name differing in
+    // its first character through. Found by predicting the escape mutation at
+    // 0 before running it.
+    expect(isScratchEntry("Xa-b12cd9", [".a-"]), "an unescaped . matched any character").toBe(false);
   });
 });
 
@@ -235,6 +282,15 @@ describe("SC-1611: the sweep runs where worktree cleanup already runs", () => {
     expect(hook, "the scratch sweep is not wired into SessionStart").toContain("cleanupScratchDirs(");
     // Counted into the same total the hook prints, not logged and forgotten.
     expect(/deletedCount \+= sr\.removed\.length/.test(hook)).toBe(true);
+    // Gated on the directory the allowlist is derived from, the way the
+    // worktree block is gated on `.claude/worktrees`. Second security finding
+    // on the first push: an ungated sweep in a project with no `test/` runs
+    // with an empty allowlist and reports success, which is this repo's
+    // recurring shape.
+    expect(
+      /existsSync\(join\(PROJECT_ROOT, 'test'\)\)/.test(hook),
+      "the scratch sweep runs without checking it has anything to derive from",
+    ).toBe(true);
   });
 
   test("the hook stays a thin trigger — SC-371's 150-line budget", () => {
