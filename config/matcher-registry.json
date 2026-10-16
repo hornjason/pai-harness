@@ -64,10 +64,10 @@
   },
   {
     "name": "content-not-contains",
-    "syntax": "{file} must NOT contain [{item1}, {item2}, ...]",
-    "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|has\\s+no)\\s+\\[([^\\]]+)\\]",
+    "syntax": "{file} [must NOT contain|not contains|does not contain|has no] [{item1}, {item2}, ...]",
+    "regex": "^(\\S+)\\s+(?:must\\s+NOT\\s+contain|does\\s+not\\s+contain|not\\s+contains?|has\\s+no)\\s+\\[([^\\]]+)\\]",
     "example": "AGENTS.md must NOT contain [deprecated-section]",
-    "notes": "Checks that a file does NOT contain any of the listed items. Supports both 'must NOT contain' and 'has no' syntax."
+    "notes": "Checks that a file does NOT contain any of the listed items. #426 added the 'not contains' and 'does not contain' forms: the entry accepted only 'must NOT contain' and 'has no', while content-contains-compound's own example writes the second clause as 'and not contains [gh issue]'. So the single-clause form of the grammar this file documents was unmatchable, and SC-1469 — an absence claim about workflows/ship.js — generated no assertion AND was rewritten lossily by scaffold --fix on every run."
   },
   {
     "name": "count-threshold",
