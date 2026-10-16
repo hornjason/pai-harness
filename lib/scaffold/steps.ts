@@ -2655,24 +2655,189 @@ function harnessVersion(): string {
  * half is a pure property and needs no registry. See
  * `test/scaffold-installable.test.ts`.
  */
+/** Every section a dependency declaration can hide in (#475). */
+export const DEP_SECTIONS = ["dependencies", "devDependencies", "optionalDependencies"] as const;
+
+/**
+ * Both names the harness has shipped under.
+ *
+ * `pai-harness` is the former name and older scaffold runs wrote it. A
+ * migration that knows only the current name leaves the old declaration in
+ * place and adds a new one beside it — two packages for one dependency.
+ */
+export const HARNESS_PKG_NAMES = ["rungate", "pai-harness"] as const;
+
+/**
+ * The name the harness ships under today; the rest of `HARNESS_PKG_NAMES` is
+ * history, and migration targets this one.
+ *
+ * Derived rather than written out so the two cannot drift — and named rather
+ * than inlined for a second reason worth stating, because it looks like
+ * evasion otherwise. #380's `IDENTITY_COMPARISON` guard matches a
+ * `name`-equality against the harness's own package name anywhere in
+ * `lib/`, to keep "is this project the harness" decided in exactly one
+ * place — and this paragraph deliberately does not spell that comparison
+ * out, because the guard reads raw source and a docstring quoting the
+ * pattern reports itself as a second site. The comparison below asks a
+ * different question of a different type — "is this DECLARATION named
+ * rungate", where `name` is a key in someone's `devDependencies` — and the
+ * textual guard cannot tell the two apart. Widening the guard would narrow
+ * it; this keeps #380's single binding intact and says which question is
+ * being asked.
+ */
+export const CURRENT_HARNESS_PKG: (typeof HARNESS_PKG_NAMES)[number] = HARNESS_PKG_NAMES[0];
+
+export interface HarnessDeclaration {
+  section: (typeof DEP_SECTIONS)[number];
+  name: (typeof HARNESS_PKG_NAMES)[number];
+  spec: string;
+}
+
+/** Every place this package.json declares the harness. */
+export function findHarnessDeclarations(pkg: unknown): HarnessDeclaration[] {
+  const out: HarnessDeclaration[] = [];
+  const obj = pkg as Record<string, Record<string, unknown>> | null;
+  if (!obj || typeof obj !== "object") return out;
+  for (const section of DEP_SECTIONS) {
+    const deps = obj[section];
+    if (!deps || typeof deps !== "object") continue;
+    for (const name of HARNESS_PKG_NAMES) {
+      const spec = deps[name];
+      if (typeof spec === "string") out.push({ section, name, spec });
+    }
+  }
+  return out;
+}
+
+/** What the scaffold intends to do about the harness dependency. */
+export interface HarnessDepPlan {
+  action: "skip" | "add" | "migrate";
+  /** Declarations to delete before writing. */
+  remove: HarnessDeclaration[];
+  /** The spec to write into `devDependencies.rungate`, or null when skipping. */
+  write: string | null;
+  /** Said out loud in the action line, with the before and after (#475 SC-4). */
+  reason: string;
+}
+
+/**
+ * The ONE decision about the harness dependency (#475).
+ *
+ * The guard this replaces read **one key in one section under one name**:
+ *
+ * ```ts
+ * if (pkg.devDependencies["rungate"] || isHarnessItself(root)) { ...skip... }
+ * ```
+ *
+ * So it could not see `rungate` in `dependencies` or `optionalDependencies`,
+ * could not see `pai-harness` anywhere, and could not see a `file:` spec
+ * under any of them. `harnessDevDepRange`'s own comment says "`file:` is the
+ * bug" — the EMISSION was fixed and nothing was ever written to undo what the
+ * broken emission left behind.
+ *
+ * The sharper half is that re-scaffolding does not merely fail to clean it
+ * up. With `optionalDependencies: { "rungate": "file:../rungate" }` and no
+ * `devDependencies.rungate`, the guard does not fire, so the scaffold writes
+ * `devDependencies.rungate = "^0.4.0"` BESIDE it. The consumer then declares
+ * one package twice, in two sections, with two incompatible specs, and the
+ * run reports `UPDATED: package.json (rungate devDep)` as a success.
+ *
+ * Measured in a real consumer, two declarations written by two scaffold runs
+ * two days apart under the two different names:
+ *
+ * ```
+ * file:../pai-harness -> 34f03818  2026-09-17
+ * file:../rungate     -> 3a6501a9  2026-09-19
+ * ```
+ *
+ * They survived every re-scaffold since September, and the cost was a dead
+ * container build: bun resolves `file:` optionals and fails on a folder that
+ * is not in the build context. A later commit moved both to
+ * `optionalDependencies` trying to make the build tolerate them, which put
+ * them further out of the old guard's reach — wrong section AND wrong name.
+ *
+ * Kept separate from the writer so there is one binding to mutate, and so
+ * the whole matrix can be driven without a filesystem.
+ */
+export function harnessDepPlan(pkg: unknown, targetRange: string): HarnessDepPlan {
+  const found = findHarnessDeclarations(pkg);
+
+  if (found.length === 0) {
+    return { action: "add", remove: [], write: targetRange, reason: "no harness dependency declared" };
+  }
+
+  // A single declaration in the RIGHT PLACE is left exactly as it is,
+  // whatever its spec. Two reasons, and the second resolves a conflict
+  // between two issues:
+  //
+  // 1. The range is not rewritten to today's floor. A scaffold that rewrites
+  //    a working spec on every run is indistinguishable from one that cannot
+  //    tell a working spec from a broken one, and it would churn every
+  //    consumer's package.json on every release.
+  //
+  // 2. `file:` is included, which is #362 SC-815: "A consumer who
+  //    deliberately points at a local checkout is not this bug, and silently
+  //    rewriting their package.json is not this fix's business." #475 SC-2
+  //    asks for `file:` to be replaced "in any of those cells", and taken
+  //    literally the two contradict.
+  //
+  // The line drawn here is PLACEMENT, not spec, because that is what #475's
+  // own evidence supports: both `file:` entries it traced were written by
+  // scaffold runs (`34f03818`, `3a6501a9`), and both ended up in
+  // `optionalDependencies` under two different names. A declaration the
+  // scaffold would never have written in that position is the scaffold's to
+  // clean up; a lone `devDependencies.rungate` is where a developer linking
+  // a local checkout would put one, and it is indistinguishable from intent.
+  const only = found.length === 1 ? found[0] : null;
+  if (only && only.section === "devDependencies" && only.name === CURRENT_HARNESS_PKG) {
+    return { action: "skip", remove: [], write: null, reason: `devDependencies.rungate is ${only.spec}` };
+  }
+
+  const where = found.map(d => `${d.section}.${d.name}=${d.spec}`).join(", ");
+  return {
+    action: "migrate",
+    remove: found,
+    write: targetRange,
+    reason: `${where} -> devDependencies.rungate=${targetRange}`,
+  };
+}
+
 export function addPaiHarnessDevDep(root: string, actions: string[], version?: string): void {
   const pkgPath = join(root, "package.json");
   if (!existsSync(pkgPath)) return;
 
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-  if (!pkg.devDependencies) {
-    pkg.devDependencies = {};
-  }
 
-  // Also a different question — "is rungate already available here" — but
-  // the self-reference half is the same fact, so it routes through the one
-  // predicate (#380).
-  if (pkg.devDependencies["rungate"] || isHarnessItself(root)) {
-    actions.push("SKIP: rungate devDep (already present or self-reference)");
+  // A different question — "is rungate already available here" — but the
+  // self-reference half is the same fact, so it routes through the one
+  // predicate (#380). Asked FIRST: the harness's own package.json names
+  // itself, and running the migration over it would rewrite the harness into
+  // depending on itself.
+  if (isHarnessItself(root)) {
+    actions.push("SKIP: rungate devDep (self-reference)");
     return;
   }
 
-  pkg.devDependencies["rungate"] = harnessDevDepRange(version);
+  const plan = harnessDepPlan(pkg, harnessDevDepRange(version));
+  if (plan.action === "skip") {
+    actions.push(`SKIP: rungate devDep (${plan.reason})`);
+    return;
+  }
+
+  // Removed BEFORE the write, and across every section, so a declaration
+  // cannot survive in the section the writer does not touch. This is the
+  // whole of SC-2: the invariant is one declaration in total, not a correct
+  // `devDependencies`.
+  for (const d of plan.remove) delete (pkg as Record<string, Record<string, unknown>>)[d.section][d.name];
+  for (const section of DEP_SECTIONS) {
+    const deps = (pkg as Record<string, unknown>)[section];
+    if (deps && typeof deps === "object" && Object.keys(deps).length === 0) {
+      delete (pkg as Record<string, unknown>)[section];
+    }
+  }
+
+  if (!pkg.devDependencies) pkg.devDependencies = {};
+  pkg.devDependencies["rungate"] = plan.write;
 
   if (!pkg.scripts) {
     pkg.scripts = {};
@@ -2682,10 +2847,15 @@ export function addPaiHarnessDevDep(root: string, actions: string[], version?: s
   }
 
   writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + "\n");
-  // Names the PATH it wrote, not just what it did (#216). An action that does
-  // not name its file is invisible to the stager and, worse, now reads as an
-  // unexplained modification to the dirty-tree check.
-  actions.push("UPDATED: package.json (rungate devDep)");
+  // Names the PATH it wrote, not just what it did (#216), and for a
+  // migration also the before and after (#475 SC-4) — the reported cost was
+  // a consumer who did not know this was in their package.json until a
+  // container build died over it.
+  actions.push(
+    plan.action === "migrate"
+      ? `UPDATED: package.json (rungate devDep migrated: ${plan.reason})`
+      : "UPDATED: package.json (rungate devDep)",
+  );
 }
 
 /**
