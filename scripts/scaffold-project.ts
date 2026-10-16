@@ -14,6 +14,7 @@ import { reportScaffoldActions } from "../lib/scaffold/steps";
 import { runScaffoldWriteSteps } from "../lib/scaffold/write-steps";
 import { cloneForRehearsal, discardRehearsal, rehearsalNotice } from "../lib/scaffold/rehearsal";
 import type { ProjectType } from "../lib/generators/types";
+import { parseProfile, STEPS_NOT_MINIMAL, type ScaffoldProfile } from "../lib/scaffold/profiles";
 
 // ── CLI argument parsing ───────────────────────────────────────
 
@@ -24,9 +25,13 @@ const typeFlag = args.find(arg => arg.startsWith('--type='))?.split('=')[1] ||
 const fix = args.includes('--fix');
 // #216: both default false — re-scaffold is how a consumer takes an UPDATE.
 const force = args.includes('--force'), commit = args.includes('--commit');
+// #449. Orthogonal to --type: that selects WHICH generators run, this selects
+// whether the harness-only ones run at all.
+const profileFlag = args.find(arg => arg.startsWith('--profile='))?.split('=')[1] ||
+                 (args.indexOf('--profile') !== -1 ? args[args.indexOf('--profile') + 1] : null);
 
 if (!projectPath) {
-  console.error("Usage: scaffold-project.ts /path/to/project [--type code|workflow] [--fix] [--force] [--commit]");
+  console.error("Usage: scaffold-project.ts /path/to/project [--type code|content|infra|workflow] [--profile full|minimal] [--fix] [--force] [--commit]");
   process.exit(1);
 }
 
@@ -46,6 +51,16 @@ if (typeFlag && !['code', 'content', 'infra', 'workflow'].includes(typeFlag)) {
   process.exit(1);
 }
 
+// parseProfile throws rather than defaulting: a typo'd --profile=minimial that
+// silently scaffolded the full harness would look like the flag was honoured.
+let profile: ScaffoldProfile;
+try {
+  profile = parseProfile(profileFlag);
+} catch (err) {
+  console.error(`ERROR: ${(err as Error).message}`);
+  process.exit(1);
+}
+
 // ── Main ───────────────────────────────────────────────────────
 
 const actions: string[] = [];
@@ -55,10 +70,11 @@ const projectName = basename(projectPath);
 console.log(`Detected project type: ${projectType}`);
 console.log(`Project: ${projectName}`);
 console.log(`Path: ${projectPath}`);
+console.log(`Profile: ${profile}${profile === "minimal" ? ` — not written: ${[...STEPS_NOT_MINIMAL.keys()].join(", ")}` : ""}`);
 console.log("---");
 
 if (fix) {
-  runScaffoldWriteSteps(projectPath, projectType, actions, { force, commit });
+  runScaffoldWriteSteps(projectPath, projectType, actions, { force, commit, profile });
 } else {
   // Audit does not PREDICT what --fix would do; it does it, against a clone,
   // and reports what the real steps said (#398). The previous audit branch was
@@ -78,7 +94,7 @@ if (fix) {
   }
   try {
     console.log(rehearsalNotice(rehearsal));
-    runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true });
+    runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true, profile });
   } finally {
     discardRehearsal(rehearsal);
   }
