@@ -37,6 +37,7 @@ import {
   NPM_REGISTRY,
   POSTFLIGHT_BUDGET_MS,
   POSTFLIGHT_DELAY_MS,
+  parsePublishReceipt,
   postflightAttempts,
   postflightVerdict,
   preflightRefusal,
@@ -986,5 +987,259 @@ describe("#364 SC-832: the pipeline cannot report a release it did not make", ()
     expect(steps).toContain(`[["ci.yml", ciYml], ["gates.yml", gatesYml]] as const`);
     expect(steps, "the scaffold writes release.yml — it is no longer caller-owned")
       .not.toContain("release.yml");
+  });
+});
+
+/**
+ * #472 — the postflight's budget was a guess against an asynchronous pipeline
+ * that announces itself.
+ *
+ * Three consecutive releases published successfully and were reported as
+ * failures: 0.3.0, 0.4.0, 0.4.1. #407 widened the budget; #445 fixed the
+ * wording. Both left the mechanism alone — a blind poll of an eventually
+ * consistent document. 0.4.1 missed by 48 seconds:
+ *
+ * | Event | Time (UTC) |
+ * |---|---|
+ * | `npm publish` returns `+ rungate@0.4.1` | 12:41:09 |
+ * | postflight gives up, 25 reads over 120s | 12:43:10 |
+ * | the registry serves 0.4.1 | 12:43:58 |
+ *
+ * Raising the budget to 180s catches that one and says nothing about the
+ * next, which is the objection #445 raised against the budget it replaced.
+ *
+ * The evidence was already on the page. npm prints `+ rungate@0.4.1` — a
+ * receipt written synchronously at publish time — and in the same output
+ * says the packument will lag. The fix reads the receipt.
+ *
+ * **Two deciders, each with an input only it can reach.** The receipt is the
+ * only thing that sees a publish npm never accepted while the registry still
+ * serves an older version; the packument is the only thing that sees a
+ * receipt for a version that never landed. The cases below are written as
+ * pairs for exactly that reason.
+ *
+ * What was broken to prove it, run and counted rather than asserted, over
+ * `test/release-guard.test.ts` (69 tests):
+ *
+ * | Mutation | Red | Predicted |
+ * |---|---|---|
+ * | `receipt` nulled on entry to `postflightDecision` — #472 restored | 5 | 5 |
+ * | the PROPAGATION PENDING branch removed | 1 | 1 |
+ * | the registry consulted BEFORE the receipt | 3 | 1 |
+ * | the receipt regex unanchored from the start of a line | 1 | 1 |
+ * | an unreadable `--publish-log` swallowed instead of refused | 1 | 1 |
+ * | `propagationWarned` dropped from the waiver condition | 1 | 1 |
+ * | the ANSI strip removed from the receipt parser | 1 | 1 |
+ *
+ * None is left in the tree; all were run and reverted. The last two rows are
+ * the security review's findings on the first commit, and the first row rose
+ * from 4 to 5 because one more case now exercises the receipt path.
+ *
+ * The ordering row is an impure mutation and the extra two reds are
+ * collateral, not coverage: it was performed by returning early with the
+ * message `"early"`, which also destroys the two cases that assert what a
+ * confirmed release SAYS. The ordering property itself is held by exactly
+ * one case — `no receipt refuses EVEN WHEN the registry serves the version`
+ * — which is the predicted number. Recorded rather than quietly rounded,
+ * because a row whose count comes from the wrong cases is how a mutation
+ * battery starts certifying itself.
+ */
+describe("#472: the publish receipt answers what the packument cannot", () => {
+  /** A captured publish log on disk, as the workflow's `tee` would leave it. */
+  const publishLog = (body: string): string => {
+    const dir = mkdtempSync(join(tmpdir(), "rungate-relog-"));
+    scratch.push(dir);
+    const path = join(dir, "publish.log");
+    writeFileSync(path, body);
+    return path;
+  };
+
+  /** The verbatim tail of the v0.4.1 publish step. */
+  const REAL_OUTPUT = [
+    "npm notice 📦  rungate@0.4.1",
+    "npm notice name:          rungate",
+    "npm notice version:       0.4.1",
+    "npm notice publish Signed provenance statement with source and build information from GitHub Actions",
+    "npm notice publish Provenance statement published to transparency log: https://search.sigstore.dev/?logIndex=3279500809",
+    "npm notice Your package is being processed and may take a few minutes to become available.",
+    "+ rungate@0.4.1",
+  ].join("\n");
+
+  const STALE = { versions: { "0.4.0": {} }, "dist-tags": { latest: "0.4.0" } };
+  const SERVED = { versions: { "0.4.0": {}, "0.4.1": {} }, "dist-tags": { latest: "0.4.1" } };
+
+  const postflight = (version: string, packument: unknown, extra: string[] = []) => [
+    "--phase", "postflight",
+    "--root", fakeRoot(version),
+    "--budget-ms", "0",
+    "--registry", fakeRegistry(packument),
+    ...extra,
+  ];
+
+  test("the receipt is read out of real npm output, and prose is not mistaken for it", () => {
+    const got = parsePublishReceipt("rungate", REAL_OUTPUT);
+    expect(got.version).toBe("0.4.1");
+    expect(got.propagationWarned, "npm's own lag warning was not noticed").toBe(true);
+
+    // The `npm notice` lines name the package and version repeatedly. Only a
+    // line that STARTS with `+ ` is the receipt; a detector that matched
+    // anywhere would read a failed publish's notices as a success.
+    const noticesOnly = REAL_OUTPUT.split("\n").filter(l => !l.startsWith("+ ")).join("\n");
+    expect(noticesOnly, "the fixture lost the lines that make this a real test")
+      .toContain("rungate");
+    expect(parsePublishReceipt("rungate", noticesOnly).version).toBeNull();
+    expect(parsePublishReceipt("rungate", "").version).toBeNull();
+    expect(parsePublishReceipt("rungate", "").bytes).toBe(0);
+
+    // A scoped name carries regex metacharacters, and an unescaped `/` or `.`
+    // would make the pattern match the wrong package.
+    expect(parsePublishReceipt("@acme/pkg.js", "+ @acme/pkg.js@1.0.0").version).toBe("1.0.0");
+    expect(parsePublishReceipt("@acme/pkg.js", "+ @acmeXpkgYjs@1.0.0").version).toBeNull();
+  });
+
+  test("THE 0.4.1 CASE: a receipt turns an exhausted budget into a pass", () => {
+    // The exact reading that failed three releases: npm accepted the publish,
+    // the packument had not caught up. The job now passes, and says loudly
+    // that it is standing on the receipt rather than on a registry read.
+    const real = run(SCRIPT, postflight("0.4.1", STALE, ["--publish-log", publishLog(REAL_OUTPUT)]));
+    expect(real.code, "a published release was still reported as a failure").toBe(0);
+    expect(real.out).toContain("PROPAGATION PENDING");
+    expect(real.out, "a fail-open that does not announce itself").toContain(
+      "NOT a confirmed read of the registry",
+    );
+    expect(real.out).toContain("npm view rungate@0.4.1 version");
+  }, 180_000);
+
+  test("WITHOUT the receipt the same reading still stops the job", () => {
+    // The pair for the case above, and the thing that keeps this able to
+    // fail: delete `--publish-log` from the workflow and the guard is back to
+    // #445's behaviour exactly. The two runs differ in ONE argument.
+    const real = run(SCRIPT, postflight("0.4.1", STALE));
+    expect(real.code, "an unconfirmed publish reported success").toBe(2);
+    expect(real.out).toContain("RELEASE UNCONFIRMED");
+  }, 180_000);
+
+  test("a publish step that produced no receipt is REFUSED, and the mutant is not", () => {
+    // The thing the postflight exists for: a skipped `if:`, a swallowed
+    // error, a duplicate npm rejected. All three leave output with no `+`
+    // line, and all three are now an ESTABLISHED failure rather than an
+    // ambiguous one — exit 1, not exit 2.
+    const args = postflight("0.4.1", STALE, [
+      "--publish-log",
+      publishLog("npm error code E403\nnpm error 403 Forbidden - PUT https://registry.npmjs.org/rungate"),
+    ]);
+    const real = run(SCRIPT, args);
+    expect(real.code, "a publish that never happened was not refused").toBe(1);
+    expect(real.out).toContain("RELEASE REFUSED");
+    expect(real.out).toContain("produced no receipt");
+    expect(run(mutantScript(), args).code, "the refusal has a second exit path").toBe(0);
+  }, 180_000);
+
+  test("no receipt refuses EVEN WHEN the registry serves the version", () => {
+    // The input only the receipt can reach, and the reason it is checked
+    // before the registry. A version the registry already serves — published
+    // last month — makes the packument read clean over a publish step that
+    // did nothing today. That is #364's whole failure mode, and the poll
+    // cannot see it.
+    const real = run(SCRIPT, postflight("0.4.1", SERVED, ["--publish-log", publishLog("npm error E403")]));
+    expect(real.code, "a no-op publish passed because the version was already there").toBe(1);
+    expect(real.out).toContain("produced no receipt");
+  }, 180_000);
+
+  test("a receipt for the wrong version is refused", () => {
+    const real = run(SCRIPT, postflight("0.4.1", STALE, [
+      "--publish-log", publishLog("+ rungate@0.3.9"),
+    ]));
+    expect(real.code).toBe(1);
+    expect(real.out).toContain("published rungate@0.3.9");
+    expect(real.out).toContain("this tree is 0.4.1");
+  }, 180_000);
+
+  test("a receipt the guard was told to read and could not is refused, not ignored", () => {
+    // Silent Default Substitution, as `.claude/rules/config-access.md` names
+    // it. An ABSENT flag means "no receipt was asked for" and falls back; an
+    // absent FILE means the reading the workflow asked for could not be
+    // taken, and treating those the same is how a broken `tee` would quietly
+    // return the guard to guessing.
+    const real = run(SCRIPT, postflight("0.4.1", STALE, [
+      "--publish-log", "/nope/no-such-publish.log",
+    ]));
+    expect(real.code).toBe(1);
+    expect(real.out).toContain("could not be read");
+  }, 180_000);
+
+  test("a receipt AND a serving registry is the ordinary confirmed release", () => {
+    // The positive control. A decision function that refused everything would
+    // satisfy every case above.
+    const real = run(SCRIPT, postflight("0.4.1", SERVED, [
+      "--publish-log", publishLog(REAL_OUTPUT),
+    ]));
+    expect(real.code, "a clean release was refused").toBe(0);
+    expect(real.out).toContain("postflight OK");
+    expect(real.out).toContain("the registry serves rungate@0.4.1");
+    expect(real.out, "a confirmed read was reported as a pending one")
+      .not.toContain("PROPAGATION PENDING");
+  }, 180_000);
+
+  test("the registry read still decides a release with no receipt available", () => {
+    // The input only the packument can reach. With no log the guard has
+    // nothing but the registry, and it must still tell served from absent —
+    // otherwise the fall-back path is itself a check that cannot fail.
+    expect(run(SCRIPT, postflight("0.4.1", SERVED)).code, "served").toBe(0);
+    expect(run(SCRIPT, postflight("0.4.1", STALE)).code, "absent").toBe(2);
+  }, 180_000);
+
+  test("ANSI colour does not hide the receipt", () => {
+    // npm colourises `+ pkg@version` whenever it believes it is on a TTY, and
+    // plenty of CI images set FORCE_COLOR. With colour the anchor missed, the
+    // guard found no receipt and REFUSED a release that published perfectly —
+    // #472's own symptom arriving through the fix for #472. Found by the
+    // security review of the first commit.
+    const coloured = "\u001b[32m+ rungate@0.4.1\u001b[39m";
+    expect(parsePublishReceipt("rungate", coloured).version).toBe("0.4.1");
+    expect(parsePublishReceipt("rungate", "  + rungate@0.4.1").version,
+      "an indented receipt was unreadable").toBe("0.4.1");
+    // Trailing content is still NOT a receipt: a dry run is a different act.
+    expect(parsePublishReceipt("rungate", "+ rungate@0.4.1 (dry-run)").version).toBeNull();
+    // The lag notice must survive colouring too, since it now decides.
+    expect(parsePublishReceipt("rungate",
+      "\u001b[33mnpm notice\u001b[39m Your package is being processed and may take a few minutes.")
+      .propagationWarned).toBe(true);
+  });
+
+  test("a receipt WITHOUT npm's lag notice does not waive the registry read", () => {
+    // The control the security review found inert. `propagationWarned` was
+    // parsed, carried and printed while deciding nothing, so a receipt alone
+    // waived the registry check — and since the workflow always passes
+    // --publish-log, the live pipeline could no longer fail here at all.
+    const bare = publishLog("+ rungate@0.4.1");
+    const real = run(SCRIPT, postflight("0.4.1", STALE, ["--publish-log", bare]));
+    expect(real.code, "a receipt alone waived the registry read").toBe(2);
+    expect(real.out).toContain("RELEASE UNCONFIRMED");
+    expect(real.out).toContain("did NOT print");
+
+    // ...and WITH the notice the same reading passes. One line apart.
+    const warned = publishLog(
+      "npm notice Your package is being processed and may take a few minutes to become available.\n+ rungate@0.4.1",
+    );
+    expect(run(SCRIPT, postflight("0.4.1", STALE, ["--publish-log", warned])).code).toBe(0);
+  }, 180_000);
+
+  test("the workflow captures the publish output and hands it to the guard", () => {
+    const src = workflowSteps(readFileSync(WORKFLOW, "utf-8"));
+    expect(src, "the publish output is not captured, so there is no receipt to read")
+      .toContain('tee "$RUNNER_TEMP/publish.log"');
+    expect(src, "the postflight is not given the receipt")
+      .toContain('--publish-log "$RUNNER_TEMP/publish.log"');
+    // Without pipefail `tee` succeeds and npm's failure is lost, which is
+    // this workflow's named failure mode arriving through the fix for it.
+    const publishStep = src.slice(src.indexOf("- name: Publish"), src.indexOf("--phase postflight"));
+    expect(publishStep, "a failed publish would exit 0 through the pipe")
+      .toContain("set -euo pipefail");
+    // The log path is a runner-provided variable, not interpolated workflow
+    // input: `${{ }}` inside a run block is the injection this repo's own
+    // header warns about.
+    expect(publishStep, "the log path is interpolated rather than read from the environment")
+      .not.toMatch(/\$\{\{/);
   });
 });
