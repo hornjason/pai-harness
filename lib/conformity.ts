@@ -3231,6 +3231,65 @@ export interface SourceEvidence {
   skipped: string[];
 }
 
+/**
+ * Directories that can never hold the project's own source, so a decline is
+ * not worth recording. `.git` and `node_modules` are the whole list, and
+ * both were cluttering the waiver message with facts true of every repo.
+ */
+const NEVER_PROJECT_SOURCE = new Set([".git", "node_modules"]);
+
+/**
+ * Scripts the config scan cannot read but a project can absolutely be built
+ * from. A `lib/loader.py` or a `hooks/run.sh` doing a direct config read is
+ * invisible to `SOURCE_EXTENSIONS` and therefore to CONFIG-1 — which is a
+ * defensible limit for a TypeScript check, and an indefensible silence.
+ */
+const SCRIPT_LIKE = /\.(py|rb|sh|bash|zsh|fish|pl|php|lua|r|go|rs|java|kt|swift|ex|exs)$/i;
+
+/**
+ * Does this directory actually contain code?
+ *
+ * The waiver message lists what the walk declined, and sec-500 measured what
+ * that list looks like on a realistic repo: nine entries, of which the five
+ * that survived `slice(0, 5)` were `.husky/`, `dist/`, `node_modules/`,
+ * `.claude/` and `.github/` — all true of every repo in existence — while
+ * `build/`, the one directory actually holding the config read, was inside
+ * ", and 4 more". The reader was told everything except the thing that
+ * explained their waiver. Worse, the order is `readdir` order, so WHICH five
+ * survived differed per machine: a consumer and CI could see different lists.
+ *
+ * Widening the slice would print more noise. This removes the noise instead:
+ * a declined directory is only worth naming if there was something in it to
+ * decline. "I declined to look at code that is really there" is the only
+ * version of this list worth printing.
+ *
+ * Bounded, because this runs inside a guard and a guard that walks
+ * `node_modules` is its own bug. On exhausting the budget it returns TRUE —
+ * recording an uninteresting directory costs a line of output, while
+ * skipping an interesting one is the silence this whole field exists to fix.
+ */
+function containsSourceFile(dir: string, budget = { reads: 120 }): boolean {
+  const stack = [dir];
+  while (stack.length > 0) {
+    if (budget.reads-- <= 0) return true;
+    const d = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      return true;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) {
+        if (!NEVER_PROJECT_SOURCE.has(e.name)) stack.push(join(d, e.name));
+      } else if (SOURCE_EXTENSIONS.test(e.name) || SCRIPT_LIKE.test(e.name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function projectSourceEvidence(root: string): SourceEvidence {
   const examples: string[] = [];
   const unreadable: string[] = [];
@@ -3277,8 +3336,13 @@ export function projectSourceEvidence(root: string): SourceEvidence {
     }
     for (const e of entries) {
       const childRelEarly = rel ? `${rel}/${e.name}` : e.name;
+      // Never recorded: these cannot hold the project's own source, so
+      // naming them is pure noise in the waiver message.
+      if (NEVER_PROJECT_SOURCE.has(e.name)) continue;
       if (SOURCE_SKIP_DIRS.has(e.name)) {
-        skipped.push(`${childRelEarly}/ (build output or dependency)`);
+        if (containsSourceFile(join(dir, e.name))) {
+          skipped.push(`${childRelEarly}/ (build output or dependency)`);
+        }
         continue;
       }
       // Tooling lives in dot-directories — `.github/scripts/release.js`,
@@ -3287,7 +3351,9 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // silent widening: a release script is not the project's source, and a
       // content project that has one is not a project CONFIG-1 can measure.
       if (e.name.startsWith(".")) {
-        skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
+        if (containsSourceFile(join(dir, e.name))) {
+          skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
+        }
         continue;
       }
       const childRel = childRelEarly;
@@ -3321,6 +3387,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       }
       if (isDir) {
         stack.push([abs, childRel]);
+      } else if (!SOURCE_EXTENSIONS.test(e.name) && SCRIPT_LIKE.test(e.name)) {
+        // Code in a language this check cannot read. sec-500's point, and
+        // the reason keying on "extension-less" would have been too narrow:
+        // a project whose only config-reading code is `lib/loader.py` or
+        // `bin/run.sh` got `skipped: []` and the fallback sentence "the walk
+        // found no files of any kind that it counts as source" — which is
+        // LITERALLY TRUE, and that is exactly what would have let it outlive
+        // the fix. Anywhere in the tree, not just the scan dirs, because
+        // `bin/` is not a scan dir and `bin/run.sh` was the example.
+        skipped.push(`${childRel} (${e.name.slice(e.name.lastIndexOf("."))} — not a language this check reads)`);
       } else if (
         !SOURCE_EXTENSIONS.test(e.name)
         && !e.name.includes(".")
@@ -3386,6 +3462,21 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       }
     }
   }
+  // Ranked, then alphabetical. `readdir` order is neither, so WHICH entries
+  // survived the message's truncation differed per machine and per tree —
+  // sec-500's point that a consumer and CI could be shown different lists,
+  // which makes the message unciteable in a bug report. Ranking also puts
+  // the classes that can plausibly hold first-party code above the ones
+  // that cannot, so the truncation cuts the least useful entries first
+  // rather than arbitrary ones.
+  const rank = (entry: string) =>
+    /\((?:symlink|directory resolving)/.test(entry) ? 0     // escaped the project
+      : /\(extension-less|not a language this check reads/.test(entry) ? 1  // code, unparseable
+      : /^(?:build|vendor)\//.test(entry) ? 2                 // generated-from-source
+      : /\(dot-directory/.test(entry) ? 3                      // tooling, can hold scripts
+      : /\(test (?:file|directory)/.test(entry) ? 4
+      : 5;                                                   // dist, coverage, .d.ts
+  skipped.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   return { found: examples.length > 0, examples, unreadable, skipped };
 }
 
@@ -3432,11 +3523,13 @@ export function unmeasuredScanReason(
   // anywhere in the tree", which is false for every skip class and is this
   // issue's own headline complaint — a true-sounding sentence the walk never
   // established — reintroduced in the waiver that #500 added.
+  const SHOWN = 8;
   const declined =
     evidence.skipped.length > 0
-      ? ` The walk did not count ${evidence.skipped.slice(0, 5).join(", ")}` +
-        `${evidence.skipped.length > 5 ? `, and ${evidence.skipped.length - 5} more` : ""}` +
-        `, so this is "no source this check counts", not "no files here".`
+      ? ` It declined ${evidence.skipped.length} entr${evidence.skipped.length === 1 ? "y" : "ies"}` +
+        ` that do contain code: ${evidence.skipped.slice(0, SHOWN).join(", ")}` +
+        `${evidence.skipped.length > SHOWN ? `, and ${evidence.skipped.length - SHOWN} more` : ""}` +
+        `. So this is "no source this check counts", not "no files here".`
       : ` The walk found no files of any kind that it counts as source.`;
   return (
     `UNMEASURED: ${label} read no files because this project has no ${sourceKind}.` +

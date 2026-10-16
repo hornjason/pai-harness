@@ -1084,6 +1084,97 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
       .toContain("type declarations");
   });
 
+  test("N-1: the entry that explains the waiver is not truncated out by boilerplate", () => {
+    // sec-500 measured the first version of `skipped[]` on a realistic repo:
+    // nine entries, and the five that survived `slice(0, 5)` were `.husky/`,
+    // `dist/`, `node_modules/`, `.claude/` and `.github/` — all true of
+    // every repo in existence — while `build/`, the directory actually
+    // holding the config read, was inside ", and 4 more".
+    const root = project({ "README.md": "# docs" });
+    for (const d of [".husky", "dist", "node_modules", ".claude", ".github", ".git", ".vscode"]) {
+      mkdirSync(join(root, d), { recursive: true });
+      writeFileSync(join(root, d, "f.js"), "export const x = 1;\n");
+    }
+    mkdirSync(join(root, "build"), { recursive: true });
+    writeFileSync(join(root, "build", "release.ts"), READS_CONFIG);
+
+    const e = projectSourceEvidence(root);
+    const msg = unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts") ?? "";
+    expect(msg, "the directory holding the config read is not in the message")
+      .toContain("build/");
+    expect(e.skipped.some(x => x.startsWith(".git/")), "`.git` can never be project source")
+      .toBe(false);
+    expect(
+      e.skipped.some(x => x.startsWith("node_modules/")),
+      "`node_modules` can never be project source",
+    ).toBe(false);
+    // The TOTAL is always stated, which is what stops truncation hiding the
+    // magnitude: a reader who sees "declined 20 entries" and five names
+    // knows to go looking. Without it, a tightened cap would silently shrink
+    // the message with nothing saying so.
+    expect(msg, "the message does not say how many entries were declined")
+      .toContain(`declined ${e.skipped.length} entr`);
+  });
+
+  test("N-1: an EMPTY declined directory is not recorded at all", () => {
+    // The other half of the noise fix, and the one that makes the list
+    // mean something: "I declined to look at code that is really there".
+    // A `dist/` with nothing in it is not a fact about this project.
+    const root = project({ "README.md": "# docs" });
+    mkdirSync(join(root, "dist"), { recursive: true });
+    writeFileSync(join(root, "dist", "notes.txt"), "no code here\n");
+    expect(
+      projectSourceEvidence(root).skipped,
+      "an empty declined directory was listed as if it hid something",
+    ).toEqual([]);
+  });
+
+  test("N-1: the decline list is ordered deterministically, not by readdir", () => {
+    // `readdir` order is neither alphabetical nor creation order, so WHICH
+    // entries survived truncation differed per machine — a consumer and CI
+    // could be shown different lists, which makes the message uncitable in
+    // a bug report.
+    // The first version of this test built the same tree twice and compared
+    // the two lists. It was VACUOUS and the battery said so — removing the
+    // sort entirely was 0 red, because two trees built by the same code in
+    // the same order give the same `readdir` order, so the comparison held
+    // whether or not anything sorted. It asserted reproducibility on one
+    // machine, which is the one thing that was never in doubt.
+    //
+    // The property is an ORDER, so the order is what gets asserted: ranked
+    // first (entries that can plausibly hold first-party code before ones
+    // that cannot), alphabetical within a rank.
+    const root = project({ "README.md": "# docs" });
+    for (const d of [".zeta", ".alpha", "dist", "coverage", "build"]) {
+      mkdirSync(join(root, d), { recursive: true });
+      writeFileSync(join(root, d, "f.js"), "export const x = 1;\n");
+    }
+    expect(projectSourceEvidence(root).skipped, "the decline list is not in ranked order")
+      .toEqual([
+        "build/ (build output or dependency)",
+        ".alpha/ (dot-directory, tooling)",
+        ".zeta/ (dot-directory, tooling)",
+        "coverage/ (build output or dependency)",
+        "dist/ (build output or dependency)",
+      ]);
+  });
+
+  test("N-2: code in a language this check cannot read is recorded, not waived silently", () => {
+    // Keying the rule on "extension-less" would have missed these, and the
+    // fallback sentence — "the walk found no files of any kind that it
+    // counts as source" — is LITERALLY TRUE for them, which is exactly what
+    // would have let the gap outlive the fix. `bin/` is not a scan dir, so
+    // this is keyed on the file rather than its directory.
+    const root = project({ "lib/loader.py": "x = 1\n", "bin/run.sh": "echo hi\n", "README.md": "# d" });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a .py became TypeScript").toBe(false);
+    expect(e.skipped.some(x => x.includes("loader.py")), `skipped was [${e.skipped.join(", ")}]`)
+      .toBe(true);
+    expect(e.skipped.some(x => x.includes("run.sh"))).toBe(true);
+    expect(unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts"))
+      .toContain("not a language this check reads");
+  });
+
   test("a real source file is still found, and is NOT a decline", () => {
     // The other direction, and the one that matters most: none of this may
     // make an ordinary project waivable.
