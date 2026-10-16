@@ -725,32 +725,62 @@ been decorative:**
 - [x] SC-1688: test/test-census.test.ts contains [the first reading of a run is not a pass] — nothing to compare and nothing removed are different verdicts, asserted beside both real answers
 - [x] SC-1689: test/test-census.test.ts contains [a refused round does not bank the reduced census] — and restoring the test clears it, because a guard with no way out gets deleted rather than satisfied
 
-#### What was broken to prove SC-1684..SC-1689
+#### What was broken to prove SC-1684..SC-1697
 
-Run and counted over `test/test-census.test.ts` (7 tests, 0 red), predicted
-before each run.
+Re-run against the final tree, over `test/test-census.test.ts` (15 tests),
+with `test/test-baseline-unmeasured.test.ts` and
+`test/ship-local-env-clause.test.ts` alongside for the shared rows (0 red
+before each). Predicted before each run.
 
 | Mutation | Predicted | Red |
 |---|---|---|
 | the counter ignores `.skip` and `.todo` | 2 | 2 |
 | `censusRegressions` skips the deleted-file case | 1 | 1 |
-| the first reading reports `no-regression` | 1 | 1 |
-| `nextCensus` always banks the current reading | 1 | 1 |
+| the first reading reports `no-regression` | 2 | 2 |
+| `nextCensus` always banks the current reading | 2 | 2 |
 | the counter drops its lookbehind anchor | 1 | 1 |
-| `censusOf` stops recursing | 1 | **2** |
+| the walk takes any non-directory, symlinks included | 1 | 1 |
+| the size cap is removed | 1 | 1 |
+| `persistTestCensus` writes the whole in-memory object | 1 | 1 |
+| `readPersistedCensus` accepts an array | 1 | 1 |
+| an empty census reports `first-reading` instead of UNMEASURED | 1 | 1 |
+| `nextCensus` drops its unmeasured arm | 1 | 1 |
+| `nextCensus` drops its regression arm | 1 | 1 |
+| `censusOf` stops recursing | 4 | 4 |
 
 None is left in the tree; all were run and reverted.
 
-The last row came back HIGHER than predicted, which is the opposite of the
-fourth shape and worth recording for what it says about the fixture. The
-expected red was SC-1687, whose four-file fixture plants one test in
-`test/unit/`. The second was the real-repo arm — written as a backstop
-against a walk that reads nothing at all, and measured here as load-bearing
-for recursion too: **39 of this project's 309 test files are in
-subdirectories and carry 488 of its 5,299 declarations**, so a flat walk
-drops the total to 4,811 and crosses the arm's threshold. A control written
-to catch one thing caught a second, which is the argument for asserting a
-real number against a real tree rather than only against a fixture you built.
+**The fourth shape, caught here rather than recorded into the rule.** The
+empty-census row came back ONE where TWO was predicted, which is the
+signature. `nextCensus`'s two arms — regression and unmeasured — were
+behaviourally one decider: the only way to be `unmeasured` is an empty
+census, and an empty census ALSO makes every previously-known file "gone",
+so `censusVerdict(before, {})` short-circuits to `unmeasured` but would fall
+through to `regression`, and `nextCensus` treats the two identically.
+SC-1692 was routing its case through `censusVerdict` and therefore testing
+the regression arm while claiming to test the unmeasured one. Disabling the
+unmeasured branch left it green.
+
+Both arms are kept — they differ in what the operator sees, and that
+difference is the point: `regression` FAILs the gate naming every file as
+deleted, which is exactly the false refusal a polyglot consumer with no JS
+suite would get on its second round. So the fix is the rule's second option:
+each decider gets an input only it reaches, written down as a case saying
+which one it is for. SC-1692 now builds an `unmeasured` verdict literal with
+a NON-empty current census, which nothing but that arm can answer, and keeps
+the shared empty-census case beside it. The two arms now mutate to one red
+each, in different tests.
+
+**And one row higher than predicted, which is the opposite signature.**
+`censusOf` stops recursing was predicted at 2 and measured 4. Two were
+expected — the four-file fixture, and the real-repo arm written as a backstop
+against a walk that reads nothing, which turns out to be load-bearing for
+recursion too (**39 of this project's 309 test files are in subdirectories
+and carry 488 of its 5,299 declarations**, so a flat walk crosses its
+threshold). The other two are the `src/` and symlink fixtures added by the
+review passes, both of which plant a nested file. A higher row means the
+binding reaches further than the prediction did, which is news about the
+prediction and not about the code.
 
 #### Three defects a security review found in the guard itself
 

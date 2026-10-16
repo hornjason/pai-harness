@@ -218,9 +218,34 @@ describe("#307: what a gate run does about it", () => {
   test("SC-1692: an unmeasured round keeps the previous reading - no amnesia", () => {
     // Banking `{}` over a real census would turn a tree the walk briefly
     // could not read into permanent amnesia, and the round after it would
-    // compare clean against nothing. Same reasoning as the refused round
-    // below, different cause.
+    // compare clean against nothing.
+    //
+    // The verdict is BUILT here rather than produced by `censusVerdict`,
+    // and that is not stylistic. A mutation battery caught the two arms of
+    // `nextCensus` agreeing: today the only way to be `unmeasured` is an
+    // empty census, and an empty census ALSO makes every previously-known
+    // file "gone", so `censusVerdict(before, {})` short-circuits to
+    // `unmeasured` but would fall through to `regression` — which
+    // `nextCensus` treats identically. Routing this case through
+    // `censusVerdict` therefore tested the regression arm while claiming to
+    // test the unmeasured one, and disabling the unmeasured branch left it
+    // green.
+    //
+    // A literal verdict with a NON-empty current census is an input only
+    // the unmeasured arm can reach (`.claude/rules/checks-must-be-able-to-fail.md`,
+    // fourth shape: keep both deciders and give each an input only it
+    // reaches, written down as a separate case saying which decider it is
+    // for).
     const before = { "test/a.test.ts": 3 };
+    const grown = { "test/a.test.ts": 3, "test/b.test.ts": 2 };
+    expect(
+      nextCensus(before, grown, { kind: "unmeasured", reason: "the walk could not read the tree" }),
+      "an unmeasured round banked a reading it did not trust",
+    ).toEqual(before);
+
+    // The arm the two deciders share, kept as a case in its own right: the
+    // empty census that arrives through `censusVerdict` must also keep the
+    // previous reading, whichever of the two branches answers it.
     expect(nextCensus(before, {}, censusVerdict(before, {}))).toEqual(before);
   });
 
