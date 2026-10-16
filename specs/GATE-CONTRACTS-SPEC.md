@@ -1486,3 +1486,134 @@ ship-orchestrator.advancePhase(slug)
 - Gates are the enforcement backbone — don't break the chain during contract extraction
 - Some gates may have intentionally loose contracts (self-heal accepts anything) — document that as a design choice, not a gap
 - Test files for gates are large (orchestrator.test.ts at 950 lines) — they may benefit from the same thin consumer migration we just did, but that's a separate task
+
+## The worktree-repository check was self-reported (#414, 2026-10-15)
+
+Follow-up to #218, which scoped this out deliberately and recorded why in
+`specs/HARNESS-STANDARD.md`.
+
+#218 refuses a worktree whose `origin` does not match the run's repo. The
+comparison is **self-reported**: `workflows/ship.js` has no subprocess (#69),
+so the only remote it can see is the one the agent said it read when asked to
+run `git remote get-url origin`.
+
+That catches the incident it was built for — on `wf_5e3ed885-98c` the agent
+noticed it was in the wrong checkout and said so — and the worse variant where
+an agent does not notice and reports success. It does not catch an agent that
+reports the repository named in its brief rather than the one its checkout
+actually has, and **that reply is indistinguishable from a correct one.**
+
+`lib/worktree-repo.ts` has exported the unforgeable half since #218:
+
+```ts
+export function readWorktreeRemote(worktreePath: string): RemoteReading
+```
+
+Nothing called it, because nothing in the ship path can. A gate can: gates run
+as real subprocesses with the worktree on disk.
+
+### Three answers a reply cannot produce
+
+| verdict | what happened |
+|---|---|
+| `missing` | the worktree is gone by gate time |
+| `forged` | the reply named the RIGHT repository and the checkout is a different one |
+| `unreadable` | the checkout is there and its origin could not be read |
+
+`forged` is not an accusation of intent — an agent answering from its brief
+produces exactly this, and so does a worktree that moved after the reply. Both
+have the same consequence, that the run's identity check passed on a string
+nothing verified, and a different remedy from an ordinary mismatch. `missing`
+is separate because **a removed worktree and a matching one must not give the
+same answer**: nothing-to-read read as nothing-to-report is the fail-open
+`.claude/rules/checks-must-be-able-to-fail.md` is about.
+
+### Both ends of the binding, because a reader alone is #315
+
+A check keyed on a field nothing authors is `code-committed` exactly: it
+early-returned on `harness?.codeCommittedPaths || []`, nothing wrote that key,
+and the check had never run on any run this repository has made. So the
+producing half is driven too — `worktreeRecords` in ship.js's
+WORKTREE-IDENTITY block is EXECUTED against agent results, and
+`gates/run-gate.ts`'s threading is run as a real subprocess that persists a
+supplied list and **clears** a stale one, the same write-or-clear rule
+`--tree-under-test` needed for the same reason (#314).
+
+An unparseable `--worktrees` refuses rather than clearing. "Nothing was sent"
+and "something unreadable was sent" are different facts, and treating the
+second as the first switches the check off exactly when its input is suspect.
+
+### A fixture that was unreadable rather than passing, again
+
+`test/contract.test.ts`'s STANDARD fixture pointed `origin` at a local bare
+path, which `repoSlug` cannot read as `owner/name` — so the new check landed
+in `unreadable` there. That is the #174 defect in the same fixture, one check
+along, and the comment recording #174 sits four lines above it.
+
+`origin` now carries the project's identity and a second remote, `mirror`,
+carries the push. Widening `repoSlug` to accept a local path would have bought
+the contract green by making the check blind to the one string it exists to
+read.
+
+- [x] SC-1540: test/worktree-repo-gate.test.ts contains [the reading is the checkout, not the reply] — driven against real `git init` checkouts, including one whose reply is correct and whose disk is not, because a stubbed reader proves the comparison can compare and proves nothing about whether git was ever asked
+- [x] SC-1541: test/worktree-repo-gate.test.ts contains [a correct reply over a wrong checkout is its own verdict] — `forged` is distinguished from `mismatch` on the SHAPE with the path blanked, and the gate's wording is distinguished from ship.js's self-reported refusal, because an operator fixes an agent that answered from its brief differently from a worktree in the wrong place
+- [x] SC-1542: test/worktree-repo-gate.test.ts contains [a removed worktree is its own verdict] — asserted against `match` and against `unreadable` separately, so neither the fail-open nor the collapse that hides it can be reached
+- [x] SC-1543: test/worktree-repo-gate.test.ts contains [no expected repository is a refusal, not a pass] — absent, null, empty and unparseable all refuse, because a run that does not know its own repository would otherwise let a worktree of anything through
+- [x] SC-1544: test/worktree-repo-gate.test.ts contains [worktreeRepoViolations is the one refusal site] — one binding, an empty list refusing as UNMEASURED rather than clean, duplicate paths read once, and the default reader asserted to be the real one rather than the injected stub
+- [x] SC-1545: test/worktree-repo-gate.test.ts contains [ship.js produces the list and run-gate.ts persists it] — the producing half is executed and the threading is a real subprocess, because a reader keyed on a field nothing authors is #315 and sat green for the life of the repository
+- [x] SC-1546: test/worktree-repo-gate.test.ts contains [a refusal never quotes a credential] — a CI checkout's origin is `https://x-access-token:TOKEN@host/owner/name` and a refusal is printed, stored and pasted into an issue, and the redaction is asserted to leave the slug parseable or it would destroy the distinction it protects
+
+### What was broken to prove it (SC-1540..1546)
+
+Run and counted over `test/worktree-repo-gate.test.ts`,
+`test/worktree-repo.test.ts`, `test/suite-binding-mutation.test.ts` and
+`test/contract.test.ts` (180 tests). None is left in the tree; all were
+applied and reverted, and every mutation asserted its target appeared exactly
+once before writing.
+
+| Mutation | Red |
+|---|---|
+| the gate reads the REPLY instead of the disk | 13 of 180 |
+| `worktreeRepoViolations` short-circuited to `return []` | 9 of 180 |
+| an absent expected repo lets any checkout through | 4 of 180 |
+| the gate check stops calling the binding | 4 of 180 |
+| a missing worktree stops being its own verdict | 3 of 180 |
+| `forged` collapses into an ordinary mismatch | 3 of 180 |
+| ship.js stops recording where it built | 2 of 180 |
+| the gate stops reading the recorded worktrees | 1 of 180 |
+| an empty worktree list reads as clean instead of UNMEASURED | 1 of 180 |
+| an unreadable origin reads as clean | 1 of 180 |
+| ship.js stops threading the list to the gate | 1 of 180 |
+| `worktreeRecords` stops redacting the reported remote | 1 of 180 |
+| run-gate.ts inherits a stale list instead of clearing it | 1 of 180 |
+| run-gate.ts accepts an unparseable list by clearing it | 1 of 180 |
+
+The second row is the one that matters most: replacing the disk reading with
+the reply turns 13 red. That is the measurement of #414 — the gate is not a
+second copy of #218's comparison, it is a different reading, and swapping one
+for the other is visible.
+
+#### Two findings from the battery itself, both recorded rather than tidied
+
+**Three of these were zeros on the first run, and the measurement was wrong,
+not the tests.** The counter read the FIRST `N fail` in the combined output.
+These tests spawn `bun test` as a subprocess and quote its output inside their
+own failure messages, so the first count in the stream is the embedded
+sub-run's — which is `0` exactly when the mutation worked. The harness was
+reporting the mutant's success as the suite's silence. It reads the last count
+now, and asserts exactly one `Ran N tests` summary so a second embedded one
+cannot be mistaken for the real one.
+
+This is the rule's own subject arriving in the instrument: a measurement that
+cannot distinguish "nothing failed" from "the thing I am measuring reported
+nothing" is not a measurement. The #400 battery, run the same day with the
+same counter, was re-measured afterwards and reproduces its published figure
+exactly (28 of 290), because none of its files spawn a subprocess.
+
+**One zero survived the fix and was a real gap.** "The gate stops reading the
+recorded worktrees" scored 0 because the fixture planted the same path as
+`treeUnderTest` and as the sole `worktrees` entry — the gate deduplicates
+them, so the second reading was never load-bearing. The fixture now plants a
+CORRECT tree under test and a SECOND checkout that is wrong, which is the
+shape #218's incident actually had and the only shape in which the
+`worktrees` field earns its place.

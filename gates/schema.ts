@@ -451,6 +451,31 @@ export const WorkflowStateSchema = z.object({
    * measurement.
    */
   treeUnderTest: z.string().optional(),
+
+  /**
+   * Every worktree this run built in, so a gate can read each one's `origin`
+   * off the disk (#414, follow-up to #218).
+   *
+   * `treeUnderTest` names ONE tree. A decomposed run has one worktree per
+   * sub-issue, and the #218 incident was a second agent landing in a
+   * different checkout while the first was correct — so checking only the
+   * tree under test reads the right answer off the wrong worktree.
+   *
+   * `reportedRepo` is what the AGENT said `git remote get-url origin`
+   * printed. It is recorded, not trusted: the gate compares the disk, and
+   * keeping the reply beside it is what lets the refusal distinguish "the
+   * worktree is in the wrong place" from "the reply was right and the
+   * checkout disagrees". The second is the case the ship workflow
+   * structurally cannot see, because the reply is the only remote it has.
+   *
+   * Absent is not a pass — `worktreeRepoViolations` refuses an empty list,
+   * because every run reaching this gate has at least a tree under test.
+   */
+  worktrees: z.array(z.object({
+    path: z.string(),
+    reportedRepo: z.string().optional(),
+  })).optional(),
+
   slug: z.string(),
   phase: z.enum(["GOAL", "DISCOVERY", "SCOPE", "BUILD", "VERIFY", "SHIP", "DONE", "CIRCUIT_BREAK"]),
   issueGoal: z.string().min(1, "issueGoal cannot be empty"),

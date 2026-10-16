@@ -71,13 +71,26 @@ function sliceBlock(name: string): string {
  * as importing it, which the Workflow sandbox makes impossible (#69). It must
  * never be given a source from anywhere else.
  */
-const inlined = new Function(
-  `${sliceBlock("WORKTREE-IDENTITY")}\nreturn { repoSlug, redactRemote, worktreeIdentity, worktreeIdentityViolations }`,
+const shipBlock = new Function(
+  `${sliceBlock("WORKTREE-IDENTITY")}\nreturn { repoSlug, redactRemote, worktreeIdentity, worktreeIdentityViolations, worktreeRecords }`,
 )() as {
   repoSlug: typeof repoSlug;
   redactRemote: typeof redactRemote;
   worktreeIdentity: typeof worktreeIdentity;
   worktreeIdentityViolations: typeof worktreeIdentityViolations;
+  /** ship.js only — the agent results reshaped for the #414 gate. The library
+   *  has no counterpart because nothing outside the workflow produces them. */
+  worktreeRecords: (r: unknown) => Array<{ path: string; reportedRepo?: string }>;
+};
+
+const { worktreeRecords } = shipBlock;
+
+/** The mirrored surface, which `worktreeRecords` is deliberately not part of. */
+const inlined = {
+  repoSlug: shipBlock.repoSlug,
+  redactRemote: shipBlock.redactRemote,
+  worktreeIdentity: shipBlock.worktreeIdentity,
+  worktreeIdentityViolations: shipBlock.worktreeIdentityViolations,
 };
 
 const COPIES: Array<[string, typeof inlined]> = [
@@ -572,10 +585,15 @@ function loadCollectBoundary(source = shipSource) {
   if (!body.includes("worktreeIdentityViolations(")) {
     throw new Error("could not build the harness: the block no longer calls the collector");
   }
+  // `runWorktrees` is declared here the way ship.js declares it in the
+  // FAILURE-LEDGER block, and returned, so the recording this block performs
+  // for the #414 gate is OBSERVED rather than merely tolerated. Without the
+  // declaration the assignment would create a sloppy-mode global and the
+  // control tests below would pass over a block that recorded nothing.
   const run = new Function(
     "implementResult", "REPO", "log", "terminalFailure",
-    "worktreeIdentityViolations", "redactRemote",
-    `return (async () => {\n${body}\nreturn { shipped: true }\n})()`,
+    "worktreeIdentityViolations", "redactRemote", "worktreeRecords",
+    `let runWorktrees = []\nreturn (async () => {\n${body}\nreturn { shipped: true, runWorktrees }\n})()`,
   );
   return {
     logs,
@@ -587,6 +605,7 @@ function loadCollectBoundary(source = shipSource) {
         async (status: string, extra: Record<string, unknown>) => ({ status, ...extra }),
         worktreeIdentityViolations,
         redactRemote,
+        worktreeRecords,
       ) as Promise<Record<string, unknown>>,
   };
 }
@@ -635,6 +654,13 @@ describe("SC-1448: the run stops at the collection boundary, not after it", () =
     );
     expect(got.shipped, JSON.stringify(got)).toBe(true);
     expect(logs).toEqual([]);
+    // #414: a run that passes the self-reported check records where it was,
+    // so a gate can ask the disk the same question. A boundary that refuses
+    // correctly and records nothing leaves the gate with an empty list and
+    // nothing to read.
+    expect(got.runWorktrees).toEqual([
+      { path: RIGHT, reportedRepo: "https://github.com/HornJason/PAI-Harness.git" },
+    ]);
   });
 
   test("a run with no agent results at all is not stopped", async () => {

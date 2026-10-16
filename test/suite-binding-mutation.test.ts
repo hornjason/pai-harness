@@ -53,6 +53,15 @@ const BINDING_SIGNATURE = "export function suiteVerdictViolations(val: unknown):
 const PREVALIDATION_SIGNATURE =
   "export function prevalidationViolations(val: unknown, gatePhase?: unknown): string[] {";
 
+/**
+ * #414's binding. `lib/worktree-repo.ts` exported the unforgeable reading
+ * since #218 and nothing could call it, because the only place that wanted it
+ * — `workflows/ship.js` — has no subprocess (#69). `worktreeRepoViolations`
+ * is the one site that turns a reading of the disk into a refusal.
+ */
+const WORKTREE_REPO_SIGNATURE =
+  "export function worktreeRepoViolations(entries: unknown, expectedRepo: unknown, read?: (p: string) => RemoteReading): string[] {";
+
 let SCRATCH = "";
 let WORK = "";
 let PROJECT = "";
@@ -504,6 +513,169 @@ describe("#235 fixture: a measured pre-validation failure reaches the gate", () 
       "An unmeasured pre-validation is not a clean one",
     );
   }, 180000);
+});
+
+// ── #414: the worktree-repository reading, mutated the same way ──
+
+/**
+ * Two real checkouts and a state naming one of them.
+ *
+ * `git init` + `git remote add`, not a stub: the whole point of #414 is that
+ * the reading comes off the disk rather than out of a reply, and a stubbed
+ * reader would prove the comparison can compare while proving nothing about
+ * whether git was ever asked.
+ *
+ * `reportedRepo` is always the RIGHT slug, so the state is exactly what an
+ * agent answering from its brief produces — the reply ship.js checks is
+ * correct, and only the disk disagrees. That is the input #218 structurally
+ * cannot refuse, which is why it is the one planted here.
+ */
+function makeCheckout(origin: string, tag: string): string {
+  const tree = join(SCRATCH, `worktree-${tag}-${createHash("sha1").update(origin).digest("hex").slice(0, 8)}`);
+  mkdirSync(tree, { recursive: true });
+  spawnSync("git", ["init", "-q", tree], { encoding: "utf-8" });
+  spawnSync("git", ["-C", tree, "remote", "add", "origin", origin], { encoding: "utf-8" });
+  return tree;
+}
+
+/**
+ * `extraWorktree` plants a SECOND checkout that is not the tree under test.
+ *
+ * Without it the state's `worktrees` entry and `treeUnderTest` are the same
+ * path, the gate deduplicates them, and dropping the `worktrees` reading
+ * changes nothing — measured as a zero in the #414 battery before this
+ * existed. It is also the shape #218's incident actually had: a decomposed
+ * run where the FIRST agent's worktree was correct and a later one was not.
+ */
+function plantWorktreeState(opts: { origin: string; reportedRepo?: string; extraWorktree?: string }): string {
+  const tree = makeCheckout(opts.origin, "tut");
+  const state = {
+    schemaVersion: 2,
+    issue: 414,
+    repo: "hornjason/pai-harness",
+    slug: "pai-harness-414",
+    phase: "SHIP",
+    projectRoot: PROJECT,
+    treeUnderTest: tree,
+    issueGoal: "the worktree a run built in is the repository the run targets",
+    sizing: { predicted: "S", ceremonyTier: "STANDARD" },
+    acs: [
+      {
+        id: "AC-1",
+        type: "CODE",
+        statement: "the gate reads origin off the checkout",
+        threshold: { op: "==", value: 0, unit: "violations" },
+        evidenceMethod: { type: "BUN_TEST" },
+      },
+    ],
+    ...(opts.extraWorktree
+      ? {
+          worktrees: [
+            ...(opts.reportedRepo ? [{ path: tree, reportedRepo: opts.reportedRepo }] : []),
+            { path: makeCheckout(opts.extraWorktree, "extra"), reportedRepo: RIGHT_ORIGIN },
+          ],
+        }
+      : opts.reportedRepo
+        ? { worktrees: [{ path: tree, reportedRepo: opts.reportedRepo }] }
+        : {}),
+  };
+  writeFileSync(join(WORK, "workflow-state.json"), JSON.stringify(state, null, 2));
+  return tree;
+}
+
+const WRONG_ORIGIN = "https://github.com/example-owner/example-project.git";
+const RIGHT_ORIGIN = "git@github.com:hornjason/pai-harness.git";
+const WORKTREE_CHECK = "worktree-repo";
+
+describe("#414 fixture: a checkout of another repository reaches the gate", () => {
+  test("the planted checkout really has the wrong origin — read, not asserted", () => {
+    const tree = plantWorktreeState({ origin: WRONG_ORIGIN });
+    const got = spawnSync("git", ["-C", tree, "remote", "get-url", "origin"], { encoding: "utf-8" });
+    expect(got.status, "the fixture is not a checkout with an origin").toBe(0);
+    expect(String(got.stdout).trim()).toBe(WRONG_ORIGIN);
+  }, 60000);
+
+  test("a worktree of another repository fails the real check", () => {
+    plantWorktreeState({ origin: WRONG_ORIGIN, reportedRepo: RIGHT_ORIGIN });
+    const r = runCheck(GATE_SUITE, WORKTREE_CHECK);
+    expect(r.ran, `${WORKTREE_CHECK} never ran — the filter matched nothing:\n${r.output}`).toBe(true);
+    expect(r.red, `a worktree of another repository passed the gate:\n${r.output}`).toBe(true);
+    // Red for the stated reason. A gate suite that failed to load is red too,
+    // and the count alone cannot tell them apart.
+    expect(r.output, "red, but not from the disk reading").toContain("example-owner/example-project");
+  }, 180000);
+
+  test("a worktree of the run's own repository passes the same check", () => {
+    // Without this control, a check that refuses everything satisfies the
+    // case above.
+    plantWorktreeState({ origin: RIGHT_ORIGIN, reportedRepo: RIGHT_ORIGIN });
+    const r = runCheck(GATE_SUITE, WORKTREE_CHECK);
+    expect(r.ran, `${WORKTREE_CHECK} never ran — the filter matched nothing:\n${r.output}`).toBe(true);
+    expect(r.red, `a correct worktree failed the gate:\n${r.output}`).toBe(false);
+  }, 180000);
+
+  test("a correct tree under test does not excuse a second worktree that is wrong", () => {
+    // The decomposed shape, and the one #218's incident actually had: the
+    // first agent's worktree was right and a later one was not. Without this
+    // the `worktrees` reading is never load-bearing — `treeUnderTest` covers
+    // the same path, the gate deduplicates, and removing the reading scores
+    // zero.
+    plantWorktreeState({
+      origin: RIGHT_ORIGIN,
+      reportedRepo: RIGHT_ORIGIN,
+      extraWorktree: WRONG_ORIGIN,
+    });
+    const r = runCheck(GATE_SUITE, WORKTREE_CHECK);
+    expect(r.ran, `${WORKTREE_CHECK} never ran — the filter matched nothing:\n${r.output}`).toBe(true);
+    expect(r.red, `a second worktree in another repository passed the gate:\n${r.output}`).toBe(true);
+    expect(r.output, "red, but not from the second worktree").toContain("example-owner/example-project");
+  }, 180000);
+
+  test("the refusal says the reply and the disk disagreed", () => {
+    // #414 SC-2. The operator's first question is which reading refused:
+    // ship.js's, from the agent's reply, or this one, from the checkout.
+    plantWorktreeState({ origin: WRONG_ORIGIN, reportedRepo: RIGHT_ORIGIN });
+    const r = runCheck(GATE_SUITE, WORKTREE_CHECK);
+    expect(r.ran).toBe(true);
+    expect(r.output).toContain("read from the checkout");
+  }, 180000);
+});
+
+describe("#414 mutant: removing the binding makes the gate ship the wrong checkout", () => {
+  test("the mutant ships the exact fixture the real source refuses", () => {
+    plantWorktreeState({ origin: WRONG_ORIGIN, reportedRepo: RIGHT_ORIGIN });
+
+    const real = runCheck(GATE_SUITE, WORKTREE_CHECK);
+    expect(real.ran, `${WORKTREE_CHECK} never ran in the real source:\n${real.output}`).toBe(true);
+    expect(real.red, `the real source shipped a worktree of another repository:\n${real.output}`).toBe(true);
+
+    const mutant = runCheck(writeMutant(WORKTREE_REPO_SIGNATURE), WORKTREE_CHECK);
+    expect(
+      mutant.ran,
+      `the mutant never ran — module resolution or the name filter, not a verdict:\n${mutant.output}`,
+    ).toBe(true);
+    expect(
+      mutant.red,
+      `the mutant still refused, so the refusal does not come from the binding:\n${mutant.output}`,
+    ).toBe(false);
+  }, 240000);
+
+  test("the mutation harness throws when the worktree binding is renamed", () => {
+    const renamed = readFileSync(GATE_SUITE, "utf-8").replace(
+      WORKTREE_REPO_SIGNATURE,
+      "export function worktreeRepoRefusal(entries: unknown, expectedRepo: unknown, read?: (p: string) => RemoteReading): string[] {",
+    );
+    expect(() => buildMutantSource(renamed, WORKTREE_REPO_SIGNATURE)).toThrow(
+      /could not build the mutant: the binding signature appears 0 times/,
+    );
+  });
+
+  test("the mutation harness throws when a second copy of the worktree binding exists", () => {
+    const src = readFileSync(GATE_SUITE, "utf-8");
+    expect(() =>
+      buildMutantSource(`${src}\n${WORKTREE_REPO_SIGNATURE}\n  return [];\n}\n`, WORKTREE_REPO_SIGNATURE),
+    ).toThrow(/appears 2 times/);
+  });
 });
 
 describe("#235 mutant: removing the binding makes the gate ship the broken commands", () => {

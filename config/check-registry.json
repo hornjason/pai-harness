@@ -78,6 +78,7 @@
     "discovery-evidence": "scope checks",
     "governing-spec-exists": "scope checks",
     "harness-port-validation": "scope checks",
+    "worktree-repo": "verify checks",
     "no-fail-verdicts-in-done": "verify checks",
     "outcome-acs-no-skip": "verify checks",
     "outcome-evidence-behavioral": "verify checks",
