@@ -21,6 +21,22 @@
  * This module is the counting and the comparison; `gates/gate-executor.ts`
  * holds the refusal and decides when to bank a new reading.
  *
+ * ## What this guard does NOT do, stated rather than implied
+ *
+ * The banked census lives in the run's `workflow-state.json`, which is a
+ * file the heal agent can write. A heal agent that deleted a test AND the
+ * census would see `first-reading` on the next round and pass. This guard
+ * raises the cost of an accidental deletion, which is the failure mode that
+ * actually happened on `wf_5cdce852-1e2`; it is not tamper-evident against a
+ * deliberate one, and `writeWorkflowState`'s Zod validation does not make it
+ * so, because an absent optional key is valid.
+ *
+ * Closing that properly means putting the reading somewhere the guarded
+ * party does not write — the witness, or an HMAC over it — and is filed
+ * separately rather than half-done here. A guard whose limit is written down
+ * is a guard somebody can finish; one whose limit is implied is one everybody
+ * assumes is complete.
+ *
  * ## Why a declaration count and not a run
  *
  * Running the suite twice per heal round costs this project about thirteen
@@ -111,8 +127,15 @@ export function countTestDeclarations(source: string): number {
   return [...source.matchAll(DECLARATION)].length;
 }
 
-/** `{ "test/a.test.ts": 12, … }` for every test file anywhere under `root`. */
-export function censusOf(root: string): Record<string, number> {
+/**
+ * `{ "test/a.test.ts": 12, … }` for every test file anywhere under `root`.
+ *
+ * Pass a `skipped` array to be told which files the walk declined to read.
+ * Optional so the common caller stays a one-liner, and the gate passes one
+ * so it can say so rather than reporting over a comparison that quietly
+ * excluded something.
+ */
+export function censusOf(root: string, skipped: string[] = []): Record<string, number> {
   const out: Record<string, number> = {};
   const walk = (dir: string, rel: string) => {
     if (!existsSync(dir)) return;
@@ -127,7 +150,15 @@ export function censusOf(root: string): Record<string, number> {
         // no symlinked-directory loop, and no `readFileSync` on a link to a
         // character device, which has size 0 and never ends.
         const p = join(dir, e.name);
-        if (statSync(p).size > MAX_CENSUS_FILE_BYTES) continue;
+        if (statSync(p).size > MAX_CENSUS_FILE_BYTES) {
+          // Named, not dropped. A skip the caller cannot see is a file
+          // silently outside the comparison, which is the shape this whole
+          // guard exists to refuse — and a reader looking at "no test was
+          // removed" deserves to know which files that sentence is not
+          // about.
+          skipped.push(r);
+          continue;
+        }
         out[r] = countTestDeclarations(readFileSync(p, "utf-8"));
       }
     }

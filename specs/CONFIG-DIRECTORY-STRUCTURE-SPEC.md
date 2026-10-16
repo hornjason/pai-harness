@@ -808,3 +808,31 @@ shipped six instances of it.
 - [x] SC-1694: test/test-census.test.ts contains [the banked census reaches the state FILE - and clobbers nothing] — a sibling under `gateContract` and unrelated top-level state are asserted to survive, and the persisted value is read back through `censusVerdict` so a census written in an unreadable shape cannot pass
 - [x] SC-1695: test/test-census.test.ts contains [the census block persists before writeGateResult re-reads the file] — the write landing in the right shape is worth nothing if it happens after the read that discards it
 - [x] SC-1696: test/test-census.test.ts contains [a file too large to be a suite is skipped - and a symlink is never read] — both a symlinked file and a symlinked directory are planted, because `isDirectory()` being false for a link is what let the file case through
+
+#### A third pass, and the limit this guard does not close
+
+7. **The previous census was read off the stale in-memory `state`.** It is
+   loaded when the process starts; the gate tests and any heal agent write
+   the file afterwards. Comparing against the stale copy and then persisting
+   over the fresh one is how a round's reading quietly disappears, and the
+   direction it disappears in is toward not refusing. `readPersistedCensus`
+   reads disk, and rejects an array or unparseable JSON as "nothing banked"
+   rather than handing it to the comparison.
+8. **Oversized files were skipped silently.** The skip is now reported by
+   name on every run. "No test was removed" is a sentence about the files
+   that were read, and a reader is owed the list it is not about.
+
+**What this guard does not do.** The banked census lives in the run's
+`workflow-state.json`, which the heal agent can write. An agent that deleted
+a test AND the census would see `first-reading` next round and pass. This
+raises the cost of an *accidental* deletion — the failure mode that actually
+happened on `wf_5cdce852-1e2` — and is not tamper-evident against a
+deliberate one. `writeWorkflowState`'s Zod validation does not help: an
+absent optional key is valid.
+
+Closing that means putting the reading where the guarded party does not
+write — the witness, or an HMAC over it — and is filed separately rather than
+half-done here. A guard whose limit is written down is a guard somebody can
+finish; one whose limit is implied is one everybody assumes is complete.
+
+- [x] SC-1697: test/test-census.test.ts contains [the previous census is read off disk - not off a stale in-memory copy] — an array, unparseable JSON and a missing file all read as nothing banked, and the `undefined` they produce is asserted to become `first-reading` rather than anything that reads as clean

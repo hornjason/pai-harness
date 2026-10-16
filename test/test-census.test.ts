@@ -31,7 +31,12 @@ import {
   countTestDeclarations,
   MAX_CENSUS_FILE_BYTES,
 } from "../lib/test-census";
-import { censusVerdict, nextCensus, persistTestCensus } from "../gates/gate-executor";
+import {
+  censusVerdict,
+  nextCensus,
+  persistTestCensus,
+  readPersistedCensus,
+} from "../gates/gate-executor";
 
 describe("#307: counting what a file declares", () => {
   test("SC-1684: skipped and todo tests are counted - converting one is removing it", () => {
@@ -157,10 +162,18 @@ describe("#307: counting what a file declares", () => {
       writeFileSync(join(root, "real", "r.test.ts"), `it("b",0);`);
       symlinkSync(join(root, "real"), join(root, "loop"));
 
-      expect(censusOf(root)).toEqual({
+      const skipped: string[] = [];
+      expect(censusOf(root, skipped)).toEqual({
         "small.test.ts": 1,
         "real/r.test.ts": 1,
       });
+      // Named, not dropped. A file silently outside the comparison is the
+      // shape this whole guard exists to refuse, so the skip is reportable
+      // and the gate warns with the list.
+      expect(skipped).toEqual(["huge.test.ts"]);
+      // The symlinks are not in the skip list either — they were never
+      // candidates, which is a different fact from being too large.
+      expect(skipped).not.toContain("link.test.ts");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -270,6 +283,38 @@ describe("#307: what a gate run does about it", () => {
         kind: "regression",
         regressions: ["test/a.test.ts: 7 test(s) before, 4 after"],
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("SC-1697: the previous census is read off disk - not off a stale in-memory copy", () => {
+    // Found by the third review pass. `state` is loaded when the process
+    // starts; the gate tests and any heal agent write the file afterwards.
+    // Comparing against the stale copy and then persisting over the fresh
+    // one is how a round's reading quietly disappears, and the direction it
+    // disappears in is toward not refusing.
+    const dir = mkdtempSync(join(tmpdir(), "rg-stale-"));
+    try {
+      const sf = join(dir, "workflow-state.json");
+      writeFileSync(sf, JSON.stringify({ gateContract: { testCensus: { "a.test.ts": 9 } } }));
+      expect(readPersistedCensus(sf)).toEqual({ "a.test.ts": 9 });
+
+      // The three shapes that must read as "nothing banked" rather than as
+      // a census — each would otherwise reach `censusRegressions` and
+      // compare against nonsense.
+      writeFileSync(sf, JSON.stringify({ gateContract: {} }));
+      expect(readPersistedCensus(sf)).toBeUndefined();
+      writeFileSync(sf, JSON.stringify({ gateContract: { testCensus: [] } }));
+      expect(readPersistedCensus(sf), "an array was accepted as a census").toBeUndefined();
+      writeFileSync(sf, "{ not json");
+      expect(readPersistedCensus(sf)).toBeUndefined();
+      expect(readPersistedCensus(join(dir, "nope.json"))).toBeUndefined();
+
+      // ...and `undefined` becomes first-reading, which is reported rather
+      // than passed quietly. The catch above is the one place this guard
+      // swallows an error, so the thing it hands on must not read as clean.
+      expect(censusVerdict(readPersistedCensus(sf), { "a.test.ts": 1 }).kind).toBe("first-reading");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

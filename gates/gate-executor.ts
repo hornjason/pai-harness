@@ -314,6 +314,29 @@ export function persistTestCensus(stateFilePath: string, census: Record<string, 
   writeFileSync(stateFilePath, JSON.stringify(fresh, null, 2));
 }
 
+/**
+ * The census the last gate run banked, read off DISK (#307 SC-A19).
+ *
+ * Not off the in-memory `state`, which was loaded when the process started:
+ * the gate tests and any heal agent have been writing the file since, and
+ * comparing against a stale copy and then persisting over the fresh one is
+ * how a round's reading quietly disappears. The direction it disappears in
+ * is toward not refusing.
+ *
+ * A file that cannot be read or parsed returns `undefined`, which
+ * `censusVerdict` turns into `first-reading` — said out loud rather than
+ * passed quietly.
+ */
+export function readPersistedCensus(stateFilePath: string): Record<string, number> | undefined {
+  try {
+    const onDisk = JSON.parse(readFileSync(stateFilePath, "utf-8"));
+    const census = onDisk?.gateContract?.testCensus;
+    return census && typeof census === "object" && !Array.isArray(census) ? census : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function nextCensus(
   previous: Record<string, number> | undefined,
   current: Record<string, number>,
@@ -2124,14 +2147,31 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   // for the one kind of run this guard most needs to watch.
   {
     const censusRoot = state.treeUnderTest || state.projectRoot || process.cwd();
-    const current = censusOf(censusRoot);
+    const censusSkipped: string[] = [];
+    const current = censusOf(censusRoot, censusSkipped);
+    if (censusSkipped.length > 0) {
+      // Reported every run. "No test was removed" is a sentence about the
+      // files that were read, and a reader is owed the list it is not about.
+      console.warn(
+        `Test census: ${censusSkipped.length} file(s) too large to count and excluded from the ` +
+          `comparison: ${censusSkipped.join(", ")}`,
+      );
+    }
+    // The PREVIOUS census comes off disk, not off the in-memory `state`.
+    // `state` was loaded when this process started; the gate tests and any
+    // heal agent have been writing the file since. Comparing against the
+    // stale copy and then persisting over the fresh one is how a round's
+    // reading quietly disappears — and the direction it disappears in is
+    // toward not refusing.
+    const previous = readPersistedCensus(sf);
+    const verdict = censusVerdict(previous, current);
+    const banked = nextCensus(previous, current, verdict);
     state.gateContract = state.gateContract || {};
-    const verdict = censusVerdict(state.gateContract.testCensus, current);
-    state.gateContract.testCensus = nextCensus(state.gateContract.testCensus, current, verdict);
+    state.gateContract.testCensus = banked;
     // To DISK, not just to `state` — `writeGateResult` below re-reads the
     // file, so an in-memory mutation here never lands and the next run
     // would find no census to compare against. See `persistTestCensus`.
-    persistTestCensus(sf, state.gateContract.testCensus);
+    persistTestCensus(sf, banked);
 
     if (verdict.kind === "regression") {
       fails++;
