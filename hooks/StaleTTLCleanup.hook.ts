@@ -52,6 +52,27 @@ if (PROJECT_ROOT) try {
   }
 } catch (e) { log(`WORKTREE cleanup error: ${e}`); }
 
+// Scratch cleanup — test fixtures the suite leaked into the repo root (#437).
+// Reported alongside worktree cleanup deliberately: both are resources created
+// by tooling that only get cleaned on the happy path, and 34 of these
+// accumulated because each one had to be found by eye.
+if (PROJECT_ROOT) try {
+  const { cleanupScratchDirs } = await import('../lib/scratch-cleanup.ts');
+  // Gated on the directory the allowlist is derived FROM, the way the
+  // worktree block is gated on `.claude/worktrees`. Without a `test/` there
+  // is nothing to derive and nothing could be swept anyway — but a sweep
+  // that runs with an empty allowlist and reports success is the shape this
+  // repo keeps finding, so the skip is explicit rather than incidental.
+  const sr = existsSync(join(PROJECT_ROOT, 'test'))
+    ? cleanupScratchDirs({ repoRoot: PROJECT_ROOT })
+    : { removed: [], kept: [], refused: [], errors: [] };
+  if (sr.removed.length) {
+    deletedCount += sr.removed.length;
+    log(`SCRATCH cleanup [${PROJECT_ROOT}]: removed ${sr.removed.length} leaked test scratch dirs`);
+  }
+  for (const e of sr.errors) log(`SCRATCH cleanup error: ${e}`);
+} catch (e) { log(`SCRATCH cleanup error: ${e}`); }
+
 // Branch cleanup
 if (PROJECT_ROOT) try {
   const { cleanupStaleBranches } = await import('../lib/branch-cleanup.ts');

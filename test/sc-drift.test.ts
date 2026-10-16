@@ -4,18 +4,18 @@ import { join } from "path";
 import { detectDrift, extractKeywords } from "../scripts/detect-sc-drift";
 
 const ROOT = join(import.meta.dir, "..");
-const TEMP_DIR = mkdtempSync(join(ROOT, ".tmp-sc-drift-test-"));
-const TEMP_SPECS = join(TEMP_DIR, "specs");
+/** Created in `beforeAll`, not at module scope — see #437. */
+let TEMP_DIR = "";
+let TEMP_SPECS = "";
 
 beforeAll(() => {
-  if (existsSync(TEMP_DIR)) {
-    rmSync(TEMP_DIR, { recursive: true });
-  }
+  TEMP_DIR = mkdtempSync(join(ROOT, ".tmp-sc-drift-test-"));
+  TEMP_SPECS = join(TEMP_DIR, "specs");
   mkdirSync(TEMP_SPECS, { recursive: true });
 });
 
 afterAll(() => {
-  if (existsSync(TEMP_DIR)) {
+  if (TEMP_DIR && existsSync(TEMP_DIR)) {
     rmSync(TEMP_DIR, { recursive: true });
   }
 });

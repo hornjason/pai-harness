@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { stripJsComments } from "../lib/strip-js-comments";
+import { fixedScratchRoots, uniqueScratchPrefixes } from "../lib/scratch-roots";
+import { scratchPrefixes } from "../lib/scratch-cleanup";
 
 /**
  * #323 SC-6 — a fixed scratch path is a shared mutable resource.
@@ -60,40 +62,15 @@ const TEST_DIR = join(ROOT, "test");
 const SELF = "scratch-paths-unique.test.ts";
 
 /**
- * Identifiers bound to the repository itself, per file.
+ * The detectors moved to `lib/scratch-roots.ts` in #437 and are imported above.
  *
- * This is the half the first cut of the detector left out, and it reported 20
- * violations of which 19 were correct code. `join(tmpDir, ".claude")` is a
- * fixed name under an ALREADY-UNIQUE root — the suffix is on the parent, which
- * is just as good and is what most suites here already do. Only a path rooted
- * at the shared checkout can collide, so the root is the thing to look at.
+ * They had to move because #437's sweeper needs the other half of the same
+ * parse — which prefixes the `mkdtempSync` roots use — to build its deletion
+ * allowlist. A second copy of the parse would be two deciders that agree, and
+ * this one has a recursive delete on the end of it: a copy that quietly
+ * stopped seeing a prefix would not go red, it would stop sweeping, which is
+ * indistinguishable from nothing having leaked.
  */
-function repoRootIdents(src: string): Set<string> {
-  const idents = new Set<string>();
-  for (const m of src.matchAll(/const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^;\n]+)/g)) {
-    if (/import\.meta\.dir|process\.cwd\(\)/.test(m[2])) idents.add(m[1]);
-  }
-  return idents;
-}
-
-/** Scratch roots declared at a fixed path under the shared checkout. */
-export function fixedScratchRoots(source: string): string[] {
-  const src = stripJsComments(source);
-  const roots = repoRootIdents(src);
-  const out: string[] = [];
-  const decl = /const\s+([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(mkdtempSync\s*\(\s*)?join\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*"(\.[^"]*)"/g;
-  for (const m of src.matchAll(decl)) {
-    const [, name, wrapped, rootIdent, literal] = m;
-    if (wrapped) continue; // mkdtempSync — unique per run, which is the fix
-    if (!roots.has(rootIdent)) continue; // already under a unique root
-    if (literal === "." || literal === ".." || literal.startsWith("../")) continue; // navigation
-    // Only a directory this suite CREATES or DELETES is scratch. One it merely
-    // reads is configuration, and renaming it per run would break the read.
-    const mutates = new RegExp(`(?:mkdirSync|rmSync)\\(\\s*(?:join\\(\\s*)?${name}\\b`);
-    if (mutates.test(src)) out.push(`${name} = ${literal}`);
-  }
-  return out;
-}
 
 describe("#323 SC-6: no suite plants its fixtures at a path another run shares", () => {
   test("every in-repo scratch root in test/ is unique per run", () => {

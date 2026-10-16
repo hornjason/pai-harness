@@ -6241,3 +6241,136 @@ row higher is a reasoning error worth recording.
 
 None is left in the tree; all were run and reverted, and the collapse that
 row five prompted is in `lib/worktree-cleanup.ts`.
+
+## Test scratch directories are created in a hook, and swept when they are not (#437)
+
+Jason found 34 hidden directories in the repo root. `.tree-under-test-scratch-*`
+accounted for 23 of them. All but one were **0 bytes** — gitignored, so nothing
+was ever at risk of being committed; this is litter, not corruption.
+
+Five suites built their fixtures with `mkdtempSync(join(REPO_ROOT, "<prefix>"))`
+at **module scope**. Every one of them also had correct `afterAll` cleanup, and
+that is the point rather than an irony: the directory appears when bun *imports*
+the file, which is before any lifecycle hook can run and before any hook is
+guaranteed to run at all. A suite interrupted, killed, or throwing during
+collection leaves one behind, empty. 0 bytes is the fingerprint. This repo kills
+suites often — the DIR-L29 guard, Ctrl-C, one jetsam kill — so the leak rate was
+not theoretical.
+
+The directories are deliberately inside the repo root rather than `/tmp`:
+`tree-under-test` scans the repo tree and `sc-drift` needs repo-relative paths.
+Relocating them was never available as a fix.
+
+### One parse, two readings
+
+`lib/scratch-roots.ts` owns the question "what does a scratch root look like",
+and two callers ask it differently:
+
+| Caller | Asks | Because |
+|---|---|---|
+| `test/scratch-paths-unique.test.ts` | which roots are at a FIXED path | a fixed path under the shared checkout is a shared mutable resource (#323 SC-6) |
+| `lib/scratch-cleanup.ts` | which PREFIXES the unique roots use | a sweeper needs to know what it may delete |
+
+Two copies of that parse would be two deciders that agree — see
+`.claude/rules/checks-must-be-able-to-fail.md` — and worse than usual here,
+because the second one's output is a **deletion allowlist**. A copy that
+quietly stopped seeing a prefix would not go red; it would stop sweeping, and
+a sweeper that sweeps nothing is indistinguishable from nothing having leaked.
+
+The prefix list is **derived, never written down**. A hand-maintained list is a
+second place to forget, and forgetting there means a new suite's leak
+accumulates silently — which is this defect again, one level up.
+
+`test/scratch-paths-unique.test.ts` is excluded from the derivation, and that
+exclusion is itself asserted. It carries `mkdtempSync(join(ROOT, ".x-"))` as a
+string LITERAL, because that is the only way to prove its detector still fires.
+Deriving from it would put a test fixture into a deletion allowlist — the
+self-reference trap with a recursive delete on the end of it.
+
+### What the sweeper will not touch
+
+Every path removed is one the sweeper built from `join(repoRoot, entry)` where
+`entry` came from reading that same directory. No absolute path from any other
+source can reach the `rmSync` — #436 established that content must never steer
+a recursive delete, and a prefix list is content.
+
+An entry must start with a derived prefix **and carry a suffix after it**. A
+bare prefix with nothing appended is refused: that is a directory someone made
+deliberately with the same name, and the sweeper cannot tell the difference, so
+it declines.
+
+Age is the other guard, and it is not belt-and-braces. This runs at
+SessionStart while another session may be three minutes into a suite whose
+scratch directory is live. The directory is anonymous and holds no lock, so the
+suite that created it cannot defend it — age is the only signal available, the
+threshold is one hour, and the direction to be wrong in is leaving litter.
+
+### Success Criteria
+
+- [x] SC-1604: test/scratch-cleanup.test.ts contains [the prefix list is derived from the suites, never listed] — a prefix a suite plants is found and one nobody plants is not
+- [x] SC-1605: test/scratch-cleanup.test.ts contains [the real tree's prefixes are all found, and the fixture file's are not] — a derived list can come back empty, and an empty deletion allowlist sweeps nothing, which looks exactly like nothing having leaked
+- [x] SC-1606: test/scratch-cleanup.test.ts contains [the two readings of a scratch root come from one parse] — including the assignment form, which #437's own fix introduced
+- [x] SC-1607: test/scratch-cleanup.test.ts contains [a leaked directory goes and an unrelated one stays] — driven against planted fixtures in a throwaway root
+- [x] SC-1608: test/scratch-cleanup.test.ts contains [a prefix is a deletion allowlist and is refused as one] — five near misses, plus the empty-allowlist case which must sweep nothing
+- [x] SC-1609: test/scratch-cleanup.test.ts contains [a scratch directory young enough to be in use is kept] — with the file case and the dry run alongside it
+- [x] SC-1610: test/scratch-cleanup.test.ts contains [no suite in test/ creates a filesystem path at module scope] — asserted on the source AND by importing the five repaired suites for real
+- [x] SC-1611: test/scratch-cleanup.test.ts contains [the sweep runs where worktree cleanup already runs] — a cleaner nobody invokes is a function, not a cleaner
+- [x] SC-1612: test/scratch-cleanup.test.ts contains [a short derived prefix cannot reach .claude or .github] — BUG-437-A: the allowlist is derived from file content, so the entry must match the full name mkdtempSync writes, not merely start with a prefix
+
+### What was broken to prove it (SC-1604..1611)
+
+Run over `test/scratch-cleanup.test.ts` and `test/scratch-paths-unique.test.ts`
+— 24 tests, baseline 0 fail. Every count predicted before the battery ran.
+
+| Mutation | Red |
+|---|---|
+| `scratchPrefixes` derives nothing, so the allowlist is always empty | 5 of 24 — the fail-safe direction, and the reason SC-1605 measures the real tree: an empty allowlist sweeps nothing, which reads as nothing having leaked |
+| `isScratchEntry` accepts everything | 6 of 24 |
+| BUG-437-A verbatim — back to "starts with a prefix and is longer" | 3 of 24 |
+| the opening anchor dropped, so a prefix becomes a substring | 1 of 24 — measured standalone twice; inside the batched runner this row reported a truncated `1 of 7`, so the number here is the standalone one |
+| the closing anchor dropped, so anything may follow the suffix | 2 of 24 |
+| the suffix relaxed from exactly six characters to one-or-more | 3 of 24 |
+| the prefix no longer escaped before it reaches a `RegExp` | 1 of 24 — an unescaped `.` is "any character" |
+| the age guard removed | 1 of 24 — a scratch directory 30 seconds old is swept out from under a live suite |
+| the age comparison inverted, so only live scratch is swept | 3 of 24 |
+| `dryRun` ignored, so a report deletes | 1 of 24 |
+| the fixture file no longer excluded from the derivation | 1 of 24 — `.x-`, a literal written to prove a detector fires, enters a deletion allowlist |
+| the parse back to `const`-only, blind to the assignment form | 2 of 24 — #437's own fix writes `let S = ""` plus a later assignment, so this is the hole the fix would have opened |
+| `moduleScopeCreations` finds nothing | 1 of 24 |
+| `sc-drift.test.ts` creates its scratch at module scope again — the defect verbatim | 2 of 24 — the source position AND the executed import |
+| the SessionStart hook stops calling the sweeper | 1 of 24 |
+| the hook's scope gate removed | 1 of 24 |
+| the module-scope detector stops stripping comments | 1 of 24 — it then reports this file's own docblock, the self-reference trap again |
+
+None of the seventeen is left in the tree; all were run and reverted.
+
+### BUG-437-A — the allowlist was the hole, not the paths
+
+Security review of the first push said the delete was content-steered. It was
+right, and running it confirmed the exact case: `isScratchEntry(".claude",
+[".c"])` returned **true**. The prefix list is derived from `test/*.ts`, so a
+future suite writing `mkdtempSync(join(REPO_ROOT, ".c"))` — a plausible typo,
+never mind anything hostile — would have armed a SessionStart hook to delete
+`.claude/` recursively.
+
+The paths were never the hole; the sweeper builds those itself. The
+**allowlist** was, and an allowlist derived from file content steers a
+recursive delete just as surely as a path would. The predicate now matches the
+full name `mkdtempSync` writes — a prefix followed by exactly six characters
+from `[A-Za-z0-9]`, measured over 200 calls rather than read off the
+documentation.
+
+### Three gaps the predictions found
+
+Each is a row that came back lower than predicted, and each was a case the
+tests did not contain rather than a defect in the code:
+
+1. The near-miss list had the prefix *minus its trailing separator* where the
+   case that matters is the prefix *exactly* — so `entry.length > p.length` was
+   guarded only by a unit test.
+2. The list had near misses of the PREFIX and none of the SUFFIX, so relaxing
+   "exactly six characters" to "one or more" went half-unnoticed.
+3. `startsWith(p)` beside a slice at `p.length` measured **0 of 24** when
+   relaxed to `includes` — two deciders that agree, provably identical on every
+   input, with the delete still on the end of them. Collapsed into one anchored
+   match. The anchors are now separately mutable and separately caught.

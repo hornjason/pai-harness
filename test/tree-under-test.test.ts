@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
@@ -41,7 +41,16 @@ const GATE_SUITE = join(REPO_ROOT, "gates", "workflow.test.ts");
  * `bunx tsc` may fail to resolve a compiler at all, and that exits non-zero,
  * which reads as "the type error was caught" no matter what the files contain.
  */
-const SCRATCH = mkdtempSync(join(REPO_ROOT, ".tree-under-test-scratch-"));
+/**
+ * Created in `beforeAll`, not at module scope (#437).
+ *
+ * At module scope the directory appears when bun IMPORTS this file — before
+ * any lifecycle hook can run, and before any hook is guaranteed to run at
+ * all. A suite that is interrupted, killed, or that throws during collection
+ * leaves it behind empty. 34 of those had accumulated in the repo root; all
+ * but one were 0 bytes, which is the fingerprint of exactly that.
+ */
+let SCRATCH = "";
 
 /**
  * The mutant lives in gates/ so its relative imports (`./schema` and friends)
@@ -54,6 +63,14 @@ const MUTANT = join(REPO_ROOT, "gates", ".tree-under-test-mutant.ts");
 let WORK = "";
 let CONFIG_TREE = "";
 let BRANCH_TREE = "";
+
+beforeAll(() => {
+  SCRATCH = mkdtempSync(join(REPO_ROOT, ".tree-under-test-scratch-"));
+});
+
+afterAll(() => {
+  if (SCRATCH) rmSync(SCRATCH, { recursive: true, force: true });
+});
 
 beforeEach(() => {
   rmSync(SCRATCH, { recursive: true, force: true });
