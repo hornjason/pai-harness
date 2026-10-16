@@ -7376,6 +7376,46 @@ terminal object holds `status` and `workDir` and nothing that says why. The log
 line one line above prints `'unknown'` and throws it away. Different defect
 class from #61, so it is filed rather than folded in.
 
+### Mutations, predicted before running and measured after
+
+Over `test/workflow-contracts.test.ts` (10 tests). Every mutation is in
+`lib/workflow-test-harness.ts`, which nothing else imports, so the battery is
+scoped to the one file and a row means what it says.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| an array synthesises as `[]` instead of one element | 6 | 6 |
+| a string synthesises as the single word `synthetic` | 5 | **6** — see below |
+| a schemaless call returns `{}` and is not recorded | 1 | 1 |
+| `phaseOrderViolations` returns `[]` for everything | 2 | 2 |
+| an unknown phase is skipped instead of flagged | 1 | 1 |
+| re-entering a phase counts as going backwards | 1 | 1 |
+| `agentPhaseViolations` flags the forward direction too | 2 | 2 |
+| `agentPhaseViolations` reports unknown phases as well | 1 | 1 |
+| `callGraph` compares labels only, dropping phases | 1 | 1 |
+| `workflowBody` returns the source with `meta` still in it | 8 | 8 |
+| the `maxCalls` cap stops silently instead of refusing | 1 | 1 |
+
+None of the eleven is left in the tree; all were run and reverted.
+
+**The row that came back high.** Ten matched exactly; the one-word-string row
+measured 6 against a predicted 5. A row HIGHER than predicted is either a
+broken mutant or a prediction that was wrong, and the way to tell is to read
+WHICH test went red rather than the count.
+
+The extra red is SC-1752, the unschemaed-call-site row, and it is red for a
+reason worth keeping: with one-word strings the run is refused at Discovery
+and never reaches `brief-preflight-assemble` at all, so `unschemaed` comes back
+`[]`. The finding disappears — not because the call site acquired a schema, but
+because the run stopped before the question was asked. That is a real
+dependency and the check catching it makes it stronger than the prediction
+allowed for, not weaker.
+
+It is also the clearest statement of why `SYNTHETIC_TEXT` is several words.
+The first draft's one-word placeholder produced a green suite, three identical
+ceremony tiers, and an empty findings list — a harness reporting confidently
+on a run that stopped in the first third.
+
 ### Success criteria
 
 - [x] SC-1748: test/workflow-contracts.test.ts contains [ship.js runs end to end in well under a second and returns a terminal status] — with a floor on the agent count, because a run that called nothing would satisfy every other assertion
