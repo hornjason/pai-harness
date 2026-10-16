@@ -2722,6 +2722,153 @@ function configAccessPattern(): RegExp {
   );
 }
 
+/**
+ * Calls whose arguments are FILESYSTEM PATHS (#415).
+ *
+ * The positive list IS the definition, not a heuristic: a config path that
+ * reaches the disk is either built by a path API or handed straight to an fs
+ * one. Everything a `node:path` call touches is a path by construction.
+ */
+const FS_PATH_CALLS = new Set([
+  "existsSync", "readFileSync", "writeFileSync", "appendFileSync", "readdirSync",
+  "mkdirSync", "rmSync", "rmdirSync", "unlinkSync", "statSync", "lstatSync",
+  "copyFileSync", "cpSync", "renameSync", "realpathSync", "readlinkSync", "openSync",
+]);
+
+/**
+ * `node:path` builders. Receiver-checked, unlike the fs names above, because
+ * `Array.prototype.join` shares one of them and `["a", "b"].join(", ")` is
+ * text. A bare `join` is the named import this repo uses; `path.join` is the
+ * namespace form.
+ */
+const PATH_BUILDERS = new Set(["join", "resolve", "relative", "normalize"]);
+
+/**
+ * Handing a shell a command that names the config is a read, and the literal
+ * carrying it has spaces in it by construction — `cat <root>/…json` would
+ * otherwise read as prose and go uncounted, which is the one fail-open the
+ * prose rule could have opened on its own.
+ */
+const SHELL_CALLS = new Set(["execSync", "exec", "execFileSync", "spawnSync", "spawn"]);
+
+function isPathCall(callee: string | null): boolean {
+  if (!callee) return false;
+  const bare = callee.slice(callee.lastIndexOf(".") + 1);
+  if (FS_PATH_CALLS.has(bare) || SHELL_CALLS.has(bare)) return true;
+  return PATH_BUILDERS.has(bare) && (callee === bare || callee === `path.${bare}`);
+}
+
+/**
+ * Calls that take TEXT. Both are universal JS idioms rather than names out of
+ * this repo — `x.push(…)` into a list of messages, and `console.*` — and both
+ * are needed because a documentation entry can carry a path-SHAPED literal:
+ * `keyFiles.push({ file: "…/" })` is a row in a generated table, not a read.
+ */
+function isTextCall(callee: string | null): boolean {
+  if (!callee) return false;
+  return callee.endsWith(".push") || callee.startsWith("console.");
+}
+
+/** The dotted name immediately left of an open paren, or `""` for a group. */
+function calleeBefore(text: string, parenIndex: number): string {
+  let j = parenIndex - 1;
+  while (j >= 0 && /\s/.test(text[j]!)) j--;
+  const end = j + 1;
+  while (j >= 0 && /[A-Za-z0-9_$.]/.test(text[j]!)) j--;
+  return text.slice(j + 1, end);
+}
+
+/** What a config-path match turned out to be. */
+export type ConfigSiteKind = "use" | "mention";
+
+export interface ConfigSite {
+  /** Offset in the comment-stripped source. */
+  index: number;
+  kind: ConfigSiteKind;
+  /** Innermost enclosing call, or null at statement level. */
+  callee: string | null;
+  /** The literal run the match sits in, or null if it is not in one. */
+  literal: string | null;
+}
+
+/**
+ * Is this path being BUILT, or merely NAMED? (#415)
+ *
+ * The one place that decides, so the mutation harness has one site to
+ * collapse (`.claude/rules/checks-must-be-able-to-fail.md`). Collapsing it
+ * either way moves a banked number and the both-ways ratchet refuses, which
+ * is the property `test/config-access-mentions.test.ts` SC-1553 pins down.
+ *
+ * ## How the two views are read
+ *
+ * There is NO second lexer here. `stripJsComments` already scans code,
+ * strings, templates (with `${}` to any depth) and regex literals, offset
+ * preserving, and `blankLiterals` gives a view in which every literal's
+ * CONTENTS are spaces and its delimiters are not. Over that view a naive
+ * paren counter is exact — no quote, paren or brace inside a string or a
+ * regex can reach it — and the literal a match sits in is simply the maximal
+ * run of blanked offsets around it. A second scanner answering the same
+ * question is a second scanner to drift.
+ *
+ * ## The decision, and which way each branch is allowed to be wrong
+ *
+ * 1. an fs, shell or `node:path` call
+ *    around it                                → USE, whatever the text says
+ * 2. otherwise, prose around the path         → MENTION
+ * 3. otherwise, a path-shaped literal into a
+ *    message list or the console              → MENTION
+ * 4. otherwise                                → USE
+ *
+ * Rule 4 is the fail-closed default and it is the reason an unrecognised
+ * helper, a bare `const p = "…"` or a path built by concatenation still
+ * counts: a path-shaped literal is a path until something shows otherwise.
+ *
+ * STATED LIMIT, in the tradition of ADR-001's: a literal containing
+ * whitespace, passed to a call this cannot recognise, reads as prose. Both
+ * halves have to be true at once, which is why the remaining blind spot is a
+ * sentence that is also a path.
+ */
+export function classifyConfigSites(source: string): ConfigSite[] {
+  const code = stripJsComments(source);
+  const bare = stripJsComments(source, { blankLiterals: true });
+
+  const sites: ConfigSite[] = [];
+  const pattern = configAccessPattern();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(code)) !== null) {
+    const at = match.index;
+
+    let depthCallee: string | null = null;
+    const stack: string[] = [];
+    for (let i = 0; i < at; i++) {
+      const c = bare[i];
+      if (c === "(") stack.push(calleeBefore(bare, i));
+      else if (c === ")") stack.pop();
+    }
+    depthCallee = stack.length > 0 ? stack[stack.length - 1]! : null;
+
+    let literal: string | null = null;
+    if (bare[at] === " " && code[at] !== " ") {
+      let lo = at;
+      let hi = at;
+      while (lo > 0 && bare[lo - 1] === " ") lo--;
+      while (hi + 1 < bare.length && bare[hi + 1] === " ") hi++;
+      literal = code.slice(lo, hi + 1);
+    }
+
+    const kind: ConfigSiteKind = isPathCall(depthCallee)
+      ? "use"
+      : literal !== null && /\s/.test(literal)
+        ? "mention"
+        : isTextCall(depthCallee)
+          ? "mention"
+          : "use";
+
+    sites.push({ index: at, kind, callee: depthCallee, literal });
+  }
+  return sites;
+}
+
 /** Directories CHECK-1 walks. Tests and `test/` are excluded by ADR-002 D4. */
 const CONFIG_SCAN_DIRS = ["lib", "gates", "scripts", "hooks", "generators"];
 
@@ -2774,7 +2921,7 @@ export function scanConfigAccess(root: string): ConfigAccessScan {
   for (const f of files) {
     bytesScanned += f.text.length;
     if (f.path === CONFIG_LOADER) continue;
-    const n = (stripJsComments(f.text).match(configAccessPattern()) || []).length;
+    const n = classifyConfigSites(f.text).filter(site => site.kind === "use").length;
     if (n > 0) counts[f.path] = n;
   }
   return { counts, filesScanned: files.length, bytesScanned };
@@ -2786,6 +2933,15 @@ export function scanConfigAccess(root: string): ConfigAccessScan {
  * Comments are stripped and literals are NOT, which is the whole point —
  * `ship.js` is mostly prompt text, and the eleven sites ADR-001's check could
  * not see all live inside template literals handed to agents.
+ *
+ * **It does NOT use `classifyConfigSites`, and must not** (#415). CHECK-1's
+ * subject is a path being built in code, so a sentence naming the file is
+ * noise. CHECK-2's subject is the sentence: "Read ${PROJECT_ROOT}/…" IS the
+ * violation, and it is prose by construction. Pointing the classifier at this
+ * scan would silently empty the check — every one of its sites would reclassify
+ * as a mention. `test/config-access-mentions.test.ts` SC-1552 runs one sentence
+ * through both scans and asserts they disagree, so the collapse cannot be made
+ * quietly in the name of consistency.
  */
 export function scanPromptConfigAccess(root: string): ConfigAccessScan {
   const dir = join(root, "workflows");

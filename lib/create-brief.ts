@@ -5,6 +5,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { writeRoleConfig } from "./config-loader";
 import type { AgentMeta } from "./generators/types";
 
 /**
@@ -83,22 +84,9 @@ export function writeBriefTemplate(templatesDir: string, roleName: string, descr
   return filePath;
 }
 
-/**
- * Add a new role to the project's rungate.json config.
- * Adds brief path, isolation: worktree, and a standardTask.
- */
-export function addRoleToConfig(configPath: string, roleName: string, description: string): void {
-  if (!existsSync(configPath)) {
-    throw new Error(`Config file not found: ${configPath}`);
-  }
-  const config = JSON.parse(readFileSync(configPath, "utf-8"));
-  if (!config.roles) {
-    config.roles = {};
-  }
-  if (config.roles[roleName]) {
-    throw new Error(`Role '${roleName}' already exists in ${configPath}`);
-  }
-  config.roles[roleName] = {
+/** The entry a newly created role gets: brief path, isolation, standardTask. */
+export function buildRoleEntry(roleName: string, description: string) {
+  return {
     brief: `.claude/agents/${roleName}.md`,
     isolation: "worktree",
     standardTask: `Perform ${description.toLowerCase()} tasks as assigned`,
@@ -106,7 +94,24 @@ export function addRoleToConfig(configPath: string, roleName: string, descriptio
     tools: "[Bash, Read]",
     model: "sonnet",
   };
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+}
+
+/**
+ * Register a new role in the project's config, whichever layout it is on.
+ *
+ * This file decides what a role ENTRY looks like; `writeRoleConfig` decides
+ * which file it belongs in. Keeping the second half in the loader is #415:
+ * the predecessor took a `configPath` from its caller, and every caller built
+ * `.claude/rungate.json` by hand.
+ *
+ * Returns the file the role was written to.
+ */
+export function registerRole(
+  projectRoot: string,
+  roleName: string,
+  description: string,
+): string {
+  return writeRoleConfig(projectRoot, roleName, buildRoleEntry(roleName, description));
 }
 
 export const DEFAULT_AGENT_META: Record<string, AgentMeta> = {

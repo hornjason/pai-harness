@@ -1,11 +1,20 @@
 /**
- * config-loader.ts — Central config loader for rungate
+ * config-loader.ts — the one module that knows where rungate config LIVES
  *
  * Reads config from .claude/rungate/ directory (preferred) or
  * .claude/rungate.json (fallback). Merges directory files into
  * the same shape as the monolith for backward compatibility.
+ *
+ * It owns the WRITE side too (#415). ADR-002 D1 is usually quoted as "only
+ * this module may read the config", but the thing being centralised is the
+ * knowledge of which file a project's config is in, and a writer that answers
+ * that question for itself is a second answer to drift from. `create-brief`
+ * was the live instance: it built `.claude/rungate.json`, handed it to a
+ * writer, and on a project that had followed the documented migration printed
+ * "not found — role not registered", naming a file the project is documented
+ * not to have. The brief was written and the role was registered nowhere.
  */
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { z } from "zod";
 import {
@@ -98,7 +107,13 @@ export const DEFAULT_TEST_TIMEOUT = 120000;
  * Malformed JSON and orphaned fragments THROW, per ADR-001 D2. Unchanged.
  */
 export type ConfigResolution =
-  | { status: "resolved"; config: ResolvedConfig; source: "directory" | "monolith" }
+  | {
+      status: "resolved";
+      config: ResolvedConfig;
+      source: "directory" | "monolith";
+      /** The directory or file the config was read from (#415). */
+      path: string;
+    }
   | { status: "absent" };
 
 const DIRECTORY_CONFIG_FILES = ["config.json", "roles.json", "hooks.json", "compliance.json"];
@@ -143,11 +158,21 @@ export function resolveConfig(projectRoot: string): ConfigResolution {
   // and silently drop issueRepo/ci/test — ADR-001 Step E keeps the monolith
   // in place during migration, so that state is on the normal upgrade path.
   if (existsSync(join(dirPath, "config.json"))) {
-    return { status: "resolved", config: loadFromDirectory(dirPath), source: "directory" };
+    return {
+      status: "resolved",
+      config: loadFromDirectory(dirPath),
+      source: "directory",
+      path: dirPath,
+    };
   }
 
   if (existsSync(monolithPath)) {
-    return { status: "resolved", config: loadFromMonolith(monolithPath), source: "monolith" };
+    return {
+      status: "resolved",
+      config: loadFromMonolith(monolithPath),
+      source: "monolith",
+      path: monolithPath,
+    };
   }
 
   // Fragments with no config.json and no monolith is a broken directory
@@ -207,6 +232,97 @@ function loadFromMonolith(path: string): ResolvedConfig {
 
 function readJson(path: string): any {
   return JSON.parse(readFileSync(path, "utf-8"));
+}
+
+/**
+ * Register a role in whichever layout the project is actually on (#415).
+ *
+ * The counterpart to `loadRoleConfig`, and deliberately in the same module:
+ * the writer has to make the same choice between the two layouts that the
+ * reader makes, and a second place making it is how `create-brief` came to
+ * write a monolith a migrated consumer does not have.
+ *
+ * Throws on an unscaffolded project. There is no third branch that invents a
+ * layout — a tool that creates `.claude/rungate.json` beside an existing
+ * `.claude/rungate/` gives the project two role sets and lets whichever the
+ * reader prefers decide what the project is, which is #70 one layer up.
+ *
+ * Returns the file written, so a caller can say where the role went rather
+ * than naming a path it guessed.
+ */
+export function writeRoleConfig(
+  projectRoot: string,
+  roleName: string,
+  role: unknown,
+): string {
+  const resolution = resolveConfig(projectRoot);
+  if (resolution.status === "absent") {
+    throw new Error(
+      `No rungate config found under ${join(projectRoot, ".claude")} — ` +
+        `scaffold the project before registering a role`,
+    );
+  }
+
+  const target =
+    resolution.source === "directory"
+      ? join(resolution.path, "roles.json")
+      : resolution.path;
+
+  const existing = existsSync(target) ? readJson(target) : {};
+  const roles = resolution.source === "directory" ? existing : (existing.roles ??= {});
+
+  if (roles[roleName]) {
+    throw new Error(`Role '${roleName}' already exists in ${target}`);
+  }
+  roles[roleName] = role;
+
+  writeFileSync(target, JSON.stringify(existing, null, 2) + "\n");
+  return target;
+}
+
+/** Whether a scaffold wrote, or stepped aside because something was there. */
+export type ScaffoldWriteResult =
+  | { status: "created"; path: string }
+  | { status: "exists"; path: string };
+
+/**
+ * Create a project's config in the DIRECTORY layout (#415).
+ *
+ * `scripts/scaffold-rungate-config.ts` built these four paths itself, which
+ * put two modules in the business of knowing the layout — and left the
+ * scaffolder banked in the config-access ratchet at a number no migration
+ * could ever lower, because there was no read to migrate.
+ *
+ * **The "already there" decision lives here and only here.** The script used
+ * to make it as well, which made this one unreachable: a mutation that
+ * deleted it left the caller's copy still refusing, so the guard measured as
+ * load-bearing while nothing depended on it. Two deciders that agree are
+ * behaviourally one.
+ *
+ * Returns rather than throwing, so the caller reports the outcome without
+ * having to sniff an exception message for a prefix.
+ */
+export function writeScaffoldedConfig(
+  projectRoot: string,
+  parts: { config: unknown; roles: unknown; hooks: unknown; compliance: unknown },
+): ScaffoldWriteResult {
+  const resolution = resolveConfig(projectRoot);
+  if (resolution.status === "resolved") {
+    return { status: "exists", path: resolution.path };
+  }
+
+  const dirPath = join(projectRoot, ".claude", "rungate");
+  mkdirSync(dirPath, { recursive: true });
+  const files: Array<[string, unknown]> = [
+    ["config.json", parts.config],
+    ["roles.json", parts.roles],
+    ["hooks.json", parts.hooks],
+    ["compliance.json", parts.compliance],
+  ];
+  for (const [name, body] of files) {
+    writeFileSync(join(dirPath, name), JSON.stringify(body, null, 2) + "\n");
+  }
+  return { status: "created", path: dirPath };
 }
 
 export function loadComplianceConfig(projectRoot: string): ComplianceConfig | null {

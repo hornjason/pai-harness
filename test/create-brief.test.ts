@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
-import { generateBriefTemplate, addRoleToConfig, buildAgentMeta } from "../lib/create-brief";
+import { generateBriefTemplate, registerRole, buildAgentMeta } from "../lib/create-brief";
 
 const ROOT = join(import.meta.dir, "..");
 const TEMPLATES_DIR = join(ROOT, "templates", "agent-briefs");
@@ -64,15 +64,18 @@ describe("create-brief", () => {
     });
   });
 
-  describe("AC-3: addRoleToConfig updates rungate.json", () => {
-    const tmpConfig = "/tmp/rungate-create-brief-test/rungate.json";
+  describe("AC-3: registerRole puts the role in the project's config", () => {
+    // #415: the role goes where the LOADER says the config is, so the test
+    // hands over a project root rather than a path it picked itself.
+    const projectRoot = "/tmp/rungate-create-brief-test";
+    const tmpConfig = `${projectRoot}/.claude/rungate.json`;
 
     beforeAll(() => {
-      mkdirSync("/tmp/rungate-create-brief-test", { recursive: true });
+      mkdirSync(`${projectRoot}/.claude`, { recursive: true });
     });
 
     afterAll(() => {
-      try { rmSync("/tmp/rungate-create-brief-test", { recursive: true }); } catch {}
+      try { rmSync(projectRoot, { recursive: true }); } catch {}
     });
 
     test("adds new role with brief, isolation, and standardTask", () => {
@@ -84,7 +87,8 @@ describe("create-brief", () => {
       };
       writeFileSync(tmpConfig, JSON.stringify(initialConfig, null, 2));
 
-      addRoleToConfig(tmpConfig, "tester3", "Test engineer who verifies changes");
+      expect(registerRole(projectRoot, "tester3", "Test engineer who verifies changes"))
+        .toBe(tmpConfig);
 
       const updated = JSON.parse(readFileSync(tmpConfig, "utf-8"));
       expect(updated.roles.tester3).toBeDefined();
@@ -108,7 +112,7 @@ describe("create-brief", () => {
       };
       writeFileSync(tmpConfig, JSON.stringify(initialConfig, null, 2));
 
-      addRoleToConfig(tmpConfig, "tester3", "Test engineer");
+      registerRole(projectRoot, "tester3", "Test engineer");
 
       const updated = JSON.parse(readFileSync(tmpConfig, "utf-8"));
       expect(updated.roles.marcus.standardTask).toBe("existing task");
@@ -130,7 +134,18 @@ describe("create-brief", () => {
       };
       writeFileSync(tmpConfig, JSON.stringify(initialConfig, null, 2));
 
-      expect(() => addRoleToConfig(tmpConfig, "tester3", "Test engineer")).toThrow(/already exists/);
+      expect(() => registerRole(projectRoot, "tester3", "Test engineer")).toThrow(/already exists/);
+    });
+
+    test("throws on an unscaffolded project rather than inventing a layout", () => {
+      const bare = `${projectRoot}-bare`;
+      mkdirSync(bare, { recursive: true });
+      try {
+        expect(() => registerRole(bare, "tester3", "Test engineer"))
+          .toThrow(/No rungate config found/);
+      } finally {
+        rmSync(bare, { recursive: true, force: true });
+      }
     });
   });
 
