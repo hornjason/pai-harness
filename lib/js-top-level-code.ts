@@ -35,7 +35,26 @@ function regexCanFollow(prev: string): boolean {
   return !/[A-Za-z0-9_$)\]]/.test(prev);
 }
 
-export function stripStringsAndComments(src: string): string {
+/**
+ * `keepStringContents` leaves quoted string bodies intact while still blanking
+ * comments, regex literals and template text.
+ *
+ * Added for #484, which needs the opposite half of what every other caller
+ * wants: the path segments in `join(__dirname, "..", "config", "x.json")` are
+ * the payload, and the reason it needs this tokenizer at all is that the same
+ * expression written in a DOC COMMENT must not be read as a call. The first
+ * draft of that check scanned raw source and reported its own module docstring
+ * as a violation — #454 is the same mistake in CONFIG-1, two weeks earlier.
+ *
+ * It is an option on this function rather than a second stripper in that
+ * module on purpose. Two functions that each decide what a comment is are two
+ * deciders, and the one that is wrong is invisible — see
+ * `.claude/rules/checks-must-be-able-to-fail.md`.
+ */
+export function stripStringsAndComments(
+  src: string,
+  { keepStringContents = false }: { keepStringContents?: boolean } = {},
+): string {
   let out = "";
   let i = 0;
   // Stack of brace depths, one entry per template literal currently open. An
@@ -100,13 +119,19 @@ export function stripStringsAndComments(src: string): string {
       i++;
       while (i < src.length) {
         if (src[i] === "\\") {
+          // Carry the escape through verbatim under `keepStringContents`.
+          // Dropping both characters turned `"a\"b"` into `ab`, which is not
+          // a shorter version of the segment — it is a DIFFERENT path, and a
+          // caller resolving it would report a file the code never reads.
+          // Silently wrong beats loudly wrong only in the wrong direction.
+          if (keepStringContents) out += src.slice(i, i + 2);
           i += 2;
           continue;
         }
         if (src[i] === quote) break;
         // Unterminated strings must not swallow the rest of the file.
         if (src[i] === "\n") break;
-        out += src[i] === "\n" ? "\n" : "";
+        out += keepStringContents ? src[i] : "";
         i++;
       }
       if (src[i] === quote) {

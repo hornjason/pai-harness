@@ -132,6 +132,56 @@ population by what the repo can see, enforce the half it owns, and make the
 other half report UNMEASURED on every run — `0`, `{}`, `null` and `SKIP` are
 indistinguishable from success, and so is silence.
 
+### A guard that answered the right question in the wrong syntax (#484)
+
+The clearest instance this repo has produced, because the fix and the blind
+spot shipped in the same commit.
+
+#446 found four published modules importing a script `files[]` omitted, fixed
+`files[]`, and added `test/package-closure.test.ts`: *every relative IMPORT in
+a published file must resolve to another published file.* Correct, and
+`0.4.1` was cut on the strength of it, with `SUCCESS.md` recording that the
+distribution had been checked against the artifact rather than the tree.
+
+`lib/conformity.ts` does not import its matcher registry. It reads it:
+
+```ts
+join(dirname(fileURLToPath(import.meta.url)), "..", "config", "matcher-registry.json")
+```
+
+`config/` was not in `files[]`. Neither was `templates/`, nor
+`specs/SPEC-TEMPLATE.md`. Seven call sites, three directories, and a
+documented CLI command — `bunx rungate create-sc --list` — that ENOENTs for
+every consumer, through the release cut to fix exactly this.
+
+**What makes it worth a row here is how it stayed invisible.** On the first
+external consumer the suite reported **21 pass, 0 fail** over a library that
+could not load its own registry — because all 40 of that project's success
+criteria were unmatched, so nothing ever called `resolveMatcher`. The suite
+was green for a reason unrelated to the code being correct, and the reward for
+making the spec more testable would have been an ENOENT crash with nothing
+connecting the two events.
+
+Two more things fell out of the battery, both from predicted counts that
+missed:
+
+- Three `files[]` rows came back **2 red where 1 was predicted**. The live-tree
+  import case asserted the WHOLE violation list, so it and the new read case
+  were one assertion wearing two names — the fourth shape, found by the
+  arithmetic rather than by reading. Split by question, each is 1.
+- The comment-stripping row came back **3 where 4 was predicted**, and the
+  missing one is the live tree. The scanner's own docstring quotes the broken
+  expression, and scanning raw source reports that quote as a call — which is
+  how the bug was found. Once `config/` shipped, the quoted path resolved to a
+  published file and the live tree stopped being able to witness it. Three
+  synthetic cases are now the only thing holding that line, which is the
+  argument against deleting them as redundant.
+
+The general form: **when a guard enforces a property, ask what other syntax
+expresses the same property.** An import and a `readFileSync(join(...))` are
+one question asked two ways, and a check that knows only one of them reads
+exactly like a check that is satisfied.
+
 ## In practice
 
 When you add or change a guard, say in the commit or PR **what you broke to
