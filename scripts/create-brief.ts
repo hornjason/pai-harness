@@ -9,7 +9,7 @@
  * Thin CLI consumer — all logic lives in lib/create-brief.ts.
  */
 import { join } from "path";
-import { generateBriefTemplate, writeBriefTemplate, addRoleToConfig } from "../lib/create-brief";
+import { generateBriefTemplate, writeBriefTemplate, registerRole } from "../lib/create-brief";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -44,21 +44,23 @@ const description = positionalArgs[1];
 const projectRoot = getFlag("project-root") || join(import.meta.dir, "..");
 
 const templatesDir = join(projectRoot, "templates", "agent-briefs");
-const configPath = join(projectRoot, ".claude", "rungate.json");
 
 try {
   // Generate template file
   const templatePath = writeBriefTemplate(templatesDir, roleName, description);
   console.log(`Created ${templatePath}`);
 
-  // Add role to rungate.json if it exists
+  // Register the role in whichever layout the project is on. The loader picks
+  // the file; this CLI never names one (#415) — the version that did printed
+  // "not found" against a path a migrated consumer is documented not to have,
+  // and the role went nowhere.
   try {
-    addRoleToConfig(configPath, roleName, description);
-    console.log(`Added role '${roleName}' to ${configPath}`);
+    const written = registerRole(projectRoot, roleName, description);
+    console.log(`Added role '${roleName}' to ${written}`);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("not found")) {
-      console.log(`Note: ${configPath} not found — role not registered in config`);
+    if (message.includes("No rungate config found")) {
+      console.log(`Note: ${message} — role not registered`);
     } else {
       throw err;
     }

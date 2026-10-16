@@ -178,8 +178,22 @@ describe("SC-1430: the check does not match its own source", () => {
 
 describe("SC-1431: the ratchet is data, scoped per check", () => {
   test("rungate's ratchet is present and non-trivial", () => {
+    // #415: this read `> 10` and was a floor under a number whose whole job is
+    // to fall. Nineteen sites left the ratchet in one change because they were
+    // never reads, and a test pinned to the size the file happened to have
+    // would have been the thing blocking that — "a check that passed because
+    // of what it never looked at", pointed at progress instead of regression.
+    //
+    // What the assertion was actually for is that the file LOADED: an absent
+    // or unparseable ratchet yields `{}`, which reads as zero tolerance and
+    // would make every banked site fail at once. So assert loaded, and
+    // non-empty, and leave the magnitude to the both-ways check below.
     const all = readConfigAccessRatchet(REPO);
-    expect(Object.keys(all).length, "the ratchet file is missing or empty").toBeGreaterThan(10);
+    expect(Object.keys(all).length, "the ratchet file is missing or empty").toBeGreaterThan(0);
+    expect(
+      Object.values(all).every(n => typeof n === "number" && n > 0),
+      "a banked entry at zero is an entry nobody will remove — delete it instead",
+    ).toBe(true);
   });
 
   test("the two checks read disjoint halves of one file", () => {

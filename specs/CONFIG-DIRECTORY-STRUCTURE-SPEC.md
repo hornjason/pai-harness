@@ -365,3 +365,142 @@ config. After the repair runs, the project IS aligned — the word is true,
 and the honest report is `REPAIRED … REPAIRED … AUDITED (aligned)`. The
 assertion moved to where it still bites: the unreadable case, where the
 repair steps aside and "aligned" would be a lie.
+
+## A detector wider than what it detects (#415)
+
+ADR-002 D4 accepted one limit on CONFIG-1's string matching and stated it:
+a path assembled by concatenation goes uncaught. That is the NARROW
+direction. The wide direction was never considered, and it is the one that
+had teeth — **the detector counted a path MENTIONED in a sentence the same
+way it counted one passed to `readFileSync`.**
+
+Measured on the tree at the time this shipped: of the 38 sites banked for
+TypeScript sources, **19 were not reads at all.** Operator messages
+(`expected …/config.json or …json`), generated brief text (`not configured
+— check …`), the `customize:` field shown to a human, rows in a generated
+key-files table, and the comment header of a generated CI workflow. The
+issue that filed this found seven of them by hand; the classifier found
+nineteen, which is the argument for measuring rather than enumerating.
+
+**Why this is not pedantry.** None of the nineteen could ever reach zero by
+migrating a read, because there was no read. The cheapest way to clear one
+was to reword a user-facing string so it stopped naming the file it was
+telling the operator to edit — the detector driving the code rather than
+measuring it. ADR-002 D4 requires the ratchet be interpretable, and
+`.claude/rules/checks-must-be-able-to-fail.md` says *"a ratchet nobody can
+interpret becomes a number nobody lowers."*
+
+### The decision, and which way each branch may be wrong
+
+`classifyConfigSites` in `lib/conformity.ts` is the one binding. It reads two
+views produced by the EXISTING `stripJsComments` scanner — the
+comment-stripped source, and the same source with every literal's contents
+blanked — so there is no second lexer to drift. Over the blanked view a naive
+paren counter is exact, and the literal a match sits in is the maximal run of
+blanked offsets around it.
+
+| Around the match | Verdict |
+|---|---|
+| an `fs` call or a `node:path` builder | USE, whatever the text says |
+| otherwise, prose | MENTION |
+| otherwise, a path-shaped literal into `x.push(…)` or `console.*` | MENTION |
+| otherwise | **USE** |
+
+The last row is the fail-closed default and it is what keeps `const p =
+"…json"; readFileSync(p)` counted. `node:path` builders are receiver-checked
+because `["a","b"].join(", ")` shares a name with `path.join`.
+
+**CHECK-2 does not use the classifier and must not.** CHECK-1's subject is a
+path being built in code, so a sentence naming the file is noise. CHECK-2's
+subject IS the sentence — `Read ${PROJECT_ROOT}/…` in a prompt is the
+violation, and it is prose by construction. Pointing one classifier at both
+would silently empty CHECK-2, so SC-1552 runs one sentence through both scans
+and asserts they disagree.
+
+### The writer had no loader (#415 part 2)
+
+`scripts/create-brief.ts` built `.claude/rungate.json`, handed it to a writer
+and, on a consumer that had followed the documented migration, printed
+`not found — role not registered in config`. The brief was written, the role
+was registered nowhere, and the message named a file the project is
+documented not to have. It was banked at 1 and could not migrate to the read
+loader, because it is a WRITE.
+
+So `lib/config-loader.ts` becomes the module that knows where config LIVES,
+in both directions: `writeRoleConfig` picks the same file `loadRoleConfig`
+would read, and `writeScaffoldedConfig` creates the directory layout for
+`scripts/scaffold-rungate-config.ts`. Both scripts leave the ratchet by
+migration, not by rewording. Neither has a third branch that invents a
+layout — a tool that creates a monolith beside an existing directory gives
+the project two role sets and lets the reader's preference decide what the
+project is, which is #70 one layer up.
+
+- [x] SC-1550: test/config-access-mentions.test.ts contains [only the path handed to an fs call is counted] — one fixture file carries five mentions and one read, so neither half of the answer can hold vacuously; the raw match count is asserted at six so that "one" is a decision and not a scan that read less of the file
+- [x] SC-1551: test/config-access-mentions.test.ts contains [a path-shaped literal with no fs call behind it still counts] — the fail-open this classifier could have shipped, asserted shut: a bare `const` path read a line later has no enclosing call to recognise and nothing prose-like about it
+- [x] SC-1552: test/config-access-mentions.test.ts contains [CHECK-2 still counts a prompt that tells an agent to read the config] — one sentence through both scans, with opposite answers, so the two checks cannot be collapsed onto one classifier in the name of consistency
+- [x] SC-1553: test/config-access-mentions.test.ts contains [both branches are load-bearing on real source] — the scaffold steps module carries both kinds and its banked number equals the measured use count, so collapsing the classifier in EITHER direction moves a number the both-ways ratchet refuses
+- [x] SC-1554: test/config-access-mentions.test.ts contains [the documentation and writer sites are gone from the ratchet] — the six cleared files are named and asserted absent, and the real check is run over the real repo so an entry banked above what remains fails exactly as a new reader does
+- [x] SC-1555: test/config-access-mentions.test.ts contains [a directory-layout project gets the role, and the loader reads it back] — the CLI is spawned against a directory-layout fixture and the role is read back through `loadRoleConfig`, not through the file the writer happened to pick; the monolith is asserted NOT to have been created
+- [x] SC-1556: test/config-access-mentions.test.ts contains [a monolith project still gets the role, in the monolith] — the same CLI over the other layout, with the two answers compared to each other rather than to a literal, because a writer that handled only one layout would pass the first case
+- [x] SC-1557: test/config-access-mentions.test.ts contains [an unscaffolded project is told so, and nothing is invented] — absence is reported as absence and no layout is created, which is the branch that would otherwise quietly restore the monolith on every consumer
+
+- [x] SC-1558: test/config-access-mentions.test.ts contains [the scaffolder refuses a project that already has a config] — the second run is compared against an AUTHORED edit, not against untouched bytes, because a scaffolder that had stopped refusing would rewrite an untouched config identically and pass
+- [x] SC-1559: test/config-access-mentions.test.ts contains [a project with nothing to detect still writes a readable config] — the control arm, and the one that bit: with a package.json present every command is inferred and no `null` is ever written, so the fixture that plants one cannot see the defect
+
+### What was broken to prove it (SC-1550..1559)
+
+Run and counted by hand over `test/config-access-mentions.test.ts`,
+`test/config-access-conformity.test.ts`, `test/config-access-adoption.test.ts`,
+`test/create-brief.test.ts`, `test/scaffold-conformity.test.ts` and
+`test/scaffold-greenfield-config.test.ts` (777 tests, 0 red):
+
+| Mutation | Red |
+|---|---|
+| the classifier counts every mention again — the defect verbatim | 6 |
+| the classifier calls every site a mention — the narrowing overshoots | 6 |
+| `isTextCall` returns false — a path-shaped literal in a message list counts | 5 |
+| CHECK-2 is given the classifier too | 4 |
+| the role writer invents a monolith instead of refusing | 2 |
+| the fail-closed default flips to mention | 1 |
+| path, fs and shell calls stop being recognised | 1 |
+| a shell command naming the config stops being a read | 1 |
+| the role writer points at the monolith only — #415 part 2 verbatim | 1 |
+| the scaffolder writes `null` for an uninferred command again | 1 |
+| the dev command goes back to a key the validator deletes | 1 |
+| the scaffolder stops refusing an existing config | 1 |
+
+No zeros. None is left in the tree; all were run and reverted.
+
+**Four of the twelve were zero on the first pass, and all four were real.**
+Predicting each count before running is what caught them — a one where two
+was expected is as much a finding as a zero, and much easier to wave through.
+
+- *Shell reads went uncounted.* A `cat …/config.json | head` handed to
+  `execSync` is a config read whose literal is a SENTENCE, so the prose rule
+  swallowed it. `SHELL_CALLS` exists because of that zero, not before it.
+- *The scaffolder refused twice.* The script pre-checked the resolution AND the
+  library refused, so deleting the library's guard changed nothing — it
+  measured as load-bearing while nothing depended on it. Two deciders that
+  agree are behaviourally one. The decision now lives only in
+  `writeScaffoldedConfig`, which RETURNS the outcome rather than throwing, so
+  the caller reports it without sniffing an exception message for a prefix.
+- *A re-scaffold could not be caught by comparing bytes.* An untouched config
+  is rewritten identically, so the fixture now authors an edit first.
+- *The `null` command was unreachable from the fixture.* A project with a
+  package.json infers every command, so SC-1559 scaffolds a bare directory.
+
+### Two defects the migration surfaced in the scaffolder
+
+Neither is in #415's class and both are in the blast radius of its fix, so
+they are fixed here rather than filed: making the scaffolder ask the loader
+where config lives also makes the loader read what the scaffolder wrote.
+
+1. **An uninferred command was written as `null`.** `test.command` and
+   `prod.rebuild` are `z.string().optional()`, so `null` does not read as
+   "not detected" — it FAILS validation. Every resolution over a project
+   scaffolded by this script with no package.json and no Makefile threw. It
+   was invisible for as long as the script never read back what it wrote.
+2. **The detected dev command went to a key the validator deletes.** `command`
+   is not a field of `DevSchema`; the loader stripped it and the inference
+   reached nobody. That is Silent Default Substitution from the writing side.
+   It is now `dev.start`, and SC-1558 asserts the round trip.
