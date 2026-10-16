@@ -82,8 +82,11 @@ beforeEach(() => {
   const git = (...a: string[]) =>
     spawnSync("git", ["-C", PROJECT, ...a], { encoding: "utf-8" }).stdout ?? "";
   git("init", "-q", "-b", "main");
-  git("config", "user.email", "t@example.test");
-  git("config", "user.name", "T");
+  // Spelled out rather than routed through `git()` above: the #84 guard reads
+  // the argv at the call site and cannot see a wrapper's prepended `-C`, so a
+  // helper here is indistinguishable from a write to the real global config.
+  spawnSync("git", ["-C", PROJECT, "config", "user.email", "t@example.test"]);
+  spawnSync("git", ["-C", PROJECT, "config", "user.name", "T"]);
   writeFileSync(join(PROJECT, "a.txt"), "a\n");
   git("add", "-A");
   git("commit", "-q", "-m", "one");
