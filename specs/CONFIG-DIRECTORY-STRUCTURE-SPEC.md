@@ -447,6 +447,48 @@ project is, which is #70 one layer up.
 - [x] SC-1558: test/config-access-mentions.test.ts contains [the scaffolder refuses a project that already has a config] — the second run is compared against an AUTHORED edit, not against untouched bytes, because a scaffolder that had stopped refusing would rewrite an untouched config identically and pass
 - [x] SC-1559: test/config-access-mentions.test.ts contains [a project with nothing to detect still writes a readable config] — the control arm, and the one that bit: with a package.json present every command is inferred and no `null` is ever written, so the fixture that plants one cannot see the defect
 
+### The case #415 fixed and nobody drove (#454)
+
+#454 reported that CONFIG-1 counts a config path spelled inside a string
+literal, including when the string is prose explaining why a step does *not*
+touch the config — the self-reference trap from
+`.claude/rules/checks-must-be-able-to-fail.md` arriving from the documentation
+side. It named the cost precisely: the reason-carrying map is a house pattern
+now (`STEPS_NOT_REHEARSED` in `lib/scaffold/rehearsal.ts:61`, #398; the
+exclusion maps in #452), and a sentence about the config could not be written
+in one without turning CONFIG-1 and the ratchet red for a file that reads no
+config at all.
+
+**Measured on main before writing anything: four of its five criteria were
+already satisfied.** #415 landed `classifyConfigSites` in `ff4a2872` (PR #456)
+hours before #454 was filed, and the issue's own four-case table reproduces
+the other way round today — `lib/reason-string.ts` classifies as `mention`,
+not as a counted site. SC-1 and SC-2 are `classifyConfigSites`, one exported
+predicate; SC-3 is SC-1553 and SC-1554 above, which account for the ratchet
+change file by file.
+
+What was NOT driven is the shape the issue is actually about. SC-1550 covers a
+sentence inside a shell command and SC-1552 covers a bare prose string;
+neither is a key paired with a reason, and the pattern is spreading. So the
+issue closes with one test rather than a fix, and the test is in the file that
+would notice if the rule were narrowed back.
+
+- [x] SC-1657: test/config-access-mentions.test.ts contains [a reason-carrying map may name the config and an assembled path beside it still counts] — the house key-plus-reason map is permitted to name the config while a path assembled from parts in the same file is still refused and both arms run through one scan so neither can hold vacuously
+
+Driven in one fixture: three sites, two excused, one counted. The site count
+is asserted alongside the verdict because deleting the map outright would
+otherwise produce the same `1`.
+
+Re-running the battery below against this tree reproduces every row, with one
+correction to my own prediction rather than to the code: *path, fs and shell
+calls stop being recognised* was predicted at 3 and measured **1** — the same
+1 the table already records. The reason is worth stating because it reads like
+the fourth shape and is not: `isPathCall` only changes a verdict for a literal
+that CONTAINS WHITESPACE, because every other site reaches the same `"use"`
+through the fall-through. Its one row is the shell command SC-1550 exists for.
+The number was already written down here; reading the table first would have
+saved the prediction.
+
 ### What was broken to prove it (SC-1550..1559)
 
 Run and counted by hand over `test/config-access-mentions.test.ts`,
