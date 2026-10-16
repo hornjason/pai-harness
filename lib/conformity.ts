@@ -7,6 +7,7 @@
  */
 import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
+import type { Dirent } from "fs";
 import { collectSpecFiles } from "./spec-files";
 import { spawnSync } from "child_process";
 import { join, dirname, sep } from "path";
@@ -3239,6 +3240,42 @@ export interface SourceEvidence {
 const NEVER_PROJECT_SOURCE = new Set([".git", "node_modules"]);
 
 /**
+ * Whether a DECLINED entry is a directory — for the label, and only for the
+ * label (#518).
+ *
+ * The three decline-by-name branches below matched a name and then wrote
+ * `${rel}/` with a directory-shaped label without asking. Measured before
+ * the fix: 8 of this repo's 369 declines and **5 of a consumer's 13** named
+ * a directory that does not exist, including four `.DS_Store/`. `.git` is
+ * the one worth naming — in a worktree it is a gitfile, so that branch was
+ * wrong in every worktree this project develops in.
+ *
+ * It is a `statSync` and not `e.isDirectory()` because `Dirent.isDirectory()`
+ * is false for a symlink, and a symlinked `node_modules` is the ordinary
+ * pnpm / npm-workspace shape — the cheap predicate gets the commonest real
+ * instance backwards.
+ *
+ * **A failed stat answers "not a directory" rather than reaching the
+ * verdict, and that is deliberate.** These entries are declined BY NAME and
+ * were declined before this function existed; nothing here may change
+ * WHETHER they are declined. If a throw pushed `unreadable`, a
+ * `.hidden -> /locked/dir` would refuse CONFIG-1 for a whole project over an
+ * entry the walk discards as tooling either way — the over-refusal the
+ * dangling-symlink note further down already rules out for the same reason.
+ * A link that resolves to nothing is not somewhere a reader can go looking,
+ * which is the only thing the trailing slash claims.
+ */
+function declinedIsDir(e: Dirent, abs: string): boolean {
+  if (e.isDirectory()) return true;
+  if (!e.isSymbolicLink()) return false;
+  try {
+    return statSync(abs).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Scripts the config scan cannot read but a project can absolutely be built
  * from. A `lib/loader.py` or a `hooks/run.sh` doing a direct config read is
  * invisible to `SOURCE_EXTENSIONS` and therefore to CONFIG-1 — which is a
@@ -3298,8 +3335,11 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // "I declined 400 entries under node_modules/" is honest and short
       // while silence is neither (sec-485). They collapse to one counted
       // line in the message, which gets the brevity without the silence.
+      // The trailing slash is a claim about the entry, so it is asked
+      // rather than assumed (#518). `.git` in a worktree is a gitfile.
+      const dirSlash = () => (declinedIsDir(e, join(dir, e.name)) ? "/" : "");
       if (NEVER_PROJECT_SOURCE.has(e.name)) {
-        skipped.push(`${childRelEarly}/ (dependency or VCS metadata)`);
+        skipped.push(`${childRelEarly}${dirSlash()} (dependency or VCS metadata)`);
         continue;
       }
       // Recorded whether or not it holds anything, and that is deliberate.
@@ -3322,7 +3362,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // capped sample and one off a count. `test/config-access-conformity
       // .test.ts`'s "function of the DECISIONS" case holds this line.
       if (SOURCE_SKIP_DIRS.has(e.name)) {
-        skipped.push(`${childRelEarly}/ (build output or dependency)`);
+        skipped.push(`${childRelEarly}${dirSlash()} (build output or dependency)`);
         continue;
       }
       // Tooling lives in dot-directories — `.github/scripts/release.js`,
@@ -3331,7 +3371,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       // silent widening: a release script is not the project's source, and a
       // content project that has one is not a project CONFIG-1 can measure.
       if (e.name.startsWith(".")) {
-        skipped.push(`${childRelEarly}/ (dot-directory, tooling)`);
+        // The only one of the three that needed a second LABEL and not just
+        // a conditional slash, because this label names the kind out loud.
+        // A `.DS_Store` reported as `.DS_Store/ (dot-directory, tooling)`
+        // sends an auditor looking for a directory that is not there, and
+        // auditing the waiver is the entire reason this list exists.
+        skipped.push(
+          declinedIsDir(e, join(dir, e.name))
+            ? `${childRelEarly}/ (dot-directory, tooling)`
+            : `${childRelEarly} (dot-file, tooling)`,
+        );
         continue;
       }
       const childRel = childRelEarly;
@@ -3453,7 +3502,12 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       : /^(?:build|vendor)\//.test(entry) ? 2                 // generated-from-source
       : /\(dot-directory/.test(entry) ? 3                      // tooling, can hold scripts
       : /\(test (?:file|directory)/.test(entry) ? 4
-      : 5;                                                   // dist, coverage, .d.ts
+      : 5;                   // dist, coverage, .d.ts, and dot-FILES (#518):
+                             // `.github/` can hide a release script, which is
+                             // why it ranks 3. `.gitignore` cannot hide
+                             // anything, so the new class falls to the
+                             // default on purpose and the truncation cuts it
+                             // before anything that could hold code.
   skipped.sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
   return { found: examples.length > 0, examples, unreadable, skipped };
 }
