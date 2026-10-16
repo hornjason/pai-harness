@@ -545,6 +545,13 @@ export const WorkflowStateSchema = z.object({
     evidence: z.any().optional(),
     baselines: z.object({
       testBaseline: z.number().optional(),
+      /**
+       * Why no number is recorded (#307). Present exactly when `testBaseline`
+       * is absent, and never beside it: a reason sitting next to a `0` would
+       * let `?? 0` keep reading the run as a measured clean tree, which is
+       * the defect the reason exists to report.
+       */
+      testBaselineUnmeasured: z.string().optional(),
       tscBaseline: z.number().optional(),
     }).optional(),
   }).optional(),

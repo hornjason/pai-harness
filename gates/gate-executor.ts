@@ -13,6 +13,7 @@ import {
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
+import { DEFAULT_TEST_TIMEOUT, resolveConfig } from "../lib/config-loader";
 import {
   slugExists,
   shouldRebuildContainer,
@@ -76,13 +77,35 @@ export function parseTestResults(output: string): GateResult[] {
 // ── Test baseline functions (#599) ───────────────────────────────────────
 
 /**
- * Extract the failure count from bun test output.
+ * The failure count a runner's output STATES, or `null` when it states none.
+ *
  * Uses the last "N fail" line (bun may print intermediate summaries).
+ *
+ * The nullable answer is the whole of #307's parser half. Bun prints ` 0 fail`
+ * on a clean run, so output carrying no fail line at all is a runner that
+ * crashed, timed out, or is not bun — and a consumer whose `dev.testCmd` is
+ * jest, pytest or a Makefile target produces exactly that on EVERY run. "The
+ * suite reported zero failures" and "nothing here reports failures" are
+ * different facts and only the first is a clean tree.
+ */
+export function parseTestFailureCount(testOutput: string): number | null {
+  const failMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
+  if (failMatches.length === 0) return null;
+  return parseInt(failMatches[failMatches.length - 1][1]);
+}
+
+/**
+ * Extract the failure count from bun test output, treating "no count stated"
+ * as zero.
+ *
+ * Kept exactly as it was, deliberately: `gates/workflow.test.ts` pins this
+ * contract and #307 is forbidden from changing the gate checks. The honest
+ * reading is `parseTestFailureCount` above, and the two are compared against
+ * each other in `test/test-baseline-unmeasured.test.ts` so this wrapper cannot
+ * drift away from the parser it wraps.
  */
 export function extractTestFailureCount(testOutput: string): number {
-  const failMatches = [...testOutput.matchAll(/^\s*(\d+)\s+fail\s*$/gm)];
-  if (failMatches.length === 0) return 0;
-  return parseInt(failMatches[failMatches.length - 1][1]);
+  return parseTestFailureCount(testOutput) ?? 0;
 }
 
 /**
@@ -94,32 +117,96 @@ export function subtractTestBaseline(totalFailures: number, baseline: number): n
 }
 
 /**
- * Capture test baseline by running the project test suite at scope time.
- * Returns the number of pre-existing test failures.
+ * What a run can honestly say about the tree it started from (#307 SC-A6).
+ *
+ * `measured` is the only reading that licenses "the suite was clean before
+ * this change". `unmeasured` carries the reason, because a baseline nobody
+ * took is news an operator can act on — usually by setting one key.
  */
-function captureTestBaseline(state: Record<string, any>): number {
+export type TestBaselineReading =
+  | { status: "measured"; failures: number; command: string }
+  | { status: "unmeasured"; reason: string };
+
+/**
+ * Capture the test baseline by running the project's suite at scope time.
+ *
+ * This used to return `0` for four different facts, and the scope gate
+ * printed "0 pre-existing failures — clean suite" for all of them:
+ *
+ *   1. no `.claude/rungate.json` — the path was built here by hand, so every
+ *      consumer on the documented `.claude/rungate/` layout took this branch
+ *   2. no `test.command` — including every consumer that authored
+ *      `dev.testCmd`, which is the canonical spelling ADR-002 D3 normalises TO
+ *   3. the suite ran and printed something unparseable
+ *   4. the suite ran and nothing was failing
+ *
+ * Only the fourth is a clean tree, and a fabricated baseline is the worst
+ * direction for this particular number to be wrong in: it asserts the
+ * strongest claim available about the tree, and the verify gate subtracts
+ * against it.
+ *
+ * It worked on rungate the whole time, which is why nothing caught it — this
+ * repo's own config carries `test.command`, so branch 2 was never taken here.
+ * See `test/test-baseline-unmeasured.test.ts` for the consumer-shaped
+ * fixtures that do take it.
+ *
+ * The timeout now comes from the resolved config rather than from a `|| 300000`
+ * that disagreed with `DEFAULT_TEST_TIMEOUT`. A consumer that sets no
+ * `test.timeout` therefore gets the shorter one — and a suite killed by it
+ * reports UNMEASURED naming the timeout, where before it reported a clean
+ * tree. The failure mode moved from silent and wrong to loud and fixable.
+ */
+export function captureTestBaseline(state: Record<string, any>): TestBaselineReading {
   const projectRoot = state.projectRoot || process.cwd();
-  const harnessPath = join(projectRoot, ".claude", "rungate.json");
-  if (!existsSync(harnessPath)) return 0;
 
-  const harness = JSON.parse(readFileSync(harnessPath, "utf-8"));
-  const testCmd = harness.test?.command;
-  if (!testCmd) return 0;
+  const resolution = resolveConfig(projectRoot);
+  if (resolution.status === "absent") {
+    return {
+      status: "unmeasured",
+      reason: `no rungate config under ${join(projectRoot, ".claude")} — nothing says how to run this project's suite`,
+    };
+  }
 
-  const timeout = harness.test?.timeout || 300000;
+  const testCmd = resolution.config.test?.command;
+  if (!testCmd) {
+    // Both spellings named on purpose. "No test command" sends an operator
+    // looking for the key they already did not set.
+    return {
+      status: "unmeasured",
+      reason:
+        `the ${resolution.source} config at ${resolution.path} sets neither ` +
+        `dev.testCmd nor test.command`,
+    };
+  }
+
+  const timeout = resolution.config.test?.timeout ?? DEFAULT_TEST_TIMEOUT;
   console.log(`Test baseline: running "${testCmd}" to capture pre-existing failures...`);
 
+  let output: string;
   try {
-    const output = execSync(`${testCmd} 2>&1`, {
-      encoding: "utf-8",
-      timeout,
-      cwd: projectRoot,
-    });
-    return extractTestFailureCount(output);
+    output = execSync(`${testCmd} 2>&1`, { encoding: "utf-8", timeout, cwd: projectRoot });
   } catch (e: any) {
-    const stdout = e.stdout || "";
-    return extractTestFailureCount(stdout);
+    // A suite with failures exits non-zero, so the count normally arrives
+    // through here. `e.stdout` is also empty on a timeout kill, which the
+    // parser below turns into UNMEASURED rather than into a clean tree.
+    output = e.stdout || "";
   }
+
+  const failures = parseTestFailureCount(output);
+  if (failures === null) {
+    const tail = output.trim();
+    return {
+      status: "unmeasured",
+      reason:
+        `"${testCmd}" produced no failure count this harness can read ` +
+        `(timeout ${timeout}ms) — ` +
+        (tail.length === 0
+          ? "it printed nothing"
+          : `it printed: ${tail.split("\n").slice(-3).join(" / ")}`),
+    };
+  }
+
+  return { status: "measured", failures, command: testCmd };
 }
 
 // ── Gate executor contract interfaces (SC-373, SC-376) ───────────────────
@@ -719,15 +806,27 @@ export async function runScopePreflights(state: Record<string, any>, harnessRoot
     }
   }
 
-  // Capture test baseline — pre-existing failures (#599)
+  // Capture test baseline — pre-existing failures (#599, #307)
+  //
+  // An unmeasured baseline records NO number. Writing 0 beside a reason would
+  // leave `?? 0` at the verify gate reading it as a measured clean tree, and
+  // the two keys would be a second answer to the same question. Absent is the
+  // only encoding a default cannot absorb.
   const testBaseline = captureTestBaseline(state);
   state.gateContract = state.gateContract || {};
   state.gateContract.baselines = state.gateContract.baselines || {};
-  state.gateContract.baselines.testBaseline = testBaseline;
-  if (testBaseline > 0) {
-    console.log(`Test baseline: ${testBaseline} pre-existing failure(s) captured — will be subtracted at verify`);
+  if (testBaseline.status === "measured") {
+    state.gateContract.baselines.testBaseline = testBaseline.failures;
+    delete state.gateContract.baselines.testBaselineUnmeasured;
+    if (testBaseline.failures > 0) {
+      console.log(`Test baseline: ${testBaseline.failures} pre-existing failure(s) captured — will be subtracted at verify`);
+    } else {
+      console.log(`Test baseline: 0 pre-existing failures — clean suite`);
+    }
   } else {
-    console.log(`Test baseline: 0 pre-existing failures — clean suite`);
+    delete state.gateContract.baselines.testBaseline;
+    state.gateContract.baselines.testBaselineUnmeasured = testBaseline.reason;
+    console.error(`Test baseline: UNMEASURED — ${testBaseline.reason}`);
   }
 
   // Track pre-existing failures (SC-33)
@@ -1840,11 +1939,28 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
 
   // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
   if (gate === "verify") {
-    const testBaseline = state.gateContract?.baselines?.testBaseline ?? 0;
-    if (testBaseline > 0) {
+    const baselines = state.gateContract?.baselines ?? {};
+    const testBaseline = baselines.testBaseline;
+    if (typeof testBaseline === "number" && testBaseline > 0) {
       const originalFails = fails;
       fails = subtractTestBaseline(fails, testBaseline);
       console.log(`Test baseline subtraction: ${originalFails} total - ${testBaseline} baseline = ${fails} new failure(s)`);
+    } else if (baselines.testBaselineUnmeasured) {
+      // #307. No subtraction happens either way — an unmeasured baseline and
+      // a measured zero both subtract nothing — so the arithmetic is not what
+      // this branch is for. What it stops is the RUN claiming a clean
+      // starting tree it never looked at. WARN, not FAIL: the house precedent
+      // is `dev-server-liveness: UNMEASURED` above, and a probe that could
+      // not run must never become a defect in the code it could not measure.
+      warns++;
+      results.push({
+        check: "test-baseline: UNMEASURED",
+        result: "WARN" as const,
+        detail:
+          `no pre-existing-failure count was taken at scope, so every failure below ` +
+          `is attributed to this change — ${baselines.testBaselineUnmeasured}`,
+      });
+      console.warn(`Test baseline: UNMEASURED — ${baselines.testBaselineUnmeasured}`);
     }
   }
 

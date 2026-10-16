@@ -546,3 +546,98 @@ where config lives also makes the loader read what the scaffolder wrote.
    is not a field of `DevSchema`; the loader stripped it and the inference
    reached nobody. That is Silent Default Substitution from the writing side.
    It is now `dev.start`, and SC-1558 asserts the round trip.
+
+## A baseline nobody measured, reported as a clean tree (#307 Phase 1)
+
+`captureTestBaseline` runs the project's suite before any change lands so the
+verify gate can subtract pre-existing failures from the ones the change caused.
+It answered `0` for four different facts, and the scope gate printed
+`Test baseline: 0 pre-existing failures — clean suite` for all four:
+
+| What happened | What was recorded |
+|---|---|
+| no `.claude/rungate.json` — the path was built here by hand, so **every consumer on the documented directory layout took this branch** | `0`, clean suite |
+| no `test.command` — including every consumer that authored `dev.testCmd`, the spelling ADR-002 D3 normalises *to* | `0`, clean suite |
+| the suite ran and printed something unparseable — jest, pytest, a Makefile target, a timeout kill | `0`, clean suite |
+| the suite ran and nothing was failing | `0`, clean suite |
+
+Only the last is a clean tree. A fabricated baseline is the worst direction for
+this particular number to be wrong in, because it asserts the strongest claim
+the run can make about the tree it started from, and because nothing downstream
+can tell it from a measurement.
+
+**It worked on rungate the whole time.** This repo's own config carries
+`test.command`, so branch 2 was never taken here, and any fixture shaped like
+this repo is green against the broken code and the fixed code alike. That is
+not a detail about the fixtures — it is the reason the defect survived a year
+of green suites, and it is why SC-A7 of #307 requires the consumer shape
+explicitly.
+
+### Absent, not zero
+
+An unmeasured baseline records **no number**. A `0` beside a reason would leave
+the verify gate's `?? 0` reading the run as a measured clean tree, and the two
+keys would be a second answer to the same question — the fourth shape in
+`.claude/rules/checks-must-be-able-to-fail.md`. Absence is the only encoding a
+default cannot absorb.
+
+The verify gate WARNs rather than FAILs on it. No subtraction happens either
+way — an unmeasured baseline and a measured zero both subtract nothing — so the
+arithmetic is not what the branch is for. What it stops is the run claiming a
+clean starting tree it never looked at. The house precedent is
+`dev-server-liveness: UNMEASURED`: a probe that could not run must never become
+a defect in the code it could not measure.
+
+### The parser gained a nullable sibling rather than a new contract
+
+`extractTestFailureCount` is pinned by `gates/workflow.test.ts`, which #307 is
+forbidden to change, and its contract — "no fail line means zero" — is wrong
+for a baseline and right for the gate's own bun output. So the honest reading
+is a second export, `parseTestFailureCount`, returning `number | null`, and the
+old function became a one-line wrapper over it. One binding, two readings, and
+the two are compared against each other in the test so the wrapper cannot drift
+away from the parser it wraps.
+
+Bun prints ` 0 fail` on a clean run. Output carrying no fail line at all is a
+runner that crashed, timed out, or is not bun.
+
+### The heal prompt sent an agent to find a file the consumer does not have
+
+The scope gate's heal prompt told an agent to read the project's monolith
+config for `apiUrl` and, failing to find the key, to write `SKIP`. Two defects
+in one sentence, and they compound. A consumer on the documented directory
+layout does not have that file, so the agent finds nothing — and the sentence
+tells it what to do about finding nothing. A project serving a live API records
+"this check does not apply", and a skip for *no server here* and a skip for *I
+could not locate the config* are the same two letters in the state file.
+
+The decision was also the agent's to make, when the workflow already knew the
+answer: it resolves the config before any prompt is written and interpolates
+`${testCommand}` from it three lines above. The URL was the one value left for
+an agent to go and find.
+
+So the clause is built by the workflow and the agent is handed a conclusion.
+**When a URL resolved, SKIP is not offered at all** — an agent that cannot
+complete the curl has found a FAIL, which is the asymmetry the gate exists for.
+It lives in a marked block and is EXECUTED by its test, because a prompt test
+that greps for a URL passes against a prompt that mentions the URL and still
+says SKIP.
+
+### The timeout moved, deliberately
+
+This site used `harness.test?.timeout || 300000`; the resolver's default is
+`DEFAULT_TEST_TIMEOUT` (120000), which is the one ship.js already uses. Two
+defaults disagreeing is the defect class, so the resolved value wins and a
+consumer that sets no `test.timeout` now gets the shorter one. The consequence
+of a kill is no longer a fabricated `0`: it is UNMEASURED naming the timeout,
+which is a sentence an operator can act on.
+
+- [x] SC-1672: test/test-baseline-unmeasured.test.ts contains [a project whose only test command is dev.testCmd is measured - not assumed clean] — the consumer shape #307 SC-A7 requires, measured at 3 pre-existing failures where the old reader returned 0; a rungate-shaped fixture is green either way and proves nothing
+- [x] SC-1673: test/test-baseline-unmeasured.test.ts contains [a project on the directory layout is read at all] — the same assertion over `.claude/rungate/`, because a reader that handled only one layout passes the case above
+- [x] SC-1674: test/test-baseline-unmeasured.test.ts contains [a project with no test command anywhere reports UNMEASURED - not zero] — and the reason names BOTH spellings, because "no test command" sends an operator looking for the key they already did not set
+- [x] SC-1675: test/test-baseline-unmeasured.test.ts contains [an absent config is UNMEASURED - a project with no rungate is not a clean tree] — the branch every unscaffolded project took, which reported the strongest available claim about a suite that was never run
+- [x] SC-1676: test/test-baseline-unmeasured.test.ts contains [output the harness cannot parse is UNMEASURED - not a clean suite] — the consumer-facing half: `dev.testCmd` is whatever the project runs and none of jest, pytest or go test prints bun's fail line; the reason quotes what the command actually printed
+- [x] SC-1677: test/test-baseline-unmeasured.test.ts contains [parseTestFailureCount returns null where extractTestFailureCount returns zero] — the two readings asserted against each other on the same input, and agreeing where a count IS stated, so the wrapper cannot drift away from the parser
+- [x] SC-1678: test/ship-local-env-clause.test.ts contains [a resolved URL reaches the prompt and no file is named] — the clause is executed out of its marked block rather than grepped, because a prompt that mentions the URL and still says SKIP passes a grep
+- [x] SC-1679: test/ship-local-env-clause.test.ts contains [SKIP is not offered when a URL resolved] — both fields, and each clause must also say what replaces SKIP; "not SKIP" with no second option is an instruction an agent resolves by picking one anyway
+- [x] SC-1680: test/ship-local-env-clause.test.ts contains [a project with no URL still skips - and says which key it looked for] — the branch that must stay reachable, since rungate sets no `dev.apiBase` and a clause that had stopped being able to skip would turn every self-run red

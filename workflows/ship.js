@@ -2542,6 +2542,45 @@ const hasContainer = !!(projectConfig.container)
 const testCommand = projectConfig.test?.command || projectConfig.dev?.testCmd || 'bun test'
 const testTimeout = projectConfig.test?.timeout || 120000
 
+// ──── LOCAL-ENV-CLAUSE-START ────
+/**
+ * The scope heal prompt's instruction for one local environment (#307 SC-A11).
+ *
+ * The URL is resolved HERE and interpolated into the prompt, exactly as
+ * `testCommand` already is. The prompt used to send the agent to the project's
+ * config file for the URL and, failing to find a key there, to write SKIP —
+ * which hands an agent the authority to decide a check does not apply, on the
+ * strength of a key it could not find in a file the project is documented not
+ * to have. Every consumer on the directory layout self-skipped API and UI
+ * validation, and every self-skip read exactly like a project that genuinely
+ * has no server. The old sentence is not quoted here on purpose: the guard in
+ * test/ship-local-env-clause.test.ts searches this file for it, and a comment
+ * reciting what was removed is evidence it is still there.
+ *
+ * So SKIP is not offered when a URL resolved. "I could not complete the check"
+ * and "this project has nothing to check" are different outcomes, and only the
+ * workflow can tell them apart — the agent cannot, because by the time it is
+ * reading this the question has already been answered.
+ *
+ * In a marked block so test/ship-local-env-clause.test.ts can EXECUTE it.
+ * Every source-text assertion in this repo has survived its first mutation.
+ */
+function localEnvClause(field, url, configKey) {
+  if (!url) {
+    return `this project resolves no ${field === 'api' ? 'API' : 'UI'} base URL, so write ` +
+      `environments.local.${field} = "SKIP" with skipReason "no ${configKey} in the resolved config". ` +
+      `Do not go looking for one.`
+  }
+  return `curl ${url} and write environments.local.${field} = PASS or FAIL from what it answered. ` +
+    `SKIP is NOT available for this project — the URL is resolved above, so a check you could not ` +
+    `complete is a FAIL, not a skip.`
+}
+// ──── LOCAL-ENV-CLAUSE-END ────
+
+/** `apiUrl`/`uiUrl` are ADR-002 D3's normalised names for `dev.apiBase`/`dev.uiBase`. */
+const localApiClause = localEnvClause('api', projectConfig.apiUrl || null, 'dev.apiBase')
+const localUiClause = localEnvClause('ui', projectConfig.uiUrl || null, 'dev.uiBase')
+
 // ──── CEREMONY-TIER-FLOOR-START ────
 /**
  * #215. The tier was chosen by the discovery LLM from issue SIZE alone, and the
@@ -2752,8 +2791,8 @@ that predates the final commit got read as a clean suite:
     --result PASS|FAIL --project ${shellQuote(PROJECT_ROOT)}
 Pass the result the suite actually printed. The recorder reads the commit from
 the project itself; do NOT pass it a SHA you typed.
-For local-api-validated: read ${PROJECT_ROOT}/.claude/rungate.json for apiUrl. If no apiUrl configured, write environments.local.api = "SKIP". If configured, curl the URL and write PASS/FAIL.
-For local-ui-validated: read ${PROJECT_ROOT}/.claude/rungate.json for uiUrl or pages config. If no UI configured, write environments.local.ui = "SKIP" with skipReason. If configured, curl the URL and write PASS/FAIL.
+For local-api-validated: ${localApiClause}
+For local-ui-validated: ${localUiClause}
 Edit workflow-state.json ONLY via writeWorkflowState():
 bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); /* apply fix here */; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 This validates via Zod at write time — you get immediate error feedback.`)

@@ -1,8 +1,8 @@
 {
-  "gates/gate-executor.ts": 5,
+  "gates/gate-executor.ts": 4,
   "gates/ship-orchestrator.ts": 1,
   "lib/scaffold/steps.ts": 9,
   "workflows/prove.js": 5,
   "workflows/ship-and-heal.js": 1,
-  "workflows/ship.js": 8
+  "workflows/ship.js": 6
 }
