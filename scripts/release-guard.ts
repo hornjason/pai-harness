@@ -11,12 +11,25 @@
  * — this file is the trigger, nothing more.
  *
  * ONE PROPERTY THIS FILE MUST KEEP, asserted by test/release-guard.test.ts
- * (see .claude/rules/checks-must-be-able-to-fail.md): every refusal exits
- * through REFUSE_EXIT, declared exactly once. The test builds a mutant copy
- * with that constant set to 0 and runs every negative case twice — the real
- * script refuses, the mutant does not. An exit written as a literal would
- * slip past the mutation, and the case guarding it would stop being
- * distinguishable from one passing by accident.
+ * (see .claude/rules/checks-must-be-able-to-fail.md): every non-zero exit
+ * travels through REFUSE_EXIT or UNMEASURED_EXIT, each declared exactly once.
+ * The test builds a mutant copy with both set to 0 and runs every negative
+ * case twice — the real script stops, the mutant does not. An exit written as
+ * a literal would slip past the mutation, and the case guarding it would stop
+ * being distinguishable from one passing by accident.
+ *
+ * WHY THERE ARE TWO (#445, SC-6). A refusal is something the guard
+ * ESTABLISHED: the version is already published, the tag disagrees with
+ * package.json, the registry could not be read at all. UNMEASURED is the
+ * postflight running out of budget with the version still absent, where "the
+ * publish did not take effect" and "the packument has not propagated" are the
+ * same observation. Both stop the job, and that is the recorded decision:
+ * GitHub Actions offers a `run:` step no neutral outcome — the only way not
+ * to fail is `continue-on-error`, which test/release-guard.test.ts forbids
+ * and which would turn this file back into a job that reports a release it
+ * never made. So the job still goes red; what changes is that the exit code
+ * and the message distinguish "we know this went wrong" from "we could not
+ * tell", instead of the second being reported as the first.
  *
  * Unlike `scripts/rook-review-scope.ts` this file DOES import from `lib/`,
  * and the mutant builder rewrites that specifier to an absolute path before
@@ -35,8 +48,11 @@ import {
   registryState,
 } from "../lib/release-preflight";
 
-/** The one exit code every refusal travels through. See the note above. */
+/** The one exit code every established refusal travels through. */
 export const REFUSE_EXIT = 1;
+
+/** The one exit code every could-not-tell travels through. See the note above. */
+export const UNMEASURED_EXIT = 2;
 
 const PKG = "rungate";
 
@@ -48,6 +64,12 @@ function arg(name: string): string | null {
 function refuse(message: string): never {
   console.error(`RELEASE REFUSED: ${message}`);
   process.exit(REFUSE_EXIT);
+}
+
+/** Not a refusal. The guard looked and could not tell; it says so and stops. */
+function unmeasured(message: string): never {
+  console.error(`RELEASE UNCONFIRMED: ${message}`);
+  process.exit(UNMEASURED_EXIT);
 }
 
 async function main(): Promise<void> {
@@ -96,8 +118,8 @@ async function main(): Promise<void> {
   // Postflight POLLS rather than reading once (#407). v0.3.0 published
   // cleanly and this step still refused, because it read the registry about a
   // second after the publish and the packument was still serving 0.2.1.
-  // `--attempts` and `--delay-ms` exist so the test suite can drive the
-  // exhaustion branch without 30 seconds of real sleep; the workflow passes
+  // `--budget-ms` and `--delay-ms` exist so the test suite can drive the
+  // exhaustion branch without two minutes of real sleep; the workflow passes
   // neither, which test/release-guard.test.ts asserts.
   const num = (name: string): number | undefined => {
     const raw = arg(name);
@@ -107,18 +129,23 @@ async function main(): Promise<void> {
   try {
     reading = await awaitRegistryServes(PKG, treeVersion!, {
       base,
-      attempts: num("attempts"),
+      budgetMs: num("budget-ms"),
       delayMs: num("delay-ms"),
     });
   } catch (e) {
     refuse(`could not read the registry: ${(e as Error).message}`);
   }
-  if (reading!.refusal) refuse(reading!.refusal);
+  // An exhausted budget is NOT a refusal (#445). The guard does not know
+  // which of the two explanations it is looking at, so it does not pick one.
+  if (reading!.verdict.unmeasured) unmeasured(reading!.verdict.unmeasured);
   console.log(
     `postflight OK: the registry serves ${PKG}@${treeVersion!} ` +
       `(read ${reading!.attempts} time${reading!.attempts === 1 ? "" : "s"}, ` +
       `waited ${Math.round(reading!.waitedMs / 1000)}s)`,
   );
+  // Published, but `latest` has not moved. Said out loud because it is the
+  // reading #364 would have called a failed publish.
+  if (reading!.verdict.note) console.log(`postflight note: ${reading!.verdict.note}`);
 }
 
 await main();
