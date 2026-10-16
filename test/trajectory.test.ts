@@ -280,13 +280,40 @@ describe("#60 SC-4: the viewer refuses to render a complete-looking incomplete r
     expect(unmeasured).toBe(false);
     expect(text).toContain("agent read-issue start [Goal]");
     expect(text).toContain("state unattributed wrote acs");
-    expect(text).toContain("Goal");
 
-    // The sentence is the check. Without it a reader counts the phases listed
-    // and concludes the run had that many — the silent-hole failure this whole
-    // file is about.
-    expect(text).toContain("Phases that recorded nothing are ABSENT from the list above, not");
-    expect(text).toContain("the timeline of what recorded, not of what ran");
+    // Sliced, not searched. The first draft asserted `text` contained "Goal"
+    // and was satisfied by the TIMELINE row `agent read-issue start [Goal]` —
+    // so with `phaseSpans` short-circuited to `[]` this test stayed green over
+    // a report with no phase list in it at all. Measured: the row came back
+    // 2 where 3 was predicted, and this was the missing one. An assertion that
+    // holds vacuously, the third shape in
+    // `.claude/rules/checks-must-be-able-to-fail.md`, found by the arithmetic
+    // rather than by reading.
+    const section = (name: string) => {
+      const at = lines.findIndex((l) => l.startsWith(name));
+      if (at < 0) return "";
+      const rest = lines.slice(at + 1).findIndex((l) => /^[A-Z]{4,}/.test(l));
+      return lines.slice(at, rest < 0 ? undefined : at + 1 + rest).join("\n");
+    };
+    const phases = section("PHASES");
+    expect(phases, "the report has no PHASES section").not.toBe("");
+    expect(phases).toContain("Goal");
+    expect(phases).toContain("1 agent");
+    expect(phases).not.toContain("UNMEASURED");
+
+    // The sentence is the other half. Without it a reader counts the phases
+    // listed and concludes the run had that many — the silent-hole failure
+    // this whole file is about.
+    expect(phases).toContain("Phases that recorded nothing are ABSENT from the list above, not");
+    expect(phases).toContain("the timeline of what recorded, not of what ran");
+
+    // And a run whose brackets carry no phase says UNMEASURED there rather
+    // than printing an empty list, which is the same hole from the other side.
+    rmSync(ARTIFACT);
+    appendTrajectory(ARTIFACT, agentLine("old", "start", 1000));
+    const older = render(readTrajectory(ARTIFACT), ARTIFACT);
+    const olderPhases = older.lines.slice(older.lines.findIndex((l) => l.startsWith("PHASES"))).join("\n");
+    expect(olderPhases).toContain("UNMEASURED — no agent bracket carried a phase");
 
     // An unattributed mutation says `unattributed`, which is a different word
     // from a name. #60 asked for "by which agent" and this is the honest half:
