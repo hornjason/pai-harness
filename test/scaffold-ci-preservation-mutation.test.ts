@@ -48,9 +48,20 @@ const STEPS_DIR = dirname(STEPS);
 const BINDING_SIGNATURE =
   "export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {";
 
-/** The mutation: preservation and refusal replaced by unconditional overwrite. */
+/**
+ * The mutation: preservation and refusal replaced by unconditional overwrite.
+ *
+ * **Every field of `ManagedWrite` has to be here, including ones the mutation
+ * does not care about.** `movedKeys` was added in #482 and omitting it made
+ * `writeManagedFile` throw on `resolved.movedKeys.length`, so the mutant never
+ * wrote at all and the planted file survived on disk — which this file's
+ * assertions read as preservation SURVIVING the mutation. A mutant that dies
+ * for an unrelated reason looks exactly like a mutation that was rejected on
+ * the merits, which is the trap the docblock above names and this literal
+ * walked straight into. `noThrow` below is the guard that makes it visible.
+ */
 const UNCONDITIONAL_OVERWRITE =
-  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], overwrittenLines: [], refusal: null }; // MUTANT: preservation removed';
+  '\n  return { content: generated, verb: "CREATED", lineDelta: 0, preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null }; // MUTANT: preservation removed';
 
 export function buildMutantSource(src: string, signature = BINDING_SIGNATURE): string {
   const occurrences = src.split(signature).length - 1;
@@ -134,6 +145,8 @@ function plantProject(dir: string, ci: string): void {
 
 interface Run {
   ran: boolean;
+  /** The generator completed without throwing. See `runGenerator` for why `ran` is not enough. */
+  noThrow: boolean;
   actions: string[];
   content: string;
   output: string;
@@ -163,9 +176,18 @@ function runGenerator(modulePath: string, label: string, ci: string): Run {
   const r = spawnSync("bun", [driver, project], { cwd: SCRATCH, encoding: "utf-8", timeout: 120000 });
   const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   const m = /ACTIONS_JSON:(.*)/.exec(output);
+  const actions = m ? (JSON.parse(m[1]) as string[]) : [];
   return {
     ran: r.status === 0 && m !== null,
-    actions: m ? (JSON.parse(m[1]) as string[]) : [],
+    // The driver CATCHES, so a generator that threw still exits 0 and still
+    // prints its actions. `ran` therefore cannot see it, and a throw leaves
+    // the planted file untouched on disk — which every assertion below reads
+    // as the content having been preserved. #482's `movedKeys` field is the
+    // live instance: the mutant literal was missing it, threw on
+    // `resolved.movedKeys.length`, wrote nothing, and the mutation looked
+    // like it had failed to take effect.
+    noThrow: !actions.some(a => a.startsWith("THREW:")),
+    actions,
     content: readFileSync(join(project, CI_REL), "utf-8"),
     output,
   };
@@ -192,7 +214,9 @@ describe("AC-6: the preservation can be removed, and the removal is visible", ()
 
     // Neither half may be read as a result unless it actually ran.
     expect(real.ran).toBe(true);
+    expect(real.noThrow, real.actions.join("\n")).toBe(true);
     expect(mutant.ran).toBe(true);
+    expect(mutant.noThrow, mutant.actions.join("\n")).toBe(true);
 
     // Assertion 1 — the job, read back out of the written file.
     expect(jobsOf(real.content)).toContain("deploy-to-staging");
@@ -213,7 +237,9 @@ describe("AC-6: the preservation can be removed, and the removal is visible", ()
     const mutant = runGenerator(writeMutant(), "mutant-flow", PLANTED_FLOW_MAPPING_CI);
 
     expect(real.ran).toBe(true);
+    expect(real.noThrow, real.actions.join("\n")).toBe(true);
     expect(mutant.ran).toBe(true);
+    expect(mutant.noThrow, mutant.actions.join("\n")).toBe(true);
 
     expect(real.content).toBe(PLANTED_FLOW_MAPPING_CI);
     expect(real.actions.join("\n")).toContain("REFUSED:");

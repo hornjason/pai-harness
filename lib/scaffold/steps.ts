@@ -16,7 +16,12 @@ import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/ag
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
-import { mergeManagedWorkflow } from "./managed-workflow";
+import {
+  mergeManagedWorkflow,
+  duplicateTopLevelKeys,
+  movedTopLevelKeys,
+  type MovedKey,
+} from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
@@ -1758,6 +1763,19 @@ export interface ManagedWrite {
    * CI resilience, and "REPLACED (+33 lines)" does not tell anyone that.
    */
   overwrittenLines: string[];
+  /**
+   * Top-level keys the merge put somewhere else (#482).
+   *
+   * Not a refusal — YAML top-level keys are order-independent, so a moved key
+   * means what it meant. It IS reported, because `UPDATED` with nothing said
+   * about position is a report that is accurate and still misleads: a
+   * consumer's `concurrency:` arrived below `jobs:` while the comment
+   * introducing it stayed above, the reader concluded it had been deleted,
+   * restored it by hand, and the file stopped parsing. "Nothing was lost" and
+   * "everything is where you left it" are different claims and only the first
+   * was being made.
+   */
+  movedKeys: MovedKey[];
   /** Non-null ⇒ the write must not happen. Names the dropped jobs and the line delta. */
   refusal: string | null;
 }
@@ -1858,7 +1876,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
 export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
-    preservedJobs: [], droppedJobs: [], overwrittenLines: [], refusal: null,
+    preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null,
   };
   if (existing === null) return base;
 
@@ -1898,10 +1916,35 @@ export function resolveManagedWrite(existing: string | null, generated: string):
   const resultJobs = workflowJobNames(content);
   if (resultJobs === null) {
     return {
-      ...unchanged, preservedJobs: [], droppedJobs: existingJobs, overwrittenLines: [], lineDelta,
+      ...unchanged, preservedJobs: [], droppedJobs: existingJobs, overwrittenLines: [], movedKeys: [], lineDelta,
       refusal: `the merged workflow does not parse, so it cannot be written (line delta ${signed(lineDelta)})`,
     };
   }
+
+  // A top-level key declared twice is a workflow YAML rejects and GitHub
+  // Actions refuses to run (#482). The realistic way one appears is the
+  // correction this issue is about — somebody restores a block they believe
+  // the merge deleted while the original is still further down — so the
+  // refusal has to look at the EXISTING file as well as the merged one, and
+  // name the key rather than the symptom.
+  const duplicated = [
+    ...duplicateTopLevelKeys(existing).map(k => [k, "the existing file"] as const),
+    ...duplicateTopLevelKeys(content)
+      .filter(k => !duplicateTopLevelKeys(existing).includes(k))
+      .map(k => [k, "the merged output"] as const),
+  ];
+  if (duplicated.length > 0) {
+    return {
+      ...unchanged, preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], lineDelta,
+      refusal:
+        `${duplicated.length} top-level key(s) declared more than once in ` +
+        `${duplicated.map(([k, where]) => `${k} (${where})`).join(", ")} — ` +
+        `YAML rejects a duplicate mapping key, so the workflow would not run. ` +
+        `Delete the extra declaration and re-run (line delta ${signed(lineDelta)})`,
+    };
+  }
+
+  const movedKeys = movedTopLevelKeys(existing, content);
 
   // The loss set is LINES, not job names. Every non-blank line the consumer
   // has that the merge did not carry is content the harness is about to drop,
@@ -1939,7 +1982,7 @@ export function resolveManagedWrite(existing: string | null, generated: string):
       ? `job(s) ${droppedJobs.join(", ")}`
       : "content outside any job";
     return {
-      ...unchanged, preservedJobs, droppedJobs, overwrittenLines: [], lineDelta,
+      ...unchanged, preservedJobs, droppedJobs, overwrittenLines: [], movedKeys: [], lineDelta,
       refusal:
         `${lostLines.length} line(s) the harness did not author would be dropped from ${where}` +
         `: ${lostLines.slice(0, 3).map(l => JSON.stringify(l)).join(", ")}` +
@@ -1948,7 +1991,7 @@ export function resolveManagedWrite(existing: string | null, generated: string):
     };
   }
 
-  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, refusal: null };
+  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, movedKeys, refusal: null };
 }
 
 /** Non-blank lines, trimmed — the unit the loss set is counted in. */
@@ -2014,6 +2057,18 @@ export function writeManagedFile(
       `${over.slice(0, 2).map(l => JSON.stringify(l)).join(", ")}` +
       `${over.length > 2 ? ` and ${over.length - 2} more` : ""}`;
 
+  // The third half of it (#482). A key that moved is not lost and not
+  // overwritten, so neither of the two above says anything — and a reader who
+  // finds a comment stranded above the wrong section has nothing in the log
+  // to check that reading against. Named with both ends, because "1 key
+  // moved" is not something anyone can act on.
+  const moved = resolved.movedKeys;
+  const relocated = moved.length === 0
+    ? ""
+    : `, moved ${moved.length} top-level key(s): ` +
+      `${moved.slice(0, 3).map(m => `${m.key} (line ${m.from + 1} -> ${m.to + 1})`).join(", ")}` +
+      `${moved.length > 3 ? ` and ${moved.length - 3} more` : ""}`;
+
   if (resolved.verb === "SKIP") {
     actions.push(`SKIP: ${label} (unchanged${kept})`);
     return;
@@ -2021,7 +2076,7 @@ export function writeManagedFile(
 
   mkdirSync(dirname(filePath), { recursive: true });
   writeFileSync(filePath, resolved.content);
-  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote})`);
+  actions.push(`${resolved.verb}: ${label} (${signed(resolved.lineDelta)} lines${kept}${overwrote}${relocated})`);
 }
 
 export function createCiWorkflows(root: string, actions: string[], opts: { force?: boolean } = {}): void {
