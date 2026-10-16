@@ -7057,12 +7057,27 @@ Over `test/dry-run-evidence-quality.test.ts` + `test/ship-scope-verdict.test.ts`
 
 | Mutation | Predicted | Measured |
 |---|---|---|
-| `dryRunEvidenceQuality` returns `{status:'PASS', blockers: []}` for everything | 4 | |
-| the absent-reading branch returns `PASS` instead of `UNMEASURED` — the draft's bug | 2 | |
-| the `PASS`-with-broken-ids contradiction branch deleted | 1 | |
-| `evidencePrevalidation` dropped from `GATE_RESULT_SCHEMA` | 1 | |
-| `evidenceQuality` dropped from the `SCOPE_FAILED` detail | 1 | |
-| `acCount` hard-wired to `2` | 1 | |
+| `dryRunEvidenceQuality` returns `{status:'PASS', blockers: []}` for everything | 4 | **5** |
+| the absent-reading branch returns `PASS` instead of `UNMEASURED` — the draft's bug | 2 | 2 |
+| the `PASS`-with-broken-ids contradiction branch deleted | 1 | 1 |
+| `evidencePrevalidation` dropped from `GATE_RESULT_SCHEMA` | 1 | 1 |
+| the gate prompt stops asking the agent for the reading | 1 | 1 |
+| `evidenceQuality` dropped from the `SCOPE_FAILED` detail | 1 | 1 |
+| `acCount` hard-wired to `2` | 1 | 1 |
+
+None of the seven is left in the tree; all were run and reverted.
+
+**The row that came back high.** The first row was predicted 4 and measured 5,
+and the extra red is SC-1724 — the test this file describes as pinning a fact
+about `gates/workflow.test.ts`. It also carries a behavioural tail
+(`expect(quality(undefined, "PASS", []).status).not.toBe("PASS")`), which is
+the half that makes the source-text half mean anything, and it was filed
+mentally under "source-text test" when the prediction was written. Extra reds
+in cases that genuinely depend on the mutated behaviour means the prediction
+was wrong and the check is better than it looked, not that the mutant is
+broken — the discriminator in
+`.claude/rules/checks-must-be-able-to-fail.md`. All five reds are the five
+behavioural cases of the function, which is the correct set.
 
 ### Success criteria
 
