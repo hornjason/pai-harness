@@ -18,7 +18,8 @@ import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
 import { mergeManagedWorkflow } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
-import { tryLoadRungateConfig } from "../config-loader";
+import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
+import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
@@ -2488,6 +2489,56 @@ export function addPaiHarnessDevDep(root: string, actions: string[], version?: s
   // not name its file is invisible to the stager and, worse, now reads as an
   // unexplained modification to the dirty-tree check.
   actions.push("UPDATED: package.json (rungate devDep)");
+}
+
+/**
+ * Report what `organizeProject` would adopt, without adopting it (#442).
+ *
+ * `organizeProject` had exactly one caller and it was a human running
+ * `scripts/organize-project.ts`. Nothing in scaffold, ship or any hook
+ * invoked it, so re-scaffolding a project — the thing people expected to
+ * trigger adoption — could not. A feature nothing invokes is a feature that
+ * has never fired, and this one never had.
+ *
+ * DRY-RUN, always. Discovery stops requiring prior knowledge that the
+ * feature exists; adoption stays something a person chooses. The step writes
+ * nothing, which is also why it is safe during rehearsal.
+ */
+export function reportExternalAdoptionStep(root: string, actions: string[]): void {
+  const config = loadComplianceConfig(root);
+  const sources = config?.organize?.externalSources ?? [];
+
+  if (sources.length === 0) {
+    // SC-5, and the decision is to write the list EMPTY. An external source
+    // is an absolute path on one person's machine; a default would have
+    // scaffold propose adopting documents out of directories the user never
+    // named, in every project it touches. Recorded as a line rather than
+    // left as an absence, so "nobody configured this" is distinguishable
+    // from "this ran and found nothing".
+    actions.push(
+      "SKIP: external adoption (compliance.json declares no organize.externalSources — " +
+      "deliberately empty, an external path is machine-specific and cannot be guessed)",
+    );
+    return;
+  }
+
+  const report = organizeProjectReport(root, { dryRun: true, harnessRoot: root });
+  const external = report.proposals.filter(p => p.source.startsWith("/"));
+
+  for (const path of report.unmeasured) {
+    actions.push(`UNMEASURED: external source ${path} is declared but not on disk`);
+  }
+  for (const path of report.unreadable) {
+    actions.push(`UNMEASURED: external source ${path} could not be read`);
+  }
+  for (const p of external) {
+    actions.push(`PROPOSED: adopt ${p.source} -> ${p.target} (${p.reasoning})`);
+  }
+  if (external.length === 0 && report.unmeasured.length === 0 && report.unreadable.length === 0) {
+    actions.push(
+      `OK: external adoption found nothing (matched against ${report.aliases.join(", ")})`,
+    );
+  }
 }
 
 export function runAuditSpecsFix(root: string, actions: string[]): void {

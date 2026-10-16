@@ -713,3 +713,153 @@ on both the files found and the SC lines classified was added first; the
 mutation above is that control, performed and observed. Without it the row
 would read **0 of 70**, in the sweep written to prove a claim about the whole
 tree — which is where it would have been least visible.
+
+## #442 — external adoption was built and had never fired
+
+`scanExternalSources` does `~` expansion, scanning, matching and
+classified-target proposal with a confidence score, and
+`scripts/convert-spec.ts` converts freeform docs into spec format. The
+feature has never fired for any project, for four independent reasons. Each
+alone is sufficient.
+
+**1. `organizeProject` had exactly one caller, and it was a human.**
+`scripts/organize-project.ts`, a CLI defaulting to `--dry-run`. Nothing in
+scaffold, ship or any hook invoked it, so re-scaffolding a project — the
+thing people expected to trigger adoption — could not.
+
+**2. Scaffold wrote the allowlist empty, in two places,** and
+`lib/organize.ts` guarded the whole external branch on its presence. A
+feature that ships with an empty allowlist and nothing prompting anyone to
+fill it is off by default forever.
+
+**3. Both match modes keyed on the literal project DIRECTORY NAME.**
+Measured by the reporting session against a real sibling document:
+
+```
+grep -ic "dailybriefdashboard"  ->  0
+grep -ic "ddb"                  ->  2
+```
+
+This generalises. A document written in one project that refers to another
+calls it by nickname, abbreviation, product name or repo slug — almost never
+by the name of the directory it happens to be checked out into.
+
+**4. Three fail-opens in one loop.** A declared path not on disk was
+`continue`d, an unreadable file was `catch {}`ed into a non-match, and the
+whole directory walk sat inside another bare `catch`. The issue named two;
+the third was found while fixing them. A fourth defect was found the same
+way: `source.path.replace("~", HOME)` replaces the FIRST `~` anywhere, so
+`/srv/backup~old/docs` became `/srv/backup<HOME>old/docs`.
+
+### Decisions, recorded
+
+**Aliases are derived where the tree states them and declared where it does
+not.** The directory name and the GitHub slug come from `basename` and
+`.git/config`; `organize.aliases` is for what only a human knows. Reading
+`.git/config` rather than spawning git is deliberate — this runs inside
+scaffold, and a subprocess per scaffolded project buys nothing when the file
+is right there.
+
+**Matching is by WORD, not substring, and short aliases are refused.** The
+aliases that make this feature work are short, and `ddb` as a substring
+matches `oddball`. A three-letter abbreviation proposing adoption of every
+document containing those letters is worse than the matcher that never
+fired. `MIN_ALIAS_LENGTH` is 2 for the same reason #437 needed an exact
+mkdtemp shape: a one-character alias matches most of a directory.
+
+**One matcher, not two.** The two modes were two separate expressions on the
+same question. `matchesAnyAlias` is the single binding, so there is one
+thing to mutate and no second copy to drift.
+
+**Scaffold runs it DRY, always.** Discovery stops requiring prior knowledge
+that the feature exists; adoption stays something a person chooses. The step
+writes nothing, which is also why it is safe during rehearsal.
+
+**The empty list stays empty, and says so.** An external source is an
+absolute path on one person's machine; a default would have scaffold propose
+adopting documents out of directories the user never named, in every project
+it touches. So the decision is to write nothing and report that the decision
+was made — "nobody configured this" and "this ran and found nothing" are
+different facts that used to produce the same output.
+
+- [x] SC-1641: test/external-adoption.test.ts contains [a project is matched by the names its documents actually use] — aliases are consulted by both modes, and the repo name and slug are derived rather than typed
+- [x] SC-1642: test/external-adoption.test.ts contains [a matcher that would propose everything is refused] — word boundaries, a minimum alias length, and a doc that matches nothing producing no proposal
+- [x] SC-1643: test/external-adoption.test.ts contains [a declared path that is not on disk is UNMEASURED] — the report names the path, and `~` expands only when it leads
+- [x] SC-1644: test/external-adoption.test.ts contains [a file that cannot be read is reported, not called a non-match] — measured once by permission and once by a dangling symlink, which no user can bypass
+- [x] SC-1645: test/external-adoption.test.ts contains [scaffold reports proposals without applying them] — the step is invoked by the scaffold run, writes nothing, and surfaces unmeasured sources
+- [x] SC-1646: test/external-adoption.test.ts contains [an empty externalSources list is a recorded decision] — the reason is stated, and a scan that ran and matched nothing names the aliases it tried
+
+### What was broken to prove it (SC-1641..1646)
+
+Run over `test/external-adoption.test.ts` — 20 tests, baseline 0 fail. Every
+count predicted before the battery ran.
+
+| Mutation | Red |
+|---|---|
+| `matchesAnyAlias` back to substring — the `oddball` case | 1 of 20 |
+| aliases back to the directory name only — defect 3, verbatim | 5 of 20 |
+| the git remote never consulted | 1 of 20 |
+| the minimum-length floor removed | 1 of 20 |
+| a missing declared path is skipped again — fail-open 1 | 2 of 20 |
+| an unreadable file is a non-match again — fail-open 2 | 2 of 20 |
+| `expandHome` back to an unanchored replace | 1 of 20 |
+| the scaffold step reports nothing for an empty list | 1 of 20 |
+| the scaffold step proposes nothing | 1 of 20 |
+| the step is exported and never invoked — defect 1, verbatim | 1 of 20 |
+| the scaffold step APPLIES instead of proposing | 1 of 20 |
+| the no-match line stops naming the aliases | 1 of 20 |
+
+None of the twelve is left in the tree; all were run and reverted.
+
+**Four rows differed, all of them prediction errors and three of them the
+same one.** Counting ASSERTIONS rather than TESTS: several failing
+expectations inside one `test()` are one red row, not three. That mistake
+has now been made on #440, #441 and #442 in a row, so it is recorded here as
+a standing note rather than a third footnote — **predict by test, not by
+assertion**. The fourth was an over-count on the git-remote row, where only
+one test asserts the derivation and the `remoteSlug` unit test exercises the
+parser directly rather than its consultation.
+
+**One row is worth reading as a measurement rather than a check.** Dropping
+configured aliases measures 5, not 4, and the extra row is the "names which
+aliases it tried" case — a scan that matched nothing stops being
+diagnosable the moment the alias list is wrong, which is precisely the
+failure mode that kept this feature dark for its whole life.
+
+### The guard that caught this, and the two holes in it
+
+Adding report verbs turned `SC-1512: every write verb the scaffold emits is
+in WRITE_VERBS` red, which is the guard doing its job: `postScaffoldCommit`
+stages by verb, so a verb in neither the write list nor the non-write list
+is generated output nobody commits. `PROPOSED`, `UNMEASURED` and `OK` are
+all absences of a write and were classified as such.
+
+Then the planted-verb mutation came back **0 where 1 was predicted**, twice,
+and the reason was not the mutation. The detector was
+`/actions\.push\([`"']([A-Z]{3,12}): /g`, and it was narrower than what it
+detects in two independent ways:
+
+- `{3,12}` could not see a **two-letter** verb at all.
+- requiring the quote IMMEDIATELY after `push(` could not see a
+  **multi-line** push — which is how every long report line in this file is
+  written, including the one this issue added. The suite went green over a
+  verb in neither list for exactly that reason.
+
+Widening it to `/actions\.push\(\s*[`"']([A-Z]{2,12}): /g` surfaced
+**`PRESERVED`**, emitted from two sites in `lib/scaffold/steps.ts` since
+long before this issue and in neither list the whole time. It announces a
+file deliberately not overwritten, so it is a non-write and needs no
+staging — but nothing could have told you that, because nothing could see
+it.
+
+| Mutation | Red |
+|---|---|
+| a multi-line push whose verb is in neither list | 1 of 17 |
+| the same verb, detector back to quote-adjacent | **0 of 17** — the hole, measured |
+| a two-letter verb in neither list | 1 of 17 |
+| the same two-letter verb, detector back at `{3,12}` | **0 of 17** — the other hole |
+| `PRESERVED` removed from the non-write list | 1 of 17 |
+
+The two zeros are deliberate rows. They are the old detector, reinstated
+over a planted verb, failing to notice — which is the only way to show that
+widening it bought something rather than being tidying.

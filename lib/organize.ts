@@ -21,6 +21,7 @@ import {
 } from "fs";
 import { join, relative, dirname, basename } from "path";
 import { loadComplianceConfig, type OrganizeExternalSource } from "./config-loader.js";
+import { matchesAnyAlias, projectAliases } from "./project-aliases.js";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -62,6 +63,27 @@ export interface OrganizeOptions {
   dryRun?: boolean;
   /** Path to the harness project root (for loading compliance.json config) */
   harnessRoot?: string;
+}
+
+/**
+ * What a scan covered, and what it could not (#442).
+ *
+ * `scanExternalSources` had three fail-opens in one loop: a declared path
+ * that is not on disk was `continue`d, an unreadable file was `catch {}`ed
+ * into a non-match, and the whole directory walk sat inside another bare
+ * `catch`. A user who declares where their documents live and is told
+ * nothing when that place is not there has been given `0`, `{}` and `SKIP`
+ * — which `.claude/rules/config-access.md` names as indistinguishable from
+ * success. `UNMEASURED` is not.
+ */
+export interface OrganizeReport {
+  proposals: OrganizeProposal[];
+  /** Declared external paths that are not on disk. Named, not skipped. */
+  unmeasured: string[];
+  /** Paths that exist and could not be read. A non-match is not the answer. */
+  unreadable: string[];
+  /** The names matching was actually done against, so a miss is diagnosable. */
+  aliases: string[];
 }
 
 // ── Well-known root files to skip ────────────────────────────────
@@ -288,7 +310,14 @@ export function classifyDocument(
 
 // ── Main organize function ───────────────────────────────────────
 
-export function organizeProject(root: string, options: OrganizeOptions = {}): OrganizeProposal[] {
+/**
+ * The full result: what was proposed, and what could not be looked at.
+ *
+ * `organizeProject` below is a view onto this, not a second implementation —
+ * eight call sites want only the proposals and changing them all would have
+ * bought nothing. One decider, one convenience accessor.
+ */
+export function organizeProjectReport(root: string, options: OrganizeOptions = {}): OrganizeReport {
   const complianceConfig = options.harnessRoot
     ? loadComplianceConfig(options.harnessRoot)
     : null;
@@ -316,69 +345,129 @@ export function organizeProject(root: string, options: OrganizeOptions = {}): Or
     });
   }
 
+  const aliases = projectAliases(root, organizeConfig?.aliases ?? []);
+  const report: OrganizeReport = { proposals, unmeasured: [], unreadable: [], aliases };
+
   // Scan external sources from config
   if (organizeConfig?.externalSources) {
-    const externalProposals = scanExternalSources(root, organizeConfig.externalSources);
-    proposals.push(...externalProposals);
+    proposals.push(...scanExternalSources(root, organizeConfig.externalSources, aliases, report));
   }
 
   if (options.apply && !options.dryRun) {
     executeProposals(root, proposals);
   }
 
-  return proposals;
+  return report;
+}
+
+export function organizeProject(root: string, options: OrganizeOptions = {}): OrganizeProposal[] {
+  return organizeProjectReport(root, options).proposals;
 }
 
 // ── External source scanning ────────────────────────────────────
 
-function scanExternalSources(projectRoot: string, sources: OrganizeExternalSource[]): OrganizeProposal[] {
+function scanExternalSources(
+  projectRoot: string,
+  sources: OrganizeExternalSource[],
+  aliases: string[],
+  report: { unmeasured: string[]; unreadable: string[] },
+): OrganizeProposal[] {
   const proposals: OrganizeProposal[] = [];
-  const projectName = basename(projectRoot).toLowerCase();
 
   for (const source of sources) {
-    const expandedPath = source.path.replace("~", process.env.HOME || "");
-    if (!existsSync(expandedPath)) continue;
+    const expandedPath = expandHome(source.path);
+    if (!existsSync(expandedPath)) {
+      // UNMEASURED, not skipped. The user said their documents live here.
+      report.unmeasured.push(source.path);
+      continue;
+    }
     if (source.target === null) continue;
 
-    if (lstatSync(expandedPath).isDirectory()) {
+    let stat;
+    try {
+      stat = lstatSync(expandedPath);
+    } catch {
+      report.unreadable.push(source.path);
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+
+    let entries: string[];
+    try {
+      entries = readdirSync(expandedPath);
+    } catch {
+      // Was a bare `catch {}` around the whole walk. A declared source the
+      // process cannot list is the single most important thing to say.
+      report.unreadable.push(source.path);
+      continue;
+    }
+
+    for (const entry of entries) {
+      const entryPath = join(expandedPath, entry);
+      let isDir: boolean;
       try {
-        for (const entry of readdirSync(expandedPath)) {
-          const entryPath = join(expandedPath, entry);
-          if (!lstatSync(entryPath).isDirectory() && !entry.endsWith(".md")) continue;
+        isDir = lstatSync(entryPath).isDirectory();
+      } catch {
+        report.unreadable.push(entryPath);
+        continue;
+      }
+      if (!isDir && !entry.endsWith(".md")) continue;
 
-          let matches = false;
-          if (source.matchBy === "project-name") {
-            matches = entry.toLowerCase().includes(projectName) ||
-              (lstatSync(entryPath).isDirectory() && readdirSync(entryPath).some(f =>
-                f.toLowerCase().includes(projectName)));
-          } else if (source.matchBy === "content-reference") {
-            if (entry.endsWith(".md")) {
-              try {
-                const content = readFileSync(entryPath, "utf-8");
-                matches = content.toLowerCase().includes(projectName);
-              } catch {}
-            }
-          }
-
-          if (matches) {
-            const targetPath = join(source.target, entry);
-            const targetFull = join(projectRoot, targetPath);
-            if (existsSync(targetFull)) continue;
-
-            proposals.push({
-              source: entryPath,
-              target: targetPath,
-              classification: source.type,
-              reasoning: `external ${source.type} matched by ${source.matchBy} in ${source.path}`,
-              confidence: 0.7,
-            });
+      let matches = false;
+      if (source.matchBy === "project-name") {
+        matches = matchesAnyAlias(entry, aliases);
+        if (!matches && isDir) {
+          try {
+            matches = readdirSync(entryPath).some(f => matchesAnyAlias(f, aliases));
+          } catch {
+            report.unreadable.push(entryPath);
+            continue;
           }
         }
-      } catch {}
+      } else if (source.matchBy === "content-reference") {
+        if (!entry.endsWith(".md")) continue;
+        let content: string;
+        try {
+          content = readFileSync(entryPath, "utf-8");
+        } catch {
+          // Was `catch {}`, which made unreadable and not-a-match the same
+          // answer. They are opposite answers: one is "no", the other is
+          // "I could not look".
+          report.unreadable.push(entryPath);
+          continue;
+        }
+        matches = matchesAnyAlias(content, aliases);
+      }
+
+      if (!matches) continue;
+
+      const targetPath = join(source.target, entry);
+      if (existsSync(join(projectRoot, targetPath))) continue;
+
+      proposals.push({
+        source: entryPath,
+        target: targetPath,
+        classification: source.type,
+        reasoning: `external ${source.type} matched by ${source.matchBy} in ${source.path}`,
+        confidence: 0.7,
+      });
     }
   }
 
   return proposals;
+}
+
+/**
+ * `~` expansion, anchored.
+ *
+ * `source.path.replace("~", HOME)` replaces the FIRST `~` anywhere in the
+ * string, so `/srv/backup~old/docs` became `/srv/backup<HOME>old/docs`. Only
+ * a leading `~` is a home reference.
+ */
+export function expandHome(path: string): string {
+  if (path !== "~" && !path.startsWith("~/")) return path;
+  const home = process.env.HOME || "";
+  return home ? home + path.slice(1) : path;
 }
 
 // ── Execute proposals (move files) ───────────────────────────────
