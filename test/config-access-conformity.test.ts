@@ -759,3 +759,95 @@ describe("#500 review: the walk is not wider than the question it answers", () =
     expect(projectSourceEvidence(content()).found).toBe(false);
   });
 });
+
+/**
+ * What the re-review of the fix found (#500, second round).
+ *
+ * All three are the narrowing itself being wrong, which is the risk the
+ * review existed to catch: narrowing a detector is the change most likely to
+ * buy green with blindness.
+ */
+describe("#500 re-review: the narrowing did not take enforcement with it", () => {
+  const waived = (root: string): boolean =>
+    unmeasuredScanReason(
+      scanConfigAccess(root),
+      projectSourceEvidence(root),
+      "CONFIG-1",
+      "hand-written TypeScript",
+    ) !== null;
+
+  test("N1: the SCAN still reads test paths under a source directory", () => {
+    // The first draft widened `walkSources` to match the evidence walk, and
+    // that silently reduced enforcement: five layouts with a real direct
+    // config read went from counted violation to silent green. No WARN, no
+    // UNMEASURED, no record — a non-empty scan never engages the waiver, so
+    // the violation simply stopped being counted.
+    //
+    // The invariant is ONE-DIRECTIONAL: the evidence walk must not claim
+    // source the scan would never read. The scan reading more is harmless.
+    // Each case carries a clean `lib/clean.ts` so the scan is non-empty and
+    // nothing can pass for the unrelated reason of an empty scan.
+    for (const f of [
+      "lib/tests/sneaky.ts", "lib/spec/y.ts", "lib/__mocks__/x.ts",
+      "lib/sneaky.test.js", "lib/sneaky.spec.ts",
+    ]) {
+      const root = project({ [f]: READS_CONFIG, "lib/clean.ts": "export const a = 1;\n" });
+      const scan = scanConfigAccess(root);
+      expect(scan.filesScanned, `${f}: the scan read nothing, so this proves nothing`)
+        .toBeGreaterThan(0);
+      expect(Object.keys(scan.counts), `${f} stopped being enforced`).toContain(f);
+    }
+  });
+
+  test("N1: the EVIDENCE walk still ignores them — the two are not symmetric", () => {
+    // The other half, stated so a later "tidy-up" cannot collapse them into
+    // one shared exclusion list and reopen N1.
+    const root = project({ "README.md": "# docs", "tests/helpers/setup.ts": "export const s = 1;\n" });
+    expect(projectSourceEvidence(root).found).toBe(false);
+  });
+
+  test("N2: 'points at nothing' and 'cannot be stat-ed' are different answers", () => {
+    // The B3 fix asked `existsSync`, which is false for BOTH, so a symlink
+    // into an unreadable directory gave found=false AND unreadable=[] — the
+    // code invisible and the walk not recording that it could not look. That
+    // is the failure the `unreadable` guard exists to prevent, reintroduced
+    // inside the guard. The errno is what separates them.
+    if (process.getuid?.() === 0) return;
+    const locked = mkdtempSync(join(tmpdir(), "rungate-locked-"));
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    writeFileSync(join(locked, "inner", "code.ts"), READS_CONFIG);
+    chmodSync(locked, 0o000);
+    try {
+      const root = project({ "README.md": "# docs" });
+      symlinkSync(join(locked, "inner"), join(root, "vendored"));
+      const ev = projectSourceEvidence(root);
+      expect(ev.unreadable, "a link we could not follow was recorded as empty").not.toEqual([]);
+      expect(waived(root), "unreadable source was waived as 'no source here'").toBe(false);
+    } finally {
+      chmodSync(locked, 0o755);
+      rmSync(locked, { recursive: true, force: true });
+    }
+  });
+
+  test("N3: a symlinked FILE cannot leave the project either", () => {
+    // The directory containment check cannot see this case. "The walk cannot
+    // leave the project" is either true of both kinds of entry or it is not
+    // a property at all.
+    const outside = mkdtempSync(join(tmpdir(), "rungate-outside-"));
+    writeFileSync(join(outside, "x.ts"), READS_CONFIG);
+    const root = project({ "README.md": "# docs" });
+    symlinkSync(join(outside, "x.ts"), join(root, "linked.ts"));
+    const ev = projectSourceEvidence(root);
+    expect(ev.examples, "a file outside the project was counted as evidence").toEqual([]);
+    expect(ev.found).toBe(false);
+    rmSync(outside, { recursive: true, force: true });
+  });
+
+  test("the control: a symlinked file INSIDE the project still counts", () => {
+    // Without this, containment that rejected every symlinked file would
+    // satisfy N3 and quietly reopen F2/F6, which is the monorepo shape.
+    const root = project({ "README.md": "# docs", "packages/core/a.ts": READS_CONFIG });
+    symlinkSync(join(root, "packages", "core", "a.ts"), join(root, "lib.ts"));
+    expect(projectSourceEvidence(root).found, "an in-project symlink was rejected").toBe(true);
+  });
+});

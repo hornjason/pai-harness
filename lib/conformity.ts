@@ -2886,11 +2886,24 @@ function walkSources(dir: string, rel: string, out: Array<{ path: string; text: 
     const abs = join(dir, e.name);
     const relPath = rel ? `${rel}/${e.name}` : e.name;
     if (e.isDirectory()) {
-      if (TEST_DIRS.has(e.name) || e.name === "node_modules") continue;
+      // NOT `TEST_DIRS`, and not `isTestSourceFile` below. The first draft of
+      // the #500 fix widened both here to match the evidence walk, and that
+      // silently REDUCED enforcement: `lib/tests/sneaky.ts`, `lib/spec/y.ts`,
+      // `lib/__mocks__/x.ts`, `lib/sneaky.test.js` and `lib/sneaky.spec.ts`
+      // each carried a real direct config read, were counted as violations
+      // before, and became silent green after — no WARN, no UNMEASURED, no
+      // record, because a non-empty scan never engages the waiver.
+      //
+      // The invariant the waiver needs is ONE-DIRECTIONAL: the evidence walk
+      // must not claim source the scan would never read. The scan reading
+      // MORE than the walk is harmless — a file the scan reads makes
+      // `filesScanned > 0`, and the waiver is never reached. So the walk is
+      // the side that narrows, and this stays where ADR-002 D4 left it.
+      if (e.name === "test" || e.name === "node_modules") continue;
       walkSources(abs, relPath, out);
       continue;
     }
-    if (!/\.(ts|js)$/.test(e.name) || isTestSourceFile(e.name)) continue;
+    if (!/\.(ts|js)$/.test(e.name) || /\.test\.ts$/.test(e.name)) continue;
     out.push({ path: relPath, text: readFileSync(abs, "utf-8") });
   }
 }
@@ -3245,15 +3258,24 @@ export function projectSourceEvidence(root: string): SourceEvidence {
       if (!isDir && e.isSymbolicLink()) {
         try {
           isDir = statSync(abs).isDirectory();
-        } catch {
+        } catch (err) {
           // A DANGLING symlink is not unmeasured — it is empty. It resolves
           // to nothing, so it cannot be hiding source, and counting it would
           // mean one broken link anywhere in a content project refuses
           // CONFIG-1 for the rest of the project's life. `unreadable` exists
           // for the case where source might be behind something we could not
-          // open; that is a permission error on a real directory, not a link
-          // to a file that does not exist.
-          if (existsSync(abs)) unreadable.push(childRel);
+          // open; that is a permission error, not a link to a file that does
+          // not exist.
+          //
+          // The distinction is the ERRNO, not `existsSync`. The first draft
+          // asked `existsSync(abs)`, which returns false for BOTH — so
+          // `vendored -> /locked/inner`, with `/locked` at mode 000 and a
+          // real config read inside, gave found=false, unreadable=[] and a
+          // clean UNMEASURED. The code was invisible AND the walk did not
+          // record that it could not look, which is the exact failure the
+          // `unreadable` guard exists to prevent, reintroduced inside the
+          // guard itself.
+          if ((err as NodeJS.ErrnoException).code !== "ENOENT") unreadable.push(childRel);
           continue;
         }
       }
@@ -3265,6 +3287,20 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         && !isTestSourceFile(e.name)
         && !isRootToolConfig(childRel, e.name)
       ) {
+        // A symlinked FILE is containment-checked too. The directory check
+        // above cannot see this case, so `linked.ts -> /outside/x.ts` made
+        // `found` true on the strength of code outside the project — which
+        // contradicts the invariant the directory check exists to state.
+        // Checked here rather than assumed, because "the walk cannot leave
+        // the project" is either true of both kinds of entry or it is not a
+        // property at all.
+        if (e.isSymbolicLink()) {
+          try {
+            if (!insideProject(realpathSync(abs))) continue;
+          } catch {
+            continue;
+          }
+        }
         if (examples.length < 3) examples.push(childRel);
       }
     }
