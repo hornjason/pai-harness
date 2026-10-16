@@ -47,6 +47,7 @@
  *   bun scripts/github-op.ts issue-label  --repo o/n --issue N --labels a,b
  *   bun scripts/github-op.ts issue-get    --repo o/n --issue N
  *   bun scripts/github-op.ts issue-create --repo o/n --title T [--body-file F] [--labels a,b]
+ *   bun scripts/github-op.ts ci-status    --repo o/n --sha SHA [--timeout-ms N] [--interval-ms N]
  */
 
 import { readFileSync } from "fs";
@@ -59,6 +60,7 @@ import {
   markPRReady,
   updateIssue,
   upsertPR,
+  waitForCi,
 } from "../lib/github";
 
 export type Flags = Record<string, string>;
@@ -173,6 +175,7 @@ export const COMMANDS = [
   "issue-label",
   "issue-get",
   "issue-create",
+  "ci-status",
 ] as const;
 
 export type Command = (typeof COMMANDS)[number];
@@ -296,7 +299,54 @@ export async function run(command: string, flags: Flags): Promise<unknown> {
       });
       return { number: data.number, html_url: data.html_url };
     }
+
+    case "ci-status": {
+      // `--sha`, and never `--branch`. The checks endpoint accepts a branch
+      // name and answers about whatever commit that branch pointed at when CI
+      // last ran, so a branch-keyed gate certifies the previous push. The flag
+      // is named for the only safe input and `readCi` re-checks it anyway.
+      const sha = required(flags, "sha");
+      return await waitForCi(client, repo, sha, {
+        timeoutMs: positiveMs(flags, "timeout-ms", 15 * 60 * 1000),
+        intervalMs: positiveMs(flags, "interval-ms", 15 * 1000),
+      });
+    }
   }
+}
+
+/**
+ * A duration flag, or its default. Zero is allowed; negative and malformed are not.
+ *
+ * `--timeout-ms 0` is a meaningful request — read CI once and report whatever
+ * is there — so it must not be swallowed by a falsy check and replaced with
+ * the fifteen-minute default. That substitution is the one this function
+ * exists to not make.
+ */
+export function positiveMs(flags: Flags, name: string, fallback: number): number {
+  const raw = flags[name];
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`--${name} must be a non-negative number of milliseconds, got "${raw}"`);
+  return n;
+}
+
+/**
+ * The process exit code for a completed operation.
+ *
+ * Everything that reaches here succeeded as an API call, so the default is 0
+ * and stays what it always was. `ci-status` is the one command whose RESULT is
+ * a verdict rather than a receipt, and a verdict of FAIL or UNMEASURED
+ * reaching a caller as exit 0 is the fail-open this gate exists to prevent.
+ *
+ * The three-way verdict still only lives in the JSON. A caller that collapses
+ * UNMEASURED into FAIL because both exit non-zero has lost the distinction
+ * that matters, which is why the prompt that runs this is told to copy
+ * `verdict` and not to derive it from the exit code (#59).
+ */
+export function exitCodeFor(command: string, result: unknown): number {
+  if (command !== "ci-status") return 0;
+  const verdict = (result as { verdict?: unknown } | null)?.verdict;
+  return verdict === "PASS" ? 0 : 1;
 }
 
 async function main() {
@@ -308,6 +358,11 @@ async function main() {
   try {
     const result = await run(command, parseFlags(rest));
     console.log(JSON.stringify(result));
+    // Printed BEFORE the exit code is applied, so a non-PASS verdict still
+    // reaches the caller as data. A gate that exits non-zero with nothing on
+    // stdout tells the operator only that something went wrong.
+    const code = exitCodeFor(command, result);
+    if (code !== 0) process.exit(code);
   } catch (e: any) {
     // The message can carry a request URL; scrubbing happens at the hook
     // boundary, and here the output goes to a workflow log the operator reads.

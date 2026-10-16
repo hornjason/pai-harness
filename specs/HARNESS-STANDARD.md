@@ -7428,3 +7428,227 @@ on a run that stopped in the first third.
 - [x] SC-1755: test/workflow-contracts.test.ts contains [an agent that has escaped its phase is caught - in the backwards direction only] — an unknown phase is the other function's finding and is deliberately not reported twice
 - [x] SC-1756: test/workflow-contracts.test.ts contains [a planted violation in ship.js itself is caught by the running harness] — the real script edited and executed, with the unedited script through the same path as the control
 - [x] SC-1757: test/workflow-contracts.test.ts contains [five runs with the same inputs produce one identical call graph] — pass^k over the half of #61's criterion this repo controls, with a vacuity floor and a run that must differ
+
+## CI's verdict, read rather than assumed (#46)
+
+The ship pipeline validated code locally and never found out what the build
+machine made of it. #46 asked for a remote verification gate. Two of its four
+steps turned out to describe a problem the harness does not have, and saying
+which is most of the value of the issue.
+
+### The premise is half wrong, and the wrong half is the half it leads with
+
+> nobody triggers the actual CI workflow to verify
+
+`.github/workflows/ci.yml` is `on: push` to `main` and `on: pull_request` to
+`main`. The Ship phase opens or updates a PR against `main`, **which fires
+`pull_request` and starts CI.** CI is already triggered, by the pipeline, on
+every run that gets that far. What nobody does is wait for it or read it.
+
+So the proposed `gh workflow run ci.yml --ref <branch>` is not built, for two
+reasons, both checked:
+
+1. **It would fail today.** `ci.yml` declares no `workflow_dispatch` trigger.
+2. **If the trigger were added it would make the gate worse.** The PR already
+   produced a run; a dispatch produces a second one against the same commit,
+   and "did CI pass" now has two answers and the gate has to pick. An
+   ambiguous input is how a check ends up satisfied by the convenient half.
+
+### Polling, and being honest about it
+
+> Uses GitHub webhook or `gh run watch` to get notified when complete (not polling)
+
+A local harness has no inbound endpoint for a webhook to arrive at, and
+`gh run watch` polls internally. The choice is not whether to poll but **who
+polls and whether the wait is bounded.** `waitForCi` does it with an explicit
+timeout and an injectable clock, so the bound is visible and the loop is
+testable without waiting for it. `workflows/ship.js` could not have run
+`gh run watch` in any case — no subprocess (#69) — and the repo is migrating
+off the `gh` CLI for infrastructure code anyway.
+
+### The trigger condition in the issue switches the check off for most consumers
+
+> Only runs when `remoteHosts.runner` is configured in rungate.json
+
+`remoteHosts` is the SSH pre-flight host map. GitHub Actions has nothing to do
+with it, so this would disable the check for every consumer that has CI and no
+SSH host. The real condition is whether the project has workflow files at all,
+counted by the shell rather than judged by an agent.
+
+### There is no branch that reaches PASS by not finding a failure
+
+This is the whole design. The one-line implementation everybody writes —
+
+```js
+const passed = !checks.some(c => c.conclusion === "failure")
+```
+
+— returns `true` four different ways over a commit nothing has verified:
+
+| What happened | What the one-liner says | What `readCi` says |
+|---|---|---|
+| CI has never reported on this commit | pass | UNMEASURED |
+| the run is queued or in progress | pass | UNMEASURED, naming what is pending |
+| the check completed as `skipped` or `neutral` | pass | UNMEASURED, naming it |
+| the checks belong to the **previous** push | pass | UNMEASURED, naming the other SHA |
+
+PASS requires at least one check, every check belonging to this exact commit,
+every check `completed`, and every conclusion `success`. Nothing arrives there
+by elimination.
+
+The fourth row is the one that would have made the gate worthless rather than
+merely weak. The checks endpoint accepts a branch name as its ref and answers
+about whatever commit that branch pointed at when CI last ran — so a
+branch-keyed gate certifies the previous push, in green, about code that is
+not in the PR. `readCi` re-filters on `headSha` even though the query was
+already keyed on one, so a caller who passes a branch gets UNMEASURED rather
+than a stale pass.
+
+### Two judgement calls, recorded as judgement calls
+
+**`cancelled` counts as a failure.** A cancellation measured nothing, which
+argues for UNMEASURED. But on this repo's CI a cancellation is nearly always
+`cancel-in-progress` superseding the run, and calling that "unmeasured" lets a
+superseded commit's gate pass. FAIL costs a re-run; the other direction costs
+a bad merge.
+
+**A failure outranks a check still running.** More waiting cannot un-fail a
+check, and reporting UNMEASURED there would turn a known red into "we did not
+find out" — and the operator would re-run rather than read the failure.
+
+**A timeout returns UNMEASURED and never anything else.** Running out of
+patience is not evidence about the code, in either direction. The reason says
+so in words, because a reader who sees UNMEASURED without that sentence
+reasonably assumes something broke.
+
+### The lever is the draft, not the run
+
+> FAILs the ship gate if CI fails
+
+Not the ship gate — `prReadiness`. `workflows/ship.js` does not merge
+anything. It opens a draft PR early so that any later refusal leaves something
+unmergeable, and marks it ready at the end once nothing is left that can
+refuse (#252). CI is exactly such a thing, and it is checked **last**: the
+status scale asks whether this run stands behind the work, and CI asks whether
+the work survives a machine that is not this one.
+
+Failing the whole run instead would throw away the prove evidence, the PR body
+and the branch for a condition that a CI re-run might clear. Leaving the PR a
+draft costs a click and states the truth: this run did not earn a mergeable
+PR.
+
+`ciBlocksReadiness` takes the reading as an argument rather than defaulting it,
+so **an absent reading is a reason to leave the draft.** The existing #252
+cases all had to be changed to pass one, which is the correct amount of
+disruption for a change that means what this one means — a default would have
+made "CI passed" and "CI was never read" the same input, silently, with every
+test still green.
+
+### The exemption that keeps it from being switched off
+
+A consumer with no workflow files has no CI to wait for, and a gate that left
+all of their PRs drafts forever would be removed within a week. `workflowCount
+=== 0` is the exemption — and it is keyed on a count the shell produced, not
+on the verdict and not on an agent's answer to "does this project have CI",
+which is a question an agent can get wrong in the direction that unblocks
+itself. A reading that does not carry the count is refused rather than given
+the benefit of the doubt, because without it "no CI" and "CI not checked" are
+the same value.
+
+### A reading that reached the gate as a typed reply is not a reading
+
+Security review of the first commit named this, and it was right: a verdict
+arriving through an agent's reply can be fabricated. A step that answered
+`{verdict: "PASS"}` without running anything would get past every branch of
+`ciBlocksReadiness`, and nothing downstream could tell — which would make the
+CI gate exactly the check #46 was filed to replace, one layer up.
+
+`workflows/ship.js` cannot close that itself. It has no filesystem and no
+subprocess (#69), so every artefact it sees crossed that boundary through an
+agent, and `prStep.ok` has the same property.
+
+What it can do is make the UNDRAFT require a live pass:
+
+```sh
+bun scripts/github-op.ts ci-status --repo R --sha "$sha" --timeout-ms 300000 \
+  && bun scripts/github-op.ts pr-ready --repo R --number N
+```
+
+The `&&` is the enforcement. `ci-status` exits non-zero on FAIL and on
+UNMEASURED, so the PR cannot leave draft without a live pass whatever any
+earlier step reported — and a fabricated PASS now buys nothing, because the
+undraft is not reached by claiming it. Both facts the chain turns on are
+computed in the command: `sha=$(git rev-parse HEAD)` and a `wc -l` over the
+workflow directory, so neither the commit consulted nor the exemption is a
+value an agent supplied.
+
+`ciBlocksReadiness` stays, as the recorded reason an operator reads in the log
+and as an early refusal so the run does not go asking to undraft something CI
+already failed. It is advisory, which the comment on it says in those words.
+If the two ever disagree, the shell is the one that is right.
+
+### Mutations, predicted before running and measured after
+
+Over `test/ci-verification.test.ts` + `test/ship-pr-draft.test.ts` (47 tests).
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the `headSha` filter is dropped | 1 | 1 |
+| a commit with no checks reads as PASS | 2 | **4** |
+| the pending branch is removed | 3 | **4** |
+| `skipped` and `neutral` are accepted | 2 | 2 |
+| `cancelled` stops counting as a failure | 1 | 1 |
+| a check still running outranks a failure | 1 | 1 |
+| the timeout upgrades the verdict to PASS | 1 | **2** |
+| an absent reading is never worth waiting on | 1 | 1 |
+| an absent `conclusion` maps to `success` | 1 | 1 |
+| `ciBlocksReadiness` accepts everything | 5 | 5 |
+| the `&&` before `pr-ready` becomes `;` | 1 | 1 |
+| the undraft's SHA is interpolated by ship.js | 1 | 1 |
+
+None of the twelve is left in the tree; all were run and reverted.
+
+**Nine matched exactly. Three came back high, and none came back low** — which
+is the direction that costs nothing to be wrong in. All three overshot for the
+same reason: `readCi`'s branches are more entangled than the predictions
+allowed for, and each extra red is in a case that genuinely depends on the
+mutated behaviour rather than a mutant breaking something unrelated.
+
+- **no-checks-reads-as-PASS** also reddened the stale-SHA row (whose foreign
+  checks leave nothing belonging to this commit, so it arrives at the same
+  branch) and the polling row (whose first page is empty, so it returns on
+  call one instead of three).
+- **pending-branch-removed** also reddened the stale-SHA row, whose mixed case
+  keeps exactly one real pending check.
+- **timeout-upgrades-to-PASS** also reddened the over-the-wire row, where a
+  `--timeout-ms 0` read of a commit with no checks now exits zero.
+
+One mutation had to be rebuilt. The first attempt at "never re-read after
+sleeping" deleted the re-read from inside the loop, which with the polling
+row's frozen clock is an infinite loop rather than a red row — a mutant that
+hangs measures nothing, and the hang was itself the finding: that row depends
+on the re-read to terminate at all. Replaced with a narrower edit to
+`worthWaiting`, predicted 1 and measured 1.
+
+### Success criteria
+
+- [x] SC-1758: test/ci-verification.test.ts contains [a commit CI has never reported on is UNMEASURED - never a pass] — the reason says in words that absence is not success, because in the obvious implementation they are the same value
+- [x] SC-1759: test/ci-verification.test.ts contains [checks belonging to another commit are discarded - not counted as this one's] — a branch-keyed query certifies the previous push, so the SHA is re-checked after the query already keyed on it
+- [x] SC-1760: test/ci-verification.test.ts contains [a check still running is UNMEASURED and says which one] — queued and in_progress are the same fact arriving as two status strings
+- [x] SC-1761: test/ci-verification.test.ts contains [a skipped or neutral check measured nothing and cannot carry a pass] — the most convincing of the four, because the run exists, completed, and did not fail
+- [x] SC-1762: test/ci-verification.test.ts contains [a failure outranks a check still running] — more waiting cannot un-fail a check, and UNMEASURED would send the operator to re-run rather than to the failure
+- [x] SC-1763: test/ci-verification.test.ts contains [every way a run can end badly is a failure - including cancelled] — cancelled is the judgement call and is recorded as one rather than left to look obvious
+- [x] SC-1764: test/ci-verification.test.ts contains [PASS requires every check present - completed and successful] — and a ref that is not a commit SHA never reaches a verdict at all
+- [x] SC-1765: test/ci-verification.test.ts contains [polling stops as soon as the answer arrives and reports it] — measured by call count against a frozen clock, so only the verdict can end the loop
+- [x] SC-1766: test/ci-verification.test.ts contains [running out of time returns UNMEASURED and says the wait is what ran out] — impatience is not evidence about the code in either direction, and a zero timeout is a real request rather than an absent one
+- [x] SC-1767: test/ci-verification.test.ts contains [a decided verdict is never polled again] — with a frozen clock a loop that did poll a settled verdict would never return
+- [x] SC-1768: test/ci-verification.test.ts contains [ci-status asks about the SHA and reports PASS on stdout with exit zero] — asserted on the request path, so the no-branch rule is a property of the deployed command and not only of the function behind it
+- [x] SC-1769: test/ci-verification.test.ts contains [a non-PASS verdict exits non-zero and still prints the reading] — FAIL and UNMEASURED share an exit code, so the three-way distinction lives in the JSON and the prompt is told to copy it
+- [x] SC-1770: test/ci-verification.test.ts contains [a malformed duration is refused rather than defaulted] — zero is a request to read CI once, and a falsy check would quietly restore the fifteen-minute wait
+- [x] SC-1771: test/ship-pr-draft.test.ts contains [a red CI leaves the PR a draft and names the failure] — with the green control, without which the row is satisfied by anything that leaves a draft for any reason
+- [x] SC-1772: test/ship-pr-draft.test.ts contains [a CI reading that is not a pass is not a pass - however it is malformed] — a lowercase pass is in the list deliberately, because one accepting comparison means every other spelling falls through to the refusal
+- [x] SC-1773: test/ship-pr-draft.test.ts contains [no reading at all is not a pass - an unread CI is the default state] — the step never reached, errored or removed, undrafting because nothing said no
+- [x] SC-1774: test/ship-pr-draft.test.ts contains [a project with no workflows has no CI to wait for and is not blocked] — keyed on a count the shell produced, because an agent asked whether a project has CI can answer wrongly in the direction that unblocks itself
+- [x] SC-1775: test/ship-pr-draft.test.ts contains [removing the CI condition undrafts a run CI called red] — and the lenient mutant that accepts an absent reading still catches the red one, so a battery planting only a failure would call it fixed
+- [x] SC-1776: test/ship-pr-draft.test.ts contains [pr-ready is chained behind ci-status and never issued alone] — a third unchained invocation reads as a harmless duplicate and undoes the whole enforcement
+- [x] SC-1777: test/ship-pr-draft.test.ts contains [the SHA and the workflow count come from the shell - not from the agent] — a typed `--sha` decides which commit's CI is consulted and is therefore a stale-reading primitive
