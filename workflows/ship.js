@@ -3954,6 +3954,60 @@ function quinnShipVerdict(containerRan, containerResult, localVerdict) {
 }
 // ──── QUINN-VERDICT-END ────
 
+// ──── PROD-QUINN-START ────
+/**
+ * What `environments.prod.quinn` can honestly say (#423).
+ *
+ * Every arm of the record-env step wrote `quinn = 'SKIP'` with a reason. The
+ * reasons were honest, but `prod-quinn-pass` therefore had **no reachable
+ * path to PASS** for any project configuring `prod.rebuild` — a check whose
+ * only possible outcome is SKIP is counted in the gate's pass total and
+ * measures nothing. #183 reported it; this is the fix.
+ *
+ * The measurement already existed and was being discarded. Container Quinn
+ * runs in the Verify phase against the rebuilt container, returns a
+ * GATE_RESULT_SCHEMA verdict, and is held in `quinnContainerResult` so the
+ * ship-phase recommit can report it — while the record-env prompt four
+ * hundred lines below ignored it and wrote a constant.
+ *
+ * So the verdict comes from `quinnVerdictFor`, which is the SAME binding the
+ * recommit uses. Two functions deciding what Quinn said would be two deciders
+ * agreeing (the fourth shape, #420): the artefact and the recorder could
+ * disagree about the same agent's reply and no behavioural test could see it.
+ *
+ * `reason` is empty for a measured verdict and non-empty for every SKIP,
+ * because `prod-quinn-pass` requires a reason on SKIP and a SKIP without one
+ * is a run that declined to measure without saying why. No apostrophes: this
+ * is interpolated into a single-quoted JS literal inside a double-quoted
+ * shell string.
+ */
+function prodQuinnRecord(containerRan, containerResult, containerConfigured) {
+  if (containerRan) {
+    const verdict = quinnVerdictFor(true, containerResult)
+    return {
+      quinn: verdict,
+      reason: verdict === 'SKIP'
+        ? 'container Quinn ran against the rebuilt container and returned SKIP'
+        : '',
+    }
+  }
+  return {
+    quinn: 'SKIP',
+    reason: containerConfigured
+      ? 'no reachable test container, so container Quinn never ran — Quinn validated on local dev'
+      : 'no container is configured for this project',
+  }
+}
+
+/** The assignment fragment the record-env prompt interpolates. */
+function prodQuinnAssignment(record) {
+  const reason = record.reason
+    ? ` s.environments.prod.quinnSkipReason = '${record.reason}';`
+    : ''
+  return `s.environments.prod.quinn = '${record.quinn}';${reason}`
+}
+// ──── PROD-QUINN-END ────
+
 // Container Quinn's reply, held so the ship-phase recommit can report it.
 // Before #169 it was awaited and dropped, so the only Quinn verdict any
 // recorder call site could name was the local one.
@@ -6497,6 +6551,13 @@ phase('Ship')
 // `smoke` stays PASS, and that is deliberate rather than an oversight: a 200
 // from the configured health path IS a smoke test, and it is the only one of
 // the three the curl actually measures.
+// #423: `prod.quinn` is the container Quinn measurement, not a constant. See
+// `prodQuinnRecord` — until now every arm wrote SKIP, so `prod-quinn-pass`
+// could not report anything else for a project configuring `prod.rebuild`.
+const prodQuinn = prodQuinnAssignment(
+  prodQuinnRecord(quinnContainerRan, quinnContainerResult, !!containerConfig),
+)
+
 let prStep = null
 
 if (containerConfig) {
@@ -6509,10 +6570,10 @@ Check test container status, then update workflow-state.json via writeWorkflowSt
 2. Based on result, run this bun -e command (pick the version matching your result):
 
 If container is up (200):
-bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'the container answered a health check; whether it was built from this commit was not measured (#183) — container-has-fix compares the image revision against HEAD'; s.environments.prod.smoke = 'PASS'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'Quinn validated on local dev'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'the container answered a health check; whether it was built from this commit was not measured (#183) — container-has-fix compares the image revision against HEAD'; s.environments.prod.smoke = 'PASS'; ${prodQuinn} writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
 If container is down:
-bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'test container not running'; s.environments.prod.smoke = 'SKIP'; s.environments.prod.smokeSkipReason = 'test container not running'; s.environments.prod.quinn = 'SKIP'; s.environments.prod.quinnSkipReason = 'test container not running'; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = s.environments.prod || {}; s.environments.prod.rebuild = 'SKIP'; s.environments.prod.rebuildSkipReason = 'test container not running'; s.environments.prod.smoke = 'SKIP'; s.environments.prod.smokeSkipReason = 'test container not running'; ${prodQuinn} writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
 Run the appropriate command and report the output.
 `, { label: 'record-env', phase: 'Ship' })
@@ -6520,7 +6581,7 @@ Run the appropriate command and report the output.
   await timedAgent(`
 No container is configured for this project, so record env as SKIP:
 
-bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container',quinn:'SKIP',quinnSkipReason:'no container'}; writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
+bun -e "import {writeWorkflowState} from '${HARNESS_ROOT}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${WORK_DIR}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.prod = {rebuild:'SKIP',rebuildSkipReason:'no container',smoke:'SKIP',smokeSkipReason:'no container'}; ${prodQuinn} writeWorkflowState('${WORK_DIR}/workflow-state.json', s);"
 
 Run the command and report the output.
 `, { label: 'record-env', phase: 'Ship' })

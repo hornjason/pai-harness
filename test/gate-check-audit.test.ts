@@ -70,13 +70,47 @@ describe("SC-1466: every gate check without an assertion is named with a reason"
     }
   });
 
-  test("the two shapes #176 named are both represented in the list", () => {
-    // Two of the four are documented decisions (#344, #409) and two were found
-    // by this audit. Asserting the mix keeps the list from silently becoming
-    // all-decisions, which would read as "nothing was found".
-    const reasons = Object.values(WARN_TIER_CHECKS).join("\n");
-    expect(reasons).toContain("#183 — reported, not fixed");
-    expect(Object.values(WARN_TIER_CHECKS).filter(r => r.includes("#183")).length).toBe(2);
+  // SC-1572: a deferral is not a resting state for an entry on this list
+  test("no entry is still a deferral — every one is a decision", () => {
+    // #183 left two entries reading "reported, not fixed", which is an honest
+    // thing to write once and a bad thing to leave. #423 settled both, in
+    // opposite directions: `outcome-evidence-behavioral` asserts now and is
+    // gone from the list entirely (the stale case above is what enforces
+    // that), and `ac-issue-alignment` stays a warning on a measurement.
+    //
+    // The replaced assertion counted deferrals and required exactly two. It
+    // could only ever be satisfied by NOT fixing them, so it is inverted
+    // rather than retuned.
+    const deferred = Object.entries(WARN_TIER_CHECKS)
+      .filter(([, reason]) => /reported,\s*not fixed/i.test(reason))
+      .map(([name]) => name);
+    expect(
+      deferred,
+      "an entry that only defers is a check nobody has decided about — either make it " +
+        "assert, or write what was measured to decide it should not",
+    ).toEqual([]);
+  });
+
+  // SC-1573: a decision needs a number, not a preference
+  test("the warning that survived on a measurement cites the measurement", () => {
+    // The whole difference between #423's two outcomes is evidence. A decision
+    // to keep a check warning forever is only distinguishable from never
+    // having looked if it says what it would have cost to make it block.
+    const reason = WARN_TIER_CHECKS["ac-issue-alignment: ACs cover goal keywords"];
+    expect(reason, "ac-issue-alignment is no longer on the list").toBeTruthy();
+    expect(reason, "the decision cites no sample size").toMatch(/\b1\d\d\b/);
+    expect(reason, "the decision cites no rate").toMatch(/\d\d%/);
+    expect(reason).toContain("#423");
+  });
+
+  // SC-1574: the check that WAS a deferral is off the list, from this side too
+  test("outcome-evidence-behavioral is no longer warn-tier", () => {
+    // The stale case above catches this generically by reading the gate
+    // source. This names it, so a future edit that re-adds the entry has to
+    // argue with the issue rather than with a list length.
+    expect(Object.keys(WARN_TIER_CHECKS)).not.toContain(
+      "outcome-evidence-behavioral: OUTCOME AC evidence is not just a number",
+    );
   });
 });
 
