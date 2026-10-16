@@ -203,15 +203,31 @@ describe("#533: the run refuses before any of it reaches a shell", () => {
     expect(r.calls.filter(c => c.kind === "agent").length).toBeGreaterThan(0);
   });
 
-  test("SC-1813: an absent projectRoot is an argument error - not a TypeError", async () => {
-    // It used to die on `PROJECT_ROOT.split('/Projects/')` thirteen lines
-    // before the check that names it. A stack trace is not an argument error:
-    // it tells an operator where the code broke rather than what they passed.
-    const r = await ran({ projectRoot: undefined });
-    expect(r.error, `it threw: ${r.error?.message}`).toBeNull();
-    const out = (r.result ?? {}) as Record<string, unknown>;
-    expect(out.status).toBe("ARGS_ERROR");
-    expect(String(out.message)).toContain("projectRoot");
+  test("SC-1813: an absent root and an unusable one are told apart", async () => {
+    // The first draft of this row asserted that an ABSENT projectRoot gives
+    // an argument error rather than a TypeError, and shipped a `String(… ||
+    // '')` guard to make it so. The mutation battery measured that guard at
+    // **0 red** and reverting it changed nothing, because `ship.js:187`
+    // already refuses an absent projectRoot thirty-eight lines earlier. The
+    // row was passing on a check that predates this issue and the fix was
+    // unreachable code — a fixture satisfying its assertion through a path
+    // that bypasses the feature.
+    //
+    // What #533 actually adds is the PRESENT-but-unusable case, so that is
+    // what this row measures, together with the boundary: both are
+    // ARGS_ERROR and they must not say the same thing, or an operator who
+    // passed a path with a backtick in it is handed a usage line.
+    const absent = (await ran({ projectRoot: undefined })).result as Record<string, unknown>;
+    expect(absent.status).toBe("ARGS_ERROR");
+    expect(String(absent.message), "the absent case is the usage refusal").toContain("Usage:");
+
+    const unusable = (await ran({ projectRoot: "/tmp/p`id`" })).result as Record<string, unknown>;
+    expect(unusable.status).toBe("ARGS_ERROR");
+    expect(String(unusable.message)).toContain("projectRoot");
+    expect(String(unusable.message)).toContain("shell metacharacter");
+    // Distinguishable. Telling someone who passed a usable-looking path to
+    // read the usage line sends them to re-check an argument they got right.
+    expect(String(unusable.message)).not.toContain("Usage:");
   });
 
   test("SC-1814: passing slug instead of repo still works - and issueRepo is still checked", async () => {

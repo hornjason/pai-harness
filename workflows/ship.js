@@ -227,10 +227,7 @@ const PHASE_TARGET = parsedArgs.phase || 'all'
 const SLUG = parsedArgs.slug || deriveSlug(REPO, ISSUE)
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
-// `String(… || '')` rather than `PROJECT_ROOT.split` (#533). An absent
-// projectRoot used to die here with a TypeError thirteen lines before the
-// check that names it, and a stack trace is not an argument error.
-const HOME = parsedArgs.home || String(PROJECT_ROOT || '').split('/Projects/')[0] || ''
+const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
 const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const SKIP_GRADE = parsedArgs.skipGrade || false

@@ -8017,3 +8017,114 @@ binding is proved by SC-1801 directly, and by SC-1802 and SC-1803 through
 - [x] SC-1803: test/terminal-failure-reason.test.ts contains [an implement phase that failed silently is a different sentence] — a dead spawn and a live agent that would not say are different failures
 - [x] SC-1805: test/terminal-failure-reason.test.ts contains [a commit step with no SHA says which of the two things happened] — the most expensive exit to be told nothing about, since everything upstream succeeded
 - [x] SC-1804: test/terminal-failure-reason.test.ts contains [the deny-list refusal reaches the result instead of only the log] — the text was computed and logged and dropped one line later, so nothing but the console ever had it
+
+## The argument boundary four values crossed unchecked (#533)
+
+Found while reviewing the #46 commit. `workflows/ship.js` interpolates four
+arguments UNQUOTED into shell command text inside agent prompts — `repo` at 6
+sites, `issueRepo` at 11, `harnessRoot` at 44 and `projectRoot` at 33 — and
+the only check any of them had was that `repo` was present.
+
+Not a live exploit, and this section does not claim one: `Skill("ship")`
+derives the slug from `git remote get-url origin`. What makes it worth fixing
+is that **the same file already does the opposite thing one function away.**
+`isSafeBranchName` runs before a branch reaches a `git push`, and
+`scripts/github-op.ts` has `--title-from-issue` precisely so an issue title
+never crosses a shell, with a comment explaining that anyone who can file an
+issue picks that string. The project had already decided that values reaching
+a shell get checked first, built two mechanisms for it, and these four
+missed — and a harness argument is exactly the kind of thing a consumer sets
+from a config file.
+
+### Two shapes, and why the second is not `pathRefusal`
+
+`repoSlugRefusal` takes `parseOwnerRepo`'s shape from `lib/github.ts`: two
+segments of `[A-Za-z0-9._-]`, neither `.` nor `..`. A slug it refuses would
+have failed at the GitHub API boundary anyway; the difference is that it now
+fails before a shell has seen it, with a sentence naming the argument.
+
+`rootPathRefusal` is deliberately **the opposite question** from
+`pathRefusal`. That table refuses an absolute path, because it answers "may
+an agent contribute this file from inside its worktree". This one requires
+one, because it answers "may the run `cd` here". Same word, two questions,
+opposite answers — and folding them together is the natural tidy-up that
+would make one of them wrong.
+
+It also refuses whitespace, which `pathRefusal` does not. A space is harmless
+in a path and fatal in an unquoted `cd`, and these values reach 77 such
+sites. The honest fix is to quote all of them; until then a run on a path
+with a space in it silently `cd`s somewhere else, and a refusal naming the
+reason is the reading an operator can act on.
+
+Every refusal is a refusal, never sanitise-and-continue. Stripping characters
+out of a repo slug produces a run filed under a different project, which is
+the defect #114 already cost this repo once.
+
+### The exemption, kept narrow
+
+`repo` is optional when `slug` is given — that is the existing contract at
+the presence check, and #533 must not narrow it. The exemption is for an
+**absent** `repo`, not for any run that happens to carry a slug: a malformed
+`repo` reaches its six shell sites either way. Widening it to the whole check
+is the cheapest way to make the slug-only case pass, so there is a row for
+each half.
+
+### A row that was passing on a check from 2026 (and the fix that was dead code)
+
+The first draft asserted that an absent `projectRoot` gives an argument error
+rather than a TypeError, and shipped a `String(… || '')` guard to make it so.
+
+**The battery measured that guard at 0 red, and reverting it changed
+nothing.** `ship.js:187` already refuses an absent `projectRoot` thirty-eight
+lines earlier, so the guard was unreachable and the row was passing on a
+check that predates the issue — a fixture satisfying its assertion through a
+path that bypasses the feature (#500). The guard is gone and the row now
+measures what #533 actually adds, the present-but-unusable case, together
+with the boundary: both are `ARGS_ERROR` and they must not say the same
+thing, or someone who passed a path with a backtick in it is handed a usage
+line and sent to re-check an argument they got right.
+
+Worth naming how it was found. Nothing in the diff showed it — the guard
+reads as a sensible defensive change and the row reads as a sensible test of
+it. Two numbers disagreed: a row predicted at 3 came back 2, and the row for
+the guard itself came back 0.
+
+### Mutations, predicted before running and measured after
+
+Ten, over `test/argument-shape-refusal.test.ts` (9 tests), re-run in full
+against the corrected tree rather than stitched from two passes. Every anchor
+was checked for uniqueness first. **All ten matched.**
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the argument loop stops refusing | 3 | 3 |
+| the root shape check is dropped from the loop | 2 | 2 |
+| the refusal stops naming the argument | 3 | 3 |
+| the repo exemption widens to any run with a slug | 1 | 1 |
+| the repo exemption is removed entirely | 1 | 1 |
+| the inlined slug regex is widened | 3 | 3 |
+| the library slug refusal always passes | 3 | 3 |
+| roots stop refusing whitespace | 2 | 2 |
+| roots stop requiring an absolute path | 4 | 4 |
+| refusal messages stop truncating the value | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+Two of the predictions were corrected mid-battery rather than recorded as
+misses, and both corrections are facts about the suite rather than about the
+code: widening the inlined regex turns three red, not two, because the
+slug-with-a-slug case genuinely depends on it; and a loop that stops naming
+its argument turns three red, not four, because the message row exercises the
+refusal functions directly and cannot see the loop's wrapper at all.
+
+### Success criteria
+
+- [x] SC-1806: test/argument-shape-refusal.test.ts contains [a repo slug is refused unless it is owner/name] — the table carries both verdicts, so a function refusing everything or nothing fails the row
+- [x] SC-1807: test/argument-shape-refusal.test.ts contains [a root is refused unless it is an absolute path with nothing a shell reads] — whitespace included, because a space is harmless in a path and fatal in an unquoted cd
+- [x] SC-1808: test/argument-shape-refusal.test.ts contains [a root refusal is the opposite question from a contributable path] — one requires an absolute path where the other refuses it, and folding them together would make one wrong
+- [x] SC-1809: test/argument-shape-refusal.test.ts contains [a refusal names the argument and truncates the value] — the message is printed and pasted into issues, and the value is attacker-shaped by assumption
+- [x] SC-1810: test/argument-shape-refusal.test.ts contains [the library and ship.js's inlined mirror agree on every case] — identical messages and not merely identical verdicts, since a copy nothing compares is a copy that drifts
+- [x] SC-1811: test/argument-shape-refusal.test.ts contains [each of the four arguments stops the run by name] — and before any agent is spawned, because a refusal after the first call has already sent the value somewhere
+- [x] SC-1812: test/argument-shape-refusal.test.ts contains [a run with four good arguments is not refused] — the control, without which a refusal firing on everything satisfies every other row
+- [x] SC-1813: test/argument-shape-refusal.test.ts contains [an absent root and an unusable one are told apart] — the row that replaced one passing on a check from before this issue, with the fix that turned out to be unreachable
+- [x] SC-1814: test/argument-shape-refusal.test.ts contains [passing slug instead of repo still works - and issueRepo is still checked] — the exemption is for an absent repo, not for any run that carries a slug
