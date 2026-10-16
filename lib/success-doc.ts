@@ -212,14 +212,15 @@ export interface SuccessVerdict {
  * single binding to mutate, and so every case can be driven without a
  * filesystem.
  */
-export function successViolations(text: string | null, template?: string | null): SuccessVerdict {
+export function successViolations(text: string | null, template: string | null): SuccessVerdict {
   // Three states, not two. `undefined` means the caller is not asking for a
   // residue comparison at all — the parser's own unit tests, which have no
   // template and are not pretending to. `TEMPLATE_MISSING` (or an explicit
   // `null`, in case a future reader reintroduces one) means a template WAS
   // looked for and not found, and that is a refusal rather than a quiet skip.
   const templateAbsent = template === TEMPLATE_MISSING || template === null;
-  const residueTemplate = templateAbsent ? undefined : template;
+  const residueTemplate =
+    templateAbsent || template === NO_RESIDUE_CHECK ? undefined : template;
   if (text === null) {
     return {
       violations: [],
@@ -464,6 +465,21 @@ export function templateResidue(text: string, template: string): string[] {
  * the only one that shrugs.
  */
 export const TEMPLATE_MISSING = "\u0000rungate:template-missing";
+
+/**
+ * "I am deliberately not comparing against the template."
+ *
+ * The opt-out the parser's own unit cases need, made explicit. The
+ * parameter used to be optional, so OMITTING it switched the residue check
+ * off silently — and the only thing keeping it on in production was that
+ * nobody had yet written a third call site that forgot the argument.
+ * Nothing asserted it; it was convention.
+ *
+ * sec-485's note, and the same move as `readSuccessTemplate(): string`
+ * applied to the parameter rather than the return: omission is now a type
+ * error, and an opt-out is something a reader sees at the call site.
+ */
+export const NO_RESIDUE_CHECK = "\u0000rungate:no-residue-check";
 
 /**
  * The template the generator copies.

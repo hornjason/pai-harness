@@ -84,6 +84,7 @@ import { spawnSync } from "child_process";
 
 import {
   PLACEHOLDER_MARKER,
+  NO_RESIDUE_CHECK,
   TEMPLATE_MISSING,
   UNREADABLE,
   parseSuccessDoc,
@@ -294,38 +295,38 @@ describe("SC-1706: `successViolations` is the one place that decides", () => {
       "## The thing",
       `## The thing\n\n<!-- ${PLACEHOLDER_MARKER} -->`,
     );
-    const v = successViolations(withMarker);
+    const v = successViolations(withMarker, NO_RESIDUE_CHECK);
     expect(v.violations).toHaveLength(1);
     expect(v.violations[0]).toContain("placeholder");
     expect(v.violations[0], "the refusal does not say which line").toContain("line(s)");
   });
 
   test("a claim with no falsifiability line is refused", () => {
-    const v = successViolations(FILLED.replace(/\*\*How it fails:\*\*[^\n]*\n[^\n]*\n/, ""));
+    const v = successViolations(FILLED.replace(/\*\*How it fails:\*\*[^\n]*\n[^\n]*\n/, ""), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("How it fails");
     expect(v.violations.join("\n"), "a slogan is not a claim").toContain("slogan");
   });
 
   test("the standing table naming a claim nothing defines is refused", () => {
-    const v = successViolations(FILLED.replace("| 1 | untested | — |", "| 1 | untested | — |\n| 2 | met | 2026-01-01 |"));
+    const v = successViolations(FILLED.replace("| 1 | untested | — |", "| 1 | untested | — |\n| 2 | met | 2026-01-01 |"), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("row for claim 2");
   });
 
   test("a claim with no standing row is refused — the direction that rots quietly", () => {
     // The inverse, and the one nobody notices: a claim added and never given
     // a row reads as met by omission.
-    const v = successViolations(FILLED.replace(/\| 1 \| untested \| — \|\n/, ""));
+    const v = successViolations(FILLED.replace(/\| 1 \| untested \| — \|\n/, ""), NO_RESIDUE_CHECK);
     expect(v.violations.join("\n")).toContain("claim 1 has no row");
     expect(v.violations.join("\n")).toContain("met by omission");
   });
 
   test("a complete document is clean", () => {
-    expect(successViolations(FILLED).violations).toEqual([]);
-    expect(successViolations(FILLED).unmeasured).toBeNull();
+    expect(successViolations(FILLED, NO_RESIDUE_CHECK).violations).toEqual([]);
+    expect(successViolations(FILLED, NO_RESIDUE_CHECK).unmeasured).toBeNull();
   });
 
   test("absent is UNMEASURED and carries no violations — the two are different answers", () => {
-    const v = successViolations(null);
+    const v = successViolations(null, NO_RESIDUE_CHECK);
     expect(v.violations, "absence was reported as a violation").toEqual([]);
     expect(v.unmeasured).toContain("UNMEASURED");
   });
@@ -342,7 +343,7 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     // reported "SUCCESS.md defines no claims". A validator whose single
     // real-world example fails it is not strict, it is miscalibrated, and the
     // repair people reach for is to stop running it.
-    const v = successViolations(readFileSync(join(ROOT, "SUCCESS.md"), "utf-8"));
+    const v = successViolations(readFileSync(join(ROOT, "SUCCESS.md"), "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations, v.violations.join("\n")).toEqual([]);
     expect(v.unmeasured).toBeNull();
   });
@@ -351,21 +352,21 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     // Not a fixture copy. If someone "fixes" the template by filling in its
     // placeholders, the generator starts handing every consumer a document
     // that passes while saying nothing, and this is what notices.
-    const v = successViolations(readFileSync(TEMPLATE, "utf-8"));
+    const v = successViolations(readFileSync(TEMPLATE, "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations.length, "the shipped template is accepted as a real SUCCESS.md")
       .toBeGreaterThan(0);
     expect(v.violations.join("\n")).toContain("placeholder");
   });
 
   test("the numbered form and the heading form are read the same way", () => {
-    const heading = successViolations(FILLED);
+    const heading = successViolations(FILLED, NO_RESIDUE_CHECK);
     const numberedDoc = FILLED
       .replace(
         "### Claim 1 — a spec with no testable criteria is rejected, not silently skipped",
         "1. **a spec with no testable criteria is rejected, not silently skipped**",
       )
       .replace(/\*\*How it fails:\*\*/, "   Check:");
-    const numbered = successViolations(numberedDoc);
+    const numbered = successViolations(numberedDoc, NO_RESIDUE_CHECK);
     expect(numbered.violations, numbered.violations.join("\n")).toEqual([]);
     // Compare the PARSED STRUCTURES, not two violation lists. Both lists are
     // empty here, so `toEqual` between them held vacuously — the third shape
@@ -404,7 +405,7 @@ describe("SC-1709: both claim forms parse, and the real documents are the cases"
     ].join("\n");
     expect(parseSuccessDoc(text).standingRows, "a prose row was counted as a claim")
       .toEqual([1]);
-    expect(successViolations(text).violations, "a prose row was refused as an unknown claim")
+    expect(successViolations(text, NO_RESIDUE_CHECK).violations, "a prose row was refused as an unknown claim")
       .toEqual([]);
   });
 });
@@ -429,7 +430,7 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
     // unmeasured.
     const root = project({});
     expect(run(["--project-root", root]).status).toBe(0);
-    const v = successViolations(readFileSync(join(root, "SUCCESS.md"), "utf-8"));
+    const v = successViolations(readFileSync(join(root, "SUCCESS.md"), "utf-8"), NO_RESIDUE_CHECK);
     expect(v.violations.length, "the generator's own output passes its own check")
       .toBeGreaterThan(0);
   });
@@ -635,7 +636,7 @@ describe("#502 review: the rest", () => {
     // `[A-Z]`. Every one of these scored zero violations as BOTH the claim
     // statement and its How-it-fails.
     for (const v of ["todo", "TBD", "FIXME", "???", "xxx", "N/A", "tbd later", "."]) {
-      expect(successViolations(claim(v)).violations.length, `"${v}" passed as a real claim`)
+      expect(successViolations(claim(v), NO_RESIDUE_CHECK).violations.length, `"${v}" passed as a real claim`)
         .toBeGreaterThan(0);
     }
   });
@@ -651,7 +652,7 @@ describe("#502 review: the rest", () => {
     // would measure nothing. This is reachable only by the widened list.
     const long = "tbd — write the real claim here once we have decided what it is";
     expect(long.length, "the fixture is short enough for the floor to catch").toBeGreaterThan(20);
-    expect(successViolations(claim(long)).violations.length, "a long lowercase placeholder passed")
+    expect(successViolations(claim(long), NO_RESIDUE_CHECK).violations.length, "a long lowercase placeholder passed")
       .toBeGreaterThan(0);
   });
 
@@ -659,14 +660,14 @@ describe("#502 review: the rest", () => {
     // And the floor's own: a short statement that is not a placeholder word.
     // "fast" is not in any list and never will be; it is also not a
     // falsifiable claim.
-    expect(successViolations(claim("fast")).violations.length, "a four-letter claim passed")
+    expect(successViolations(claim("fast"), NO_RESIDUE_CHECK).violations.length, "a four-letter claim passed")
       .toBeGreaterThan(0);
   });
 
   test("§5: the control — a real claim of ordinary length passes", () => {
     // The length floor is the half most likely to over-refuse, so the
     // boundary is asserted rather than assumed.
-    expect(successViolations(claim("the parser rejects an empty spec")).violations).toEqual([]);
+    expect(successViolations(claim("the parser rejects an empty spec"), NO_RESIDUE_CHECK).violations).toEqual([]);
   });
 
   test("§6: a falsifiability line cannot be borrowed from a later section", () => {
@@ -682,7 +683,7 @@ describe("#502 review: the rest", () => {
       "",
       "| Claim | Standing |", "|---|---|", "| 1 | untested |",
     ].join("\n");
-    const v = successViolations(doc);
+    const v = successViolations(doc, NO_RESIDUE_CHECK);
     expect(v.violations.join("\n"), "a Check: under another heading was borrowed")
       .toContain("How it fails");
   });
@@ -699,7 +700,7 @@ describe("#502 review: the rest", () => {
       "",
       "| Claim | Standing |", "|---|---|", "| 1 | untested |",
     ].join("\n");
-    expect(successViolations(doc).violations.join("\n"), "a fenced example satisfied a claim")
+    expect(successViolations(doc, NO_RESIDUE_CHECK).violations.join("\n"), "a fenced example satisfied a claim")
       .toContain("How it fails");
   });
 
@@ -713,7 +714,7 @@ describe("#502 review: the rest", () => {
     const root = project({});
     mkdirSync(join(root, "SUCCESS.md"), { recursive: true });
     expect(readSuccessDoc(root), "a directory read as an absent file").toBe(UNREADABLE);
-    const v = successViolations(readSuccessDoc(root));
+    const v = successViolations(readSuccessDoc(root), NO_RESIDUE_CHECK);
     expect(v.violations.length, "an unreadable SUCCESS.md passed").toBe(1);
     expect(v.unmeasured, "unreadable was collapsed into unmeasured").toBeNull();
 
@@ -778,39 +779,100 @@ describe("#502 review: the rest", () => {
     rmSync(outside, { recursive: true, force: true });
   });
 
-  test("Q1: placeholder prose in a claim heading or a short line is residue", () => {
-    // sec-485's question 1. The docstring claimed `templateResidue` covers
-    // "a new template section the day it ships"; it did not. Anything in a
-    // heading, a table row, or under thirteen characters was invisible
-    // forever, and on TODAY's template that already hid a real body line
-    // (`"prevent."`, eight characters) and all three claim statements.
-    //
-    // This is a plausible next-version template. The consumer does the one
-    // thing the generator asks — writes a How-it-fails per claim — and
-    // changes nothing else. Before the narrowing it scored residue [] and
-    // ZERO violations while still reading `Describe it.` / `List them.`
-    // with both claims generic. Measured, before the fix was written.
-    const TPL = [
-      "---", "doc-type: reference", "status: active", "owner: TODO-OWNER", "---", "",
-      "# What we are building", "", "## The thing", "", "Describe it.", "",
-      "## Risks", "", "List them.", "", "## The claims", "",
-      "### Claim 1 — the system behaves as intended under normal use", "",
-      "**How it fails:** TODO", "",
-      "### Claim 2 — the system behaves as intended under load", "",
-      "**How it fails:** TODO", "",
-      "## Standing", "", "| Claim | Standing |", "|---|---|",
-      "| 1 | untested |", "| 2 | untested |", "",
-    ].join("\n");
-    const doc = TPL
-      .replace(/^\*\*How it fails:\*\* TODO$/m, "**How it fails:** it drops writes when full")
-      .replace(/^\*\*How it fails:\*\* TODO$/m, "**How it fails:** latency exceeds 1s at 100rps");
+  /**
+   * sec-485's fixture, verbatim and DERIVED rather than hand-written.
+   *
+   * A plausible NEXT version of SUCCESS-TEMPLATE.md, used only as a residue
+   * fixture — it is not the shipped template and is not meant to become one.
+   * Everything the reader must replace is written as a heading, a table row,
+   * or a line of twelve characters or fewer: the three classes `structural()`
+   * used to exclude. Today's template happens to put its placeholder prose in
+   * long body paragraphs, which is the ONLY reason the check saw it at all.
+   *
+   * Against the tree before the narrowing this scored 1 pass / 3 fail.
+   */
+  const NEXT_TEMPLATE = `---
+doc-type: reference
+status: active
+owner: TODO-OWNER
+updated: TODO-DATE
+---
 
-    const residue = templateResidue(doc, TPL);
-    expect(residue, "a claim statement left as the template's prose was invisible")
-      .toContain("the system behaves as intended under normal use");
-    expect(residue, "an unwritten section body under 13 chars was invisible")
-      .toContain("Describe it.");
-    expect(successViolations(doc, TPL).violations.length).toBeGreaterThan(0);
+# What we are building, and how we will know it worked
+
+## The thing
+
+Describe it.
+
+## Risks
+
+List them.
+
+### Claim 1 — the system behaves correctly under load
+
+**How it fails:** TODO
+
+### Claim 2 — the system recovers from a restart without data loss
+
+**How it fails:** TODO
+
+## Standing
+
+| Claim | Standing | Measured |
+|---|---|---|
+| 1 | untested | — |
+| 2 | untested | — |
+`;
+
+  // The attack, DERIVED from the template rather than hand-written: the
+  // reader does the one thing the generator asks — a `How it fails` per
+  // claim — and changes nothing else. The two `.replace()` calls are the
+  // discipline: the fixture cannot drift away from the template, because it
+  // IS the template with two substitutions. Inlining it as a literal for
+  // readability would turn it into an attack on a string that once
+  // resembled the template.
+  const ABANDONED = NEXT_TEMPLATE
+    .replace("**How it fails:** TODO", "**How it fails:** p99 latency exceeds 2s at 500 rps.")
+    .replace("**How it fails:** TODO", "**How it fails:** a restart drops uncommitted writes.");
+
+  test("Q1 fixture self-guard: it is still a real attack", () => {
+    // Not padding. The thing that defeats this kind of fixture is not a
+    // wrong assertion, it is a later edit that accidentally fills the
+    // placeholders in — at which point the three cases below go green over
+    // a check that never improved. I produced that exact failure earlier in
+    // this issue from the other direction, with a mutation fixture the old
+    // code already caught.
+    expect(ABANDONED, "the fixture filled in the section bodies").toContain("Describe it.");
+    expect(ABANDONED, "the fixture filled in the section bodies").toContain("List them.");
+    expect(ABANDONED, "the fixture rewrote the claim statements")
+      .toContain("### Claim 1 — the system behaves correctly under load");
+    expect(ABANDONED, "the fixture substituted the frontmatter").toContain("owner: TODO-OWNER");
+    expect(ABANDONED, "the fixture left a How-it-fails unwritten")
+      .not.toContain("**How it fails:** TODO");
+  });
+
+  test("Q1: a claim statement left at the template's wording is residue", () => {
+    expect(
+      templateResidue(ABANDONED, NEXT_TEMPLATE).join("\n"),
+      "a claim heading the reader never wrote was invisible",
+    ).toContain("the system behaves correctly under load");
+  });
+
+  test("Q1: a section body of twelve characters or fewer is residue", () => {
+    // `Describe it.` is exactly 12 characters and `List them.` is 10, so
+    // the old `length <= 12` floor hid both no matter what the heading rule
+    // did. sec-485 flagged that option 1 alone would leave this case red;
+    // both exclusions were narrowed.
+    const residue = templateResidue(ABANDONED, NEXT_TEMPLATE);
+    expect(residue, "a short template body line was invisible").toContain("Describe it.");
+    expect(residue, "a short template body line was invisible").toContain("List them.");
+  });
+
+  test("Q1: the document as a whole is refused", () => {
+    const v = successViolations(ABANDONED, NEXT_TEMPLATE);
+    expect(v.violations.length, "a document that is still mostly the template passed")
+      .toBeGreaterThan(0);
+    expect(v.unmeasured, "an edited seed was waved through as pristine").toBeNull();
   });
 
   test("Q1 control: the narrowing did not start refusing the real document", () => {
@@ -962,7 +1024,7 @@ describe("#502 re-review (sec-485)", () => {
       "",
       "| 1 | untested | — |",
     ].join("\n");
-    expect(successViolations(good).violations, "undefined started refusing").toEqual([]);
+    expect(successViolations(good, NO_RESIDUE_CHECK).violations, "undefined started refusing").toEqual([]);
   });
 
   test("N1: readSuccessTemplate reports absence as the sentinel, never as falsy", () => {

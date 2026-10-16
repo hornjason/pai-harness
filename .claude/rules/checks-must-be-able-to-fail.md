@@ -405,6 +405,69 @@ None is left in the tree; all were run and reverted. The three mutations
 recorded above for SC-618..620 were also re-run against this tree and reproduce
 their counts exactly — 3, 4 and 3 red of 29.
 
+### A fixture that reached the assertion without the feature (#500)
+
+The third shape, and the cheapest version of it to write by accident: a test
+whose fixture satisfies the assertion through a path that does not go through
+the thing under test.
+
+#500 replaced a waiver predicate with `projectSourceEvidence`, a tree walk
+that deliberately **follows symlinked directories** — `readdirSync(withFileTypes)`
+reports a symlink as not-a-directory, so a `statSync` is the only thing that
+makes `packages/core` behind `lib/impl` visible, and a predicate that cannot
+see it waives a monorepo full of code. The test said so by name: *"F6: a
+symlinked source directory is followed, and a cycle terminates."* It planted
+`packages/core/reader.ts`, symlinked `lib-impl` at it, and asserted
+`projectSourceEvidence(root).found`.
+
+`packages/core/reader.ts` is inside the root. The walk reaches it by ordinary
+recursion, without ever traversing the symlink, so the assertion was true
+before the symlink existed and stayed true after the feature was deleted. The
+cycle half had the same defect from the other direction: its fixture's
+`a/x.ts` is found on the first pass, so `found` is true whether or not
+`realpathSync` ever terminates anything.
+
+Measured by sec-500 during the security review of PR #500, on `git archive`
+copies under `/tmp`; the repo was never modified. There is no SC for this
+one, and rather than invent one so a number has somewhere to sit — which is
+`.claude/rules/claiming-sc-coverage.md`'s trap from the other direction — the
+counts live here and nowhere else.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the whole symlinked-directory branch replaced by `continue` — symlinks never followed | **0 of 29** | 1 |
+| the same mutation after a target reachable only through the link was added | **1 of 45** | 1 |
+
+The row came back 0 where 1 was expected, which is the signature the
+fourth-shape section describes, arriving in the third shape. Nothing in the
+diff showed it: the fixture builds a symlink, the test is named after
+symlinks, and the assertion is about symlinks. Only the count disagreed.
+
+**The general form: a fixture must not be able to satisfy the assertion by a
+route that bypasses the feature.** For a symlink test that means the target
+is reachable ONLY through the link — put it outside the walked tree, or
+delete the real path after linking. For a cache test, the backing store has
+to be unreadable on the second call. For a fallback, the primary has to
+actually be gone. The question to ask of any fixture is not "does this
+exercise the feature" but **"what would this test report if the feature were
+deleted"** — and the only honest way to answer it is to delete the feature
+and look.
+
+It recurs. Three more instances in the same two issues, all found by the
+count rather than by reading:
+
+- a determinism test that built the same tree twice and compared the two
+  lists. Removing the sort entirely was 0 red, because two trees built by the
+  same code in the same order give the same `readdir` order. It asserted
+  reproducibility on one machine, which was never in doubt; the property is
+  an ORDER, so the order is what has to be asserted.
+- a `--force`-through-a-symlink test asserting the exclusive write flag with
+  a file-level `toContain('{ flag: "wx" }')`. Moving the literal into a
+  comment and leaving the write bare passed both halves.
+- a refusal asserting `toContain("symlink")` against a message that says
+  "symlink" twice. Deleting the clause that names it as a cause left the
+  sentence explaining the policy, and the row was 0.
+
 ### When the guard is a spawn, not a comparison (#171)
 
 #169's refusal was correct and incomplete: it stopped a run whose branch had
