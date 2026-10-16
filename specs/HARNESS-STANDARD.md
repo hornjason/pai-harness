@@ -7587,6 +7587,49 @@ and as an early refusal so the run does not go asking to undraft something CI
 already failed. It is advisory, which the comment on it says in those words.
 If the two ever disagree, the shell is the one that is right.
 
+### Mutations, predicted before running and measured after
+
+Over `test/ci-verification.test.ts` + `test/ship-pr-draft.test.ts` (47 tests).
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| the `headSha` filter is dropped | 1 | 1 |
+| a commit with no checks reads as PASS | 2 | **4** |
+| the pending branch is removed | 3 | **4** |
+| `skipped` and `neutral` are accepted | 2 | 2 |
+| `cancelled` stops counting as a failure | 1 | 1 |
+| a check still running outranks a failure | 1 | 1 |
+| the timeout upgrades the verdict to PASS | 1 | **2** |
+| an absent reading is never worth waiting on | 1 | 1 |
+| an absent `conclusion` maps to `success` | 1 | 1 |
+| `ciBlocksReadiness` accepts everything | 5 | 5 |
+| the `&&` before `pr-ready` becomes `;` | 1 | 1 |
+| the undraft's SHA is interpolated by ship.js | 1 | 1 |
+
+None of the twelve is left in the tree; all were run and reverted.
+
+**Nine matched exactly. Three came back high, and none came back low** — which
+is the direction that costs nothing to be wrong in. All three overshot for the
+same reason: `readCi`'s branches are more entangled than the predictions
+allowed for, and each extra red is in a case that genuinely depends on the
+mutated behaviour rather than a mutant breaking something unrelated.
+
+- **no-checks-reads-as-PASS** also reddened the stale-SHA row (whose foreign
+  checks leave nothing belonging to this commit, so it arrives at the same
+  branch) and the polling row (whose first page is empty, so it returns on
+  call one instead of three).
+- **pending-branch-removed** also reddened the stale-SHA row, whose mixed case
+  keeps exactly one real pending check.
+- **timeout-upgrades-to-PASS** also reddened the over-the-wire row, where a
+  `--timeout-ms 0` read of a commit with no checks now exits zero.
+
+One mutation had to be rebuilt. The first attempt at "never re-read after
+sleeping" deleted the re-read from inside the loop, which with the polling
+row's frozen clock is an infinite loop rather than a red row — a mutant that
+hangs measures nothing, and the hang was itself the finding: that row depends
+on the re-read to terminate at all. Replaced with a narrower edit to
+`worthWaiting`, predicted 1 and measured 1.
+
 ### Success criteria
 
 - [x] SC-1758: test/ci-verification.test.ts contains [a commit CI has never reported on is UNMEASURED - never a pass] — the reason says in words that absence is not success, because in the obvious implementation they are the same value
