@@ -1557,66 +1557,122 @@ export function createTsconfig(root: string, actions: string[]): void {
   actions.push("CREATED: tsconfig.json");
 }
 
+/**
+ * One `.gitignore` section, and whether an ADOPTING project must get it (#474).
+ *
+ * The two branches of `createGitignore` used to hold two lists written in two
+ * syntaxes, and they disagreed. The fresh-template branch wrote
+ * `credentials.json`; the append branch derived its own form with
+ * `e.includes("*") ? e : \`${e}/\``, which appends a trailing slash — and a
+ * trailing slash in gitignore syntax RESTRICTS THE PATTERN TO DIRECTORIES:
+ *
+ * | Intended | Appended | Matches a file `credentials.json`? |
+ * |---|---|---|
+ * | `credentials.json` | `credentials.json/` | no |
+ * | `service-account*` | `service-account/` | no |
+ *
+ * Six of the eight entries are directories, so the bug was invisible for them
+ * and the block it broke is the one labelled "Environment and secrets" — the
+ * two entries that are FILES are the two it silently inverted. The scaffold
+ * reported `UPDATED: .gitignore (added 8 missing entries)` with two of them
+ * inert, on exactly the path an existing project takes when it adopts
+ * rungate. Found while scaffolding a plugin whose whole integration is Google
+ * Drive, where `credentials.json` is the default client-secrets filename.
+ *
+ * So there is ONE list, and every pattern is written here EXACTLY as it must
+ * appear on disk. Nothing downstream may transform a pattern — a second place
+ * that decides syntax is the shape this bug had.
+ */
+interface GitignoreSection {
+  heading: string;
+  patterns: string[];
+  /**
+   * Ensured when appending to a `.gitignore` that already exists. A project
+   * adopting rungate keeps its own conventions for build output and editors;
+   * what it does not get to opt out of is leaking a credential.
+   */
+  requiredOnAdoption: boolean;
+}
+
+/** The single source for both branches below. Patterns are verbatim. */
+export const GITIGNORE_SECTIONS: GitignoreSection[] = [
+  { heading: "Dependencies", requiredOnAdoption: true, patterns: ["node_modules/", ".bun/"] },
+  // Required because the list this replaced required `dist`. Rounded up to
+  // the whole section rather than down: #474 is about the two branches
+  // disagreeing, and quietly shrinking what an adopting project gets would
+  // be a second behaviour change hiding inside the fix for the first.
+  { heading: "Build output", requiredOnAdoption: true, patterns: ["dist/", "build/", "*.tsbuildinfo"] },
+  {
+    heading: "Environment and secrets",
+    requiredOnAdoption: true,
+    patterns: [
+      ".env",
+      ".env.*",
+      "!.env.example",
+      "*.pem",
+      "*.key",
+      "*.p12",
+      "*.pfx",
+      "credentials.json",
+      "service-account*",
+      ".secret*",
+    ],
+  },
+  { heading: "Harness working directory", requiredOnAdoption: true, patterns: [".rungate/"] },
+  { heading: "IDE", requiredOnAdoption: false, patterns: [".vscode/", ".idea/", "*.swp", "*.swo"] },
+  { heading: "OS", requiredOnAdoption: false, patterns: [".DS_Store", "Thumbs.db"] },
+  { heading: "Test artifacts", requiredOnAdoption: false, patterns: ["coverage/"] },
+];
+
+/** The patterns an adopting project must end up with, in order. */
+export function requiredGitignorePatterns(): string[] {
+  return GITIGNORE_SECTIONS.filter(s => s.requiredOnAdoption).flatMap(s => s.patterns);
+}
+
+/** The fresh-project file, rendered from the one list. */
+export function gitignoreTemplate(): string {
+  return (
+    GITIGNORE_SECTIONS.map(s => `# ${s.heading}\n${s.patterns.join("\n")}\n`).join("\n") + ""
+  );
+}
+
+/**
+ * Which required patterns an existing `.gitignore` does not already carry.
+ *
+ * Compared LINE-WISE against uncommented lines, not with `existing.includes`
+ * (#474). A substring test over the whole file reports `credentials.json` as
+ * present because of a comment reading `# credentials.json lives in
+ * 1Password`, and then appends nothing — the entry is "handled" by a sentence
+ * about it. It also made `*.key` satisfied by `*.keystore` and
+ * `service-account` satisfied by the longer `service-account*`, which is how
+ * the two lists stayed different without anything noticing.
+ */
+export function missingGitignorePatterns(existing: string): string[] {
+  const present = new Set(
+    existing
+      .split("\n")
+      .map(l => l.trim())
+      .filter(l => l !== "" && !l.startsWith("#")),
+  );
+  return requiredGitignorePatterns().filter(p => !present.has(p));
+}
+
 export function createGitignore(root: string, actions: string[]): void {
   const gitignorePath = join(root, ".gitignore");
-  const securityTemplate = `# Dependencies
-node_modules/
-.bun/
-
-# Build output
-dist/
-build/
-*.tsbuildinfo
-
-# Environment and secrets
-.env
-.env.*
-!.env.example
-*.pem
-*.key
-*.p12
-*.pfx
-credentials.json
-service-account*
-.secret*
-
-# Harness working directory
-.rungate/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Test artifacts
-coverage/
-`;
 
   if (existsSync(gitignorePath)) {
     const existing = readFileSync(gitignorePath, "utf-8");
-    const required = [
-      "node_modules", "dist", ".env", ".rungate",
-      "*.pem", "*.key", "credentials.json", "service-account",
-    ];
-    const missing = required.filter(entry => !existing.includes(entry));
+    const missing = missingGitignorePatterns(existing);
     if (missing.length > 0) {
-      const additions = "\n# Added by rungate scaffold\n" +
-        missing.map(e => {
-          if (e === ".env") return ".env\n.env.*\n!.env.example";
-          return e.includes("*") ? e : `${e}/`;
-        }).join("\n") + "\n";
+      // Written VERBATIM. The transform that used to live here is the bug.
+      const additions = "\n# Added by rungate scaffold\n" + missing.join("\n") + "\n";
       writeFileSync(gitignorePath, existing.trimEnd() + "\n" + additions);
       actions.push(`UPDATED: .gitignore (added ${missing.length} missing entries)`);
     } else {
       actions.push("SKIP: .gitignore (all required entries present)");
     }
   } else {
-    writeFileSync(gitignorePath, securityTemplate);
+    writeFileSync(gitignorePath, gitignoreTemplate());
     actions.push("CREATED: .gitignore (security template)");
   }
 }
