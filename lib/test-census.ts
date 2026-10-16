@@ -37,8 +37,40 @@
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 
-/** Directories a census walks, relative to the project root. */
-export const CENSUS_DIRS = ["test", "gates"];
+/**
+ * Directories a census never walks into.
+ *
+ * The walk is the whole project, NOT a fixed list of test directories. A
+ * `["test", "gates"]` list is rungate's own layout, and a consumer that keeps
+ * its tests beside its sources — `src/foo.test.ts`, which is the commonest
+ * JavaScript convention there is — would census to `{}` on every run. An
+ * empty census compares clean against an empty census forever, so the guard
+ * would be dead for exactly the projects it is supposed to protect, and
+ * nothing would say so.
+ */
+export const CENSUS_SKIP = new Set([
+  "node_modules",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  ".turbo",
+  "vendor",
+  "test-fixtures",
+  "worktrees",
+]);
+
+/**
+ * What counts as a test file.
+ *
+ * The JS/TS family only, stated rather than implied: a consumer whose suite
+ * is pytest or `go test` censuses to `{}`, and `censusVerdict` reports that
+ * as UNMEASURED rather than as nothing-removed. "We cannot see this
+ * project's tests" is a different answer from "no test was removed", and
+ * only the first one is honest about a polyglot repo.
+ */
+const TEST_FILE = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/;
 
 /**
  * Declaration forms bun recognises. `test` and `it`, bare or with a modifier.
@@ -67,23 +99,22 @@ export function countTestDeclarations(source: string): number {
   return [...source.matchAll(DECLARATION)].length;
 }
 
-/** `{ "test/a.test.ts": 12, … }` for every test file under CENSUS_DIRS. */
+/** `{ "test/a.test.ts": 12, … }` for every test file anywhere under `root`. */
 export function censusOf(root: string): Record<string, number> {
   const out: Record<string, number> = {};
   const walk = (dir: string, rel: string) => {
     if (!existsSync(dir)) return;
     for (const e of readdirSync(dir, { withFileTypes: true })) {
-      const p = join(dir, e.name);
       const r = rel ? `${rel}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (e.name === "node_modules" || e.name === "test-fixtures") continue;
-        walk(p, r);
-      } else if (e.name.endsWith(".test.ts")) {
-        out[r] = countTestDeclarations(readFileSync(p, "utf-8"));
+        if (CENSUS_SKIP.has(e.name) || e.name.startsWith(".")) continue;
+        walk(join(dir, e.name), r);
+      } else if (TEST_FILE.test(e.name)) {
+        out[r] = countTestDeclarations(readFileSync(join(dir, e.name), "utf-8"));
       }
     }
   };
-  for (const d of CENSUS_DIRS) walk(join(root, d), d);
+  walk(root, "");
   return out;
 }
 

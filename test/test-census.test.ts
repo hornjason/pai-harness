@@ -22,7 +22,7 @@
  * agent.
  */
 import { describe, test, expect } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { censusOf, censusRegressions, countTestDeclarations } from "../lib/test-census";
@@ -98,6 +98,36 @@ describe("#307: counting what a file declares", () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  test("SC-1690: a consumer that keeps tests beside its sources is censused too", () => {
+    // Found by review. The walk was a fixed `["test", "gates"]` — rungate's
+    // own layout — so `src/foo.test.ts`, the commonest JavaScript convention
+    // there is, censused to `{}`. An empty census compares clean against an
+    // empty census on every round, so the guard would have been permanently
+    // and silently dead for exactly the consumers it exists to protect.
+    const root = mkdtempSync(join(tmpdir(), "rg-census-src-"));
+    try {
+      mkdirSync(join(root, "src", "widgets"), { recursive: true });
+      mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+      mkdirSync(join(root, "dist"), { recursive: true });
+      writeFileSync(join(root, "src", "a.test.ts"), `test("a",0);`);
+      writeFileSync(join(root, "src", "widgets", "b.spec.tsx"), `it("b",0);it("c",0);`);
+      writeFileSync(join(root, "src", "c.test.js"), `test("d",0);`);
+      // A dependency's own suite is not this project's, and build output is
+      // a copy — counting either would make an `npm install` or a rebuild
+      // read as tests appearing and disappearing.
+      writeFileSync(join(root, "node_modules", "dep", "x.test.ts"), `test("no",0);`);
+      writeFileSync(join(root, "dist", "y.test.js"), `test("no",0);`);
+
+      expect(censusOf(root)).toEqual({
+        "src/a.test.ts": 1,
+        "src/c.test.js": 1,
+        "src/widgets/b.spec.tsx": 2,
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("#307: what a gate run does about it", () => {
@@ -119,6 +149,31 @@ describe("#307: what a gate run does about it", () => {
     });
   });
 
+  test("SC-1691: a tree with no test file the walk can see is UNMEASURED - not clean", () => {
+    // Found by review, and it is the arm that keeps this guard alive on a
+    // project that is not this one. A pytest or `go test` consumer censuses
+    // to `{}`; `{}` compares clean against `{}` on every subsequent round,
+    // so without this the guard is dead and indistinguishable from a guard
+    // that keeps finding nothing wrong.
+    const v = censusVerdict({ "test/a.test.ts": 3 }, {});
+    expect(v.kind).toBe("unmeasured");
+    if (v.kind !== "unmeasured") throw new Error("unreachable");
+    expect(v.reason).toContain("could not be seen");
+
+    // An empty tree on the FIRST round too — `{}` against `undefined` must
+    // not slip through as `first-reading`, which reads as ordinary.
+    expect(censusVerdict(undefined, {}).kind).toBe("unmeasured");
+  });
+
+  test("SC-1692: an unmeasured round keeps the previous reading - no amnesia", () => {
+    // Banking `{}` over a real census would turn a tree the walk briefly
+    // could not read into permanent amnesia, and the round after it would
+    // compare clean against nothing. Same reasoning as the refused round
+    // below, different cause.
+    const before = { "test/a.test.ts": 3 };
+    expect(nextCensus(before, {}, censusVerdict(before, {}))).toEqual(before);
+  });
+
   test("SC-1689: a refused round does not bank the reduced census", () => {
     // The guard you only have to get past once. Banking the tree the
     // deletion produced means the next round compares against it, finds no
@@ -137,6 +192,34 @@ describe("#307: what a gate run does about it", () => {
     // comparison move forward at all.
     const grown = { "test/a.test.ts": 5 };
     expect(nextCensus(before, grown, censusVerdict(before, grown))).toEqual(grown);
+  });
+
+  test("SC-1693: the census refusal is counted after the baseline subtraction - not before", () => {
+    // Found by review, and it was a live fail-open. The census `fails++` was
+    // written ABOVE the verify gate's `subtractTestBaseline`, which cannot
+    // tell a census refusal from a suite failure — so a run carrying three
+    // pre-existing failures would have had the deleted-test refusal
+    // subtracted to zero. A baseline is a statement about the SUITE and can
+    // say nothing about whether a heal round removed a test.
+    //
+    // Ordering is not something a pure decider can express, so this is a
+    // source-position assertion, the same shape as the `if (rebuildCmd)`
+    // enclosure guard in test/adr-002-regression-guards.test.ts.
+    const src = readFileSync(join(import.meta.dir, "..", "gates", "gate-executor.ts"), "utf-8");
+    const subtraction = src.indexOf("Subtract test baseline at verify gate");
+    const census = src.indexOf("Did a heal round delete a test?");
+    const report = src.indexOf("`\\nTest results: ${passes} pass");
+
+    expect(subtraction, "the baseline subtraction block is gone").toBeGreaterThan(-1);
+    expect(census, "the census block is gone").toBeGreaterThan(-1);
+    expect(report, "the results line is gone — if it moved, move this guard with it").toBeGreaterThan(-1);
+    expect(
+      census,
+      "the census refusal is counted before the baseline subtraction, which can erase it",
+    ).toBeGreaterThan(subtraction);
+    // ...and still before anything reports the counts, or the refusal would
+    // be added after the number a human reads.
+    expect(census, "the census runs after the results are already reported").toBeLessThan(report);
   });
 
   test("this repo's own census is substantial - the walk is not reading nothing", () => {

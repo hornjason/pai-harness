@@ -724,3 +724,60 @@ been decorative:**
 - [x] SC-1687: test/test-census.test.ts contains [the census reads real files on disk - and only test files] — the comparison is pure and could be right over a census nobody took, so this is the arm that says the walk reaches a subdirectory and stops at non-test sources carrying the same token
 - [x] SC-1688: test/test-census.test.ts contains [the first reading of a run is not a pass] — nothing to compare and nothing removed are different verdicts, asserted beside both real answers
 - [x] SC-1689: test/test-census.test.ts contains [a refused round does not bank the reduced census] — and restoring the test clears it, because a guard with no way out gets deleted rather than satisfied
+
+#### What was broken to prove SC-1684..SC-1689
+
+Run and counted over `test/test-census.test.ts` (7 tests, 0 red), predicted
+before each run.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the counter ignores `.skip` and `.todo` | 2 | 2 |
+| `censusRegressions` skips the deleted-file case | 1 | 1 |
+| the first reading reports `no-regression` | 1 | 1 |
+| `nextCensus` always banks the current reading | 1 | 1 |
+| the counter drops its lookbehind anchor | 1 | 1 |
+| `censusOf` stops recursing | 1 | **2** |
+
+None is left in the tree; all were run and reverted.
+
+The last row came back HIGHER than predicted, which is the opposite of the
+fourth shape and worth recording for what it says about the fixture. The
+expected red was SC-1687, whose four-file fixture plants one test in
+`test/unit/`. The second was the real-repo arm — written as a backstop
+against a walk that reads nothing at all, and measured here as load-bearing
+for recursion too: **39 of this project's 309 test files are in
+subdirectories and carry 488 of its 5,299 declarations**, so a flat walk
+drops the total to 4,811 and crosses the arm's threshold. A control written
+to catch one thing caught a second, which is the argument for asserting a
+real number against a real tree rather than only against a fixture you built.
+
+#### Three defects a security review found in the guard itself
+
+All three had the same shape as the thing SC-A19 guards against: the check was
+present, called, and unable to fire.
+
+1. **The refusal was counted where a later step erases it.** The census
+   `fails++` was written ABOVE the verify gate's `subtractTestBaseline`, which
+   cannot tell a census refusal from a suite failure. A run carrying three
+   pre-existing failures would have had the deleted-test refusal subtracted to
+   zero. A baseline is a statement about the SUITE and can say nothing about
+   whether a heal round removed a test, so the census now runs after the
+   subtraction and before the results line.
+2. **It censused the wrong tree.** `state.projectRoot` is the main checkout;
+   on a decomposed run the agent's edits are in a worktree named by
+   `state.treeUnderTest`. The guard would have compared a tree nobody touched
+   against itself — green every round, for the one kind of run it most needs
+   to watch.
+3. **The walk was rungate's own layout.** `["test", "gates"]` means
+   `src/foo.test.ts` — the commonest JavaScript convention there is —
+   censuses to `{}`, and `{}` compares clean against `{}` on every subsequent
+   round. The guard would have been permanently and silently dead for exactly
+   the consumers it exists to protect. The walk is now the whole tree minus
+   `node_modules`, build output and dotfiles, over the `.test`/`.spec` family,
+   and an empty census is UNMEASURED rather than first-reading.
+
+- [x] SC-1690: test/test-census.test.ts contains [a consumer that keeps tests beside its sources is censused too] — `src/*.test.ts` and `src/**/*.spec.tsx` are counted while `node_modules` and `dist` are not, because a dependency's suite and a build copy appearing or vanishing is not this project removing a test
+- [x] SC-1691: test/test-census.test.ts contains [a tree with no test file the walk can see is UNMEASURED - not clean] — asserted on the first round as well, since `{}` against `undefined` slipping through as `first-reading` reads as ordinary
+- [x] SC-1692: test/test-census.test.ts contains [an unmeasured round keeps the previous reading - no amnesia] — banking `{}` over a real census would make the round after it compare clean against nothing
+- [x] SC-1693: test/test-census.test.ts contains [the census refusal is counted after the baseline subtraction - not before] — ordering is not something a pure decider can express, so this is a source-position assertion in the shape of the `if (rebuildCmd)` enclosure guard, pinned against the results line at the other end

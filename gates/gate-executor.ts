@@ -237,6 +237,7 @@ export function recordTestBaseline(
 
 /** What a gate run does about the tests that existed when it last looked. */
 export type CensusVerdict =
+  | { kind: "unmeasured"; reason: string }
   | { kind: "first-reading"; files: number }
   | { kind: "no-regression"; files: number }
   | { kind: "regression"; regressions: string[] };
@@ -256,12 +257,27 @@ export type CensusVerdict =
  * gate run of a run, and a verdict that said "no regression" there would be
  * the reading nobody took wearing the answer's clothes — the whole subject of
  * `.claude/rules/checks-must-be-able-to-fail.md`.
+ *
+ * Neither is `unmeasured`, and it is the arm that keeps this guard alive on a
+ * project that is not this one. A tree with no recognisable test file
+ * censuses to `{}`, `{}` compares clean against `{}` on every subsequent
+ * round, and the guard would be permanently and silently dead for exactly the
+ * repos it exists to protect — a polyglot consumer, or one whose suite the
+ * walk cannot see. Reported, every run, rather than inferred from silence.
  */
 export function censusVerdict(
   previous: Record<string, number> | undefined,
   current: Record<string, number>,
 ): CensusVerdict {
   const files = Object.keys(current).length;
+  if (files === 0) {
+    return {
+      kind: "unmeasured",
+      reason:
+        "no .test/.spec file in the JS/TS family was found in the tree under test, " +
+        "so a heal round that deleted one could not be seen",
+    };
+  }
   if (!previous || Object.keys(previous).length === 0) return { kind: "first-reading", files };
   const regressions = censusRegressions(previous, current);
   return regressions.length > 0 ? { kind: "regression", regressions } : { kind: "no-regression", files };
@@ -281,7 +297,12 @@ export function nextCensus(
   current: Record<string, number>,
   verdict: CensusVerdict,
 ): Record<string, number> {
-  return verdict.kind === "regression" ? (previous ?? current) : current;
+  // `unmeasured` holds the previous reading too. Banking an empty census
+  // over a real one would turn a tree the walk briefly could not read — a
+  // worktree mid-checkout, a `dist` rename — into a permanent amnesia, and
+  // the round after it would compare clean against nothing.
+  if (verdict.kind === "regression" || verdict.kind === "unmeasured") return previous ?? current;
+  return current;
 }
 
 /** What the verify gate does with whatever scope recorded (#307). */
@@ -2040,37 +2061,6 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   // Parse results
   let { passes, fails, warns, results } = parseGateResults(testOutput, earlyResults, earlyFails);
 
-  // Did a heal round delete a test? (#307 SC-A19)
-  //
-  // Runs on every gate, not just verify: a heal round ends in a gate re-run
-  // whichever gate it was healing, and the scope gate heals too.
-  {
-    const current = censusOf(state.projectRoot || process.cwd());
-    state.gateContract = state.gateContract || {};
-    const verdict = censusVerdict(state.gateContract.testCensus, current);
-    state.gateContract.testCensus = nextCensus(state.gateContract.testCensus, current, verdict);
-
-    if (verdict.kind === "regression") {
-      fails++;
-      results.push({
-        check: "test-census: a round removed tests",
-        result: "FAIL" as const,
-        detail:
-          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
-          `is not a gate that passed. Restore the test, or say in the PR which check ` +
-          `replaced it (#307 SC-A19).`,
-      });
-      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
-    } else if (verdict.kind === "first-reading") {
-      // Said out loud rather than passed quietly: a run with nothing to
-      // compare has not been checked, and silence is how that becomes
-      // "checked and clean".
-      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
-    } else {
-      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
-    }
-  }
-
   // Subtract test baseline at verify gate (#599) — pre-existing failures don't block
   if (gate === "verify") {
     const adjustment = baselineAdjustment(state.gateContract?.baselines, fails);
@@ -2090,6 +2080,63 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
           `is attributed to this change — ${adjustment.reason}`,
       });
       console.warn(`Test baseline: UNMEASURED — ${adjustment.reason}`);
+    }
+  }
+
+  // Did a heal round delete a test? (#307 SC-A19)
+  //
+  // Runs on every gate, not just verify: a heal round ends in a gate re-run
+  // whichever gate it was healing, and the scope gate heals too.
+  //
+  // AFTER the baseline subtraction above, deliberately. This was written
+  // before it and a security review caught the fail-open: a census FAIL
+  // incremented into `fails` is indistinguishable from a suite failure to
+  // `subtractTestBaseline`, so a run carrying three pre-existing failures
+  // would have had the deleted-test refusal subtracted to zero. A baseline
+  // is a statement about the SUITE and can say nothing about whether a heal
+  // round removed a test.
+  //
+  // The census reads `treeUnderTest`, not `projectRoot`. On a decomposed run
+  // the agent's edits are in a worktree, and a census of the main checkout
+  // would compare a tree nobody touched against itself — green every round,
+  // for the one kind of run this guard most needs to watch.
+  {
+    const censusRoot = state.treeUnderTest || state.projectRoot || process.cwd();
+    const current = censusOf(censusRoot);
+    state.gateContract = state.gateContract || {};
+    const verdict = censusVerdict(state.gateContract.testCensus, current);
+    state.gateContract.testCensus = nextCensus(state.gateContract.testCensus, current, verdict);
+
+    if (verdict.kind === "regression") {
+      fails++;
+      results.push({
+        check: "test-census: a round removed tests",
+        result: "FAIL" as const,
+        detail:
+          `${verdict.regressions.join("; ")}. A gate that passes because its test is gone ` +
+          `is not a gate that passed. Restore the test, or say in the PR which check ` +
+          `replaced it (#307 SC-A19).`,
+      });
+      console.error(`Test census: REFUSED — ${verdict.regressions.join("; ")}`);
+    } else if (verdict.kind === "unmeasured") {
+      // A WARN rather than silence. An empty census compares clean against
+      // an empty census on every subsequent round, so a guard that said
+      // nothing here would be permanently dead on a polyglot consumer and
+      // would look exactly like a guard that keeps finding nothing wrong.
+      warns++;
+      results.push({
+        check: "test-census: UNMEASURED",
+        result: "WARN" as const,
+        detail: `${verdict.reason} (tree: ${censusRoot})`,
+      });
+      console.warn(`Test census: UNMEASURED — ${verdict.reason}`);
+    } else if (verdict.kind === "first-reading") {
+      // Said out loud rather than passed quietly: a run with nothing to
+      // compare has not been checked, and silence is how that becomes
+      // "checked and clean".
+      console.log(`Test census: first reading this run — ${verdict.files} test file(s), nothing to compare yet`);
+    } else {
+      console.log(`Test census: no test was removed (${verdict.files} file(s) compared)`);
     }
   }
 
