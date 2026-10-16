@@ -2502,16 +2502,38 @@ export function runAuditSpecsFix(root: string, actions: string[]): void {
     return;
   }
   const result = auditSpecs(root, { fix: true });
-  const rewriteCount = result.rewrites?.length ?? 0;
-  if (rewriteCount > 0) {
-    // One action per spec file actually rewritten, naming the path (#216).
+  const entries = result.rewrites ?? [];
+  // #426: a line that was left alone is not a rewrite. Both are reported,
+  // because "the matcher could not bind this" is worth seeing — but only one
+  // of them changed what a reader will read, and conflating them is how a
+  // silent spec edit hid behind a summary line naming `ci.yml`.
+  const rewritten = entries.filter(r => r.kept === undefined);
+  const kept = entries.filter(r => r.kept !== undefined);
+
+  if (entries.length > 0) {
+    // One action per spec file actually touched, naming the path (#216).
     // "rewrote 2 SCs" named no file, so the rewritten specs were never staged
     // and showed up to the dirty-tree check as somebody else's edit.
-    const touched = [...new Set((result.rewrites ?? []).map(r => `specs/${r.specFile}`))];
+    const touched = [...new Set(entries.map(r => `specs/${r.specFile}`))];
     for (const file of touched) actions.push(`UPDATED: ${file} (audit-specs --fix)`);
-    actions.push(`SKIP: audit-specs summary (rewrote ${rewriteCount} SCs across ${touched.length} spec file(s))`);
-  } else {
+  }
+
+  // #426 SC-3: every rewritten criterion is named, with its id and its spec.
+  // A spec line edited under a documented command and reported only as a
+  // count is the defect, not merely the content that was lost.
+  for (const r of rewritten) {
+    actions.push(`REWROTE: specs/${r.specFile} ${r.scId} as ${r.patternUsed} — was: ${r.before}`);
+  }
+  for (const r of kept) {
+    actions.push(`KEPT: specs/${r.specFile} ${r.scId} — ${r.kept}`);
+  }
+
+  if (entries.length === 0) {
     actions.push("SKIP: audit-specs (all SCs already matchable)");
+  } else {
+    actions.push(
+      `SKIP: audit-specs summary (rewrote ${rewritten.length} SCs, left ${kept.length} unmatched but intact)`,
+    );
   }
 }
 
@@ -2574,6 +2596,11 @@ function dirtyPaths(root: string, generated: string[]): string[] {
 export const WRITE_VERBS: readonly string[] = [
   "CREATED", "UPDATED", "REPLACED", "GENERATED", "REGENERATED",
   "REFRESHED", "REPAIRED", "DEPLOYED", "SPLIT",
+  // #426: a rewritten SC line is a write to the spec that names it. The
+  // `UPDATED:` action for the same file already stages it, so this is
+  // belt-and-braces — but a verb that announces an edit and is not here is
+  // the exact drift this list exists to stop.
+  "REWROTE",
 ];
 
 export function writtenPath(line: string): string | null {

@@ -620,3 +620,96 @@ tests with it. A value the generator writes and the loader refuses is not a
 value; `typeCheck` is now `.nullable().optional()` for the reason
 `healthPath` already is, and the round trip through the loader is asserted
 here rather than left to a neighbouring suite to discover.
+
+## #426 — `scaffold --fix` silently truncated the criteria it could not parse
+
+`bun bin/rungate.ts scaffold . --fix` is the documented way to take a harness
+update. It rewrote `specs/HARNESS-GATES.md` on every run, and the rewrite lost
+information:
+
+```diff
+-- [ ] SC-1469: workflows/ship.js not contains [s.environments.prod.rebuild = 'PASS'] — a container that answers a health check is recorded as SKIP with a reason rather than as a rebuild that happened
++- [ ] SC-1469: not contains [s.environments.prod.rebuild = 'PASS']
+```
+
+The file the criterion is about and the whole rationale clause, deleted,
+deterministically, reported only as `1 replaced` under a summary naming
+`ci.yml`.
+
+### The proximate cause is a matcher that did not accept its own grammar
+
+`content-not-contains` in `config/matcher-registry.json` accepted
+`must NOT contain` and `has no` — but **not** the `not contains` form, which
+is the form `content-contains-compound`'s own example writes
+(`gates/orchestrator.ts contains [github] and not contains [gh issue]`). So
+the single-clause form of the documented grammar was unmatchable.
+
+That has a consequence larger than the truncation, and it is this repo's
+central defect class: **SC-1469 generated no assertion.** An absence claim
+about `workflows/ship.js` sat in a spec reading like a criterion, was counted
+as an unmatched coverage gap, and was never executed. Widening the entry
+turns it, and SC-539, into checks that run.
+
+### Fixing only the matcher would have left the mechanism intact
+
+Measured before the fix: **71 of 152 unchecked SC lines across `specs/`** were
+classified unmatched, and every one of them is a candidate for the same
+rewrite. So the rewriter itself is guarded, by one exported decision —
+`decideRewrite` in `scripts/audit-specs.ts` — with three rules:
+
+1. A statement already in the structured grammar — a target named up front and
+   a bracketed payload — is **never** rewritten. A matcher gap is a matcher
+   gap; it is not a licence to delete what the author wrote.
+2. A rewrite that would drop the file the criterion names is **refused**.
+   `findClosestPattern`'s last resort collapses anything containing a filename
+   to `<file> exists`, which is an assertion that holds vacuously against a
+   file that obviously exists.
+3. A rewrite that survives both carries the em-dash rationale across.
+
+`file-exists` remains the one live rewrite path, and deliberately: it writes
+the statement it replaced into a `REVIEW` comment on the next line, so nothing
+leaves the file. A fix that stopped rewriting altogether would satisfy every
+"the line survived" case here, which is why each of them is paired with a case
+asserting that an unstructured line IS still rewritten.
+
+- [x] SC-1587: test/audit-specs-lossless.test.ts contains [--fix leaves a structured criterion byte-identical] — SC-1469's exact text, run through the real rewriter, beside a structured-but-still-unmatched line and an unstructured one that must still be rewritten
+- [x] SC-1588: test/audit-specs-lossless.test.ts contains [running --fix twice is a fixed point] — the issue's own reproduction: a rewriter that is not idempotent is editing something it has already decided about
+- [x] SC-1589: test/audit-specs-lossless.test.ts contains [the decision about one line, driven directly] — one exported binding, so there is exactly one thing to mutate
+- [x] SC-1590: test/audit-specs-lossless.test.ts contains [a rewrite that would drop the file the criterion names is refused] — rather than written and reported
+- [x] SC-1591: test/audit-specs-lossless.test.ts contains [a rewrite that survives carries the rationale across] — the prose after the em dash is the intent, and intent is what the claiming-sc-coverage rule exists to keep legible
+- [x] SC-1592: test/audit-specs-lossless.test.ts contains [a statement with no close pattern is kept rather than invented]
+- [x] SC-1593: test/audit-specs-lossless.test.ts contains [the absence form binds to a matcher, so the claim is executed] — five forms asserted matchable and prose asserted NOT, because a matcher widened until it matches everything is the same defect from the other side
+- [x] SC-1594: test/audit-specs-lossless.test.ts contains [a rewrite is reported, naming the spec and the id] — and SC-1469 is asserted to be MATCHED now rather than merely unrewritten: "not rewritten" and "never considered" are different states
+- [x] SC-1595: test/audit-specs-lossless.test.ts contains [the scaffold step names every rewritten criterion in its actions] — a spec line edited under a documented command and reported only as a count is the defect, not just the content lost
+- [x] SC-1596: test/audit-specs-lossless.test.ts contains [the tree carries no line already damaged by this] — swept over every spec rather than the one the issue names, with a probe case proving the sweep can see a damaged line
+
+### What was broken to prove it (SC-1587..1596)
+
+Measured over `test/audit-specs-lossless.test.ts`, `test/audit-specs.test.ts`,
+`test/scaffold-audit-agreement.test.ts` and `test/conformity-sc-binding.test.ts`
+— 70 tests, baseline 0 red. None of the eleven is left in the tree; all were
+run and reverted.
+
+| Mutation | Red |
+|---|---|
+| nothing is already structured — #426 verbatim | 4 of 70 — the byte-identical case, both halves of the predicate, and the reported decision |
+| everything is already structured, so `--fix` stops rewriting | 7 of 70 — every rewrite case, the predicate, and #556's own AC-8 idempotence test. This is the "fix by switching it off" that AC-4 names, and it is the most-caught mutation in the battery |
+| a rewrite may drop the file the criterion names | 1 of 70 |
+| the rationale is not carried across | 1 of 70 |
+| every line is kept, so `--fix` is a no-op | 4 of 70 — including AC-8 again, from the other direction |
+| the `kept` flag is never recorded | 1 of 70 — "deliberately left alone" and "rewritten to the same text" stop being distinguishable |
+| the absence form goes back to being unmatchable | 2 of 70 — the five-form case, and SC-1469 falling back out of `matchedSCs` |
+| the absence form widens until prose matches it | 9 of 70 — the positive control plus six pre-existing cases across the conformity binding and the audit's own classification. A matcher widened until it matches everything is the same defect from the other side, and the suite already knew it |
+| the scaffold stops naming what it rewrote | 1 of 70 |
+| the scaffold stops naming what it kept | 1 of 70 |
+| the tree sweep reads nothing | 1 of 70 |
+
+The last row is the one worth recording, because it was a defect in this
+PR's own first draft, found by predicting the count before running. The sweep
+asserted `damaged` was empty over every spec in the tree — and an empty list
+is also what a walker reading nothing produces. The case that was supposed to
+guard it only exercised the classifying regex, not the walk. A count control
+on both the files found and the SC lines classified was added first; the
+mutation above is that control, performed and observed. Without it the row
+would read **0 of 70**, in the sweep written to prove a claim about the whole
+tree — which is where it would have been least visible.

@@ -45,6 +45,13 @@ export interface RewriteEntry {
   after: string;
   patternUsed: string;
   ambiguous: boolean;
+  /**
+   * Set when the line was DELIBERATELY left alone (#426), carrying why.
+   * `before === after` alone cannot say this: it is also what a rewrite that
+   * happened to be a no-op looks like, and the caller reports the two
+   * differently.
+   */
+  kept?: string;
 }
 
 export interface AuditResult {
@@ -258,6 +265,100 @@ function findClosestPattern(
   return null;
 }
 
+// ── Whether to rewrite at all, and into what (#426) ───────────
+
+/**
+ * A file-ish leading token: `workflows/ship.js`, `AGENTS.md`, `specs/X.md`.
+ *
+ * Anchored, because the question is whether the statement OPENS by naming
+ * its target. A filename mentioned halfway through a sentence of prose is
+ * not a structured criterion, and treating it as one is how
+ * `findClosestPattern`'s last resort turns a whole criterion into
+ * `foo.ts exists`.
+ */
+function leadingFileToken(statement: string): string | null {
+  const m = /^(\S*[./]\S*)\s/.exec(statement);
+  return m ? m[1]! : null;
+}
+
+/** The prose after the em dash — the part that says why the criterion exists. */
+function rationaleOf(statement: string): string | null {
+  const m = /\s+—\s+(.+)$/.exec(statement);
+  return m ? m[1]!.trim() : null;
+}
+
+/**
+ * Is this already written in the structured grammar?
+ *
+ * A target named up front and a bracketed payload. That is the authored
+ * shape of every matcher in `config/matcher-registry.json` that takes one —
+ * `contains [...]`, `not contains [...]`, `is under [N] lines`,
+ * `has field [x]` — and it is deliberately asked of the SHAPE rather than
+ * by running the registry.
+ *
+ * The distinction matters: SC-1469 is structured and the registry did not
+ * recognise it, because `content-not-contains` accepted `must NOT contain`
+ * and `has no` but not the `not contains` form the compound matcher's own
+ * example uses. Asking the registry would therefore have answered "rewrite
+ * it", which is the bug. A matcher gap is a matcher gap; it is not a licence
+ * to delete what the author wrote.
+ */
+export function alreadyStructured(statement: string): boolean {
+  return leadingFileToken(statement) !== null && /\[[^\]]+\]/.test(statement);
+}
+
+export type RewriteDecision =
+  | { kind: "keep"; reason: string }
+  | { kind: "rewrite"; statement: string };
+
+/**
+ * What `--fix` may do to one SC line (#426).
+ *
+ * `scaffold . --fix` is the documented way to take a harness update, and it
+ * was rewriting SC-1469 on every run into
+ * `not contains [s.environments.prod.rebuild = 'PASS']` — dropping both the
+ * file the criterion is about and the whole rationale clause, silently, under
+ * a summary line naming `ci.yml`.
+ *
+ * Three rules, and the third is the one that makes this a fix rather than a
+ * patch over one line:
+ *
+ *   1. A statement already in the structured grammar is never rewritten.
+ *   2. A rewrite that would drop the file the criterion names is refused
+ *      outright. `findClosestPattern`'s last resort collapses anything with a
+ *      filename in it to `<file> exists`, which is an assertion that holds
+ *      vacuously against a file that obviously exists.
+ *   3. A rewrite that survives both carries the em-dash rationale across.
+ *
+ * One exported binding, so there is exactly one thing to mutate.
+ */
+export function decideRewrite(
+  statement: string,
+  closest: { patternName: string; rewrite: string; ambiguous: boolean } | null,
+): RewriteDecision {
+  if (alreadyStructured(statement)) {
+    return { kind: "keep", reason: "already a structured criterion — a matcher gap is not a licence to rewrite it" };
+  }
+  if (!closest) {
+    return { kind: "keep", reason: "no registry pattern was close enough" };
+  }
+
+  const file = leadingFileToken(statement);
+  if (file !== null && !closest.rewrite.includes(file)) {
+    return {
+      kind: "keep",
+      reason: `rewriting as ${closest.patternName} would drop the file ${file} the criterion names`,
+    };
+  }
+
+  const rationale = rationaleOf(statement);
+  const rewritten = rationale ? `${closest.rewrite} — ${rationale}` : closest.rewrite;
+  if (rewritten === statement) {
+    return { kind: "keep", reason: "the rewrite is what is already written" };
+  }
+  return { kind: "rewrite", statement: rewritten };
+}
+
 // ── Core audit function ───────────────────────────────────────
 
 export function auditSpecs(
@@ -319,52 +420,48 @@ export function auditSpecs(
 
       for (const usc of unmatchedSCs) {
         const closest = findClosestPattern(usc.statement);
-        if (!closest) {
-          // Can't rewrite — mark with REVIEW comment
-          const scLinePattern = new RegExp(
-            `^(- \\[ \\] ${usc.id}:\\s*)(.+)$`,
-            "m"
-          );
-          const scMatch = modified.match(scLinePattern);
-          if (scMatch) {
-            // `closest` is null inside this branch, so the rewrite arm of the
-            // old ternary was unreachable. Only the REVIEW marker can apply.
-            const replacement = `${scMatch[0]}\n<!-- REVIEW: original — ${usc.statement} -->`;
-            modified = modified.replace(scLinePattern, replacement);
-            hasChanges = true;
-            rewrites.push({
-              scId: usc.id,
-              specFile,
-              before: usc.statement,
-              after: usc.statement, // unchanged
-              patternUsed: "none",
-              ambiguous: true,
-            });
-          }
-          continue;
-        }
+        const decision = decideRewrite(usc.statement, closest);
 
-        const scLinePattern = new RegExp(
-          `^(- \\[ \\] ${usc.id}:\\s*)(.+)$`,
-          "m"
-        );
+        const scLinePattern = new RegExp(`^(- \\[ \\] ${usc.id}:\\s*)(.+)$`, "m");
         const scMatch = modified.match(scLinePattern);
-        if (scMatch) {
-          let replacement = `${scMatch[1]}${closest.rewrite}`;
-          if (closest.ambiguous) {
-            replacement += `\n<!-- REVIEW: original — ${usc.statement} -->`;
+        if (!scMatch) continue;
+
+        // #426: a line we decline to rewrite keeps its text exactly. The
+        // REVIEW marker records that the matcher could not bind it — which
+        // is a coverage gap worth seeing — without the line itself losing
+        // the file it names or the prose that says why it exists.
+        if (decision.kind === "keep") {
+          const marker = `<!-- REVIEW: unmatched (${decision.reason}) -->`;
+          if (!modified.includes(marker)) {
+            modified = modified.replace(scLinePattern, `${scMatch[0]}\n${marker}`);
+            hasChanges = true;
           }
-          modified = modified.replace(scLinePattern, replacement);
-          hasChanges = true;
           rewrites.push({
             scId: usc.id,
             specFile,
             before: usc.statement,
-            after: closest.rewrite,
-            patternUsed: closest.patternName,
-            ambiguous: closest.ambiguous,
+            after: usc.statement, // unchanged, and that is the point
+            patternUsed: closest?.patternName ?? "none",
+            ambiguous: true,
+            kept: decision.reason,
           });
+          continue;
         }
+
+        let replacement = `${scMatch[1]}${decision.statement}`;
+        if (closest!.ambiguous) {
+          replacement += `\n<!-- REVIEW: original — ${usc.statement} -->`;
+        }
+        modified = modified.replace(scLinePattern, replacement);
+        hasChanges = true;
+        rewrites.push({
+          scId: usc.id,
+          specFile,
+          before: usc.statement,
+          after: decision.statement,
+          patternUsed: closest!.patternName,
+          ambiguous: closest!.ambiguous,
+        });
       }
 
       if (hasChanges) {

@@ -376,7 +376,9 @@ describe("SC-1512: one binding decides what counts as a written path", () => {
     // AUDIT / AUDITED / UNCHANGED / REFUSED, which announce that none
     // happened. A new verb lands in one list or the other by hand — that
     // judgement cannot be derived — but it can no longer land in neither.
-    const NON_WRITE = new Set(["SKIP", "GAP", "WARN", "AUDIT", "AUDITED", "UNCHANGED", "REFUSED", "ERROR", "NOTE"]);
+    // #426 added KEPT: it announces that an SC line was DELIBERATELY not
+    // rewritten, which is the absence of a write by definition.
+    const NON_WRITE = new Set(["SKIP", "GAP", "WARN", "AUDIT", "AUDITED", "UNCHANGED", "REFUSED", "ERROR", "NOTE", "KEPT"]);
     const emitted = new Set<string>();
     for (const m of sources.matchAll(/actions\.push\([`"']([A-Z]{3,12}): /g)) emitted.add(m[1]!);
 
