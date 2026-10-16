@@ -23,8 +23,12 @@ describe("Anti-Criteria: must NOT happen", () => {
   // growth and goes red as an instruction to delist.
   describe("SC-A1: no project-specific references in workflows", () => {
     const CONSUMER = "DailyBriefDashboard";
+    // `lib/scaffold/managed-workflow.ts` delisted in #482: the comment that
+    // named a consumer was on the merge path that issue deleted, and the
+    // replacement says "a real consumer" with the detail in the issue. The
+    // ratchet caught it the moment the file went clean, which is the half of
+    // "both ways" that usually never fires.
     const KNOWN = [
-      "lib/scaffold/managed-workflow.ts",
       "lib/scaffold/steps.ts",
     ];
 

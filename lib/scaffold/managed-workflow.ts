@@ -147,6 +147,78 @@ function jobsSectionOf(sections: Section[]): Section | undefined {
   return sections.find(s => s.key === "jobs");
 }
 
+/** Every top-level key a workflow declares, in file order (#482). */
+export function topLevelKeyOrder(text: string): string[] {
+  return splitTopLevel(text).map(s => s.key).filter(k => k !== "");
+}
+
+/**
+ * Top-level keys declared more than once, in first-seen order (#482).
+ *
+ * YAML forbids duplicate mapping keys and GitHub Actions rejects the file, so
+ * this is not a style question — it is a workflow that will not run. It
+ * happens when somebody restores a block they believe the merge deleted and
+ * the original is still further down, which is the incident this issue is
+ * about.
+ *
+ * The repo has no YAML dependency on purpose — every reader in this file
+ * parses the shape by hand — so the property detected is the one that causes
+ * the parse error rather than the parser's message.
+ */
+export function duplicateTopLevelKeys(text: string): string[] {
+  const seen = new Set<string>();
+  const dupes: string[] = [];
+  for (const key of topLevelKeyOrder(text)) {
+    if (seen.has(key) && !dupes.includes(key)) dupes.push(key);
+    seen.add(key);
+  }
+  return dupes;
+}
+
+export interface MovedKey {
+  key: string;
+  from: number;
+  to: number;
+}
+
+/**
+ * Top-level keys that changed line position between two versions (#482).
+ *
+ * **Keys added or removed are excluded, deliberately.** They shift the index
+ * of everything after them, so counting those as movement makes the signal
+ * fire on the ordinary case — a scaffold adding its own key — and a report
+ * that fires every time is a report nobody reads. What is left is the thing
+ * worth saying: a key that exists in both and is somewhere else.
+ */
+export function movedTopLevelKeys(before: string, after: string): MovedKey[] {
+  const index = (text: string): Map<string, number> => {
+    const out = new Map<string, number>();
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const m = TOP_LEVEL_KEY.exec(lines[i]);
+      if (m && !out.has(m[1])) out.set(m[1], i);
+    }
+    return out;
+  };
+  const b = index(before);
+  const a = index(after);
+
+  // Movement is a change of RANK among the keys both versions have, not a
+  // change of line number. A key inserted above `b` moves `b`'s line and
+  // leaves its position in the file's structure exactly where the consumer
+  // put it; reporting that would fire on every scaffold that adds a key.
+  const common = [...b.keys()].filter(k => a.has(k));
+  const rankBefore = new Map(common.slice().sort((x, y) => b.get(x)! - b.get(y)!).map((k, i) => [k, i]));
+  const rankAfter = new Map(common.slice().sort((x, y) => a.get(x)! - a.get(y)!).map((k, i) => [k, i]));
+
+  const moved: MovedKey[] = [];
+  for (const key of common) {
+    if (rankBefore.get(key) === rankAfter.get(key)) continue;
+    moved.push({ key, from: b.get(key)!, to: a.get(key)! });
+  }
+  return moved;
+}
+
 /** Every job name in a workflow file, in file order. */
 export function jobNames(text: string): string[] {
   const jobs = jobsSectionOf(splitTopLevel(text));
@@ -179,36 +251,62 @@ export function mergeManagedWorkflow(before: string, generated: string): string 
   const beforeJobs = jobsSectionOf(b);
   const beforeByKey = new Map(b.filter(s => s.key !== "").map(s => [s.key, s] as const));
 
-  const out: string[] = [];
-  for (const section of g) {
-    // The ownership rule, and the only one this file needs to state:
-    //
-    //   the harness owns the JOBS it generates, and its own preamble.
-    //   every other top-level key belongs to the consumer, if the consumer
-    //   already has one.
-    //
-    // The generated `on:` is a default for a file that does not exist yet, not
-    // a claim on one that does. Replacing a consumer's `on:` wholesale is how
-    // DailyBriefDashboard lost its `workflow_dispatch` trigger and its
-    // `paths-ignore` list to a write that reported success — and a consumer's
-    // trailing comments live in the section of the key above them, so this is
-    // also what keeps those.
-    if (section.key === "jobs" && beforeJobs) out.push(...mergeJobsSection(beforeJobs, section));
-    else if (section.key !== "" && beforeByKey.has(section.key)) {
-      out.push(...beforeByKey.get(section.key)!.lines);
-    } else out.push(...section.lines);
-  }
-
-  const extraSections = b.filter(s => s.key !== "" && !generatedKeys.has(s.key));
-  if (extraSections.length > 0) {
-    while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
-    for (const section of extraSections) {
-      out.push("");
-      out.push(...splitTrailingBlanks(section.lines)[0]);
+  // Walk the CONSUMER's sections, not the generated ones (#482).
+  //
+  // The previous form emitted the generated order and appended the consumer's
+  // extra keys at the end. Nothing was lost — `lostLines` is a line set and
+  // correctly stayed quiet — but `concurrency:` arrived 460 lines below the
+  // comment introducing it, because a comment above a top-level key lives in
+  // the section of the key ABOVE it and so does not travel. A reader of the
+  // resulting diff concluded the block had been deleted and restored it by
+  // hand; the file then declared the key twice and stopped parsing.
+  //
+  // So the consumer's order is the order. The harness owns the jobs it
+  // generates and its own preamble; it does not own where in the file the
+  // consumer's keys sit, and moving them manufactures a deletion signal that
+  // is more expensive than a deletion.
+  const generatedByKey = new Map(g.filter(s => s.key !== "").map(s => [s.key, s] as const));
+  const emitted = new Set<string>();
+  const sectionFor = (section: Section): string[] => {
+    if (section.key === "jobs" && beforeJobs) {
+      const generatedJobs = generatedByKey.get("jobs");
+      return generatedJobs ? mergeJobsSection(beforeJobs, generatedJobs) : section.lines;
     }
-    out.push("");
+    // Every non-jobs key the consumer already has is the consumer's, whichever
+    // side we are walking. The generated `on:` is a default for a file that
+    // does not exist yet, not a claim on one that does.
+    if (section.key !== "" && beforeByKey.has(section.key)) return beforeByKey.get(section.key)!.lines;
+    return section.lines;
+  };
+
+  const ordered: string[] = [];
+  for (const section of b) {
+    if (section.key === "") {
+      // The consumer's leading preamble is replaced by the generated one,
+      // which carries the managed banner. It is the one part of the file the
+      // harness does author.
+      const genHead = g.find(s => s.key === "");
+      if (genHead) ordered.push(...genHead.lines);
+      continue;
+    }
+    ordered.push(...sectionFor(section));
+    emitted.add(section.key);
   }
-  return out.join("\n");
+  // Generated keys the consumer does not have, appended in generated order.
+  // Preserving the consumer's layout must not mean refusing to take anything
+  // new.
+  for (const section of g) {
+    if (section.key === "" || emitted.has(section.key)) continue;
+    ordered.push(...splitTrailingBlanks(section.lines)[0]);
+    ordered.push("");
+  }
+  // A `before` with no top-level key at all — empty, or something that is not
+  // a workflow — has no layout to preserve and nothing to carry, so the
+  // generated file is the answer. Returned directly rather than walked by a
+  // second merge loop: two code paths producing the same bytes for the same
+  // input is one decider too many, and the dead one is the one no mutation
+  // can reach.
+  return b.some(s => s.key !== "") ? ordered.join("\n") : generated;
 }
 
 /**

@@ -16,7 +16,12 @@ import { generateAgentBriefs as buildAgentBriefsContent } from "../generators/ag
 import { generateCodeMap as buildCodeMapContent } from "../generators/code-map";
 import { buildAgentMeta, DEFAULT_AGENT_META } from "../create-brief";
 import { buildDefaultRoles, buildDefaultHooks } from "./defaults";
-import { mergeManagedWorkflow } from "./managed-workflow";
+import {
+  mergeManagedWorkflow,
+  duplicateTopLevelKeys,
+  movedTopLevelKeys,
+  type MovedKey,
+} from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
@@ -1758,6 +1763,19 @@ export interface ManagedWrite {
    * CI resilience, and "REPLACED (+33 lines)" does not tell anyone that.
    */
   overwrittenLines: string[];
+  /**
+   * Top-level keys the merge put somewhere else (#482).
+   *
+   * Not a refusal — YAML top-level keys are order-independent, so a moved key
+   * means what it meant. It IS reported, because `UPDATED` with nothing said
+   * about position is a report that is accurate and still misleads: a
+   * consumer's `concurrency:` arrived below `jobs:` while the comment
+   * introducing it stayed above, the reader concluded it had been deleted,
+   * restored it by hand, and the file stopped parsing. "Nothing was lost" and
+   * "everything is where you left it" are different claims and only the first
+   * was being made.
+   */
+  movedKeys: MovedKey[];
   /** Non-null ⇒ the write must not happen. Names the dropped jobs and the line delta. */
   refusal: string | null;
 }
@@ -1858,7 +1876,7 @@ function measureWrite(existing: string | null, next: string): { verb: ManagedWri
 export function resolveManagedWrite(existing: string | null, generated: string): ManagedWrite {
   const base: ManagedWrite = {
     content: generated, verb: "CREATED", lineDelta: lineCount(generated),
-    preservedJobs: [], droppedJobs: [], overwrittenLines: [], refusal: null,
+    preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], refusal: null,
   };
   if (existing === null) return base;
 
@@ -1898,8 +1916,60 @@ export function resolveManagedWrite(existing: string | null, generated: string):
   const resultJobs = workflowJobNames(content);
   if (resultJobs === null) {
     return {
-      ...unchanged, preservedJobs: [], droppedJobs: existingJobs, overwrittenLines: [], lineDelta,
+      ...unchanged, preservedJobs: [], droppedJobs: existingJobs, overwrittenLines: [], movedKeys: [], lineDelta,
       refusal: `the merged workflow does not parse, so it cannot be written (line delta ${signed(lineDelta)})`,
+    };
+  }
+
+  // A top-level key declared twice is a workflow YAML rejects and GitHub
+  // Actions refuses to run (#482). The realistic way one appears is the
+  // correction this issue is about — somebody restores a block they believe
+  // the merge deleted while the original is still further down — so the
+  // refusal has to look at the EXISTING file as well as the merged one, and
+  // name the key rather than the symptom.
+  const duplicated = [
+    ...duplicateTopLevelKeys(existing).map(k => [k, "the existing file"] as const),
+    ...duplicateTopLevelKeys(content)
+      .filter(k => !duplicateTopLevelKeys(existing).includes(k))
+      .map(k => [k, "the merged output"] as const),
+  ];
+  if (duplicated.length > 0) {
+    return {
+      ...unchanged, preservedJobs: [], droppedJobs: [], overwrittenLines: [], movedKeys: [], lineDelta,
+      refusal:
+        `${duplicated.length} top-level key(s) declared more than once in ` +
+        `${duplicated.map(([k, where]) => `${k} (${where})`).join(", ")} — ` +
+        `YAML rejects a duplicate mapping key, so the workflow would not run. ` +
+        `Delete the extra declaration and re-run (line delta ${signed(lineDelta)})`,
+    };
+  }
+
+  // The merge's contract since #482 is that the consumer's top-level ORDER is
+  // the consumer's. So movement is no longer something to report — it is a
+  // bug in the merge, and shipping one is what produced the incident: a
+  // `concurrency:` block 460 lines below the comment introducing it, read as
+  // a deletion, "restored", and the workflow stopped parsing.
+  //
+  // A refusal rather than a warning, because the cost is asymmetric. A
+  // consumer who hits an unenumerated edge case gets a named refusal and
+  // `--force`; a consumer who does not get one gets a file they will
+  // misread. Measured against this repo's three real workflow files — one of
+  // which carries a `permissions:` key between `on:` and `jobs:`, exactly the
+  // shape that used to move: zero movement in all three.
+  //
+  // The file is not named here on purpose. `test/anti.test.ts` SC-A1 keeps
+  // the scaffold from naming a workflow it does not own, and a comment is as
+  // nameable as a code path.
+  const movedKeys = movedTopLevelKeys(existing, content);
+  if (movedKeys.length > 0) {
+    return {
+      ...unchanged, preservedJobs, droppedJobs: [], overwrittenLines: [], movedKeys, lineDelta,
+      refusal:
+        `${movedKeys.length} top-level key(s) would move: ` +
+        `${movedKeys.slice(0, 3).map(m => `${m.key} (line ${m.from + 1} -> ${m.to + 1})`).join(", ")}` +
+        `${movedKeys.length > 3 ? ` and ${movedKeys.length - 3} more` : ""} — ` +
+        `a key that moves away from the comment introducing it reads as a deletion ` +
+        `(line delta ${signed(lineDelta)})`,
     };
   }
 
@@ -1939,7 +2009,7 @@ export function resolveManagedWrite(existing: string | null, generated: string):
       ? `job(s) ${droppedJobs.join(", ")}`
       : "content outside any job";
     return {
-      ...unchanged, preservedJobs, droppedJobs, overwrittenLines: [], lineDelta,
+      ...unchanged, preservedJobs, droppedJobs, overwrittenLines: [], movedKeys: [], lineDelta,
       refusal:
         `${lostLines.length} line(s) the harness did not author would be dropped from ${where}` +
         `: ${lostLines.slice(0, 3).map(l => JSON.stringify(l)).join(", ")}` +
@@ -1948,7 +2018,7 @@ export function resolveManagedWrite(existing: string | null, generated: string):
     };
   }
 
-  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, refusal: null };
+  return { content, ...measureWrite(existing, content), preservedJobs, droppedJobs: [], overwrittenLines, movedKeys, refusal: null };
 }
 
 /** Non-blank lines, trimmed — the unit the loss set is counted in. */
