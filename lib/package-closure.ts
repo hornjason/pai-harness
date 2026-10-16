@@ -46,7 +46,7 @@
  * things and both feed the one `packageClosureViolations` binding, so there is
  * still exactly one decider to mutate.
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "fs";
 import { join, dirname, relative, resolve } from "path";
 import { stripStringsAndComments } from "./js-top-level-code";
 
@@ -64,12 +64,38 @@ export function publishedFiles(root: string, patterns: string[]): Set<string> {
     if (!existsSync(abs)) return;
     for (const entry of readdirSync(abs)) {
       const childRel = `${rel}/${entry}`.replace(/\/+/g, "/");
-      if (statSync(join(root, childRel)).isDirectory()) addDir(childRel);
+      const childAbs = join(root, childRel);
+      // `lstat`, not `stat`. A symlink inside a published directory points
+      // wherever it likes, and `relative()` cannot see that because the path
+      // STRING is still under the root — a `linked/` symlink enumerated
+      // `secret.txt` from a directory outside the package entirely. npm would
+      // follow it into the tarball too, so this is a packaging hazard either
+      // way and the honest answer is to refuse rather than to model it.
+      const st = lstatSync(childAbs);
+      if (st.isSymbolicLink()) {
+        throw new Error(`package.json files[] reaches a symlink at "${childRel}" — refusing to resolve it`);
+      }
+      if (st.isDirectory()) addDir(childRel);
       else out.add(childRel);
     }
   }
 
+  /** npm expands these; this checker does not, and must not pretend to. */
+  const GLOB_META = /[*?[\]{}!]/;
+
   for (const pattern of patterns) {
+    // A glob is not a path, and treating it as one resolves to NOTHING:
+    // `files: ["scripts/*.ts"]` produced a published set containing only
+    // package.json, so the closure loop had almost nothing to walk and
+    // reported zero violations over a package it had not looked at. That is
+    // the same vacuous-scan failure CONFIG-1 refuses, reached through the
+    // manifest instead of through the file walk.
+    if (GLOB_META.test(pattern)) {
+      throw new Error(
+        `package.json files[] entry "${pattern}" is a glob, which this checker does not expand — ` +
+          `it would report a clean closure over files it never resolved`,
+      );
+    }
     const clean = pattern.replace(/^\.\//, "").replace(/\/$/, "");
     const abs = join(root, clean);
     // A files[] entry that climbs out of the package is never legitimate, and
@@ -81,6 +107,14 @@ export function publishedFiles(root: string, patterns: string[]): Set<string> {
       throw new Error(`package.json files[] entry "${pattern}" escapes the package root`);
     }
     if (!existsSync(abs)) continue;
+    // The same lstat the recursion does. A first draft checked only inside
+    // addDir, so `files: ["linked/"]` — the symlink named as the entry itself
+    // — walked straight past it and enumerated a directory outside the
+    // package. The guard has to sit on every path that becomes a published
+    // name, not only on the ones reached by recursion.
+    if (lstatSync(abs).isSymbolicLink()) {
+      throw new Error(`package.json files[] entry "${pattern}" is a symlink — refusing to resolve it`);
+    }
     if (statSync(abs).isDirectory()) addDir(clean);
     else out.add(clean);
   }
@@ -252,9 +286,11 @@ function scanModuleRelativeJoins(raw: string): { resolved: RuntimeRead[]; unreso
  */
 export function packageClosureViolations(root: string, published: Set<string>): string[] {
   const violations: string[] = [];
+  let scanned = 0;
 
   for (const file of published) {
     if (!SOURCE_EXT.test(file)) continue;
+    scanned++;
     const source = readFileSync(join(root, file), "utf-8");
 
     // A module-relative path the scanner could not resolve statically is
@@ -323,6 +359,19 @@ export function packageClosureViolations(root: string, published: Set<string>): 
         violations.push(`${file} imports "${specifier}" -> ${targetRel}, which files[] does not publish`);
       }
     }
+  }
+
+  // A closure check that walked no source reports a closed package and cannot
+  // be told from one. Every way of producing an empty set found so far — a
+  // glob entry, a files[] naming only non-source, a wrong root — throws or
+  // refuses somewhere above; this is the backstop for the next one, because
+  // the list of ways is not knowable in advance. ADR-002 D4, same argument.
+  if (scanned === 0) {
+    return [
+      "package closure: NO published source files were scanned. A check that reads nothing " +
+        "reports nothing and cannot be told from a closed package — refusing rather than " +
+        "reporting clean.",
+    ];
   }
   return violations.sort();
 }

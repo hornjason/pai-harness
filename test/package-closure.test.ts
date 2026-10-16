@@ -96,9 +96,46 @@
  * `packageClosureViolations` — the scanner's classification and the reporting
  * of it are two questions, and they have a case each. The six rows above were
  * re-measured against this tree and reproduce exactly: 1, 1, 1, 8, 3, 8.
+ *
+ * ## Two more, from the review of the commit that fixed those four
+ * ## (CLOSURE-11, 12, 13)
+ *
+ * Both are ways the ALLOWLIST means something other than what this module
+ * modelled, which makes everything downstream vacuous rather than wrong.
+ *
+ * - **Globs are legal `files[]` syntax and resolved to nothing.** Measured:
+ *   `files: ["scripts/*.ts"]` produced a published set of exactly
+ *   `{package.json}`, so the closure loop walked no source and returned `[]`.
+ *   A package using ordinary npm syntax got a clean bill of health from a
+ *   check that had not read a line of it. Refused rather than expanded —
+ *   implementing glob semantics is a bigger surface than this needs, and a
+ *   silent mis-model is worse than a loud limitation.
+ * - **A symlink escapes `relative()`**, because the path STRING stays under
+ *   the root and only the inode leaves. `files: ["linked/"]` enumerated
+ *   `secret.txt` from a directory outside the package. `lstat` now refuses at
+ *   BOTH levels, and they are separate guards with separate cases: the first
+ *   draft checked only inside the recursion, so a symlink named as the entry
+ *   itself walked straight past it.
+ *
+ * `packageClosureViolations` also refuses a scan that read zero source files.
+ * Every route to an empty set found so far throws somewhere above — but a
+ * glob was not on that list an hour ago, and the list is not knowable in
+ * advance. ADR-002 D4 makes the same argument for CONFIG-1.
+ *
+ * Predicted first, then measured over 45 tests — all four as predicted:
+ *
+ * | Mutation | Predicted | Red |
+ * |---|---|---|
+ * | glob refusal removed | 5 | 5 |
+ * | symlink refusal removed at the entry level | 1 | 1 |
+ * | symlink refusal removed inside the recursion | 1 | 1 |
+ * | empty-scan refusal removed | 1 | 1 |
+ *
+ * The two symlink rows are 1 and 1 rather than 2 and 0, which is the whole
+ * reason both guards stay: each has an input the other cannot reach.
  */
 import { describe, expect, test, afterAll } from "bun:test";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import {
@@ -438,6 +475,105 @@ describe("#484 CLOSURE-10: what the scanner cannot read, it refuses", () => {
     const published = publishedFiles(ROOT, readPackageFiles(ROOT));
     const unmeasured = packageClosureViolations(ROOT, published).filter(v => v.includes("UNMEASURED"));
     expect(unmeasured, unmeasured.join("\n")).toEqual([]);
+  });
+});
+
+/**
+ * Two more findings, from the review of the commit that fixed the first four.
+ * Both are ways the ALLOWLIST itself can mean something other than what this
+ * module models, which makes every answer downstream vacuous rather than wrong
+ * — the hardest kind to notice.
+ */
+describe("#484 CLOSURE-11: a manifest this checker cannot model is refused", () => {
+  function pkg(files: string[]): string {
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "a.ts"), 'import { x } from "../scripts/h";\n');
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files }));
+    return dir;
+  }
+
+  test("a glob entry throws rather than expanding to nothing", () => {
+    // Measured before the fix: `files: ["scripts/*.ts"]` produced a published
+    // set of exactly {package.json}, so the closure loop walked no source and
+    // returned []. A package using legal npm syntax got a clean bill of
+    // health from a check that had not looked at it.
+    const dir = pkg(["scripts/*.ts"]);
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).toThrow("glob");
+  });
+
+  for (const glob of ["lib/**", "lib/?.ts", "lib/[ab].ts", "!lib/x.ts"]) {
+    test(`"${glob}" is recognised as a glob`, () => {
+      const dir = pkg([glob]);
+      expect(() => publishedFiles(dir, readPackageFiles(dir))).toThrow("glob");
+    });
+  }
+
+  test("a plain path is not mistaken for a glob", () => {
+    // The other direction. A refusal that fired on everything would pass the
+    // cases above while making the checker useless.
+    const dir = pkg(["lib/"]);
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).not.toThrow();
+  });
+});
+
+describe("#484 CLOSURE-12: a symlink is refused at every level that names a file", () => {
+  function pkgWithLink(where: "entry" | "inside"): string {
+    const dir = scratch();
+    const outside = scratch();
+    writeFileSync(join(outside, "secret.txt"), "s\n");
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "a.ts"), "export const a = 1;\n");
+    if (where === "entry") symlinkSync(outside, join(dir, "linked"));
+    else symlinkSync(join(outside, "secret.txt"), join(dir, "lib", "sneak.ts"));
+    writeFileSync(
+      join(dir, "package.json"),
+      JSON.stringify({ name: "f", version: "0.0.0", files: where === "entry" ? ["linked/"] : ["lib/"] }),
+    );
+    return dir;
+  }
+
+  test("named as the files[] entry itself", () => {
+    // The first draft only checked inside the recursion, so this walked
+    // straight past and enumerated `linked/secret.txt` from a directory
+    // outside the package. `relative()` could not see it: the path STRING is
+    // under the root, and only the inode is not.
+    const dir = pkgWithLink("entry");
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).toThrow("symlink");
+  });
+
+  test("reached by recursion into a published directory", () => {
+    const dir = pkgWithLink("inside");
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).toThrow("symlink");
+  });
+
+  test("an ordinary tree with no symlinks does not throw", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["lib/"] }));
+    expect(() => publishedFiles(dir, readPackageFiles(dir))).not.toThrow();
+  });
+});
+
+describe("#484 CLOSURE-13: a scan that read nothing is not a clean scan", () => {
+  test("zero published source files refuses rather than reporting closed", () => {
+    // The backstop. Every known route to an empty set throws somewhere above,
+    // but the list of routes is not knowable in advance — a glob was not on
+    // it an hour ago. ADR-002 D4 makes the same argument for CONFIG-1.
+    const dir = scratch();
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["package.json"] }));
+    const v = packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)));
+    expect(v).toHaveLength(1);
+    expect(v[0]).toContain("NO published source files");
+  });
+
+  test("one published source file is enough to measure", () => {
+    const dir = scratch();
+    mkdirSync(join(dir, "lib"), { recursive: true });
+    writeFileSync(join(dir, "lib", "a.ts"), "export const a = 1;\n");
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "f", version: "0.0.0", files: ["lib/"] }));
+    expect(packageClosureViolations(dir, publishedFiles(dir, readPackageFiles(dir)))).toEqual([]);
   });
 });
 
