@@ -105,6 +105,33 @@ separate cases with a comment saying which decider each one is for. Without
 that, the next person to simplify the code deletes a line that has a test and
 watches it stay green.
 
+### "This cannot be checked" is a claim, and it is checkable (#199, #479)
+
+The cheapest way to ship a check that cannot fail is to not ship it, having
+written down a good reason. The reason is usually true, and the trap is that
+it is true of the cases you measured.
+
+`.claude/rungate/hooks.json` declared sixteen hooks enabled; five had never
+fired. #199's test file concluded that no repo test could honestly assert
+registration — `~/.claude/settings.json` is machine state, reading it passes on
+one laptop and fails in CI, and `HOOK-ARCHITECTURE-SPEC.md` SC-518 *requires*
+machine-wide hooks to live there. Every sentence of that is correct. It is
+also derived entirely from the eleven hooks that WERE registered, all of them
+in user settings, and then applied to all sixteen. The five all act on the
+current project, project `.claude/settings.json` is committed, and for those
+five "is it registered" was an ordinary repo fact the whole time. The issue
+closed; four weeks later the same five were still inert.
+
+So when you are about to write "this cannot be tested", say which cases you
+measured to conclude it, and check whether the ones you are excusing are among
+them. The sentence costs a line. Here it was the difference between a check
+and a paragraph explaining why there is no check.
+
+The usable form of the answer is almost never all-or-nothing. Split the
+population by what the repo can see, enforce the half it owns, and make the
+other half report UNMEASURED on every run — `0`, `{}`, `null` and `SKIP` are
+indistinguishable from success, and so is silence.
+
 ## In practice
 
 When you add or change a guard, say in the commit or PR **what you broke to
