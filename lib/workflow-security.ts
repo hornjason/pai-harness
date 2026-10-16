@@ -108,6 +108,92 @@ export function isSafeBranchName(name: unknown): name is string {
   return true;
 }
 
+/**
+ * Why a repo slug may not reach a shell command, or null if it may (#533).
+ *
+ * `ship.js` interpolates `repo` and `issueRepo` UNQUOTED into shell text
+ * inside agent prompts — six and eleven sites respectively — and checked only
+ * that `repo` was present. One function away, the same file validates a
+ * branch name before it reaches a `git push`, and `scripts/github-op.ts` has
+ * `--title-from-issue` precisely so an issue title never crosses a shell. So
+ * the project had already decided that values reaching a shell get checked
+ * first, and this is the one that missed.
+ *
+ * The shape is `parseOwnerRepo`'s in `lib/github.ts`, which is what the
+ * GitHub API layer will accept anyway: exactly two segments of
+ * `[A-Za-z0-9._-]`, neither of them `.` or `..`. A slug this refuses would
+ * have failed at the API boundary regardless — the difference is that it now
+ * fails before a shell has seen it, with a sentence naming the argument.
+ *
+ * REFUSED, never sanitised. Stripping characters out of a repo slug produces
+ * a run filed under a different project, which is the defect #114 already
+ * cost this repo once.
+ */
+const REPO_SLUG_SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+export function repoSlugRefusal(argName: string, value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return `${argName} must be a non-empty string of the form "owner/name"; got ${describeArg(value)}`;
+  }
+  if (value.length > 255) return `${argName} is ${value.length} characters, which is not a repository slug`;
+  const parts = value.split("/");
+  if (parts.length !== 2 || parts.some(p => !REPO_SLUG_SEGMENT.test(p) || p === "." || p === "..")) {
+    return (
+      `${argName} must be "owner/name" using only letters, digits, dot, dash and underscore; ` +
+      `got ${describeArg(value)} — it is interpolated unquoted into shell commands`
+    );
+  }
+  return null;
+}
+
+/**
+ * Why a root directory may not reach a shell command, or null if it may.
+ *
+ * Deliberately NOT `pathRefusal`, and the difference is the first rule in
+ * each: that table refuses an absolute path, because it answers "may an agent
+ * contribute this file from inside its worktree". This one REQUIRES an
+ * absolute path, because it answers "may the run `cd` here". Same word, two
+ * questions, opposite answers — folding them together would make one of the
+ * two wrong.
+ *
+ * Whitespace is refused along with the metacharacters, which `pathRefusal`
+ * does not do. A space is harmless in a path and fatal in `cd ${ROOT} && …`
+ * unquoted, and these values reach seventy-seven such sites. The honest fix
+ * is to quote all of them; until then a run on a path with a space in it
+ * silently `cd`s somewhere else, and refusing is the reading an operator can
+ * act on.
+ */
+export function rootPathRefusal(argName: string, value: unknown): string | null {
+  if (typeof value !== "string" || value.length === 0) {
+    return `${argName} must be a non-empty absolute path; got ${describeArg(value)}`;
+  }
+  if (value.length > 500) return `${argName} is ${value.length} characters, which is not a directory path`;
+  if (!value.startsWith("/")) return `${argName} must be an absolute path; got ${describeArg(value)}`;
+  if (NULL_BYTE.test(value)) return `${argName} contains a null byte`;
+  if (value.split("/").includes("..")) return `${argName} contains a \`..\` segment: ${describeArg(value)}`;
+  if (/\s/.test(value)) {
+    return (
+      `${argName} contains whitespace: ${describeArg(value)} — it is interpolated unquoted into ` +
+      `shell commands, so the run would cd somewhere other than where you meant`
+    );
+  }
+  if (SHELL_METACHARACTERS.test(value)) {
+    return `${argName} contains a shell metacharacter: ${describeArg(value)} — it is interpolated unquoted into shell commands`;
+  }
+  return null;
+}
+
+/**
+ * An argument value, quoted and truncated, for a refusal message.
+ *
+ * Truncated because the value is attacker-shaped by assumption at the point
+ * this runs, and a refusal is printed, logged and pasted into issues.
+ */
+function describeArg(value: unknown): string {
+  if (typeof value !== "string") return value === undefined ? "nothing" : JSON.stringify(value) ?? String(value);
+  return JSON.stringify(value.length > 80 ? value.slice(0, 80) + "…" : value);
+}
+
 export function resolveEvidencePath(
   basePath: string,
   evidencePath: string,

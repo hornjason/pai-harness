@@ -227,7 +227,10 @@ const PHASE_TARGET = parsedArgs.phase || 'all'
 const SLUG = parsedArgs.slug || deriveSlug(REPO, ISSUE)
 if (!parsedArgs.harnessRoot) return { status: 'ARGS_ERROR', message: 'harnessRoot is required' }
 const HARNESS_ROOT = parsedArgs.harnessRoot
-const HOME = parsedArgs.home || PROJECT_ROOT.split('/Projects/')[0] || ''
+// `String(… || '')` rather than `PROJECT_ROOT.split` (#533). An absent
+// projectRoot used to die here with a TypeError thirteen lines before the
+// check that names it, and a stack trace is not an argument error.
+const HOME = parsedArgs.home || String(PROJECT_ROOT || '').split('/Projects/')[0] || ''
 const WORK_DIR = parsedArgs.workDir || `${HOME}/.rungate/${SLUG}`
 const DRY_RUN = parsedArgs.dryRun || false
 const SKIP_GRADE = parsedArgs.skipGrade || false
@@ -334,6 +337,52 @@ function isSafeBranchName(name) {
   if (!SAFE_BRANCH.test(name)) return false
   if (name.includes('..') || name.includes('//') || name.endsWith('/') || name.endsWith('.lock')) return false
   return true
+}
+
+// Mirror of repoSlugRefusal / rootPathRefusal in lib/workflow-security.ts —
+// see the note at the top of this block. Change one, change the other; the
+// integration test runs both against the same inputs.
+//
+// `rootPathRefusal` is deliberately NOT pathRefusal. That table refuses an
+// absolute path because it answers "may an agent contribute this file from
+// inside its worktree"; this one REQUIRES one, because it answers "may the
+// run cd here". Same word, two questions, opposite answers.
+const REPO_SLUG_SEGMENT = /^[A-Za-z0-9._-]+$/
+
+function describeArg(value) {
+  if (typeof value !== 'string') return value === undefined ? 'nothing' : (JSON.stringify(value) ?? String(value))
+  return JSON.stringify(value.length > 80 ? value.slice(0, 80) + '…' : value)
+}
+
+function repoSlugRefusal(argName, value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return `${argName} must be a non-empty string of the form "owner/name"; got ${describeArg(value)}`
+  }
+  if (value.length > 255) return `${argName} is ${value.length} characters, which is not a repository slug`
+  const parts = value.split('/')
+  if (parts.length !== 2 || parts.some(p => !REPO_SLUG_SEGMENT.test(p) || p === '.' || p === '..')) {
+    return `${argName} must be "owner/name" using only letters, digits, dot, dash and underscore; ` +
+      `got ${describeArg(value)} — it is interpolated unquoted into shell commands`
+  }
+  return null
+}
+
+function rootPathRefusal(argName, value) {
+  if (typeof value !== 'string' || value.length === 0) {
+    return `${argName} must be a non-empty absolute path; got ${describeArg(value)}`
+  }
+  if (value.length > 500) return `${argName} is ${value.length} characters, which is not a directory path`
+  if (!value.startsWith('/')) return `${argName} must be an absolute path; got ${describeArg(value)}`
+  if (NULL_BYTE.test(value)) return `${argName} contains a null byte`
+  if (value.split('/').includes('..')) return `${argName} contains a \`..\` segment: ${describeArg(value)}`
+  if (/\s/.test(value)) {
+    return `${argName} contains whitespace: ${describeArg(value)} — it is interpolated unquoted into ` +
+      `shell commands, so the run would cd somewhere other than where you meant`
+  }
+  if (SHELL_METACHARACTERS.test(value)) {
+    return `${argName} contains a shell metacharacter: ${describeArg(value)} — it is interpolated unquoted into shell commands`
+  }
+  return null
 }
 
 function resolveEvidencePath(basePath, evidencePath) {
@@ -527,6 +576,41 @@ function safeSSHCommand(host, remoteCmd) {
 }
 
 // ──── SECURITY-HELPERS-END ────
+
+// ──── ARGUMENT-SHAPES-START ────
+/**
+ * The argument boundary, checked before any of these values reaches a shell
+ * (#533).
+ *
+ * Four values are interpolated UNQUOTED into shell command text inside agent
+ * prompts — `repo` at 6 sites, `issueRepo` at 11, `harnessRoot` at 44 and
+ * `projectRoot` at 33 — and the only check any of them had was that `repo`
+ * was present. One function above this, the same file refuses an unsafe
+ * BRANCH name before it reaches a `git push`.
+ *
+ * HERE rather than beside the presence check thirteen lines up, because the
+ * refusal functions close over regexes declared in the helpers block and a
+ * `const` is not hoisted. Nothing between the two points runs a command.
+ *
+ * Every refusal is an `ARGS_ERROR` return, which is the status this file
+ * already uses for an argument it will not guess at, and which
+ * `test/preserve-every-exit.test.ts` allows to skip worktree preservation
+ * because no agent has run yet. That claim is re-measured by that test, not
+ * assumed here.
+ */
+for (const [name, refusal] of [
+  ['repo', REPO === undefined && parsedArgs.slug ? null : repoSlugRefusal('repo', REPO)],
+  ['issueRepo', repoSlugRefusal('issueRepo', ISSUE_REPO)],
+  ['projectRoot', rootPathRefusal('projectRoot', PROJECT_ROOT)],
+  ['harnessRoot', rootPathRefusal('harnessRoot', HARNESS_ROOT)],
+]) {
+  if (!refusal) continue
+  // The value is NOT echoed in full and is never sanitised and reused.
+  // Stripping characters out of a repo slug produces a run filed under a
+  // different project, which is the defect #114 already cost this repo once.
+  return { status: 'ARGS_ERROR', message: `${refusal} (argument: ${name})` }
+}
+// ──── ARGUMENT-SHAPES-END ────
 
 // ──── AGENT-TIMING-START ────
 /**
