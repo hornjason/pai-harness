@@ -669,11 +669,16 @@ describe("#500 review: the walk is not wider than the question it answers", () =
     // sec-500 showed the directory decider should not exist at all, by
     // checking rather than arguing: `grep -rnoE '"(test|tests)/..."'
     // lib/scaffold/*.ts` returns exactly one path, which the filename
-    // predicate already matches. And the project this test described cannot
-    // reach the waiver — a project with test helpers HAS production source,
-    // so `filesScanned > 0` and the waiver is never consulted. The exclusion
-    // was defending a case that does not occur, while waiving a real one:
-    // `tests/helper.ts` holding a live direct config read.
+    // predicate already matches. And the project this test described does
+    // not get waived — measured through the whole chain rather than argued
+    // from `filesScanned`, which an earlier draft of this comment got
+    // wrong. A project whose only source is `tests/helpers/setup.ts` scans
+    // zero files AND has `found === true`, so `unmeasuredScanReason`
+    // declines to waive it and `configAccessViolations` refuses by name:
+    // "This project DOES contain source — tests/helpers/setup.ts — none of
+    // it in the directories this check reads, so the check is blind rather
+    // than satisfied." That is the correct answer and the exclusion
+    // suppressed it into a soft WARN. See the end-to-end case below.
     //
     // So the collapsed pair is resolved by DELETING one decider rather than
     // by feeding it, which is the first of the two options the rubric gives
@@ -681,6 +686,40 @@ describe("#500 review: the walk is not wider than the question it answers", () =
     const root = content({ "tests/helpers/setup.ts": "export const s = 1;\n" });
     expect(projectSourceEvidence(root).found, "a test helper stopped being project source")
       .toBe(true);
+  });
+
+  test("dropping the directory skip changes a VERDICT, and in the loud direction", () => {
+    // jhorn-dd's objection, which is the right one to make: dropping the
+    // skip changes which projects pass, not merely what they are told, and
+    // "this is redundant" drawn from one motivating case is exactly the
+    // move the #500 row in the rules file is about. So the two populations
+    // are measured end to end rather than at `projectSourceEvidence`, and
+    // the answer is that the change is from a soft WARN to a hard refusal
+    // that names the file. A project whose only source sits where CONFIG-1
+    // cannot look IS a blind check, and blind refuses.
+    const verdict = (root: string) => {
+      const scan = scanConfigAccess(root);
+      const e = projectSourceEvidence(root);
+      const u = unmeasuredScanReason(scan, e, "CONFIG-1", "ts");
+      if (u) return { kind: "WARN" as const, text: u };
+      const v = configAccessViolations(scan, {}, "CONFIG-1", true, e);
+      return v.length ? { kind: "FAIL" as const, text: v[0] } : { kind: "PASS" as const, text: "" };
+    };
+
+    const helper = verdict(content({ "tests/helpers/setup.ts": READS_CONFIG }));
+    expect(helper.kind, "a project the check cannot see was waived instead of refused")
+      .toBe("FAIL");
+    expect(helper.text, "the refusal does not name the source that caused it")
+      .toContain("tests/helpers/setup.ts");
+    expect(helper.text, "the refusal does not say the check was blind")
+      .toContain("blind rather than satisfied");
+
+    // The control, and the direction this must not drift in: B1's own case
+    // must still reach the soft waiver, or dropping the skip would have
+    // turned every freshly-scaffolded consumer red.
+    const scaffolded = verdict(content({ "test/scaffold-conformity.test.ts": "export const s = 1;\n" }));
+    expect(scaffolded.kind, "a freshly scaffolded project started failing CONFIG-1")
+      .toBe("WARN");
   });
 
   test("B1 still holds: the scaffold's own test file is not project source", () => {
