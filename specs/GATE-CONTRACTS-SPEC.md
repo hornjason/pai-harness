@@ -1714,3 +1714,37 @@ survives, and the remainder is recorded here rather than left to be found.
 - [x] SC-1718: test/gate-env-expressibility.test.ts contains [the written answer names both ports - the verdict token and the record-env site] — AC-6's four elements, asserted over the prose rather than over a summary of it, because an answer nobody can check is the thing #274 asked for instead of a check
 - [x] SC-1719: test/gate-env-expressibility.test.ts contains [the answer describes the tree it is about - not the tree it was written from] — the two sites #274 named are re-measured against source on every run, so the day one of them moves this section stops being true quietly
 - [x] SC-1720: test/gate-env-expressibility.test.ts contains [the gate checks' own loader is still monolith-only - and the suite check returns before asserting] — the gap the answer records, asserted as a fact about the source so closing it turns this red and whoever closes it has to update the written answer
+
+### What was broken to prove it (SC-1718..SC-1720)
+
+Over the three tests in `test/gate-env-expressibility.test.ts`. Predictions
+written before the battery ran; two rows missed and both are recorded.
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| the verdict token removed from the answer | 1 | 1 |
+| a cited `ship.js:N` pointed at the wrong line | 1 | 1 |
+| `environments.prod.rebuild = 'PASS'` reintroduced in ship.js | 1 | 1 |
+| the gate checks' loader migrated off the hand-built monolith path | 1 | 1 |
+| `monolith-only` removed from the answer's prose | 1 | **0**, then 1 |
+| one `rebuildSkipReason` deleted from ship.js | 1 | 1 |
+| the consumer named in the answer | 1 | 1 |
+| the whole section deleted from the spec | 3 | 1 |
+
+**The 0.** Deleting the phrase from the paragraph changed nothing, because
+the section's own success criteria are inside the section, and an SC line
+quotes the title of the test claiming it — so `SC-1720: … is still
+monolith-only …` kept answering a search that was supposed to be reading the
+prose. A spec could have stopped explaining itself while the test that reads
+it stayed green, which is the self-reference trap in
+`.claude/rules/checks-must-be-able-to-fail.md`. The extractor now strips SC
+lines before searching, and the row is 1.
+
+That trap has now caught this repo four times — #330, #352, #360, and here.
+Three of those were found by a human reading carefully. This one was found by
+a predicted number coming back wrong, which is the cheaper instrument.
+
+**The 3 that was 1.** Deleting the section makes the extractor throw at module
+load, so bun reports one failed FILE rather than three failed tests. The
+prediction was wrong about the counting, not about the behaviour — nothing in
+the file can pass without the section, which is what the row was for.

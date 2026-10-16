@@ -36,12 +36,27 @@ const read = (p: string) => readFileSync(join(ROOT, p), "utf-8");
 
 const SPEC = read("specs/GATE-CONTRACTS-SPEC.md");
 
-/** The #297 section, so a match elsewhere in a long spec cannot stand in. */
+/**
+ * The #297 section's PROSE, so a match elsewhere in a long spec cannot stand
+ * in — and neither can the section's own success criteria.
+ *
+ * The SC lines are stripped, and that is not tidiness. An SC line quotes the
+ * title of the test that claims it, so "the gate checks' own loader is still
+ * monolith-only" appears in the criterion whether or not the paragraph above
+ * still says it. Measured: deleting the phrase from the prose was **0 red**
+ * until these lines came out, because the search was finding the SC line
+ * demanding the phrase and reading it as the phrase being present. That is
+ * the self-reference trap in `.claude/rules/checks-must-be-able-to-fail.md`,
+ * and it has now caught this repo four times.
+ */
 const ANSWER = (() => {
   const start = SPEC.indexOf("## Is a consumer's test-environment-before-production gate expressible");
   if (start < 0) throw new Error("the #297 written answer is not in GATE-CONTRACTS-SPEC.md");
   const next = SPEC.indexOf("\n## ", start + 1);
-  return SPEC.slice(start, next < 0 ? undefined : next);
+  return SPEC.slice(start, next < 0 ? undefined : next)
+    .split("\n")
+    .filter(l => !/^\s*-\s*\[[ x]\]\s*SC-\d+:/.test(l))
+    .join("\n");
 })();
 
 describe("#297 SC-5: the written answer, checked rather than trusted", () => {
