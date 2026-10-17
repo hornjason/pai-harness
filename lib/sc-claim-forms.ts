@@ -169,12 +169,41 @@ const IDS_ONLY =
  */
 const PAREN_LABEL = /^\s*(?:SC|AC)-[A-Z]?\d+\s*:/;
 
+/**
+ * A RANGE inside a parenthetical — `(SC-1930..SC-1948)`.
+ *
+ * An attribution names THE criterion a statement is about. A range names a
+ * group, which is how prose refers to a set it is discussing rather than
+ * claiming, and the scanner can only see the two ids that are literally
+ * written: a range of nineteen credits its two endpoints and silently not
+ * the seventeen between them. A form that credits 2 of the 19 ids it names
+ * is not measuring anything.
+ *
+ * Found in #574, on this sentence:
+ *
+ *     * The spec's 19 behavioural criteria (SC-1930..SC-1948) are NOT
+ *     * covered here.
+ *
+ * — which credited SC-1930 and SC-1948 and ticked both boxes. The
+ * self-reference this area keeps producing, now in its sharpest form: a
+ * comment saying the criteria are not covered was the evidence that they
+ * were.
+ *
+ * Measured before narrowing, because narrowing a detector is the change
+ * most likely to buy green with blindness: of 32 attribution credits in the
+ * tree, 30 are plain and 2 are ranges — and the 2 are these. A range at the
+ * START of a line is still a claim, by the `line` form, which is where
+ * `* SC-561..SC-564 (SPEC.md)` is credited and is unaffected.
+ */
+const PAREN_RANGE = /\.\.+/;
+
 function inIdOnlyParenthetical(line: string, at: number): boolean {
   const open = line.lastIndexOf("(", at);
   if (open < 0) return false;
   const close = line.indexOf(")", open);
   if (close < 0 || close < at) return false;
   const inner = line.slice(open + 1, close);
+  if (PAREN_RANGE.test(inner)) return false;
   return IDS_ONLY.test(inner) || PAREN_LABEL.test(inner);
 }
 

@@ -156,7 +156,7 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-302: scaffold output PROJECT-STATE.md exists
 - [x] SC-303: lib/scaffold/steps.ts contains [/bin/sh, --diff-filter=A] — two corrections. The token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually emits. And the target was `.git/hooks/pre-commit`, which git never tracks, so the assertion was about one machine's local state rather than about the repository
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
-- [x] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
+- [ ] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
 - [x] SC-308: scripts/update-project-state.ts contains [✅, ⬜]
