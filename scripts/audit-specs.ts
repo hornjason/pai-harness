@@ -118,6 +118,10 @@ function findClosestPattern(
     pattern: string;
     keywords: string[];
     extractor: (stmt: string) => string | null;
+    /** All keywords must be present, not any one of them (#586). */
+    requireAll?: boolean;
+    /** The extractor ignores its argument, so it cannot be unambiguous (#586). */
+    constant?: boolean;
   }> = [
     {
       pattern: "pointer-exists",
@@ -228,30 +232,72 @@ function findClosestPattern(
     },
     {
       pattern: "all-specs-frontmatter",
+      // #586: `requireAll`, because the keyword test below is `some` and the
+      // bare word `frontmatter` was firing a rule about ALL SPECS. It turned
+      // `Baseline rules carry no paths: key in frontmatter` into
+      // `all specs have frontmatter` — a different, weaker property.
+      // "all specs" is the phrase that scopes this rule; "frontmatter" is
+      // the phrase it shares with every other frontmatter criterion.
+      requireAll: true,
       keywords: ["all specs", "frontmatter"],
       extractor: () => "all specs have frontmatter",
+      /**
+       * The extractor never reads its argument, so it cannot know what the
+       * criterion said. #586: that is precisely when the original must be
+       * kept in the file, and this rule claimed `ambiguous: false` — the
+       * one flag that suppresses the `<!-- REVIEW: original — … -->` marker.
+       */
+      constant: true,
     },
     {
       pattern: "canary",
       keywords: ["canary"],
       extractor: () => "canary test exists",
+      constant: true,
     },
   ];
 
   // Try each heuristic — first one whose extractor succeeds wins
   for (const h of heuristics) {
-    // Check if any keyword matches
-    const hasKeyword = h.keywords.some((k) => lower.includes(k));
+    const hasKeyword = h.requireAll
+      ? h.keywords.every((k) => lower.includes(k))
+      : h.keywords.some((k) => lower.includes(k));
     if (!hasKeyword) continue;
 
     const rewrite = h.extractor(statement);
     if (rewrite) {
-      return { patternName: h.pattern, rewrite, ambiguous: false };
+      // A constant extractor is ambiguous BY CONSTRUCTION. Marking it
+      // otherwise discards the original from the file in the only case where
+      // nothing can reconstruct it.
+      return { patternName: h.pattern, rewrite, ambiguous: h.constant === true };
     }
   }
 
-  // If no heuristic matched, try a loose file-exists match
-  // Look for any filename-like token (word.ext) in the statement
+  // If no heuristic matched, try a loose file-exists match.
+  // Look for any filename-like token (word.ext) in the statement.
+  //
+  // #586 looked hard at narrowing this to statements whose verb is
+  // existence, and did not. The fallback does turn behaviour into presence —
+  // measured over the real tree, two criteria go through it:
+  //
+  //   "Rejecting a promoted rule writes its hash to
+  //    `reference/rejected-constraints.md` and it is never re-promoted"
+  //      -> "reference/rejected-constraints.md exists"
+  //
+  //   "Makefile targets, `package.json` scripts and CI workflow files are
+  //    scanned for constraints alongside markdown"
+  //      -> "package.json exists"
+  //
+  // — but it reports `ambiguous: true`, and an ambiguous rewrite writes
+  // `<!-- REVIEW: original — … -->` beside the line. #426 kept this path for
+  // exactly that reason (see SC-1587: "a lossy render by nature … kept as the
+  // one remaining rewrite path precisely because it writes the statement it
+  // replaced into the next line"). Nothing is discarded, so this is a
+  // DOWNGRADE, not a LOSS, and #586 is about loss.
+  //
+  // Narrowing it here turns SC-1587 and SC-1594 red for a reason those
+  // criteria are right about, which is how the distinction got found. The
+  // downgrade is #589, filed rather than folded in.
   const fileToken = statement.match(/\b(\S+\.\w{1,5})\b/);
   if (fileToken) {
     return {
@@ -353,10 +399,127 @@ export function decideRewrite(
 
   const rationale = rationaleOf(statement);
   const rewritten = rationale ? `${closest.rewrite} — ${rationale}` : closest.rewrite;
+
+  // #586: the fourth guard, and the general one. The three above protect
+  // specific things — a structured line, a missing pattern, a named file.
+  // This one asks the question they are each a special case of: **does the
+  // rewrite still say what the criterion was about?**
+  //
+  // It exists because the three above all passed on
+  // `Baseline rules carry no paths: key in frontmatter`, which was rewritten
+  // to `all specs have frontmatter`. Nothing of the original survived and no
+  // guard was looking at that.
+  //
+  // It asks the question of `rewritten`, not of `closest.rewrite`, and the
+  // difference is #426's SC-1591: the rationale clause is carried across, so
+  // a statement whose meaning lives in its `— because …` half survives a
+  // constant rewrite with that half intact. Asking it of the bare pattern
+  // text refuses those, which turns the enricher off for every criterion
+  // that explains itself. SC-1930 has no rationale clause, so nothing of it
+  // survives either way and it is still refused.
+  const terms = distinguishingTerms(statement);
+  const lowered = rewritten.toLowerCase();
+  if (terms.length > 0 && !terms.some(t => lowered.includes(t))) {
+    return {
+      kind: "keep",
+      reason:
+        `rewriting as ${closest.patternName} would drop every distinguishing term the ` +
+        `criterion uses (${terms.join(", ")}) — the rewrite would be about something else`,
+    };
+  }
+
   if (rewritten === statement) {
     return { kind: "keep", reason: "the rewrite is what is already written" };
   }
   return { kind: "rewrite", statement: rewritten };
+}
+
+/**
+ * The words that say what THIS criterion is about (#586).
+ *
+ * Deliberately not "every word": a rewrite legitimately drops grammar, and
+ * the term that caused the heuristic to fire is shared with every other
+ * criterion the heuristic matches. Counting the MATCHED keyword as retained
+ * content is how a constant rewrite reads as a faithful one — the proxy
+ * standing in for the property, which `.claude/rules/checks-must-be-able-to-fail.md`
+ * names as the trap in wording a refusal.
+ *
+ * So: lowercase alphanumeric tokens of four characters or more, minus
+ * stopwords, minus the vocabulary every registry pattern already uses.
+ */
+const REWRITE_STOPWORDS = new Set([
+  "that", "this", "with", "from", "have", "has", "does", "must", "will", "when",
+  "then", "than", "each", "every", "into", "over", "under", "about", "there",
+  "their", "which", "where", "while", "been", "being", "they", "them", "than",
+  // The registry's own vocabulary. A rewrite keeping only these has kept
+  // nothing specific to the criterion it replaced.
+  "frontmatter", "specs", "spec", "exists", "contains", "canary", "test",
+  "tests", "file", "files", "all", "none",
+]);
+
+export function distinguishingTerms(statement: string): string[] {
+  const words = statement.toLowerCase().match(/[a-z0-9]{4,}/g) ?? [];
+  return [...new Set(words)].filter(w => !REWRITE_STOPWORDS.has(w));
+}
+
+/**
+ * `findClosestPattern`, exported so a test can drive the real decision.
+ *
+ * One binding (#586). A test that reimplemented the heuristic walk would
+ * agree with it right up until somebody changed one of them.
+ */
+export function closestPatternFor(
+  statement: string,
+): { patternName: string; rewrite: string; ambiguous: boolean } | null {
+  return findClosestPattern(statement);
+}
+
+// ── Editing one SC line ───────────────────────────────────────
+
+/**
+ * Put `replacement` where `match` was, as LITERAL TEXT (#586).
+ *
+ * `String.prototype.replace(re, string)` treats the second argument as a
+ * replacement TEMPLATE: `$'` is "everything after the match", `$&` is the
+ * match, `$1` is the first capture group. Every one of those is a sequence a
+ * success criterion can legitimately contain — `--fix` is a tool for editing
+ * documents written by people about shell and regex syntax — and the text
+ * being substituted in here is the criterion itself.
+ *
+ * Measured before this existed, on a four-criterion fixture whose first
+ * statement read ``Baseline rules carry no $' key in frontmatter``:
+ *
+ *     - [ ] SC-9301: Baseline rules carry no        <- its text, truncated
+ *     - [ ] SC-9302: …                              <- the remainder of the
+ *     - [ ] SC-9303: …                                 document, pasted in
+ *     - [ ] SC-9304: …
+ *      key in frontmatter
+ *
+ * Three ids now appeared twice in one spec and one criterion had lost its
+ * statement — on a run whose own ledger reported `kept` and `before ===
+ * after` for all four. The report and the file disagreed and only the report
+ * was ever read.
+ *
+ * It splices by INDEX rather than re-running the regex, which also removes
+ * the second search: the caller has already found the line, and a function
+ * that searched for it again would be a second answer to a question that was
+ * already answered.
+ */
+function replaceLine(content: string, match: RegExpMatchArray, replacement: string): string {
+  const at = match.index!;
+  return content.slice(0, at) + replacement + content.slice(at + match[0].length);
+}
+
+/**
+ * Does `marker` already sit on the line directly below the matched line?
+ *
+ * The question the suppression guard has to ask (#586). It used to ask
+ * `modified.includes(marker)` — of the WHOLE FILE — so the second criterion
+ * declined for a given reason was silently left unmarked, and the commonest
+ * reason by far is the generic "no registry pattern was close enough".
+ */
+function followsWith(content: string, match: RegExpMatchArray, marker: string): boolean {
+  return content.slice(match.index! + match[0].length).startsWith(`\n${marker}`);
 }
 
 // ── Core audit function ───────────────────────────────────────
@@ -432,8 +595,15 @@ export function auditSpecs(
         // the file it names or the prose that says why it exists.
         if (decision.kind === "keep") {
           const marker = `<!-- REVIEW: unmatched (${decision.reason}) -->`;
-          if (!modified.includes(marker)) {
-            modified = modified.replace(scLinePattern, `${scMatch[0]}\n${marker}`);
+          // #586: asked of THIS criterion's own next line, not of the whole
+          // file. A file-wide `includes` meant that two criteria declined
+          // for the same reason — and "no registry pattern was close enough"
+          // is the commonest reason there is — shared one marker: measured
+          // at four unmatched criteria and one marker. The three unmarked
+          // ones read as reviewed because of a comment about a different
+          // criterion.
+          if (!followsWith(modified, scMatch, marker)) {
+            modified = replaceLine(modified, scMatch, `${scMatch[0]}\n${marker}`);
             hasChanges = true;
           }
           rewrites.push({
@@ -452,7 +622,7 @@ export function auditSpecs(
         if (closest!.ambiguous) {
           replacement += `\n<!-- REVIEW: original — ${usc.statement} -->`;
         }
-        modified = modified.replace(scLinePattern, replacement);
+        modified = replaceLine(modified, scMatch, replacement);
         hasChanges = true;
         rewrites.push({
           scId: usc.id,

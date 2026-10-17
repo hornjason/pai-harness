@@ -1761,7 +1761,20 @@ export function missingGitignorePatterns(existing: string): string[] {
       .map(l => l.trim())
       .filter(l => l !== "" && !l.startsWith("#")),
   );
-  return requiredGitignorePatterns().filter(p => !present.has(p));
+  // #586: `X/` is satisfied by an existing `X`, and ONLY in that direction.
+  // This repo's `.gitignore` opens with `node_modules` and the required
+  // pattern is `node_modules/`, so exact matching reported it absent and
+  // every scaffold run re-added a line that changes nothing.
+  //
+  // The direction is the whole safety argument, and it is the opposite of
+  // the trap the docstring above names. A bare `node_modules` matches files
+  // AND directories, so it is STRICTLY BROADER than `node_modules/` — the
+  // requirement is already met. `service-account` present against a required
+  // `service-account*` is the reverse: the required pattern is broader, the
+  // requirement is NOT met, and that case must keep failing.
+  const satisfied = (p: string): boolean =>
+    present.has(p) || (p.endsWith("/") && present.has(p.slice(0, -1)));
+  return requiredGitignorePatterns().filter(p => !satisfied(p));
 }
 
 export function createGitignore(root: string, actions: string[]): void {

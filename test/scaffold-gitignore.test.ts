@@ -231,3 +231,69 @@ describe("#474: presence is decided line-wise, not by substring", () => {
     expect(missingGitignorePatterns("  credentials.json  \n")).not.toContain("credentials.json");
   });
 });
+
+/**
+ * Covers SC-2003 (CONFIG-DRIVEN-TESTING-SPEC.md), #586 AC-3.
+ *
+ * Every case above calls `createGitignore` ONCE, which is the one thing a
+ * project adopting rungate never does — re-scaffolding is how you take an
+ * update. #586 was filed saying the scaffold "appends a duplicate block on
+ * every invocation"; SC-1999 establishes that `missingGitignorePatterns` is
+ * idempotent as a function, over strings. This is the same claim made of the
+ * STEP, over a real tree and a real file, because the function being
+ * idempotent and the step being idempotent are two statements and only the
+ * second is what a user sees.
+ *
+ * What it is pointed at: the append branch's old
+ * `e.includes("*") ? e : \`${e}/\`` transform. With it, run 1 writes
+ * `credentials.json/`, run 2 still finds `credentials.json` missing, and the
+ * block grows by two entries on every re-scaffold forever. That is the
+ * defect the issue described, reached from the direction the issue described
+ * it from — #474's cases reach the same code by asking git what it ignores.
+ */
+describe("#586: a second scaffold over a tree the first one wrote appends nothing", () => {
+  /** Non-empty lines, so "appended nothing" is a count and not a feeling. */
+  const lines = (dir: string): string[] =>
+    readFileSync(join(dir, ".gitignore"), "utf-8").split("\n");
+
+  test("SC-2003: a fresh tree and an adopting tree are both fixed points after one run", () => {
+    for (const seed of [
+      undefined,
+      // This repo's own shape: a bare `node_modules` against a required
+      // `node_modules/`, which is the line SC-1999 is about.
+      "# my project\nnode_modules\n*.log\n",
+      "node_modules/\ndist/\n",
+    ]) {
+      const dir = repo(seed);
+      const first: string[] = [];
+      createGitignore(dir, first);
+      const afterFirst = lines(dir);
+
+      const second: string[] = [];
+      createGitignore(dir, second);
+      const afterSecond = lines(dir);
+
+      // The run has to have DONE something, or "it appended nothing the
+      // second time" is a statement about a step that is switched off.
+      expect(first.join(" "), `the first run over ${JSON.stringify(seed)} did nothing`)
+        .toMatch(/CREATED|UPDATED/);
+
+      expect(
+        afterSecond.length - afterFirst.length,
+        `the second run appended lines over ${JSON.stringify(seed)}: ` +
+          afterSecond.slice(afterFirst.length).join(" | "),
+      ).toBe(0);
+      expect(afterSecond.join("\n"), "the second run rewrote the file").toBe(afterFirst.join("\n"));
+      expect(second.join(" "), "the second run did not report that it had nothing to do")
+        .toContain("SKIP");
+
+      // And the file still works, measured by git rather than by reading it.
+      // A second run that emptied the file would satisfy every assertion
+      // above by writing nothing at all.
+      for (const [file, why] of SECRET_FILES) {
+        expect(ignored(dir, file), `${file} stopped being ignored after a second run — ${why}`)
+          .toBe(true);
+      }
+    }
+  });
+});

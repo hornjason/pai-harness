@@ -1016,3 +1016,227 @@ notices that the report has stopped reporting.
 - [x] SC-1957: test/sc-todo-credit.test.ts contains [a todo is credited to nothing and reported by name] — the report is non-empty, and no id in it is also credited by a test claim
 - [x] SC-1958: test/sc-todo-credit.test.ts contains [a range in a parenthetical is prose about a group, not an attribution] — the sentence from the tree verbatim, with the two attribution forms that must NOT move asserted beside it
 - [x] SC-1959: test/sc-todo-credit.test.ts contains [no ticked criterion in this repo rests on a test that never runs] — the live tree, through the conformity engine, so a tick backed by a mechanical match is not reported as a regression
+
+## A rewrite that replaces the requirement (#586)
+
+`bun bin/rungate.ts scaffold . --fix` calls `auditSpecs(root, {fix: true})`,
+which rewrites criteria the matcher registry cannot bind. On a clean tree it
+turned
+
+> `SC-1930: Baseline rules carry no `paths:` key in frontmatter`
+
+into
+
+> `SC-1930: all specs have frontmatter`
+
+A different property, and a weaker one. Two more criteria in the same run
+became `reference/rejected-constraints.md exists` and `package.json exists`,
+each from a sentence stating a behaviour.
+
+**The reporting was never the problem, and the first draft of #586 said it
+was.** #426 already emits `REWROTE: specs/<file> <id> as <pattern> — was:
+<original>`, one line per rewritten criterion. The issue was filed off the
+diff without reading the run's own output, which is the thing this repo's
+rules exist to stop; it is corrected in the issue rather than quietly
+dropped.
+
+### Three mechanisms, composing
+
+1. **The heuristic keyword test is `some`.** `keywords: ["all specs",
+   "frontmatter"]` fires on the bare word `frontmatter`, so a criterion about
+   one category of rule file bound to a rule about ALL specs.
+2. **The extractor is a constant.** `() => "all specs have frontmatter"`
+   never reads its argument, so every statement reaching it produces the
+   identical criterion.
+3. **It reported `ambiguous: false`**, and only an ambiguous rewrite writes
+   the `REVIEW: original` marker comment that preserves the statement it
+   replaced. So **the one case where the rewrite cannot know what the
+   statement said is the one case where the original is not kept in the
+   file.** It survived in stdout and nowhere else.
+
+   (Named rather than quoted on purpose: `AC-3` in
+   `test/audit-specs.test.ts` greps every spec for that marker's literal
+   text, so a spec explaining the mechanism emits one. Fourth time this
+   session that writing about a detector tripped it —
+   `.claude/rules/checks-must-be-able-to-fail.md` has caught the shape in
+   prose four times before, and it is cheaper to describe the marker than
+   to widen the detector.)
+
+`decideRewrite`'s three guards all passed it: not already structured, a
+pattern was found, and no file token to protect.
+
+### The fourth guard is the general one
+
+A rewrite that retains none of the statement's distinguishing terms is a
+`keep`. That is the question the other three are each a special case of, and
+it catches the NEXT constant extractor rather than these two — `canary` has
+the same shape and is not the one that bit us.
+
+"Distinguishing" excludes the matched keyword on purpose. Counting the word
+that caused the heuristic to fire as retained content is how a constant
+rewrite reads as faithful: the proxy standing in for the property.
+
+### And the loose fallback downgrades, which is not the same as losing
+
+Found by running the fixed enricher over the tree rather than by reading it.
+The last-resort `file-exists` match takes any filename-like token anywhere in
+a sentence, so a criterion about *writing a hash to* a file becomes a
+criterion about that file *existing*. Both survivors keep the filename, so
+the distinguishing-terms guard passes them — **a filename a criterion
+mentions is not what the criterion is about**, which is
+`lib/spec-listing.ts`'s "a mention is not a listing" arriving in a third
+place.
+
+**It is not narrowed here, and the reason is the distinction #586 turns on.**
+That path reports `ambiguous: true`, which is what writes the
+`REVIEW: original` marker comment beside the rewritten line, so the statement
+it replaced is still in the file. (Spelled that way here on purpose: line
+1052 above does the same, because `test/audit-specs.test.ts` AC-3 refuses any
+spec containing the marker's literal opening — a document explaining the
+marker would otherwise report itself as a spec needing review.) #426 kept it for exactly that reason and
+pinned it in SC-1587 and SC-1594. A downgrade whose original is recorded is
+recoverable by anyone reading the spec; the `all-specs-frontmatter` rewrite
+was not, because `ambiguous: false` suppresses the marker.
+
+The first draft narrowed it to statements whose verb is existence and turned
+SC-1587 and SC-1594 red — two criteria that are right, caught asserting the
+behaviour this change would have removed. The downgrade is real and is #589,
+filed rather than folded in, which is the same call #586 itself records being
+made about it.
+
+So what SC-1998 pins is the property that makes the downgrade survivable:
+the marker, and a negative control that an exactly-bound criterion reports
+`ambiguous: false`, because every pattern reporting `true` would satisfy the
+assertion while saying nothing.
+
+### Success Criteria
+
+- [x] SC-1993: test/audit-specs-rewrite-fidelity.test.ts contains [the criterion the scaffold rewrote is now kept, by name] — pinned to the exact string, and kept by the keyword scoping rather than by the fourth guard, which is why SC-1994 carries the other input
+- [x] SC-1994: test/audit-specs-rewrite-fidelity.test.ts contains [a rewrite that drops every distinguishing word is refused] — the general guard over a statement unrelated to SC-1930, with a positive control that a bindable criterion is still rewritten
+- [x] SC-1995: test/audit-specs-rewrite-fidelity.test.ts contains [distinguishing terms are the statement's own words, not the matched keyword] — counting the matched keyword as retained content is how a constant rewrite reads as faithful
+- [x] SC-1996: test/audit-specs-rewrite-fidelity.test.ts contains [an extractor that ignores its input cannot claim to be unambiguous] — two statements differing in every word must not produce one unambiguous rewrite
+- [x] SC-1997: test/audit-specs-rewrite-fidelity.test.ts contains [a keyword list means all of its phrases, not any one of them] — with the rule still firing on the statement it is actually for
+- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback downgrades, and records that it did] — the two live survivors rewrite, and each carries `ambiguous: true` so the original is written beside it; the negative control is a criterion the registry binds exactly, which must report `false`
+- [x] SC-1999: test/audit-specs-rewrite-fidelity.test.ts contains [a directory pattern is satisfied by its broader bare form, and not the reverse] — the `.gitignore` half, which was filed wrongly as non-idempotence; the reverse direction is pinned because widening this match is how `service-account*` comes back
+
+### What was broken to prove it (SC-1993..SC-1999)
+
+Run and counted over `test/audit-specs-rewrite-fidelity.test.ts` +
+`test/scaffold-conformity.test.ts` + `test/audit-specs.test.ts` +
+`test/audit-specs-lossless.test.ts` (baseline 1099 pass / 0 fail). None is
+left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the keyword test back to `some` for every heuristic | 2 | 2 |
+| a constant extractor reports `ambiguous: false` again | 1 | 1 |
+| the distinguishing-terms guard removed | 1 | 1 |
+| the stopword filter removed from `distinguishingTerms` | 2 | 2 |
+| the guard reads `closest.rewrite` instead of the final rewritten text | 1 | 1 |
+| the loose fallback reports `ambiguous: false` | 2 | 2 |
+| `missingGitignorePatterns` back to exact matching | 1 | 1 |
+
+`test/audit-specs-lossless.test.ts` is in the battery, and was not in the
+first draft's. Adding it is what produced rows five and six: #426's criteria
+are the ones that fail when this fix reaches past loss into downgrade, and a
+battery scoped to the new file cannot see them. Row five is red in SC-1591
+and row six in SC-1587 — both in the OLDER file, neither reachable from the
+new one.
+
+**Row four found two vacuous assertions in the file written to catch
+vacuous rewrites.** It was predicted to turn SC-1995 red and turned SC-1994
+instead. SC-1995's negative controls were `not.toContain("the")` and
+`not.toContain("no")` against `Baseline rules carry no paths: key in
+frontmatter` — `the` does not occur in that statement at all, and `no` is
+below the four-character floor whatever the stopword set says. Both held
+for reasons unrelated to the filter.
+
+The replacement asserts the thing that actually carries the case: the
+MATCHED keyword is excluded. `frontmatter` is in the statement, it is what
+fired the heuristic, and the constant rewrite contains it — so counting it
+as retained content is exactly what makes a constant rewrite read as
+faithful. With that in place the row is 2, and both reds are about the
+mutation.
+
+## The decision was right and the WRITE lost the line anyway (#586, second pass)
+
+Everything above is about `decideRewrite`. The criteria below are about the
+twelve lines underneath it that put the decision into the file, because for
+every statement here the decision was already correct — `keep`, with a
+reason — and the document still lost the criterion.
+
+Two faults, in one edit each, and they have to be fixed together:
+
+- **the line is edited with a replacement STRING.**
+  `String.prototype.replace(re, string)` expands `$'`, `$&` and `$1` in its
+  second argument, and the second argument here is the criterion. `--fix`
+  edits documents written by people about shell and regex syntax, so those
+  sequences are ordinary content. Measured on a four-criterion fixture whose
+  first statement read ``Baseline rules carry no $' key in frontmatter``: the
+  statement came back as `Baseline rules carry no `, the remaining three
+  criteria were pasted into the file a second time, and the run's own ledger
+  reported `kept` with `before === after` for all four. **The report and the
+  file disagreed, and only the report is ever read.**
+
+- **the marker is suppressed by a whole-file `includes`.** Two criteria
+  declined for the same reason share one marker, and the commonest reason by
+  a long way is the generic "no registry pattern was close enough". The same
+  fixture: four unmatched criteria, one marker. The other three read as
+  reviewed because of a comment about a different criterion.
+
+Fixing the suppression alone makes the corruption reach three criteria
+instead of one, which is why they are one commit.
+
+`.gitignore` is the third criterion and it is a test, not a fix: SC-1999
+established that `missingGitignorePatterns` is idempotent as a FUNCTION, over
+strings. SC-2003 asks it of the STEP, over a real tree and a real file,
+because those are two statements and only the second is what a user re-taking
+a harness update sees.
+
+### Success Criteria
+
+- [x] SC-2000: test/audit-specs-lossless.test.ts contains [--fix is a fixed point per criterion, not merely per file] — SC statement lines compared by id across the original, the first run and the second, so a run that duplicates ids or truncates a statement is visible where a whole-file comparison of the two runs is not
+- [x] SC-2001: test/audit-specs-rewrite-fidelity.test.ts contains [the REVIEW marker goes below the criterion, never into it] — a declined criterion's line is byte-identical and the marker is the line after it, with a bindable criterion still rewritten beside it as the control
+- [x] SC-2002: test/audit-specs-rewrite-fidelity.test.ts contains [two criteria declined for the same reason each get a marker] — asserted as a count against a fixture whose four declines deliberately share one reason
+- [x] SC-2003: test/scaffold-gitignore.test.ts contains [a fresh tree and an adopting tree are both fixed points after one run] — the second `createGitignore` appends zero lines and reports SKIP, and git still ignores every secret file afterwards
+
+### What was broken to prove it (SC-2000..SC-2003)
+
+Run and counted over `test/audit-specs-lossless.test.ts` +
+`test/audit-specs-rewrite-fidelity.test.ts` + `test/scaffold-gitignore.test.ts`
+(baseline 34 pass / 0 fail). None is left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `replaceLine` back to `content.replace(match[0], replacement)` — `$` expansion restored | 2 | 2 |
+| `followsWith` back to a whole-file `content.includes(marker)` | 2 | 2 |
+| the append branch's `e.includes("*") ? e : \`${e}/\`` transform restored (#474 verbatim) | 5 | 5 |
+
+The distinguishing input for row one, named before the count was read: a
+criterion containing `$'`. The mutant truncates it at the `$` and splices the
+rest of the document in after it; the original leaves the line byte-identical.
+For row two: two criteria whose decline reason is the same string. For row
+three: an adopting repo seeded with `node_modules`, where the mutant writes
+`credentials.json/` on the first run and finds `credentials.json` missing
+again on the second, forever.
+
+Row three is 4 of #474's own cases plus SC-2003, and the four were predicted
+from the count this spec's `.gitignore` section already records. SC-2003 is
+the fifth and is the only one of the five that asks about a SECOND run.
+
+**SC-2000 carries a vacuous half, deliberately, and says so in the file.**
+AC-1 asks for zero SC statement lines differing between the first and second
+run, and the `$'` corruption is invisible to exactly that comparison: the
+first run wrecks the document and the second reproduces the wreck, so the two
+runs agree. The criterion is written as AC-1 words it AND carries the original
+alongside, which is the half that can fail. Recording which half is load-bearing
+is cheaper than leaving the next reader to find out by mutating it.
+
+### A fourth self-reference trap, in this section
+
+The paragraph above explaining the preservation marker originally quoted
+it, and `AC-3` in `test/audit-specs.test.ts` greps every spec for that
+marker's literal text — so a spec describing the mechanism reported itself
+as a spec with an unresolved marker in it. It is named rather than quoted
+now. `.claude/rules/checks-must-be-able-to-fail.md` has caught this shape
+in prose four times; describing the detector is cheaper than widening it.
