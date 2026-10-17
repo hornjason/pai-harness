@@ -9639,3 +9639,88 @@ loose object rather than mocking the runner.
 - [x] SC-1919: test/tracked-vs-ignored.test.ts contains [a repo whose rules and tracked set agree passes] — over a non-empty corpus and over the live tree, since an empty corpus and a clean one are the same verdict
 - [x] SC-1920: test/tracked-vs-ignored.test.ts contains [it never asks git status] — plus a `check-ignore` forced to exit 128 while `ls-files` succeeds, which is the fail-open a `catch` would create
 - [x] SC-1921: test/tracked-vs-ignored.test.ts contains [check-ignore is asked with --no-index] — measured both ways on one fixture, because without the flag that arm is a comparison against the empty set
+
+## The guard rationed the thing it most wanted people doing (#510)
+
+DIR-L29 limits full-suite runs to 8 per 30 minutes, and it charged a
+reviewer's `/tmp` probe at the same rate as this repository's own suite.
+Measured during the security review of PR #500: sec-500 reached 8 of 8
+running mutation probes on `git archive` exports, having never once run the
+real suite to completion, and reported two findings as explicitly unmeasured
+because of it.
+
+The incentive ran backwards — **the more carefully someone reviewed, the
+less they were allowed to measure** — and the error is treating a twenty-test
+probe that finishes in under a second and a 400-second 12,000-test run as one
+unit.
+
+### Whose suite is this
+
+`runScope` compares the **shared git directory**, not a path:
+
+| Scope | What it is | Charged |
+|---|---|---|
+| `project` | a tree of the repository the guard belongs to, all 110 worktrees included | yes |
+| `scratch` | a directory that EXISTS and is not part of it — a `git archive` export, a fixture repo, another checkout | no |
+| `unknown` | no cwd, a path that is not there, a git that would not run | yes |
+
+A `/tmp` denylist would be a detector narrower than what it detects in both
+directions: it exempts a real checkout that happens to live there and charges
+a probe that lives anywhere else. Git already answers the question exactly,
+and SC-1924 pins it with a worktree of this repository created **under the
+same tmpdir a probe would use**.
+
+The line between `scratch` and `unknown` is *"I looked and it is not this
+repository"* against *"I could not look"*. A `git archive` export has no
+`.git` at all and is the case that filed this, so a git-less directory must
+be scratch — but only after something has confirmed the directory is there.
+
+### It exempts the budget and never the slot
+
+The budget is a RATE, which is the wrong unit for a one-second probe. The
+concurrency slot is SIMULTANEITY, which is what exhausted the VM compressor
+and rebooted the machine in #67, and a scratch tree can be a full clone.
+
+Two more reasons, and the first is a bug the first draft had:
+`TestSuiteRelease` frees a slot on the same `isFullSuiteCommand` predicate
+with no notion of scope, so an acquire this side skipped would hand back a
+slot **somebody else was holding**. And "cd into /tmp" must not be a way past
+the cap. SC-1922 asserts that two concurrent scratch suites are still
+refused.
+
+An exemption is recorded in `full-suite.scratch-runs.json` with its cwd.
+Allowed-and-quiet would make it indistinguishable from a budget nobody spent.
+
+### What was broken to prove it
+
+Seven mutations over 158 tests. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| no exemption — every suite charged again | 3 | 3 |
+| every suite treated as scratch | 35 | 48 |
+| scope decided by a `/tmp` path prefix instead of the git dir | 1 | 1 |
+| a cwd that is not there is scratch rather than unknown | 3 | 4 |
+| the exemption is not recorded | 1 | 1 |
+| the hook stops passing `cwd` | 1 | 1 |
+| a scratch run skips the concurrency slot too | 1 | 1 |
+
+**The third row measured 0 the first time it was run, and the 0 was the
+mutant rather than a finding.** That mutant tested the prefix of the GIT
+COMMON DIR, which for a worktree under tmp is the main repository's `.git`
+and not under tmp at all — so the mutant and the original agreed on every
+input the suite has. Rebuilt against the cwd, which is what a denylist would
+actually look at, it is 1. Before believing a 0, name an input on which the
+mutant and the original differ.
+
+Rows 2 and 4 are below predictions taken against the FIRST draft, the one
+that skipped the slot. Restoring the slot is what moved them: with
+concurrency still enforced for scratch runs, the cases that were failing over
+missing slots pass, and only the budget cases remain.
+
+### Success Criteria
+
+- [x] SC-1922: test/test-suite-scope.test.ts contains [thirty probes on an exported tree spend nothing] — with a real run afterwards proving the budget was untouched rather than merely larger, and two concurrent scratch suites still refused
+- [x] SC-1923: test/test-suite-scope.test.ts contains [a run of this repository is still charged] — the positive control, including that an exempted run does not clear a budget it was never charged to
+- [x] SC-1924: test/test-suite-scope.test.ts contains [scope is the shared git directory] — a worktree of this repository created under tmpdir is still charged, which is what separates this from a path denylist
+- [x] SC-1925: test/test-suite-scope.test.ts contains [the exemption is recorded] — and the hook is driven as a subprocess, because every library case above stays green when the hook stops passing `cwd`
