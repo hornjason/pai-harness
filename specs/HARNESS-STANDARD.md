@@ -8629,3 +8629,147 @@ counting rows would otherwise expect two.
 - [x] SC-1861: gates/schema-parity.test.ts contains [an ordinary failure's backward scan is unchanged] — a stopping condition that fires too eagerly truncates every detail, and a shorter detail is still a detail
 - [x] SC-1862: test/gate-suite-timeouts.test.ts contains [neither file hardcodes a timeout the ordering cannot see] — a fourth number beside the constants is a number nobody compares
 - [x] SC-1863: gates/schema-parity.test.ts contains [no other producer assigns a bare failed as a detail] — the reintroduction guard, which caught itself quoting the string on its first run
+
+## A refusal a later gate re-ran and did not reproduce (#532)
+
+Run `wf_e230fddc-a71` ended with nineteen refusals. Several were already
+resolved. The ship gate **re-runs the verify checks** —
+`runGateTests` spawns `bun test gates/ --test-name-pattern
+"schema|scope|verify|ship|B1|B2"` for it — so a refusal banked at verify had
+been measured a second time, later, against a tree the heal rounds had since
+changed. From that run's own `workflow-state.json`:
+
+| Check | `gates.verify.failures` | `gates.ship.failures` |
+|---|---|---|
+| `verify checks > tests-pass` | FAIL | FAIL |
+| `verify checks > evidence-prevalidation` | **FAIL** | **absent** |
+| `verify checks > tsc-pass` | FAIL | FAIL |
+
+`state.evidencePrevalidation` in the same file reads `{"verdict":"PASS",
+acs: [… all "ok" …]}`. The refusal was round one, a heal fixed it, the ship
+gate re-ran it and it passed — and the terminal report listed it anyway,
+because the report is the UNION of every gate's list rather than the latest
+reading of each check. `recordGateRefusal` already clears a SAME-gate entry on
+a later PASS (#252); nothing crossed gates. The one refusal that actually
+blocked the run, a `SECURITY_REVIEW_STALE`, was buried among the stale ones,
+and a report with false entries in it is a report nobody reads twice.
+
+### Absence is not a pass, so retirement needs a positive witness
+
+A check missing from a later gate's FAILURES means either *it passed there* or
+*that gate never ran it*. Those are opposite facts and a failure list cannot
+tell them apart. Retiring on absence would silently drop every refusal a later
+gate's narrower pattern skipped — worse than the bug, because it erases a true
+refusal instead of keeping a stale one.
+
+So `gates.<gate>.checksRun` records the names the gate reported a verdict for,
+and a gate with no `checksRun` retires NOTHING. `null` and `[]` are different
+answers and only one of them is a measurement
+(`.claude/rules/config-access.md`, Silent Default Substitution). The field is
+left OFF rather than written empty, because an empty list is a claim.
+
+`workflows/ship.js` cannot import (#69), so it carries an inlined copy of the
+rule inside `REFUSAL-CURRENCY` markers; `test/gate-refusal-currency.test.ts`
+extracts it, executes it, and drives both copies over one matrix.
+
+### The witness had no producer, and the obvious one names only failures
+
+The first implementation sourced `checksRun` from the `results` array
+`gates/gate-executor.ts` builds. Measured on a real scope gate run: **2 names
+for 118 checks.**
+
+`parseTestResults` scans for `(pass)` and `(fail)` markers, and **bun 1.3.14
+prints no `(pass)` markers at all** — a marker for each failure, a count for
+everything else. The `(pass)` branch matches nothing on the runner this repo
+uses, so `results` is a failure list wearing a neutral name. That is fine for
+the failure ledger, which is all it had ever been read for, and fatal here: a
+witness that names only the failures retires nothing on any run that has ever
+happened. It is this repo's central defect class
+(`.claude/rules/checks-must-be-able-to-fail.md`) reached from a new direction
+— not a check that cannot fail, but a positive witness that cannot witness.
+
+The names now come from the run's JUnit report. `--reporter=junit
+--reporter-outfile=<path>` writes alongside the console output rather than
+replacing it, so one spawn still prints the `(fail)` lines the detail parser
+reads.
+
+### Two things about that report that are not obvious
+
+**A test excluded by `--test-name-pattern` is still listed, as a
+`<skipped />`.** The scope gate filters 279 of 397 on every run. Counting a
+filtered test as run would retire a refusal the gate never re-measured, which
+is the direction that erases a true refusal. So a `<skipped />` testcase is
+not a check that ran, and the count of them is returned rather than discarded:
+"ran 118, skipped 279" and "ran 397" are different facts about one report.
+
+**`classname` is unusable.** bun emits the describe chain REVERSED and
+double-escaped — a test whose console marker reads `outer > inner > deep
+fails` is written `classname="inner &amp;gt; outer"`. The nested `<testsuite>`
+elements carry the same chain in the right order, so the name is rebuilt from
+the element stack with the outermost suite (the FILE, whose name is a path)
+dropped. That rebuilt string has to equal the `(fail)` marker for the same
+test, because `checksRun` must be a superset of `failedChecks` or the
+subtraction reports a still-failing check as resolved.
+
+The verdicts the gate reaches on its own — `test-census: UNMEASURED`,
+`ac-verdict-fail: AC-2`, the liveness probe — have no testcase behind them and
+are unioned in. `writeGateResult` applies the same union a second time because
+it appends `ac-verdict-fail:` entries AFTER the caller has read the list.
+
+### What was broken to prove it
+
+Thirteen mutations over 21 tests in `test/gate-refusal-currency.test.ts` and
+`test/junit-checks.test.ts`. None is left in the tree.
+
+| Mutation | Red | First prediction |
+|---|---|---|
+| `resolvedCheckNames` returns `[]` for an absent `checksRun` | 2 | 2 |
+| the library drops the `failedChecks` subtraction | **4** | 3 |
+| the ship.js copy returns `[]` for an absent `checksRun` | 2 | 2 |
+| the library collects retirements in reverse order | 2 | 2 |
+| `gateExit` stops retiring | 1 | 1 |
+| `gateExit` records before it retires | 1 | 1 |
+| a filtered-out testcase counts as a check that ran | **3** | 2 |
+| the file-level suite stays in the rebuilt name | **4** | 3 |
+| an unreadable report reads as an empty list | 1 | 1 |
+| a document with no `<testsuites>` root reads as an empty list | 1 | 1 |
+| `unionNames` ignores the verdicts with no testcase | 1 | 1 |
+| the gate run stops writing a JUnit report | 2 | 2 |
+| `writeGateResult` ignores the witness and uses the failure list | 2 | 2 |
+
+**Three rows missed, and two of them were defects in the tests.**
+
+*The subtraction row* was predicted to turn the twelve-row parity matrix red
+and did not. No row in it put a name in BOTH `checksRun` and `failedChecks` —
+the one relationship the function exists to express. Twelve rows, none of them
+exercising the subtraction. With a thirteenth row added it is 4.
+
+*The filtered-out row* was predicted to turn the real-run case red and did
+not. That case asserted `skipped > 50`, and the mutation does not change the
+skip COUNT — it leaves it at 279 and simply adds all 279 names to the list.
+The case was measuring a proxy for the property. It now asserts MEMBERSHIP:
+every name the reading returns must match the gate's own
+`schema|scope` filter, because a name matching neither is a test the run did
+not execute. With that it is 3.
+
+*The file-level-suite row* missed in the other direction, and the extra red is
+about the mutated behaviour rather than an artefact: a rebuilt name carrying
+the file path also stops matching the `(fail)` marker, which SC-1872 checks
+from the failure side. The prediction was wrong and the coverage is better
+than it looked.
+
+### Success Criteria
+
+- [x] SC-1864: test/gate-refusal-currency.test.ts contains [the resolved check is retired and the others are kept] — driven over both copies of the rule
+- [x] SC-1865: test/gate-refusal-currency.test.ts contains [a gate that reported no checksRun retires nothing] — null and an empty list are opposite answers and both are asserted
+- [x] SC-1866: test/gate-refusal-currency.test.ts contains [a refusal with no check name is never retired] — a stale security review is what actually blocked the run that filed this
+- [x] SC-1867: test/gate-refusal-currency.test.ts contains [the ledger is edited in place] — one array the whole run appends to, and the removals are returned rather than dropped
+- [x] SC-1868: test/gate-refusal-currency.test.ts contains [a check the later gate ALSO failed is not retired] — the subtraction is what makes checksRun a list of passes rather than a list of names
+- [x] SC-1869: test/gate-refusal-currency.test.ts contains [both copies give the same answer on every row] — thirteen rows including one where a name is in both lists
+- [x] SC-1870: test/gate-refusal-currency.test.ts contains [a real gate run writes checksRun] — over the state a real gate run wrote rather than a planted one
+- [x] SC-1871: test/junit-checks.test.ts contains [a filtered-out or skipped testcase is not a check that ran] — the direction that erases a true refusal
+- [x] SC-1872: test/junit-checks.test.ts contains [a failing testcase is a check that ran] — a skip and a failure are both a testcase with a child element
+- [x] SC-1873: test/junit-checks.test.ts contains [the name is rebuilt from the nesting] — because bun writes classname backwards and double-escaped
+- [x] SC-1874: test/junit-checks.test.ts contains [a report that cannot be read is null] — and a report that lists nothing is an empty list
+- [x] SC-1875: test/junit-checks.test.ts contains [the verdicts the gate reaches on its own are in the witness too] — the union is what keeps checksRun a superset of failures
+- [x] SC-1876: test/junit-checks.test.ts contains [JUnit report names far more checks than it failed] — 118 measured where the failure-list witness gave 2
