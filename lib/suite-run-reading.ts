@@ -126,23 +126,22 @@ export function readSuiteRun(output: unknown): SuiteRun {
   const passMatch = lastMatch(PASS_LINE, output);
   const failMatch = lastMatch(FAIL_LINE, output);
 
-  // #469's shape. The run printed its banner, some errors, and stopped. An
-  // exit code is the only other thing a caller has, and it lied.
-  if (!passMatch && !failMatch) {
-    return unmeasured(
-      "the test runner printed no pass/fail summary, so it never reported a result — " +
-        `this is a run that measured nothing, not a run that found nothing wrong (#469). Last output: ${tail(output)}`,
-    );
-  }
-  // Half a summary is not a summary. Reading the half that is present and
-  // defaulting the other to 0 is the fail-open this module exists to remove.
+  // #469's shape, and half of it. ONE branch, two sentences: the run printed
+  // no summary, or printed half of one, and in both cases there is no result
+  // to read. Written as a single decider on purpose — a separate `!pass &&
+  // !fail` branch above this would be a second guard answering a question
+  // this one already answers, and no behavioural test could tell them apart
+  // (.claude/rules/checks-must-be-able-to-fail.md, the fourth shape). The
+  // distinction is a wording, so it lives in the wording.
   if (!passMatch || !failMatch) {
-    const present = passMatch ? "pass" : "fail";
-    const missing = passMatch ? "fail" : "pass";
-    return unmeasured(
-      `the test runner printed a "${present}" count but no "${missing}" count, so its summary is ` +
-        `incomplete and the missing half cannot be assumed to be zero (#469). Last output: ${tail(output)}`,
-    );
+    const missing = [!passMatch && "pass", !failMatch && "fail"].filter(Boolean) as string[];
+    const what =
+      missing.length === 2
+        ? "printed no pass/fail summary, so it never reported a result — this is a run that " +
+          "measured nothing, not a run that found nothing wrong"
+        : `printed a "${passMatch ? "pass" : "fail"}" count but no "${missing[0]}" count, so its ` +
+          "summary is incomplete and the missing half cannot be assumed to be zero";
+    return unmeasured(`the test runner ${what} (#469). Last output: ${tail(output)}`);
   }
 
   const pass = Number(passMatch[1]);

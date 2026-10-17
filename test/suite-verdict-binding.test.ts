@@ -577,4 +577,20 @@ describe("#224: the schema exports the field list the guide is checked against",
     expect(over(null)).toBe(true);
     expect(over(2)).toBe(true);
   });
+
+  test("SC-1844: the schema refuses a measurement over zero executed tests", () => {
+    // The row above enforces the PROXY. On its own it would be the trap this
+    // issue is about, applied to its own fix: `files: 1, tests: 0` is one
+    // empty test file, it satisfies "files > 0", and it measures nothing.
+    // Flagged by the commit security review on this branch.
+    const withTests = (tests: unknown) =>
+      WorkflowStateSchema.safeParse(
+        stateWith({ verdict: "PASS", failures: 0, measuredSha: SHA, tests, files: 1 }),
+      ).success;
+    expect(withTests(0), "a run that executed no tests was accepted over one discovered file").toBe(false);
+    expect(withTests(3)).toBe(true);
+    // null stays writable for the same reason `files: null` does — a runner
+    // that did not report a count has not reported a zero.
+    expect(withTests(null)).toBe(true);
+  });
 });

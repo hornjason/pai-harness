@@ -308,6 +308,19 @@ export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefin
       path: ["failures"],
     });
   }
+  // #490. `files: z.number().positive()` refuses a run over no files, and on
+  // its own that would be the PROXY enforced in place of the property: one
+  // empty file satisfies it and measures nothing. A recorded `tests: 0` is
+  // the property, and it is the shape this field exists to make visible.
+  if (m.tests === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "suiteMeasurement: a run that executed 0 tests is not a measurement — " +
+        "a runner that discovered nothing to run exits exactly like a clean suite (#490)",
+      path: ["tests"],
+    });
+  }
 });
 
 // ── Evidence pre-validation (#235) ────────────────────────────────────────

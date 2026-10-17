@@ -175,6 +175,34 @@ describe("#307: the test baseline says what it measured", () => {
     });
   });
 
+  test("SC-1845: a baseline run that executed nothing is UNMEASURED - not a clean tree", () => {
+    // #490, in the live production path, and the fifth fact the four in this
+    // file's header could not separate. A renamed directory or a glob that
+    // stopped matching prints a complete, clean-looking summary over nothing
+    // and exits 0 — and `0` here is the strongest claim the baseline can
+    // make, with the verify gate subtracting against it.
+    //
+    // Found by the commit security review on the #469/#490 branch, which is
+    // worth recording: the issue was about the recorder, and this is the
+    // same defect two files away in the path that already ran.
+    inProject(root => {
+      monolith(root, CONSUMER(`printf ' 0 pass\\n 0 fail\\nRan 0 tests across 1 file. [6.00ms]\\n'`));
+      const reading = captureTestBaseline({ projectRoot: root });
+
+      expect(reading.status, `reading was: ${JSON.stringify(reading)}`).toBe("unmeasured");
+      if (reading.status !== "unmeasured") throw new Error("unreachable");
+      expect(reading.reason).toContain("executed 0 tests");
+    });
+
+    // And a run that printed no summary at all, which is #469's shape
+    // reaching the same function.
+    inProject(root => {
+      monolith(root, CONSUMER(`printf 'error: ENOENT reading "a.test.ts"\\n'`));
+      const reading = captureTestBaseline({ projectRoot: root });
+      expect(reading.status).toBe("unmeasured");
+    });
+  });
+
   test("a command that exits non-zero is still measured from what it printed", () => {
     // A suite with failures exits 1, so `execSync` throws and the count has
     // to come off `e.stdout`. The old code did this and it was the one part

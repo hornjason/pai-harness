@@ -41,6 +41,18 @@
  * and that means nothing. The output itself is the argument now, and
  * `lib/suite-run-reading.ts` decides whether there is a result in it.
  *
+ * WHAT --output IS NOT. It is not provenance. The file is written by the
+ * step above it in the same prompt, into a directory the agent can write, so
+ * an agent determined to record a clean suite can still author one. Flagged
+ * by the commit security review, and it is a real limit — but it is not a
+ * regression and not the thing this flag is for. `--failures 0` was the same
+ * hole needing one token instead of a crafted summary, and #224 answered the
+ * forgery question in a different place on purpose: the provenance is the
+ * COMMIT, read from the tree by `measuredSha` and compared against the
+ * branch tip at ship time by `suiteCurrency`. What `--output` buys is that
+ * the honest path can no longer produce a wrong answer by accident, which is
+ * how every instance of this has actually arrived.
+ *
  * WHY AN UNMEASURED RUN IS REFUSED RATHER THAN RECORDED. `lib/suite-measurement.ts`
  * says it: UNMEASURED is not a result, it is the statement that this run has
  * no suite evidence, and it is deliberately not writable — a recorded
