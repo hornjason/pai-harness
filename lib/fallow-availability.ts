@@ -86,10 +86,33 @@ export function fallowNotInstalled(): FallowUnavailable {
   };
 }
 
+/**
+ * A tool's output, made safe to put in a document an agent reads.
+ *
+ * The `run-failed` reason quotes what fallow printed, and that string ends
+ * up inside CODE-MAP.md — which `.claude/rules/key-files.md` tells every
+ * agent to read to understand the codebase. So it is untrusted text on its
+ * way into a trusted document, and fallow's error text can quote the repo's
+ * own file names and contents.
+ *
+ * One line, an allowlist, and a cap. Not an escape routine: a denylist of
+ * markdown syntax is a detector narrower than what it detects, and the
+ * useful content of a tool error survives an allowlist intact.
+ */
+export function safeToolDetail(raw: string): string {
+  const firstLine = raw.split("\n")[0] ?? "";
+  // A RUN of disallowed characters collapses to one `?`, rather than one
+  // `?` each. Both are safe; the difference is whether a detail that was
+  // entirely unprintable comes back as `????????` — which carries no
+  // information and is indistinguishable from a tool that said something.
+  const cleaned = firstLine.replace(/[^A-Za-z0-9 .,:;()/'"=+-]+/g, "?").slice(0, 120).trim();
+  return /^[?\s]*$/.test(cleaned) ? "(no printable detail)" : cleaned;
+}
+
 export function fallowRunFailed(detail: string): FallowUnavailable {
   return {
     kind: "run-failed",
-    reason: `fallow is installed but the run did not produce a reading: ${detail}`,
+    reason: `fallow is installed but the run did not produce a reading: ${safeToolDetail(detail)}`,
   };
 }
 

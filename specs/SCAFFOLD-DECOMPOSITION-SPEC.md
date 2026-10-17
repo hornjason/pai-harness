@@ -1204,8 +1204,9 @@ own reports UNMEASURED by name rather than failing over the npm registry.
 - [x] SC-1981: test/code-map-fallow.test.ts contains [not-installed and run-failed are different sentences] — a notice that said the same for both would send a reader to install a tool they already have, and the two have opposite fixes
 - [x] SC-1982: test/code-map-fallow.test.ts contains [the conformity suite and the generator ask the same binding] — not "both answer the same today" but the SAME FUNCTION, because this pair spent four months disagreeing while every test passed
 - [x] SC-1983: test/code-map-fallow.test.ts contains [no caller spawns fallow without resolving it first] — the source-level ratchet, and the only form that catches the NEXT caller; a test over the two files that exist today would not have caught this one either
+- [x] SC-1984: test/code-map-fallow.test.ts contains [a tool's own words cannot write markdown into the document agents read] — the run-failed reason quotes what fallow printed and that string lands in CODE-MAP.md, which every agent is told to read; one line, an allowlist and a cap, with the positive control that an ordinary tool error survives intact
 
-### What was broken to prove it (SC-1979..1983)
+### What was broken to prove it (SC-1979..1984)
 
 Run and counted over `test/code-map-fallow.test.ts` +
 `test/scaffold-relative-root.test.ts` (12 tests, baseline 12 pass / 0 fail).
@@ -1218,3 +1219,22 @@ None is left in the tree; all were run and reverted.
 | `lib/conformity.ts` declares its own copy instead of re-exporting | 1 of 12 | 1 |
 | `SC-1665`'s exclusion back to demanding BOTH runs produced the file | 1 of 12 | 1 |
 | `not-installed` stops saying no fetch was attempted | 2 of 12 | 2 |
+| `safeToolDetail` returns its input unchanged | 1 of 13 | 1 |
+
+#### A finding the fix introduced, caught by the review of its own commit
+
+The `run-failed` reason quotes what fallow printed, and that string is
+written into `CODE-MAP.md` — the document `.claude/rules/key-files.md` tells
+every agent to read to understand the codebase. fallow's error text can
+quote the repo's own file names and contents, so the first version of this
+fix piped untrusted output straight into a trusted document: `## Hard
+Constraints` in a tool's stderr would have become a heading in the
+consumer's code map.
+
+`safeToolDetail` takes the first line, passes it through an **allowlist**,
+and caps it. An allowlist rather than a denylist of markdown syntax,
+because a denylist is a detector narrower than what it detects — and the
+useful content of an ordinary tool error survives an allowlist intact,
+which is the positive control in SC-1984. A run of disallowed characters
+collapses to one `?` rather than one each, so a detail that was entirely
+unprintable reads `(no printable detail)` instead of `????????`.
