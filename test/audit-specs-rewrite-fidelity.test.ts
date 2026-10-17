@@ -136,42 +136,51 @@ describe("#586: a rewrite keeps what the criterion was about", () => {
     }
   });
 
-  test("SC-1998: the loose file fallback fires on existence, not on any filename", () => {
+  test("SC-1998: the loose file fallback downgrades, and records that it did", () => {
     // Found by running the fixed enricher over the real tree rather than by
-    // reading it: two criteria were still being replaced, both through this
-    // fallback, and both keep the filename — so the distinguishing-terms
-    // guard passes them while the whole requirement is discarded.
+    // reading it: two criteria are replaced through the loose fallback, and
+    // both keep the filename — so the distinguishing-terms guard passes them
+    // while the requirement itself becomes a file-existence check.
+    //
+    // **This is a downgrade, not a loss, and #586 is about loss.** The
+    // fallback reports `ambiguous: true`, which is what writes
+    // `<!-- REVIEW: original — … -->` beside the rewritten line, so the
+    // statement it replaced is still in the file. #426 kept this path for
+    // exactly that reason and pinned it in SC-1587 and SC-1594.
+    //
+    // The first draft of this case narrowed the fallback to statements whose
+    // verb is existence. It turned both of those criteria red — a fix for a
+    // defect that is real but is a DIFFERENT defect, filed rather than
+    // folded in. What is pinned here instead is the property that makes the
+    // downgrade survivable: the marker.
     const behaviour =
       "Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` " +
       "and it is never re-promoted";
-    const decided = decideRewrite(behaviour, closestPatternFor(behaviour));
+    const closest = closestPatternFor(behaviour);
+    expect(closest?.patternName, "the fallback no longer fires on the case it is for")
+      .toBe("file-exists");
     expect(
-      decided.kind,
-      `a behavioural criterion was replaced with a file-existence one: ${JSON.stringify(decided)}`,
-    ).toBe("keep");
+      closest?.ambiguous,
+      "a behavioural criterion is replaced by a file-existence one AND the original is " +
+        "not written beside it — the rewrite is now unrecoverable",
+    ).toBe(true);
+    expect(
+      decideRewrite(behaviour, closest).kind,
+      "nothing is rewritten, so the marker assertion above holds vacuously",
+    ).toBe("rewrite");
 
     const scanned =
       "Makefile targets, `package.json` scripts and CI workflow files are scanned for " +
       "constraints alongside markdown";
-    expect(decideRewrite(scanned, closestPatternFor(scanned)).kind).toBe("keep");
+    expect(closestPatternFor(scanned)?.ambiguous).toBe(true);
 
-    // The positive control. The fallback exists for a real case and
-    // narrowing it to nothing would be the cheapest way to make the two
-    // assertions above pass — which is the fifth shape, so it is asserted
-    // rather than trusted.
-    //
-    // Phrased so it reaches the LOOSE fallback rather than the registry's
-    // own `file-exists` heuristic, which binds a plainly-worded
-    // `X.md exists` earlier and reports `ambiguous: false`. Both carry the
-    // pattern name `file-exists`, so asserting the name alone cannot tell
-    // which path ran — the first draft of this control did exactly that and
-    // was measuring the heuristic, not the fallback it is about.
-    const presence = "a canonical reference/rejected-constraints.md is present after the first rejection";
-    const kept = closestPatternFor(presence);
-    expect(kept?.patternName, "the fallback no longer fires on the case it is for")
-      .toBe("file-exists");
-    expect(kept?.ambiguous, "the loose path was not the one that ran, so this proves nothing")
-      .toBe(true);
+    // The negative control, because every `ambiguous` in the registry being
+    // `true` would satisfy the assertions above while saying nothing. A
+    // statement the registry binds EXACTLY is unambiguous — there is nothing
+    // to review — so the two flags have to be distinguishable.
+    const exact = closestPatternFor("AGENTS.md contains [Hard Constraints]");
+    expect(exact?.ambiguous, "every pattern reports ambiguous, so the flag carries no information")
+      .toBe(false);
   });
 
   test("SC-1999: a directory pattern is satisfied by its broader bare form, and not the reverse", () => {

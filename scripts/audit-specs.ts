@@ -274,10 +274,11 @@ function findClosestPattern(
   }
 
   // If no heuristic matched, try a loose file-exists match.
+  // Look for any filename-like token (word.ext) in the statement.
   //
-  // #586: and only where the criterion is ABOUT the file existing. This
-  // fallback fires on any filename-like token anywhere in the sentence, so
-  // it was turning behaviour into presence:
+  // #586 looked hard at narrowing this to statements whose verb is
+  // existence, and did not. The fallback does turn behaviour into presence —
+  // measured over the real tree, two criteria go through it:
   //
   //   "Rejecting a promoted rule writes its hash to
   //    `reference/rejected-constraints.md` and it is never re-promoted"
@@ -287,20 +288,18 @@ function findClosestPattern(
   //    scanned for constraints alongside markdown"
   //      -> "package.json exists"
   //
-  // Both keep a word from the original — the filename — so the
-  // distinguishing-terms guard in `decideRewrite` passes them, and both
-  // discard the entire requirement. A filename a criterion MENTIONS is not
-  // what the criterion is about, which is `lib/spec-listing.ts`'s "a mention
-  // is not a listing" arriving in a third place.
+  // — but it reports `ambiguous: true`, and an ambiguous rewrite writes
+  // `<!-- REVIEW: original — … -->` beside the line. #426 kept this path for
+  // exactly that reason (see SC-1587: "a lossy render by nature … kept as the
+  // one remaining rewrite path precisely because it writes the statement it
+  // replaced into the next line"). Nothing is discarded, so this is a
+  // DOWNGRADE, not a LOSS, and #586 is about loss.
   //
-  // The narrowing is to the case the fallback was for: a short statement
-  // whose verb is existence. Anything else is reported as unmatched and kept
-  // intact, which is #426's path and the honest answer — a criterion the
-  // registry cannot express needs a pattern or a human, not a downgrade.
+  // Narrowing it here turns SC-1587 and SC-1594 red for a reason those
+  // criteria are right about, which is how the distinction got found. The
+  // downgrade is filed separately rather than folded in.
   const fileToken = statement.match(/\b(\S+\.\w{1,5})\b/);
-  const isAboutExistence =
-    /\b(exists?|is present|are present|is created|has been created|must exist)\b/i.test(statement);
-  if (fileToken && isAboutExistence) {
+  if (fileToken) {
     return {
       patternName: "file-exists",
       rewrite: `${fileToken[1]} exists`,
@@ -398,6 +397,9 @@ export function decideRewrite(
     };
   }
 
+  const rationale = rationaleOf(statement);
+  const rewritten = rationale ? `${closest.rewrite} — ${rationale}` : closest.rewrite;
+
   // #586: the fourth guard, and the general one. The three above protect
   // specific things — a structured line, a missing pattern, a named file.
   // This one asks the question they are each a special case of: **does the
@@ -407,21 +409,25 @@ export function decideRewrite(
   // `Baseline rules carry no paths: key in frontmatter`, which was rewritten
   // to `all specs have frontmatter`. Nothing of the original survived and no
   // guard was looking at that.
-  const kept = distinguishingTerms(statement).filter(t =>
-    closest.rewrite.toLowerCase().includes(t),
-  );
-  if (distinguishingTerms(statement).length > 0 && kept.length === 0) {
+  //
+  // It asks the question of `rewritten`, not of `closest.rewrite`, and the
+  // difference is #426's SC-1591: the rationale clause is carried across, so
+  // a statement whose meaning lives in its `— because …` half survives a
+  // constant rewrite with that half intact. Asking it of the bare pattern
+  // text refuses those, which turns the enricher off for every criterion
+  // that explains itself. SC-1930 has no rationale clause, so nothing of it
+  // survives either way and it is still refused.
+  const terms = distinguishingTerms(statement);
+  const lowered = rewritten.toLowerCase();
+  if (terms.length > 0 && !terms.some(t => lowered.includes(t))) {
     return {
       kind: "keep",
       reason:
         `rewriting as ${closest.patternName} would drop every distinguishing term the ` +
-        `criterion uses (${distinguishingTerms(statement).join(", ")}) — the rewrite would be ` +
-        `about something else`,
+        `criterion uses (${terms.join(", ")}) — the rewrite would be about something else`,
     };
   }
 
-  const rationale = rationaleOf(statement);
-  const rewritten = rationale ? `${closest.rewrite} — ${rationale}` : closest.rewrite;
   if (rewritten === statement) {
     return { kind: "keep", reason: "the rewrite is what is already written" };
   }

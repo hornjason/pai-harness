@@ -1076,19 +1076,35 @@ the same shape and is not the one that bit us.
 that caused the heuristic to fire as retained content is how a constant
 rewrite reads as faithful: the proxy standing in for the property.
 
-### And the loose fallback fires on existence, not on any filename
+### And the loose fallback downgrades, which is not the same as losing
 
 Found by running the fixed enricher over the tree rather than by reading it.
-The last-resort `file-exists` match took any filename-like token anywhere in
-a sentence, so a criterion about *writing a hash to* a file became a
-criterion about that file *existing*. Both survivors kept the filename, so
-the distinguishing-terms guard passed them — **a filename a criterion
+The last-resort `file-exists` match takes any filename-like token anywhere in
+a sentence, so a criterion about *writing a hash to* a file becomes a
+criterion about that file *existing*. Both survivors keep the filename, so
+the distinguishing-terms guard passes them — **a filename a criterion
 mentions is not what the criterion is about**, which is
 `lib/spec-listing.ts`'s "a mention is not a listing" arriving in a third
 place.
 
-After the fix, `auditSpecs(".", {fix: true})` rewrites **0** of 19 unmatched
-criteria and keeps all 19 intact with their reasons reported.
+**It is not narrowed here, and the reason is the distinction #586 turns on.**
+That path reports `ambiguous: true`, which is what writes
+`<!-- REVIEW: original — … -->` beside the rewritten line, so the statement
+it replaced is still in the file. #426 kept it for exactly that reason and
+pinned it in SC-1587 and SC-1594. A downgrade whose original is recorded is
+recoverable by anyone reading the spec; the `all-specs-frontmatter` rewrite
+was not, because `ambiguous: false` suppresses the marker.
+
+The first draft narrowed it to statements whose verb is existence and turned
+SC-1587 and SC-1594 red — two criteria that are right, caught asserting the
+behaviour this change would have removed. The downgrade is real and is filed
+separately rather than folded in, which is the same call #586 itself records
+being made about it.
+
+So what SC-1998 pins is the property that makes the downgrade survivable:
+the marker, and a negative control that an exactly-bound criterion reports
+`ambiguous: false`, because every pattern reporting `true` would satisfy the
+assertion while saying nothing.
 
 ### Success Criteria
 
@@ -1097,7 +1113,7 @@ criteria and keeps all 19 intact with their reasons reported.
 - [x] SC-1995: test/audit-specs-rewrite-fidelity.test.ts contains [distinguishing terms are the statement's own words, not the matched keyword] — counting the matched keyword as retained content is how a constant rewrite reads as faithful
 - [x] SC-1996: test/audit-specs-rewrite-fidelity.test.ts contains [an extractor that ignores its input cannot claim to be unambiguous] — two statements differing in every word must not produce one unambiguous rewrite
 - [x] SC-1997: test/audit-specs-rewrite-fidelity.test.ts contains [a keyword list means all of its phrases, not any one of them] — with the rule still firing on the statement it is actually for
-- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback fires on existence, not on any filename] — the two live survivors, plus a control phrased to reach the LOOSE path rather than the registry heuristic that shares its pattern name
+- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback downgrades, and records that it did] — the two live survivors rewrite, and each carries `ambiguous: true` so the original is written beside it; the negative control is a criterion the registry binds exactly, which must report `false`
 - [x] SC-1999: test/audit-specs-rewrite-fidelity.test.ts contains [a directory pattern is satisfied by its broader bare form, and not the reverse] — the `.gitignore` half, which was filed wrongly as non-idempotence; the reverse direction is pinned because widening this match is how `service-account*` comes back
 
 ### What was broken to prove it (SC-1993..SC-1999)
