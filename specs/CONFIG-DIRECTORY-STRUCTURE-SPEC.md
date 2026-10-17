@@ -1240,53 +1240,97 @@ what the gates read, and none of them expresses "this environment first".
 
 This is recorded here, in the config spec, rather than left to be discovered
 during a DDB run — which is the way it would otherwise be found, because every
-mechanism below fails quietly. Line numbers are as of `2c220e5e`; the names are
+mechanism below fails quietly. Line numbers are as of `1103bbd4`; the names are
 the durable part.
+
+**Re-measured at `1103bbd4`, and two of the readings below had changed.** The
+section was first written against `2c220e5e`; between the two, #344 and #183
+landed and each falsified one row. Both are corrected in place, with what they
+used to say kept beside them — a gap description that quietly absorbs its own
+fixes cannot be told from one that was never true. The conclusion survives both
+corrections, and survives them for a *different* reason than the one originally
+given, which is the part worth reading.
 
 ### What stands in for the rule today, and why none of it is the rule
 
 | Mechanism | What it actually does |
 |---|---|
-| `local-before-prod` (`gates/workflow.test.ts:384`) | The closest check there is. Reads `environments.prod.rebuild` and refuses unless `local.api` or `local.tests` is PASS. It names no ports, reads no config, and cannot distinguish 7776 from anything else |
-| `quinn-container-port` (`gates/workflow.test.ts:697`) | The only place a gate knows the number 7776, and it is **hardcoded**, not read from `container.port`. It `console.warn`s on a mismatch and never fails — a check that cannot go red |
+| `local-before-prod` (`gates/workflow.test.ts:739`) | The closest check there is. Reads `environments.prod.rebuild` and refuses unless `local.api` or `local.tests` is PASS. It names no ports, reads no config, and cannot distinguish 7776 from anything else. **And since #183 it never fires at all** — it early-returns on `SKIP`, which is now the only value any arm of the producer writes (see mechanism 3) |
+| `quinn-container-port` (`gates/workflow.test.ts:1148`) | **Corrected.** This said the check hardcoded 7776. #344 fixed that: `expected` is `harness?.container?.port`, and with none configured the check reports UNMEASURED rather than inventing a number to disagree with. What is still true is the second half — every arm is a `console.warn` or a bare `return`, so it cannot go red, and #344's comment says so deliberately rather than by oversight |
 | `container.port` / `container.rebuildCommand` | Config the SHIP phase substitutes into agent prompts. Nothing compares them to anything |
 
 ### The three mechanisms the gap is made of
 
 **1. The config-key split — same fact, two key names (#294).** `tests-pass` is
-gated on `dev.testCmd` (`gates/workflow.test.ts:532`), while the test baseline
-in `captureTestBaseline` reads `test.command` (`gates/gate-executor.ts:92`).
+gated on `dev.testCmd` (`gates/workflow.test.ts:914`), while the test baseline
+in `captureTestBaseline` reads `test.command` (`gates/gate-executor.ts:227`).
 Both mean "the command that runs this project's suite". This repo's own
 `.claude/rungate.json` sets `test.command` and no `dev.testCmd`, so `tests-pass`
 early-returns on every run of rungate against itself. A consumer writing the
 rule under either name has a 50% chance of writing it where nothing reads.
 
-**2. 10 gate checks sit behind `loadProjectHarness`, and it only reads the
-monolith.** `loadProjectHarness()` (`gates/workflow.test.ts:40`, and a second
-copy in `gates/brief-assembler.ts:115`) reads `.claude/rungate.json` directly —
-not `.claude/rungate/`, and not through `lib/config-loader.ts`, which is the
-loader D-1 and D-2 describe. A consumer that took the directory split and
-deleted the monolith gets `null` from it, and all ten of those checks return
-without measuring anything. The split this spec specifies is therefore not yet
-true of the gates: `lib/config-loader.ts` honours it and the gate suite does
-not. Any port rule added to config inherits that gap on day one.
+**2. Eleven gate checks sit behind `loadProjectHarness`, and it only reads the
+monolith.** `loadProjectHarness()` (`gates/workflow.test.ts:104`) reads
+`.claude/rungate.json` directly — not `.claude/rungate/`, and not through
+`lib/config-loader.ts`, which is the loader D-1 and D-2 describe. A consumer
+that took the directory split and deleted the monolith gets `null` from it, and
+all eleven of those checks return without measuring anything. The split this
+spec specifies is therefore not yet true of the gates: `lib/config-loader.ts`
+honours it and the gate suite does not. Any port rule added to config inherits
+that gap on day one.
 
-**3. The rebuild verdict is a string an agent writes.** The `record-env` prompt
-in `workflows/ship.js` (PHASE 8: SHIP, `label: 'record-env'`, line 4566) tells
-the agent: curl the container health path, and if it returns 200, run a `bun -e`
-that sets `environments.prod.rebuild = 'PASS'`. So "the rebuild happened" is
-satisfied by "something answered on the port" — and `local-before-prod`, the one
-check that looks like an ordering rule, keys on exactly that field. On a DDB run
-this is worse than imprecise: DDB's own CLAUDE.md forbids the agent from running
-its rebuild target, and its Makefile has a worktree guard that exits 1. The honest
-value there is `SKIP` with a reason; `PASS` asserts a rebuild nobody is allowed
-to perform.
+Two readings here have moved since `2c220e5e` without changing the finding: the
+checks are eleven rather than ten (`harness-port-validation`,
+`container-has-fix`, `tests-pass`, `code-committed`, `local-api-validated`,
+`local-ui-validated`, `quinn-container-port`, `prod-rebuild-pass`,
+`prod-smoke-pass`, `prod-quinn-pass`, `prod-quinn-spot`), and the second copy
+in `gates/brief-assembler.ts` is gone — that file now reaches the config through
+the loader and says so in a comment where the direct read used to be. One of the
+two readers named here has been fixed; the one the checks hang off has not.
+
+**3. The rebuild verdict is a string an agent writes — and since #183 the
+string is always `SKIP`.** **Corrected.** This said the `record-env` prompt
+tells the agent to curl the container health path and write
+`environments.prod.rebuild = 'PASS'` on a 200, so "the rebuild happened" was
+satisfied by "something answered on the port". That is no longer what the prompt
+says. #183 replaced it: at `workflows/ship.js:7172` the container-is-up arm
+writes `'SKIP'` with `rebuildSkipReason` reading *"the container answered a
+health check; whether it was built from this commit was not measured (#183) —
+container-has-fix compares the image revision against HEAD"*, and the
+container-down arm at `:7175` writes `'SKIP'` too.
+
+**This makes the gap wider, not narrower, and that is the correction worth
+having.** `local-before-prod` early-returns on `SKIP`. With both arms of the only
+producer writing `SKIP`, the one check in the suite that looks like an ordering
+rule now cannot fire on any run at all — where before it fired on a value that
+did not mean what it said. The honest reading moved from *wrong* to
+*unmeasured*, which is the direction this repo wants and is still not the rule.
+
+The DDB consequence is unchanged and is now served correctly by accident: DDB's
+CLAUDE.md forbids the agent from running its rebuild target and its Makefile has
+a worktree guard that exits 1, so `SKIP` with a reason was always the honest
+value there. #183 made it the value on every project rather than on that one.
 
 ### What expressing it would take
 
-Three things, none of which exist: a config key for environment precedence
-(a `prod` that may not be recorded before a named `test` environment is PASS); a
-gate check that reads it instead of hardcoding a port; and a measured source for
-`environments.prod.rebuild` to replace the agent prompt. Until then the honest
-statement for a consumer is that rungate can run a container on a configured
-port and cannot enforce an order between two of them.
+Three things. At `2c220e5e` none of them existed; at `1103bbd4` one and a half
+do, and the rule still cannot be written.
+
+1. **A config key for environment precedence** — a `prod` that may not be
+   recorded before a named `test` environment is PASS. Still absent. This is
+   the one that makes the other two insufficient on their own.
+2. **A gate check that reads the port from config instead of hardcoding it.**
+   Done, by #344 — `quinn-container-port` reads `container.port`. It still
+   cannot go red, so it informs rather than enforces: half.
+3. **A measured source for `environments.prod.rebuild` to replace the agent
+   prompt.** Still absent, and #183 is why the absence is now visible: the
+   prompt stopped claiming `PASS` and started recording `SKIP` with the reason
+   that provenance was not measured. The measurement it defers to —
+   `container-has-fix`, comparing the image revision label against HEAD — is a
+   different check keyed on a different field, so nothing turns it back into an
+   ordering fact.
+
+Until (1) exists the honest statement for a consumer is unchanged: rungate can
+run a container on a configured port and cannot enforce an order between two of
+them. What changed between the two measurements is that it no longer reports
+otherwise.
