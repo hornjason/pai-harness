@@ -448,7 +448,7 @@ describe("#208 AC-2: measured on this repo", () => {
  * described as belonging to all of them is the gap #507 exists to record,
  * so it is measured here rather than recorded.
  */
-describe("#507 SC-1930: no owned file is written through a symlink, whatever its strategy", () => {
+describe("#507 SC-1949: no owned file is written through a symlink, whatever its strategy", () => {
   const victimRoot = () => {
     const d = mkdtempSync(join(tmpdir(), "rungate-507-victim-"));
     scratch.push(d);

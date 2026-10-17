@@ -43,7 +43,7 @@ import {
   FIXTURE_SC_FLOOR, isFixtureScId, scIdsSpelledInSource, strayFixtureIds,
   buildScRegistry, SC_SOURCE_DIRS,
 } from "../lib/sc-ids";
-import { nextSCNumber } from "../lib/create-sc";
+import { allocateScNumber, nextSCNumber } from "../lib/create-sc";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -294,7 +294,19 @@ describe("SC-1525: the CLI asks the allocator the whole question", () => {
     const before = readFileSync(spec, "utf-8");
     const specOnly = nextSCNumber("", registry);
     const probeFile = join(ROOT, "test", "zz-399-cli-probe.ts");
-    const probeId = specOnly + 7;
+    // Above the WHOLE namespace, not just this tree's spec registry (#503).
+    // Since `allocateScNumber` reads sibling worktrees and every branch ref,
+    // another session's in-flight block can sit above `specOnly` — and then
+    // the CLI steps over THAT rather than over the probe, and the case
+    // passes without the feature it names. Measured the day it happened: a
+    // peer's unmerged branch held a block of nineteen ids above the registry
+    // answer, the probe landed inside it, and the CLI correctly allocated
+    // past the whole block rather than past the probe.
+    //
+    // Computed, never spelled: a literal id here would be a stray in this
+    // very file, and the guard below would report its own test.
+    const probeId = allocateScNumber(ROOT, "").number + 7;
+    expect(probeId, "the probe is not above the registry answer it must beat").toBeGreaterThan(specOnly);
     try {
       writeFileSync(probeFile, `// scratch probe written by test/sc-fixture-namespace.ts\nconst id = "SC-${probeId}";\n`);
       const r = spawnSync("bun", [join(ROOT, "scripts", "create-sc.ts"),
