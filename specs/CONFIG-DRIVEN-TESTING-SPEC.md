@@ -980,6 +980,35 @@ second, legitimate credit path. That is why the live-tree ratchet asserts
 backed by a test file" — the narrower property would have made the honest
 answer look like a regression. Net 38.
 
+### What was broken to prove it
+
+Five mutations over 80 tests across five files. Baseline 80 pass, 0 fail —
+read first, and it was 1 fail on the first attempt because this file spelled
+a literal below-floor SC id and `SC-1522` reported its own test. None of the
+mutations is left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `titleCall` returns `runs` for everything | 4 | 4 |
+| the non-running set narrowed back to `.todo` alone | 1 | 1 |
+| the range exclusion removed from the attribution form | 1 | 1 |
+| the credit rule stops skipping `unrun-title` | 1 | 2 |
+| the UNMEASURED report returns empty | 2 | 2 |
+
+The fourth row missed LOW and the reason is worth keeping, because the two
+guards it touches look like a pair and are not. SC-1957 asks the CREDIT
+RULE a question and goes red. SC-1959 asks the SPECS ON DISK a question —
+"is anything ticked that rests on a todo" — and the specs do not re-tick
+themselves inside a test run, so a credit-rule regression alone leaves it
+green. It fires when someone commits the tick, which is a ratchet rather
+than a unit test, and it is the only case here that keeps the forty
+removals from coming back.
+
+SC-1959 goes red under the FIRST mutation, which is the one that would let
+them back, and it goes red there on its instrument assertion rather than
+its property — `expect(unmeasured.size).toBeGreaterThan(10)` is what
+notices that the report has stopped reporting.
+
 ### Success Criteria
 
 - [x] SC-1955: test/sc-todo-credit.test.ts contains [a todo title declares intent, a test title declares coverage] — the same id, file and words with one modifier of difference, and the running title as the positive control
