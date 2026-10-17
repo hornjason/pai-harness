@@ -1,8 +1,9 @@
 import { test, expect, describe } from "bun:test";
-import { readFileSync } from "fs";
+import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { THRESHOLD_OPS, EVIDENCE_METHOD_TYPES, SUITE_MEASUREMENT_FIELDS } from "./schema";
 import { parseTestResults } from "./run-gate";
+import { stripJsComments } from "../lib/strip-js-comments";
 
 const GATES_DIR = __dirname;
 const V2_SCHEMA_PATH = join(GATES_DIR, "..", "config", "workflow-schema.json");
@@ -297,6 +298,41 @@ describe("#550: a timed-out failure keeps its own explanation", () => {
     // satisfies the assertion above.
     expect(next!.detail).toContain("expect(received).toBe(expected)");
     expect(next!.detail).toContain("Expected: 2");
+  });
+
+  test("SC-1863: nothing in gates/ assigns a bare \"failed\" as a detail", () => {
+    // SC-1860 is about the one producer this repo has today. This is the
+    // reintroduction guard: a second place writing `detail: "failed"` would
+    // put a reasonless refusal back in the state file while SC-1860 stayed
+    // green, because SC-1860 only ever drives `parseTestResults`.
+    //
+    // Comments are stripped first — this file and gate-executor.ts both
+    // DISCUSS the old string on purpose, and a comment reciting what was
+    // removed is not evidence it is still there.
+    // THIS FILE is the one exclusion, and it is not an exemption list: the
+    // instrument below has to quote the forbidden string to prove the
+    // pattern still matches, and on the first run the check caught itself
+    // doing so. The exclusion is one named file — the scanner — rather than
+    // a list anybody can add to, and `workflow.test.ts` and every other
+    // file in gates/ stay in scope.
+    const SELF = "schema-parity.test.ts";
+    const offenders: string[] = [];
+    for (const name of readdirSync(GATES_DIR).filter(f => f.endsWith(".ts") && f !== SELF)) {
+      const code = stripJsComments(readFileSync(join(GATES_DIR, name), "utf-8"));
+      code.split("\n").forEach((line, i) => {
+        if (/\bdetail:\s*["'`]failed["'`]/.test(line)) offenders.push(`${name}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders, `a reasonless refusal detail is back:\n${offenders.join("\n")}`).toEqual([]);
+
+    // The instrument, twice over: the pattern matches when the string is
+    // there, and the scan really did read the files rather than skipping
+    // them all.
+    expect(/\bdetail:\s*["'`]failed["'`]/.test('  results.push({ detail: "failed" })')).toBe(true);
+    expect(
+      readdirSync(GATES_DIR).filter(f => f.endsWith(".ts") && f !== SELF).length,
+      "the scan found no files to read",
+    ).toBeGreaterThan(3);
   });
 
   test("SC-1861: an ordinary failure's backward scan is unchanged", () => {
