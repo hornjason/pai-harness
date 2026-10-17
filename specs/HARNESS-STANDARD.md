@@ -8348,3 +8348,122 @@ than kept and measured.
 - [x] SC-1843: test/recorder-command-executed.test.ts contains [reintroducing --failures into the prompt turns this red] — a prompt that asks for a count is how a count gets typed
 - [x] SC-1844: test/suite-verdict-binding.test.ts contains [the schema refuses a measurement over zero executed tests] — the property, where the row above it enforces only the proxy
 - [x] SC-1845: test/test-baseline-unmeasured.test.ts contains [a baseline run that executed nothing is UNMEASURED - not a clean tree] — #490 in the live path that already ran, found by the commit security review rather than by the issue
+
+## The field three gates read, and nothing wrote (#530)
+
+`tests-pass`, `local-api-validated` and `local-ui-validated` all refuse a run
+whose `environments.local` does not carry their field. The clauses that tell
+an agent how to produce those fields have been correct since #307. **Nothing
+ran them.**
+
+They are interpolated into the SCOPE gate's heal prompt, and a heal prompt
+runs only when its gate fails. So on every run where scope passed — the
+normal run — `environments.local` stayed `{}`, and three gates refused
+finished work for want of a value no step had ever been asked to write.
+
+### What was observed
+
+Run `wf_e230fddc-a71` refused at verify with `local.tests not set — PASS or
+SKIP required when dev.testCmd is configured`. Its state carried
+`environments: { local: {} }` and no `suiteMeasurement` at all, because the
+recorder invocation lives in the same prompt as the clauses.
+
+Reading the run state rather than the issue corrected the premise twice, and
+both corrections narrowed the fix:
+
+- **Three gates, not four.** `tsc-pass` has not read `environments.local`
+  since #176; its detail in that run was the bare string `"failed"`, and the
+  `^ this test timed out after 5000ms` line in the neighbouring detail belongs
+  to it rather than to `local-api`. That is a different defect and is filed
+  separately as #550.
+- **The asymmetry is not agent-versus-shell.** `environments.prod` is written
+  by `record-env`, which is also an agent step. What makes it reliable is that
+  it is a *dedicated step on every path*, where the local half was *a clause
+  inside a conditional heal prompt*.
+
+### One fact, two shapes, one write
+
+`tests-pass` reads `environments.local.tests`, an enum of `PASS | FAIL |
+SKIP`. `suiteCurrency` reads `suiteMeasurement`, which must carry the SHA the
+run was measured at or it is not evidence (#224). Both are needed and neither
+can be dropped, so the recorder writes both — in `applyMeasurement`, from one
+verdict derived once in `buildMeasurement`.
+
+That is not two deciders. It is one decision copied to the two places that
+read it, and the copy is checked: `suiteVerdictViolations` now takes the
+measurement as a second argument and refuses a `PASS` the measurement does not
+back, with *"A verdict no measurement backs is a verdict somebody typed."*
+Before #530 that sentence had nowhere to fire, because the only way the field
+was ever populated was by hand.
+
+**Every green row in `test/suite-binding-mutation.test.ts` was a hand-written
+enum** standing in for a chain that did not connect. That is why the gap
+survived #224, #307 and #312: each of them tested the consumer against a
+planted value, and a planted value is exactly what you get when the producer
+writes somewhere else. The fixture rows now run the recorder.
+
+### The step measures the worktree, not main
+
+`record-local-env` is handed `marcusWorktreePath` for both the capture and the
+recorder. PROJECT_ROOT is main. A suite measured there is a measurement of
+somebody else's commit, and the recorder would stamp main's SHA onto this
+branch's verdict — which `suiteCurrency` then compares against the branch tip
+and refuses, for a reason that has nothing to do with the code.
+
+The scope-phase prompt keeps PROJECT_ROOT, and that is correct rather than an
+oversight: at scope there is no worktree yet.
+
+### Placement is checked structurally, not by grep
+
+A `toContain("record-local-env")` passes against a step buried in an arm
+nothing takes — which is the arrangement this issue is about. So
+`localEnvPlacementViolations` counts braces over a literals-blanked view of
+`workflows/ship.js` and refuses a call site at any depth but zero, or one
+sitting after the gate that reads what it writes. Anchors are located in a
+comments-blanked view and braces counted in a literals-blanked one: the step's
+prompt carries `${...}` braces the code view would count, and `phase('Verify')`
+carries a string the skeleton cannot see.
+
+### What was broken to prove it
+
+Seven mutations over 43 tests in `test/suite-binding-mutation.test.ts` and
+`test/ship-local-env-clause.test.ts`. None is left in the tree.
+
+| Mutation | Red | First prediction |
+|---|---|---|
+| `applyMeasurement` stops writing `environments.local.tests` | 3 | 3 |
+| the cross-check clause in `suiteVerdictViolations` disabled | 1 | 1 |
+| the gate call site drops the measurement argument | 1 | 1 |
+| the `record-local-env` step buried in a conditional | 1 | 1 |
+| the prompt stops emitting the recorder command | 1 | 1 |
+| the call site measures `PROJECT_ROOT` instead of the worktree | 1 | 1 |
+| `recordLocalEnvPrompt` renamed | file aborts | file aborts |
+
+The last row is the one that keeps the others honest: the block is extracted
+and executed at module load, so a rename takes the whole file down with
+`ReferenceError: recordLocalEnvPrompt is not defined` rather than letting five
+tests pass over a prompt that no longer exists.
+
+**The first row was 2 before it was 3, and the missing one was a real
+finding.** `SC-1848`'s control half planted `tests: "PASS"` by hand for its
+first half and then ran the recorder over the same state — so when
+`applyMeasurement` stopped writing the field, the row stayed green on the
+value it had planted itself. That is `.claude/rules/checks-must-be-able-to-fail.md`'s
+*"a fixture that reached the assertion without the feature"*, one line away
+from a row about exactly that. The control now clears the field first, so the
+only thing that can put a `PASS` back is the recorder.
+
+Mutations two and three are the two ends of one binding — the writer of the
+argument and the reader of it — not two deciders. Both are mutated because a
+reader-only proof cannot catch a producer that stopped producing (#235).
+
+### Success Criteria
+
+- [x] SC-1846: test/suite-binding-mutation.test.ts contains [fixture with one failing test: the real tests-pass check goes red] — the verdict reaches the gate through the recorder, so the row fails if the producer stops writing where the consumer reads
+- [x] SC-1847: test/suite-binding-mutation.test.ts contains [fixture with the failing test repaired: the same check is green] — and both shapes of the one fact are asserted present, written by one write
+- [x] SC-1848: test/suite-binding-mutation.test.ts contains [a PASS with no measurement behind it is refused] — the hand-written verdict the ship prompt had only ever forbidden in prose, with a cleared-then-recorded control beside it
+- [x] SC-1849: test/ship-local-env-clause.test.ts contains [the step is on a path every Verify reaches] — brace depth over a literals-blanked view, because a grep passes against a step nothing runs
+- [x] SC-1850: test/ship-local-env-clause.test.ts contains [the same check refuses the step put back inside a conditional] — the mutation performed rather than argued, and asserted to refuse on the merits rather than as a parse failure
+- [x] SC-1851: test/ship-local-env-clause.test.ts contains [the prompt carries both commands and forbids a typed verdict] — and names none of the flags the recorder refuses, because an agent reading a flag in prose types it
+- [x] SC-1852: test/ship-local-env-clause.test.ts contains [the api and ui clauses reach it] — one producer of the wording, and no config file named
+- [x] SC-1853: test/ship-local-env-clause.test.ts contains [the call site measures the worktree, not main] — a suite measured on main is a measurement of somebody else's commit

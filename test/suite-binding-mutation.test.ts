@@ -366,6 +366,14 @@ describe("#224 fixture: a measured suite failure reaches tests-pass", () => {
 
     // And the control one line over: the same enum, now backed. Without this
     // the refusal above is satisfied by a check that rejects every PASS.
+    //
+    // The typed verdict is CLEARED first, so the only thing that can put a
+    // PASS back is the recorder. Leaving it in place measured 2 red where 3
+    // was predicted when `applyMeasurement` was mutated — the row stayed
+    // green on the hand-planted value, which is #500's "a fixture that
+    // reached the assertion without the feature" one line from a row about
+    // exactly that.
+    plantState({});
     const rec = recordFixtureSuite();
     expect(rec.code, rec.err).toBe(0);
     const backed = runCheck(GATE_SUITE);
