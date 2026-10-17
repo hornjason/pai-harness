@@ -6392,6 +6392,26 @@ await parallel([runContainerVerify, () => runRookReview()])
 // Two values, no judgement: the agent reports what it read, and
 // reviewIsCurrent — the same function lib/security-verdict.ts exports and
 // test/security-verdict-blocks.test.ts drives — decides.
+//
+// #530, second instance. This block asked for `environments.local.testsSha`
+// for its whole life. **Nothing has ever written that field** — it appeared
+// in exactly one place in the tree, this prompt, and it is not a key
+// `EnvironmentLocalSchema` declares. The recorder has written the SHA to
+// `suiteMeasurement.measuredSha` since #224. So `suiteMeasuredSha` was the
+// empty string on every run, which `suiteCurrency` reads as UNRECORDED —
+// meaning the STALE refusal below has never once been able to fire, and
+// every run's terminal status was capped for a reason that had nothing to do
+// with the run.
+//
+// `writeWorkflowState` would NOT have caught a writer for it, which is worth
+// saying because it is the first thing you reach for: it calls
+// `WorkflowStateSchema.passthrough().parse(state)` and then writes the
+// ORIGINAL object, so an undeclared key validates and persists. The schema is
+// the contract about what has a producer; a written state file is not. That
+// is what test/suite-measurement-parity.test.ts checks these paths against.
+//
+// Same shape as #530 itself and one step away from it: a consumer reading a
+// name no producer writes. The producer was right; the sentence was wrong.
 const currencyProbe = await timedAgent(`
 Report two values. Do NOT reconcile, normalise or correct them, and do NOT
 substitute one for the other — reporting them as equal when they are not is
@@ -6409,7 +6429,7 @@ the failure this step exists to catch (#169).
 
 3. The test suite result that was written down, and the commit it was measured
    against. From the same ${WORK_DIR}/workflow-state.json, report
-   environments.local.tests as suiteResult and environments.local.testsSha as
+   environments.local.tests as suiteResult and suiteMeasurement.measuredSha as
    suiteMeasuredSha, both exactly as they appear. Report an empty string for
    either one that is missing (#224).
 
