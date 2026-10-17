@@ -174,6 +174,12 @@ export function writeGateResult(
     result: resultVal,
     attempt,
     failures,
+    // #532. Every check this run reported a verdict for, PASS and FAIL
+    // alike. The ship gate re-runs the verify checks, so a `verify checks >`
+    // name missing from `gates.ship.failures` means either it passed there
+    // or ship never ran it — opposite facts, and the failure list cannot
+    // tell them apart. This is the positive witness that can.
+    checksRun: results.map(r => r.check),
     ts,
     commitSha: sha,
   };

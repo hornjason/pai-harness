@@ -231,6 +231,15 @@ export const GateResultSchema = z.object({
   result: z.enum(["PASS", "FAIL"]).nullable().optional(),
   attempt: z.number().optional(),
   failures: z.array(z.any()).optional(),
+  /**
+   * Every check the gate reported a verdict for, PASS and FAIL alike (#532).
+   *
+   * Optional rather than defaulted, and `lib/gate-refusal-currency.ts`
+   * treats its absence as "this gate says nothing about what it ran" rather
+   * than as "it ran nothing" — a record written by a harness older than this
+   * field must not be read as a gate that retired every earlier refusal.
+   */
+  checksRun: z.array(z.string()).optional(),
   ts: z.string().optional(),
   commitSha: z.string().optional(),
 }).optional();
