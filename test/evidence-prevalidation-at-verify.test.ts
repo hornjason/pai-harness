@@ -28,9 +28,10 @@
  * actually wrote. None of them reads the source.
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { execSync } from "child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
+
+import { GATE_TEST_TIMEOUT_MS, gateRunRefusal, runGateProcess } from "./helpers/gate-run";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const GATE_RUNNER = join(REPO_ROOT, "gates", "run-gate.ts");
@@ -122,24 +123,20 @@ function plant(
 const MIN_GATE_CHECKS = 100;
 
 function runVerify(slug: string, env: Record<string, string> = {}): Record<string, any> {
-  let output = "";
-  const prefix = Object.entries({
-    RUNGATE_WORK_DIR: BASE_DIR,
-    RUNGATE_SKIP_AGENTS: "1",
-    ...env,
-  })
-    .map(([k, v]) => `${k}=${v}`)
-    .join(" ");
-  try {
-    output = execSync(
-      `${prefix} bun run ${GATE_RUNNER} --gate verify --slug ${slug} --issue 261 2>&1`,
-      { encoding: "utf-8", timeout: 300000 },
-    );
-  } catch (e: any) {
-    // A failing verify gate exits non-zero. Half these cases are supposed to
-    // fail; what matters is what the run wrote before exiting.
-    output = e?.stdout?.toString?.() || "";
-  }
+  // A failing verify gate exits non-zero — half these cases are supposed to
+  // fail — so a non-zero exit is not an error here. A run KILLED BY ITS
+  // BUDGET is, and the two used to be one `catch` with empty stdout between
+  // them. See test/helpers/gate-run.ts; this is #508's second half.
+  const run = runGateProcess({
+    runner: GATE_RUNNER,
+    gate: "verify",
+    slug,
+    issue: 261,
+    workDir: BASE_DIR,
+    env,
+  });
+  const output = run.output;
+  expect(gateRunRefusal(run), "the gate run never finished, so nothing below is a measurement").toBeNull();
 
   const out = JSON.parse(readFileSync(join(BASE_DIR, slug, "workflow-state.json"), "utf-8"));
 
@@ -178,7 +175,7 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
     // The scope gate genuinely did not run — otherwise this test would be
     // measuring the old path and would stay green after a revert.
     expect(out.gates?.scope, "a scope gate ran, so this is not the LIGHT path").toBeUndefined();
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("the reading is on disk BEFORE the gate suite is spawned", () => {
     // The ordering assertion, and it is the reason the two halves below are in
@@ -200,7 +197,7 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
       refusals,
       `the suite refused on a reading the run had taken: ${refusals.join("; ")}`,
     ).toEqual([]);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("a broken evidence command on a LIGHT run still refuses", () => {
     // The rubber-stamp case. Measuring at verify buys nothing if the
@@ -215,7 +212,7 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
       "the gate accepted a measured FAIL",
     ).not.toEqual([]);
     expect(out.gates?.verify?.result).toBe("FAIL");
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("an explicit UNMEASURED reading is still a refusal, not a retry", () => {
     // SC-5, and the fail-open this fix could most easily have introduced: "if
@@ -238,7 +235,7 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
     expect(out.evidencePrevalidation.verdict, "an UNMEASURED reading was overwritten").toBe("UNMEASURED");
     expect(out.evidencePrevalidation.checkedAt).toBe("2020-01-01T00:00:00.000Z");
     expect(prevalidationFailures(out), "the gate accepted an UNMEASURED reading").not.toEqual([]);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("a STANDARD run that already measured is not measured a second time", () => {
     // SC-3. The sentinel is a PASS reading on an AC whose command is broken: if
@@ -266,7 +263,7 @@ describe("#261: a LIGHT run reaches a verify verdict on its own merits", () => {
       .toBe("2020-01-01T00:00:00.000Z");
     expect(out.evidencePrevalidation.verdict).toBe("PASS");
     expect(prevalidationFailures(out)).toEqual([]);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 });
 
 /**
@@ -319,7 +316,7 @@ describe("#264: the reading is taken where the evidence is, and re-taken when it
       `the dry run looked in the wrong directory: ${JSON.stringify(reading?.acs)}`,
     ).toBe("PASS");
     expect(reading.acs.find((r: any) => r.id === "AC-1")?.status).toBe("ok");
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("a verify-taken reading is re-taken on the next attempt, so a heal can clear it", () => {
     // The heal round, simulated without an agent: attempt 1 runs with the file
@@ -349,7 +346,7 @@ describe("#264: the reading is taken where the evidence is, and re-taken when it
       "the reading was never re-taken — same timestamp on both attempts",
     ).not.toBe(firstCheckedAt);
     expect(prevalidationFailures(second), "the gate refused on a stale reading").toEqual([]);
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("the state records WHICH gate took the reading", () => {
     // The distinction the fix needs. "A reading exists" cannot separate "the
@@ -361,7 +358,7 @@ describe("#264: the reading is taken where the evidence is, and re-taken when it
     const out = runVerify("records-its-source");
     expect(out.evidencePrevalidation?.takenAt, "the reading does not say where it came from")
       .toBe("verify");
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 
   test("a scope-taken reading still survives verify, unchanged", () => {
     // The guard D2's fix must not break, stated against the new field rather
@@ -389,7 +386,7 @@ describe("#264: the reading is taken where the evidence is, and re-taken when it
     expect(out.evidencePrevalidation.checkedAt, "a scope reading was re-taken at verify")
       .toBe("2020-01-01T00:00:00.000Z");
     expect(out.evidencePrevalidation.verdict).toBe("PASS");
-  });
+  }, GATE_TEST_TIMEOUT_MS);
 });
 
 /**
