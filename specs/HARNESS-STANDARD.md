@@ -3339,7 +3339,31 @@ numbers rather than silence that reads like a verdict.
 - [x] SC-1970: test/gate-run-budget.test.ts contains [the test ceiling is above the subprocess budget, not below it] — the arrangement that produced this defect, asserted so that sizing the two independently reintroduces it as a red rather than as a misattributed timeout
 
 What was broken to prove it, run and counted rather than asserted, over
-`test/gate-run-budget.test.ts` + `test/evidence-prevalidation-at-verify.test.ts`:
+`test/gate-run-budget.test.ts` + `test/evidence-prevalidation-at-verify.test.ts`
+(12 tests, baseline 12 pass / 0 fail). None is left in the tree; all were run
+and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `timedOut` hard-coded false — a killed run is never reported as one | 1 of 12 | 1 |
+| `timedOut: !proc.success` — the cheap version, where any failed run is a timeout | **10 of 12** | 5 |
+| `gateRunRefusal` short-circuited to `return null` | 1 of 12 | 1 |
+| `GATE_TEST_TIMEOUT_MS` dropped below `GATE_RUN_BUDGET_MS` — the defect, reintroduced | 1 of 12 | 1 |
+
+**The second row missed HIGH, and the extra reds are the interesting part.**
+`.claude/rules/checks-must-be-able-to-fail.md` says to read which tests went
+red before concluding anything, because a crashing mutant and an
+unexpectedly load-bearing binding both come back high. These are the second:
+every extra red is a case that calls `gateRunRefusal` on a run the mutant now
+calls a timeout, so they are squarely about the mutated behaviour.
+
+What the prediction got wrong is a fact about this repo rather than about the
+mutation. The file's own comment says *"half these cases are supposed to
+fail"*, and five was predicted from it. All **nine** planted fixtures exit
+non-zero — which is only visible because the mutant turned every non-zero
+exit into a refusal and all nine went red together. The positive control in
+SC-1969 therefore has nine live witnesses behind it rather than the four the
+comment implies.
 
 #### Two of this workflow's own rules in contradiction (2026-10-10, #267)
 
