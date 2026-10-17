@@ -1049,10 +1049,18 @@ dropped.
    never reads its argument, so every statement reaching it produces the
    identical criterion.
 3. **It reported `ambiguous: false`**, and only an ambiguous rewrite writes
-   the `<!-- REVIEW: original — … -->` marker. So **the one case where the
-   rewrite cannot know what the statement said is the one case where the
-   original is not kept in the file.** It survived in stdout and nowhere
-   else.
+   the `REVIEW: original` marker comment that preserves the statement it
+   replaced. So **the one case where the rewrite cannot know what the
+   statement said is the one case where the original is not kept in the
+   file.** It survived in stdout and nowhere else.
+
+   (Named rather than quoted on purpose: `AC-3` in
+   `test/audit-specs.test.ts` greps every spec for that marker's literal
+   text, so a spec explaining the mechanism emits one. Fourth time this
+   session that writing about a detector tripped it —
+   `.claude/rules/checks-must-be-able-to-fail.md` has caught the shape in
+   prose four times before, and it is cheaper to describe the marker than
+   to widen the detector.)
 
 `decideRewrite`'s three guards all passed it: not already structured, a
 pattern was found, and no file token to protect.
