@@ -32,7 +32,16 @@ async function main() {
   // defect — a guard whose broken state and whose satisfied state look
   // identical cannot be known to have ever fired (#194 SC-642).
   try {
-    const decision = evaluateFullSuiteRequest(sessionId, command, { workerId, runId });
+    // `cwd` decides whose repository this suite belongs to (#510). A full
+    // suite of a scratch tree — a reviewer's `git archive` export, a fixture
+    // repo — is twenty tests and under a second, and charging it against a
+    // budget sized for this repository's 400-second run made careful review
+    // the thing the guard rationed.
+    const decision = evaluateFullSuiteRequest(sessionId, command, {
+      workerId,
+      runId,
+      cwd: input.cwd,
+    });
     if (!decision.allow) {
       console.log(JSON.stringify({
         decision: 'block',

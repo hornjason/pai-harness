@@ -26,6 +26,7 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -708,6 +709,13 @@ export function acquireFullSuiteSlot(
 
 export interface GateDecision {
   allow: boolean;
+  /**
+   * Present when the run was allowed because it is not a run of THIS
+   * repository (#510). Allowed-and-quiet would make an exemption
+   * indistinguishable from a budget that was never spent, so it is named
+   * here and recorded on disk.
+   */
+  exempt?: string;
   /** Present when refused — shown verbatim to the caller. Never silent. */
   reason?: string;
   /**
@@ -860,6 +868,117 @@ export interface GateOptions extends LockOptions {
   runId?: string;
   /** Overrides the per-run ceiling. Tests only; there is no environment path. */
   maxRunsPerPipeline?: number;
+  /**
+   * The working directory the command will run in (#510). Used to decide
+   * whether this is a run of the guarded repository or of a scratch tree
+   * somewhere else. Absent means UNKNOWN, which is charged — the budget
+   * fails closed, as the rest of this module does.
+   */
+  cwd?: string;
+  /** Injected scope, so a test need not build a git repository to drive it. */
+  scope?: RunScope;
+}
+
+/**
+ * Whose suite this is.
+ *
+ * - `project` — a tree of the repository this guard belongs to, including
+ *   every one of its worktrees. Charged.
+ * - `scratch` — a directory that EXISTS and is not part of it: a `git
+ *   archive` export under /tmp, a fixture repo a test just created, another
+ *   checkout entirely. Not charged.
+ * - `unknown` — the question could not be answered: no cwd, a path that is
+ *   not there, a git that would not run. Charged, because a guard that opens
+ *   on an error is the shape this repo keeps finding.
+ *
+ * The line between the last two is "I looked and it is not this repository"
+ * against "I could not look". A `git archive` export has no `.git` and is
+ * the case that filed #510, so a git-less directory must be scratch — but
+ * only once something has confirmed the directory is really there.
+ */
+export type RunScope = "project" | "scratch" | "unknown";
+
+/** The guarded repository's shared git directory, resolved once. */
+function projectCommonDir(): string | null {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd: join(import.meta.dir, ".."),
+      encoding: "utf-8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return realpathSync(out.trim());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Is this working directory part of the repository the guard is installed in?
+ *
+ * The comparison is the **shared git directory**, not the path: all 110
+ * worktrees of this repository answer with one `.git`, and they are all real
+ * runs that must be charged. A `git archive` export has no `.git` at all, and
+ * a fixture built by `git init` has its own — both scratch.
+ *
+ * ## Why this is not a /tmp denylist
+ *
+ * A path prefix is a detector narrower than what it detects: a reviewer's
+ * probe under `~/scratch` would be charged, and a real checkout under /tmp
+ * would be exempt. The question is "whose suite is this", and git already
+ * answers it exactly.
+ */
+export function runScope(cwd: string | undefined, projectDir?: string | null): RunScope {
+  if (!cwd) return "unknown";
+  try {
+    if (!statSync(cwd).isDirectory()) return "unknown";
+  } catch {
+    return "unknown";
+  }
+  const project = projectDir === undefined ? projectCommonDir() : projectDir;
+  if (project === null) return "unknown";
+  try {
+    const out = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+      cwd,
+      encoding: "utf-8",
+      timeout: 10_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return realpathSync(out.trim()) === project ? "project" : "scratch";
+  } catch {
+    // The directory is there and git will not claim it: not a repository at
+    // all, which is what a `git archive` export is. Not a run of the guarded
+    // project, and charging it is the thing #510 is about.
+    return "scratch";
+  }
+}
+
+/** Where exempted runs are recorded, so the exemption is auditable. */
+export function scratchRunsPath(lockDir: string): string {
+  return join(lockDir, "full-suite.scratch-runs.json");
+}
+
+/**
+ * Record an exempted run. Best-effort, like the budget counter — but it is
+ * the only trace an exemption leaves, so losing it costs visibility rather
+ * than enforcement.
+ */
+function recordScratchRun(lockDir: string, now: number, cwd: string | undefined): void {
+  try {
+    const path = scratchRunsPath(lockDir);
+    let runs: Array<{ at: number; cwd: string }> = [];
+    try {
+      const parsed = JSON.parse(readFileSync(path, "utf-8"));
+      if (Array.isArray(parsed?.runs)) runs = parsed.runs;
+    } catch {
+      // An unreadable or absent log starts a new one. This file is a record,
+      // never an input to a decision, so a lost entry cannot open a gate.
+    }
+    runs.push({ at: now, cwd: cwd ?? "" });
+    writeFileSync(path, JSON.stringify({ runs: runs.slice(-200) }));
+  } catch {
+    // Recording must never be able to block a run it is not guarding.
+  }
 }
 
 interface BudgetView {
@@ -1045,13 +1164,34 @@ export function evaluateFullSuiteRequest(
   command: string,
   options: GateOptions = {},
 ): GateDecision {
-  const predicted = wouldAllowFullSuite(sessionId, command, options);
-  if (!predicted.allow) return predicted;
-  // Targeted runs are neither capped nor counted, so there is nothing to spend.
+  // Targeted runs are neither capped nor counted, so there is nothing to
+  // spend. Asked FIRST, because the scope question below costs a subprocess
+  // and the overwhelming majority of Bash commands are not suites at all.
   if (!isFullSuiteCommand(command)) return { allow: true };
 
   const lockDir = options.lockDir ?? defaultLockDir();
   const now = options.now ?? Date.now();
+
+  // A full suite of somebody else's tree is not this repository's suite
+  // (#510). A reviewer's mutation probe on a `git archive` export is twenty
+  // tests and under a second, and charging it against a budget sized for a
+  // 400-second 12,000-test run made careful review the thing the guard
+  // rationed. Scope is decided here and only here: `wouldAllowFullSuite`
+  // below must not answer the same question, or there would be two deciders
+  // and no behavioural test could tell them apart.
+  const scope = options.scope ?? runScope(options.cwd);
+  if (scope === "scratch") {
+    recordScratchRun(lockDir, now, options.cwd);
+    return {
+      allow: true,
+      exempt:
+        `not a run of this repository (${options.cwd ?? "unknown cwd"}), so it is not charged ` +
+        `against DIR-L29 — recorded in ${scratchRunsPath(lockDir)}`,
+    };
+  }
+
+  const predicted = wouldAllowFullSuite(sessionId, command, options);
+  if (!predicted.allow) return predicted;
 
   // The prediction above is advisory; this is the atomic claim. Another session
   // can take the last slot in between, and then the acquirer's answer wins.
