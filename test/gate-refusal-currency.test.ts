@@ -190,6 +190,12 @@ describe("#532: the inlined copy and the library agree", () => {
     { label: "checksRun empty", report: { checksRun: [] }, ledger: () => [{ check: "a" }] },
     { label: "failedChecks absent", report: { checksRun: ["a", "b"] }, ledger: () => [{ check: "a" }, { check: "b" }] },
     { label: "failedChecks not an array", report: { checksRun: ["a"], failedChecks: "a" }, ledger: () => [{ check: "a" }] },
+    // The one relationship the function is about, and the first draft of
+    // this matrix did not have it: a name in BOTH lists. Found by the
+    // battery — dropping the subtraction from the library was predicted to
+    // turn this row red and did not, because no row made the two lists
+    // overlap. Twelve rows, none of them exercising the subtraction.
+    { label: "a name in both lists", report: { checksRun: ["a", "b"], failedChecks: ["a"] }, ledger: () => [{ check: "a" }, { check: "b" }] },
     { label: "non-string names are ignored", report: { checksRun: ["a", 3, null, ""] }, ledger: () => [{ check: "a" }, { check: "" }] },
     { label: "a non-string check on the entry", report: { checksRun: ["a"] }, ledger: () => [{ check: 7 }, { check: "a" }] },
     { label: "duplicate names", report: { checksRun: ["a", "a"], failedChecks: [] }, ledger: () => [{ check: "a" }, { check: "a" }] },
