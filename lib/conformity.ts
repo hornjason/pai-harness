@@ -3499,7 +3499,16 @@ export function projectSourceEvidence(root: string): SourceEvidence {
   const rank = (entry: string) =>
     /\((?:symlink|directory resolving)/.test(entry) ? 0     // escaped the project
       : /\(extension-less|not a language this check reads/.test(entry) ? 1  // code, unparseable
-      : /^(?:build|vendor)\//.test(entry) ? 2                 // generated-from-source
+      // `(?:\/|\s)` and not `\/`, because this fix removes the trailing
+      // slash from a declined FILE and the slash was load-bearing here —
+      // sec-518's F3. A file named `build` or `vendor` silently dropped
+      // from rank 2 to rank 5, which is a second behavioural change riding
+      // inside the first. Measured on one tree carrying both as files:
+      // before `["build/", "vendor/", ".alpha/", "dist/"]`, after
+      // `[".alpha/", "build", "dist/", "vendor"]`. Rank 2 is the right
+      // answer for both spellings — the class is "generated from source",
+      // and a build manifest is as generated as a build directory.
+      : /^(?:build|vendor)(?:\/|\s)/.test(entry) ? 2          // generated-from-source
       : /\(dot-directory/.test(entry) ? 3                      // tooling, can hold scripts
       : /\(test (?:file|directory)/.test(entry) ? 4
       : 5;                   // dist, coverage, .d.ts, and dot-FILES (#518):

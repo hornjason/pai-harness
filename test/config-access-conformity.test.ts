@@ -1268,16 +1268,35 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     // The property is an ORDER, so the order is what gets asserted: ranked
     // first (entries that can plausibly hold first-party code before ones
     // that cannot), alphabetical within a rank.
+    //
+    // The fixture carries a dot-FILE and a FILE named `vendor` as well as
+    // the directories, and both were added because sec-518's battery found
+    // the ordering unpinned (F2, F3). Ranking `dot-file` alongside
+    // `dot-directory` was **0 red of 71**: this was the only ordering
+    // assertion and its fixture had no dot-file in it, so the one part of
+    // #518 that changes ordering had nothing holding it.
+    //
+    // The two ranks are different on purpose. `.github/` can hide a release
+    // script, so a dot-DIRECTORY ranks 3 and survives truncation; `.env`
+    // cannot hide anything, so a dot-FILE falls to 5 and is cut first.
     const root = project({ "README.md": "# docs" });
     for (const d of [".zeta", ".alpha", "dist", "coverage", "build"]) {
       mkdirSync(join(root, d), { recursive: true });
       writeFileSync(join(root, d, "f.js"), "export const x = 1;\n");
     }
+    writeFileSync(join(root, ".env"), "SECRET=1\n");
+    writeFileSync(join(root, "vendor"), "a manifest, not a directory\n");
     expect(projectSourceEvidence(root).skipped, "the decline list is not in ranked order")
       .toEqual([
         "build/ (build output or dependency)",
+        // Rank 2 with no trailing slash — F3. Before the regex was widened
+        // this sorted to the bottom, because `/^(?:build|vendor)\//` was
+        // matching the slash #518 removes from a declined file.
+        "vendor (build output or dependency)",
         ".alpha/ (dot-directory, tooling)",
         ".zeta/ (dot-directory, tooling)",
+        // Rank 5: below every dot-DIRECTORY, which is the whole point.
+        ".env (dot-file, tooling)",
         "coverage/ (build output or dependency)",
         "dist/ (build output or dependency)",
       ]);
@@ -1414,6 +1433,55 @@ describe("#518: a declined entry is written down as the kind it actually is", ()
     expect(dist, "the file stopped being recorded").toBeDefined();
     expect(dist, "a regular file was written down as a build directory").not.toContain("dist/");
     expect(dist).toContain("build output");
+  });
+
+  test("a dot-symlink that cannot be resolved is a LABEL, never a refusal", () => {
+    // sec-518's F1, and the mutation that found it came back **0 of 71**:
+    // `declinedIsDir`'s `catch` was the only thing deciding whether a
+    // failed stat stays a label or escapes, and no fixture reached it.
+    // Every symlink in this file's fixtures resolves.
+    //
+    // Both halves matter and they fail differently.
+    //
+    // Deleting the `catch` lets the throw escape `projectSourceEvidence`
+    // into the surrounding `test()`, so a consumer with one dangling
+    // symlink — `.broken -> ./gone`, or a symlinked `node_modules` whose
+    // store was pruned — gets a HARD CONFIG-1 FAILURE over an entry the
+    // walk declines as tooling either way. That is the over-refusal the
+    // dangling-symlink note forbids, arriving through the label path.
+    //
+    // Returning `true` instead of `false` is the other direction: the
+    // entry gets a trailing slash and is written down as a directory that
+    // is not there, which is #518 reintroduced for the unresolvable case.
+    const root = project({ "README.md": "# docs", "src/app.ts": READS_CONFIG });
+    const locked = mkdtempSync(join(tmpdir(), "rungate-476-locked-"));
+    scratch.push(locked);
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    symlinkSync(join(root, "gone"), join(root, ".broken"));      // ENOENT
+    symlinkSync(join(locked, "inner"), join(root, ".vault"));    // EACCES below
+    symlinkSync(join(root, ".loopB"), join(root, ".loopA"));     // ELOOP
+    symlinkSync(join(root, ".loopA"), join(root, ".loopB"));
+    chmodSync(locked, 0o000);
+    try {
+      let ev;
+      expect(() => { ev = projectSourceEvidence(root); }, "an unresolvable symlink escaped as a throw")
+        .not.toThrow();
+      const e = ev!;
+      for (const name of [".broken", ".vault", ".loopA", ".loopB"]) {
+        const entry = e.skipped.find((s: string) => s.startsWith(`${name} (`) || s.startsWith(`${name}/ (`));
+        expect(entry, `${name} was not recorded at all; skipped was [${e.skipped.join(", ")}]`)
+          .toBeDefined();
+        expect(entry, `${name} resolves to nothing but was written down as a directory`)
+          .not.toContain(`${name}/`);
+      }
+      // And none of it reached the verdict. `unreadable` is what turns an
+      // UNMEASURED into a refusal, and a declined-by-name entry must never
+      // put anything in it — the project is declined as tooling regardless.
+      expect(e.unreadable, "a declined dot-symlink was reported as unreadable").toEqual([]);
+      expect(e.found, "the real source stopped being found").toBe(true);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
   });
 
   test("only the label moved: the verdict and the counts are unchanged", () => {
