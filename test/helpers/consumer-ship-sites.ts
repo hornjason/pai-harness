@@ -49,7 +49,7 @@ const shipSource = readFileSync(SHIP, "utf-8");
  * these sites would make the slice boundaries ambiguous, and a harness that
  * silently picked the first of two would execute code nobody meant to run.
  */
-function one(source: string, re: RegExp, label: string): { text: string; index: number } {
+export function one(source: string, re: RegExp, label: string): { text: string; index: number } {
   const all = [...source.matchAll(new RegExp(re.source, `${re.flags.replace(/g/g, "")}g`))];
   if (all.length !== 1) {
     throw new Error(
@@ -58,6 +58,38 @@ function one(source: string, re: RegExp, label: string): { text: string; index: 
     );
   }
   return { text: all[0][0], index: all[0].index! };
+}
+
+/**
+ * The `// ──── <marker>-START ────` … `-END` region of `source`, start
+ * inclusive and END EXCLUSIVE — the slice `ship-ceremony-tier-floor.test.ts`
+ * had cut by hand with two `indexOf` calls since #215, lifted here so the repo
+ * has ONE extractor over `workflows/ship.js` rather than one per suite (#274).
+ *
+ * Two deliberate differences from the `indexOf` pair it replaces:
+ *
+ *  - `source` is a PARAMETER, not this module's `shipSource`. The batteries
+ *    hand it a mutant copy, and an extractor closed over the real file would
+ *    read the real source while reporting on the mutant — which is a check
+ *    that cannot fail, in the shape `.claude/rules/checks-must-be-able-to-fail.md`
+ *    calls an instrument that stopped measuring.
+ *  - Each anchor goes through `one()`, so a DUPLICATED marker throws instead of
+ *    silently taking the first. `indexOf` cannot tell one marker from two, and
+ *    a slice between the wrong pair executes code nobody chose.
+ *
+ * The marker is escaped before it reaches the pattern: it is interpolated into
+ * a RegExp, and a caller's marker is not a promise about regex syntax.
+ */
+export function markerRegion(source: string, marker: string): string {
+  const esc = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const start = one(source, new RegExp(`^// ──── ${esc}-START ────$`, "m"), `${marker}-START`);
+  const end = one(source, new RegExp(`^// ──── ${esc}-END ────$`, "m"), `${marker}-END`);
+  if (end.index <= start.index) {
+    throw new Error(
+      `the ${marker} markers are inverted in the source — the end anchor precedes the start`,
+    );
+  }
+  return source.slice(start.index, end.index);
 }
 
 /** The contiguous region between two exactly-once anchors, both included. */
