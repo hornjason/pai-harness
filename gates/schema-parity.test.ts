@@ -300,7 +300,7 @@ describe("#550: a timed-out failure keeps its own explanation", () => {
     expect(next!.detail).toContain("Expected: 2");
   });
 
-  test("SC-1863: nothing in gates/ assigns a bare \"failed\" as a detail", () => {
+  test("SC-1863: no other producer assigns a bare failed as a detail", () => {
     // SC-1860 is about the one producer this repo has today. This is the
     // reintroduction guard: a second place writing `detail: "failed"` would
     // put a reasonless refusal back in the state file while SC-1860 stayed
