@@ -1100,9 +1100,9 @@ was not, because `ambiguous: false` suppresses the marker.
 
 The first draft narrowed it to statements whose verb is existence and turned
 SC-1587 and SC-1594 red — two criteria that are right, caught asserting the
-behaviour this change would have removed. The downgrade is real and is filed
-separately rather than folded in, which is the same call #586 itself records
-being made about it.
+behaviour this change would have removed. The downgrade is real and is #589,
+filed rather than folded in, which is the same call #586 itself records being
+made about it.
 
 So what SC-1998 pins is the property that makes the downgrade survivable:
 the marker, and a negative control that an exactly-bound criterion reports

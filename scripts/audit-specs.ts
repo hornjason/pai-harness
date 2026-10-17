@@ -297,7 +297,7 @@ function findClosestPattern(
   //
   // Narrowing it here turns SC-1587 and SC-1594 red for a reason those
   // criteria are right about, which is how the distinction got found. The
-  // downgrade is filed separately rather than folded in.
+  // downgrade is #589, filed rather than folded in.
   const fileToken = statement.match(/\b(\S+\.\w{1,5})\b/);
   if (fileToken) {
     return {
