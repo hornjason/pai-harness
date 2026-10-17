@@ -2909,6 +2909,42 @@ export const CONFIG_SCAN_DIRS = [
   ...new Set([...TS_SOURCE_DIRS, "generators"]),
 ].filter(d => !CONFIG_1_DECLINES.has(d));
 
+/**
+ * Source CONFIG-1 does not walk and that is NOT a coverage shortfall,
+ * because somebody else measures it or policy excludes it.
+ *
+ * Without this the shortfall warning is wrong on rungate's own tree, and on
+ * every tree the scaffolder produces. Measured through the real validator
+ * before it existed: **19 files named, 1 of them a true gap.**
+ *
+ * | Named | Count | Why it is not a shortfall |
+ * |---|---|---|
+ * | `workflows/` | 6 | `CONFIG_1_DECLINES` holds it *because CONFIG-2 owns it*. `scanPromptConfigAccess` reads exactly those 6, and the ratchet banks 11 violations across three of them. The warning's sentence — "a direct config read there is invisible to it" — is not imprecise about these, it is false: they are enumerated and ratcheted |
+ * | `test/` | 12 | excluded by ADR-002 D4, as `CONFIG_SCAN_DIRS`'s own docstring says. Nine of the twelve are planted fixture projects, which are not project source in any sense |
+ * | `bin/` | 1 | **a real gap, and the one the warning should keep naming** |
+ *
+ * A warning that is wrong on the repo that ships it is how a project learns
+ * to ignore warnings, and then the true one — `bin/rungate.ts` here, the
+ * shape of #476's `bin/cli.ts` — is invisible too. The test asserting that
+ * silence said so in its own comment before this was measured.
+ *
+ * Found by sec-492. It is #492's own rubric entry recurring inside #492's
+ * fix: every shortfall fixture in the battery used a directory that was
+ * genuinely unmeasured, so the precondition "no declined-but-measured
+ * directory exists" held across every case, and the branch where it does
+ * not hold was outside the battery's reach entirely.
+ */
+function measuredElsewhere(top: string): boolean {
+  // TOP-LEVEL ONLY, deliberately. An earlier cut also excluded anything
+  // under a `fixtures/` path at any depth, which was dead on this tree —
+  // every fixture here is under `test/`, already covered by the clause
+  // below — and opened a hole in a consumer's: `domain/fixtures/config.ts`
+  // is real source in a directory nothing walks, and the broader rule
+  // dropped it from the count silently. An exclusion that is not needed to
+  // make the warning true is an exclusion that only subtracts coverage.
+  return CONFIG_1_DECLINES.has(top) || top === "test" || top === "tests";
+}
+
 /** The one module allowed to read the config. ADR-002 D1. */
 const CONFIG_LOADER = "lib/config-loader.ts";
 
@@ -3657,7 +3693,7 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         // the scan does not walk either — `index.ts` is an ordinary shape
         // and leaving it out would be the same blind spot one level up.
         const top = childRel.includes("/") ? childRel.slice(0, childRel.indexOf("/")) : ".";
-        if (!CONFIG_SCAN_DIRS.includes(top)) {
+        if (!CONFIG_SCAN_DIRS.includes(top) && !measuredElsewhere(top)) {
           unscannedDirs.add(top);
           unscannedSourceCount++;
         }
@@ -3802,6 +3838,18 @@ function summariseDeclines(skipped: string[], sample = 3): string {
  * knows the check is partial and has nowhere to go.
  */
 export function coverageShortfall(scan: ConfigAccessScan, evidence: SourceEvidence): string | null {
+  // Both guards are `=== 0`, and both are load-bearing at exactly that
+  // point. ONE unread file is a shortfall and ONE scanned file is a scan,
+  // and `test/config-access-conformity.test.ts` pins both boundaries —
+  // because a threshold is the cheapest way to make this quiet.
+  //
+  // `unread < 20` is not hypothetical: before `measuredElsewhere` existed
+  // this warning named 19 files on rungate's own tree, so 20 is precisely
+  // the number someone reaches for to silence it. And `bytesScanned < 10`
+  // in place of the file guard re-opens the one-byte hole recorded in
+  // `.claude/rules/checks-must-be-able-to-fail.md`, one guard over from
+  // where that entry already closed it. Both measured at 0 red before the
+  // boundary cases were added (sec-492).
   if (scan.filesScanned === 0) return null; // the empty-scan refusal owns this case
   const unread = evidence.unscannedSourceCount;
   if (unread === 0) return null;

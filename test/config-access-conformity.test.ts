@@ -974,6 +974,99 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       expect(got.violations, "a clean project reported violations").toEqual([]);
     });
 
+    test("#540 review: source CONFIG-2 owns, or policy excludes, is not a shortfall", () => {
+      // The case the whole battery was blind to, and it fires on THIS repo.
+      // Measured through the real validator before `measuredElsewhere`
+      // existed: 19 files named — 6 in `workflows/`, 12 in `test/`, and
+      // `bin/rungate.ts`. Only the last is a gap.
+      //
+      // `workflows/` is the sharp one. It is in `CONFIG_1_DECLINES`
+      // *because CONFIG-2 owns it*: `scanPromptConfigAccess` reads exactly
+      // those files and `.claude/config-access-ratchet.json` banks eleven
+      // violations across three of them. So "a direct config read there is
+      // invisible to it" was not imprecise, it was false — about reads that
+      // are enumerated and ratcheted.
+      //
+      // Every fixture above uses a directory that is genuinely unmeasured,
+      // so the precondition "no declined-but-measured directory exists"
+      // held across all of them. That is this repo's own rubric entry —
+      // whose worked example is #492 — recurring inside #492's fix.
+      const owned = config1(project({
+        "lib/clean.ts": "export const ok = 1;\n",
+        "workflows/ship.js": "const x = 1;\n",
+        "test/helpers/fixture.ts": "export const h = 1;\n",
+        "test/fixtures/golden/src/index.ts": "export const g = 1;\n",
+        "README.md": "# d",
+      }));
+      expect(owned.unmeasured, `CONFIG-2's own territory was reported as CONFIG-1's blind spot: ${owned.unmeasured}`)
+        .toBeNull();
+
+      // The control, and it is the half that keeps this from being "turn
+      // the warning off": a directory that really is unmeasured, in the
+      // same tree, still gets named.
+      const mixed = config1(project({
+        "lib/clean.ts": "export const ok = 1;\n",
+        "workflows/ship.js": "const x = 1;\n",
+        "test/helpers/fixture.ts": "export const h = 1;\n",
+        "bin/cli.ts": "export const c = 1;\n",
+        "README.md": "# d",
+      }));
+      expect(mixed.unmeasured, "a genuinely unwalked directory stopped being reported")
+        .toContain("bin/");
+      expect(mixed.unmeasured, "an excluded directory is still being counted")
+        .not.toContain("workflows/,");
+      expect(mixed.unmeasured, "test material is still being counted").not.toContain("test/");
+      expect(mixed.unmeasured, "the count includes directories somebody else measures")
+        .toContain("1 more source file(s)");
+    });
+
+    test("#540 review: ONE unread file is a shortfall, and ONE scanned file is a scan", () => {
+      // Both guards in `coverageShortfall` are `=== 0`, and every fixture
+      // in the battery sat at unread=61 / filesScanned=1 / bytesScanned=22.
+      // Neither dimension was ever varied, so widening either guard was 0
+      // red — the fifth shape, twice, and one of them is the cheapest way
+      // to silence the finding above.
+      //
+      // `unread < 20` is the number someone reaches for, because the
+      // unfixed warning reported exactly 19 on rungate's own tree.
+      const one = config1(project({
+        "lib/clean.ts": "export const ok = 1;\n",
+        "domain/one.ts": "export const d = 1;\n",
+        "README.md": "# d",
+      }));
+      expect(one.unmeasured, "a single unread source file was below a threshold")
+        .toContain("domain/");
+      expect(one.unmeasured, "the count is wrong at the boundary").toContain("1 more source file(s)");
+
+      // And the other boundary: one BYTE in a scanned directory is a scan.
+      // Swapping the file guard for `bytesScanned < 10` re-opens the
+      // one-byte hole the rubric records, one guard over from where that
+      // entry closed it.
+      const oneByte = config1(project({
+        "scripts/x.ts": "\n",
+        "domain/config.ts": READS_CONFIG,
+        "README.md": "# d",
+      }));
+      expect(oneByte.unmeasured, "a one-byte scan was treated as no scan at all")
+        .toContain("domain/");
+    });
+
+    test("#540 review: the message says how many files were READ, not just how many were not", () => {
+      // Replacing the numerator with a literal `0` is 0 red: the message
+      // then reads "CONFIG-1 read 0 file(s), and 19 more…" over a scan that
+      // read 208 — prose indistinguishable from the empty-scan refusal this
+      // message exists to NOT be. The docstring says both numbers are the
+      // finding; only one of them was asserted.
+      const got = config1(project({
+        "lib/a.ts": "export const a = 1;\n",
+        "lib/b.ts": "export const b = 1;\n",
+        "domain/one.ts": "export const d = 1;\n",
+        "README.md": "# d",
+      }));
+      expect(got.unmeasured, "the scanned-file count is missing or wrong")
+        .toContain("read 2 file(s)");
+    });
+
     test("#492: `src/` specifically, because that is the instance that was reported", () => {
       // Adding `src` to the list is not the whole fix, but it IS half of it,
       // and the half a consumer feels. A direct read in `src/` must now be
