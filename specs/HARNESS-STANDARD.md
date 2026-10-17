@@ -8501,3 +8501,131 @@ Restoring the old name is 1 red, and the failure message names the path.
 
 - [x] SC-1854: test/suite-measurement-parity.test.ts contains [every state path the probe sends an agent to is one the schema declares] — walked over the Zod shape, because a written state file persists an undeclared key and cannot see the defect
 - [x] SC-1855: test/suite-measurement-parity.test.ts contains [the path walker can say no - the old name and the new one differ] — the control, without which a walker returning true for everything satisfies the row above
+
+## A check killed before it could finish, and a reason filed under the next check (#550)
+
+`tsc-pass` spawns `bunx tsc --noEmit` with `timeout: 240000`. The `test()`
+around it took no timeout argument, so it got bun's default 5000ms. The gate
+suite as a whole is spawned by `runGateTests` with `timeout: 120000`.
+
+Three nested budgets, and **two of the three orderings were backwards**:
+
+| Layer | Was | Now |
+|---|---|---|
+| the exec helpers (`git`, shell) | 30000 | `EXEC_TIMEOUT_MS` 30000 |
+| the compiler `tsc-pass` spawns | 240000 | `TYPECHECK_TIMEOUT_MS` 90000 |
+| the `test()` around that spawn | 5000 (bun's default, undeclared) | `GATE_TEST_TIMEOUT_MS` 120000 |
+| the whole `bun test gates/` run | 120000 | `GATE_SUITE_TIMEOUT_MS` 180000 |
+
+So the compiler was allowed four minutes by a call killed after five seconds,
+inside a run killed after two. **`tsc-pass` could not pass on any project
+whose typecheck takes longer than five seconds**, which is every project large
+enough to have a gate run. The 240000 reads as deliberate and was unreachable
+from two directions at once.
+
+Nothing could say so, because a timeout and a genuine failure are the same
+red — and the one line that distinguished them was being filed under a
+different check.
+
+### The reason went to the next failure
+
+Bun prints a failure's excerpt, error and stack BEFORE its `(fail)` marker,
+which is why #314 made `parseTestResults` scan backward. A TIMEOUT is the one
+exception: the marker comes first and `^ this test timed out after Nms.`
+follows it. So the backward scan from the NEXT failure walked over it and took
+it, and the test it belonged to was left with `detailLines.length === 0` and
+the fallback string `"failed"`.
+
+Observed on a live run state:
+
+```json
+{"check":"verify checks > tsc-pass: ...","result":"FAIL","detail":"failed"}
+{"check":"verify checks > local-api-validated: ...","detail":"^ this test timed out after 5000ms.\n..."}
+```
+
+`tsc-pass` printed `Type check PASS: bunx tsc --noEmit` to its own stdout and
+recorded FAIL with no reason, while the next check's detail OPENED with a
+diagnosis of a different check. #530's first pass read it that way, and so did
+this issue's author on first pass.
+
+The fallback is no longer `"failed"`. A detail that says nothing is a refusal
+with no reason in the one field a heal prompt reads, and worse, it reads like
+something the runner said rather than like the parser giving up. It now names
+the parser, so the next reader goes to `gate-executor.ts` rather than to the
+check.
+
+### One owner for the ordering, and why it is a file-level default
+
+`lib/gate-timeouts.ts` holds the four constants and
+`gateTimeoutOrderingViolations`, which requires each layer to **strictly**
+outlive the one inside it. Equal is refused: a spawn killed at the same
+instant as its test is a race, and which of the two messages you get is not
+decided by this repo.
+
+The per-test budget is declared with `setDefaultTimeout` at file level and not
+as a `}, 120000);` argument on `tsc-pass`. That argument is the repair
+somebody reaches for at 5pm and it fixes exactly one check — `exec`,
+`execArgv` and `execArgvOf` each spawn with `EXEC_TIMEOUT_MS` and are called
+from dozens of checks, and the next spawning check added inherits nothing. A
+rule naming one test is a rule the next one evades.
+
+### The slow fixture is a shim, on purpose
+
+SC-1857 runs the real `tsc-pass` against a project whose
+`node_modules/.bin/tsc` sleeps for eight seconds. `bunx` prefers the local
+binary, so that script IS the compiler as far as the check is concerned.
+
+A fixture that made a REAL tsc slow would have a running time that depends on
+the machine, and the property under test is not about TypeScript — it is that
+the check outlives the process it starts. The shim makes the one variable that
+matters exact, and the row asserts the elapsed time exceeds 5000ms before it
+reads anything, because a shim that stopped sleeping would make the case pass
+for the wrong reason.
+
+### What was broken to prove it
+
+Seven mutations over 100 tests in `gates/schema-parity.test.ts` and
+`test/gate-suite-timeouts.test.ts`. Every count was predicted before the run
+and every one matched. None is left in the tree.
+
+| Mutation | Red | First prediction |
+|---|---|---|
+| `setDefaultTimeout` removed from the gate suite | 3 | 3 |
+| `TYPECHECK_TIMEOUT_MS` raised to 240000, above the test budget | 1 | 1 |
+| `GATE_SUITE_TIMEOUT_MS` lowered to 60000, below the test budget | 1 | 1 |
+| the forward scan that collects a timeout's own line removed | 1 | 1 |
+| the backward scan's stop at a timeout line removed | 1 | 1 |
+| the unexplained-failure detail reverted to `"failed"` | 1 | 1 |
+| `TIMEOUT_EXPLANATION` narrowed so it matches nothing | 2 | 2 |
+
+**Rows four and five are the interesting pair.** They are two deciders about
+one line of output, and a single case would have let either hold the other up.
+Each is 1 red on a DIFFERENT row: deleting the forward scan leaves the
+timed-out test with nothing (SC-1858) while the next failure still does not
+acquire it; deleting the backward stop leaves the next failure acquiring it
+(SC-1859) while the timed-out test keeps its own. Two inputs, two refusals,
+neither propping up the other.
+
+The first row's 3 is the slow-typecheck case failing live, its mutant half
+failing to build, and the wiring assertion — and the inner gate run inside it
+prints `(fail) ... tsc-pass ... [5004.66ms]`, which is #550 reproduced rather
+than described.
+
+**One thing the battery says that the diff does not.** Reverting the fallback
+to `"failed"` is 1 red, not 2: SC-1863, the reintroduction guard, stays green,
+because it looks for a direct `detail: "failed"` assignment and the fallback
+reaches it through a ternary. That is correct and deliberate — the two rows
+have different subjects, and a guard that also caught the ternary would make
+SC-1860 unnecessary rather than redundant. It is recorded because a reader
+counting rows would otherwise expect two.
+
+### Success Criteria
+
+- [x] SC-1856: test/gate-suite-timeouts.test.ts contains [the four nested budgets are strictly increasing] — driven over values rather than over the constants, so the comparison is not the constants against themselves
+- [x] SC-1857: test/gate-suite-timeouts.test.ts contains [the check survives a compiler that takes longer than 5s] — the real check against a real slow spawn, with the fixture's own slowness asserted first
+- [x] SC-1858: gates/schema-parity.test.ts contains [the timed-out test's detail is its own timeout line] — over bun 1.3.14 output captured from a run rather than imagined
+- [x] SC-1859: gates/schema-parity.test.ts contains [the following failure does not acquire it] — and keeps its own, so the fix is a reattribution rather than a deletion
+- [x] SC-1860: gates/schema-parity.test.ts contains [a failure the parser cannot explain says so, and names the parser] — revised from a case that documented the bare "failed" as acceptable
+- [x] SC-1861: gates/schema-parity.test.ts contains [an ordinary failure's backward scan is unchanged] — a stopping condition that fires too eagerly truncates every detail, and a shorter detail is still a detail
+- [x] SC-1862: test/gate-suite-timeouts.test.ts contains [neither file hardcodes a timeout the ordering cannot see] — a fourth number beside the constants is a number nobody compares
+- [x] SC-1863: gates/schema-parity.test.ts contains [no other producer assigns a bare failed as a detail] — the reintroduction guard, which caught itself quoting the string on its first run
