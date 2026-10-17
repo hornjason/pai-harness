@@ -132,7 +132,13 @@ function scanSpecs(root: string): SpecEntry[] {
       if (tMatch) testable = tMatch[1].trim();
     }
 
-    specs.push({ file: f, governs, testable });
+    // #579. A row in this table promises a reader that the document on the
+    // other end governs something. When the document says it states no
+    // criteria, the row says so too — see `lib/spec-requirements.ts` for why
+    // the declaration lives in frontmatter rather than in an allowlist.
+    const criteriaNone = /^criteria:\s*none\s*$/m.test(fmMatch?.[1] ?? "");
+
+    specs.push({ file: f, governs, testable, criteriaNone });
   }
 
   // Also scan specs subdirectories
@@ -157,7 +163,24 @@ function scanSpecs(root: string): SpecEntry[] {
             }
           }
         }
-        specs.push({ file: `${sub}/ (${subFiles.length} specs)`, governs: groupGoverns, testable: "yes" });
+        // `"yes"` was a literal here, and every reader of this field compares
+        // against the string `"true"` — so the group row has always rendered
+        // a word that means false to the code and true to a reader (#579).
+        // Derived from the members instead: testable if any of them is.
+        const anyTestable = subFiles.some(sf => {
+          try {
+            return /^testable:\s*true\s*$/m.test(
+              readFileSync(join(subPath, sf), "utf-8").match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "",
+            );
+          } catch {
+            return false;
+          }
+        });
+        specs.push({
+          file: `${sub}/ (${subFiles.length} specs)`,
+          governs: groupGoverns,
+          testable: String(anyTestable),
+        });
       }
     }
   } catch {}

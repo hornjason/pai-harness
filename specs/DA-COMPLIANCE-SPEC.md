@@ -1,7 +1,7 @@
 ---
 doc-type: spec
 status: active
-testable: no
+testable: false
 owner: jason
 updated: 2026-09-22
 created: 2026-09-25

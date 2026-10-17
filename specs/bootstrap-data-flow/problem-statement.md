@@ -6,6 +6,8 @@ created: 2026-09-20
 updated: 2026-09-20
 governs: Problem Statement + 7 more
 testable: true
+criteria: none
+criteria-reason: split sibling — this directory's criteria are consolidated in specs/bootstrap-data-flow/success-criteria.md, which is where a reader should look for requirements on anything in this directory
 ---
 
 ## Problem Statement

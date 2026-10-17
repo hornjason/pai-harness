@@ -210,6 +210,125 @@ test/scaffold-conformity.test.ts -t HYGIENE-6` prints
 (routing)` and completes in 232ms, against the 5001ms timeout that was the
 check's only possible red before.
 
+### A document the routing table calls a spec states something (#579)
+
+`.claude/rules/specs-routing.md` is generated one row per file in `specs/`,
+and every row promises a reader that the document on the other end GOVERNS
+something. Nothing checked that it states a requirement.
+
+`specs/PROJECT-STATE.md` was a **rendered `PROJECT-STATE.md` snapshot from
+2026-09-22 with spec frontmatter pasted on top** — a "Current phase" line, a
+stale priorities list, and `| Status | SC | What |` tables citing criteria it
+did not declare. It reported `Suite: 984 tests` against a suite of 11,961,
+and it sat in the routing table as the governing spec for project state
+management for two months. An agent sent there got no requirements at all.
+
+**A gap in a routing table is visible; this is not.** The reader believes they
+have arrived. Same harm as `.claude/rules/config-access.md`'s *Silent Default
+Substitution*, with a document as the victim — an empty answer and a correct
+answer are the same shape to the consumer.
+
+#### Why the exemption is frontmatter, not an allowlist
+
+Some documents here legitimately state no criteria: `BOOTSTRAP-DATA-FLOW-SPEC.md`
+is a redirect stub, and the five `bootstrap-data-flow/` siblings consolidate
+their criteria in `success-criteria.md`. An allowlist would cover them, and
+two things are wrong with one.
+
+DRIFT-3 refuses any entry ADDED to `.claude/conformity-allowlists.json`
+relative to `origin/main`, because an agent must not pass a gate by editing
+the gate. Shipping DRIFT-4 with its nine violators pre-listed is exactly that
+move, and the ratchet is right to refuse it.
+
+The better reason: **an allowlist is invisible to the person being harmed.**
+The reader harmed by a criteria-free spec is the one who followed the routing
+table to it, and a JSON file in `.claude/` is not on that path. A declaration
+in the document's own frontmatter is — and `lib/generators/agents-md.ts` now
+renders it, so the row reads `STATES NO CRITERIA — …` and the warning reaches
+the reader before they click rather than after 300 lines.
+
+#### Two defects found while fixing it, both in the same class
+
+**DRIFT-2 credited a spec for a test naming a different file.** It asked
+`allContent.includes(specFileName)`, and for a top-level spec that name is a
+bare basename. `specs/PROJECT-STATE.md` and the generated root
+`PROJECT-STATE.md` share one; **ten test files mention the root one.** This
+was aimed straight at #579's own prescribed fix — `testable: true` plus "a
+test naming it, which `test/update-project-state.test.ts` can do in one line"
+— which would have turned DRIFT-2 green on the strength of
+`test/organize-project.test.ts` discussing a status file. The fifth shape,
+pointed at the issue that was meant to close it.
+
+Measured rather than assumed: requiring the `specs/`-qualified path from every
+test orphans **15 of 22** testable specs, so the rule is narrowed to names
+that are genuinely ambiguous — of which this tree has exactly one.
+
+**`testable:` was read as `=== "true"`, so every other spelling meant false.**
+`specs/DA-COMPLIANCE-SPEC.md` carried `testable: no`, which happened to mean
+what its author intended; `testable: yes` would have dropped a spec out of the
+conformity surface while its frontmatter, the routing table and every reader
+said it was in. `lib/scanner.ts` also wrote the literal `"yes"` into the group
+row for every `specs/` subdirectory — a word that means false to the code and
+true to a reader, in the table this issue is about. It is derived from the
+members now.
+
+- [x] SC-1985: test/spec-requirements.test.ts contains [a spec with no criteria and no declaration is refused, and the live tree has none] — the synthetic half first, because the live half goes green the moment this lands and a case that can only fail on today's tree stops being able to fail
+- [x] SC-1986: test/spec-requirements.test.ts contains [the declaration is refused when it is a mute rather than a statement] — `criteria: none` with no reason is the exemption-list failure mode reproduced in frontmatter, with the positive control that a declared stub passes
+- [x] SC-1987: test/spec-requirements.test.ts contains [a spec that declares none and states some is refused too] — both directions, so a declaration cannot outlive the gap and keep warning readers away from a document that now has what they came for
+- [x] SC-1988: test/spec-requirements.test.ts contains [criteria are counted on any checkbox, not on the SC- prefix] — the first census counted `- [ ] SC-` and reported BOOTSTRAP-TEST-PLAN.md's 41 `TP-` criteria as nothing, which would have demanded a false declaration on a correct spec
+- [x] SC-1989: test/spec-requirements.test.ts contains [a bare spec name that also names another file does not credit the spec] — with the other direction asserted, because requiring qualification everywhere orphans 15 of 22
+- [x] SC-1990: test/spec-requirements.test.ts contains [the ambiguity is measured against the tree, not listed] — a hard-coded list of colliding names is a second decider that agrees until a new collision arrives
+- [x] SC-1991: test/spec-requirements.test.ts contains [testable: carries a value every reader agrees on] — `yes` means false to the code and true to a human, and nothing said so
+- [x] SC-1992: test/spec-requirements.test.ts contains [a row sending a reader to a criteria-free spec says so in the row] — the whole argument for frontmatter over an allowlist, with the positive control that a generator marking every row tells a reader nothing
+
+#### What was broken to prove it (SC-1985..SC-1992)
+
+Run and counted over `test/spec-requirements.test.ts` +
+`test/scaffold-conformity.test.ts` (baseline 1059 pass / 0 fail). None is
+left in the tree; all were run and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `requirementViolations` short-circuited to `return []` | **3** | 4 |
+| the mute-declaration branch (`criteria: none` with no reason) removed | 1 | 1 |
+| the declared-none-but-states-some branch removed | 1 | 1 |
+| criteria counted only on `- [ ] SC-` | 3 | 3 |
+| `specIsReferenced` ignores ambiguity and always matches bare | 1 | 1 |
+| `ambiguousSpecNames` returns the empty set | 1 | 1 |
+| `testableViolations` short-circuited to `return []` | 1 | 1 |
+| `lib/scanner.ts` never reads the declaration | 1 | 1 |
+| the generator drops the marker from the row | 1 | 1 |
+
+**The first row missed LOW, and the reason is worth more than the number.**
+DRIFT-4 was predicted to go red and did not: on a clean tree there are no
+violations, so `return []` and the real function give the same answer and
+nothing in the live arm can tell them apart. That is #492's shape — a check
+whose only population meets the precondition — and it is the normal condition
+of any ratchet sitting at zero.
+
+It is not a collapsed pair, and the discriminator is row four: narrowing
+`CRITERION_LINE` creates a live violator, and DRIFT-4 goes red there. The
+check can fail against the tree; it needs something to fail about. That is
+also why SC-1985 carries a synthetic half as well as the live one — the live
+half goes green the moment this issue lands and could never fail again.
+
+#### Two defects this work introduced, and the ratchets caught both
+
+The first draft of SC-1992 keyed the routing-table assertion on a `testable:
+true` spec that sits on DRIFT-2's `untestedSpecs` ratchet. DRIFT-2 credits a
+spec when any test file's text contains its name, so **naming it here as a
+FIXTURE made it read as tested**, and the ratchet correctly demanded it be
+delisted — which would have certified an untested spec on the strength of one
+line in a test about something else. The case is keyed on a `testable: false`
+spec now, and the comment explaining the choice does not spell the name
+either, because the first rewrite of the comment put the string straight back
+and turned DRIFT-2 red a second time.
+
+The second: that same assertion matched the whole table line, and one spec's
+`governs` field cites another spec's filename, so it matched two rows. It
+keys on the row's first cell now — `lib/spec-listing.ts`'s *"a mention is not
+a listing"*, arriving in the table that module exists to police.
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)

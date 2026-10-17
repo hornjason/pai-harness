@@ -9,6 +9,13 @@ import { describe, test, expect } from "bun:test";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "fs";
 import type { Dirent } from "fs";
 import { collectSpecFiles } from "./spec-files";
+import {
+  ambiguousSpecNames,
+  readSpecRequirements,
+  requirementViolations,
+  specIsReferenced,
+  testableViolations,
+} from "./spec-requirements";
 import { lastCommitDates } from "./git-dates";
 import { spawnSync } from "child_process";
 import { join, dirname, sep } from "path";
@@ -1528,7 +1535,11 @@ export function runSpecDrift(
         }
       }
 
-      const orphaned = testable.filter(s => !allContent.includes(s));
+      // Not `allContent.includes(s)`. A bare basename credits a spec for a
+      // test that names a DIFFERENT file — see `lib/spec-requirements.ts`,
+      // where the collision and its one instance on this tree are measured.
+      const ambiguous = ambiguousSpecNames(root, collectSpecFiles(specsDir));
+      const orphaned = testable.filter(s => !specIsReferenced(allContent, s, ambiguous));
 
       // Was `expect(true).toBe(true)` after a console.warn, so the mechanical
       // enforcement of CLAUDE.md's "SCs without tests are wishes" could never
@@ -1613,6 +1624,23 @@ export function runSpecDrift(
         `an exemption was ADDED relative to origin/main. Fix the violation, or make the ` +
           `exemption a deliberate recorded decision rather than a diff.`,
       ).toEqual([]);
+    });
+
+    test("DRIFT-4: Every spec states criteria, or declares that it states none", () => {
+      if (!existsSync(specsDir)) return checkSkipped("DRIFT-4", "no specs/ directory");
+      const specs = collectSpecFiles(specsDir);
+      if (specs.length === 0) return checkSkipped("DRIFT-4", "no spec files");
+
+      // Unlike DRIFT-2 this has no ratchet and does not need one. The
+      // exemption is a line in the document's own frontmatter, so a consumer
+      // on upgrade can clear a violation by declaring it where the reader it
+      // affects will see it — no list to adopt, nothing inherited from
+      // rungate's backlog, and nothing DRIFT-3 has to police.
+      const violations = requirementViolations(specs.map(s => readSpecRequirements(specsDir, s)));
+      expect(violations, violations.join("\n")).toEqual([]);
+
+      const badFlags = testableViolations(specsDir, specs);
+      expect(badFlags, badFlags.join("\n")).toEqual([]);
     });
   });
 }
