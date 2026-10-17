@@ -9516,12 +9516,23 @@ in the tree.
 
 | Mutation | Red | Prediction |
 |---|---|---|
-| an external path is included again, as #439 had it | 4 | 4 |
-| the comparison goes back to the lexical path | 1 | 1 |
-| `realPathish` falls back to `resolve` for a missing path | 1 | 1 |
+| an external path is included again, as #439 had it | 7 | 4 |
+| the comparison goes back to the lexical path | 3 | 1 |
+| `realPathish` falls back to `resolve` for a missing path | 3 | 1 |
 | the trusted-root check accepts any non-empty allowlist | 1 | 1 |
 | `trustedDocRoots` keeps relative entries | 1 | 1 |
-| `contextFiles` stops going through the classifier | 1 | 1 |
+| `contextFiles` stops going through the classifier | 2 | 1 |
+
+Four rows came in above their prediction and every extra red is about the
+mutated behaviour rather than a mutant that crashed — the discriminator the
+rule asks for. Row 1's three extras are SC-1616's cases, revised by this
+issue to expect a refusal. Rows 2 and 3 take the resolution apart, so the
+cases that assert WHERE a doc resolved go with them: SC-1617's positive
+control compares against the real path, SC-1618's missing doc does too, and
+`brief-assembler`'s de-duplication stops matching when `/var` and
+`/private/var` spell the same file two ways. Row 6's extra is SC-1621,
+whose control-character case now travels through the same classifier — which
+is the point of routing the second door through it.
 
 ### Success Criteria
 
