@@ -3,7 +3,7 @@ import { join, basename } from "path";
 import { plantCanaries, getDefaultCanaries } from "../lib/canary.js";
 import { tryLoadRungateConfig } from "../lib/config-loader";
 import {
-  classifyContextDocs, contextDocLines, contextDocNotes, hasBriefUnsafeChars,
+  classifyContextDoc, classifyContextDocs, contextDocLines, contextDocNotes, hasBriefUnsafeChars,
   type ContextDocVerdict,
 } from "../lib/context-docs";
 
@@ -81,7 +81,7 @@ export async function assembleBrief(opts: AssembleBriefInput): Promise<AssembleR
     sections.push(buildRCASection(state.rca));
   }
   sections.push(buildGitProtocol(state.issue));
-  sections.push(buildFilesSection(contextFiles));
+  sections.push(buildFilesSection(projectRoot, contextFiles));
   sections.push(buildScopeSection(scopeOut, harness?.forbiddenCommands));
   sections.push(buildVerifySection(verifyCommands));
   sections.push(buildReportSection());
@@ -221,20 +221,36 @@ function buildGitProtocol(issue: number): string {
   ].join("\n");
 }
 
-function buildFilesSection(contextFiles: Array<{ path: string; reason: string }>): string {
+function buildFilesSection(
+  projectRoot: string,
+  contextFiles: Array<{ path: string; reason: string }>,
+): string {
   const lines = ["## Files to read before touching anything"];
 
   if (contextFiles.length === 0) {
     lines.push("- (no context files specified)");
   } else {
     for (const cf of contextFiles) {
-      // BUG-439-A, and the same predicate `contextDocs` uses. These paths
-      // come from the AC schema and had no filtering of any kind, so a
-      // newline in one wrote its own lines into an agent instruction.
-      if (hasBriefUnsafeChars(cf.path) || hasBriefUnsafeChars(cf.reason ?? "")) {
-        lines.push(`- (REJECTED ${JSON.stringify(cf.path)}: contains a newline or control character)`);
+      // The same classifier `contextDocs` uses, not a second copy of its
+      // rules (#497). These paths come from the AC schema and had no
+      // filtering of any kind before BUG-439-A, and an externality control on
+      // one of the two doors into a brief is the thing #439 correctly said
+      // the old filter was not.
+      //
+      // The reason string goes through the character predicate separately:
+      // it is rendered on the same line and the classifier only sees paths.
+      const verdict = classifyContextDoc(projectRoot, cf.path);
+      if (verdict.kind === "rejected") {
+        lines.push(`- (REJECTED ${JSON.stringify(cf.path)}: ${verdict.reason})`);
         continue;
       }
+      if (hasBriefUnsafeChars(cf.reason ?? "")) {
+        lines.push(`- (REJECTED ${JSON.stringify(cf.path)}: its reason contains a newline or control character)`);
+        continue;
+      }
+      // Rendered as declared, not as resolved: these are repo-relative paths
+      // an agent is meant to recognise, and rewriting them to absolute would
+      // change every existing brief for no gain.
       lines.push(`- ${cf.path}${cf.reason ? " — " + cf.reason : ""}`);
     }
   }

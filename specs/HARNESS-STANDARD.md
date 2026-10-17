@@ -6623,11 +6623,11 @@ written to report on.
 - [x] SC-1613: test/context-docs.test.ts contains [contextDocs is read through the one loader] — a project on the DIRECTORY layout gets its docs, with the fixture asserting no monolith exists
 - [x] SC-1614: test/context-docs.test.ts contains [malformed config throws; absent config does not] — asserted as two cases, because the point is that they stop being one outcome
 - [x] SC-1615: test/context-docs.test.ts contains [a rejected entry is reported, not dropped] — naming the path and the reason, and the two briefs compared directly
-- [x] SC-1616: test/context-docs.test.ts contains [a path outside the project root is a recorded decision] — included and labelled, with the prefix-versus-relative boundary asserted
+- [x] SC-1616: test/context-docs.test.ts contains [a path outside the project root is a recorded decision] — refused and NAMED since #497, with the prefix-versus-relative boundary asserted; the recording is #439's property and the refusal is the revision
 - [x] SC-1617: test/context-docs.test.ts contains [each arm of the classifier, with a positive control] — every arm plus a valid relative path that still reaches the brief
 - [x] SC-1618: test/context-docs.test.ts contains [a declared doc that is not on disk is INCLUDED and labelled] — the built-ins above it already say "(if exists)"
 - [x] SC-1619: test/context-docs.test.ts contains [both authored shapes survive the schema] — the array form and the object form
-- [x] SC-1620: test/context-docs.test.ts contains [a traversing path reaches the brief, labelled external] — the `..` case the old filter dropped
+- [x] SC-1620: test/context-docs.test.ts contains [a traversing path reaches the brief as a named rejection] — the `..` case the old filter dropped in silence, now refused out loud (#497)
 - [x] SC-1621: test/context-docs.test.ts contains [a declared path cannot write lines of its own into the brief] — BUG-439-A, and the same predicate guards the AC contextFiles that had no filtering at all
 
 ### What was broken to prove it (SC-1613..1620)
@@ -9452,3 +9452,91 @@ running it rather than by reading it.
 - [x] SC-1910: test/sc-id-cross-tree.test.ts contains [a source it could not read is named] — and the remainder is non-empty even on a clean read, because a reading that claims to be complete is the silent default this rule forbids
 - [x] SC-1911: test/sc-id-cross-tree.test.ts contains [the allocator does not re-issue a sibling's number] — driven with two different sibling values, since one cannot tell reading the namespace from adding a constant
 - [x] SC-1912: test/sc-id-cross-tree.test.ts contains [the allocator composes all three widths] — SC-1911 hands `nextSCNumber` ids the test assembled, so only this can witness a caller that reads the namespace and forgets to pass it
+
+## A containment decision taken on the half of the population it covered (#497)
+
+#439 decided that a `contextDocs` entry resolving outside the project root
+is included in the brief and labelled, rather than filtered out. Two
+premises, both written down:
+
+> A brief NAMES files; it does not read them. The config is written by the
+> operator whose session the agent runs in, so a path they declared is not an
+> escalation of anything.
+
+The first is true of the brief and beside the point: the brief exists to be
+obeyed by an agent holding a Read tool, so "named" and "read" are one step
+apart and the step is the document's purpose. The second is true when the
+operator scaffolded the project — and rungate is a harness pointed at a
+`projectRoot` whose config lives INSIDE that tree, so for any repository the
+operator cloned rather than authored, `contextDocs: ["/Users/<them>/.ssh/id_rsa"]`
+is a line in a checked-in file that puts an arbitrary host path into an agent
+instruction.
+
+A true sentence, derived from the cases that were measured, then applied to a
+population they do not cover — the shape under *"This cannot be checked" is a
+claim, and it is checkable* in `.claude/rules/checks-must-be-able-to-fail.md`.
+
+### What changed, and what deliberately did not
+
+An external path is **rejected**, and the rejection is named in the brief
+with its reason and with the variable that would allow it. That second half
+is #439's property, untouched: nothing declared disappears without a line
+saying what happened to it. The old filter dropped these in silence, and the
+difference between silence and a named refusal is the only difference that
+has ever mattered here.
+
+Trust comes from `RUNGATE_TRUSTED_DOC_ROOTS` in the environment and from
+nowhere else. **An allowlist inside the config it is allowing is not one** —
+the threat is an entry in a repository somebody else wrote, so an allowlist
+read from that repository is authored by whoever authored the entry it is
+supposed to authorise. It is deliberately not a rungate config key and
+therefore deliberately outside `.claude/rules/config-access.md`: routing it
+through the loader would put it back inside the tree it exists to be outside
+of.
+
+The comparison is on the REAL path, both sides. `relative(resolve(root),
+resolved)` is symlink-blind, so `ln -s ~/.ssh docs` inside the repo resolves
+under the root and reads as internal — a control satisfiable by the cheapest
+possible bypass. `realPathish` resolves the nearest existing ancestor and
+appends the remainder, so a path that does not exist yet is still resolved
+through the links above it; without that, the missing case and the symlink
+case are mutually exclusive and the bypass sits in the gap.
+
+And it covers **both doors**. #439's own finding was that the old filter was
+never a path control because it guarded `contextDocs` while the AC
+`contextFiles` had no filtering of any kind. A containment control on
+`contextDocs` alone repeats that exactly, so `gates/brief-assembler.ts`
+classifies `contextFiles` through the same function.
+
+### What was broken to prove it
+
+Six mutations over 43 tests in `test/context-docs-containment.test.ts`,
+`test/context-docs.test.ts` and `gates/brief-assembler.test.ts`. None is left
+in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| an external path is included again, as #439 had it | 7 | 4 |
+| the comparison goes back to the lexical path | 3 | 1 |
+| `realPathish` falls back to `resolve` for a missing path | 3 | 1 |
+| the trusted-root check accepts any non-empty allowlist | 1 | 1 |
+| `trustedDocRoots` keeps relative entries | 1 | 1 |
+| `contextFiles` stops going through the classifier | 2 | 1 |
+
+Four rows came in above their prediction and every extra red is about the
+mutated behaviour rather than a mutant that crashed — the discriminator the
+rule asks for. Row 1's three extras are SC-1616's cases, revised by this
+issue to expect a refusal. Rows 2 and 3 take the resolution apart, so the
+cases that assert WHERE a doc resolved go with them: SC-1617's positive
+control compares against the real path, SC-1618's missing doc does too, and
+`brief-assembler`'s de-duplication stops matching when `/var` and
+`/private/var` spell the same file two ways. Row 6's extra is SC-1621,
+whose control-character case now travels through the same classifier — which
+is the point of routing the second door through it.
+
+### Success Criteria
+
+- [x] SC-1913: test/context-docs-containment.test.ts contains [a symlink out of the project is refused on the real path] — with the #439 comparison run against the same fixture as the instrument, so a pass is not a property of the fixture
+- [x] SC-1914: test/context-docs-containment.test.ts contains [trust comes from the environment] — a different trusted root does not admit it, and a root named by the project's own config admits nothing at all
+- [x] SC-1915: test/context-docs-containment.test.ts contains [a path that does not exist is still resolved through its links] — otherwise the missing verdict and the symlink refusal are mutually exclusive and the bypass is the gap between them
+- [x] SC-1916: test/context-docs-containment.test.ts contains [the AC contextFiles door is the same door] — with a project-internal path in the same brief as the positive control, since a door that refuses everything satisfies the refusal half
