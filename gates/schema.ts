@@ -316,8 +316,14 @@ export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefin
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       message:
-        "suiteMeasurement: a run that executed 0 tests is not a measurement — " +
-        "a runner that discovered nothing to run exits exactly like a clean suite (#490)",
+        'suiteMeasurement: a record carrying "tests": 0 is not a measurement — a runner that ' +
+        "discovered nothing to run exits exactly like a clean suite (#490)",
+      // Worded so it cannot be mistaken for `lib/suite-run-reading.ts`'s
+      // refusal, which says "executed 0 tests". The two are a legitimate
+      // pair — this one also catches a state the recorder did not produce —
+      // but a test asserting on the reading's sentence must not be able to
+      // pass on this one's. Measured: with identical wording, disabling the
+      // reading's refusal left two rows green that exist to witness it.
       path: ["tests"],
     });
   }

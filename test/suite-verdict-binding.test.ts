@@ -66,6 +66,18 @@ const OUTPUT = {
     "-------------------------------\n",
   /** #490 — one file, no tests, exit 0. */
   nothingRan: " 0 pass\n 0 fail\nRan 0 tests across 1 file. [6.00ms]\n",
+  /**
+   * The same nothing, from a runner that reports no file count.
+   *
+   * The input that reaches ONLY the reading's refusal. The row above is
+   * caught twice — by `readSuiteRun` and again by the schema's `tests: 0`
+   * refusal, which is a legitimate pair since each has an input the other
+   * cannot see, but it means the row above cannot witness either of them
+   * alone. Measured: disabling the reading's executed-zero refusal left the
+   * row above green, held up by the schema. This one has no `tests` to
+   * record, so the schema has nothing to say about it.
+   */
+  nothingRanNoFileCount: " 0 pass\n 0 fail\n",
 };
 /** Paths of the above, filled in beforeEach. */
 let OUT: Record<keyof typeof OUTPUT, string> = {} as any;
@@ -475,6 +487,18 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
       /executed 0 tests/,
     );
     expect(readSuiteMeasurement(readState()).verdict).toBe("UNMEASURED");
+
+    // And the same nothing from a runner that reports no file count, which
+    // is the input only `readSuiteRun` reaches. The row above is caught
+    // twice — the schema refuses a recorded `tests: 0` as well — so without
+    // this one, disabling the reading's refusal leaves both green and the
+    // proof belongs to a decider this case is not about. Measured: that
+    // mutation was 3 red before this line and 5 after it.
+    expectRefused(
+      "a run that executed no tests and reported no file count",
+      ["--state", STATE, "--project", PROJECT, "--output", OUT.nothingRanNoFileCount],
+      /executed 0 tests/,
+    );
   });
 
   test("a git that answers with something that is not a commit", () => {
