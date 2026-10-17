@@ -31,7 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
-import { testCommandDecision } from "../test-command";
+import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
 import {
   readSuccessDoc,
@@ -954,10 +954,11 @@ export function generateOrAuditProjectHarness(root: string, actions: string[], o
     }
   }
 
-  // Scan test commands — through the one binding (#488). This copy threw on
-  // a malformed package.json where its three siblings shrugged, which is a
-  // scaffold that dies over a file it consulted for a default.
-  const testCmd = testCommandDecision(root).command;
+  // `inferredTestCommand`, not the full decision (#488). This value is what
+  // gets WRITTEN into `dev.testCmd`, so reading `dev.testCmd` to choose it
+  // is circular — and this step runs against trees whose config is
+  // malformed, which is what it exists to repair.
+  const testCmd = inferredTestCommand(root).command;
   const pkgPath = join(root, "package.json");
   // #87 — this defaulted to `bunx tsc --noEmit` for every project, including
   // one with no tsconfig, and `gates/gate-executor.ts` RUNS what lands here.

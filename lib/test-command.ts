@@ -71,6 +71,12 @@ export function testCommandDecision(root: string): TestCommandDecision {
   // (`.claude/rules/config-access.md`). It also means both config layouts
   // are honoured — a consumer who followed the documented migration to the
   // directory form is the exact population a monolith-only read loses.
+  //
+  // It THROWS on a malformed config, deliberately: a corrupt config is
+  // never a missing config, and `catch {}` here is the conversion that rule
+  // exists to forbid. The one caller that must survive corruption is the
+  // config REPAIR step, and it calls `inferredTestCommand` instead — see
+  // below for why that is not a loophole.
   const config = tryLoadRungateConfig(root) as { dev?: { testCmd?: unknown } } | null;
   const declared = config?.dev?.testCmd;
   if (typeof declared === "string" && declared.trim() !== "") {
@@ -81,6 +87,25 @@ export function testCommandDecision(root: string): TestCommandDecision {
     };
   }
 
+  return inferredTestCommand(root);
+}
+
+/**
+ * The same decision with the config rung removed — what this project's test
+ * command would be if the config said nothing.
+ *
+ * Exactly one caller, and it is not a convenience: `generateOrAuditProjectHarness`
+ * chooses the value to WRITE into `dev.testCmd`, so asking the loader for
+ * `dev.testCmd` first is circular, and it runs against trees whose config is
+ * malformed — that is what it exists to repair. Routing it through the
+ * throwing loader killed the repair with `SyntaxError: JSON Parse error` in
+ * the step whose job is to fix that file.
+ *
+ * Split rather than flagged, because a boolean parameter makes the two
+ * behaviours one call site's argument rather than two named things, and the
+ * shared rungs stay shared either way.
+ */
+export function inferredTestCommand(root: string): TestCommandDecision {
   const pkgPath = join(root, "package.json");
   if (existsSync(pkgPath)) {
     try {
