@@ -167,7 +167,16 @@ export function writeGateResult(
   const prev = state.gates?.[gate]?.attempt ?? 0;
   const attempt = prev + 1;
   const ts = isoNow();
-  const sha = gitSha(projectRoot);
+  // #531. The TREE UNDER TEST, not the project root. `commitSha` is read back
+  // by three gate checks to build "what did this branch change", and on a
+  // worktree run `projectRoot` is the main checkout — which is sitting on
+  // whatever branch somebody left it on. Run `wf_e230fddc-a71` recorded the
+  // tip of an unrelated branch and the gate then refused over a Dockerfile
+  // and seven `.tsx` files the shipped branch has never contained. The state
+  // named the right tree the whole time; the writer read HEAD from somewhere
+  // else. Same precedent as the test census at
+  // `gates/gate-executor.ts`'s `censusRoot`.
+  const sha = gitSha(state.treeUnderTest || projectRoot);
 
   const failures = results.filter(r => r.result === "FAIL");
 
