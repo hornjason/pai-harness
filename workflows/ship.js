@@ -2828,6 +2828,60 @@ function localEnvClause(field, url, configKey) {
 const localApiClause = localEnvClause('api', projectConfig.apiUrl || null, 'dev.apiBase')
 const localUiClause = localEnvClause('ui', projectConfig.uiUrl || null, 'dev.uiBase')
 
+// ──── RECORD-LOCAL-ENV-START ────
+/**
+ * The step that records `environments.local` — api, ui and tests (#530).
+ *
+ * The clauses above are correct and have been since #307. **Nothing ran
+ * them.** They are interpolated into the SCOPE gate's heal prompt, which
+ * only runs when the scope gate FAILS, so on every run where scope passed
+ * `environments.local` stayed `{}` and three gates refused a run whose work
+ * was finished — `tests-pass`, `local-api-validated` and `local-ui-validated`.
+ * Run wf_e230fddc-a71 is the instance: `local.tests not set`, over a state
+ * whose `suiteMeasurement` was never written either, because the command that
+ * writes it lives in the same prompt.
+ *
+ * A clause inside a conditional heal prompt is not a producer. `record-env`
+ * has always been a dedicated step that runs on every path, which is why
+ * `environments.prod` is never missing, and this is that shape for the local
+ * half — the asymmetry was never agent-versus-shell (`record-env` is an agent
+ * too), it was *always runs* versus *runs if something else failed*.
+ *
+ * The capture and recorder commands are passed in rather than rebuilt here.
+ * They have one producer — the RECORDER-COMMAND block — and a second copy of
+ * that wording is a second thing to keep in step with `--output`.
+ *
+ * In a marked block so test/ship-local-env-clause.test.ts can EXECUTE it;
+ * every source-text assertion in this repo has survived its first mutation.
+ */
+function recordLocalEnvPrompt(o) {
+  return `Record what this branch's local environment actually did. Three
+fields, none of them guessed.
+
+TESTS. Run the suite and record it with the recorder, which writes both the
+result and the commit it was measured against (#224). Two commands, in this
+order, and do NOT edit environments.local.tests by hand — a verdict no
+measurement backs is a verdict somebody typed, and the gate refuses it (#530):
+  ${o.suiteCapture}   # timeout: ${o.testTimeout}
+  ${o.recorder}
+Do NOT type a count anywhere, and do NOT add flags. The recorder reads the
+summary out of the file the first command captured and derives the count, the
+verdict and the commit from it (#469). If it refuses because the run printed
+no summary or executed no tests, that is the finding: the suite did not
+measure this branch, and what needs fixing is the run, not the number. Report
+the refusal rather than working around it.
+
+API. ${o.apiClause}
+UI. ${o.uiClause}
+
+Write the api and ui fields — and ONLY those two — with writeWorkflowState():
+bun -e "import {writeWorkflowState} from '${o.harnessRoot}/gates/orchestrator.ts'; import {readFileSync} from 'fs'; const s = JSON.parse(readFileSync('${o.workDir}/workflow-state.json','utf8')); s.environments = s.environments || {}; s.environments.local = s.environments.local || {}; /* set api and ui here */; writeWorkflowState('${o.workDir}/workflow-state.json', s);"
+
+Run that AFTER the recorder, and do not include tests in it — the recorder
+owns that field and a second writer is a second answer.`
+}
+// ──── RECORD-LOCAL-ENV-END ────
+
 // ──── CEREMONY-TIER-FLOOR-START ────
 /**
  * #215. The tier was chosen by the discovery LLM from issue SIZE alone, and the
@@ -5361,10 +5415,34 @@ log(`Work branch: ${shipBranch}`)
 
 phase('Verify')
 
+// #530. Before the gate that reads `environments.local`, the step that
+// writes it — on every path, not only when some earlier gate failed.
+//
+// `marcusWorktreePath` and not PROJECT_ROOT, in both commands. The tree under
+// test is the worktree; PROJECT_ROOT is main, and a suite measured on main is
+// a measurement of somebody else's commit. The recorder reads the SHA from the
+// same directory it is handed, so passing the worktree is what makes
+// `suiteCurrency` able to compare the measurement against this branch's tip.
+await timedAgent(
+  recordLocalEnvPrompt({
+    harnessRoot: HARNESS_ROOT,
+    workDir: WORK_DIR,
+    testTimeout,
+    suiteCapture: suiteCaptureCommand(marcusWorktreePath, testCommand, WORK_DIR, shellQuote),
+    recorder: recorderCommand(HARNESS_ROOT, WORK_DIR, marcusWorktreePath, shellQuote),
+    apiClause: localApiClause,
+    uiClause: localUiClause,
+  }),
+  { label: 'record-local-env', phase: 'Verify' },
+)
+
 // Run verify gate first (mechanical checks)
 // Run verify from worktree (where Marcus's code lives) — NOT main
 const verifyResult = await runGateWithHeal('verify', 'Verify',
-  'Fix evidence gaps, test failures, uncommitted code. Run AC evidence commands.',
+  'Fix evidence gaps, test failures, uncommitted code. Run AC evidence commands. ' +
+  'For environments.local gaps: the record-local-env step above owns those three ' +
+  'fields — re-run it rather than writing them here, and do not hand-write ' +
+  'environments.local.tests at all (#530).',
   { cwd: marcusWorktreePath })
 
 if (verifyResult?.result === 'FAIL') {
@@ -6314,6 +6392,26 @@ await parallel([runContainerVerify, () => runRookReview()])
 // Two values, no judgement: the agent reports what it read, and
 // reviewIsCurrent — the same function lib/security-verdict.ts exports and
 // test/security-verdict-blocks.test.ts drives — decides.
+//
+// #530, second instance. This block asked for `environments.local.testsSha`
+// for its whole life. **Nothing has ever written that field** — it appeared
+// in exactly one place in the tree, this prompt, and it is not a key
+// `EnvironmentLocalSchema` declares. The recorder has written the SHA to
+// `suiteMeasurement.measuredSha` since #224. So `suiteMeasuredSha` was the
+// empty string on every run, which `suiteCurrency` reads as UNRECORDED —
+// meaning the STALE refusal below has never once been able to fire, and
+// every run's terminal status was capped for a reason that had nothing to do
+// with the run.
+//
+// `writeWorkflowState` would NOT have caught a writer for it, which is worth
+// saying because it is the first thing you reach for: it calls
+// `WorkflowStateSchema.passthrough().parse(state)` and then writes the
+// ORIGINAL object, so an undeclared key validates and persists. The schema is
+// the contract about what has a producer; a written state file is not. That
+// is what test/suite-measurement-parity.test.ts checks these paths against.
+//
+// Same shape as #530 itself and one step away from it: a consumer reading a
+// name no producer writes. The producer was right; the sentence was wrong.
 const currencyProbe = await timedAgent(`
 Report two values. Do NOT reconcile, normalise or correct them, and do NOT
 substitute one for the other — reporting them as equal when they are not is
@@ -6331,7 +6429,7 @@ the failure this step exists to catch (#169).
 
 3. The test suite result that was written down, and the commit it was measured
    against. From the same ${WORK_DIR}/workflow-state.json, report
-   environments.local.tests as suiteResult and environments.local.testsSha as
+   environments.local.tests as suiteResult and suiteMeasurement.measuredSha as
    suiteMeasuredSha, both exactly as they appear. Report an empty string for
    either one that is missing (#224).
 

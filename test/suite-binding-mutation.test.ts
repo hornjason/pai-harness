@@ -44,7 +44,8 @@ const GATE_SUITE = join(GATES_DIR, "workflow.test.ts");
  * that renaming the function in gates/workflow.test.ts aborts this file
  * instead of quietly mutating nothing.
  */
-const BINDING_SIGNATURE = "export function suiteVerdictViolations(val: unknown): string[] {";
+const BINDING_SIGNATURE =
+  "export function suiteVerdictViolations(val: unknown, measurement: SuiteReading): string[] {";
 
 /**
  * #235's binding, mutated the same way. The pre-validator already knew which
@@ -173,6 +174,51 @@ function plantState(local: Record<string, unknown> | undefined): void {
   writeFileSync(join(WORK, "workflow-state.json"), JSON.stringify(state, null, 2));
 }
 
+/**
+ * The producer, run against the fixture, with nothing in between (#530).
+ *
+ * Until #530 the only way to get a verdict into `environments.local.tests`
+ * was to write it by hand — and that is the defect, not a convenience of the
+ * test: the recorder wrote `suiteMeasurement`, the gate read
+ * `environments.local.tests`, and nothing bridged them. Every green row in
+ * this file was a hand-written enum standing in for a chain that did not
+ * connect, which is why the chain's absence survived #224, #307 and #312.
+ *
+ * So the fixture is committed to a real repository (the recorder refuses a
+ * measurement with no commit behind it, #224/#312), its suite output is
+ * captured, and the recorder is run. What `tests-pass` then reads is what
+ * the producer wrote.
+ */
+function recordFixtureSuite(): { code: number; err: string } {
+  const git = (...a: string[]) =>
+    spawnSync("git", ["-C", PROJECT, ...a], { encoding: "utf-8" });
+  if (!existsSync(join(PROJECT, ".git"))) {
+    git("init", "-q", "-b", "main");
+    // Spelled out rather than through `git()`: the #84 guard reads the argv
+    // at the call site and cannot see a wrapper's prepended `-C`.
+    spawnSync("git", ["-C", PROJECT, "config", "user.email", "t@example.test"]);
+    spawnSync("git", ["-C", PROJECT, "config", "user.name", "T"]);
+  }
+  git("add", "-A");
+  git("commit", "-q", "-m", "fixture");
+
+  const out = join(WORK, "suite-output.txt");
+  const run = spawnSync("bun", ["test"], { cwd: PROJECT, encoding: "utf-8", timeout: 60000 });
+  writeFileSync(out, `${run.stdout ?? ""}${run.stderr ?? ""}`);
+
+  const r = spawnSync(
+    "bun",
+    [
+      join(REPO_ROOT, "scripts", "record-suite-measurement.ts"),
+      "--state", join(WORK, "workflow-state.json"),
+      "--project", PROJECT,
+      "--output", out,
+    ],
+    { encoding: "utf-8", timeout: 60000 },
+  );
+  return { code: r.status ?? -1, err: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
 // ── running one named check out of a gate suite ─────────────────────────────
 
 /**
@@ -267,11 +313,14 @@ describe("#224 fixture: a measured suite failure reaches tests-pass", () => {
     expect(repaired.verdict).toBe("PASS");
   }, 120000);
 
-  test("fixture with one failing test: the real tests-pass check goes red", () => {
+  test("SC-1846: fixture with one failing test: the real tests-pass check goes red", () => {
     plantProject({ failing: true });
-    const measured = measureFixture();
-    expect(measured.verdict).toBe("FAIL");
-    plantState({ tests: measured.verdict });
+    plantState(undefined);
+    // Through the RECORDER, since #530. Nothing between the suite and the
+    // check writes a verdict, so this row fails if the producer stops
+    // reaching the field the consumer reads.
+    const rec = recordFixtureSuite();
+    expect(rec.code, `the recorder refused a measurable fixture:\n${rec.err}`).toBe(0);
 
     const r = runCheck(GATE_SUITE);
     expect(r.ran, `tests-pass never ran — the filter matched nothing:\n${r.output}`).toBe(true);
@@ -281,17 +330,55 @@ describe("#224 fixture: a measured suite failure reaches tests-pass", () => {
     expect(r.output, "red, but not from the suite reading").toContain("tests: FAIL — expected PASS");
   }, 180000);
 
-  test("fixture with the failing test repaired: the same check is green", () => {
-    // Without this control, a check that refuses everything satisfies the case
-    // above.
+  test("SC-1847: fixture with the failing test repaired: the same check is green", () => {
+    // The control, and since #530 it is also the end-to-end proof: a PASS
+    // that reaches this check has been written by the recorder from a run
+    // that happened, not planted. Without this row a check that refuses
+    // everything satisfies the case above — and without the recorder in the
+    // chain, a producer that writes nowhere the consumer reads satisfies
+    // both, which is how #530 survived three issues about this exact field.
     plantProject({ failing: false });
-    const measured = measureFixture();
-    expect(measured.verdict).toBe("PASS");
-    plantState({ tests: measured.verdict });
+    plantState(undefined);
+    const rec = recordFixtureSuite();
+    expect(rec.code, `the recorder refused a clean fixture:\n${rec.err}`).toBe(0);
+
+    // Both shapes of the one fact, written by one write.
+    const written = JSON.parse(readFileSync(join(WORK, "workflow-state.json"), "utf-8"));
+    expect(written.environments?.local?.tests, "the recorder did not write the field the gate reads").toBe("PASS");
+    expect(written.suiteMeasurement?.verdict).toBe("PASS");
 
     const r = runCheck(GATE_SUITE);
     expect(r.ran, `tests-pass never ran — the filter matched nothing:\n${r.output}`).toBe(true);
     expect(r.red, `a measured suite PASS failed tests-pass:\n${r.output}`).toBe(false);
+  }, 180000);
+
+  test("SC-1848: a PASS with no measurement behind it is refused", () => {
+    // The hand-written verdict, which the ship prompt has only ever
+    // forbidden in prose — and which was the ONLY way this check could pass
+    // before #530, because nothing wrote the field.
+    plantProject({ failing: false });
+    plantState({ tests: "PASS" });
+
+    const r = runCheck(GATE_SUITE);
+    expect(r.ran, `tests-pass never ran:\n${r.output}`).toBe(true);
+    expect(r.red, `a typed PASS with no measurement was accepted:\n${r.output}`).toBe(true);
+    expect(r.output).toContain("a verdict somebody typed");
+
+    // And the control one line over: the same enum, now backed. Without this
+    // the refusal above is satisfied by a check that rejects every PASS.
+    //
+    // The typed verdict is CLEARED first, so the only thing that can put a
+    // PASS back is the recorder. Leaving it in place measured 2 red where 3
+    // was predicted when `applyMeasurement` was mutated — the row stayed
+    // green on the hand-planted value, which is #500's "a fixture that
+    // reached the assertion without the feature" one line from a row about
+    // exactly that.
+    plantState({});
+    const rec = recordFixtureSuite();
+    expect(rec.code, rec.err).toBe(0);
+    const backed = runCheck(GATE_SUITE);
+    expect(backed.ran).toBe(true);
+    expect(backed.red, `a measured PASS was refused:\n${backed.output}`).toBe(false);
   }, 180000);
 
   test("fixture with nothing measured at all: still red", () => {

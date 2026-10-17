@@ -227,6 +227,35 @@ export function buildMeasurement(sha: string, run: MeasuredRun): Record<string, 
   };
 }
 
+/**
+ * Put the same verdict where the gate reads it (#530).
+ *
+ * `tests-pass` reads `environments.local.tests`; this script writes
+ * `suiteMeasurement`. **Nothing bridged them.** Run wf_e230fddc-a71 refused
+ * with `local.tests not set` over a state whose `environments.local` was `{}`
+ * and whose `suiteMeasurement` was absent, because the only thing that ever
+ * wrote the field was a sentence inside the scope gate's heal prompt — and
+ * the scope gate passed, so that prompt never ran.
+ *
+ * ONE WRITE, two shapes of one fact. The verdict is derived once, in
+ * `buildMeasurement`, and copied here; this is not a second decider, and
+ * `suiteVerdictViolations` refuses a `tests` that its measurement does not
+ * back, so the two cannot be made to disagree by hand either.
+ *
+ * The enum is why both exist: `EnvironmentLocalSchema` accepts
+ * `PASS | FAIL | SKIP` and nothing richer, and the measurement has to carry
+ * the SHA it was taken at or it is not evidence (#224).
+ */
+export function applyMeasurement(
+  state: Record<string, any>,
+  measurement: Record<string, unknown>,
+): void {
+  state.suiteMeasurement = measurement;
+  state.environments = state.environments || {};
+  state.environments.local = state.environments.local || {};
+  state.environments.local.tests = measurement.verdict;
+}
+
 if (import.meta.main) {
   try {
     const args = parseArgs(process.argv.slice(2));
@@ -236,7 +265,7 @@ if (import.meta.main) {
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
     const measurement = buildMeasurement(sha, run);
-    state.suiteMeasurement = measurement;
+    applyMeasurement(state, measurement);
     state.changelog = state.changelog || [];
     const coverage = run.files === null
       ? `${run.pass + run.fail} test(s), file count not reported`

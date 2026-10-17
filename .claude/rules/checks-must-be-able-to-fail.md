@@ -425,6 +425,49 @@ expresses the same property.** An import and a `readFileSync(join(...))` are
 one question asked two ways, and a check that knows only one of them reads
 exactly like a check that is satisfied.
 
+### The artifact everyone reaches for as ground truth, which always agrees (#530)
+
+The fourth shape says two deciders that agree are behaviourally one. There is
+a version where **the second decider is a file**, and a file has no behaviour
+to mutate, so nothing in this document's method finds it.
+
+`workflows/ship.js`'s review-currency probe asked an agent to read
+`environments.local.testsSha` out of `workflow-state.json`. Nothing has ever
+written that field: it is not a key `EnvironmentLocalSchema` declares, and it
+appeared in exactly one place in the tree — that prompt. The recorder has
+written the SHA to `suiteMeasurement.measuredSha` since #224. So
+`suiteCurrency` returned UNRECORDED on every run that has ever happened, and
+the `SUITE_MEASUREMENT_STALE` refusal twenty lines below it has never once
+been able to fire. #224 shipped a recorder and a refusal and never connected
+them.
+
+**The instrument you reach for cannot see it.** The obvious way to check
+whether a field exists is to write a state through the real writer and read
+it back. `writeWorkflowState` calls
+`WorkflowStateSchema.passthrough().parse(state)` and then writes the
+**original** object — so an undeclared key validates, persists, and reads
+back exactly like a declared one. Measured: a state carrying both
+`environments.local.testsSha` and `suiteMeasurement.measuredSha` round-trips
+with both intact. The file confirms any field you ask it about.
+
+So the check is against the **contract**, not the artifact: walk the Zod
+shape and refuse any prompt that sends an agent to a path the schema does not
+declare. The schema is the statement about what has a producer; the JSON is
+the statement about what someone happened to write.
+
+Two generalisations, and the second is the reusable one:
+
+- A consumer reads a name, a producer writes a different name, and nothing
+  compares the two. #484 is that with a filesystem in the middle; this is
+  that with a schema in the middle. Same question, two syntaxes, a checker
+  that knew one — which is the section directly above, arriving again within
+  the week.
+- **When an artifact is your evidence, ask what it would say if the thing
+  were absent.** A permissive store — `passthrough()`, a schemaless JSON
+  blob, a key-value cache, a log you grep — answers yes to every question of
+  the form "is this here", because you put it there. That is not a witness.
+  It is the question restated.
+
 ## In practice
 
 When you add or change a guard, say in the commit or PR **what you broke to

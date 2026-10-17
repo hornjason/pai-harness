@@ -34,6 +34,39 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
+import { WorkflowStateSchema } from "../gates/schema";
+
+/**
+ * Does `WorkflowStateSchema` declare a dotted state path? (#530)
+ *
+ * Walks the Zod shape rather than a sample state, because a sample state
+ * cannot answer the question: `writeWorkflowState` validates with
+ * `.passthrough()` and then writes the object it was given, so an undeclared
+ * key survives a real write. What has a producer is what the schema names.
+ *
+ * Unwraps optional / nullable / default / effects wrappers at every step — a
+ * walker that stopped at the first `.optional()` would report `false` for
+ * almost everything, and a test asserting "no undeclared paths" would then
+ * pass by finding nothing it could resolve at all. SC-1855 is the control
+ * that makes both directions observable.
+ */
+function schemaDeclaresPath(path: string): boolean {
+  let node: any = WorkflowStateSchema;
+  for (const key of path.split(".")) {
+    for (let i = 0; i < 10 && node; i++) {
+      const name = node?._def?.typeName;
+      if (name === "ZodObject") break;
+      if (node._def?.innerType) node = node._def.innerType;
+      else if (node._def?.schema) node = node._def.schema;
+      else break;
+    }
+    const shape = node?._def?.typeName === "ZodObject" ? node.shape : null;
+    if (!shape || !Object.prototype.hasOwnProperty.call(shape, key)) return false;
+    node = shape[key];
+  }
+  return true;
+}
+
 const REPO_ROOT = join(import.meta.dir, "..");
 const SHIP_PATH = join(REPO_ROOT, "workflows", "ship.js");
 const LIB_PATH = join(REPO_ROOT, "lib", "suite-measurement.ts");
@@ -311,6 +344,62 @@ describe("#224: the suite result reaches state through the recorder", () => {
     expect(probe, "ship.js has no review-currency probe").not.toBe("");
     expect(probe).toContain("environments.local.tests");
     expect(probe).toContain("suiteMeasuredSha");
+  });
+
+  test("SC-1854: every state path the probe sends an agent to is one the schema declares", () => {
+    // #530's second instance, and the check that would have caught the first.
+    //
+    // The probe asked for `environments.local.testsSha` for its whole life.
+    // Nothing has ever written it: it is not a key `EnvironmentLocalSchema`
+    // declares, and it appeared in exactly one place in the tree — that
+    // sentence. So `suiteMeasuredSha` was always "", `suiteCurrency` always
+    // read UNRECORDED, and the STALE refusal twenty lines below could never
+    // fire. A gate that cannot fire is this repo's central defect class.
+    //
+    // Checked against the SCHEMA and not against a written state file,
+    // because a written state file cannot see it: `writeWorkflowState` calls
+    // `WorkflowStateSchema.passthrough().parse(state)` and then writes the
+    // ORIGINAL object, so an undeclared key validates and persists. The
+    // schema is the contract about what has a producer; the file is not.
+    const probe = shipSource.slice(
+      shipSource.indexOf("// ──── REVIEW-CURRENCY-PROBE-START ────"),
+      shipSource.indexOf("// ──── REVIEW-CURRENCY-PROBE-END ────"),
+    );
+    // Comments in the block discuss the old name on purpose, so the search is
+    // over the PROMPT TEXT alone — the template literal the agent is handed.
+    // Searching the whole block would report this file's own history as a
+    // live instruction (.claude/rules/checks-must-be-able-to-fail.md, "search
+    // the slice, not the document").
+    const prompt = probe.slice(probe.indexOf("await timedAgent(`"));
+    expect(prompt, "the probe's prompt literal was not found").not.toBe("");
+
+    const paths = [...new Set(
+      (prompt.match(/\b(?:environments|suiteMeasurement|agents)(?:\.[A-Za-z][A-Za-z0-9]*)+/g) || []),
+    )];
+    // A regex that matched nothing would satisfy every assertion below.
+    expect(paths.length, `no state paths were found in the probe prompt:\n${prompt.slice(0, 400)}`)
+      .toBeGreaterThanOrEqual(3);
+
+    const undeclared = paths.filter(p => !schemaDeclaresPath(p));
+    expect(
+      undeclared,
+      `the probe sends an agent to state path(s) the schema does not declare, so nothing ` +
+        `is contracted to write them and the value read back is always absent (#530):\n${undeclared.join("\n")}`,
+    ).toEqual([]);
+  });
+
+  test("SC-1855: the path walker can say no - the old name and the new one differ", () => {
+    // The control. Without it the assertion above is satisfied by a walker
+    // that returns true for everything, which is the shape this whole file
+    // exists to rule out.
+    expect(schemaDeclaresPath("suiteMeasurement.measuredSha"), "the name the recorder writes").toBe(true);
+    expect(schemaDeclaresPath("environments.local.tests"), "the name the gate reads").toBe(true);
+    expect(schemaDeclaresPath("agents.rook.testedSha"), "the name the review-currency check reads").toBe(true);
+
+    // The name the probe used to carry, and two more that have never existed.
+    expect(schemaDeclaresPath("environments.local.testsSha"), "#530's second instance").toBe(false);
+    expect(schemaDeclaresPath("suiteMeasurement.sha")).toBe(false);
+    expect(schemaDeclaresPath("environments.local")).toBe(true);
   });
 
   test("a stale measurement is a refusal, not a log line", () => {
