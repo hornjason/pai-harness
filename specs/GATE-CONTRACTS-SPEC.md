@@ -1818,6 +1818,10 @@ for uniqueness before being applied.
 | the spec goes back to a line number | 2 | 2 |
 | a citation is edited so it no longer matches source | 1 | 1 |
 | a citation is deleted outright | 1 | 1 |
+| the absolute-path refusal is removed | 1 | 1 |
+| the lexical containment check is removed | 1 | 1 |
+| the symlink check is removed | 1 | 1 |
+| a traversal refuses for absence instead of for leaving | 1 | 1 |
 
 None is left in the tree; all were run and reverted.
 
@@ -1826,6 +1830,38 @@ document rather than about the resolver: every anchor in this spec is present
 and unique, so disabling the not-found and found-twice refusals changes
 nothing about what the spec resolves to. Those refusals are proved by
 SC-1816 and SC-1817, which ask them directly.
+
+### The path guards, and the pair the battery found
+
+The commit security review flagged path traversal: the path comes out of a
+markdown document and `resolveCitation` reads whatever it names. No live
+document does that — every citation here is written by someone with commit
+access — but "the input happens to be trusted today" is not a property of a
+library, and a spec is exactly the sort of file a consumer generates.
+
+The first draft had four checks. **Two of them measured 0 red**, because a
+`..`-segment spelling rule and the lexical containment check answer one
+question: `resolve` normalises `..`, so either could be deleted with
+nothing to say which. The draft's comment asserted they differed, on the
+grounds that containment sees "a symlinked directory inside the tree". It
+does not — `resolve` is purely lexical and cannot see a link at all.
+
+Three remain, each with an input only it reaches:
+
+| input | the only check that catches it |
+|---|---|
+| an absolute path | the leading-slash refusal — `join` CONCATENATES a leading slash rather than absorbing it, so the path stays inside the tree and containment has nothing to say |
+| a `..` traversal | lexical containment |
+| a symlink inside the tree whose target is outside | `realpathSync`, the only thing that follows it |
+
+The absolute-path case is not an escape: `join(root, "/etc/passwd")` reads
+`<root>/etc/passwd`. It is refused because a citation written absolute means
+something other than what its author thinks it means, and a confident
+citation to the wrong file is this entire issue.
+
+The symlink fixture's target is reachable ONLY through the link, outside the
+walked tree entirely. A fixture that can satisfy its assertion by another
+route measures nothing about the feature (#500).
 
 The last two rows were added after the battery's first pass. The count floor
 on the resolving row had been set below the real number of citations, so
@@ -1839,6 +1875,7 @@ that cannot see a loss. Set to the measured 9, both rows are 1.
 - [x] SC-1817: test/source-anchor-citations.test.ts contains [an anchor matching twice is a refusal - not the first match] — an ambiguous anchor is how a stale citation lands somewhere believable
 - [x] SC-1818: test/source-anchor-citations.test.ts contains [a short anchor is refused before it becomes ambiguous] — unique today is one unrelated edit away from not being
 - [x] SC-1823: test/source-anchor-citations.test.ts contains [a citation cannot read outside the repository] — flagged by the commit security review: the path comes out of a document and this function reads whatever it names, and refused for leaving rather than for being absent
+- [x] SC-1824: test/source-anchor-citations.test.ts contains [a symlink inside the tree pointing out of it is refused] — the input the lexical check cannot reach, with a target reachable only through the link
 - [x] SC-1819: test/source-anchor-citations.test.ts contains [a missing file and a multi-line anchor both refuse] — reporting the first line of a spanning fragment is the near-enough that put three wrong numbers here
 - [x] SC-1820: test/source-anchor-citations.test.ts contains [all of them resolve] — with the count floor at today's number, so a citation cannot be deleted without the row saying so
 - [x] SC-1821: test/source-anchor-citations.test.ts contains [the line-number form is gone and does not come back] — converting seven is worth nothing if the eighth is written the old way next week

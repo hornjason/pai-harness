@@ -24,7 +24,7 @@
  * numbers had. `0`, `null` and "the first match" are indistinguishable from a
  * correct answer; a refusal naming the count is not.
  */
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, realpathSync } from "fs";
 import { join, resolve, sep } from "path";
 
 /** `path@"anchor"` inside a single markdown code span. */
@@ -79,17 +79,41 @@ export function resolveCitation(root: string, cite: Citation): Resolution {
   // generates. Refused rather than normalised: a citation that climbs out of
   // the repository is not a citation with a fixable path, it is a citation to
   // something this function has no business reading.
+  //
+  // Three checks, and each has an input only it reaches. The first draft had
+  // four, and the battery measured the fourth — a `..`-segment spelling rule
+  // — at **0 red**, because `resolve` normalises `..` and the containment
+  // check below already refuses it. Two deciders answering one question, the
+  // fourth shape in `.claude/rules/checks-must-be-able-to-fail.md`. Dropped.
+  //
+  //   `/etc/passwd`        only this rule. `join` CONCATENATES a leading
+  //                        slash rather than absorbing it, so the path stays
+  //                        inside the tree and containment has nothing to say
+  //   `../../etc/passwd`   only containment, below
+  //   a symlink inside     only `realpathSync`, below — `resolve` is purely
+  //                        lexical and cannot see a link at all
+  //
+  // The first of those is not an escape: `join(root, "/etc/passwd")` reads
+  // `<root>/etc/passwd`. It is refused because a citation written absolute
+  // means something other than what its author thinks it means, and a
+  // confident citation to the wrong file is this whole issue.
   if (path.startsWith("/")) return fail("the path is absolute — citations are repository-relative");
-  if (path.split("/").includes("..")) return fail("the path contains a `..` segment, so it may leave the repository");
 
   const full = join(root, path);
-  // And the containment is checked rather than inferred from the two rules
-  // above, because those are about the spelling and this is about where the
-  // path actually landed. A symlinked directory inside the tree is the case
-  // no spelling rule can see.
   const contained = resolve(root) + sep;
-  if (!resolve(full).startsWith(contained)) return fail("the path resolves outside the repository");
+  if (!resolve(full).startsWith(contained)) {
+    return fail("the path resolves outside the repository, so it is not a citation to this tree");
+  }
   if (!existsSync(full)) return fail("no such file in the repository");
+
+  // The symlink question, which the lexical check genuinely cannot answer:
+  // a link INSIDE the tree whose target is outside it resolves to a
+  // contained path and reads an uncontained file. `realpathSync` is the only
+  // thing that follows it, and it needs the file to exist, which is why it
+  // sits here rather than beside its lexical sibling.
+  if (!realpathSync(full).startsWith(realpathSync(resolve(root)) + sep)) {
+    return fail("the path is a symlink whose target is outside the repository");
+  }
 
   const source = readFileSync(full, "utf-8");
   const count = source.split(anchor).length - 1;

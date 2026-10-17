@@ -25,7 +25,8 @@
  * executed.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 import {
@@ -127,6 +128,44 @@ describe("#514: a citation resolves to exactly one site, or it refuses", () => {
       anchor: "Citing source by what it says, not by where it sits",
     });
     expect(ok.ok, ok.ok ? "" : ok.reason).toBe(true);
+  });
+
+  test("SC-1824: a symlink inside the tree pointing out of it is refused", () => {
+    // The input NOTHING above reaches. `resolve` is purely lexical, so a
+    // link whose path is entirely inside the repository passes containment
+    // and then reads a file that is not in the repository at all. The first
+    // draft's comment claimed the lexical check covered this; it does not,
+    // and the battery is what said so.
+    //
+    // The target is reachable ONLY through the link — outside the walked
+    // tree entirely — because a fixture that can satisfy the assertion by
+    // another route measures nothing about the feature (#500).
+    const base = mkdtempSync(join(tmpdir(), "rungate-anchor-"));
+    try {
+      const root = join(base, "repo");
+      mkdirSync(root);
+      const outside = join(base, "secret.ts");
+      writeFileSync(outside, "export const TOKEN = 'this text is long enough to anchor on';\n");
+      symlinkSync(outside, join(root, "innocent.ts"));
+
+      const r = resolveCitation(root, {
+        path: "innocent.ts",
+        anchor: "this text is long enough to anchor on",
+      });
+      expect(r.ok, "a symlink out of the repository was followed and read").toBe(false);
+      if (!r.ok) expect(r.reason).toContain("symlink");
+
+      // The control, in the same temp tree: an ordinary file resolves, so
+      // the refusal is about the link and not about the fixture.
+      writeFileSync(join(root, "real.ts"), "export const OK = 'this text is long enough to anchor on';\n");
+      const fine = resolveCitation(root, {
+        path: "real.ts",
+        anchor: "this text is long enough to anchor on",
+      });
+      expect(fine.ok, fine.ok ? "" : fine.reason).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 
   test("SC-1819: a missing file and a multi-line anchor both refuse", () => {
