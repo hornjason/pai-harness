@@ -272,6 +272,16 @@ const SuiteMeasurementShape = {
   measuredSha: z.string().regex(MEASURED_SHA, "measuredSha must be a commit SHA (7-40 hex), not a ref name"),
   failures: z.number().int().nonnegative(),
   measuredAt: z.string().optional(),
+  // #490 — what the run covered, beside what it found. A verdict with no
+  // coverage beside it cannot tell `0 fail` over 324 files from `0 fail` over
+  // one empty one, and both print the same summary.
+  //
+  // `.nullable()`, and the recorder writes null rather than omitting the key
+  // when a runner does not report a count: absent means "a harness older than
+  // this field", null means "this runner was asked and did not say", and 0
+  // means "it said none". Collapsing those is the defect one level down.
+  tests: z.number().int().nonnegative().nullable().optional(),
+  files: z.number().int().positive().nullable().optional(),
 };
 
 /**

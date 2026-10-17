@@ -46,6 +46,30 @@ let HEAD_SHA = "";
 /** Every mutant copy written into scripts/ by this file, cleaned in afterEach. */
 let MUTANTS: string[] = [];
 
+/**
+ * Captured runner output, which is what the recorder reads since #469/#490.
+ *
+ * Written here rather than executed: this file's subject is the recorder's
+ * arguments and its refusals, and the output is its INPUT. The proof that
+ * these shapes are the ones a real runner produces is in
+ * test/suite-run-reading.test.ts, which runs five live `bun test` fixtures
+ * and reads them with the same function.
+ */
+const OUTPUT = {
+  clean: " 3 pass\n 0 fail\nRan 3 tests across 2 files. [1.00ms]\n",
+  oneFailure: " 2 pass\n 1 fail\nRan 3 tests across 2 files. [1.00ms]\n",
+  fourFailures: " 0 pass\n 4 fail\nRan 4 tests across 2 files. [1.00ms]\n",
+  /** #469 — the files were gone by the time the runner reached them. */
+  noSummary:
+    "bun test v1.3.14 (d1632b29)\n\n# Unhandled error between tests\n" +
+    '-------------------------------\nerror: ENOENT reading "/gone/a.test.ts"\n' +
+    "-------------------------------\n",
+  /** #490 — one file, no tests, exit 0. */
+  nothingRan: " 0 pass\n 0 fail\nRan 0 tests across 1 file. [6.00ms]\n",
+};
+/** Paths of the above, filled in beforeEach. */
+let OUT: Record<keyof typeof OUTPUT, string> = {} as any;
+
 /** The smallest workflow-state.json that writeWorkflowState will accept. */
 function baseState(extra: Record<string, unknown> = {}) {
   return {
@@ -76,6 +100,13 @@ beforeEach(() => {
   DIR = mkdtempSync(join(tmpdir(), "record-suite-measurement-"));
   STATE = join(DIR, "workflow-state.json");
   writeFileSync(STATE, JSON.stringify(baseState(), null, 2));
+
+  OUT = {} as any;
+  for (const [name, body] of Object.entries(OUTPUT)) {
+    const path = join(DIR, `suite-${name}.txt`);
+    writeFileSync(path, body);
+    (OUT as Record<string, string>)[name] = path;
+  }
 
   PROJECT = join(DIR, "project");
   mkdirSync(PROJECT, { recursive: true });
@@ -245,7 +276,7 @@ describe("#224: the SHA round-trips through the schema", () => {
 
 describe("#224: scripts/record-suite-measurement.ts records what it measured", () => {
   test("zero failures is written as a PASS carrying the SHA", () => {
-    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "0"]);
+    const r = run(["--state", STATE, "--project", PROJECT, "--output", OUT.clean]);
     expect(r.code, r.err).toBe(0);
     expect(JSON.parse(r.out)).toMatchObject({ ok: true, verdict: "PASS", measuredSha: HEAD_SHA });
 
@@ -254,8 +285,29 @@ describe("#224: scripts/record-suite-measurement.ts records what it measured", (
     expect(readSuiteMeasurement(state).verdict).toBe("PASS");
   });
 
+  test("SC-1834: the record carries what the run covered - not only what it found", () => {
+    // #490. A verdict with no coverage beside it cannot tell `0 fail` over
+    // two files from `0 fail` over one empty one, and both print a summary
+    // that reads the same.
+    run(["--state", STATE, "--project", PROJECT, "--output", OUT.clean]);
+    expect(readState().suiteMeasurement).toMatchObject({ tests: 3, files: 2 });
+
+    // A runner that reported no file count records null, never 0 — "asked and
+    // did not say" and "said none" are opposite facts.
+    writeFileSync(join(DIR, "bare.txt"), " 3 pass\n 0 fail\n");
+    run(["--state", STATE, "--project", PROJECT, "--output", join(DIR, "bare.txt")]);
+    const bare = readState().suiteMeasurement as Record<string, unknown>;
+    expect(bare.files).toBeNull();
+    expect(bare.files).not.toBe(0);
+
+    // The changelog says the coverage too, because the state file is the
+    // artefact a reader reaches for after the run is over.
+    const changelog = readState().changelog as Array<Record<string, unknown>>;
+    expect(String(changelog.find(e => e.event === "suite-measurement")?.detail)).toContain("test(s)");
+  });
+
   test("a failing suite is written as a FAIL the reader can act on", () => {
-    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "1"]);
+    const r = run(["--state", STATE, "--project", PROJECT, "--output", OUT.oneFailure]);
     expect(r.code, r.err).toBe(0);
 
     const reading = readSuiteMeasurement(readState());
@@ -264,14 +316,17 @@ describe("#224: scripts/record-suite-measurement.ts records what it measured", (
     expect(reading.measuredSha).toBe(HEAD_SHA);
   });
 
-  test("the verdict comes from the count, not from the caller", () => {
-    // There is no --verdict option. A caller cannot hand this script the word
-    // PASS over a suite that failed — that is the #224 defect in one argument.
+  test("the verdict comes from the output, not from the caller", () => {
+    // There is no --verdict option, and since #469 there is no --failures
+    // either. A caller cannot hand this script the word PASS over a suite
+    // that failed, nor a zero over a suite that never reported one — those
+    // are #224 and #469 in one argument each.
     const options = readFileSync(SCRIPT, "utf-8").match(/const OPTIONS = new Set\(\[([^\]]*)\]\)/);
     expect(options, "OPTIONS is no longer a single-line Set literal — this check cannot read it").toBeTruthy();
     expect(options![1]).not.toContain("verdict");
-    expect(run(["--state", STATE, "--project", PROJECT, "--failures", "4"]).code).toBe(0);
-    expect((readState().suiteMeasurement as any).verdict).toBe("FAIL");
+    expect(options![1]).not.toContain("failures");
+    expect(run(["--state", STATE, "--project", PROJECT, "--output", OUT.fourFailures]).code).toBe(0);
+    expect((readState().suiteMeasurement as any)).toMatchObject({ verdict: "FAIL", failures: 4 });
   });
 
   test("the measurement is written through writeWorkflowState", () => {
@@ -283,7 +338,7 @@ describe("#224: scripts/record-suite-measurement.ts records what it measured", (
   });
 
   test("the run is recorded in the changelog", () => {
-    run(["--state", STATE, "--project", PROJECT, "--failures", "0"]);
+    run(["--state", STATE, "--project", PROJECT, "--output", OUT.clean]);
     const changelog = readState().changelog as Array<Record<string, unknown>>;
     expect(changelog.some(e => e.event === "suite-measurement")).toBe(true);
   });
@@ -312,11 +367,11 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
   }
 
   test("no --state", () => {
-    expectRefused("a missing --state", ["--project", PROJECT, "--failures", "0"], /--state is required/);
+    expectRefused("a missing --state", ["--project", PROJECT, "--output", OUT.clean], /--state is required/);
   });
 
   test("no --project", () => {
-    expectRefused("a missing --project", ["--state", STATE, "--failures", "0"], /--project is required/);
+    expectRefused("a missing --project", ["--state", STATE, "--output", OUT.clean], /--project is required/);
   });
 
   test("--sha, which this script used to require", () => {
@@ -328,8 +383,22 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
     // CALLER choosing the commit, not the commit being wrong.
     expectRefused(
       "a caller-supplied SHA",
-      ["--state", STATE, "--project", PROJECT, "--sha", HEAD_SHA, "--failures", "0"],
+      ["--state", STATE, "--project", PROJECT, "--sha", HEAD_SHA, "--output", OUT.clean],
       /--sha is no longer accepted/,
+    );
+  });
+
+  test("SC-1835: --failures, the last value the caller still chose", () => {
+    // #469/#490. Refused by name rather than as "unexpected argument", for
+    // the same reason as `--sha`: it was in the documented usage for this
+    // script's whole life, so a caller still passing it is following
+    // instructions. The count passed here is 0 over a real clean fixture —
+    // a value the recorder would have accepted — so what is refused is the
+    // CALLER reading the summary, not the number being wrong.
+    expectRefused(
+      "a caller-supplied failure count",
+      ["--state", STATE, "--project", PROJECT, "--failures", "0", "--output", OUT.clean],
+      /--failures is no longer accepted/,
     );
   });
 
@@ -355,7 +424,7 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
     // directly because no fixture here can produce it.
     expectRefused(
       "a repository with no commits",
-      ["--state", STATE, "--project", empty, "--failures", "0"],
+      ["--state", STATE, "--project", empty, "--output", OUT.clean],
       /could not read a commit/,
     );
   });
@@ -363,22 +432,49 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
   test("a --project that is not a repository", () => {
     expectRefused(
       "a directory that is not a git repository",
-      ["--state", STATE, "--project", join(DIR, "nope"), "--failures", "0"],
+      ["--state", STATE, "--project", join(DIR, "nope"), "--output", OUT.clean],
       /could not read a commit/,
     );
   });
 
-  test("no --failures", () => {
+  test("no --output", () => {
     // The whole bug: no count recorded, and the record still reads as a result.
-    expectRefused("a missing --failures", ["--state", STATE, "--project", PROJECT], /--failures is required/);
+    expectRefused("a missing --output", ["--state", STATE, "--project", PROJECT], /--output is required/);
   });
 
-  test("a --failures that is not a count", () => {
-    expectRefused("a non-numeric count", ["--state", STATE, "--project", PROJECT, "--failures", "none"], /--failures/);
+  test("an --output file that is not there", () => {
+    expectRefused(
+      "an unreadable suite output",
+      ["--state", STATE, "--project", PROJECT, "--output", join(DIR, "never-written.txt")],
+      /could not read the suite output/,
+    );
   });
 
-  test("a negative --failures", () => {
-    expectRefused("a negative count", ["--state", STATE, "--project", PROJECT, "--failures", "-1"], /--failures/);
+  test("SC-1836: a run that printed no summary is refused, not recorded as clean", () => {
+    // #469. The state is asserted untouched by expectRefused, which is the
+    // load-bearing half: `lib/suite-measurement.ts` reads an absent record as
+    // UNMEASURED, so refusing leaves the run saying the true thing. Recording
+    // an UNMEASURED verdict instead would park an unmeasured run in the field
+    // that proves the suite ran.
+    expectRefused(
+      "a run with no pass/fail summary",
+      ["--state", STATE, "--project", PROJECT, "--output", OUT.noSummary],
+      /no pass\/fail summary/,
+    );
+    expect(readSuiteMeasurement(readState()).verdict).toBe("UNMEASURED");
+    expect(readSuiteMeasurement(readState()).failures).toBeNull();
+  });
+
+  test("SC-1837: a run that executed nothing is refused, not recorded as clean", () => {
+    // #490. `0 pass / 0 fail / Ran 0 tests across 1 file.` exits 0 and every
+    // indicator is green. The refusal names the coverage so an operator can
+    // tell this from a runner that found no files at all.
+    expectRefused(
+      "a run that executed no tests",
+      ["--state", STATE, "--project", PROJECT, "--output", OUT.nothingRan],
+      /executed 0 tests/,
+    );
+    expect(readSuiteMeasurement(readState()).verdict).toBe("UNMEASURED");
   });
 
   test("a git that answers with something that is not a commit", () => {
@@ -398,13 +494,13 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
   });
 
   test("an unknown argument", () => {
-    expectRefused("an unknown flag", ["--state", STATE, "--project", PROJECT, "--failures", "0", "--commit", "x"], /unexpected argument/);
+    expectRefused("an unknown flag", ["--state", STATE, "--project", PROJECT, "--output", OUT.clean, "--commit", "x"], /unexpected argument/);
   });
 
   test("a state file that is not there", () => {
     expectRefused(
       "a missing state file",
-      ["--state", join(DIR, "absent.json"), "--project", PROJECT, "--failures", "0"],
+      ["--state", join(DIR, "absent.json"), "--project", PROJECT, "--output", OUT.clean],
       /record-suite-measurement/,
     );
   });
@@ -416,7 +512,7 @@ describe("#224: refusals, each shown against a mutant that does not refuse", () 
     writeFileSync(STATE, JSON.stringify(baseState({ changelog: [{ ts: "now", event: "x", actor: "robot" }] })));
     expectRefused(
       "a state with an invalid changelog actor",
-      ["--state", STATE, "--project", PROJECT, "--failures", "0"],
+      ["--state", STATE, "--project", PROJECT, "--output", OUT.clean],
       /actor/,
     );
   });
@@ -439,9 +535,9 @@ describe("#224: the properties the mutant depends on", () => {
   test("the mutant is not simply a script that always exits 0", () => {
     // Guards the guard: if the mutant refused nothing AND did nothing, every
     // expectRefused above would pass vacuously.
-    const r = run(["--state", STATE, "--project", PROJECT, "--failures", "2"], MUTANT);
+    const r = run(["--state", STATE, "--project", PROJECT, "--output", OUT.oneFailure], MUTANT);
     expect(r.code).toBe(0);
-    expect((readState().suiteMeasurement as any)).toMatchObject({ verdict: "FAIL", failures: 2, measuredSha: HEAD_SHA });
+    expect((readState().suiteMeasurement as any)).toMatchObject({ verdict: "FAIL", failures: 1, measuredSha: HEAD_SHA });
   });
 
   test("no mutant is left behind", () => {
@@ -461,6 +557,24 @@ describe("#224: the properties the mutant depends on", () => {
 
 describe("#224: the schema exports the field list the guide is checked against", () => {
   test("SUITE_MEASUREMENT_FIELDS names every field of the measurement", () => {
-    expect([...SUITE_MEASUREMENT_FIELDS].sort()).toEqual(["failures", "measuredAt", "measuredSha", "verdict"]);
+    expect([...SUITE_MEASUREMENT_FIELDS].sort())
+      .toEqual(["failures", "files", "measuredAt", "measuredSha", "tests", "verdict"]);
+  });
+
+  test("SC-1838: the schema refuses a measurement over zero files", () => {
+    // The write path's half of #490, and an input only it reaches: the
+    // recorder cannot produce `files: 0` because `readSuiteRun` refuses that
+    // output, but a state file edited by hand, merged, or written by an older
+    // harness arrives here without passing through either.
+    const over = (files: unknown) =>
+      WorkflowStateSchema.safeParse(
+        stateWith({ verdict: "PASS", failures: 0, measuredSha: SHA, tests: 3, files }),
+      ).success;
+    expect(over(0), "a measurement over zero discovered files was accepted").toBe(false);
+    expect(over(-1)).toBe(false);
+    // null is the honest answer for a runner that did not report a count, and
+    // it has to stay writable or every non-bun runner is refused.
+    expect(over(null)).toBe(true);
+    expect(over(2)).toBe(true);
   });
 });

@@ -8128,3 +8128,157 @@ refusal functions directly and cannot see the loop's wrapper at all.
 - [x] SC-1812: test/argument-shape-refusal.test.ts contains [a run with four good arguments is not refused] — the control, without which a refusal firing on everything satisfies every other row
 - [x] SC-1813: test/argument-shape-refusal.test.ts contains [an absent root and an unusable one are told apart] — the row that replaced one passing on a check from before this issue, with the fix that turned out to be unreachable
 - [x] SC-1814: test/argument-shape-refusal.test.ts contains [passing slug instead of repo still works - and issueRepo is still checked] — the exemption is for an absent repo, not for any run that carries a slug
+
+## A run that measured nothing, read as a clean run (#469, #490)
+
+Two issues, one shape, and the shape is this repo's central defect class
+arriving from the environment rather than from a check: **a run that measured
+nothing is indistinguishable from a run that found nothing wrong.**
+
+### What was observed
+
+#469. On 2026-10-16 the stale `~/Projects/rungate-wt-*` directories were
+cleaned up by hand. A suite was running inside one of them. It printed:
+
+```
+# Unhandled error between tests
+-------------------------------
+error: ENOENT reading ".../gates/adversarial.test.ts"
+-------------------------------
+...
+[exited with code 0]
+```
+
+Four such blocks, no `N pass / N fail` summary, **exit 0**. Anything reading
+that exit code sees success.
+
+#490. A runner that discovers nothing exits 0. So does a clean run. Filed as
+a proposal by a peer session, with no observed instance — and reproducing it
+while fixing this produced one, on bun 1.3.14 over a project whose only test
+file declares no tests:
+
+```
+ 0 pass
+ 0 fail
+Ran 0 tests across 1 file. [6.00ms]
+```
+
+Exit 0, a complete summary, and nothing measured.
+
+### The exit code decides nothing, and the fixtures say so
+
+#469's run exited **0**. The reproduction of it here — the first test file
+bun imports removes the directory the rest live in — exits **1**. A reading
+keyed off the exit code would have been wrong about one of them, and which
+is not something the harness can know.
+
+So `lib/suite-run-reading.ts` never takes an exit code. The five live
+fixtures in `test/suite-run-reading.test.ts` make that a measurement rather
+than an assertion: exit 0 covers one measured run and one unmeasured one, and
+so does exit 1. Neither value separates the two sets.
+
+| Fixture | Exit | Output | Verdict |
+|---|---|---|---|
+| test files vanish mid-run | 1 | banner only | UNMEASURED |
+| no test files at all | 1 | `error: 0 test files matching …` | UNMEASURED |
+| one file, no tests | 0 | `0 pass / 0 fail / Ran 0 tests across 1 file.` | UNMEASURED |
+| one passing test | 0 | `1 pass / 0 fail / Ran 1 test across 1 file.` | PASS |
+| one failing test | 1 | `0 pass / 1 fail` | FAIL |
+
+### The file count is the proxy; the executed count is the property
+
+#490 asks for the discovered FILE count to be asserted greater than zero.
+Row three above is why this does not stop there: **one empty file satisfies
+"files > 0" and measures exactly as much as no files at all.** Wording the
+refusal after the cheapest available proxy is the trap
+`.claude/rules/checks-must-be-able-to-fail.md` records — a proxy is a thing
+people can satisfy directly, and "add an empty test file" is the five-o'clock
+repair that would silence it.
+
+The file count is still read, still recorded, and still refused — as a
+**contradiction**, which is the one question the executed-count refusal
+cannot ask. That one fires when nothing ran; `3 pass / 0 fail / Ran 3 tests
+across 0 files.` fires only when something did. Each has an input the other
+never reaches, so neither holds the other up.
+
+A runner that reports no file count at all records `files: null`, never `0`.
+"Asked and did not say" and "said none" are opposite facts, and `0` is the
+value that would let a reader add them together — *Silent Default
+Substitution*, from `.claude/rules/config-access.md`, pointed at the number
+#490 is about. This is also the population split that keeps the fix from
+bringing its own outage: a runner printing `12 pass / 3 fail` has proved it
+executed twelve things whether or not it said how many files they came from.
+
+### The count stopped being an argument
+
+`scripts/record-suite-measurement.ts` took `--failures <n>`, and #224's own
+reasoning explains why that was the last thing left to remove: it had already
+refused `--verdict` (a caller must not name the result) and #312 had already
+refused `--sha` (a caller must not name the commit). The count was the
+remaining value a caller chose — and it is the one the defect arrives
+through, because an agent reading a run that printed no summary types `0` in
+perfect good faith.
+
+So the prompt captures the run and the recorder reads it:
+
+```
+cd <project> && <testCmd> 2>&1 | tee <work>/suite-output.txt
+bun .../record-suite-measurement.ts --state … --project … --output <work>/suite-output.txt
+```
+
+`2>&1 | tee` rather than a redirect, because the agent still needs to see
+what the run found. The pipeline's exit code becomes `tee`'s, which costs
+nothing: the exit code was never the thing being read.
+
+**An unmeasured run is refused, not recorded.** `lib/suite-measurement.ts`
+already says why — UNMEASURED is not a result, it is the statement that this
+run has no suite evidence, and recording it would be a way to park an
+unmeasured run in the field that proves the suite ran. The recorder refuses,
+nothing is written, and the absent record reads UNMEASURED, which is what
+absence has meant here since #224.
+
+### What the reader already did, and what it could never be handed
+
+`suiteVerdictViolations` in `gates/workflow.test.ts` refuses everything that
+is not `PASS` or a declared `SKIP`, so it has refused the string `UNMEASURED`
+since #224. That half needed no change. What it could never be handed was an
+UNMEASURED reading, because nothing upstream could produce one — every path
+ended in a number, and a number is a measurement. SC-1839 and SC-1840 close
+that by deriving the verdict from a run that really happened and watching the
+check refuse it, then watching the mutant ship it.
+
+### What was broken to prove it
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `readSuiteRun`'s no-summary refusal removed | 7 of 23 | 7 |
+| `readSuiteRun`'s executed-zero refusal removed | 5 of 23 | 5 |
+| the zero-files contradiction removed | 1 of 23 | 1 |
+| the half-summary refusal removed | 1 of 23 | 1 |
+| `files` defaulted to `0` instead of `null` | 2 of 23 | 2 |
+| `--failures` restored to `OPTIONS` | 2 of 23 | 2 |
+
+Counted over `test/suite-run-reading.test.ts` + `test/suite-verdict-binding.test.ts`
++ `test/recorder-command-executed.test.ts`. None is left in the tree.
+
+### Success Criteria
+
+- [x] SC-1825: test/suite-run-reading.test.ts contains [a run whose test files vanish prints no pass/fail summary] — the instrument is checked before the reading, because a fixture that stopped reproducing and a parser that stopped matching look identical
+- [x] SC-1826: test/suite-run-reading.test.ts contains [a runner that discovered one file and ran nothing in it reads UNMEASURED] — the row that says why the refusal is about the executed count and not the discovered file count
+- [x] SC-1827: test/suite-run-reading.test.ts contains [a directory with no test files reads UNMEASURED] — the runner refuses to start and prints no summary at all
+- [x] SC-1828: test/suite-run-reading.test.ts contains [a real suite is measured - and keeps the coverage it reported] — the control, without which a reader refusing everything satisfies every other row
+- [x] SC-1829: test/suite-run-reading.test.ts contains [the exit code decides nothing - both values appear on both verdicts] — measured over the five live fixtures rather than claimed in a sentence
+- [x] SC-1830: test/suite-run-reading.test.ts contains [half a summary is not a summary] — the missing half is not assumed to be zero
+- [x] SC-1831: test/suite-run-reading.test.ts contains [results reported from zero discovered files contradict each other] — #490's file-count assertion as the one question the executed-count refusal cannot reach
+- [x] SC-1832: test/suite-run-reading.test.ts contains [a runner that reports no file count is measured with files null - never 0] — the population split that keeps the fix from refusing every runner this repo cannot read
+- [x] SC-1833: test/suite-run-reading.test.ts contains [the summary is read off whole lines - not out of prose] — and the last summary wins, matching the parser #307 added
+- [x] SC-1834: test/suite-verdict-binding.test.ts contains [the record carries what the run covered - not only what it found] — a verdict with no coverage beside it cannot tell a clean suite from an empty one
+- [x] SC-1835: test/suite-verdict-binding.test.ts contains [--failures, the last value the caller still chose] — refused by name rather than as an unexpected argument, because it was in the documented usage for this script's whole life
+- [x] SC-1836: test/suite-verdict-binding.test.ts contains [a run that printed no summary is refused, not recorded as clean] — and the state is asserted untouched, so the absence reads UNMEASURED
+- [x] SC-1837: test/suite-verdict-binding.test.ts contains [a run that executed nothing is refused, not recorded as clean] — #490's shape, which exits 0 with a complete summary
+- [x] SC-1838: test/suite-verdict-binding.test.ts contains [the schema refuses a measurement over zero files] — the write path's half, reachable only from a state the recorder did not produce
+- [x] SC-1839: test/suite-binding-mutation.test.ts contains [a run whose test files vanished reads UNMEASURED and the same check goes red] — the verdict is derived from a run that happened, not from a string the test chose
+- [x] SC-1840: test/suite-binding-mutation.test.ts contains [the mutant ships an UNMEASURED run the real source refuses] — the real source refusing is not on its own evidence that the refusal comes from the binding
+- [x] SC-1841: test/recorder-command-executed.test.ts contains [the prompt's own two commands refuse a run that measured nothing] — end to end through the text an agent is handed, which is the row that could not exist while the count was an argument
+- [x] SC-1842: test/recorder-command-executed.test.ts contains [a runner that executed nothing is refused the same way] — a different refusal from SC-1841, asserted separately so one decider cannot wear two names
+- [x] SC-1843: test/recorder-command-executed.test.ts contains [reintroducing --failures into the prompt turns this red] — a prompt that asks for a count is how a count gets typed

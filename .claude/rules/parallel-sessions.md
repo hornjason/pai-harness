@@ -4,7 +4,7 @@ generated-sha: dd4aa69abde57f13
 doc-type: reference
 status: active
 owner: jason
-updated: 2026-10-16
+updated: 2026-10-17
 ---
 
 ## Claim the issue before you write code
@@ -25,6 +25,28 @@ self-contained, no overlap" and offered it to a second session, while a third
 had it finished, reviewed, security-reviewed and rebased five times on an
 unpushed branch. Whoever took it would have rebuilt completed work and
 collided with a branch they could not see.
+
+## Commit before the first long-running step, not after the work is finished
+
+A WIP commit on your branch costs nothing and is the only thing that makes
+your work survive the worktree. Make it before you start anything that will
+hold the session for minutes — a full suite, a mutation battery, a long agent
+run — not when the change feels done.
+
+**Why:** on 2026-10-16 the stale `~/Projects/rungate-wt-*` directories were
+cleaned up by hand, which is an ordinary thing to do and not a mistake: `git
+worktree list` marks a worktree whose branch is merged exactly the same as an
+abandoned one, and nothing in this repo makes an uncommitted worktree visibly
+in use from outside. Two sessions lost in-flight work — one about 500 lines,
+redone from the transcript, and one holding PR #452's branch. Neither had
+committed. A commit is what turns "a directory somebody might delete" into
+"a branch that shows up in `git branch`".
+
+The suite running inside one of them exited 0 with no summary at all, which
+is #469 and now a refusal in `lib/suite-run-reading.ts` — but that is the
+consequence, not the lesson. The lesson is that the window between starting
+and committing is exactly the window where your work is invisible to everyone
+else, so make it short.
 
 ## Push finished work. Do not park it waiting for review
 

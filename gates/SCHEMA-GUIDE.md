@@ -146,6 +146,8 @@ and **absent means UNMEASURED** — not "clean".
 | `measuredSha` | string | The commit the suite actually ran against — 7-40 hex, never a ref name |
 | `failures` | number | Failing tests: `0` for a PASS, at least `1` for a FAIL |
 | `measuredAt` | string | ISO timestamp of the run (optional) |
+| `tests` | number \| null | Tests the runner said it executed, or `null` when it did not say (#490) |
+| `files` | number \| null | Test files the runner said it discovered, or `null` when it did not say. Never `0` — a run over no files is refused, not recorded (#490) |
 
 **A measurement with no `measuredSha` is rejected at write time.** A count with no
 commit attached cannot be checked against the tree being shipped, so it is not
@@ -171,13 +173,21 @@ than `0`, so a consumer cannot add an unmeasured run into a clean total.
 Write it with `scripts/record-suite-measurement.ts`, not by hand:
 
 ```
-bun scripts/record-suite-measurement.ts --state <workflow-state.json> --project <project root> --failures <n>
+bun scripts/record-suite-measurement.ts --state <workflow-state.json> --project <project root> --output <captured suite output>
 ```
 
 The commit is read from `--project`, not supplied (#312). A SHA a caller types
 can agree with HEAD by construction, which is the provenance check answering
 itself — so `--sha` is refused by name, as is `--result`: the verdict comes
 from the count and has no other source.
+
+**The count is read from the runner's output, not supplied either (#469, #490).**
+`--failures <n>` is refused by name for the same reason as `--sha`: it was a
+number an agent typed after reading a summary, and the run this guards against
+had no summary to read. A run whose output carries no pass/fail counts, or
+which executed nothing, is **refused rather than recorded** — the absence then
+reads UNMEASURED through `lib/suite-measurement.ts`, which is what absence
+already means here.
 
 ## evidencePrevalidation
 

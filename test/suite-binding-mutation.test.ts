@@ -6,6 +6,7 @@ import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { extractTestFailureCount } from "../gates/gate-executor";
 import { prevalidateEvidence } from "../lib/evidence-prevalidator";
+import { readSuiteRun, suiteRunVerdict } from "../lib/suite-run-reading";
 
 /**
  * #224 — the suite result and the ship verdict were not connected.
@@ -117,6 +118,36 @@ function measureFixture(): { failures: number; verdict: "PASS" | "FAIL" } {
   });
   const failures = extractTestFailureCount(`${r.stdout ?? ""}${r.stderr ?? ""}`);
   return { failures, verdict: failures > 0 ? "FAIL" : "PASS" };
+}
+
+/**
+ * A project whose test files are gone by the time the runner reaches them
+ * (#469), and what `bun test` printed when it tried.
+ *
+ * The first file bun imports removes the directory the rest live in, which is
+ * what a worktree being deleted mid-run looks like from inside the runner.
+ * The incident's own run exited 0; this reproduction exits 1, and neither
+ * number is consulted — `readSuiteRun` keys off the absence of a summary,
+ * which is the only thing both runs have in common.
+ */
+function measureVanishingFixture(): { output: string; code: number } {
+  mkdirSync(join(PROJECT, "sub"), { recursive: true });
+  writeFileSync(
+    join(PROJECT, "000-remover.test.ts"),
+    'import { rmSync } from "fs";\nrmSync(`${import.meta.dir}/sub`, { recursive: true, force: true });\n',
+  );
+  for (const n of ["a", "b", "c"]) {
+    writeFileSync(
+      join(PROJECT, "sub", `${n}.test.ts`),
+      'import { test, expect } from "bun:test";\ntest("t", () => { expect(1).toBe(1); });\n',
+    );
+  }
+  writeFileSync(
+    join(PROJECT, ".claude", "rungate.json"),
+    JSON.stringify({ dev: { testCmd: "bun test" } }, null, 2),
+  );
+  const r = spawnSync("bun", ["test"], { cwd: PROJECT, encoding: "utf-8", timeout: 60000 });
+  return { output: `${r.stdout ?? ""}${r.stderr ?? ""}`, code: r.status ?? -1 };
 }
 
 function plantState(local: Record<string, unknown> | undefined): void {
@@ -274,6 +305,35 @@ describe("#224 fixture: a measured suite failure reaches tests-pass", () => {
     expect(r.red, `an unmeasured suite did not fail tests-pass:\n${r.output}`).toBe(true);
     expect(r.output, "red, but not from the missing reading").toContain("local.tests not set");
   }, 180000);
+
+  test("SC-1839: a run whose test files vanished reads UNMEASURED and the same check goes red", () => {
+    // #469 SC-1 and SC-2 in one chain, and the chain is the point: the
+    // verdict handed to the check is DERIVED from a run that really happened,
+    // not a string this test chose. A hand-written "UNMEASURED" would prove
+    // the check can read a word.
+    const run = measureVanishingFixture();
+    // The instrument first. A fixture that stopped reproducing and a reader
+    // that stopped refusing produce the same UNMEASURED, and only this can
+    // tell them apart (.claude/rules/checks-must-be-able-to-fail.md).
+    expect(run.output, "the vanishing fixture now prints a summary — re-derive it")
+      .not.toMatch(/^\s*\d+\s+(pass|fail)\s*$/m);
+
+    const reading = readSuiteRun(run.output);
+    expect(reading.status, reading.status === "MEASURED" ? "the run was read as measured" : "").toBe("UNMEASURED");
+    const verdict = suiteRunVerdict(reading);
+    expect(verdict).toBe("UNMEASURED");
+    // The specific shape of #469: this must not be the verdict a clean run
+    // gets. `extractTestFailureCount` reads the same output as 0 failures,
+    // which is how the run that forced this issue reported success.
+    expect(verdict).not.toBe("PASS");
+    expect(extractTestFailureCount(run.output), "the old parser still reads this run as clean").toBe(0);
+
+    plantState({ tests: verdict });
+    const r = runCheck(GATE_SUITE);
+    expect(r.ran, `tests-pass never ran — the filter matched nothing:\n${r.output}`).toBe(true);
+    expect(r.red, `an UNMEASURED suite reading did not fail tests-pass:\n${r.output}`).toBe(true);
+    expect(r.output, "red, but not from the suite reading").toContain("tests: UNMEASURED — expected PASS");
+  }, 180000);
 });
 
 // ── AC-2: the binding removed, and observed not refusing ────────────────────
@@ -292,6 +352,32 @@ describe("#224 mutant: removing the binding makes the gate ship the failure", ()
     expect(real.ran, `tests-pass never ran in the real source:\n${real.output}`).toBe(true);
     expect(real.red, `the real source shipped a measured FAIL:\n${real.output}`).toBe(true);
     expect(real.output).toContain("tests: FAIL — expected PASS");
+
+    const mutant = runCheck(writeMutant());
+    expect(
+      mutant.ran,
+      `the mutant never ran — module resolution or the name filter, not a verdict:\n${mutant.output}`,
+    ).toBe(true);
+    expect(
+      mutant.red,
+      `the mutant still refused, so the refusal does not come from the binding:\n${mutant.output}`,
+    ).toBe(false);
+  }, 240000);
+
+  test("SC-1840: the mutant ships an UNMEASURED run the real source refuses", () => {
+    // #469 SC-2, through the harness the issue names. The real source
+    // refusing an UNMEASURED reading is not on its own evidence that the
+    // refusal comes from `suiteVerdictViolations` — the mutant going green on
+    // the same planted state is.
+    const run = measureVanishingFixture();
+    const verdict = suiteRunVerdict(readSuiteRun(run.output));
+    expect(verdict).toBe("UNMEASURED");
+    plantState({ tests: verdict });
+
+    const real = runCheck(GATE_SUITE);
+    expect(real.ran, `tests-pass never ran in the real source:\n${real.output}`).toBe(true);
+    expect(real.red, `the real source shipped an UNMEASURED reading:\n${real.output}`).toBe(true);
+    expect(real.output).toContain("tests: UNMEASURED — expected PASS");
 
     const mutant = runCheck(writeMutant());
     expect(
