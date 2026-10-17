@@ -157,10 +157,26 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     expect(cal.elapsedMs, "the calibration was never timed").toBeGreaterThan(0);
     expect(cal.ok, `the calibration scaffold did not succeed: ${cal.note}`).toBe(true);
     expect(cal.note, "the calibration does not say what it measured").toMatch(/\d+ms/);
-    // Not a unit test of the clock: a scaffold with a nested bun start cannot
-    // finish in single-digit milliseconds, and a calibration that did is
-    // measuring something other than a scaffold.
-    expect(cal.elapsedMs, "the calibration is too fast to have run a scaffold").toBeGreaterThan(100);
+
+    // The floor is measured, not written down. This asserted `> 100` and CI
+    // turned it red at **48ms** the moment #581 stopped the scaffold
+    // fetching `fallow` from the npm registry — the 100 had been calibrated
+    // against a number that included a network call. A constant threshold
+    // about machine speed, inside the issue whose whole subject is constant
+    // thresholds about machine speed.
+    //
+    // What the case actually wants is "the calibration timed a scaffold
+    // rather than nothing", and a scaffold is at minimum a bun start, so
+    // that is the comparison: taken on this machine, now.
+    const t0 = Date.now();
+    Bun.spawnSync({ cmd: ["bun", "-e", ""], stdout: "pipe", stderr: "pipe" });
+    const bareBunStartMs = Date.now() - t0;
+
+    expect(
+      cal.elapsedMs,
+      `the calibration (${cal.elapsedMs}ms) was quicker than a bare bun start (${bareBunStartMs}ms), ` +
+        `so it did not time a scaffold`,
+    ).toBeGreaterThanOrEqual(bareBunStartMs);
   });
 
   test("SC-1975: the census counts both outcomes and names the unmeasured ones", () => {

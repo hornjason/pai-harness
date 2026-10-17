@@ -1243,3 +1243,39 @@ useful content of an ordinary tool error survives an allowlist intact,
 which is the positive control in SC-1984. A run of disallowed characters
 collapses to one `?` rather than one each, so a detail that was entirely
 unprintable reads `(no printable detail)` instead of `????????`.
+
+#### …and a second one, caught by CI: removing the fetch broke #478's floor
+
+`SC-1974` asserts that the calibration measured a real scaffold rather than
+nothing, and it asserted it as `expect(cal.elapsedMs).toBeGreaterThan(100)`.
+That passed everywhere until this change, and then CI went red at **48ms**
+— `cal.ok` true, exit 0, the scaffold genuinely complete.
+
+The 100 was never a fact about scaffolds. It was a fact about scaffolds
+**that fetch fallow from the npm registry**, which is what every scaffold
+did when the number was written: CI's calibration had been reporting
+1279ms, and 1231ms of that was the failing `npx`. Removing the fetch — the
+entire point of #581 — moved the real measurement below the floor derived
+from the fetch.
+
+So a constant threshold about machine speed, written down **inside the
+issue whose whole subject is constant thresholds about machine speed**, and
+written by the author of that issue. #445 and #407 are in this repo's
+history for the same move; #478's own docstring says *"a constant encodes
+one machine's speed on one afternoon"*. It is recorded rather than quietly
+corrected for the same reason the 5008.23ms failure above it is: a literal
+is wrong in a way its author cannot see from their own machine, and that
+blindness does not lift because the author happens to be writing about it.
+
+**The cheapest repair is to lower the 100**, and
+`.claude/rules/checks-must-be-able-to-fail.md`'s fifth shape is exactly
+about what that buys: the case goes green while certifying a budget derived
+from a run nobody has established is a scaffold. Any number low enough to
+pass on a fast runner is also low enough to pass on a calibration that did
+nothing.
+
+The floor is now measured on the machine asking the question — a bare `bun
+-e ""` spawn, taken in the case — because a scaffold is at minimum a bun
+start, and a reading below one did not time a scaffold. A faster runner
+moves both numbers together, which is the same argument that produced
+`BUDGET_MULTIPLE` one issue earlier.
