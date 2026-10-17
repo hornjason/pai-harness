@@ -119,7 +119,12 @@ function runScaffold(projectPath: string, opts?: { expectFail?: boolean; fix?: b
   if (r.exitCode !== 0 && !opts?.expectFail) {
     throw new Error(`scaffold exited ${r.exitCode} for ${projectPath}:\n${r.output}`);
   }
-  return r.output;
+  // The streams stay apart exactly as `execSync` left them: stdout on the
+  // success path, `stderr || stdout` on the expected-failure path. Merging
+  // them would let a `toContain` in any of the 29 success-path assertions be
+  // satisfied by a warning on stderr, which is a widening none of them could
+  // see and which has nothing to do with this issue.
+  return r.exitCode === 0 ? r.stdout : r.stderr || r.stdout;
 }
 
 describe("scaffold-project: the test budget must outlast the thing it measures", () => {
@@ -815,6 +820,21 @@ describe("scaffold-project: what this run actually measured", () => {
       CENSUS.measured,
       `every case was killed by the ${SCAFFOLD_TIMEOUT_MS}ms scaffold budget, so this file measured nothing`,
     ).toBeGreaterThan(0);
+
+    // …and `measured 1 of 40` must not pass either. A refusal worded after
+    // the cheapest proxy — zero — is satisfiable by something other than
+    // fixing the problem, which is #492's trap and the reason that issue is
+    // in `.claude/rules/checks-must-be-able-to-fail.md`. The property is
+    // that this file observed the scaffold, and a minority of it did not.
+    //
+    // A majority rather than a tuned fraction, deliberately: starvation on a
+    // machine healthy enough to be running the suite is exceptional, so any
+    // threshold between "one" and "most" would be a number pretending to a
+    // precision nothing here has.
+    expect(
+      CENSUS.unmeasured.length,
+      `most of this file went unobserved — that is not a hiccup, it is a machine that cannot run these cases`,
+    ).toBeLessThanOrEqual(CENSUS.measured);
 
     // The arm that keeps the line above from being satisfied by a census
     // nobody feeds: this file has 39 cases and the count has to look like it.

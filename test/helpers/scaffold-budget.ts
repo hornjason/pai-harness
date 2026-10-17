@@ -71,7 +71,19 @@ export const BUDGET_FLOOR_MS = 15_000;
 export const TEST_HEADROOM_MS = 5_000;
 
 export interface ScaffoldReading {
-  /** stdout and stderr together. Empty when the run was killed before it spoke. */
+  /**
+   * The two streams kept apart.
+   *
+   * `execSync` handed callers **stdout only** on the success path and
+   * `stderr || stdout` on the failure path, and 29 assertions in
+   * `test/unit/scaffold-project.test.ts` were written against that. Merging
+   * them would quietly let a `toContain` be satisfied by a warning on stderr
+   * — a widening nothing in that file could see, in a change whose subject
+   * is a timeout.
+   */
+  stdout: string;
+  stderr: string;
+  /** Both together, for a message a human reads. Empty when the run was killed before it spoke. */
   output: string;
   /** Wall-clock milliseconds the spawn took. */
   elapsedMs: number;
@@ -110,8 +122,12 @@ export function runScaffoldProcess(opts: ScaffoldRunOptions): ScaffoldReading {
   });
   const elapsedMs = Date.now() - started;
   const signal = proc.signalCode ?? null;
+  const stdout = proc.stdout.toString();
+  const stderr = proc.stderr.toString();
   return {
-    output: proc.stdout.toString() + proc.stderr.toString(),
+    stdout,
+    stderr,
+    output: stdout + stderr,
     elapsedMs,
     budgetMs: opts.budgetMs,
     exitCode: proc.exitCode ?? null,
@@ -148,6 +164,16 @@ export interface Calibration {
   elapsedMs: number;
   /** Whether the calibration run itself succeeded. */
   ok: boolean;
+  /**
+   * The calibration run was killed by its own ceiling.
+   *
+   * Distinct from `ok` because the two want opposite treatment: a scaffold
+   * that ran and exited non-zero still TOOK that long, so its timing is a
+   * reading. A scaffold that was killed took as long as the ceiling allowed
+   * and nothing more is known, so its timing is not a reading at all and
+   * multiplying it would hand out a budget derived from the kill.
+   */
+  killed: boolean;
   /** Said out loud when it did not, because a failed calibration is not a fast one. */
   note: string;
 }
@@ -165,13 +191,17 @@ export function calibrateScaffold(script: string): Calibration {
   try {
     mkdirSync(join(dir, "src"), { recursive: true });
     writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "calibration", dependencies: {} }));
-    // A generous ceiling: the calibration must not itself be the thing that
-    // gets killed, or the budget it produces would be a measurement of the
-    // kill rather than of the machine.
-    const r = runScaffoldProcess({ script, projectPath: dir, args: ["--fix"], budgetMs: 120_000 });
+    // The floor, not something generous. This runs at MODULE scope, outside
+    // any test's timeout, so nothing above it can attribute a stall — a
+    // ceiling of two minutes is two minutes the file hangs with no case to
+    // blame. The floor is the right ceiling anyway: a machine that cannot
+    // finish one scaffold inside `BUDGET_FLOOR_MS` has told us all the
+    // calibration can, and `killed` makes the floor apply.
+    const r = runScaffoldProcess({ script, projectPath: dir, args: ["--fix"], budgetMs: BUDGET_FLOOR_MS });
     return {
       elapsedMs: r.elapsedMs,
       ok: !r.timedOut && r.exitCode === 0,
+      killed: r.timedOut,
       note: r.timedOut
         ? `the calibration run was killed after ${r.elapsedMs}ms — the floor applies`
         : r.exitCode === 0
@@ -189,9 +219,14 @@ export function calibrateScaffold(script: string): Calibration {
  *
  * A calibration that failed still contributes its timing — the run happened
  * and took that long — but a calibration that was KILLED contributes nothing
- * but its ceiling, so the floor carries it.
+ * but its ceiling, so the floor carries it. Without the `killed` branch this
+ * function computes `ceiling x 10` from a run that never finished, which is a
+ * budget derived from the kill; the sentence above was in this docstring
+ * before the branch was, which is the shape
+ * `.claude/rules/checks-must-be-able-to-fail.md` is about.
  */
 export function scaffoldBudget(cal: Calibration): number {
+  if (cal.killed) return BUDGET_FLOOR_MS;
   return Math.max(BUDGET_FLOOR_MS, Math.round(cal.elapsedMs * BUDGET_MULTIPLE));
 }
 

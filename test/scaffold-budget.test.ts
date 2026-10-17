@@ -1,5 +1,5 @@
 /**
- * Covers SC-1971..SC-1975 (SCAFFOLD-DECOMPOSITION-SPEC.md), #478.
+ * Covers SC-1971..SC-1977 (SCAFFOLD-DECOMPOSITION-SPEC.md), #478.
  *
  * `test/unit/scaffold-project.test.ts` spawns a real scaffold in 32 places.
  * One of them died at 5007ms in 2026-10-13; the fix declared a 15_000ms
@@ -112,8 +112,8 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     // reading the constant back. A `scaffoldBudget` that ignored its
     // argument and returned the floor would be the old behaviour wearing the
     // new mechanism's name, and nothing but a second calibration can see it.
-    const slow = scaffoldBudget({ elapsedMs: 9_000, ok: true, note: "slow runner" });
-    const quick = scaffoldBudget({ elapsedMs: 100, ok: true, note: "warm cache" });
+    const slow = scaffoldBudget({ elapsedMs: 9_000, ok: true, killed: false, note: "slow runner" });
+    const quick = scaffoldBudget({ elapsedMs: 100, ok: true, killed: false, note: "warm cache" });
 
     expect(slow, "a slower machine did not get a larger budget").toBe(9_000 * BUDGET_MULTIPLE);
     expect(slow, "the budget does not move with the calibration").toBeGreaterThan(quick);
@@ -148,6 +148,8 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     // to be able to report a zero — and to report a non-zero beside it.
     const census = new ScaffoldCensus();
     const starved: ScaffoldReading = {
+      stdout: "",
+      stderr: "",
       output: "",
       elapsedMs: 15_031,
       budgetMs: 15_000,
@@ -163,12 +165,64 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     expect(census.measured).toBe(2);
     expect(census.total, "an unmeasured case fell out of the denominator").toBe(3);
 
-    const summary = census.summary(15_000, { elapsedMs: 1_400, ok: true, note: "one scaffold took 1400ms" });
+    const summary = census.summary(15_000, {
+      elapsedMs: 1_400,
+      ok: true,
+      killed: false,
+      note: "one scaffold took 1400ms",
+    });
     expect(summary).toContain("measured 2 of 3 cases");
     // By name, not by count. A reader cannot act on "1 case was unmeasured".
     expect(summary, "the unmeasured case is counted but not named")
       .toContain("reports what it created and what it skipped");
     expect(summary).toContain("15031ms");
     expect(summary, "the notice does not say the code went unobserved").toContain("not observed to be wrong");
+  });
+
+  test("SC-1976: a calibration that was killed hands back the floor, not its ceiling times ten", () => {
+    // The branch, and it is here because the DOCSTRING claimed it before the
+    // code did: `max(FLOOR, elapsed x 10)` over a run killed at the ceiling
+    // computes a budget from the kill — 150_000ms from a 15_000ms ceiling —
+    // and every case would then get ten times the budget on exactly the
+    // machine that was already too slow. A sentence in a comment that the
+    // function does not keep is this repo's oldest defect shape.
+    const killed = { elapsedMs: BUDGET_FLOOR_MS, ok: false, killed: true, note: "killed" };
+    expect(scaffoldBudget(killed), "a killed calibration handed out a budget derived from the kill")
+      .toBe(BUDGET_FLOOR_MS);
+
+    // The discriminator: the SAME timing from a run that finished is a
+    // reading, and does get multiplied. Without this the branch above is
+    // satisfied by a `scaffoldBudget` that ignores its argument entirely.
+    const finished = { elapsedMs: BUDGET_FLOOR_MS, ok: true, killed: false, note: "slow but finished" };
+    expect(scaffoldBudget(finished)).toBe(BUDGET_FLOOR_MS * BUDGET_MULTIPLE);
+  });
+
+  test("SC-1977: the scaffold's two output streams are kept apart", () => {
+    // `execSync` gave callers stdout on the success path and `stderr ||
+    // stdout` on the failure path, and 29 assertions in
+    // test/unit/scaffold-project.test.ts are written against that. A reading
+    // that merged them would let a `toContain` be satisfied by a warning on
+    // stderr — a widening none of those cases could see, in a change whose
+    // subject is a timeout.
+    const dir = fixture();
+    try {
+      const ok = runScaffoldProcess({ script: SCRIPT, projectPath: dir, args: ["--fix"], budgetMs: 120_000 });
+      expect(ok.stdout.length, "the scaffold said nothing on stdout").toBeGreaterThan(0);
+      expect(ok.output, "`output` is not the two streams together").toBe(ok.stdout + ok.stderr);
+
+      // The refusal writes to stderr, which is what makes the separation
+      // observable at all: on this input the two streams carry different
+      // text, so a merge is detectable rather than theoretical.
+      const missing = runScaffoldProcess({
+        script: SCRIPT,
+        projectPath: join(dir, "no-such-directory"),
+        budgetMs: 120_000,
+      });
+      expect(missing.stderr, "the refusal did not reach stderr").toContain("ERROR: Path does not exist");
+      expect(missing.stdout, "the refusal leaked onto stdout, so the streams are not distinguishable here")
+        .not.toContain("ERROR: Path does not exist");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

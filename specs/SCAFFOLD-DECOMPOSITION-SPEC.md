@@ -1023,3 +1023,69 @@ it.
 The two zeros are deliberate rows. They are the old detector, reinstated
 over a planted verb, failing to notice — which is the only way to show that
 widening it bought something rather than being tidying.
+
+## #478 — the scaffold test's budget was raised once and outgrew the raise
+
+`test/unit/scaffold-project.test.ts` spawns a real
+`bun scripts/scaffold-project.ts` in 32 places. On 2026-10-13 one case died
+at **5007ms** — bun's default, a third of what the helper itself declared the
+operation may take. #454 set `SCAFFOLD_TIMEOUT_MS = 15_000`, asserted that
+the test ceiling exceeds it, and recorded the reasoning in the file's header.
+
+On 2026-10-16 the **same case, by name** died at **15007.04ms** — the new
+budget, exactly — while a re-run of the same tree reported 0 fail and the
+file passed 39/39 in isolation.
+
+### Why not 30 seconds
+
+Because that is the move that does not converge, and this repo has the
+receipts: #445 guessed bigger rather than differently, and #407 widened a
+window from 1 read to 10 and blew through it the next day. A constant
+encodes one machine's speed on one afternoon. The runner's speed is the
+variable, and a constant cannot see it.
+
+**The budget is now a ratio to a calibration run taken on the machine the
+suite is running on.** One scaffold is timed at module load — with `--fix`,
+so the nested `bun` that generates CODE-MAP.md is included, which is 1.04s
+of a 1.42s run — and every case gets `calibration × 10`. A loaded runner
+makes the calibration slow too, so both numbers move together and the
+verdict stops depending on how busy the box was.
+
+`BUDGET_FLOOR_MS` is the one constant left and it is **not raised**: it is
+still 15_000, now acting as a floor under the calibrated budget rather than
+as the budget. Measured on this machine, calibration lands at 1210–1561ms, so
+the budget comes out at 15000–15610ms and today's behaviour is unchanged.
+That is the point — the mechanism changed and the number did not.
+
+### An over-budget run did not observe anything
+
+A case killed by its budget is not evidence the scaffold is broken. It is
+the absence of evidence, and `0`, `SKIP`, `FAIL` and silence are
+indistinguishable from each other while `UNMEASURED` is not.
+
+`runScaffold` throws `ScaffoldUnmeasured` — a class, not a message prefix, so
+an ordinary assertion failure mentioning a timeout still goes red — and the
+file's own `test` wrapper converts exactly that into a recorded, named
+UNMEASURED. The wrapper shadows the import rather than editing 39 call sites,
+which keeps ONE binding deciding what a timeout means; a second copy would
+survive any mutation of the first.
+
+What stops that becoming a file that passes having measured nothing is the
+coverage case declared last: it prints `measured N of M` with every
+unmeasured case named, refuses when N is zero, and refuses when the census is
+too small to be counting the file. One starved case on a busy runner is a
+hiccup this file now survives and names; every case starved is an instrument
+that stopped reporting.
+
+The #454 ordering assertion — the test ceiling strictly exceeds the
+scaffold's budget — survives verbatim. Only its derivation moved.
+
+- [x] SC-1971: test/scaffold-budget.test.ts contains [a run killed by its budget is reported as unmeasured, with both numbers] — the starved path is reached with an injected 1ms budget, so it needs no contention to reproduce a condition that only appears under contention
+- [x] SC-1972: test/scaffold-budget.test.ts contains [a run that finishes, and a run that fails on its merits, are both measured] — the two-sided positive control: a reading that called every non-success a timeout would satisfy the case above and silently convert every real scaffold failure into an UNMEASURED that passes
+- [x] SC-1973: test/scaffold-budget.test.ts contains [the budget tracks the calibration, and never falls below the floor] — asserted as a function of its input over two calibrations, because a `scaffoldBudget` that ignored its argument and returned the floor is the old behaviour wearing the new mechanism's name
+- [x] SC-1974: test/scaffold-budget.test.ts contains [the calibration measures a real scaffold, including its nested generator] — 73% of a scaffold is a second cold bun start, so a calibration that skipped `--fix` would time something no case does
+- [x] SC-1975: test/scaffold-budget.test.ts contains [the census counts both outcomes and names the unmeasured ones] — by name and not by count, because a reader cannot act on "1 case was unmeasured"
+- [x] SC-1976: test/scaffold-budget.test.ts contains [a calibration that was killed hands back the floor, not its ceiling times ten] — the branch is here because the DOCSTRING claimed it before the code did: multiplying a run killed at the ceiling computes a budget from the kill, and hands ten times the budget to exactly the machine that was already too slow
+- [x] SC-1977: test/scaffold-budget.test.ts contains [the scaffold's two output streams are kept apart] — `execSync` gave callers stdout on the success path and `stderr || stdout` on the failure path, and merging them would let a `toContain` in any of 29 assertions be satisfied by a warning on stderr
+
+### What was broken to prove it (SC-1971..1977)
