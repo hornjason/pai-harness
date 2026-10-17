@@ -188,8 +188,28 @@ describe("#481: the documented invocation", () => {
     const EXCLUDED = new Set([".fallow/cache.bin"]);
     // ...and the exclusion is itself asserted, so a file silently vanishing
     // from one run cannot be mistaken for a file deliberately skipped.
+    //
+    // This demanded that BOTH runs produced the file, and that is a
+    // demand on the npm registry: `fallow` is an optional tool nobody
+    // declares, `.fallow/cache.bin` exists only where it resolves, and
+    // until #581 the scaffold reached for it with a bare `npx`. PR #580 —
+    // three state files, no code — went red here when the fetch failed,
+    // and the message blamed the two invocations for a network. Reproduced
+    // with `npm_config_registry=http://127.0.0.1:1/` and no repo change.
+    //
+    // So the half this repo owns is asserted and the half it does not is
+    // named: both-or-neither always, and non-vacuity only where the tool
+    // that writes the file is installed.
     for (const f of EXCLUDED) {
-      expect(fromAbsolute.has(f) && fromRelative.has(f), `${f} is excluded but was not produced by both runs`).toBe(true);
+      const inAbsolute = fromAbsolute.has(f);
+      expect(inAbsolute, `${f} is excluded but only ONE invocation produced it`).toBe(fromRelative.has(f));
+      if (!inAbsolute) {
+        console.warn(
+          `UNMEASURED: ${f} was produced by neither run — fallow is not installed here, ` +
+            `so this exclusion was not exercised. An exclusion nothing produces is dead weight ` +
+            `that can grow to cover a real divergence.`,
+        );
+      }
     }
 
     const differing = [...fromAbsolute.keys()]

@@ -1136,3 +1136,146 @@ nothing asserts it, because it is explanatory prose beside three clauses that
 are asserted (`UNMEASURED`, the budget, and `NOT observed`). Recorded rather
 than padded: widening an assertion to cover prose would raise the number
 without widening the question.
+
+## #581 — the scaffold path fetched an undeclared tool from the npm registry
+
+`scripts/generate-code-map.ts` spawned `npx fallow dead-code` with no check
+that fallow was installed. It is an optional tool and **not a declared
+dependency** — not in `package.json`, not in `node_modules/.bin`, not on
+`PATH`, on a developer machine or on CI. So every invocation was a registry
+fetch, on the **scaffold** path, once per consumer forever.
+
+`lib/conformity.ts:2427` had already written the fix and the reason for it:
+
+> When it is absent, `npx fallow` does a registry fetch on every invocation
+> … Resolve it locally instead, with no network path.
+
+and kept it to itself. One question, two answers, and the answer that
+reaches consumers was the one that goes out to the network.
+
+**That is the fourth shape with the copies behaving DIFFERENTLY, and no
+mutation finds it.** `.claude/rules/checks-must-be-able-to-fail.md` describes
+two deciders that AGREE, where a mutation of either leaves the other holding
+the case up. Here they disagreed for four months: mutate the good copy and
+the bad one carries on being bad, and every suite stays green because
+nothing asserted the absence of a network call. The general form belongs
+beside #484's: *when a guard enforces a property, ask what other syntax
+expresses the same property* — and then ask **who else answers the same
+question**, because a second answerer is not always a duplicate. Sometimes it
+is the only one anybody runs.
+
+### What it cost, measured rather than argued
+
+PR #580 — three state files, no code — went red on `SC-1665`, whose
+exclusion assertion demanded that **both** scaffold runs produced
+`.fallow/cache.bin`. When the fetch fails it is produced by neither. Main
+was green on identical code nine minutes earlier, which is what makes it a
+flake rather than a finding, and a flake in a suite is a thing people learn
+to re-run rather than read.
+
+Reproduced deterministically with no repo change:
+
+```
+$ npm_config_registry=http://127.0.0.1:1/ bun test test/scaffold-relative-root.test.ts
+error: .fallow/cache.bin is excluded but was not produced by both runs
+ 6 pass, 1 fail   [1045.80ms]
+```
+
+The timing confirms the mechanism: three green CI runs took 1543/2451/2045
+ms for that case, the red one 1228 ms, and the offline repro 1046 ms —
+because a failed `npx` returns long before a successful one.
+
+### Three outcomes, not two
+
+`runFallow()` returned `null` for "not installed", "the spawn failed", "the
+output did not parse", and — through `fallow?.unusedFiles.length || "N/A"` —
+"it ran and found zero". The CODE-MAP was byte-identical for all of them, so
+a reader could not tell a project with no dead code from a project nobody
+looked at. The map now carries a named `**UNMEASURED**` section and
+UNMEASURED summary cells, with the two unavailable kinds carrying different
+sentences because they have opposite fixes.
+
+The exclusion in `SC-1665` is split the way this repo's rules ask: the half
+it owns is asserted on every run (both-or-neither), and the half it does not
+own reports UNMEASURED by name rather than failing over the npm registry.
+
+- [x] SC-1979: test/code-map-fallow.test.ts contains [a project without fallow gets no npx invocation, and the proof is on disk] — `.fallow/` is created by fallow and nothing else, so its absence after a complete run is the observable fact that no fetch was attempted; asserting only the notice would pass over a generator that fetched, failed, and printed the right words
+- [x] SC-1980: test/code-map-fallow.test.ts contains [the generated map says UNMEASURED rather than leaving the section out] — an omitted section and a section reporting nothing wrong are the same absence to a reader, and the reader of a CODE-MAP is an agent deciding whether this project has dead code
+- [x] SC-1981: test/code-map-fallow.test.ts contains [not-installed and run-failed are different sentences] — a notice that said the same for both would send a reader to install a tool they already have, and the two have opposite fixes
+- [x] SC-1982: test/code-map-fallow.test.ts contains [the conformity suite and the generator ask the same binding] — not "both answer the same today" but the SAME FUNCTION, because this pair spent four months disagreeing while every test passed
+- [x] SC-1983: test/code-map-fallow.test.ts contains [no caller spawns fallow without resolving it first] — the source-level ratchet, and the only form that catches the NEXT caller; a test over the two files that exist today would not have caught this one either
+- [x] SC-1984: test/code-map-fallow.test.ts contains [a tool's own words cannot write markdown into the document agents read] — the run-failed reason quotes what fallow printed and that string lands in CODE-MAP.md, which every agent is told to read; one line, an allowlist and a cap, with the positive control that an ordinary tool error survives intact
+
+### What was broken to prove it (SC-1979..1984)
+
+Run and counted over `test/code-map-fallow.test.ts` +
+`test/scaffold-relative-root.test.ts` (12 tests, baseline 12 pass / 0 fail).
+None is left in the tree; all were run and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the availability check removed — the bare `npx` restored | 3 of 12 | 3 |
+| a summary cell back to `fallow?.unusedFiles.length \|\| "N/A"` | 1 of 12 | 1 |
+| `lib/conformity.ts` declares its own copy instead of re-exporting | 1 of 12 | 1 |
+| `SC-1665`'s exclusion back to demanding BOTH runs produced the file | 1 of 12 | 1 |
+| `not-installed` stops saying no fetch was attempted | 2 of 12 | 2 |
+| `safeToolDetail` returns its input unchanged | 1 of 13 | 1 |
+
+The last row has a different denominator because it was measured after
+SC-1984 was added; the five above it were measured over the 12 tests that
+existed when they were run, and are not re-stated as 13 without being
+re-run.
+
+#### A finding the fix introduced, caught by the review of its own commit
+
+The `run-failed` reason quotes what fallow printed, and that string is
+written into `CODE-MAP.md` — the document `.claude/rules/key-files.md` tells
+every agent to read to understand the codebase. fallow's error text can
+quote the repo's own file names and contents, so the first version of this
+fix piped untrusted output straight into a trusted document: `## Hard
+Constraints` in a tool's stderr would have become a heading in the
+consumer's code map.
+
+`safeToolDetail` takes the first line, passes it through an **allowlist**,
+and caps it. An allowlist rather than a denylist of markdown syntax,
+because a denylist is a detector narrower than what it detects — and the
+useful content of an ordinary tool error survives an allowlist intact,
+which is the positive control in SC-1984. A run of disallowed characters
+collapses to one `?` rather than one each, so a detail that was entirely
+unprintable reads `(no printable detail)` instead of `????????`.
+
+#### …and a second one, caught by CI: removing the fetch broke #478's floor
+
+`SC-1974` asserts that the calibration measured a real scaffold rather than
+nothing, and it asserted it as `expect(cal.elapsedMs).toBeGreaterThan(100)`.
+That passed everywhere until this change, and then CI went red at **48ms**
+— `cal.ok` true, exit 0, the scaffold genuinely complete.
+
+The 100 was never a fact about scaffolds. It was a fact about scaffolds
+**that fetch fallow from the npm registry**, which is what every scaffold
+did when the number was written: CI's calibration had been reporting
+1279ms, and 1231ms of that was the failing `npx`. Removing the fetch — the
+entire point of #581 — moved the real measurement below the floor derived
+from the fetch.
+
+So a constant threshold about machine speed, written down **inside the
+issue whose whole subject is constant thresholds about machine speed**, and
+written by the author of that issue. #445 and #407 are in this repo's
+history for the same move; #478's own docstring says *"a constant encodes
+one machine's speed on one afternoon"*. It is recorded rather than quietly
+corrected for the same reason the 5008.23ms failure above it is: a literal
+is wrong in a way its author cannot see from their own machine, and that
+blindness does not lift because the author happens to be writing about it.
+
+**The cheapest repair is to lower the 100**, and
+`.claude/rules/checks-must-be-able-to-fail.md`'s fifth shape is exactly
+about what that buys: the case goes green while certifying a budget derived
+from a run nobody has established is a scaffold. Any number low enough to
+pass on a fast runner is also low enough to pass on a calibration that did
+nothing.
+
+The floor is now measured on the machine asking the question — a bare `bun
+-e ""` spawn, taken in the case — because a scaffold is at minimum a bun
+start, and a reading below one did not time a scaffold. A faster runner
+moves both numbers together, which is the same argument that produced
+`BUDGET_MULTIPLE` one issue earlier.

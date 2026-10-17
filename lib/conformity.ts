@@ -19,6 +19,7 @@ import { tryLoadRungateConfig } from "./config-loader";
 import { stripJsComments } from "./strip-js-comments";
 import { parseScDeclarations } from "./sc-ids";
 import { isHarnessItself } from "./harness-identity";
+import { fallowAvailable } from "./fallow-availability";
 import { tsconfigVerdict, TS_SOURCE_DIRS } from "./typescript-project";
 import { readSuccessDoc, readSuccessTemplate, successViolations } from "./success-doc";
 
@@ -2430,21 +2431,13 @@ interface FallowResult {
 // fail as timeouts instead of skipping, which blocks the pre-push conformity
 // gate on a tool nobody installed.
 //
-// Resolve it locally instead, with no network path. Memoised PER ROOT —
-// runFallowCheck is exported and consumer projects call it with their own
-// root, so a single process can ask about several. A root-independent cache
-// would answer for the wrong directory.
-const FALLOW_AVAILABLE = new Map<string, boolean>();
-
-function fallowAvailable(root: string): boolean {
-  const cached = FALLOW_AVAILABLE.get(root);
-  if (cached !== undefined) return cached;
-  const available =
-    existsSync(join(root, "node_modules", ".bin", "fallow")) ||
-    Bun.which("fallow") !== null;
-  FALLOW_AVAILABLE.set(root, available);
-  return available;
-}
+// Resolve it locally instead, with no network path. The predicate moved to
+// `lib/fallow-availability.ts` in #581 and is re-exported here rather than
+// copied: this module imports `bun:test` at module scope, so a CLI cannot
+// import it, and `scripts/generate-code-map.ts` is a CLI that needed the
+// same answer. It had a second answer — a bare `npx fallow` — for four
+// months, which is the defect #581 is about.
+export { fallowAvailable };
 
 /** Shared skip notice — a skipped check must say so, not read as a pass. */
 function fallowSkipped(check: string): void {

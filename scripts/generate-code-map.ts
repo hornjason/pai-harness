@@ -10,6 +10,13 @@
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "fs";
 import { join, basename } from "path";
+import {
+  fallowAvailable,
+  fallowNotInstalled,
+  fallowRunFailed,
+  fallowUnmeasuredNotice,
+  type FallowUnavailable,
+} from "../lib/fallow-availability";
 
 const projectPath = process.argv[2];
 if (!projectPath || !existsSync(projectPath)) {
@@ -30,16 +37,38 @@ interface FallowData {
   elapsed: number;
 }
 
-function runFallow(): FallowData | null {
+/**
+ * Three outcomes, not two (#581).
+ *
+ * This returned `null` for "not installed", "the spawn failed", "the output
+ * did not parse" and — through `||` in the summary table below — "it ran and
+ * found zero". A CODE-MAP written from any of them was byte-identical, so a
+ * reader could not tell a project with no dead code from a project nobody
+ * looked at.
+ */
+type FallowOutcome = { data: FallowData } | { unavailable: FallowUnavailable };
+
+function runFallow(): FallowOutcome {
+  // Resolved locally, with no network path. A bare `npx fallow` for a tool
+  // that is not a declared dependency is a registry fetch on the SCAFFOLD
+  // path — once per consumer, forever, including behind a proxy and in an
+  // air-gapped CI. `lib/conformity.ts` fixed this for itself in #510 and
+  // this caller never got it.
+  if (!fallowAvailable(projectPath) && !fallowAvailable(process.cwd())) {
+    return { unavailable: fallowNotInstalled() };
+  }
   const result = Bun.spawnSync(
     ["npx", "fallow", "dead-code", "--format", "json", "--quiet"],
     { cwd: projectPath, timeout: 30_000 }
   );
   const stdout = result.stdout.toString().trim();
-  if (!stdout || stdout.startsWith("{\"error\"")) return null;
+  if (!stdout) return { unavailable: fallowRunFailed(`exit ${result.exitCode}, no output`) };
+  if (stdout.startsWith("{\"error\"")) {
+    return { unavailable: fallowRunFailed(stdout.slice(0, 200)) };
+  }
   try {
     const d = JSON.parse(stdout);
-    return {
+    return { data: {
       entryPoints: d.entry_points?.total || 0,
       unusedFiles: (d.unused_files || []).map((f: any) => f.path),
       unusedExports: (d.unused_exports || []).map((e: any) => ({
@@ -49,8 +78,10 @@ function runFallow(): FallowData | null {
         files: c.files || [c.path]
       })),
       elapsed: d.elapsed_ms || 0,
-    };
-  } catch { return null; }
+    } };
+  } catch (e) {
+    return { unavailable: fallowRunFailed(`output did not parse as JSON (${(e as Error).name})`) };
+  }
 }
 
 // ── Route scanning ───────────────────────────────────────────
@@ -192,7 +223,9 @@ function readPackageInfo(): { name: string; deps: number; devDeps: number; scrip
 
 console.log(`Scanning ${projectName}...`);
 
-const fallow = runFallow();
+const fallowOutcome = runFallow();
+const fallow = "data" in fallowOutcome ? fallowOutcome.data : null;
+const fallowMissing = "unavailable" in fallowOutcome ? fallowOutcome.unavailable : null;
 const routes = scanRoutes();
 const dirs = scanDirectories();
 const components = scanComponents();
@@ -200,7 +233,9 @@ const pkg = readPackageInfo();
 const consumerMappings = scanConsumerModules();
 const pageMappings = scanPageComponents();
 
-console.log(`  Fallow: ${fallow ? `${fallow.entryPoints} entry points, ${fallow.elapsed}ms` : "not available"}`);
+console.log(
+  `  Fallow: ${fallow ? `${fallow.entryPoints} entry points, ${fallow.elapsed}ms` : `UNMEASURED — ${fallowMissing?.reason}`}`,
+);
 console.log(`  Routes: ${routes.length}`);
 console.log(`  Directories: ${dirs.length}`);
 console.log(`  Components: ${components.length}`);
@@ -240,10 +275,10 @@ sections.push(`## Summary
 | Dev dependencies | ${pkg.devDeps} |
 | API routes | ${routes.length} |
 | React components | ${components.length} |
-| Entry points (fallow) | ${fallow?.entryPoints || "N/A"} |
-| Unused files | ${fallow?.unusedFiles.length || "N/A"} |
-| Unused exports | ${fallow?.unusedExports.length || "N/A"} |
-| Circular dependencies | ${fallow?.circularDeps.length || "N/A"} |
+| Entry points (fallow) | ${fallow ? fallow.entryPoints : "UNMEASURED"} |
+| Unused files | ${fallow ? fallow.unusedFiles.length : "UNMEASURED"} |
+| Unused exports | ${fallow ? fallow.unusedExports.length : "UNMEASURED"} |
+| Circular dependencies | ${fallow ? fallow.circularDeps.length : "UNMEASURED"} |
 | Module import mappings | ${consumerMappings.length} |
 | Page-component mappings | ${pageMappings.length} |`);
 
@@ -324,6 +359,11 @@ if (fallow) {
   }
 
   sections.push(health.trim());
+} else if (fallowMissing) {
+  // Named, not omitted. A missing section and a section reporting nothing
+  // wrong are the same absence to a reader, and the reader of a CODE-MAP is
+  // an agent deciding whether this project has dead code.
+  sections.push(fallowUnmeasuredNotice(fallowMissing));
 }
 
 // Scripts
