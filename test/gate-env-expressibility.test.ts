@@ -31,6 +31,8 @@ import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
 
+import { anchorCitations, resolveCitation } from "../lib/source-anchor";
+
 const ROOT = join(import.meta.dir, "..");
 const read = (p: string) => readFileSync(join(ROOT, p), "utf-8");
 
@@ -68,7 +70,11 @@ describe("#297 SC-5: the written answer, checked rather than trusted", () => {
       "test port": /\b7776\b/.test(ANSWER),
       "production port": /\b7777\b/.test(ANSWER),
       "verdict token": /\b(?:NOT-EXPRESSIBLE|PARTIALLY-EXPRESSIBLE|EXPRESSIBLE)\b/.test(ANSWER),
-      "record-env site": /ship\.js:\d+/.test(ANSWER),
+      // An ANCHOR citation since #514, not `ship.js:N`. AC-6's element is
+      // "the answer names the ship.js site", and a citation that names what
+      // the site SAYS satisfies it more strongly than one naming where the
+      // site happened to sit on the day it was written.
+      "record-env site": anchorCitations(ANSWER).some(c => c.path.endsWith("ship.js")),
     };
     const missing = Object.entries(elements).filter(([, present]) => !present).map(([k]) => k);
     expect(missing, `the answer is missing: ${missing.join(", ")}`).toEqual([]);
@@ -110,25 +116,37 @@ describe("#297 SC-5: the written answer, checked rather than trusted", () => {
       "a SKIP arm lost its reason",
     ).toBe(3);
 
-    // Claim 3: the line numbers the answer cites still contain what it says
-    // they do. A spec that cites a line is a spec that goes stale at the next
-    // insertion, so the citation is checked rather than believed.
+    // Claim 3: the sites the answer cites still exist and still say what the
+    // answer says they say.
     //
-    // `ship.js:N` is reserved for LIVE citations. The one historical site the
-    // answer discusses — the `prod.rebuild = 'PASS'` write #274 named — is
-    // written as prose ("line 4462 of ship.js as it then stood") precisely so
-    // it is not swept up here: a citation to a line that no longer exists is
-    // the point of that paragraph, not a defect in it.
-    const lines = ship.split("\n");
-    const cited = [...ANSWER.matchAll(/ship\.js:(\d+)/g)].map(m => Number(m[1]));
-    expect(cited.length, "the answer cites no live ship.js line at all").toBeGreaterThan(0);
-    for (const n of cited) {
-      expect(lines.length, `the answer cites ship.js:${n}, past the end of the file`)
-        .toBeGreaterThanOrEqual(n);
+    // By ANCHOR TEXT since #514, not by line number. The line-number form
+    // cost three hand edits of five numbers across two PRs, and — measured
+    // in #514 — three of this file's four UNGUARDED line citations were
+    // already pointing at plausible wrong lines. An anchor that no longer
+    // appears is a refusal; so is one that appears twice, because an
+    // ambiguous citation is how a stale one lands somewhere believable.
+    //
+    // The historical site the answer discusses — the `prod.rebuild = 'PASS'`
+    // write #274 named — stays prose ("line 4462 of ship.js as it then
+    // stood"). A citation to a line that no longer exists is the point of
+    // that paragraph, not a defect in it, and `resolveCitation` would
+    // rightly refuse it.
+    const cited = anchorCitations(ANSWER).filter(c => c.path.endsWith("ship.js"));
+    expect(cited.length, "the answer cites no ship.js site at all").toBeGreaterThan(0);
+    for (const cite of cited) {
+      const r = resolveCitation(ROOT, cite);
+      expect(r.ok, r.ok ? "" : `the #297 answer cites ${cite.path}@"${cite.anchor}" — ${r.reason}`).toBe(true);
+      if (!r.ok) continue;
+      // Resolving is not enough: a unique string somewhere unrelated in
+      // ship.js would resolve perfectly and say nothing about the
+      // production record. This is a different question from uniqueness and
+      // each has an input only it reaches — an unrelated unique line passes
+      // the resolver and fails here, and `containerConfig` alone passes here
+      // and fails the resolver.
       expect(
-        /prod\.rebuild|prod = \{rebuild|containerConfig|rebuildCmd/.test(lines[n - 1]),
-        `ship.js:${n} is cited by the #297 answer but no longer says anything about the ` +
-          `production record or the container rebuild — it reads: ${lines[n - 1]?.trim().slice(0, 100)}`,
+        /prod\.rebuild|prod = \{rebuild|containerConfig|rebuildCmd|prod\.smoke/.test(r.text),
+        `the #297 answer cites ${cite.path}@"${cite.anchor}", which resolves to line ${r.line} ` +
+          `but says nothing about the production record or the container rebuild`,
       ).toBe(true);
     }
 

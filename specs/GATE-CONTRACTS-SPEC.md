@@ -151,7 +151,7 @@ criteria` block, contradicting the one above it. Both claimed to describe
 | Input also carries `projectRoot`, `issueRepo` | `GateExecutorInput` is `gate, slug, issue, workDir, stateFilePath, harnessRoot` and nothing else. Both names are read off `state` inside the executor, not passed in. |
 | Output carries `testOutput`, and no `resultVal`/`attempt`/`exitCode` | `GateExecutorResult` is `resultVal, passes, fails, warns, results, attempt, exitCode`. There is no `testOutput` field. |
 
-`executeGate` at `gates/gate-executor.ts:1725` is the only entry point, so
+`executeGate` at `gates/gate-executor.ts@"export async function executeGate(input: GateExecutorInput)"` is the only entry point, so
 there was no second function for the second block to be describing. It was a
 pre-#190 design that the `harnessRoot` work superseded and nobody deleted —
 and because a duplicate heading is still a heading, the registry read it as a
@@ -627,7 +627,7 @@ context cost twice.
 |---|---|---|
 | `lib/transcript-checker.ts` | `textLower.includes("make rebuild")` | The forbidden-command directive fell through to `N/A`, which `computeScore` drops from its denominator. The rule went unenforced, the score did not move, and nothing named the directive that had stopped being measured. |
 | `lib/create-brief.ts`, `gates/brief-assembler.ts` | "Never run \`make rebuild\`" | One consumer's prohibition emitted into every consumer's agent brief. The agent obeys it; nobody finds out it was invented. |
-| `lib/scaffold/steps.ts` | `existsSync(makefile) ? "make rebuild"` | Inferred from a Makefile EXISTING, not from the target existing. A project with a Makefile and no `rebuild` target got a `prod.rebuild` that cannot run. `scripts/scaffold-rungate-config.ts:66` already checked the target; the two are now consistent. |
+| `lib/scaffold/steps.ts` | `existsSync(makefile) ? "make rebuild"` | Inferred from a Makefile EXISTING, not from the target existing. A project with a Makefile and no `rebuild` target got a `prod.rebuild` that cannot run. `scripts/scaffold-rungate-config.ts@"if (/^rebuild/m.test(mf)) rebuildCmd ="` already checked the target; the two are now consistent. |
 | `workflows/verify.js`, `workflows/batch-ship.js` | ports, container name, app root, test dir, two routes | Three produce a loud false FAIL. The test directory produces a false **PASS** — `bun test --isolate test/unit/` against a project with no such directory runs zero tests and reports success with a count of nothing. |
 | `gates/workflow.test.ts` | `if (port !== 7776)` | `quinn-container-port` warned that a consumer's correct port was wrong, naming a port they do not run. |
 
@@ -1293,7 +1293,7 @@ gets disabled; a check that fires on nothing is the one being replaced.
 
 Zero tolerance is safe here precisely because it was not safe above: the
 correct form already exists and costs one token. Evidence commands run with
-`cwd: projectRoot` (`lib/evidence-prevalidator.ts:208`), so the project's own
+`cwd: projectRoot` (`lib/evidence-prevalidator.ts@"cwd: projectRoot,"`), so the project's own
 files need no prefix, and the harness root has had `$HARNESS_ROOT` since
 `gates/run-gate.ts` — which is what all 55 of those references spell out
 longhand.
@@ -1645,7 +1645,7 @@ The test environment itself, through the `container` block declared by
 | `container.healthPath` | the path a probe calls to decide it came up |
 | `container.hosts` | where to look for it |
 
-`workflows/ship.js:5947` reads it, and on STANDARD+ runs the rebuild happens
+`workflows/ship.js@"const containerConfig = projectConfig.container"` reads it, and on STANDARD+ runs the rebuild happens
 and container Quinn is pointed at `http://<host>:<port>`. Before the schema
 change the key existed in prompts and in no validator, so a config that went
 through zod lost it — the block was there, and the container path rested on a
@@ -1670,7 +1670,7 @@ configure `prod.rebuild: "<cmd>"` and `forbiddenCommands: ["<cmd>"]` at the
 same time and nothing notices the contradiction — the brief tells the agent
 never to run it while the config declares it as this project's rebuild.
 `container.rebuildCommand` is interpolated directly into an agent prompt at
-`ship.js:5960`, so a consumer that puts its production command behind that key
+`workflows/ship.js@"${rebuildCmd} 2>&1 | tail -20"`, so a consumer that puts its production command behind that key
 has armed exactly the thing its own rules forbid, and no check looks.
 
 ### The record-env site, which is not where #274 said
@@ -1682,7 +1682,7 @@ forbid the agent from running it.
 
 **That site is gone.** #183 replaced it. All three arms of the production
 record now write `SKIP` with a reason naming what was not measured
-(`ship.js:6966`, `:6969`, `:6977`), the health-check arm says in so many words
+(`workflows/ship.js@"s.environments.prod.smoke = 'PASS';"`, `workflows/ship.js@"s.environments.prod.smokeSkipReason = 'test container not running';"`, `workflows/ship.js@"prod = {rebuild:'SKIP',rebuildSkipReason:'no container'"`), the health-check arm says in so many words
 that a 200 means a container answered and not that it was built from this
 commit, and `container-has-fix` compares the image revision against HEAD. The
 honest value #274 asked for is the value the code writes.
@@ -1694,7 +1694,7 @@ loader side: `normaliseConfig` resolves `dev.testCmd ?? test.command` into one
 normalised `test.command`, and `captureTestBaseline` reads the normalised
 name.
 
-**The gate checks did not move.** `gates/workflow.test.ts:87` still has its
+**The gate checks did not move.** `gates/workflow.test.ts@"function loadProjectHarness(): any {"` still has its
 own `loadProjectHarness()`, and it is monolith-only — `join(root, ".claude",
 "rungate.json")`, `existsSync`, `null`. Ten checks sit behind it, and
 `tests-pass` at `:859` reads the raw `dev.testCmd`:
