@@ -9418,13 +9418,13 @@ spec lines one test can bind to, with no way to see which one it bound to.
 
 ### What was broken to prove it
 
-Seven mutations over 55 tests in `test/sc-id-cross-tree.test.ts`,
+Seven mutations over 103 tests in `test/sc-id-cross-tree.test.ts`,
 `test/sc-fixture-namespace.test.ts`, `test/sc-id-namespace.test.ts` and
 `test/spec-sc-ids-unique.test.ts`. None is left in the tree.
 
 | Mutation | Red | Prediction |
 |---|---|---|
-| sibling worktrees are not read | 3 | 3 |
+| sibling worktrees are not read | 4 | 3 |
 | branch refs are not read | 1 | 1 |
 | an unreadable worktree is skipped without being recorded | 1 | 1 |
 | the unmeasured remainder is dropped on a clean read | 2 | 1 |
@@ -9432,8 +9432,13 @@ Seven mutations over 55 tests in `test/sc-id-cross-tree.test.ts`,
 | `siblingWorktrees` reports a git failure as "no siblings" | 1 | 1 |
 | `allocateScNumber` passes the registry but not the namespace | 1 | 1 |
 
-The fourth row is 2 because SC-1912 asserts the reading travels with the
-allocated number, which is the same property from the caller's side.
+Two rows came in above their prediction, and both extras are about the
+mutated behaviour rather than a broken mutant. The first row's fourth red is
+SC-1910, whose unreadable-worktree half has nothing to report when no
+worktree is read at all — the worktree source is its subject, so it is a
+genuine dependency the prediction missed. The fourth row is 2 because
+SC-1912 asserts the reading travels with the allocated number, which is the
+same property from the caller's side.
 
 The first version of this module hit `ENOBUFS` grepping a thousand refs at
 once and reported it as a **skipped source with a reason** rather than as an
