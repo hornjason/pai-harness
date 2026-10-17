@@ -628,3 +628,83 @@ one.
 - [x] SC-1952: test/agents-md-sections.test.ts contains [a merge that would drop a line refuses, and names the line] — reached through `decideOwnedWrite`, with the ordinary write still happening so the refusal is not a writer that refuses everything
 - [x] SC-1953: test/agents-md-sections.test.ts contains [AGENTS.md is written through the owned-file writer] — the #507 refusal reaching the one file it never covered, asserted on behaviour and on the call site
 - [x] SC-1954: test/agents-md-sections.test.ts contains [the section is read as a section, not as a prefix match] — the boundaries, each of which was a way to lose content: the next `##` ends it, a `###` belongs to it, a heading at EOF has no terminator
+
+## The handoff rendered three array entries and called them the newest sessions (#572)
+
+`scripts/update-project-state.ts` renders the most recent sessions into
+PROJECT-STATE.md, the file AGENTS.md tells the next session to read first.
+It selected them with:
+
+```ts
+for (const session of [...state.sessions].reverse().slice(0, 3)) {
+```
+
+That is "the last three entries of the array". It is correct exactly while
+`sessions` is in append order, and nothing enforced that — not a schema,
+not a test, not the writer.
+
+**Measured:** session 48 was written to `sessions[0]` on 2026-10-17. Eight
+issues merged that day and not one line of it reached PROJECT-STATE.md,
+which showed sessions 47, 46 and 45 all day. Found by accident, while
+appending a fourteenth item to an entry that was never being rendered.
+
+### This is the second instance in the same function
+
+Six lines above the loop, a comment records the first: `slice(0, 3)`
+rendered the three OLDEST entries, so *"every session appended to the array
+was invisible, and PROJECT-STATE.md showed ancient history to the next
+session"*. The fix was `.reverse()` — which repaired the symptom and left
+the defect. The renderer still had no idea which sessions were newest; it
+trusted a different position.
+
+Choosing by DATE removes position from the question, so where an entry is
+written stops mattering. That is the difference between fixing an instance
+and fixing the bug.
+
+### Undated entries are ranked, not dropped
+
+The obvious implementation excludes an entry whose `date` cannot be parsed.
+That turns out to produce an EMPTY handoff for a project whose dates are
+all free-form — the repo's own `sessions capped at 3` fixture is exactly
+that shape — which is a worse outcome than the bug being fixed.
+
+So an undated entry ranks below every dated one, in array order, which is
+the only information left about it and is precisely what the old renderer
+used for everything. Such a project renders exactly as it did before. The
+entries are REPORTED by name, because being outranked by any dated entry
+however old is surprising if you cannot see it.
+
+### The run says what it rendered
+
+`✅ rewrote PROJECT-STATE.md` was true on every run that dropped session
+48, because the script had in fact rewritten the file. Success was reported
+against the write rather than the output. It now names the sessions that
+reached the file, so a reader who sees yesterday's date at the top of that
+line knows immediately.
+
+### What was broken to prove it
+
+Four mutations over 35 tests. Baseline 35 pass, 0 fail. None is left in the
+tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the selection back to `reverse().slice(0, 3)` | 3 | 3 |
+| the sort reversed, so oldest leads | 2 | 2 |
+| undated entries never reported | 1 | 1 |
+| the run stops naming what it rendered | 1 | 1 |
+
+The second row is the interesting one: SC-1961 stays GREEN under it. That
+case asserts the render is the same for all three orderings of the same
+entries, and a sort in the wrong direction is still position-independent.
+Recency and position-independence are two properties, each with an input
+only it can reach — which is what
+`.claude/rules/checks-must-be-able-to-fail.md` asks for when two checks
+look like a pair and are not.
+
+### Success Criteria
+
+- [x] SC-1960: test/update-project-state.test.ts contains [the newest session is rendered from the FRONT of the array] — the position the DA actually wrote to, and the position the old renderer could not see; a fixture that appends passes under the bug
+- [x] SC-1961: test/update-project-state.test.ts contains [the position in the array decides nothing] — the same three entries in three orders render identically, with the agreement asserted to be non-empty
+- [x] SC-1962: test/update-project-state.test.ts contains [a fourth, older session is dropped and an undated one is named] — the limit still bites, and an unorderable entry is ranked below the dated one rather than excluded
+- [x] SC-1963: test/update-project-state.test.ts contains [the run names the sessions it rendered, not just that it wrote] — the line that was true on every run that dropped a session
