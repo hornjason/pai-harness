@@ -47,7 +47,7 @@ function loadShipSecurityHelpers(projectRoot: string) {
        relativizePaths, safeGitAddCommand, safeSSHCommand,
        buildSafeGitAdd, buildSafeSSHCommand, isSafeBranchName,
        resolveEvidencePath, validateEvidenceCommand, validateFilePaths,
-       pathRefusal,
+       pathRefusal, repoSlugRefusal, rootPathRefusal,
      };`,
   );
   const helpers = factory(projectRoot, (m: string) => logs.push(m));
@@ -111,15 +111,20 @@ describe("prove.js heredocSafe (#137)", () => {
 });
 
 describe("AC-1: lib/workflow-security.ts exported surface", () => {
-  test("exports exactly nine security functions", () => {
+  test("exports exactly eleven security functions", () => {
     // Nine since #400 added `pathRefusal`, the single path-safety decider
-    // that `validateFilePaths` and ship.js's claim audit both call.
+    // that `validateFilePaths` and ship.js's claim audit both call. Eleven
+    // since #533 added the two argument-shape refusals.
+    //
+    // The number is the point, not the number itself: an export added here
+    // without a parity block below is a library copy that ship.js's inlined
+    // mirror can silently drift from, and this row is what notices.
     const source = readFileSync(
       join(REPO_ROOT, "lib", "workflow-security.ts"),
       "utf-8",
     );
     const exported = source.match(/^export function /gm) || [];
-    expect(exported.length).toBe(9);
+    expect(exported.length).toBe(11);
   });
 });
 
