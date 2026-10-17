@@ -10,7 +10,10 @@
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
-import { missingStateVerdict, projectStateViolations } from "../lib/project-state-shape";
+
+/** How many sessions the handoff shows. One site, so the count can be mutated. */
+const RENDERED_SESSIONS = 3;
+import { missingStateVerdict, projectStateViolations, selectRecentSessions } from "../lib/project-state-shape";
 
 /**
  * The one exit code every refusal here routes through, per
@@ -131,13 +134,14 @@ function render(state: ProjectState): string {
   if (state.sessions.length > 0) {
     lines.push("---");
     lines.push("");
-    // Newest first. This was `slice(0, 3)`, which rendered the three OLDEST
-    // entries — so every session appended to the array was invisible, and
-    // PROJECT-STATE.md showed ancient history to the next session while
-    // AGENTS.md instructs reading it first as the handoff. The generator
-    // printed "✅ Updated" the whole time, because it had in fact rewritten
-    // the file; it just never rendered the new rows.
-    for (const session of [...state.sessions].reverse().slice(0, 3)) {
+    // By DATE, not by position in the array (#572). Twice now this has been
+    // a positional guess: `slice(0, 3)` rendered the three OLDEST entries,
+    // and `.reverse().slice(0, 3)` rendered the last three of the array —
+    // correct only while the array is in append order, which nothing
+    // enforces. Session 48 was written to `sessions[0]` and eight merged
+    // issues never reached this file, while the script reported success on
+    // every run because it had in fact rewritten it.
+    for (const session of selectRecentSessions(state.sessions, RENDERED_SESSIONS).rendered) {
       lines.push(`**Session ${session.date}:**`);
       session.items.forEach(item => lines.push(`- ${item}`));
       lines.push("");
@@ -238,10 +242,32 @@ const changed = [
   mdBefore !== mdAfter ? "PROJECT-STATE.md" : null,
 ].filter(Boolean);
 
+/**
+ * What the run RENDERED, not that it ran.
+ *
+ * "rewrote PROJECT-STATE.md" was true on every one of the runs that
+ * dropped session 48, so the summary has to name the sessions that reached
+ * the file. A reader who sees yesterday's date at the top of this line
+ * knows immediately; a reader who sees "rewrote" learns nothing.
+ */
+const selection = selectRecentSessions(state.sessions, RENDERED_SESSIONS);
 const latest = state.session?.date ?? "(none recorded)";
 if (changed.length === 0) {
   console.log(`project-state: unchanged — latest recorded session is ${latest}. ` +
     `This script re-renders; it does not write session content.`);
 } else {
   console.log(`✅ project-state: rewrote ${changed.join(" + ")} — latest recorded session ${latest} (${done}/${total} Phase 0+1 SCs)`);
+}
+console.log(
+  `project-state: rendered ${selection.rendered.length} of ${state.sessions.length} session(s) — ` +
+    `${selection.rendered.map(s => s.date.split(" ")[0]).join(", ") || "none"}`,
+);
+if (selection.undated.length > 0) {
+  // UNMEASURED, by name. An entry with no readable date ranks below every
+  // dated one however old, which is surprising if you cannot see it — and
+  // silence here is indistinguishable from an entry that is merely old.
+  console.warn(
+    `project-state: ${selection.undated.length} session entr(ies) have no ISO date, so they rank below every dated one:`,
+  );
+  for (const u of selection.undated) console.warn(`  - ${JSON.stringify(u.date)}`);
 }

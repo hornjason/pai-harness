@@ -261,4 +261,107 @@ describe("update-project-state", () => {
       writeFileSync(STATE_JSON, backup);
     }
   });
+
+  // ── #572: the handoff shows the newest sessions, wherever they were written ──
+
+  /**
+   * Every fixture here plants the newest entry at `sessions[0]`, which is
+   * where the DA actually wrote session 48 and where the old renderer could
+   * not see it. A fixture that appends instead passes under the bug, which
+   * is the whole reason this one does not.
+   */
+  function withSessions(sessions: Array<{ date: string; items: string[] }>) {
+    writeTestJson({
+      updated: "2026-01-01",
+      notes: "",
+      priorities: [],
+      phases: [],
+      sessions,
+    });
+    return run();
+  }
+
+  test("SC-1960: the newest session is rendered from the FRONT of the array", () => {
+    const md = withSessions([
+      { date: "2026-10-17 session 48", items: ["the newest, written first in the array"] },
+      { date: "2026-10-01 session 40", items: ["older"] },
+      { date: "2026-10-02 session 41", items: ["older still, but later in the array"] },
+    ]);
+    expect(md, "the newest session did not reach the handoff").toContain("the newest, written first in the array");
+
+    // And it is FIRST, because the file is read top-down by the next
+    // session and a correct entry buried under two older ones is the same
+    // failure one step smaller.
+    expect(md.indexOf("session 48")).toBeLessThan(md.indexOf("session 41"));
+    expect(md.indexOf("session 41")).toBeLessThan(md.indexOf("session 40"));
+  });
+
+  test("SC-1961: the position in the array decides nothing", () => {
+    // The same three entries in three orders must render identically. The
+    // old renderer gives three different answers, and only one of them is
+    // right — which is what "it just trusted a position" means.
+    const entries = [
+      { date: "2026-10-17 newest", items: ["c"] },
+      { date: "2026-10-02 middle", items: ["b"] },
+      { date: "2026-10-01 oldest", items: ["a"] },
+    ];
+    const a = withSessions([entries[0]!, entries[1]!, entries[2]!]);
+    const b = withSessions([entries[2]!, entries[1]!, entries[0]!]);
+    const c = withSessions([entries[1]!, entries[0]!, entries[2]!]);
+    expect(b).toBe(a);
+    expect(c).toBe(a);
+    // …and the agreement is not three empty renders.
+    expect(a).toContain("newest");
+  });
+
+  test("SC-1962: a fourth, older session is dropped and an undated one is named", () => {
+    const md = withSessions([
+      { date: "2026-10-17 d", items: ["d"] },
+      { date: "2026-10-16 c", items: ["c"] },
+      { date: "2026-10-15 b", items: ["b"] },
+      { date: "2026-10-14 a", items: ["a"] },
+    ]);
+    expect(md).toContain("2026-10-15 b");
+    expect(md, "the fourth-newest session was rendered, so the limit does nothing").not.toContain("2026-10-14 a");
+
+    // An entry with no ISO date cannot be ordered, so it is never rendered.
+    // Silence would make it indistinguishable from one that is merely old,
+    // so the run says so by name.
+    writeTestJson({
+      updated: "2026-01-01",
+      notes: "",
+      priorities: [],
+      phases: [],
+      sessions: [
+        { date: "someday", items: ["unorderable"] },
+        { date: "2026-10-17 d", items: ["d"] },
+      ],
+    });
+    const out = execSync("bun scripts/update-project-state.ts 2>&1", { cwd: ROOT, encoding: "utf-8", timeout: 10000 });
+    expect(out, "an unorderable entry was ranked without saying so").toContain("someday");
+    expect(out).toContain("no ISO date");
+
+    // Ranked below the dated entry, NOT dropped. A project whose dates are
+    // all free-form must still get a handoff — excluding them would mean
+    // fixing this bug by producing an empty file, which is worse than the
+    // bug. Its position is the only thing that changes.
+    const md2 = readFileSync(STATE_MD, "utf-8");
+    expect(md2).toContain("unorderable");
+    expect(md2.indexOf("2026-10-17 d")).toBeLessThan(md2.indexOf("someday"));
+  });
+
+  test("SC-1963: the run names the sessions it rendered, not just that it wrote", () => {
+    // `rewrote PROJECT-STATE.md` was true on every run that dropped session
+    // 48. A reader who sees yesterday's date in this line knows at once.
+    writeTestJson({
+      updated: "2026-01-01",
+      notes: "",
+      priorities: [],
+      phases: [],
+      sessions: [{ date: "2026-10-17 session 48", items: ["x"] }],
+    });
+    const out = execSync("bun scripts/update-project-state.ts 2>&1", { cwd: ROOT, encoding: "utf-8", timeout: 10000 });
+    expect(out).toContain("rendered 1 of 1 session(s)");
+    expect(out, "the summary does not say which session reached the file").toContain("2026-10-17");
+  });
 });

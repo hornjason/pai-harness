@@ -164,3 +164,62 @@ export function missingStateVerdict(opts: {
   }
   return { verdict: "SKIP", detail: "project-state.json not found and no PROJECT-STATE.md to maintain — nothing to do" };
 }
+
+/** One rendered session, and the entries the selection could not place. */
+export interface SessionSelection<T> {
+  /** Newest first, at most `limit` of them. */
+  rendered: T[];
+   /**
+   * Entries whose `date` does not begin with an ISO date.
+   *
+   * They are NOT excluded — they rank below every dated entry, in array
+   * order, which is the only information left about them and is exactly
+   * what the old renderer used for everything. A project whose dates are
+   * all free-form therefore renders exactly as it did before.
+   *
+   * They are reported by name, because an entry nobody can order is a
+   * thing worth saying out loud: it will be outranked by any dated entry,
+   * however old, and that is surprising if you cannot see it.
+   */
+  undated: T[];
+}
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})\b/;
+
+/**
+ * The `limit` NEWEST sessions, chosen by date (#572).
+ *
+ * The renderer used to take `[...sessions].reverse().slice(0, 3)` — "the
+ * last three entries of the array", which is correct exactly while the
+ * array is in append order and which nothing anywhere enforced. Session 48
+ * was written to `sessions[0]`, so eight merged issues never appeared in
+ * PROJECT-STATE.md, the file AGENTS.md tells the next session to read
+ * first. The script printed `✅ rewrote` every time, because it had in fact
+ * rewritten the file.
+ *
+ * This is the second instance of that bug in the same function. The first
+ * was `slice(0, 3)` rendering the three OLDEST entries, and the fix was
+ * `.reverse()` — which repaired the symptom and left the defect: the
+ * renderer still had no idea which sessions were newest, it just trusted a
+ * position. Choosing by date removes the position from the question
+ * entirely, so where an entry is written stops mattering.
+ *
+ * Ties keep array order with the later index first, which is the only
+ * information left when two entries share a day — and several do.
+ */
+export function selectRecentSessions<T extends { date: string }>(
+  sessions: readonly T[],
+  limit: number,
+): SessionSelection<T> {
+  const undated: T[] = [];
+  const ranked = sessions.map((s, i) => {
+    const m = ISO_DATE.exec(s.date ?? "");
+    if (m === null) undated.push(s);
+    // An undated entry sorts below every dated one. `""` is less than any
+    // ISO date, so the comparison needs no second branch — and a branch
+    // that exists only for the empty case is a branch no fixture reaches.
+    return { s, key: m === null ? "" : m[0], i };
+  });
+  ranked.sort((a, b) => (a.key === b.key ? b.i - a.i : a.key < b.key ? 1 : -1));
+  return { rendered: ranked.slice(0, limit).map(d => d.s), undated };
+}
