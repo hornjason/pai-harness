@@ -24,7 +24,6 @@ import {
   generateAgentsMdContent,
   refreshScopedRulesStep,
   refreshAgentsMd,
-  updateSpecsTable,
   injectEnvironmentSection,
   generateConformityTest,
   generateAgentBriefsStep,
@@ -114,7 +113,6 @@ export function runScaffoldWriteSteps(
   writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
   actions.push("REGENERATED: AGENTS.md");
   refreshAgentsMd(projectPath, projectType, actions);
-  updateSpecsTable(join(projectPath, "AGENTS.md"), actions);
 
   // Phase 0.6: Create copilot instructions
   const copilotInstructions = `# Copilot Instructions\n\nRead [AGENTS.md](../AGENTS.md) for project context, key files, specs, and workflow.\n\nAll project knowledge lives in AGENTS.md. Start there.\n`;

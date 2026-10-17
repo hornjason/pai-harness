@@ -31,6 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
+import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
 import {
   readSuccessDoc,
   readSuccessTemplate,
@@ -240,40 +241,6 @@ function loadHarnessConfig(root: string): any {
 }
 
 // ── AGENTS.md generation and updates ───────────────────────────
-
-export function updateSpecsTable(agentsMdPath: string, actions: string[]): void {
-  if (!existsSync(agentsMdPath)) return;
-  const specsDir = join(dirname(agentsMdPath), "specs");
-  if (!existsSync(specsDir)) return;
-
-  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
-  if (specFiles.length === 0) return;
-
-  const specRows: string[] = [];
-  for (const f of specFiles) {
-    const content = readFileSync(join(specsDir, f), "utf-8");
-    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
-    let testable = "false";
-    let governs = f.replace(/\.md$/, "");
-    if (fmMatch) {
-      const tMatch = fmMatch[1].match(/testable:\s*(true|false)/);
-      if (tMatch) testable = tMatch[1];
-      const gMatch = fmMatch[1].match(/governs:\s*(.+)/);
-      if (gMatch) governs = gMatch[1].trim();
-    }
-    specRows.push(`| ${f} | ${governs} | ${testable === "true" ? "yes" : "no"} |`);
-  }
-
-  const existing = readFileSync(agentsMdPath, "utf-8");
-  const tablePattern = /(\|[^\n]*Spec[^\n]*\|\n\|[-| ]+\|\n)((?:\|[^\n]+\|\n)*)/;
-  const match = existing.match(tablePattern);
-  if (match) {
-    const newTable = match[1] + specRows.join("\n") + "\n";
-    const updated = existing.replace(tablePattern, newTable);
-    writeFileSync(agentsMdPath, updated);
-    actions.push("UPDATED: AGENTS.md specs table from frontmatter");
-  }
-}
 
 export function injectEnvironmentSection(root: string, actions: string[]): void {
   const agentsMdPath = join(root, "AGENTS.md");
@@ -661,8 +628,14 @@ export function generateAgentsMdContent(
  * Re-running the generator is safe and cheap: `generateAgentsMdContent` writes
  * only the rules, and returns AGENTS.md content for its caller to write. The
  * return value is discarded here on purpose — AGENTS.md has already been
- * through `updateSpecsTable` and `injectEnvironmentSection` by this point, and
- * rewriting it would undo both.
+ * through `injectEnvironmentSection` by this point, and rewriting it would
+ * undo that.
+ *
+ * It used to say `updateSpecsTable` as well. That function ran immediately
+ * after the generator had rewritten AGENTS.md, edited an EXISTING table
+ * matched on a header row containing `Spec`, and the generator emits no such
+ * table — so the match never succeeded, the `if` had no `else`, and its
+ * action string never once appeared in a report. It is deleted (#382).
  */
 export function refreshScopedRulesStep(
   root: string,
@@ -724,19 +697,23 @@ export function refreshAgentsMd(root: string, type: ProjectType, actions: string
     } catch (e: unknown) { console.warn('Staleness check failed for', ref, (e as Error).message); }
   }
 
-  // Check specs table
-  const specsDir = join(root, "specs");
-  if (existsSync(specsDir)) {
-    const actualSpecs = readdirSync(specsDir).filter(f => f.endsWith(".md"));
-    const unlisted = actualSpecs.filter(f => !content.includes(f));
-    if (unlisted.length > 0) {
-      issues.push(`UNLISTED specs: ${unlisted.join(", ")} (in specs/ but not in AGENTS.md)`);
-    }
+  // Check specs table.
+  //
+  // Across AGENTS.md AND `.claude/rules/`, because D-15 capped AGENTS.md at
+  // 100 lines and moved both tables there (#382). Asked of `lib/spec-listing.ts`
+  // rather than inline: this site had its own idea of what counts as a spec —
+  // every `.md` in `specs/`, including `SPEC-TEMPLATE.md` — and the routing
+  // generator had another, so the one entry that could never be listed
+  // anywhere was reported on every run.
+  const unlisted = unlistedSpecs(root);
+  if (unlisted.length > 0) {
+    issues.push(`UNLISTED specs: ${unlisted.join(", ")} (in specs/ but not in AGENTS.md or .claude/rules/)`);
   }
 
-  // Check CODE-MAP.md reference
-  if (existsSync(join(root, "CODE-MAP.md")) && !content.includes("CODE-MAP")) {
-    issues.push("CODE-MAP.md exists but not referenced in AGENTS.md routing table");
+  // Check CODE-MAP.md reference — same surfaces, same reason. It is named in
+  // the first row of `.claude/rules/docs-routing.md`.
+  if (codeMapUnreferenced(root)) {
+    issues.push("CODE-MAP.md exists but not referenced in AGENTS.md or .claude/rules/");
   }
 
   if (issues.length > 0 || staleFiles.length > 0) {

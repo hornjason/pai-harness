@@ -16,6 +16,7 @@ import { resolveConfig } from "./config-loader";
 // exists precisely so this module and the generators can share one answer
 // instead of drifting apart (#380).
 import { isHarnessItself } from "./harness-identity";
+import { isSpecFile } from "./spec-listing";
 import type {
   ProjectScan,
   ProjectType,
@@ -109,7 +110,11 @@ function scanSpecs(root: string): SpecEntry[] {
   if (!existsSync(specsDir)) return [];
 
   const specs: SpecEntry[] = [];
-  const specFiles = readdirSync(specsDir).filter(f => f.endsWith(".md") && f !== "SPEC-TEMPLATE.md");
+  // `isSpecFile`, not an inline name comparison. The audit in
+  // `lib/scaffold/steps.ts` answered the same question with its own filter
+  // and reached the opposite verdict for `SPEC-TEMPLATE.md`, so the one file
+  // this table deliberately omits was reported as missing from it (#382).
+  const specFiles = readdirSync(specsDir).filter(isSpecFile);
 
   for (const f of specFiles) {
     const content = readFileSync(join(specsDir, f), "utf-8");
