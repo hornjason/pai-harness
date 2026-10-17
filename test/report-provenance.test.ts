@@ -75,6 +75,15 @@ describe("#553: a report states the tree it measured", () => {
     // Both operands, or the reader cannot tell which tree to go and look at.
     expect(stale.reason).toContain(measured);
     expect(stale.reason).toContain(moved);
+
+    // And in the BLOCK, which is the artefact that actually travels. The
+    // reading can be perfect and the pasted three lines still omit the tip,
+    // which is the omission this whole issue is about — measured at 0 red
+    // before this assertion existed.
+    const block = provenanceBlock(stale);
+    expect(block, "the block does not name the tree that was measured").toContain(measured);
+    expect(block, "the block does not name the tip the branch moved to").toContain(moved);
+    expect(block, "the block does not name the ref it compared against").toContain(stale.ref!);
   });
 
   test("SC-1927: a currency it could not establish is never a pass", () => {

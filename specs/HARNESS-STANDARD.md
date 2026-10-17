@@ -9724,3 +9724,73 @@ missing slots pass, and only the budget cases remain.
 - [x] SC-1923: test/test-suite-scope.test.ts contains [a run of this repository is still charged] — the positive control, including that an exempted run does not clear a budget it was never charged to
 - [x] SC-1924: test/test-suite-scope.test.ts contains [scope is the shared git directory] — a worktree of this repository created under tmpdir is still charged, which is what separates this from a path denylist
 - [x] SC-1925: test/test-suite-scope.test.ts contains [the exemption is recorded] — and the hook is driven as a subprocess, because every library case above stays green when the hook stops passing `cwd`
+
+## A report that does not say which tree it measured (#553)
+
+Two security reviews arrived from peer sessions on 2026-10-17. Both reported
+CONFIRMED findings, both were measured against a tree the branch had already
+moved past, and **in both cases the report gave no way to tell**. sec-492's
+three findings were pinned to `7fdfa72a` at 20:32; two commits landed about
+75 minutes later and closed all three, and two of its "0 red" mutation rows
+are 3 and 1 on main.
+
+The receiving rule worked — `.claude/rules/parallel-sessions.md` already
+says peer reports are evidence rather than fact, and both reports were
+checked before anything was acted on, which is the only reason neither cost
+anything. What is missing is the **sending** side: verifying every finding
+from scratch is the expensive path to a cheap fact that the reviewer already
+holds.
+
+`workflows/ship.js` solves this inside itself. `reviewIsCurrent` pins a
+review to a commit and refuses when the branch has moved — #129, #169, #171
+and #244 of accumulated work. **A review conducted outside the pipeline
+inherits none of it**, and both of these came in that way.
+
+`lib/report-provenance.ts` is that same binding reachable from a terminal.
+It imports `reviewIsCurrent` rather than repeating the comparison: a second
+decider answering the same question is behaviourally one decider, and no
+test can tell them apart.
+
+```
+$ bun scripts/report-provenance.ts
+Measured against: 1e122b12…
+Branch tip (origin/fix/553): 1e122b12…
+Currency: CURRENT — the report describes 1e122b12…, which is the tip of origin/fix/553
+```
+
+Non-zero when the branch has moved. `origin/<branch>` is preferred over the
+local ref because that is what the reader can fetch, which also makes "I
+have not pushed" visible rather than silent. It fetches nothing: a reviewer
+who has not fetched is comparing against a stale remote-tracking ref, and
+that is a different failure from a moved branch that must not be hidden by a
+network call the function made on its own.
+
+An unanswerable currency is UNMEASURED, never a pass — no branch, a detached
+HEAD, a ref that will not resolve. "I could not look" and "I looked and it
+moved" are different things to write in a report, and silence reads as
+current.
+
+### What was broken to prove it
+
+Six mutations over 486 tests. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| currency always true | 3 | 3 |
+| no branch falls back to HEAD instead of UNMEASURED | 1 | 2 |
+| `origin/<branch>` stops being preferred | 1 | 1 |
+| an unresolvable ref is stale rather than UNMEASURED | 1 | 1 |
+| the pasted block stops naming the tip | **0 → 1** | 0 |
+| the CLI always exits 0 | 1 | 1 |
+
+The fifth row was predicted as 0 and measured 0, and a predicted zero is
+still a hole: the reading can be perfect while the three lines that actually
+travel omit the tip, which is the omission this entire issue is about. The
+block is now asserted directly and the row is 1.
+
+### Success Criteria
+
+- [x] SC-1926: test/report-provenance.test.ts contains [a branch that moved does not read like one that did not] — over a real second commit, with both operands asserted in the reason AND in the pasted block, which is the artefact that travels
+- [x] SC-1927: test/report-provenance.test.ts contains [a currency it could not establish is never a pass] — no repository, detached HEAD and an unresolvable ref, with a current reading as the positive control
+- [x] SC-1928: test/report-provenance.test.ts contains [origin is preferred over the local branch] — against a real bare remote, so an unpushed commit reads as not current rather than as the tip
+- [x] SC-1929: test/report-provenance.test.ts contains [the CLI exits non-zero on a stale reading] — every library case stays green if the script prints the block and exits 0, which is the one line that makes a reviewer stop
