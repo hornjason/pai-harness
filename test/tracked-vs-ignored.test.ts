@@ -86,6 +86,23 @@ describe("#471: a path cannot be both tracked and ignored", () => {
     git(root, ["add", "."]);
     expect(trackedAndIgnored(root).findings.map(f => f.path)).toContain("dashboard/node_modules");
 
+    // A link whose target cannot be READ is a finding too. Without this, a
+    // `cat-file` that fails leaves `linkTarget` null, the absolute test is
+    // false, and a broken read becomes the cheapest way to clear the check.
+    // Found by security review of the first push.
+    const unreadable = repo("\n");
+    symlinkSync("/somewhere/else", join(unreadable, "dep"));
+    git(unreadable, ["add", "."]);
+    const sha = git(unreadable, ["ls-files", "-s", "dep"]).trim().split(/\s+/)[1]!;
+    // The object is REMOVED rather than the runner mocked: a mock would be
+    // asserting the mock, and a loose object file is mode 444, so deleting
+    // it is the honest way in. `cat-file` then exits non-zero and the blob
+    // genuinely cannot be read.
+    rmSync(join(unreadable, ".git", "objects", sha.slice(0, 2), sha.slice(2)), { force: true });
+    const brokenLink = trackedAndIgnored(unreadable).findings.find(f => f.path === "dep");
+    expect(brokenLink?.reasons ?? [], "an unreadable link target cleared the check").toEqual(["unreadable-symlink"]);
+    expect(describeFindings(trackedAndIgnored(unreadable)).join("\n")).toContain("UNMEASURED");
+
     // A RELATIVE link is a repository making a statement about itself, and
     // it survives a clone. Without this the finding is "tracked symlink",
     // which is a different and much blunter rule.

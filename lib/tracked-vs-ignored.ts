@@ -82,7 +82,7 @@ import { spawnSync } from "child_process";
  * link to `/Users/<someone>/...` is wrong in a repository that never had a
  * rule about it.
  */
-export type FindingReason = "tracked-and-ignored" | "absolute-symlink";
+export type FindingReason = "tracked-and-ignored" | "absolute-symlink" | "unreadable-symlink";
 
 /** One tracked path that should not be tracked the way it is. */
 export interface Finding {
@@ -192,9 +192,19 @@ export function trackedAndIgnored(root: string): TrackedIgnoredReading {
       // the only thing that tells the two apart.
       const blob = run(root, ["cat-file", "-p", entry.sha]);
       linkTarget = blob.status === 0 ? blob.stdout.trim() : null;
-      // A relative link is a repository making a statement about itself and
-      // is portable. An absolute one is a statement about one filesystem.
-      if (linkTarget !== null && linkTarget.startsWith("/")) reasons.push("absolute-symlink");
+      if (linkTarget === null) {
+        // A link whose target could not be read is a finding, not a pass.
+        // Treating it as "no target, therefore not absolute" would make a
+        // broken `cat-file` the cheapest way to clear this check — the
+        // fail-open this module's own docstring warns about, one branch
+        // below where it warns about it. Found by security review.
+        reasons.push("unreadable-symlink");
+      } else if (linkTarget.startsWith("/")) {
+        // A relative link is a repository making a statement about itself
+        // and is portable. An absolute one is a statement about one
+        // filesystem.
+        reasons.push("absolute-symlink");
+      }
     }
 
     if (reasons.length > 0) {
@@ -211,11 +221,13 @@ export function describeFindings(reading: TrackedIgnoredReading): string[] {
     const kind = f.mode === "120000" ? "symlink" : `mode ${f.mode}`;
     const target = f.linkTarget !== null ? ` -> ${f.linkTarget}` : "";
     const why = f.reasons
-      .map(r =>
-        r === "tracked-and-ignored"
-          ? "matched by this repository's own ignore rules"
-          : "a link to an absolute path, which resolves to nothing on another machine",
-      )
+      .map(r => {
+        if (r === "tracked-and-ignored") return "matched by this repository's own ignore rules";
+        if (r === "absolute-symlink") {
+          return "a link to an absolute path, which resolves to nothing on another machine";
+        }
+        return "UNMEASURED: a link whose target could not be read, so it cannot be judged";
+      })
       .join("; ");
     return `${f.path} is tracked (${kind}${target}): ${why}`;
   });

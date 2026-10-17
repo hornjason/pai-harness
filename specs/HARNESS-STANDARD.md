@@ -9540,3 +9540,102 @@ is the point of routing the second door through it.
 - [x] SC-1914: test/context-docs-containment.test.ts contains [trust comes from the environment] — a different trusted root does not admit it, and a root named by the project's own config admits nothing at all
 - [x] SC-1915: test/context-docs-containment.test.ts contains [a path that does not exist is still resolved through its links] — otherwise the missing verdict and the symlink refusal are mutually exclusive and the bypass is the gap between them
 - [x] SC-1916: test/context-docs-containment.test.ts contains [the AC contextFiles door is the same door] — with a project-internal path in the same brief as the positive control, since a door that refuses everything satisfies the refusal half
+
+## A path that is both tracked and ignored — and the detector that could not see the case that filed it (#471)
+
+A `.gitignore` rule written with a trailing slash — `node_modules/` — does
+not match a **symlink** named `node_modules`. `git add .` therefore tracks
+it, and what lands in the commit is a mode `120000` blob whose entire content
+is a machine-absolute path. Reported from a consumer repo with two such
+entries, against a `.gitignore` that named both correctly, each with the
+trailing slash that fails to match a link.
+
+**`git status` was clean throughout.** The rule is right, the mental model is
+right, and the only thing that reveals the divergence is `git ls-files`.
+
+### The shape it was filed as does not catch it
+
+The issue proposes: *fail when `git ls-files` returns a path that
+`git check-ignore` also matches*. That is a real contradiction and it is the
+first of the two findings here. Run against the reported case it reports
+nothing, for exactly the reason the bug exists — measured on a planted repo:
+
+```
+$ git check-ignore --no-index -v node_modules
+$ echo $?
+1
+$ git check-ignore --no-index -v node_modules/anything
+fatal: pathspec 'node_modules/anything' is beyond a symbolic link
+```
+
+`check-ignore` declines to match the link just as faithfully as `git add`
+did, and it will not look past one either. A detector built only on the
+agreement between those two commands is narrower than the thing it was
+written to detect — the second shape in
+`.claude/rules/checks-must-be-able-to-fail.md`, arriving in the check rather
+than in the ignore rule. SC-1917 asserts that non-match directly, so the
+reason the second finding exists is a case rather than a paragraph.
+
+So `lib/tracked-vs-ignored.ts` reports two kinds of finding:
+
+| Finding | Catches | Needs an ignore rule? |
+|---|---|---|
+| `tracked-and-ignored` | a `git add -f` of an ignored file; any rule contradicting the index | yes |
+| `absolute-symlink` | the reported case: a committed link to `/Users/<someone>/...` | **no** |
+
+The second needs no rule because no rule could make it right: the blob is a
+path on one filesystem, so the checkout is broken for everyone else. A
+RELATIVE link is a repository making a statement about itself and survives a
+clone, so it is not a finding — asserted, because without that line the rule
+is "no tracked symlinks", which is blunter and wrong.
+
+`--no-index` is load-bearing for the first finding and its absence would be a
+check that cannot fire: `git check-ignore` skips files in the index unless it
+is passed, so without it the command is asked about tracked paths and answers
+about untracked ones. Measured both ways in SC-1921.
+
+A failure to measure is never a clean result. `git check-ignore` exits 1 when
+nothing matched — a result — and 128 on an error, and the difference is one
+`catch` away from reading a broken comparison as a tidy repository.
+
+### No ratchet, because the repository reaches zero
+
+Measured on this tree: 913 tracked paths, **0** matched by its own ignore
+rules and **0** tracked symlinks of any kind. The house convention asks for a
+known-violations ratchet when a repo cannot reach zero; this one does, and a
+ratchet nobody needs is a number nobody can interpret.
+
+### What was broken to prove it
+
+Eight mutations over 5 tests. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| the `absolute-symlink` finding is removed | 2 | 2 |
+| `--no-index` is dropped from the check-ignore call | 2 | 2 |
+| a `check-ignore` that exits 128 is read as clean | 1 | 1 |
+| an `ls-files` that fails is read as clean | 1 | 1 |
+| every tracked symlink becomes a finding, relative or not | 1 | 1 |
+| `trackedCount` stops being reported | 1 | 1 |
+| the link target is never read | 2 | 3 |
+| an unreadable link target stops being a finding | 1 | 1 |
+
+The link-target row is low because the prediction counted SC-1921, whose
+fixture is a tracked `.env` and not a link, so nothing there ever reaches
+`cat-file`. Two of two cases that can witness it do.
+
+The last row is a defect found by security review of the first push, not by
+this battery: a `cat-file` that fails left `linkTarget` null, the absolute
+test false, and the finding silently absent — so a broken read was the
+cheapest way to clear the check, which is the fail-open this file's own
+docstring warns about one branch above where it happened. An unreadable
+target is now its own reason and reports UNMEASURED. The fixture deletes the
+loose object rather than mocking the runner.
+
+### Success Criteria
+
+- [x] SC-1917: test/tracked-vs-ignored.test.ts contains [a symlink a trailing-slash rule failed to match is caught] — built by `ln -s` and `git add .` against a repo whose status is clean, with `check-ignore`'s own non-match asserted as the instrument
+- [x] SC-1918: test/tracked-vs-ignored.test.ts contains [the mode and the link target are reported] — `120000` and the blob content, because a directory of tracked files is wasteful and a tracked link is what breaks on another machine
+- [x] SC-1919: test/tracked-vs-ignored.test.ts contains [a repo whose rules and tracked set agree passes] — over a non-empty corpus and over the live tree, since an empty corpus and a clean one are the same verdict
+- [x] SC-1920: test/tracked-vs-ignored.test.ts contains [it never asks git status] — plus a `check-ignore` forced to exit 128 while `ls-files` succeeds, which is the fail-open a `catch` would create
+- [x] SC-1921: test/tracked-vs-ignored.test.ts contains [check-ignore is asked with --no-index] — measured both ways on one fixture, because without the flag that arm is a comparison against the empty set
