@@ -282,6 +282,41 @@ const realCp: CopyRunner = (args, timeout) =>
  *
  * Returns the first non-zero `cp` status, or 0.
  */
+/**
+ * Remove a tree we own, clearing what makes a removal refuse first.
+ * Returns `null` when the path is gone, or the reason it is not.
+ *
+ * Two things stop `rm` on a tree this module created, and neither is a
+ * permission the owner actually lacks:
+ *
+ * - **BSD file flags.** `cp -Rc` is a clonefile and a clonefile carries
+ *   flags, so a clone of this repo holds the `uchg` files it sets on
+ *   `gates/prompts/*.md`. `rm` answers "Operation not permitted" and bun
+ *   reports it as `EFAULT: bad address in system call argument`, naming
+ *   neither the file nor the flag. That is #549's error message.
+ * - **A directory with no owner-read or owner-execute bit.** An unreadable
+ *   directory is one `cp` cannot copy, so it is exactly what a failed first
+ *   attempt leaves behind — and `rmSync` cannot list it to empty it. The
+ *   owner can always chmod it; `rm -rf` never does.
+ *
+ * Both are best-effort: `chflags` does not exist on Linux, where there are
+ * no BSD flags either, and a failing `chmod` is a tree we do not own, which
+ * the removal below will report in its own words.
+ */
+function removeTree(path: string): string | null {
+  spawnSync("chflags", ["-R", "nouchg,noschg", path], { timeout: 60_000 });
+  spawnSync("chmod", ["-R", "u+rwX", path], { timeout: 60_000 });
+  try {
+    rmSync(path, { recursive: true, force: true });
+    return null;
+  } catch (err) {
+    if (spawnSync("rm", ["-rf", path], { encoding: "utf-8", timeout: 120_000 }).status === 0) {
+      return null;
+    }
+    return (err as Error).message;
+  }
+}
+
 export function copyTreeExcluding(
   src: string,
   dst: string,
@@ -294,7 +329,14 @@ export function copyTreeExcluding(
   // ordering between them: a failed `cp -Rc` may have copied part of the
   // tree, and falling back on top of that leaves a PARTIAL clone whose
   // steps report less than `--fix` will do.
-  rmSync(dst, { recursive: true, force: true });
+  //
+  // Through `removeTree`, not a bare `rmSync`. What the first attempt left
+  // behind is whatever made it fail — on Linux CI an unreadable directory
+  // `cp -R` could not copy and `rmSync` then cannot remove — and a throw
+  // here escapes `cloneForRehearsal` as a raw EACCES instead of its refusal
+  // sentence. That is the same defect as the one in `discardRehearsal`
+  // below, one function earlier.
+  if (removeTree(dst) !== null) return 1;
   const paths = excludes.map(e => e.split("/").filter(Boolean)).filter(p => p.length > 0);
   return copyLevel(src, dst, paths, cpFlag, timeout, run);
 }
@@ -406,18 +448,13 @@ export function discardRehearsal(r: Rehearsal): string | null {
   // does not own; the owner is recorded at creation instead. Leaving the
   // mkdtemp behind is the leak #437 is about, so it is the parent that goes.
   //
-  // Best-effort: `chflags` is macOS/BSD and absent on Linux, where there are
-  // no BSD flags to clear either.
-  spawnSync("chflags", ["-R", "nouchg,noschg", r.parent], { timeout: 60_000 });
-  try {
-    rmSync(r.parent, { recursive: true, force: true });
-    return null;
-  } catch (err) {
-    const rm = spawnSync("rm", ["-rf", r.parent], { encoding: "utf-8", timeout: 120_000 });
-    if (rm.status === 0) return null;
-    return `the rehearsal clone could not be removed and is still on disk: ${r.parent} — ` +
-      `${(err as Error).message}. Remove it by hand; nothing in the consumer's tree was touched.`;
-  }
+  // One binding with the copy's own cleanup, so the flag-clearing and the
+  // mode-clearing cannot drift apart between the two places that delete a
+  // tree this module made.
+  const why = removeTree(r.parent);
+  if (why === null) return null;
+  return `the rehearsal clone could not be removed and is still on disk: ${r.parent} — ` +
+    `${why}. Remove it by hand; nothing in the consumer's tree was touched.`;
 }
 
 /**

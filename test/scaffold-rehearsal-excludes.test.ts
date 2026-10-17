@@ -93,6 +93,34 @@ describe("#549: an excluded path is never read, not merely absent afterwards", (
       .toThrow(/could not be copied/);
   });
 
+  test("SC-1884: a destination the first attempt could not empty is a refusal, not a throw", () => {
+    // Found on Linux CI, where the control above threw `EACCES: permission
+    // denied, rm` instead of the refusal. `cp -Rc` fails over an unreadable
+    // directory, the `-R` retry clears the destination first, and what the
+    // first attempt left behind is an unreadable directory `rmSync` cannot
+    // list. The throw escapes `cloneForRehearsal` entirely — the SAME defect
+    // as the one `discardRehearsal` fixes, one function earlier, and the
+    // reason both now go through one removal.
+    //
+    // Driven directly rather than through `cp`, so it does not depend on
+    // what a platform's `cp` leaves behind after it fails.
+    const src = project("stale-dst");
+    const dst = join(scratch("stale-dst-dst"), "tree");
+    mkdirSync(join(dst, "leftover"), { recursive: true });
+    writeFileSync(join(dst, "leftover", "f.txt"), "x\n");
+    chmodSync(join(dst, "leftover"), 0o000);
+    unlock.push(join(dst, "leftover"));
+
+    // The instrument: the destination really is one a plain recursive delete
+    // refuses, or this is asserting against an ordinary empty directory.
+    expect(() => rmSync(dst, { recursive: true, force: true }),
+      "the leftover was removable anyway, so the fixture cannot witness the fix").toThrow();
+
+    expect(copyTreeExcluding(src, dst, REHEARSAL_EXCLUDES, "-R", 10_000)).toBe(0);
+    expect(readdirSync(dst).sort(), "the stale destination was copied into rather than replaced")
+      .toEqual(["README.md", "src"]);
+  });
+
   test("SC-1885: no copy is issued for anything under an excluded path", () => {
     // The cost half, measured. "Independent of the size of the excluded
     // directory" is a timing claim and timing is a flaky assertion; the
