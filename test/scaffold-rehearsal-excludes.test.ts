@@ -82,15 +82,29 @@ describe("#549: an excluded path is never read, not merely absent afterwards", (
     expect(readdirSync(r.dir).sort()).toEqual([".claude", "README.md", "src"]);
 
     // The INSTRUMENT, and without it the row above passes on a tree whose
-    // chmod silently did nothing: the same unreadable directory in a place
-    // the exclude list does not name must refuse the clone.
+    // chmod silently did nothing: an unreadable directory the exclude list
+    // does not name must refuse the clone.
+    //
+    // `.claude` rather than an arbitrary `secrets/`, because it is an
+    // ANCESTOR of an exclude and so is walked rather than handed to `cp`.
+    // That makes the leftover deterministic: the walk mkdirs it and copies
+    // the source's mode onto it before failing to read it, so the aborted
+    // clone holds a mode-000 directory on every platform. Handing it to
+    // `cp` instead leaves whatever that platform's `cp` happens to create —
+    // 0o000 on GNU, 0o700 on macOS — and the removal below is then exercised
+    // on Linux CI only, which is how this shipped green and came back red.
     const other = project("unreadable-control");
-    mkdirSync(join(other, "secrets"), { recursive: true });
-    writeFileSync(join(other, "secrets", "x.txt"), "x\n");
-    chmodSync(join(other, "secrets"), 0o000);
-    unlock.push(join(other, "secrets"));
+    mkdirSync(join(other, ".claude", "worktrees"), { recursive: true });
+    writeFileSync(join(other, ".claude", "settings.json"), "{}\n");
+    chmodSync(join(other, ".claude"), 0o000);
+    unlock.push(join(other, ".claude"));
     expect(() => cloneForRehearsal(other), "mode 000 did not stop the copy, so the fixture proves nothing")
       .toThrow(/could not be copied/);
+    // …and it declined rather than crashed: the refusal cleans up after
+    // itself, and a raw `EACCES` reaching the caller here is the same defect
+    // as the one `discardRehearsal` fixes, two functions earlier.
+    expect(() => cloneForRehearsal(other), "the refusal could not remove its own aborted clone")
+      .not.toThrow(/still on disk/);
   });
 
   test("SC-1884: a destination the first attempt could not empty is a refusal, not a throw", () => {

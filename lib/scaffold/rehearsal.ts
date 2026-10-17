@@ -189,8 +189,16 @@ export function cloneForRehearsal(root: string): Rehearsal {
   const parent = mkdtempSync(join(tmpdir(), "rungate-rehearsal-"));
   const dir = join(parent, "tree");
   const fail = (why: string): never => {
-    rmSync(parent, { recursive: true, force: true });
-    throw new Error(`audit did NOT run: ${why}`);
+    // Through `removeTree`: what a failed copy leaves behind is whatever
+    // made it fail, and a bare `rmSync` here throws that errno in place of
+    // the refusal below — so the caller is told the audit crashed rather
+    // than why it declined. A clone we cannot clean up is still a decline,
+    // so a leftover is appended to the sentence rather than replacing it.
+    const leaked = removeTree(parent);
+    throw new Error(
+      `audit did NOT run: ${why}` +
+      (leaked === null ? "" : ` (and the clone is still on disk: ${parent} — ${leaked})`),
+    );
   };
 
   // `-c` asks for an APFS clonefile. It fails on filesystems that cannot do
