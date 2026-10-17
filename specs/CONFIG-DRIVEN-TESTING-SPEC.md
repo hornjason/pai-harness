@@ -1088,9 +1088,12 @@ mentions is not what the criterion is about**, which is
 place.
 
 **It is not narrowed here, and the reason is the distinction #586 turns on.**
-That path reports `ambiguous: true`, which is what writes
-`<!-- REVIEW: original — … -->` beside the rewritten line, so the statement
-it replaced is still in the file. #426 kept it for exactly that reason and
+That path reports `ambiguous: true`, which is what writes the
+`REVIEW: original` marker comment beside the rewritten line, so the statement
+it replaced is still in the file. (Spelled that way here on purpose: line
+1052 above does the same, because `test/audit-specs.test.ts` AC-3 refuses any
+spec containing the marker's literal opening — a document explaining the
+marker would otherwise report itself as a spec needing review.) #426 kept it for exactly that reason and
 pinned it in SC-1587 and SC-1594. A downgrade whose original is recorded is
 recoverable by anyone reading the spec; the `all-specs-frontmatter` rewrite
 was not, because `ambiguous: false` suppresses the marker.
@@ -1119,17 +1122,26 @@ assertion while saying nothing.
 ### What was broken to prove it (SC-1993..SC-1999)
 
 Run and counted over `test/audit-specs-rewrite-fidelity.test.ts` +
-`test/scaffold-conformity.test.ts` + `test/audit-specs.test.ts` (baseline
-1087 pass / 0 fail). None is left in the tree.
+`test/scaffold-conformity.test.ts` + `test/audit-specs.test.ts` +
+`test/audit-specs-lossless.test.ts` (baseline 1099 pass / 0 fail). None is
+left in the tree.
 
 | Mutation | Red | Predicted |
 |---|---|---|
 | the keyword test back to `some` for every heuristic | 2 | 2 |
 | a constant extractor reports `ambiguous: false` again | 1 | 1 |
 | the distinguishing-terms guard removed | 1 | 1 |
-| the stopword filter removed from `distinguishingTerms` | **2** | 1 |
-| the loose fallback's existence narrowing removed | 1 | 1 |
+| the stopword filter removed from `distinguishingTerms` | 2 | 2 |
+| the guard reads `closest.rewrite` instead of the final rewritten text | 1 | 1 |
+| the loose fallback reports `ambiguous: false` | 2 | 2 |
 | `missingGitignorePatterns` back to exact matching | 1 | 1 |
+
+`test/audit-specs-lossless.test.ts` is in the battery, and was not in the
+first draft's. Adding it is what produced rows five and six: #426's criteria
+are the ones that fail when this fix reaches past loss into downgrade, and a
+battery scoped to the new file cannot see them. Row five is red in SC-1591
+and row six in SC-1587 — both in the OLDER file, neither reachable from the
+new one.
 
 **Row four found two vacuous assertions in the file written to catch
 vacuous rewrites.** It was predicted to turn SC-1995 red and turned SC-1994
