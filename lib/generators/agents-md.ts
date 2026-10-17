@@ -22,6 +22,28 @@ import { typecheckDecision } from "../typescript-project";
  * drop a hand-set owner, and emitting nothing — the previous behavior —
  * stripped the block entirely on every re-scaffold.
  */
+export function existingFrontmatter(root: string): Record<string, string> {
+  const path = join(root, "AGENTS.md");
+  const existing: Record<string, string> = {};
+  if (!existsSync(path)) return existing;
+  const content = readFileSync(path, "utf-8");
+  const match = content.match(/^---\n([\s\S]*?)\n---\n/);
+  if (!match) return existing;
+  for (const line of match[1].split("\n")) {
+    const kv = line.match(/^([\w-]+):\s*(.*)$/);
+    if (!kv) continue;
+    const value = kv[2].trim();
+    // Carry forward only simple scalars. The block is re-emitted verbatim,
+    // so a value holding a delimiter or control character could terminate
+    // the frontmatter early and turn the rest of the file into a second
+    // document — or smuggle keys past this loop on the next round-trip.
+    if (value.includes("---") || /[\x00-\x1f]/.test(value)) continue;
+    if (value.length > 200) continue;
+    existing[kv[1]] = value;
+  }
+  return existing;
+}
+
 function buildFrontmatter(root: string): string {
   const today = new Date().toISOString().slice(0, 10);
   const defaults: Record<string, string> = {
@@ -30,26 +52,7 @@ function buildFrontmatter(root: string): string {
     updated: today,
   };
 
-  const path = join(root, "AGENTS.md");
-  const existing: Record<string, string> = {};
-  if (existsSync(path)) {
-    const content = readFileSync(path, "utf-8");
-    const match = content.match(/^---\n([\s\S]*?)\n---\n/);
-    if (match) {
-      for (const line of match[1].split("\n")) {
-        const kv = line.match(/^([\w-]+):\s*(.*)$/);
-        if (!kv) continue;
-        const value = kv[2].trim();
-        // Carry forward only simple scalars. The block is re-emitted verbatim,
-        // so a value holding a delimiter or control character could terminate
-        // the frontmatter early and turn the rest of the file into a second
-        // document — or smuggle keys past this loop on the next round-trip.
-        if (value.includes("---") || /[\x00-\x1f]/.test(value)) continue;
-        if (value.length > 200) continue;
-        existing[kv[1]] = value;
-      }
-    }
-  }
+  const existing = existingFrontmatter(root);
 
   const merged: Record<string, string> = { ...defaults, ...existing, updated: today };
   const order = ["doc-type", "status", "owner", "updated"];
@@ -76,7 +79,23 @@ export function generateAgentsMd(scan: ProjectScan): string {
   } = scan;
 
   const techLine = techStack.length > 0 ? `\n**Tech:** ${techStack.join(", ")}` : "";
-  const repoLine = repoUrl ? `- **Repo:** ${repoUrl}` : "<!-- TODO: Add repo URL -->";
+
+  // #552. `scan.repoUrl` is `git remote get-url origin`, and a project with
+  // no remote called `origin` gets `""` — which this line turned into
+  // `<!-- TODO: Add repo URL -->`, twice, on every single run, with NOWHERE
+  // for the consumer to put the answer. `--profile=minimal` writes no
+  // `.claude/rungate/`, so there was no config key either, and editing
+  // AGENTS.md is futile because the next run regenerates it.
+  //
+  // The frontmatter is the place, because it is the one part of this file
+  // that already survives regeneration: `buildFrontmatter` carries forward
+  // every simple scalar the existing block declared. So `repo:` written once
+  // by hand persists, and the git remote stays the default when there is one.
+  const declaredRepo = existingFrontmatter(scan.root).repo;
+  const effectiveRepoUrl = repoUrl || (declaredRepo ?? "");
+  const repoLine = effectiveRepoUrl
+    ? `- **Repo:** ${effectiveRepoUrl}`
+    : "<!-- TODO: Add repo URL — set `repo:` in this file's frontmatter, which survives regeneration -->";
 
   const consumerSection = consumers.length > 0
     ? `\n## Consumers (${consumers.length})\n\n${consumers.map(c => `- ${c}`).join("\n")}\n\nCheck cascade impact when modifying shared modules.`
