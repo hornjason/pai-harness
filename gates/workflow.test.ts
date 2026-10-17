@@ -16,6 +16,7 @@ import {
   resolveContainerRuntime,
 } from "../lib/container-provenance";
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
+import { readBranchDiff } from "../lib/branch-diff";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
 import { readSuiteMeasurement, type SuiteReading } from "../lib/suite-measurement";
@@ -1234,10 +1235,12 @@ describe("verify checks", () => {
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;
-    const diff = exec(`git diff --name-only ${scopeSha}..HEAD`, root);
-    if (!diff.ok || !diff.output) return;
+    // #531: branch-relative, and an unusable diff says so rather than
+    // reading as "nothing changed".
+    const changed = readBranchDiff(scopeSha, a => execArgvOf("git", a, root), "prove-evidence-type");
+    if (changed.files === null) { console.warn(`WARN: ${changed.reason}`); return; }
     const UI_EXT = /\.(tsx|jsx|css|scss|html|svg|less)$/i;
-    const uiChanged = diff.output.split("\n").filter(f => UI_EXT.test(f));
+    const uiChanged = changed.files.filter(f => UI_EXT.test(f));
     if (uiChanged.length === 0) return;
     const slug = sf("slug");
     if (!slug) return;
@@ -1314,8 +1317,11 @@ describe("verify checks", () => {
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;
-    const diff = exec(`git diff --name-only ${scopeSha}..HEAD`, root);
-    if (!diff.ok || !diff.output) return; // no changed files — silently return
+    // #531: branch-relative, and an unusable diff is UNMEASURED rather than
+    // "no changed files — silently return", which is what the previous line
+    // said and which waves every file-matched gate below through.
+    const changed = readBranchDiff(scopeSha, a => execArgvOf("git", a, root), "contextual-skip-validation");
+    if (changed.files === null) { console.warn(`WARN: ${changed.reason}`); return; }
 
     const FILE_GATE_MAP: Record<string, string[]> = {
       "tsx|jsx": ["local-ui-validated", "quinn-on-ui-change"],
@@ -1331,7 +1337,7 @@ describe("verify checks", () => {
       "prod-rebuild-pass": "environments.prod.rebuild",
     };
 
-    const changedFiles = diff.output.split("\n").filter(Boolean);
+    const changedFiles = changed.files;
     let warnCount = 0;
     for (const file of changedFiles) {
       for (const [extPattern, gates] of Object.entries(FILE_GATE_MAP)) {
@@ -1579,10 +1585,12 @@ describe("ship checks", () => {
     if (!root) return;
     const scopeSha = sf("gates")?.scope?.commitSha;
     if (!scopeSha) return;
-    const diff = exec(`git diff --name-only ${scopeSha}..HEAD`, root);
-    if (!diff.ok) return;
+    // #531: branch-relative. This is the check that refused on seven `.tsx`
+    // files the branch has never contained.
+    const changed = readBranchDiff(scopeSha, a => execArgvOf("git", a, root), "quinn-tested-changed-files");
+    if (changed.files === null) { console.warn(`WARN: ${changed.reason}`); return; }
     const UI_EXT = /\.(tsx|jsx|css|scss|html|svg|less)$/i;
-    const uiChanged = diff.output.split("\n").filter(f => UI_EXT.test(f));
+    const uiChanged = changed.files.filter(f => UI_EXT.test(f));
     if (uiChanged.length === 0) return;
     const testedPaths = sf("agents")?.quinn?.testedPaths || [];
     if (testedPaths.length === 0) {
