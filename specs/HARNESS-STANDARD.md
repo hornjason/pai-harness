@@ -9827,7 +9827,10 @@ overwriting a file outside the project.
 
 ### What was broken to prove it
 
-Two mutations over 110 tests. None is left in the tree.
+Two mutations over 151 tests — every file that drives `regenerateOwned`,
+`ownedStrategy` or `safeWrite`, so a refusal that moved to a second site
+would show up as a row that did not move. Baseline 151 pass, 0 fail, read
+before either mutation row. None is left in the tree.
 
 | Mutation | Red | Prediction |
 |---|---|---|
