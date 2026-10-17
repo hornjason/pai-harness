@@ -71,10 +71,17 @@ describe("#287: which specs actually have a drift hash", () => {
       "BOOTSTRAP-DATA-FLOW-SPEC.md",
       "BOOTSTRAP-TEST-PLAN.md",
     ]);
-    expect(GUARDS.guardFiles.sort()).toEqual([
-      "test/helpers/scaffold-fixture.ts",
-      "test/phase-5.test.ts",
-    ]);
+    // ONE guard file as of #579. `test/phase-5.test.ts` carried its own
+    // `SPEC_HASH` over the same spec — two deciders answering one question
+    // about one input, and they were found by exactly that: a deliberate
+    // frontmatter change re-pinned one and left the other red with an
+    // identical message about an identical fact. It calls `checkSpecDrift`
+    // now, which also covers the test plan the copy did not.
+    //
+    // This case going red at the collapse is the discovery working. A
+    // hardcoded list in the checker would have stayed green over it, which
+    // is SC-756's whole point.
+    expect(GUARDS.guardFiles.sort()).toEqual(["test/helpers/scaffold-fixture.ts"]);
   });
 
   test("the discovery is reading the tree, not returning a constant", () => {

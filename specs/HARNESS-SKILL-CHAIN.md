@@ -7,6 +7,8 @@ updated: 2026-09-03
 testable: true
 compliance: strict
 governs: Skill chaining — how goal → ship → prove → close sequences connect and pass state
+criteria: none
+criteria-reason: its claims are stated as prose and asserted verbatim by test/spec-compliance.test.ts (SS-1..SS-6), which is cover without checkboxes — the criteria are unwritten, not the tests
 ---
 
 # Harness Skill Chain Spec

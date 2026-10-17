@@ -9,6 +9,8 @@ council: "2026-09-07 — bash vs hooks vs workflows (D-001 through D-009)"
 testable: true
 compliance: strict
 governs: Automation strategy — bash scripts vs hooks vs workflows for harness enforcement
+criteria: none
+criteria-reason: UNWRITTEN — this spec describes an automation strategy in prose and no test drives any of it; it is on DRIFT-2's untestedSpecs ratchet for the same reason. A reader routed here gets description, not requirements
 ---
 
 # Harness v2 Automation Matrix

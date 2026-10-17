@@ -17,6 +17,14 @@ export interface SpecEntry {
   file: string;
   governs: string;
   testable: string;
+  /**
+   * The spec declares `criteria: none` in its frontmatter (#579).
+   *
+   * Carried into the routing table rather than left in the file, because the
+   * reader harmed by a criteria-free spec is the one the table SENDS there.
+   * Optional so a consumer's scanner predating this still typechecks.
+   */
+  criteriaNone?: boolean;
 }
 
 export interface TestFile {

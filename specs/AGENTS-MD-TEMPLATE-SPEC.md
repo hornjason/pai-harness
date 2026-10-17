@@ -146,20 +146,24 @@ Not implemented yet — CLAUDE.md is sufficient while we're the only consumer.
 - [x] SC-284: Permanent routing categories always present in AGENTS.md: specs, docs/adr, docs/research, docs/council, docs/guides, reference — regardless of whether files exist yet
 - [x] SC-285: Scaffold WARN when a Where to Create Things category has no corresponding docs/ subdirectory (e.g. council listed but docs/council/ doesn't exist)
 
-### PROJECT-STATE.md Automation
-- [x] SC-296: scripts/update-project-state.ts exists and runs with --skip-tests in under 2 seconds
-- [x] SC-297: lib/scaffold/steps.ts contains [update-project-state] — asserts the generator, not `.git/hooks/pre-commit`. The installed hook is untracked, so the old target passed on a developer machine and could never pass in CI; #209 made checked SCs bind and the gap surfaced immediately
-- [ ] SC-298: scripts/update-project-state.ts contains [scanSpecSCStatus, frontmatter]
-- [ ] SC-299: Phase headers auto-flip based on SC completion within each phase (behavioral)
-- [x] SC-300: PROJECT-STATE.md is under [200] lines
-- [x] SC-301: docs/session-log/ directory exists
-- [x] SC-302: scaffold output PROJECT-STATE.md exists
+### Commit and hook automation
+
+**The project-state criteria moved out (#579).** SC-296, SC-297, SC-298,
+SC-299, SC-300, SC-301, SC-302 and SC-308 now live in
+`specs/PROJECT-STATE.md`, together with #572's SC-1960..SC-1963. This spec
+`governs` "AGENTS.md template structure", which never covered them; they were
+here because the spec that should have held them was a rendered status
+snapshot rather than a requirements document. Ids and claim text are
+unchanged, so their cover moved with them.
+
+What remains below genuinely belongs to this spec: the commit hook and the
+agent-registration plumbing the AGENTS.md template emits.
+
 - [x] SC-303: lib/scaffold/steps.ts contains [/bin/sh, --diff-filter=A] — two corrections. The token was `.sh`, which the POSIX hook never contains; `/bin/sh` is the shebang it actually emits. And the target was `.git/hooks/pre-commit`, which git never tracks, so the assertion was about one machine's local state rather than about the repository
 - [x] SC-304: hooks/CommitEnforcement.hook.ts contains [code, agent] and has no [=== "marcus"]
 - [ ] SC-305: Hook registrations contain RUNGATE_HOOKS_DIR variable (behavioral)
 - [ ] SC-306: codeAgent() wrapper in workflows auto-adds isolation: worktree for code agents (behavioral)
 - [x] SC-307: SC checkboxes in spec files auto-flip from [ ] to [x] when their named test passes
-- [x] SC-308: scripts/update-project-state.ts contains [✅, ⬜]
 
 ---
 
@@ -704,7 +708,8 @@ look like a pair and are not.
 
 ### Success Criteria
 
-- [x] SC-1960: test/update-project-state.test.ts contains [the newest session is rendered from the FRONT of the array] — the position the DA actually wrote to, and the position the old renderer could not see; a fixture that appends passes under the bug
-- [x] SC-1961: test/update-project-state.test.ts contains [the position in the array decides nothing] — the same three entries in three orders render identically, with the agreement asserted to be non-empty
-- [x] SC-1962: test/update-project-state.test.ts contains [a fourth, older session is dropped and an undated one is named] — the limit still bites, and an unorderable entry is ranked below the dated one rather than excluded
-- [x] SC-1963: test/update-project-state.test.ts contains [the run names the sessions it rendered, not just that it wrote] — the line that was true on every run that dropped a session
+**SC-1960..SC-1963 moved to `specs/PROJECT-STATE.md` (#579).** The analysis
+above stays here because it is the record of how #572 was found and what was
+broken to prove it; the criteria themselves are requirements about the state
+renderer, which is not what this spec governs. They went here originally for
+consistency with SC-296..SC-308, which were also in the wrong place.

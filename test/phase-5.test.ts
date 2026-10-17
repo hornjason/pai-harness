@@ -2,12 +2,9 @@ import { describe, test, expect } from "bun:test";
 import { execSync } from "child_process";
 import { join, resolve } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
+import { checkSpecDrift } from "./helpers/scaffold-fixture";
 
 const ROOT = resolve(import.meta.dir, "..");
-// Re-hashed 2026-10-05 (#80): BOOTSTRAP-DATA-FLOW-SPEC.md is a redirect stub
-// whose `governs` field was literally "TODO" — the only violation blocking
-// HYGIENE-1 from becoming a real assertion. The split specs are unchanged.
-const SPEC_HASH = "05f388d8b3a2e036";
 
 // Auto-generated conformity tests from specs
 runScaffoldConformity(ROOT);
@@ -15,14 +12,17 @@ runScaffoldConformity(ROOT);
 // Custom tail: phase-5 specific checks
 describe("Phase 5 — Instruction Compliance (custom checks)", () => {
   test("spec-drift: governing spec hasn't changed", () => {
-    const specPath = join(ROOT, "specs", "BOOTSTRAP-DATA-FLOW-SPEC.md");
-    const hash = execSync(`shasum -a 256 "${specPath}" | cut -c1-16`, { encoding: "utf-8" }).trim();
-    if (hash !== SPEC_HASH) {
-      throw new Error(
-        `SPEC DRIFT: bootstrap spec changed (hash ${hash} != ${SPEC_HASH}). ` +
-        `Update SPEC_HASH to "${hash}".`
-      );
-    }
+    // One binding (#579). This was a second hash pin over the same spec, in
+    // a second file, with its own constant — two deciders answering one
+    // question about one input, which is
+    // `.claude/rules/checks-must-be-able-to-fail.md`'s fourth shape. Updating
+    // one and not the other is how it surfaced: `test/helpers/scaffold-fixture.ts`
+    // was re-pinned for a deliberate frontmatter change and this file stayed
+    // red with an identical message, pointing at an identical fact.
+    //
+    // `checkSpecDrift` already covers this spec AND the test plan, so the
+    // copy was also narrower than the thing it duplicated.
+    checkSpecDrift();
   });
 
   test.todo("SC-236: test-navigability produces navigability-score.json");

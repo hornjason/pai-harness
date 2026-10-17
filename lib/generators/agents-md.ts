@@ -303,7 +303,16 @@ If Skill("harness") or Skill("goal") fails, fall back to Skill("ship") with the 
   });
 
   if (specs.length > 0) {
-    const specsTable = specs.map(s => `| ${s.file} | ${s.governs} | ${s.testable} |`).join("\n");
+    // A row that sends a reader to a document stating no requirements says so
+    // in the row (#579). `specs/PROJECT-STATE.md` sat here for two months as
+    // the governing spec for project state management while being a rendered
+    // status snapshot, and the table was the reason anyone went there.
+    const specsTable = specs
+      .map(s => {
+        const governs = s.criteriaNone ? `STATES NO CRITERIA — ${s.governs}` : s.governs;
+        return `| ${s.file} | ${governs} | ${s.testable} |`;
+      })
+      .join("\n");
     rules.push({
       filename: "specs-routing.md",
       content: `---

@@ -7,6 +7,8 @@ updated: 2026-09-03
 testable: true
 compliance: strict
 governs: Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills
+criteria: none
+criteria-reason: UNWRITTEN — this spec describes skill interface contracts in prose and no test drives any of them; it is on DRIFT-2's untestedSpecs ratchet for the same reason. A reader routed here gets description, not requirements
 ---
 
 # Harness Skill Contract

@@ -9,6 +9,8 @@ testable: true
 # The `make` commands below are examples of a scaffolded CONSUMER's Makefile,
 # not requirements on this harness's own workflows/ship.js (#225).
 workflow-claims: false
+criteria: none
+criteria-reason: split sibling — this directory's criteria are consolidated in specs/bootstrap-data-flow/success-criteria.md, which is where a reader should look for requirements on anything in this directory
 ---
 
 ## Template Architecture

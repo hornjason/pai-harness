@@ -6,6 +6,8 @@ updated: 2026-09-30
 testable: false
 created: 2026-09-30
 governs: Redirect stub — this spec was split into specs/bootstrap-data-flow/; it governs nothing itself and exists to point readers at the replacements
+criteria: none
+criteria-reason: redirect stub — this spec was split into specs/bootstrap-data-flow/ and governs nothing itself; its only job is to point a reader at the directory
 ---
 
 This file has been split. See:
