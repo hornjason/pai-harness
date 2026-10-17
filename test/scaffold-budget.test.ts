@@ -30,7 +30,7 @@
  * either — several cases in that file pass `expectFail` and must keep
  * reaching their assertions.
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -49,6 +49,25 @@ import {
 } from "./helpers/scaffold-budget";
 
 const SCRIPT = join(import.meta.dir, "..", "scripts", "scaffold-project.ts");
+
+/**
+ * This file's own budgets, through the same binding the subject uses.
+ *
+ * The first draft handed its spawns a 120-second literal and left the tests
+ * on bun's 5000ms default — the exact arrangement this issue exists to
+ * remove, in the file written to remove it. CI said so: SC-1972 died at
+ * **5008.23ms** on the first run of PR #583, having spawned two real
+ * scaffolds inside a five-second test, while every local run passed because
+ * two scaffolds here cost about 2.6s.
+ *
+ * It is recorded rather than quietly corrected because of what it says about
+ * the defect: a budget written as a literal is wrong in a way the author
+ * cannot see from their own machine, which is the whole argument for
+ * deriving one. These come from `scaffoldTestTimeout`, so the ordering
+ * SC-1973 asserts holds here by construction rather than by my arithmetic.
+ */
+const SPAWN_BUDGET_MS = BUDGET_FLOOR_MS;
+setDefaultTimeout(scaffoldTestTimeout(2 * SPAWN_BUDGET_MS));
 
 /** The smallest tree the scaffold will act on. */
 function fixture(): string {
@@ -91,7 +110,7 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     // easily have introduced.
     const dir = fixture();
     try {
-      const ok = runScaffoldProcess({ script: SCRIPT, projectPath: dir, args: ["--fix"], budgetMs: 120_000 });
+      const ok = runScaffoldProcess({ script: SCRIPT, projectPath: dir, args: ["--fix"], budgetMs: SPAWN_BUDGET_MS });
       expect(ok.timedOut, "a run that finished was called a timeout").toBe(false);
       expect(ok.exitCode, "the exit status the scaffold set was lost").toBe(0);
       expect(ok.output.length, "the scaffold's own words were discarded").toBeGreaterThan(0);
@@ -99,7 +118,7 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
       const missing = runScaffoldProcess({
         script: SCRIPT,
         projectPath: join(dir, "no-such-directory"),
-        budgetMs: 120_000,
+        budgetMs: SPAWN_BUDGET_MS,
       });
       expect(missing.timedOut, "a scaffold that refused on the merits was called a timeout").toBe(false);
       expect(missing.exitCode, "a refusing scaffold exited 0").not.toBe(0);
@@ -142,7 +161,7 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     // finish in single-digit milliseconds, and a calibration that did is
     // measuring something other than a scaffold.
     expect(cal.elapsedMs, "the calibration is too fast to have run a scaffold").toBeGreaterThan(100);
-  }, 180_000);
+  });
 
   test("SC-1975: the census counts both outcomes and names the unmeasured ones", () => {
     // UNMEASURED without a count is silence, and silence reads as success.
@@ -208,7 +227,7 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
     // subject is a timeout.
     const dir = fixture();
     try {
-      const ok = runScaffoldProcess({ script: SCRIPT, projectPath: dir, args: ["--fix"], budgetMs: 120_000 });
+      const ok = runScaffoldProcess({ script: SCRIPT, projectPath: dir, args: ["--fix"], budgetMs: SPAWN_BUDGET_MS });
       expect(ok.stdout.length, "the scaffold said nothing on stdout").toBeGreaterThan(0);
       expect(ok.output, "`output` is not the two streams together").toBe(ok.stdout + ok.stderr);
 
@@ -218,7 +237,7 @@ describe("#478: an over-budget scaffold is unmeasured, not wrong", () => {
       const missing = runScaffoldProcess({
         script: SCRIPT,
         projectPath: join(dir, "no-such-directory"),
-        budgetMs: 120_000,
+        budgetMs: SPAWN_BUDGET_MS,
       });
       expect(missing.stderr, "the refusal did not reach stderr").toContain("ERROR: Path does not exist");
       expect(missing.stdout, "the refusal leaked onto stdout, so the streams are not distinguishable here")

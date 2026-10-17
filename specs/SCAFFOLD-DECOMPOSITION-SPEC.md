@@ -1113,6 +1113,22 @@ unreachable from the tree. That is #492's shape, and the response this file's
 own rules prescribe is to build the one fixture that does not meet the
 precondition rather than to record a zero.
 
+#### The fix's own test file had the defect (#583, first CI run)
+
+`test/scaffold-budget.test.ts` handed its spawns `budgetMs: 120_000` and left
+the cases on bun's 5000ms default — the exact arrangement this issue exists
+to remove, in the file written to remove it. Every local run passed, because
+two scaffolds cost about 2.6s here. CI did not: **SC-1972 died at
+5008.23ms.**
+
+Worth a paragraph rather than a quiet correction, because of what it says
+about the defect rather than about the mistake. A budget written as a
+literal is wrong in a way its author cannot see from their own machine —
+which is the whole argument for deriving one, made again by the person
+making it. The file's budgets now come from `scaffoldTestTimeout`, so the
+ordering SC-1973 asserts holds here by construction instead of by someone's
+arithmetic.
+
 One deliberate zero is kept and not fixed: deleting the sentence *"this is
 the absence of a measurement, not a failing one"* from the UNMEASURED message
 is **0 of 49**. The mutant and the original differ — on that substring — and
