@@ -13,6 +13,7 @@
  * used the same word.
  */
 import { afterAll, describe, expect, test } from "bun:test";
+import { spawnSync } from "child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -21,7 +22,7 @@ import { refreshAgentsMd } from "../lib/scaffold/steps";
 import {
   codeMapUnreferenced, isSpecFile, listingSurfaces, listsFile, specFilesIn, unlistedSpecs,
 } from "../lib/spec-listing";
-import { generateScopedRules } from "../lib/generators/agents-md";
+import { generateAgentsMd, generateScopedRules } from "../lib/generators/agents-md";
 import { scanProject } from "../lib/scanner";
 
 const REPO = join(import.meta.dir, "..");
@@ -187,5 +188,51 @@ describe("#382: the audit reads the surfaces the generator writes to", () => {
     // Specifically the one carrying the table, named here so the link is
     // legible — but asserted through the set above, not instead of it.
     expect(written).toContain(".claude/rules/specs-routing.md");
+  });
+});
+
+describe("#552: a project with no `origin` remote can still state its repo", () => {
+  function noRemoteProject(name: string, frontmatter: string): string {
+    const root = scratch(name);
+    spawnSync("git", ["init", "-q", "-b", "main"], { cwd: root });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "demo" }));
+    writeFileSync(join(root, "AGENTS.md"), `${frontmatter}# demo\n`);
+    return root;
+  }
+
+  test("SC-1897: `repo:` in the frontmatter fills the Repo line git could not", () => {
+    // `scan.repoUrl` is `git remote get-url origin`. A project with no
+    // remote by that name gets "", which the generator turned into
+    // `<!-- TODO: Add repo URL -->` in BOTH places it writes the line — on
+    // every run, with nowhere to put the answer: `--profile=minimal` writes
+    // no `.claude/rungate/`, and editing AGENTS.md is futile because the
+    // next run regenerates it. Measured before the fix: 2 occurrences.
+    const root = noRemoteProject("declared", "---\ndoc-type: reference\nrepo: https://example.com/demo\n---\n\n");
+    const scan = scanProject(root);
+    // The INSTRUMENT: the fixture really has no origin, or this asserts
+    // nothing about the fallback.
+    expect(scan.repoUrl, "the fixture has a remote, so the fallback is never reached").toBe("");
+
+    const md = generateAgentsMd(scan);
+    expect(md.match(/TODO: Add repo URL/g) ?? [], "the declared repo did not reach the Repo line").toEqual([]);
+    expect(md.split("\n").filter(l => l.startsWith("- **Repo:**")))
+      .toEqual(["- **Repo:** https://example.com/demo", "- **Repo:** https://example.com/demo"]);
+
+    // …and it survives the round trip, which is the whole point: the
+    // frontmatter is the one part of this file regeneration carries forward.
+    writeFileSync(join(root, "AGENTS.md"), md);
+    expect(generateAgentsMd(scanProject(root)), "the declared repo was dropped on the second run")
+      .toContain("- **Repo:** https://example.com/demo");
+  });
+
+  test("SC-1897: a project that declares nothing still says so, and says where", () => {
+    // The control. Without it the row above is satisfied by a generator
+    // that prints a Repo line whatever it was given, and the TODO has to
+    // name the place or it is the same dead end it was before.
+    const root = noRemoteProject("undeclared", "---\ndoc-type: reference\n---\n\n");
+    const md = generateAgentsMd(scanProject(root));
+    expect(md.match(/TODO: Add repo URL/g) ?? []).toHaveLength(2);
+    expect(md, "the TODO does not say where a consumer may put the answer")
+      .toContain("set `repo:` in this file's frontmatter");
   });
 });

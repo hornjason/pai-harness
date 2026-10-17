@@ -432,19 +432,54 @@ one is reported `PRESERVED: … generator output withheld`, and a spec added
 after that edit appears in no surface. That is the live condition this check
 exists for, and it is the one #549 retired a divergence over.
 
+### A mention is not a listing, found by a row missing LOW
+
+The first draft asked each surface `content.includes(f)`. Making
+`SPEC-TEMPLATE.md` a spec again predicted 2 red and measured **1** — and
+the one that did not fire was the live-tree case, the only one that matters
+to the issue.
+
+`.claude/rules/checks-must-be-able-to-fail.md:407` discusses
+`specs/SPEC-TEMPLATE.md` in a paragraph about #484. A whole-document
+`includes` reads that sentence as the template being listed, so the file
+counted as routed by a rule that does not route it — and so would any spec
+any rule file happens to name in prose. The audit would have reported
+nothing while pointing readers nowhere.
+
+That is this project's own *"search the slice, not the document"* arriving
+in a function whose entire job is to decide whether a document points
+somewhere. `listsFile` now requires the filename to sit on a table row or a
+list item. It is deliberately permissive about which — the generator writes
+rows, a consumer may write bullets — because the direction this is allowed
+to be wrong in is toward reporting a spec that is in fact listed, which
+costs one line in a table, rather than toward silence.
+
+SC-1896 asserts the boundary in both directions. Narrowing a detector is the
+change most likely to buy green with blindness, so it is a case rather than
+a comment.
+
 ### What was broken to prove it
 
-Five mutations over 6 tests in `test/agents-md-spec-listing.test.ts`. Every
-count was predicted before the run and every one matched. None is left in
-the tree.
+Six mutations over 7 tests in `test/agents-md-spec-listing.test.ts`. None is
+left in the tree.
 
 | Mutation | Red | Prediction |
 |---|---|---|
-| `listingSurfaces` reads AGENTS.md only | 3 | 3 |
-| `unlistedSpecs` returns `[]` | 2 | 2 |
+| `listingSurfaces` reads AGENTS.md only | 4 | 3 |
+| `unlistedSpecs` returns `[]` | 3 | 3 |
 | `isSpecFile` stops excluding `SPEC-TEMPLATE.md` | 2 | 2 |
 | `codeMapUnreferenced` returns `false` | 1 | 1 |
-| the audit stops calling `unlistedSpecs` | 2 | 2 |
+| the audit stops calling `unlistedSpecs` | 3 | 3 |
+| `listsFile` back to a whole-document `includes` | 1 | 1 |
+
+The first row's extra red is SC-1895, and it is genuinely about the
+mutation: moving the rules directory out of the surface list means the
+generator writes rules the audit never reads, which is exactly what that
+case asks. The prediction was wrong and the link is load-bearing.
+
+The third row is the one that measured 1 before `listsFile` existed. It is
+2 here, and the difference between those two numbers is the whole of the
+section above.
 
 Every case EXECUTES `refreshAgentsMd` and counts what it printed. SC-848 in
 the section above was asserted by grepping this same function's source and
@@ -458,3 +493,4 @@ because the comment above the call used the same word.
 - [x] SC-1893: test/agents-md-spec-listing.test.ts contains [a spec listed only in .claude/rules/ is listed] — the exact shape D-15 created, with the same fixture one line different as the control
 - [x] SC-1894: test/agents-md-spec-listing.test.ts contains [SPEC-TEMPLATE.md is not a spec] — one binding, asked of the scanner's routing table and of the audit over the same tree
 - [x] SC-1895: test/agents-md-spec-listing.test.ts contains [every rule the generator writes is a surface the audit searches] — the anti-drift link, and the reason the surfaces are a directory rather than a filename
+- [x] SC-1896: test/agents-md-spec-listing.test.ts contains [a spec mentioned in prose is not a spec that is listed] — found by a mutation row measuring 1 where 2 was predicted, and the row that stayed green was the live tree
