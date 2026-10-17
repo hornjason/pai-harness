@@ -1948,7 +1948,28 @@ export function runDocHygiene(
         );
       }
 
-      expect(true).toBe(true);
+      // The leniency above is about the BACKLOG. It was never meant to be
+      // leniency about whether the scan happened, and `expect(true).toBe(true)`
+      // made it both: with no assertion on the reading, the only red this
+      // check could produce was a timeout — which is exactly the red it
+      // produced, four times, until #508 made the staleness scan one git
+      // call instead of ninety-two.
+      //
+      // So the reading is asserted and the backlog still is not. `0
+      // candidates` over 91 documents and `0 candidates` over 4 are the same
+      // line of output, and nothing here could previously tell them apart.
+      console.log(
+        `HYGIENE-6 coverage: read ${result.coverage.read} of ${result.coverage.planned} planned documents ` +
+          `from ${result.scan.roots.length} directories (${result.scan.source})`,
+      );
+      expect(
+        result.coverage.planned,
+        "the documentation scan planned no files, so this check measured nothing",
+      ).toBeGreaterThan(0);
+      expect(
+        result.coverage.unread,
+        "planned documents could not be read, so the candidate list above is partial",
+      ).toEqual([]);
     });
 
     test("HYGIENE-11: Stale unreferenced files warn with archival suggestion", () => {

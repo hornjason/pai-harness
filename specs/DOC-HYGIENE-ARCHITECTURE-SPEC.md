@@ -124,6 +124,59 @@ in the tree; all were run and reverted.
 | the trailing newline absorbed back into the last entry's block | 2 of 22 |
 | the HOOK's merge reverted to the original rebuild-from-REQUIRED | 3 of 22 — strip, flatten, and the library parity case |
 
+### HYGIENE-6 reports its own coverage (#508)
+
+HYGIENE-6 is advisory about the review BACKLOG, and should stay that way —
+119 pending candidates on this repo, and asserting them to zero would block
+every push until someone triaged all of them. It was also advisory about
+whether the scan happened at all, which was never intended: the body ended in
+`expect(true).toBe(true)`, so the only red it could produce was a **timeout**,
+and that is the red it produced four times in full runs while passing
+standalone every time.
+
+Two things were wrong underneath it, and the first is why the second stayed
+invisible for so long.
+
+**The staleness scan spawned one `git log` per document** — the exact code
+#323 removed from `runDocHygiene`, in a file #323 did not touch. 91 serial
+subprocesses against one repository, nothing wrong with any single one, and
+load-sensitive by construction: a busy machine or another suite holding the
+index pushes it past bun's 5000ms default. Measured on an idle machine with a
+warm cache, three runs each:
+
+| | before | after |
+|---|---|---|
+| `computeStaleness` over 91 documents | 4169 / 4521 / 3969 ms | 240 / 197 / 189 ms |
+
+Equivalence was checked rather than assumed, because a detector that got
+quicker by finding less would pass every timing test: both paths were run
+over the same 91 documents and compared date-for-date — **91 agree, 0
+differ**. `lastCommitDates` now lives in `lib/git-dates.ts` and is re-exported
+from `lib/conformity.ts`, which imports `bun:test` at module scope and so
+cannot be imported by a CLI.
+
+**The extractor never said how much it read.** `scan` reported what the walk
+could SEE; nothing reported what the read then took, and `0 candidates` over
+91 documents is the same line of output as `0 candidates` over 4.
+`ScanCoverage` is the reading — `planned`, `read`, and `unread` naming each
+file with the errno that stopped it. A planned file that cannot be read is
+recorded rather than thrown (one transient file must not take an advisory
+backlog report down) and recorded rather than dropped (a partial scan must
+not be indistinguishable from a complete one).
+
+Fixing that surfaced a third: `planDocScan`'s flat root scan asked the `.md`
+suffix and never asked the filesystem, while the recursive walk beside it
+asks `statSync` before it decides. A **directory** named `NOTES.md` at the
+project root was planned as a document and handed to `readFileSync`, which
+throws EISDIR — a plan naming a file it could never read.
+
+- [x] SC-1964: test/extract-constraints-coverage.test.ts contains [a planned document that cannot be read is named, and the rest are still read] — the file moves between the walk and the read, and the two survivors are still read, so one bad document does not abandon the scan
+- [x] SC-1965: test/extract-constraints-coverage.test.ts contains [the counts are the scan's own and move with it] — two fixtures of different sizes, because a constant satisfies a single-fixture count as readily as a measurement does
+- [x] SC-1966: test/extract-constraints-coverage.test.ts contains [a directory whose name ends in .md is not planned as a document] — both halves, since dropping every root-level document is the cheapest wrong fix available
+- [x] SC-1967: test/extract-constraints-coverage.test.ts contains [on this repository every planned document is read] — the live tree, which is the reading HYGIENE-6 itself now asserts
+
+#### What was broken to prove it (#508)
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)

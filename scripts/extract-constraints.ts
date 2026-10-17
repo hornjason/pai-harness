@@ -22,6 +22,37 @@ export interface StalenessEntry {
   type: string;
 }
 
+/**
+ * What the scan planned against what it actually read (#508).
+ *
+ * `scan` below says what the walk could SEE. Nothing said what the extractor
+ * then managed to READ, and the two are different questions: a candidate
+ * count of zero from a scan that read 91 documents and a candidate count of
+ * zero from a scan that read 4 are the same line of output.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` states the general form
+ * after #492 measured it — *a scan that reports a verdict should report its
+ * own coverage* — and HYGIENE-6 is the verdict in question: it ended in
+ * `expect(true).toBe(true)`, so a timeout was the only red it could produce.
+ */
+export interface ScanCoverage {
+  /** Documents the plan listed. */
+  planned: number;
+  /** Documents whose bytes reached `extractSignalPhrases`. */
+  read: number;
+  /**
+   * Planned documents the read could not take, with the error that stopped
+   * it — `ENOENT` for a file that moved between the walk and the read,
+   * `EISDIR`, `EACCES`.
+   *
+   * Recorded rather than thrown, and recorded rather than dropped. A throw
+   * takes an advisory backlog report down over one transient file; a drop
+   * makes a partial scan indistinguishable from a complete one, which is
+   * the failure this whole interface exists to stop.
+   */
+  unread: Array<{ file: string; reason: string }>;
+}
+
 export interface ExtractResult {
   candidates: Candidate[];
   deduped: {
@@ -30,6 +61,8 @@ export interface ExtractResult {
     candidatesRemoved: number;
   };
   staleness: StalenessEntry[];
+  /** What was planned against what was read. Never inferred from `candidates`. */
+  coverage: ScanCoverage;
   /**
    * What was scanned and what could not be (#440).
    *
@@ -192,16 +225,32 @@ function applyToAgentsMd(projectPath: string, candidates: Candidate[]): void {
 
 export async function extractConstraints(
   projectPath: string,
-  options?: { apply?: boolean }
+  options?: { apply?: boolean; plan?: DocScanPlan }
 ): Promise<ExtractResult> {
-  const scan = planDocScan(projectPath);
+  // `plan` is a seam, and it is here for one reason worth stating: the
+  // unread branch below is unreachable from outside this function, because
+  // the walk that produces the plan only lists files it has just stat'd. A
+  // branch no test can reach is the subject of this repo's central rule, so
+  // the plan is an input a caller may supply — which is also the race the
+  // branch is about, a plan taken a moment before the tree moved.
+  const scan = options?.plan ?? planDocScan(projectPath);
   const scanFiles = scan.files;
   const existingConstraints = loadExistingConstraints(projectPath);
   const rejectedHashes = loadRejectedHashes(projectPath);
 
   let allCandidates: Candidate[] = [];
+  const unread: ScanCoverage["unread"] = [];
+  let read = 0;
   for (const filePath of scanFiles) {
-    const content = readFileSync(filePath, "utf-8");
+    let content: string;
+    try {
+      content = readFileSync(filePath, "utf-8");
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      unread.push({ file: relative(projectPath, filePath), reason: e.code ?? e.name });
+      continue;
+    }
+    read++;
     allCandidates.push(...extractSignalPhrases(content, filePath, projectPath));
   }
 
@@ -236,6 +285,7 @@ export async function extractConstraints(
       candidatesRemoved: existingRemoved + rejectedRemoved,
     },
     staleness,
+    coverage: { planned: scanFiles.length, read, unread },
     scan,
   };
 }
