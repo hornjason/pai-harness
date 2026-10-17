@@ -8959,3 +8959,130 @@ which is SC-1880.
 - [x] SC-1881: test/branch-diff.test.ts contains [the scope commit is read from the tree under test] — through a real worktree whose HEAD is asserted to differ from the main checkout's
 - [x] SC-1882: test/branch-diff.test.ts contains [no gate check builds a two-dot diff against the scope sha] — the reintroduction guard the library tests cannot provide
 - [x] SC-1883: test/branch-diff.test.ts contains [a UI file with a non-ASCII name is still a UI file] — git C-quotes the path out of every filename regex downstream unless the diff is asked for with -z
+
+## An exclude list applied after the copy it was meant to prevent (#549)
+
+`bunx rungate scaffold .` could not run on rungate at all. The audit branch
+clones the tree so it can report what `--fix` would really do (#398), and
+`cloneForRehearsal` copied the WHOLE tree and then applied
+`REHEARSAL_EXCLUDES` to the result. On this repo that is 737 MB across 104
+worktrees, copied and then handed to a recursive delete that died with
+`EFAULT: bad address in system call argument`.
+
+**The exclude list was right. The ORDERING defeated it**, and the reason the
+defect could sit there is that the property everyone checks —
+*"the excluded path is absent from the clone"* — is true under both orderings.
+Absence cannot witness this fix. Two things can, and they are what SC-1884 and
+SC-1885 are:
+
+- an excluded directory that **cannot be read**. Copy-then-prune fails on it
+  and turns the whole audit into `audit did NOT run: the tree could not be
+  copied`; copy-excluding never opens it. A permission difference is a
+  verdict, where a size difference would have been a timing assertion.
+- the **list of `cp` invocations**, recorded through an injected runner, so
+  "no work proportional to the excluded directory" is measured. SC-1885 adds a
+  thousand files under the exclude and asserts the invocation list is
+  unchanged — the independence claim, driven rather than reasoned.
+
+### The diagnosis in the issue was incomplete, and the correction is the fix
+
+#549 attributed the `EFAULT` to the size of the recursive delete. It is not
+the size. After the copy was reordered the same error moved to
+`discardRehearsal`, and `/bin/rm -rf` on the leftover printed `Operation not
+permitted` for `gates/prompts/evidence-validator.md`. `ls -lO` named the
+cause:
+
+```
+-r--r--r--  1 jhorn  staff  uchg  evidence-validator.md
+```
+
+`cp -Rc` is a clonefile and **a clonefile carries BSD file flags**. This
+repository sets `uchg` on `gates/prompts/*.md` — the prompt-immutability
+feature, working — so the clone held immutable files, `rm` refused them, and
+bun reported the refusal as `EFAULT`, naming neither the file nor the flag.
+The 737 MB made it slower and held most of the flagged copies. What `rm`
+refused was a flag.
+
+So `discardRehearsal` clears flags before deleting (`chflags -R
+nouchg,noschg`, best-effort, absent on Linux where there are no BSD flags)
+and falls back to `/bin/rm -rf`.
+
+### A cleanup failure is a sentence, not an exception
+
+The audit report has already printed by the time cleanup runs, so a throw
+there loses the report — which is exactly what #549 saw. Returning nothing
+loses the leak, which is #437. `discardRehearsal` returns `string | null` and
+the caller prints `WARNING: …`; the sentence names the directory and says
+nothing in the consumer's tree was touched.
+
+### Two things the walk has to do that `cp` was doing for free
+
+Copying level-by-level down to an exclude means the ancestors of an exclude
+are created by `mkdirSync`, not by `cp`, and `mkdirSync` uses the process
+umask. A `.claude` at `0o700` silently became `0o755` in the clone, so a step
+that reads permissions would have reported on a tree that is not the
+consumer's — the one thing a rehearsal may never do. SC-1889 is that, and it
+was found by a mutation row measuring 0.
+
+`isDirectory()` is false for a symlink, so a symlinked ancestor of an exclude
+is copied as a LINK and never descended. That is not an optimisation: the old
+code's answer was to prune nothing and let `escapingSymlinks` refuse, because
+`rmSync(..., { recursive: true })` follows a symlinked parent and would have
+deleted the consumer's real worktrees. Descending on the copy side reads the
+consumer's tree, and the clone stops being a clone. SC-1886 asserts the link
+is copied as a link, the real tree is untouched, AND that
+`cloneForRehearsal` then refuses the tree — without that last part the case is
+satisfied by a copier that quietly previews someone else's directory.
+
+### The cost beyond the error message
+
+With `scaffold` unable to run, a new spec's routing row has to be added to
+`.claude/rules/specs-routing.md` by hand — which converts a GENERATED file
+into a provenance-preserved one (#370), so it stops regenerating and every
+subsequent spec needs the same manual step.
+
+SC-1890 asserts that hand edit is redundant, as a PROPERTY rather than by
+naming a spec. A case naming the spec whose row was added by hand measures
+which checkout it is running in: absent before that branch lands, present
+after, and reporting the generator as broken in both states where it is
+working. The property — the scan sees a spec, the generator writes its row —
+is true in every checkout, and is what makes dropping the divergence safe
+rather than lossy. Verified end-to-end: `bun bin/rungate.ts scaffold
+/Users/jhorn/Projects/rungate` now exits 0 in 2.8 s with no temp directory
+left behind, reporting `Total: 0 created, 0 replaced, 0 auto-fixed, 17
+skipped, 0 refused`.
+
+### What was broken to prove it
+
+Six mutations over 27 tests in `test/scaffold-rehearsal-excludes.test.ts` +
+`test/scaffold-rehearsal-safety.test.ts`. Every count was predicted before the
+run and every one matched. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| nothing is excluded from the copy | 6 | 6 |
+| a symlinked ancestor of an exclude is descended | 2 | 2 |
+| the BSD flags are not cleared before the discard | 1 | 1 |
+| a failed discard throws again | 1 | 1 |
+| a walked directory is created without the source's mode | 1 | 1 |
+| the generated specs table drops a row | 2 | 2 |
+
+The first row's six are SC-1884, SC-1885 and SC-1887 plus three existing
+cases in `scaffold-rehearsal-safety.test.ts` — SC-1513 and SC-1516 — which
+are genuinely about the mutation: with nothing excluded during the copy there
+is a `node_modules` symlink in the clone for the old prune path to follow.
+Those three were 0 red against the pre-fix tree for the same reason the fix
+exists.
+
+The fifth row was **0 before SC-1889 was written**. That is the finding, not
+a passing grade: the mode was being lost and nothing could see it.
+
+### Success Criteria
+
+- [x] SC-1884: test/scaffold-rehearsal-excludes.test.ts contains [a clone succeeds over an excluded directory that cannot be opened] — the differential absence cannot witness, with a mode-000 directory outside the exclude list as the instrument
+- [x] SC-1885: test/scaffold-rehearsal-excludes.test.ts contains [no copy is issued for anything under an excluded path] — the invocation list through an injected runner, re-measured after a thousand files are added under the exclude
+- [x] SC-1886: test/scaffold-rehearsal-excludes.test.ts contains [a symlinked ancestor of an exclude is copied as a link] — and the clone is then refused, or the row is satisfied by a copier that previews the consumer's tree
+- [x] SC-1887: test/scaffold-rehearsal-excludes.test.ts contains [an excluded path that is itself a link is skipped and its target survives] — the pre-push hook's node_modules, previously copied and then unlinked
+- [x] SC-1888: test/scaffold-rehearsal-excludes.test.ts contains [an immutable file in the clone does not survive the discard] — with the uchg flag asserted present on the clone first, and a second case for a clone that truly cannot be removed
+- [x] SC-1889: test/scaffold-rehearsal-excludes.test.ts contains [a directory the walk creates keeps the mode it had] — mkdirSync uses the umask, so only the ancestors of an exclude were at risk
+- [x] SC-1890: test/scaffold-rehearsal-excludes.test.ts contains [a spec the scan can see gets a generated row] — the property rather than a spec filename, which would measure which checkout the suite is running in
