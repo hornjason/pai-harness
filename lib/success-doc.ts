@@ -298,7 +298,14 @@ export function successViolations(text: string | null, template: string | null):
     const residue = templateResidue(text, residueTemplate);
     if (residue.length > 0) {
       out.push(
-        `SUCCESS.md still contains ${residue.length} line(s) verbatim from the generator's ` +
+        // "passage(s)", not "line(s) verbatim". The check now matches lines
+        // AND reflowed sentences, so a hit need not be a line and need not
+        // be verbatim — reflow surviving the comparison is the point of
+        // #515, and a message saying "verbatim" about a re-wrapped
+        // paragraph sends the reader looking for text that is not there.
+        // The count is a count of distinct passages, which is why a
+        // two-line paragraph can report more hits than it has lines.
+        `SUCCESS.md still carries ${residue.length} passage(s) from the generator's ` +
           `template, so this document is partly unwritten: ` +
           residue.slice(0, 3).map(l => JSON.stringify(l.slice(0, 70))).join(", ") +
           `${residue.length > 3 ? `, and ${residue.length - 3} more` : ""}. ` +
@@ -444,6 +451,23 @@ export function successViolations(text: string | null, template: string | null):
  * `test/success-doc.test.ts`'s "an HTML comment interleaved into the prose"
  * case — which is the reformat-defeats-the-detector shape one layer down.
  *
+ * Two things measured and NOT changed, recorded so the next reader does not
+ * have to measure them again:
+ *
+ * - **The TEMPLATE-side strip is dead on today's template.** Dropping it is
+ *   0 red; dropping the DOCUMENT-side one is 1. An input that distinguishes
+ *   them exists — template comment text quoted inside a fenced block in a
+ *   document — but it is contrived, and a fixture built to make a number
+ *   move is worth less than the sentence saying so. Kept for symmetry, with
+ *   the asymmetry written down rather than implied.
+ * - **`unfilled()`'s 10-character floor was chosen for an EQUALITY test and
+ *   is reused for a SUBSTRING test.** That is sound today — the shortest
+ *   live template unit is 22 characters and the shortest non-placeholder
+ *   one is 45, and 52,333 external markdown files produce zero new
+ *   refusals. A future template sentence of 10-20 characters becomes a
+ *   substring landmine against every document in a consumer repo, and the
+ *   argument below reasons only about the 4-character `TODO`.
+ *
  * `unfilled()` is the floor rather than a fresh number. It is already the
  * module's answer to "is this string too slight to mean anything", and the
  * only template unit it removes is the bare `TODO` a claim heading reduces
@@ -454,24 +478,59 @@ function templateSentences(template: string): string[] {
   const out: string[] = [];
   for (const block of stripHtmlComments(template).split(/\n[ \t]*\n/)) {
     const prose: string[] = [];
+    // `structural` is a WHOLE-LINE classifier, and inside a block only the
+    // leading lines are whole lines — the rest are continuations of a
+    // sentence that started above them. Asking it about a continuation is
+    // asking the wrong question, and it answers:
+    //
+    //     Name the one thing that is true when this works. Do not
+    //     hedge: a hedged claim cannot fail, and a claim that cannot
+    //     fail is not a claim.
+    //
+    // `hedge: ...` matches the frontmatter rule, is dropped, and lines 1
+    // and 3 join across the hole to produce `Do not fail is not a claim.`
+    // — a sentence that exists nowhere, replacing one that does. Re-wrap
+    // the same prose one word differently and which sentence survives
+    // changes. That is the line-break dependence this function exists to
+    // remove, still present in the function that removes it.
+    //
+    // So structural lines are only recognised as a LEADING RUN. Once prose
+    // starts, the rest of the block is its continuation. A heading
+    // immediately above a paragraph still drops; a paragraph that happens
+    // to wrap onto `hedge:` does not.
+    //
+    // Found by sec-515 on a synthetic template. Zero instances on today's,
+    // which is why the fixture in `test/success-doc.test.ts` is synthetic
+    // too — a latent falsification of a documented guarantee is still a
+    // falsification.
+    let leading = true;
     for (const line of block.split("\n").map(l => l.trim()).filter(l => l.length > 0)) {
       const claim = CLAIM_HEADING.exec(line);
       // A claim heading contributes its STATEMENT and not its prefix, for
       // the same reason the line path strips it: `### Claim 1 — <text>` is
       // a heading by syntax and the claim itself by content.
       if (claim) {
-        if (claim[2].trim()) prose.push(claim[2].trim());
+        if (claim[2].trim()) {
+          prose.push(claim[2].trim());
+          leading = false;
+        }
         continue;
       }
-      if (structural(line)) continue;
+      if (leading && structural(line)) continue;
+      leading = false;
       prose.push(line);
     }
     if (prose.length === 0) continue;
     // Joined FIRST, then split. Splitting per line would re-introduce the
     // dependency on where the breaks are, which is the whole defect.
     for (const sentence of collapseWhitespace(prose.join(" ")).split(SENTENCE_BREAK)) {
+      // No dedup here. `templateResidue` already refuses to push a unit it
+      // has, so a second `!out.includes` was a decider nothing could
+      // distinguish — measured at 0 red of 71, where the two sites in
+      // `templateResidue` are 1 each. Two guards answering one question are
+      // behaviourally one, and the dead one is invisible.
       const u = sentence.trim();
-      if (u.length > 0 && !unfilled(u) && !out.includes(u)) out.push(u);
+      if (u.length > 0 && !unfilled(u)) out.push(u);
     }
   }
   return out;
@@ -498,7 +557,46 @@ const structural = (l: string) =>
   || (l.startsWith("#") && !CLAIM_HEADING.test(l))
   || /^[a-z][a-z-]*:\s/.test(l);
 const collapseWhitespace = (s: string) => s.replace(/\s+/g, " ").trim();
-const stripHtmlComments = (s: string) => s.replace(/<!--[\s\S]*?-->/g, " ");
+
+/**
+ * Terminated HTML comments become a space. An UNTERMINATED `<!--` is left
+ * exactly as it is.
+ *
+ * Written as a scan rather than `s.replace(/<!--[\s\S]*?-->/g, " ")`, which
+ * is quadratic on unterminated openers and runs on consumer documents.
+ * Measured by sec-515 through `templateResidue`, doubling the input:
+ *
+ * | input | regex | this |
+ * |---|---|---|
+ * | 80 KB (20k openers) | 616 ms | — |
+ * | 200 KB | 3.85 s | — |
+ * | 400 KB | 15.70 s | — |
+ * | 800 KB | 61.77 s | — |
+ * | 320 KB, isolated | 9.99 s | 0.1 ms |
+ *
+ * For each `<!--` the lazy body scans to end-of-input looking for `-->`,
+ * fails, backtracks, and the engine advances one position: O(N·L). Properly
+ * closed comments are fine either way — 200k of them in 3.8 ms — so the
+ * blowup needs only one malformed document to arrive.
+ *
+ * Anchoring the unterminated case with `(?:-->|$)` would also be linear, and
+ * is NOT what this does: it would make a stray `<!--` swallow the rest of
+ * the file, and everything after it would stop being comparable. That is a
+ * silent narrowing of the check, bought to fix a performance bug.
+ */
+const stripHtmlComments = (s: string) => {
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const open = s.indexOf("<!--", i);
+    if (open === -1) break;
+    const close = s.indexOf("-->", open + 4);
+    if (close === -1) break;
+    out += `${s.slice(i, open)} `;
+    i = close + 3;
+  }
+  return out + s.slice(i);
+};
 
 export function templateResidue(text: string, template: string): string[] {
   // A claim heading is NOT structural. `### Claim 1 — TODO` is a heading by

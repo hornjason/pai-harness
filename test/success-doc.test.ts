@@ -508,7 +508,7 @@ describe("#502 review: the marker check and the writers were both too narrow", (
     const v = successViolations(doc, template);
     expect(v.violations.length, "a document that is still mostly the template passed")
       .toBeGreaterThan(0);
-    expect(v.violations.join("\n")).toContain("verbatim from the generator's template");
+    expect(v.violations.join("\n")).toContain("passage(s) from the generator's template");
   });
 
   test("F1: the residue check does NOT fire on the one real document", () => {
@@ -1064,7 +1064,7 @@ describe("#502 re-review (sec-485)", () => {
     const withTemplate = successViolations(doc, template);
     expect(withTemplate.violations, "the fixture stopped being a residue case")
       .toHaveLength(1);
-    expect(withTemplate.violations[0]).toContain("verbatim from the generator's template");
+    expect(withTemplate.violations[0]).toContain("passage(s) from the generator's template");
 
     const absent = successViolations(doc, TEMPLATE_MISSING);
     expect(absent.violations, "a missing template silently switched the residue check off")
@@ -1278,5 +1278,185 @@ describe("#515: the residue check survives a reflow, and still catches a partial
     });
     expect(refused, `files newly refused as template residue: ${refused.join(", ")}`)
       .toEqual(["templates/SUCCESS-TEMPLATE.md"]);
+  });
+
+  /**
+   * Seven bindings this PR shipped that no case could distinguish, and one
+   * operational defect it introduced.
+   *
+   * Every row below was measured at **0 red of 63** by sec-515, each with a
+   * named input on which the mutant and the original differ — so none of
+   * them is the "code run twice" non-mutation this repo's rules warn about.
+   * They are collected here rather than scattered because they share one
+   * cause: the fixtures above were written from the template, and the
+   * template exercises about half of what the code decides.
+   *
+   * The sharpest is the first. The PR is NAMED after surviving a reflow,
+   * and the only reflow fixture it shipped collapses the paragraph onto a
+   * single line — a degenerate case that the cheap wrong fix also passes.
+   */
+  describe("#525 review: the bindings nothing could distinguish", () => {
+    test("a REAL re-wrap at a different width is caught — not just a collapse to one line", () => {
+      // `collapseWhitespace` with `/\s+/` narrowed to `/[ \t]+/` is 0 red,
+      // because R2's fixture joins the paragraph onto ONE line and there is
+      // then no newline left to collapse. `[ \t]+` is exactly the repair a
+      // reviewer reaches for — "`\s+` is overbroad" — and it reinstates the
+      // bug #515 exists to fix while the suite stays green. The fifth
+      // shape, against the headline claim of the PR that adds the rule.
+      //
+      // This is what `prettier --prose-wrap` actually produces: the same
+      // words, three lines, different break positions.
+      const rewrapped = [
+        "TODO — one sentence. Not a feature list and not a",
+        "mission statement: the single thing that is true when this works,",
+        "written so that someone could disagree with it.",
+      ].join("\n");
+      const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+      expect(flat(rewrapped), "the fixture changed a word, so it is not a pure re-wrap")
+        .toBe(flat(PARA));
+      expect(rewrapped.split("\n").length, "a one-line fixture cannot witness newline collapsing")
+        .toBe(3);
+      expect(templateResidue(doc(rewrapped), TEMPLATE_TEXT), "a re-wrapped paragraph was invisible")
+        .not.toEqual([]);
+    });
+
+    test("a mid-sentence FRAGMENT is not residue — the block split is not a per-line split", () => {
+      // `.split(/\n[ \t]*\n/)` replaced by `.split(/\n/)` is 0 red. The
+      // docstring argues hardest for this line and nothing held it: the
+      // mutant does not lose the reflow case, it OVER-refuses, and there
+      // was no fixture in the cost direction for a fragment longer than
+      // the 10-character floor.
+      //
+      // 58 characters, wholly inside ONE template line and therefore a unit
+      // under the mutant, but only half a sentence under the real split —
+      // the template's sentence runs on to the next line.
+      const fragment = "Not a feature list and not a mission statement: the single";
+      expect(fragment.length, "a short fragment would be caught by unfilled() instead")
+        .toBeGreaterThan(10);
+      const line = TEMPLATE_TEXT.split("\n").find(l => l.includes(fragment));
+      expect(line, "the fragment is not inside a single template line any more").toBeDefined();
+      expect(line!.trim().endsWith(fragment), `the fragment must END its line, or it is a whole sentence: ${line}`)
+        .toBe(true);
+      const hits = templateResidue(doc(`Our house rule: ${fragment} report everyone reads.`), TEMPLATE_TEXT);
+      expect(hits, `a mid-sentence fragment was refused as residue: ${hits.join(" | ")}`)
+        .toEqual([]);
+    });
+
+    test("a sentence opening with a quotation mark is still a sentence", () => {
+      // SENTENCE_BREAK's lookahead narrowed to `(?=[A-Z])` is 0 red. The
+      // template opens a sentence with a double quote, and without the
+      // wider lookahead it merges into the one before it — producing a unit
+      // the document does not contain, so the real sentence goes invisible.
+      const quoted = '"It doesn\'t work" is not an answer; name the input and the wrong output.';
+      expect(TEMPLATE_TEXT, "the template no longer opens a sentence with a quote")
+        .toContain(quoted);
+      expect(templateResidue(doc(quoted), TEMPLATE_TEXT), "a quote-opening sentence was invisible")
+        .not.toEqual([]);
+    });
+
+    test("a comment with no space around it still separates the words it sits between", () => {
+      // Replacing the `" "` that a stripped comment becomes with `""` is 0
+      // red, because R2's interleave fixture writes `and <!-- ... --> not`
+      // — spaces on BOTH sides, so either replacement collapses to the same
+      // string. The same shape as the mutation that fixture was added for,
+      // one layer further down.
+      const sentence =
+        "Not a feature list and not a mission statement: the single thing that is true "
+        + "when this works, written so that someone could disagree with it.";
+      const glued = sentence.replace("so that someone", "so that<!--note-->someone");
+      expect(glued, "the fixture left a space beside the comment, which cannot witness this")
+        .toContain("that<!--note-->someone");
+      expect(templateResidue(doc(glued), TEMPLATE_TEXT), "a tightly-glued comment hid template prose")
+        .not.toEqual([]);
+    });
+
+    test("a claim heading contributes its statement, not the whole heading line", () => {
+      // Replacing `claim[2].trim()` with the raw line is 0 red, and it is
+      // equivalent to DELETING the branch: a claim heading then falls
+      // through `structural`, which returns false for it, so it is pushed
+      // unchanged either way. On today's template the branch is dead in the
+      // positive direction — every claim heading reduces to `TODO`, which
+      // `unfilled()` discards — so its only effect is to prevent a
+      // widening, and nothing was measuring the widening.
+      const withPrefix = doc("### Claim 1 — TODO list hygiene is enforced by the linter on every commit.");
+      const hits = templateResidue(withPrefix, TEMPLATE_TEXT);
+      expect(hits, `a hand-written claim was refused for its heading prefix: ${hits.join(" | ")}`)
+        .toEqual([]);
+    });
+
+    test("a passage the template repeats is reported once", () => {
+      // Removing any of the three `!out.includes(...)` guards is 0 red. The
+      // template carries `**How it fails:** TODO` on two lines, so an
+      // undeduped check reports a document holding it once as holding it
+      // twice — a count the reader cannot reconcile with the document.
+      const repeated = "**How it fails:** TODO";
+      const occurrences = TEMPLATE_TEXT.split(repeated).length - 1;
+      expect(occurrences, "the template no longer repeats this line, so this cannot witness dedup")
+        .toBeGreaterThan(1);
+      const hits = templateResidue(doc(repeated), TEMPLATE_TEXT);
+      expect(hits.filter(h => h === repeated), "a repeated template line was reported twice")
+        .toHaveLength(hits.filter(h => h === repeated).length > 0 ? 1 : 0);
+      expect(new Set(hits).size, "the residue list contains duplicates").toBe(hits.length);
+    });
+
+    test("structural() is asked about whole lines, not about continuations of a sentence", () => {
+      // The reflow guarantee, falsified. `structural` is a whole-line
+      // classifier and was applied to every line inside a block, so a
+      // paragraph that happens to wrap onto a line starting `word: ` had
+      // that line dropped as frontmatter and the lines either side JOINED
+      // across the hole — producing a sentence that exists nowhere and
+      // losing one that does.
+      //
+      // Synthetic, because today's template has no such wrap. A latent
+      // falsification of a documented guarantee is still a falsification,
+      // and the next re-wrap of the template creates one for free.
+      const template = [
+        "# A template",
+        "",
+        "Name the one thing that is true when this works. Do not",
+        "hedge: a hedged claim cannot fail, and a claim that cannot",
+        "fail is not a claim.",
+        "",
+      ].join("\n");
+      const bothSentences = [
+        "Name the one thing that is true when this works.",
+        "Do not hedge: a hedged claim cannot fail, and a claim that cannot fail is not a claim.",
+      ];
+      // The reader copy-pasted the whole paragraph, re-wrapped. BOTH
+      // sentences are template prose and both must be reported.
+      const copied = doc(bothSentences.join(" "));
+      const hits = templateResidue(copied, template);
+      for (const s of bothSentences) {
+        expect(hits, `"${s.slice(0, 40)}…" was lost to a continuation line read as structural`)
+          .toContain(s);
+      }
+      // And nothing fabricated: the hole used to splice lines 1 and 3 into
+      // `Do not fail is not a claim.`, which appears in neither document.
+      expect(hits.join("\n"), "a sentence that exists in neither document was synthesised")
+        .not.toContain("Do not fail is not a claim.");
+    });
+
+    test("an unterminated HTML comment is linear, and does not swallow the rest of the document", () => {
+      // `s.replace(/<!--[\s\S]*?-->/g, " ")` is O(N·L) on unterminated
+      // openers: 800 KB took 61.77 s, and it runs on consumer documents.
+      // The cheap fix — anchoring with `(?:-->|$)` — is also linear and is
+      // NOT what shipped, because it makes one stray `<!--` swallow the
+      // rest of the file, silently narrowing the check to buy the speed.
+      const sentence =
+        "Not a feature list and not a mission statement: the single thing that is true "
+        + "when this works, written so that someone could disagree with it.";
+      const hostile = `${"<!--".repeat(20_000)}\n\n${sentence}`;
+      const started = Date.now();
+      const hits = templateResidue(doc(hostile), TEMPLATE_TEXT);
+      const elapsed = Date.now() - started;
+      // The quadratic version takes ~600 ms on this input and grows 4x per
+      // doubling; the scan is sub-millisecond. Two orders of magnitude of
+      // headroom, so this is not a timing flake.
+      expect(elapsed, `20k unterminated openers took ${elapsed}ms`).toBeLessThan(250);
+      // And the prose AFTER the stray opener is still compared, which the
+      // anchored-regex repair would have lost.
+      expect(hits, "an unterminated comment swallowed the rest of the document")
+        .not.toEqual([]);
+    });
   });
 });
