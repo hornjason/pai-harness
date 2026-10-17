@@ -45,7 +45,7 @@ const GATE_SUITE = join(GATES_DIR, "workflow.test.ts");
  * instead of quietly mutating nothing.
  */
 const BINDING_SIGNATURE =
-  "export function suiteVerdictViolations(val: unknown, measurement?: SuiteReading): string[] {";
+  "export function suiteVerdictViolations(val: unknown, measurement: SuiteReading): string[] {";
 
 /**
  * #235's binding, mutated the same way. The pre-validator already knew which

@@ -316,8 +316,15 @@ const isDone = () => sf("phase") === "DONE";
  * The clauses do not overlap. An absent field, a `FAIL`, and a declared
  * `SKIP` are each decided before the measurement is consulted at all, and
  * `{tests: "PASS"}` with no `suiteMeasurement` is reached by nothing else.
+ *
+ * The second argument is REQUIRED, and that is the point of it. Optional, it
+ * would be a check any future caller could lose by omission — and losing it
+ * is silent, because the three clauses above still refuse everything they
+ * refused before, so the call reads exactly like a call that is checking.
+ * `readSuiteMeasurement` is a total function that returns UNMEASURED for
+ * every unusable input, so there is never a caller with nothing to pass.
  */
-export function suiteVerdictViolations(val: unknown, measurement?: SuiteReading): string[] {
+export function suiteVerdictViolations(val: unknown, measurement: SuiteReading): string[] {
   if (val === undefined || val === null || val === "") {
     return [
       "local.tests not set — PASS or SKIP required when dev.testCmd is configured. " +
@@ -326,11 +333,10 @@ export function suiteVerdictViolations(val: unknown, measurement?: SuiteReading)
   }
   if (val === "SKIP") return []; // SKIP is allowed — it says so, rather than implying PASS
   if (val !== "PASS") return [`tests: ${String(val)} — expected PASS`];
-  // A PASS has to be backed by the measurement that produced it. Called
-  // without one this is the pre-#530 behaviour, which is what every caller
-  // that has no state to read should get — an argument nobody passed must
-  // not become evidence of anything.
-  if (measurement && measurement.verdict !== "PASS") {
+  // A PASS has to be backed by the measurement that produced it. No
+  // `measurement &&` guard: a branch for an argument that cannot be absent
+  // is a branch no test can enter.
+  if (measurement.verdict !== "PASS") {
     return [
       `tests: PASS, but the suite measurement behind it reads ${measurement.verdict} — ` +
         `${measurement.reason || "the two disagree"} (#530). A verdict no measurement backs is a ` +
