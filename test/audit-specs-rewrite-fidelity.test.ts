@@ -32,9 +32,12 @@
  * constant extractor rather than these two. `canary` has the same shape and
  * is not the one that bit us.
  */
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
 
 import {
+  auditSpecs,
   closestPatternFor,
   decideRewrite,
   distinguishingTerms,
@@ -223,5 +226,103 @@ describe("#586: a rewrite keeps what the criterion was about", () => {
       unscoped?.patternName,
       "a criterion about one rule file still binds to the all-specs rule",
     ).not.toBe("all-specs-frontmatter");
+  });
+});
+
+/**
+ * Covers SC-2001, SC-2002 (CONFIG-DRIVEN-TESTING-SPEC.md), #586 AC-2.
+ *
+ * Everything above drives `decideRewrite` directly, which is the decision.
+ * These two drive the WRITE, because the decision was already right for every
+ * criterion below and the file still lost them.
+ *
+ * Two faults, and they are fixed together because fixing either one alone is
+ * worse than fixing neither:
+ *
+ *  - the marker is suppressed by `modified.includes(marker)`, a test over the
+ *    WHOLE FILE. Two criteria declined for the same reason — "no registry
+ *    pattern was close enough", which is the commonest reason there is — and
+ *    only the first is marked. Measured: four unmatched criteria, one marker.
+ *  - the line is edited with `String.replace(re, string)`, so `$'`, `$&` and
+ *    `$1` in a criterion are expanded by the regex engine.
+ *
+ * Un-suppressing the marker without escaping the replacement makes the
+ * corruption reach three criteria instead of one, which is why the two cases
+ * sit beside each other rather than in separate commits.
+ */
+describe("SC-2001: the REVIEW marker goes below the criterion, never into it", () => {
+  const FIXTURE = join(import.meta.dir, "fixtures", "audit-specs-marker");
+
+  /** Four statements the registry cannot bind, so all four are `keep`s. */
+  const KEPT: Array<[string, string]> = [
+    ["SC-9401", "Baseline rules carry no $' key in frontmatter"],
+    ["SC-9402", "Baseline rules carry no $& key in frontmatter"],
+    ["SC-9403", "Baseline rules carry no $1 key in frontmatter"],
+    ["SC-9404", "Baseline rules carry no `owner:` key in frontmatter"],
+  ];
+  /** A criterion the rewriter genuinely acts on. The control. */
+  const REWRITTEN = ["SC-9405", "the generator should emit a tidy CODE-MAP.md for every project"] as const;
+
+  function plant(): string {
+    mkdirSync(join(FIXTURE, "specs"), { recursive: true });
+    const path = join(FIXTURE, "specs", "MARKER-SPEC.md");
+    writeFileSync(
+      path,
+      `---\ndoc-type: spec\nstatus: active\ntestable: true\ncompliance: strict\n` +
+        `updated: 2026-10-17\ngoverns: the #586 marker fixture\n---\n\n# Marker Spec\n\n` +
+        `## Success Criteria\n\n` +
+        [...KEPT, REWRITTEN].map(([id, s]) => `- [ ] ${id}: ${s}`).join("\n") +
+        `\n`,
+    );
+    return path;
+  }
+
+  beforeEach(() => { if (existsSync(FIXTURE)) rmSync(FIXTURE, { recursive: true }); });
+  afterEach(() => { if (existsSync(FIXTURE)) rmSync(FIXTURE, { recursive: true }); });
+
+  test("SC-2001: a declined criterion's line is untouched and the marker is the line after it", () => {
+    const path = plant();
+    const result = auditSpecs(FIXTURE, { fix: true });
+    const lines = readFileSync(path, "utf-8").split("\n");
+
+    // The run has to have DECLINED all four, or the assertions below are
+    // about a classification that never happened.
+    const kept = (result.rewrites ?? []).filter(r => r.kept);
+    expect(kept.map(r => r.scId).sort(), "the fixture no longer produces four declined criteria")
+      .toEqual(KEPT.map(([id]) => id));
+
+    for (const [id, statement] of KEPT) {
+      const at = lines.indexOf(`- [ ] ${id}: ${statement}`);
+      expect(at, `${id}'s line is not in the file verbatim — the fix run rewrote a criterion it kept`)
+        .toBeGreaterThan(-1);
+      expect(lines[at + 1], `${id} carries no REVIEW marker on the line below it`)
+        .toMatch(/^<!-- REVIEW: unmatched \(.+\) -->$/);
+    }
+
+    // The control, and it is the half that stops "never write anything" from
+    // passing: a criterion the registry CAN bind is still rewritten, and its
+    // original is still written beside it.
+    const [rid, rstatement] = REWRITTEN;
+    const rat = lines.indexOf(`- [ ] ${rid}: CODE-MAP.md exists`);
+    expect(rat, "the rewriter stopped rewriting, so the assertions above prove nothing")
+      .toBeGreaterThan(-1);
+    expect(lines[rat + 1]).toBe(`<!-- REVIEW: original — ${rstatement} -->`);
+  });
+
+  test("SC-2002: two criteria declined for the same reason each get a marker", () => {
+    // The suppression, stated as a count rather than as a shape. All four
+    // declines carry the identical reason, so a file-wide `includes` guard
+    // writes exactly one marker and three criteria are recorded as reviewed
+    // by a line that is about a different criterion.
+    const path = plant();
+    const result = auditSpecs(FIXTURE, { fix: true });
+    const reasons = new Set((result.rewrites ?? []).filter(r => r.kept).map(r => r.kept));
+    expect(reasons.size, "the four declines no longer share one reason, so this measures nothing")
+      .toBe(1);
+
+    const markers = readFileSync(path, "utf-8")
+      .split("\n")
+      .filter(l => l.startsWith("<!-- REVIEW: unmatched"));
+    expect(markers.length, "declined criteria are sharing one marker").toBe(KEPT.length);
   });
 });

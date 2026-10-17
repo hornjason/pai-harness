@@ -1158,6 +1158,80 @@ as retained content is exactly what makes a constant rewrite read as
 faithful. With that in place the row is 2, and both reds are about the
 mutation.
 
+## The decision was right and the WRITE lost the line anyway (#586, second pass)
+
+Everything above is about `decideRewrite`. The criteria below are about the
+twelve lines underneath it that put the decision into the file, because for
+every statement here the decision was already correct — `keep`, with a
+reason — and the document still lost the criterion.
+
+Two faults, in one edit each, and they have to be fixed together:
+
+- **the line is edited with a replacement STRING.**
+  `String.prototype.replace(re, string)` expands `$'`, `$&` and `$1` in its
+  second argument, and the second argument here is the criterion. `--fix`
+  edits documents written by people about shell and regex syntax, so those
+  sequences are ordinary content. Measured on a four-criterion fixture whose
+  first statement read ``Baseline rules carry no $' key in frontmatter``: the
+  statement came back as `Baseline rules carry no `, the remaining three
+  criteria were pasted into the file a second time, and the run's own ledger
+  reported `kept` with `before === after` for all four. **The report and the
+  file disagreed, and only the report is ever read.**
+
+- **the marker is suppressed by a whole-file `includes`.** Two criteria
+  declined for the same reason share one marker, and the commonest reason by
+  a long way is the generic "no registry pattern was close enough". The same
+  fixture: four unmatched criteria, one marker. The other three read as
+  reviewed because of a comment about a different criterion.
+
+Fixing the suppression alone makes the corruption reach three criteria
+instead of one, which is why they are one commit.
+
+`.gitignore` is the third criterion and it is a test, not a fix: SC-1999
+established that `missingGitignorePatterns` is idempotent as a FUNCTION, over
+strings. SC-2003 asks it of the STEP, over a real tree and a real file,
+because those are two statements and only the second is what a user re-taking
+a harness update sees.
+
+### Success Criteria
+
+- [x] SC-2000: test/audit-specs-lossless.test.ts contains [--fix is a fixed point per criterion, not merely per file] — SC statement lines compared by id across the original, the first run and the second, so a run that duplicates ids or truncates a statement is visible where a whole-file comparison of the two runs is not
+- [x] SC-2001: test/audit-specs-rewrite-fidelity.test.ts contains [the REVIEW marker goes below the criterion, never into it] — a declined criterion's line is byte-identical and the marker is the line after it, with a bindable criterion still rewritten beside it as the control
+- [x] SC-2002: test/audit-specs-rewrite-fidelity.test.ts contains [two criteria declined for the same reason each get a marker] — asserted as a count against a fixture whose four declines deliberately share one reason
+- [x] SC-2003: test/scaffold-gitignore.test.ts contains [a fresh tree and an adopting tree are both fixed points after one run] — the second `createGitignore` appends zero lines and reports SKIP, and git still ignores every secret file afterwards
+
+### What was broken to prove it (SC-2000..SC-2003)
+
+Run and counted over `test/audit-specs-lossless.test.ts` +
+`test/audit-specs-rewrite-fidelity.test.ts` + `test/scaffold-gitignore.test.ts`
+(baseline 34 pass / 0 fail). None is left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `replaceLine` back to `content.replace(match[0], replacement)` — `$` expansion restored | 2 | 2 |
+| `followsWith` back to a whole-file `content.includes(marker)` | 2 | 2 |
+| the append branch's `e.includes("*") ? e : \`${e}/\`` transform restored (#474 verbatim) | 5 | 5 |
+
+The distinguishing input for row one, named before the count was read: a
+criterion containing `$'`. The mutant truncates it at the `$` and splices the
+rest of the document in after it; the original leaves the line byte-identical.
+For row two: two criteria whose decline reason is the same string. For row
+three: an adopting repo seeded with `node_modules`, where the mutant writes
+`credentials.json/` on the first run and finds `credentials.json` missing
+again on the second, forever.
+
+Row three is 4 of #474's own cases plus SC-2003, and the four were predicted
+from the count this spec's `.gitignore` section already records. SC-2003 is
+the fifth and is the only one of the five that asks about a SECOND run.
+
+**SC-2000 carries a vacuous half, deliberately, and says so in the file.**
+AC-1 asks for zero SC statement lines differing between the first and second
+run, and the `$'` corruption is invisible to exactly that comparison: the
+first run wrecks the document and the second reproduces the wreck, so the two
+runs agree. The criterion is written as AC-1 words it AND carries the original
+alongside, which is the half that can fail. Recording which half is load-bearing
+is cheaper than leaving the next reader to find out by mutating it.
+
 ### A fourth self-reference trap, in this section
 
 The paragraph above explaining the preservation marker originally quoted

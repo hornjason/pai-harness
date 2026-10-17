@@ -474,6 +474,54 @@ export function closestPatternFor(
   return findClosestPattern(statement);
 }
 
+// ── Editing one SC line ───────────────────────────────────────
+
+/**
+ * Put `replacement` where `match` was, as LITERAL TEXT (#586).
+ *
+ * `String.prototype.replace(re, string)` treats the second argument as a
+ * replacement TEMPLATE: `$'` is "everything after the match", `$&` is the
+ * match, `$1` is the first capture group. Every one of those is a sequence a
+ * success criterion can legitimately contain — `--fix` is a tool for editing
+ * documents written by people about shell and regex syntax — and the text
+ * being substituted in here is the criterion itself.
+ *
+ * Measured before this existed, on a four-criterion fixture whose first
+ * statement read ``Baseline rules carry no $' key in frontmatter``:
+ *
+ *     - [ ] SC-9301: Baseline rules carry no        <- its text, truncated
+ *     - [ ] SC-9302: …                              <- the remainder of the
+ *     - [ ] SC-9303: …                                 document, pasted in
+ *     - [ ] SC-9304: …
+ *      key in frontmatter
+ *
+ * Three ids now appeared twice in one spec and one criterion had lost its
+ * statement — on a run whose own ledger reported `kept` and `before ===
+ * after` for all four. The report and the file disagreed and only the report
+ * was ever read.
+ *
+ * It splices by INDEX rather than re-running the regex, which also removes
+ * the second search: the caller has already found the line, and a function
+ * that searched for it again would be a second answer to a question that was
+ * already answered.
+ */
+function replaceLine(content: string, match: RegExpMatchArray, replacement: string): string {
+  const at = match.index!;
+  return content.slice(0, at) + replacement + content.slice(at + match[0].length);
+}
+
+/**
+ * Does `marker` already sit on the line directly below the matched line?
+ *
+ * The question the suppression guard has to ask (#586). It used to ask
+ * `modified.includes(marker)` — of the WHOLE FILE — so the second criterion
+ * declined for a given reason was silently left unmarked, and the commonest
+ * reason by far is the generic "no registry pattern was close enough".
+ */
+function followsWith(content: string, match: RegExpMatchArray, marker: string): boolean {
+  return content.slice(match.index! + match[0].length).startsWith(`\n${marker}`);
+}
+
 // ── Core audit function ───────────────────────────────────────
 
 export function auditSpecs(
@@ -547,8 +595,15 @@ export function auditSpecs(
         // the file it names or the prose that says why it exists.
         if (decision.kind === "keep") {
           const marker = `<!-- REVIEW: unmatched (${decision.reason}) -->`;
-          if (!modified.includes(marker)) {
-            modified = modified.replace(scLinePattern, `${scMatch[0]}\n${marker}`);
+          // #586: asked of THIS criterion's own next line, not of the whole
+          // file. A file-wide `includes` meant that two criteria declined
+          // for the same reason — and "no registry pattern was close enough"
+          // is the commonest reason there is — shared one marker: measured
+          // at four unmatched criteria and one marker. The three unmarked
+          // ones read as reviewed because of a comment about a different
+          // criterion.
+          if (!followsWith(modified, scMatch, marker)) {
+            modified = replaceLine(modified, scMatch, `${scMatch[0]}\n${marker}`);
             hasChanges = true;
           }
           rewrites.push({
@@ -567,7 +622,7 @@ export function auditSpecs(
         if (closest!.ambiguous) {
           replacement += `\n<!-- REVIEW: original — ${usc.statement} -->`;
         }
-        modified = modified.replace(scLinePattern, replacement);
+        modified = replaceLine(modified, scMatch, replacement);
         hasChanges = true;
         rewrites.push({
           scId: usc.id,

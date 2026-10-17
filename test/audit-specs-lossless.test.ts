@@ -314,3 +314,132 @@ describe("SC-1596: the tree carries no line already damaged by this", () => {
     expect(DAMAGED.test("AGENTS.md contains [Project Identity]")).toBe(false);
   });
 });
+
+/**
+ * The SC statement lines of a spec, keyed by id, with duplicates named (#586).
+ *
+ * **By id, and not by index.** The defect below DUPLICATES lines, and a
+ * positional comparison of two lists of different lengths reports every row
+ * after the first as different — true, and useless for saying which criterion
+ * was damaged. Duplicates are returned rather than silently collapsed because
+ * a `Map` keyed by id would otherwise absorb exactly the evidence.
+ *
+ * `(.*)$` rather than `(.+)$`, which is what `extractSCs` uses: a statement
+ * truncated to the empty string must read as a criterion whose text is gone,
+ * not as a line the scanner never saw.
+ */
+function statementsById(content: string): { byId: Map<string, string>; duplicates: string[] } {
+  const byId = new Map<string, string>();
+  const duplicates: string[] = [];
+  for (const m of content.matchAll(/^- \[[ x]\] (SC-[\w-]+):\s*(.*)$/gm)) {
+    const id = m[1]!;
+    if (byId.has(id)) duplicates.push(id);
+    else byId.set(id, m[2]!);
+  }
+  return { byId, duplicates };
+}
+
+/**
+ * Covers SC-2000 (CONFIG-DRIVEN-TESTING-SPEC.md), #586 AC-1.
+ *
+ * SC-1588 above already runs `--fix` twice and compares the whole file, and
+ * it is green. It is also the weaker instrument, and this is the input that
+ * shows why: `auditSpecs` edits each SC line with
+ *
+ *   modified.replace(scLinePattern, `${scMatch[0]}\n${marker}`)
+ *
+ * where the second argument is a REPLACEMENT STRING, so `$'`, `$&` and `$1`
+ * inside the criterion are expanded by the regex engine. Measured, before the
+ * fix, on a four-criterion fixture:
+ *
+ *   - [ ] SC-9301: Baseline rules carry no          <- truncated
+ *   - [ ] SC-9302: …                                <- the rest of the file,
+ *   - [ ] SC-9303: …                                   copied in by `$'`
+ *   - [ ] SC-9304: …
+ *    key in frontmatter
+ *
+ * Three ids now appear twice in the document and one criterion has lost its
+ * text — under a run that reported `kept: "no registry pattern was close
+ * enough"` and `before === after` for all four. **The ledger says nothing was
+ * touched and the file disagrees**, which is the whole of #586 arriving by a
+ * different route than the one the issue describes.
+ *
+ * A whole-file comparison of run 1 against run 2 cannot see any of it: the
+ * damage is done by the FIRST run and the second reproduces it exactly, so
+ * `one === two` is true over a wrecked document. That is this repo's
+ * "assertions that hold vacuously" shape, and the AC's own metric — zero SC
+ * statement lines differing between the runs — has it too. So the run-1/run-2
+ * comparison is kept, because it is what AC-1 asks for, and the original is
+ * carried in beside it as the half that can actually fail.
+ */
+describe("SC-2000: --fix is a fixed point per criterion, not merely per file", () => {
+  /** `$'` — "the portion of the input after the match". The destructive one. */
+  const DOLLAR_AFTER = "Baseline rules carry no $' key in frontmatter";
+  /** `$&` — "the whole match", so the line is pasted into itself. */
+  const DOLLAR_MATCH = "Baseline rules carry no $& key in frontmatter";
+  /** `$1` — the first capture group, which is the `- [ ] SC-9303: ` prefix. */
+  const DOLLAR_GROUP = "Baseline rules carry no $1 key in frontmatter";
+  /** The same shape with no `$` in it. The control for the corpus itself. */
+  const PLAIN = "Baseline rules carry no `owner:` key in frontmatter";
+
+  test("every criterion's statement survives, no id is duplicated, and the second run changes nothing", () => {
+    const path = writeFixtureSpec(
+      [
+        `- [ ] SC-9301: ${DOLLAR_AFTER}`,
+        `- [ ] SC-9302: ${DOLLAR_MATCH}`,
+        `- [ ] SC-9303: ${DOLLAR_GROUP}`,
+        `- [ ] SC-9304: ${PLAIN}`,
+        `- [ ] SC-9305: ${UNSTRUCTURED}`,
+      ].join("\n"),
+    );
+    const before = statementsById(readFileSync(path, "utf-8"));
+    expect(before.byId.size, "the fixture did not render five criteria").toBe(5);
+
+    const result = auditSpecs(FIXTURE, { fix: true });
+    const one = statementsById(readFileSync(path, "utf-8"));
+    auditSpecs(FIXTURE, { fix: true });
+    const two = statementsById(readFileSync(path, "utf-8"));
+
+    // The positive control FIRST, and it is the reason this case cannot be
+    // satisfied by switching `--fix` off: a rewriter that never touched
+    // anything would pass every assertion below.
+    expect(one.byId.get("SC-9305"), "--fix rewrote nothing, so the rest of this proves nothing")
+      .toBe("CODE-MAP.md exists");
+
+    // A criterion the rewriter DECLINED to rewrite must read back exactly as
+    // it was written. This is the half that was red: SC-9301 came back as
+    // `Baseline rules carry no ` with the remainder of the document spliced
+    // in after it.
+    for (const id of ["SC-9301", "SC-9302", "SC-9303", "SC-9304"]) {
+      expect(one.byId.get(id), `${id}'s statement was changed by a run that reported keeping it`)
+        .toBe(before.byId.get(id));
+    }
+
+    // The document still has one line per criterion. `$'` and `$&` both
+    // duplicate ids, and a spec carrying two SC-9303 lines is a spec where
+    // every downstream reader — the sync, the drift detector, the registry —
+    // answers about whichever one it reached first.
+    expect(one.duplicates, "the fix run duplicated SC lines into the document").toEqual([]);
+    expect(one.byId.size, "the fix run changed how many criteria the spec declares").toBe(5);
+
+    // The ledger and the file have to agree. `before === after` on a `kept`
+    // entry is the run's own claim that it left the line alone; without this
+    // the claim is checked against nothing.
+    for (const r of result.rewrites ?? []) {
+      if (!r.kept) continue;
+      expect(r.before, `${r.scId} is reported as kept but before !== after`).toBe(r.after);
+      expect(
+        one.byId.get(r.scId),
+        `${r.scId} was reported as kept and the file says otherwise`,
+      ).toBe(r.before);
+    }
+
+    // AC-1 as worded. Vacuous against the defect above — recorded in the
+    // docstring rather than left for a reader to discover — and not vacuous
+    // against a rewriter that re-rewrites its own output, which is the other
+    // way a `--fix` stops being a fixed point.
+    const differing = [...one.byId.keys()].filter(id => one.byId.get(id) !== two.byId.get(id));
+    expect(differing, "a second --fix changed criteria the first had already settled").toEqual([]);
+    expect(two.duplicates, "the second --fix duplicated SC lines").toEqual([]);
+  });
+});
