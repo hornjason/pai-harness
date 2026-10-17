@@ -323,6 +323,15 @@ const isDone = () => sf("phase") === "DONE";
  * refused before, so the call reads exactly like a call that is checking.
  * `readSuiteMeasurement` is a total function that returns UNMEASURED for
  * every unusable input, so there is never a caller with nothing to pass.
+ *
+ * **What the requirement buys is that the absence now fails CLOSED.** With an
+ * optional argument, omitting it meant "no objection". Required, the only
+ * thing a caller can hand this for a state with no measurement is an
+ * UNMEASURED reading, and `UNMEASURED !== "PASS"` refuses. The failure mode
+ * inverted: absence used to be silence and is now a refusal. That is
+ * `.claude/rules/config-access.md`'s Silent Default Substitution at a second
+ * site — `0`, `{}`, `null` and `SKIP` are indistinguishable from success;
+ * `UNMEASURED` is not.
  */
 export function suiteVerdictViolations(val: unknown, measurement: SuiteReading): string[] {
   if (val === undefined || val === null || val === "") {
