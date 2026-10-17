@@ -19,7 +19,7 @@ import { join } from "path";
 
 import { refreshAgentsMd } from "../lib/scaffold/steps";
 import {
-  codeMapUnreferenced, isSpecFile, listingSurfaces, specFilesIn, unlistedSpecs,
+  codeMapUnreferenced, isSpecFile, listingSurfaces, listsFile, specFilesIn, unlistedSpecs,
 } from "../lib/spec-listing";
 import { generateScopedRules } from "../lib/generators/agents-md";
 import { scanProject } from "../lib/scanner";
@@ -106,7 +106,9 @@ describe("#382: the audit reads the surfaces the generator writes to", () => {
   test("SC-1893: CODE-MAP referenced only from .claude/rules/ is not reported", () => {
     const routed = project("codemap", {
       codeMap: true,
-      routing: "| POV-SPEC.md | x | true |\n\nSee `CODE-MAP.md` for structure.\n",
+      // A ROW, the way `docs-routing.md` writes it. Prose naming the file
+      // is not a listing — SC-1896.
+      routing: "| POV-SPEC.md | x | true |\n| Codebase structure | `CODE-MAP.md` |\n",
     });
     expect(codeMapUnreferenced(routed)).toBe(false);
     expect(auditIssues(routed).filter(i => i.includes("CODE-MAP"))).toEqual([]);
@@ -142,6 +144,33 @@ describe("#382: the audit reads the surfaces the generator writes to", () => {
       .toEqual([]);
     expect(generateScopedRules(scanProject(root)).map(r => r.filename))
       .not.toContain("specs-routing.md");
+  });
+
+  test("SC-1896: a spec mentioned in prose is not a spec that is listed", () => {
+    // Found by a mutation row missing LOW. Making SPEC-TEMPLATE.md a spec
+    // again predicted 2 red and measured 1: the live-tree case stayed green
+    // because `.claude/rules/checks-must-be-able-to-fail.md:407` discusses
+    // `specs/SPEC-TEMPLATE.md` in a paragraph about #484, and a
+    // whole-document `includes` reads that as the template being listed.
+    // Any spec any rule file happens to name in prose was waved through the
+    // same way.
+    //
+    // Narrowing a detector is the change most likely to buy green with
+    // blindness, so the boundary is a case in both directions rather than a
+    // comment.
+    const prose = "Earlier work on `specs/POV-SPEC.md` found three call sites\nand two directories.\n";
+    expect(listsFile(prose, "POV-SPEC.md"), "a sentence about a spec counted as a table row").toBe(false);
+    expect(listsFile("| POV-SPEC.md | the point of view | true |", "POV-SPEC.md")).toBe(true);
+    expect(listsFile("- `specs/POV-SPEC.md` — the point of view", "POV-SPEC.md"),
+      "a bullet is a listing; a consumer writes them and the generator does not").toBe(true);
+
+    // Driven through the audit, over the shape that was really there: a
+    // rule file whose only mention of the spec is prose.
+    const root = project("prose-only");
+    mkdirSync(join(root, ".claude", "rules"), { recursive: true });
+    writeFileSync(join(root, ".claude", "rules", "notes.md"), prose);
+    expect(auditIssues(root).filter(i => i.startsWith("UNLISTED specs")),
+      "a spec only mentioned in a paragraph was treated as routed").toHaveLength(1);
   });
 
   test("SC-1895: every rule the generator writes is a surface the audit searches", () => {

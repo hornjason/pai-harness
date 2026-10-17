@@ -98,12 +98,41 @@ export function listingSurfaces(root: string): Surface[] {
   return out;
 }
 
-/** Spec files named by no surface. Empty when every spec is listed somewhere. */
+/**
+ * A line that puts a reader somewhere: a table row, or a list item.
+ *
+ * **A mention is not a listing**, and the difference is measurable here.
+ * `.claude/rules/checks-must-be-able-to-fail.md:407` discusses
+ * `specs/SPEC-TEMPLATE.md` in a paragraph about #484. A whole-document
+ * `includes` counts that as the template being listed — so the mutation
+ * that makes `SPEC-TEMPLATE.md` a spec again measured 1 red where 2 were
+ * predicted, and the one that did not fire was the live-tree case. Any spec
+ * any rule file happens to name in prose would have been waved through the
+ * same way.
+ *
+ * That is `.claude/rules/checks-must-be-able-to-fail.md`'s own *"search the
+ * slice, not the document"*, met in a function whose job is to decide
+ * whether a document points somewhere. The boundary is asserted in both
+ * directions rather than left to this comment, because narrowing a detector
+ * is the change most likely to buy green with blindness.
+ *
+ * Deliberately permissive about WHICH list: the generator writes table rows,
+ * a consumer may well write bullets, and the direction this is allowed to be
+ * wrong in is toward reporting a spec that is in fact listed — which costs a
+ * line in a table — rather than toward silence.
+ */
+const LISTING_LINE = /^\s*(\||[-*+]\s|\d+\.\s)/;
+
+export function listsFile(content: string, name: string): boolean {
+  return content.split("\n").some(l => l.includes(name) && LISTING_LINE.test(l));
+}
+
+/** Spec files listed by no surface. Empty when every spec is listed somewhere. */
 export function unlistedSpecs(root: string): string[] {
   const specs = specFilesIn(root);
   if (specs.length === 0) return [];
   const surfaces = listingSurfaces(root);
-  return specs.filter(f => !surfaces.some(s => s.content.includes(f)));
+  return specs.filter(f => !surfaces.some(s => listsFile(s.content, f)));
 }
 
 /**
@@ -115,5 +144,5 @@ export function unlistedSpecs(root: string): string[] {
  */
 export function codeMapUnreferenced(root: string): boolean {
   if (!existsSync(join(root, "CODE-MAP.md"))) return false;
-  return !listingSurfaces(root).some(s => s.content.includes("CODE-MAP"));
+  return !listingSurfaces(root).some(s => listsFile(s.content, "CODE-MAP"));
 }
