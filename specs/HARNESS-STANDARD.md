@@ -9634,7 +9634,7 @@ loose object rather than mocking the runner.
 
 ### Success Criteria
 
-- [x] SC-1917: test/tracked-vs-ignored.test.ts contains [a symlink a trailing-slash rule failed to match is caught] — built by `ln -s` and `git add .` against a repo whose status is clean, with `check-ignore`'s own non-match asserted as the instrument
+- [x] SC-1917: test/tracked-vs-ignored.test.ts contains [a symlink a trailing-slash rule failed to match is caught] — built by `ln -s` and `git add .` against a repo whose status is clean, with `check-ignore`'s own non-match asserted as the instrument; a relative link is not a finding and an unreadable target is
 - [x] SC-1918: test/tracked-vs-ignored.test.ts contains [the mode and the link target are reported] — `120000` and the blob content, because a directory of tracked files is wasteful and a tracked link is what breaks on another machine
 - [x] SC-1919: test/tracked-vs-ignored.test.ts contains [a repo whose rules and tracked set agree passes] — over a non-empty corpus and over the live tree, since an empty corpus and a clean one are the same verdict
 - [x] SC-1920: test/tracked-vs-ignored.test.ts contains [it never asks git status] — plus a `check-ignore` forced to exit 128 while `ls-files` succeeds, which is the fail-open a `catch` would create
