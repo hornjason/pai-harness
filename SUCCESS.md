@@ -160,7 +160,44 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-16)** — tree `0.4.1`, published `rungate@0.4.1`.
+- **Distribution standing (2026-10-17)** — tree `0.5.0`, published `rungate@0.4.1`.
+
+**Why this release is `0.5.0` and not `0.4.2`.** It was planned as a patch and
+the plan was wrong, on this file's own stated test: *observable behaviour
+changes, not fixes*. Four of the 36 commits past `v0.4.1` meet it.
+
+#449 adds `--profile=minimal`, a new CLI flag and a new published module
+(`lib/scaffold/profiles.ts`) — the public surface grew. #485 makes `SUCCESS-1`
+refuse a file that is still the seed template, where it previously passed.
+#469/#490 makes a suite run that measured nothing a refusal, where it
+previously read as a clean tree. #42 makes re-scaffold auto-fix, which changes
+what an existing consumer's re-scaffold does to their files without them
+asking for anything new.
+
+The second and third are the same shape as #405 and #397, which this file
+cites as the reason `0.4.0` was a minor. A patch number on a release that adds
+a flag and turns two passes into refusals is a false statement to anyone
+reading the version to decide whether to upgrade.
+
+**What `0.4.1` could not do, measured on a real consumer rather than argued.**
+`#484` is the reason this release is not optional. Published `0.4.1` carries
+`lib/conformity.ts`, which reads its matcher registry by building a path from
+its own module directory rather than importing it — so `files[]` omitting
+`config/` was invisible to `test/package-closure.test.ts`, which only knew
+about imports. Run against the one external consumer that exists, `bunx
+rungate scaffold .` on installed `0.4.1` dies:
+
+```
+ENOENT: no such file or directory, open
+  '<consumer>/node_modules/rungate/config/matcher-registry.json'
+    at loadBuiltInRegistry (node_modules/rungate/lib/conformity.ts:496)
+```
+
+So claim 5's first measurement against an installable artifact — recorded
+above for `0.4.1` and correct as far as it went — covered importing
+`lib/conformity`, not using it. `0.4.2` was never a question of nice-to-have;
+`0.4.1` cannot scaffold a consumer at all, and `0.5.0` is the first release
+that can.
 
 **The gap is closed, and for the first time the artifact was checked rather
 than the number.** `v0.4.1` was cut on 2026-10-16 and the registry serves it.
