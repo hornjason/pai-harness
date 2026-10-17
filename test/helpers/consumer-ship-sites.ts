@@ -103,15 +103,28 @@ function region(startRe: RegExp, endRe: RegExp, label: string): string {
 }
 
 /**
- * The consumer-config flatten, `pagesConfig`, `hasUI`, the test command, the
- * CEREMONY-TIER-FLOOR block, the CLI downgrade, the floor call and the raise.
+ * `pagesConfig`, `hasUI`, the test command, the CEREMONY-TIER-FLOOR block, the
+ * CLI downgrade, the floor call and the raise.
  *
  * Taken as ONE contiguous slice rather than as statements reassembled in an
  * order this file chose: the downgrade overwriting the floor is a regression
  * this has to be able to see, and only source order can see it.
+ *
+ * The slice used to open on ship.js's own `dev.apiBase → apiUrl` flatten. ADR-002
+ * D3 deleted that shim — `lib/config-loader.ts`'s `normaliseConfig` does the
+ * flattening once, before the config ever reaches a run — so the anchor moved
+ * down to `pagesConfig`, the first statement of the chain that still exists.
+ * Nothing is lost by the move: `CONSUMER_FIXTURE` is loaded THROUGH that loader,
+ * so the fixture reaching this block is flattened by the real normaliser rather
+ * than by a second copy of the rule, which is the whole point of D3.
+ *
+ * The two lines above `pagesConfig` are deliberately outside the slice. They
+ * declare `projectConfig` from `setupResult`, a value only a real run has, and
+ * the harness supplies `projectConfig` itself — re-declaring it here would be a
+ * `SyntaxError` in the generated function body.
  */
 const TIER_CHAIN = region(
-  /^if \(!projectConfig\.apiUrl && projectConfig\.dev\?\.apiBase\) projectConfig\.apiUrl = projectConfig\.dev\.apiBase$/m,
+  /^const pagesConfig = projectConfig\.pages \|\| parsedArgs\.pages \|\| \{\}$/m,
   /^if \(flooredTier !== discovery\.ceremonyTier\) \{\n[\s\S]*?\n\}$/m,
   "the config-to-ceremony-tier chain",
 );
@@ -190,6 +203,19 @@ const SECURITY_HELPERS = region(
   /^\/\/ ──── SECURITY-HELPERS-END ────$/m,
   "the security helpers block",
 );
+
+/**
+ * `suiteOutputPath`, `suiteCaptureCommand` and `recorderCommand`, extracted for
+ * the same reason as the security helpers: the scope gate's heal prompt calls
+ * `suiteCaptureCommand` while it is being built, so a run with the name absent
+ * throws before the block has done anything, and a stub would let the harness
+ * assert on a command ship.js does not emit.
+ *
+ * Taken by MARKER rather than by a pair of statement anchors — the three are
+ * already fenced as one region for `#312 SC-A12`, and reusing the fence means
+ * a fourth helper added inside it arrives here without an edit.
+ */
+const RECORDER_COMMANDS = markerRegion(shipSource, "RECORDER-COMMAND");
 
 // ── the consumer fixture, read from disk ─────────────────────
 
@@ -352,6 +378,7 @@ async function runBlock(block: string, opts: RunOpts): Promise<Recorded> {
     "const discovery = { ceremonyTier: discoveryTier, acs, filesToModify: ['src/pages/reports.tsx'] }",
     "const projectConfig = JSON.parse(JSON.stringify(config))",
     "const parsedArgs = { remoteHosts: config.remoteHosts || {}, preflightResults: null }",
+    RECORDER_COMMANDS,
     TIER_CHAIN,
     "tierBox.tier = discovery.ceremonyTier",
     block,

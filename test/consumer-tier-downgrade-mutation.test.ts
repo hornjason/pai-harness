@@ -255,6 +255,21 @@ async function runBlock(code, extra) {
       runGateWithHeal: async () => ({ result: "PASS" }),
       shellQuote: (s) => "'" + s + "'",
       safeSSHCommand: (h, c) => "ssh " + h + " " + c,
+      // The scope heal prompt interpolates this while it is being BUILT, so an
+      // absent name throws before the block reaches scopeRan. Stubbed rather
+      // than sliced out of SRC, like shellQuote and safeSSHCommand beside it:
+      // SRC here is a MUTANT, the mutants this file spawns include the pre-#215
+      // source, and a helper lifted from a source that may not carry it would
+      // turn "the tier sites are gone" into "the harness could not build",
+      // which is a different outcome from the one every observation measures.
+      // Nothing asserts the command's text — consumer-tier-gated-subsystems
+      // runs the real suiteCaptureCommand against the real source for that.
+      suiteCaptureCommand: (root, cmd) => "cd " + root + " && " + cmd,
+      recorderCommand: (harness, work) => "bun " + harness + "/scripts/record-suite-measurement.ts --state " + work,
+      // #307 SC-A11's two resolved-URL clauses, interpolated into the same
+      // prompt. Strings, for the same reason as the two above.
+      localApiClause: "- api: http://localhost:7776",
+      localUiClause: "- ui: http://localhost:3000",
       HARNESS_ROOT: "/harness",
       PROJECT_ROOT: "/project",
       WORK_DIR: "/work",
