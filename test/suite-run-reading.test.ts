@@ -133,9 +133,21 @@ describe("#469/#490: the fixtures still reproduce what they were built for", () 
   });
 
   test("SC-1827: a directory with no test files reads UNMEASURED", () => {
-    expect(LIVE.noFiles.output).toContain("0 test files matching");
+    // The instrument, asserted as a PROPERTY rather than as bun's sentence.
+    // The first draft asserted `toContain("0 test files matching")`, which is
+    // the exact wording of bun 1.3.14 — CI runs `bun-version: latest` and
+    // 1.4.3 says `No tests found!` instead, so the row went red in CI while
+    // the reading was correct on both. An assertion on a vendor's phrasing is
+    // a detector narrower than what it detects
+    // (.claude/rules/checks-must-be-able-to-fail.md), and the property here
+    // is that the runner said something and none of it was a summary.
+    expect(LIVE.noFiles.output.trim(), "the no-files fixture printed nothing at all").not.toBe("");
+    expect(LIVE.noFiles.output, "the no-files fixture now prints a summary — re-derive it")
+      .not.toMatch(/^\s*\d+\s+(pass|fail)\s*$/m);
+
     const run = readSuiteRun(LIVE.noFiles.output);
     expect(run.status).toBe("UNMEASURED");
+    if (run.status === "UNMEASURED") expect(run.reason).toContain("no pass/fail summary");
   });
 
   test("SC-1828: a real suite is measured - and keeps the coverage it reported", () => {
