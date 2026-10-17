@@ -906,3 +906,84 @@ report `[]` for both lists and the subset test passes vacuously. The
 `onlyCensus` assertion, which names the two `testable: no` criteria exactly,
 is the one that catches it — 1 of 12, and that 1 is the whole reason the
 second direction is written out.
+
+## A criterion ticked because somebody wrote down its name (#574)
+
+`scripts/sync-sc-status.ts` credits a criterion when a test file names it in
+a declaring position, and a `test()` title is one — correctly; it is this
+project's oldest coverage convention and the one position that never needed
+a rule. `test.todo("SC-N: …")` is also a title, and a todo is the one test
+guaranteed never to fail.
+
+Measured on main at `469ef084`:
+
+```
+64  SC ids named inside a .todo( in test/ or gates/
+53  of those with no other declaring mention anywhere
+37  of those 53 ticked [x] in a spec
+19  more about to flip on the next run of the sync
+```
+
+The 19 are another session's in-flight design spec. Its test file says so,
+four lines from the top — *"The spec's 19 behavioural criteria are NOT
+covered here"* — and then lists each one honestly as a todo. The author
+wrote down what was not done, and the sync read the list as nineteen
+completed criteria.
+
+**The incentive was backwards in the same way #510's was.** A session that
+records its unfinished criteria as todos scores better than one that leaves
+them unmentioned.
+
+### The sentence that proved its own negation
+
+Two of the nineteen were credited by something else, and it is worth its
+own paragraph because it is the sharpest version of this area's recurring
+trap:
+
+```
+ * The spec's 19 behavioural criteria (SC-1930..SC-1948) are NOT covered here.
+```
+
+`(SC-1930..SC-1948)` is a parenthetical holding nothing but ids, which
+`commentClaimForm` credits as an *attribution* — so the comment saying the
+criteria are not covered was the evidence that they were, and it ticked
+both endpoints.
+
+A range is not an attribution. An attribution names THE criterion a
+statement is about; a range names a group, which is how prose refers to a
+set it is discussing. And the scanner can only see ids that are literally
+written, so a range of nineteen credits its two endpoints and silently not
+the seventeen between them: **a form that credits 2 of the 19 ids it names
+is not measuring anything.**
+
+Measured before narrowing, because narrowing a detector is the change most
+likely to buy green with blindness: of 32 attribution credits in the tree,
+30 are plain and 2 are ranges, and the 2 are these. A range at the START of
+a line is still a claim, by the `line` form, which is where
+`SC-561..SC-564 (SPEC.md)` is credited and is unchanged.
+
+### Not crediting is not enough — it has to be said
+
+`0`, `{}`, `null` and "not in the list" are all indistinguishable from
+success. So a criterion whose only declaring position is a title that never
+runs is reported by name, with its file, on every sync run. An id that also
+has a running test is NOT reported: the question is whether anything can
+measure the criterion, not whether a todo exists, and a list that names
+every todo beside a passing test is ignored within a week.
+
+### A tick can rest on something other than a test file
+
+40 ticks were removed. **Two came back on the next run**, through the
+conformity engine, which matches an SC statement mechanically and is a
+second, legitimate credit path. That is why the live-tree ratchet asserts
+"every tick is backed by SOME measurement" rather than "every tick is
+backed by a test file" — the narrower property would have made the honest
+answer look like a regression. Net 38.
+
+### Success Criteria
+
+- [x] SC-1955: test/sc-todo-credit.test.ts contains [a todo title declares intent, a test title declares coverage] — the same id, file and words with one modifier of difference, and the running title as the positive control
+- [x] SC-1956: test/sc-todo-credit.test.ts contains [the modifiers that never run are refused and the ones that run are not] — `.todo`, `.skip`, `.skipIf`, `.todoIf` against `.only`, `.each`, `.failing`, `.concurrent`, and "not a title call" kept as a third answer
+- [x] SC-1957: test/sc-todo-credit.test.ts contains [a todo is credited to nothing and reported by name] — the report is non-empty, and no id in it is also credited by a test claim
+- [x] SC-1958: test/sc-todo-credit.test.ts contains [a range in a parenthetical is prose about a group, not an attribution] — the sentence from the tree verbatim, with the two attribution forms that must NOT move asserted beside it
+- [x] SC-1959: test/sc-todo-credit.test.ts contains [no ticked criterion in this repo rests on a test that never runs] — the live tree, through the conformity engine, so a tick backed by a mechanical match is not reported as a regression

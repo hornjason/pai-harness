@@ -22,6 +22,7 @@ import { globSync } from "fs";
 import { join } from "path";
 
 import { commentClaimForm, titleCall } from "../lib/sc-claim-forms";
+import { FIXTURE_SC_FLOOR } from "../lib/sc-ids";
 import {
   checkConformitySCs,
   coverageClaimSites,
@@ -44,14 +45,18 @@ describe("#574: a criterion whose only test is a todo is not a covered criterion
   test("SC-1955: a todo title declares intent, a test title declares coverage", () => {
     // The same id, the same file, the same words — one character of
     // difference. Nothing but the modifier can account for the two answers.
-    const todo = `test.todo("SC-8001: the rate is a rate");\n`;
-    const real = `test("SC-8001: the rate is a rate", () => {});\n`;
+    // COMPUTED, never spelled: a below-floor literal here is a stray id in
+    // this very file, and `SC-1522`'s guard reports its own test. Caught by
+    // that guard on this file's first battery run.
+    const id = `SC-${FIXTURE_SC_FLOOR + 1}`;
+    const todo = `test.todo("${id}: the rate is a rate");\n`;
+    const real = `test("${id}: the rate is a rate", () => {});\n`;
 
     expect(kinds(todo).title ?? [], "a todo was credited as coverage").toEqual([]);
-    expect(kinds(todo)["unrun-title"], "the todo was dropped instead of recorded").toEqual(["SC-8001"]);
+    expect(kinds(todo)["unrun-title"], "the todo was dropped instead of recorded").toEqual([id]);
     // The positive control, without which every assertion here is satisfied
     // by a scanner that credits no title at all.
-    expect(kinds(real).title).toEqual(["SC-8001"]);
+    expect(kinds(real).title).toEqual([id]);
     expect(kinds(real)["unrun-title"] ?? []).toEqual([]);
   });
 
