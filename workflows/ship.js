@@ -94,6 +94,15 @@ const GATE_RESULT_SCHEMA = {
   properties: {
     result: { type: 'string', enum: ['PASS', 'FAIL'] },
     failures: { type: 'array', items: { type: 'string' } },
+    // #532 — the NAMES, separately from the free-text failure lines above.
+    // The ship gate re-runs the verify checks, so a refusal recorded at
+    // verify may have been measured again, later, and passed. Retiring it
+    // needs two things the failure strings cannot give: a check name to
+    // match on, and a positive witness that this gate RAN it. Absence from
+    // `failedChecks` alone means either "passed" or "never ran", and those
+    // are opposite facts.
+    checksRun: { type: 'array', items: { type: 'string' } },
+    failedChecks: { type: 'array', items: { type: 'string' } },
     category: { type: 'string', enum: ['STATE', 'CODE', 'DISCOVERY', 'ENVIRONMENT', 'NON_RETRYABLE'] },
     regressionTarget: { type: 'string', enum: ['BUILD', 'DISCOVERY'] },
     // #59 SC-4 — `state.evidencePrevalidation`, carried out of
@@ -1710,13 +1719,48 @@ const refusals = []
 /** A gate failure line that says a fan-out slot was never written. */
 const UNPOPULATED_SLOT_LINE = /not populated/i
 
-function recordRefusal(kind, phaseName, detail) {
+// ──── REFUSAL-CURRENCY-START ────
+/**
+ * Retire refusals a later gate re-ran and did not reproduce (#532).
+ *
+ * An inlined copy of lib/gate-refusal-currency.ts — ship.js has no module
+ * loading (#69). test/gate-refusal-currency.test.ts extracts this block,
+ * executes it, and runs both copies over one matrix, so the duplication
+ * cannot drift silently.
+ */
+function resolvedCheckNames(report) {
+  if (!report || !Array.isArray(report.checksRun)) return null
+  const failed = new Set((Array.isArray(report.failedChecks) ? report.failedChecks : [])
+    .filter(c => typeof c === 'string' && c !== ''))
+  return report.checksRun.filter(c => typeof c === 'string' && c !== '' && !failed.has(c))
+}
+
+function retireSupersededRefusals(entries, report) {
+  const resolved = resolvedCheckNames(report)
+  if (resolved === null || resolved.length === 0) return []
+  const names = new Set(resolved)
+  const dropped = []
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const check = entries[i] && entries[i].check
+    if (typeof check === 'string' && check !== '' && names.has(check)) {
+      dropped.unshift(entries.splice(i, 1)[0])
+    }
+  }
+  return dropped
+}
+// ──── REFUSAL-CURRENCY-END ────
+
+function recordRefusal(kind, phaseName, detail, check) {
   const entry = {
     // An unranked kind is kept, not coerced to a ranked one — it sorts last
     // in failureSummary rather than being quietly promoted past a gate.
     kind: typeof kind === 'string' && kind ? kind : 'REFUSAL',
     phase: typeof phaseName === 'string' && phaseName ? phaseName : 'unknown',
     detail: typeof detail === 'string' && detail ? detail : 'no detail recorded',
+    // #532 — the check this refusal is about, when it is about one. Entries
+    // with no check name are never retired: a refusal nothing re-measures
+    // cannot be shown to have been resolved.
+    ...(typeof check === 'string' && check ? { check } : {}),
   }
   refusals.push(entry)
   return entry
@@ -1751,10 +1795,23 @@ function recordGateRefusal(phaseName, gateName, result) {
   if (lines.length === 0) {
     return [recordRefusal('GATE_FAIL', phaseName, `${tag} ${result.result || 'did not report a result'} with no failures listed`)]
   }
+  // #532 — the check name comes from `failedChecks`, matched by prefix
+  // against the free-text line. A line is tagged only when EXACTLY ONE name
+  // matches it: two names that both prefix one line would make the entry
+  // retirable by either, and a refusal retired by the wrong check's pass is
+  // the bug this is fixing, pointed the other way.
+  const reported = Array.isArray(result.failedChecks)
+    ? result.failedChecks.filter(c => typeof c === 'string' && c)
+    : []
+  const nameFor = line => {
+    const hits = reported.filter(c => line.startsWith(c))
+    return hits.length === 1 ? hits[0] : undefined
+  }
   return lines.map(line => recordRefusal(
     UNPOPULATED_SLOT_LINE.test(line) ? 'UNPOPULATED_SLOT' : 'GATE_FAIL',
     phaseName,
     `${tag}: ${line}`,
+    nameFor(line),
   ))
 }
 
@@ -1911,6 +1968,16 @@ async function runGateWithHeal(gateName, phaseName, healContext, gateOpts = {}) 
    * ones that end a run.
    */
   const gateExit = result => {
+    // #532 — BEFORE recording this gate's own refusals. The ship gate
+    // re-runs the verify checks, so a refusal banked at verify may have been
+    // measured again here and passed; the union of every gate's list put
+    // nineteen entries in one terminal report, several already resolved,
+    // and buried the one that actually blocked the run.
+    const retired = retireSupersededRefusals(refusals, result)
+    if (retired.length > 0) {
+      log(`${gateName} gate re-ran and resolved ${retired.length} earlier refusal(s): ` +
+        retired.map(r => r.check).join(', '))
+    }
     recordGateRefusal(phaseName, gateName, result)
     return result
   }
@@ -1927,7 +1994,14 @@ Run the ${gateName} gate and classify any failures:
    const f = s.gates?.['${gateName}']?.failures || [];
    console.log(JSON.stringify(classifyFailures(f)));
    " 2>&1
-4. Report: result (PASS/FAIL), failures list, category, regressionTarget
+4. Report: result (PASS/FAIL), failures list, category, regressionTarget.
+   Also report, from the same workflow-state.json, two NAME lists copied
+   verbatim out of \`state.gates['${gateName}']\` (#532):
+   - checksRun: its \`checksRun\` array exactly as it appears. If the key is
+     absent, report an empty array and do NOT reconstruct it from anything
+     else — a list you assembled would retire refusals this gate never ran.
+   - failedChecks: the \`check\` field of every entry in its \`failures\`
+     array.
 5. Also report evidencePrevalidation, copied from \`state.evidencePrevalidation\`
    in that same workflow-state.json: {verdict, brokenAcs}, where brokenAcs is
    the \`id\` of every entry in its \`acs\` array whose \`status\` is "broken".

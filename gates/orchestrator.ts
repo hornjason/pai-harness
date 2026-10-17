@@ -8,6 +8,7 @@ import { createGitHubClient, addLabels, addComment, type GitHubClient } from "..
 import { computeACHash } from "../lib/workflow-security";
 import { verifiedPush, leftWorkLocal, type PushOutcome } from "../lib/verified-push";
 import { acProvenance, beginRun } from "./run-attribution";
+import { unionNames } from "../lib/junit-checks";
 import { recordStateWrite } from "../lib/trajectory";
 
 /**
@@ -140,6 +141,7 @@ export function writeGateResult(
   warns: number,
   results: GateResult[],
   projectRoot?: string,
+  checksRun?: string[] | null,
 ): { resultVal: "PASS" | "FAIL"; attempt: number } {
   const state = readState(sf);
   let resultVal: "PASS" | "FAIL" = fails === 0 ? "PASS" : "FAIL";
@@ -169,11 +171,29 @@ export function writeGateResult(
 
   const failures = results.filter(r => r.result === "FAIL");
 
+  // #532. Every check this run reported a verdict for, PASS and FAIL alike.
+  // The ship gate re-runs the verify checks, so a `verify checks >` name
+  // missing from `gates.ship.failures` means either it passed there or ship
+  // never ran it — opposite facts, and the failure list cannot tell them
+  // apart. This is the positive witness that can.
+  //
+  // It is NOT `results.map(...)`: bun prints no `(pass)` markers, so
+  // `results` is a failure list and a `checksRun` built from it would retire
+  // nothing on any run that has ever happened. The names come from the
+  // JUnit report the gate run wrote (lib/junit-checks.ts); the union below
+  // adds the verdicts this function appends after the caller read them.
+  //
+  // `undefined` and `null` are both "this gate said nothing about what it
+  // ran", and the field is left OFF rather than written empty — an empty
+  // list says the gate ran nothing, which is a claim, and a wrong one.
+  const measuredChecks = unionNames(checksRun ?? null, results.map(r => r.check));
+
   state.gates = state.gates || {};
   state.gates[gate] = {
     result: resultVal,
     attempt,
     failures,
+    ...(measuredChecks === null ? {} : { checksRun: measuredChecks }),
     ts,
     commitSha: sha,
   };

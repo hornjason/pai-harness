@@ -283,6 +283,17 @@ it, and the project is no more scanned than it was. When you word a refusal,
 word it after the property you care about, not after the cheapest proxy you
 had to hand, because a proxy is a thing people can satisfy directly.
 
+The same trap takes assertions, not just refusals, and there the tell is a
+mutation row that misses LOW. #532's real-run case asserted that the gate's
+JUnit reading reported more than fifty tests *filtered out*. Making the reader
+treat a filtered-out test as one that RAN — the mutation the case exists to
+catch — leaves that number untouched at 279 and simply adds all 279 names to
+the list, so the row was 2 where 3 was predicted. A count is the proxy; which
+names are in the list is the property. It now asserts that every name the
+reading returns matches the gate's own `--test-name-pattern`, and is 3.
+**When a case asserts a number about a collection, ask whether the defect
+changes the number or only the membership.**
+
 **So name the precondition, then go and build the one fixture that does not
 meet it.** In #492's case that is a project with files in both a scanned and
 an unscanned directory; in #59's it is reading the gate at the phase it
