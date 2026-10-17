@@ -1,5 +1,7 @@
 /**
  * Covers SC-1971..SC-1977 (SCAFFOLD-DECOMPOSITION-SPEC.md), #478.
+ * SC-1978 lives in test/unit/scaffold-project.test.ts, where the branch it
+ * covers lives.
  *
  * `test/unit/scaffold-project.test.ts` spawns a real scaffold in 32 places.
  * One of them died at 5007ms in 2026-10-13; the fix declared a 15_000ms

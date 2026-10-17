@@ -1087,5 +1087,6 @@ scaffold's budget — survives verbatim. Only its derivation moved.
 - [x] SC-1975: test/scaffold-budget.test.ts contains [the census counts both outcomes and names the unmeasured ones] — by name and not by count, because a reader cannot act on "1 case was unmeasured"
 - [x] SC-1976: test/scaffold-budget.test.ts contains [a calibration that was killed hands back the floor, not its ceiling times ten] — the branch is here because the DOCSTRING claimed it before the code did: multiplying a run killed at the ceiling computes a budget from the kill, and hands ten times the budget to exactly the machine that was already too slow
 - [x] SC-1977: test/scaffold-budget.test.ts contains [the scaffold's two output streams are kept apart] — `execSync` gave callers stdout on the success path and `stderr || stdout` on the failure path, and merging them would let a `toContain` in any of 29 assertions be satisfied by a warning on stderr
+- [x] SC-1978: test/unit/scaffold-project.test.ts contains [a deliberately starved case is recorded UNMEASURED instead of failing] — the wrapper's conversion branch exercised where it lives and failing in BOTH directions, because every other fixture in that file meets its budget and #492 is the shape where a battery measures nothing past a precondition they all satisfy
 
-### What was broken to prove it (SC-1971..1977)
+### What was broken to prove it (SC-1971..1978)

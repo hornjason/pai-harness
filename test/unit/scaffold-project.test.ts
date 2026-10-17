@@ -104,14 +104,22 @@ function createTempDir(): string {
   return dir;
 }
 
-function runScaffold(projectPath: string, opts?: { expectFail?: boolean; fix?: boolean; args?: string[] }): string {
+function runScaffold(
+  projectPath: string,
+  opts?: { expectFail?: boolean; fix?: boolean; args?: string[]; budgetMs?: number },
+): string {
   const extraArgs: string[] = opts?.args || [];
   if (opts?.fix) extraArgs.push("--fix");
   const r = runScaffoldProcess({
     script: SCRIPT,
     projectPath,
     args: extraArgs,
-    budgetMs: SCAFFOLD_TIMEOUT_MS,
+    // Injectable so the starved path is reachable in the file where it
+    // lives. Without it the wrapper's conversion branch is unreachable from
+    // this tree — every fixture here meets the budget, which is #492's
+    // shape: a battery whose cases all satisfy a precondition measures
+    // nothing on the other side of it.
+    budgetMs: opts?.budgetMs ?? SCAFFOLD_TIMEOUT_MS,
   });
   // Killed by the budget is not "the scaffold failed" — it is no reading at
   // all, and the two used to arrive at the caller as the same empty string.
@@ -154,6 +162,30 @@ describe("scaffold-project: the test budget must outlast the thing it measures",
     const APPLIED = /^setDefaultTimeout\(TEST_TIMEOUT_MS\);$/m;
     const src = readFileSync(join(import.meta.dir, "scaffold-project.test.ts"), "utf-8");
     expect(APPLIED.test(src), "the budget is declared but never applied").toBe(true);
+  });
+
+  test("a deliberately starved case is recorded UNMEASURED instead of failing", () => {
+    // The wrapper's conversion branch, exercised where it lives rather than
+    // only at the helper. It fails in BOTH directions, which is the point:
+    //
+    //  - if `runScaffold` stops raising on a killed run, the line below it
+    //    executes and this test fails by its own hand;
+    //  - if the wrapper stops converting `ScaffoldUnmeasured`, the error
+    //    propagates and this test fails as a red.
+    //
+    // It also puts one real entry in the census on every run, so the
+    // coverage line below prints a named UNMEASURED rather than describing
+    // a path nothing has taken. `measured N of N+1` here is the control,
+    // not a sick machine.
+    const dir = createTempDir();
+    try {
+      mkdirSync(join(dir, "src"), { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "starved", dependencies: {} }));
+      runScaffold(dir, { fix: true, budgetMs: 1 });
+      throw new Error("a 1ms budget did not starve the scaffold, so the UNMEASURED path was never taken");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("the budget was calibrated on this machine, not read off a constant", () => {
