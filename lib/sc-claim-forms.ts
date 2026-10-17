@@ -177,3 +177,49 @@ function inIdOnlyParenthetical(line: string, at: number): boolean {
   const inner = line.slice(open + 1, close);
   return IDS_ONLY.test(inner) || PAREN_LABEL.test(inner);
 }
+
+/**
+ * A `describe`/`test`/`it` call that opens a title literal, and whether it
+ * will ever run (#574).
+ *
+ * A test title is the project's oldest coverage convention and the one
+ * position that needed no rule — until `test.todo("SC-1930: …")` turned out
+ * to be a title too. A todo is the one test guaranteed never to fail, so
+ * crediting it produces a tick indistinguishable from a tick earned by a
+ * test that can go red. Measured when this was found: 64 ids named only
+ * inside a `.todo`, 37 of them ticked `[x]` in a spec, and 19 more about to
+ * flip on the next run of the sync — one of them from a file whose own
+ * comment says, four lines from the top, that none of its criteria are
+ * covered here.
+ *
+ * `.skip` is the same fact with a different word, and there are five of
+ * those. `.skipIf` and `.todoIf` take a condition, so whether they ran is
+ * not answerable from the source at all; there are none today and they are
+ * named anyway, because a predicate narrower than what it detects is this
+ * repo's third defect shape and the cost of naming them is one word each.
+ *
+ * `.only`, `.each`, `.failing` and `.concurrent` all RUN, so they still
+ * credit — `.failing` included, because a test expected to fail is still a
+ * test that goes red when the expectation stops holding.
+ *
+ * Returns `null` when the text does not open a title call at all. The three
+ * answers are distinct on purpose: a non-running title must be reported as
+ * UNMEASURED rather than dropped, and dropping it would make "nobody has
+ * written this test" look exactly like "nobody has mentioned this id".
+ */
+export type TitleCall = "runs" | "never-runs";
+
+const NON_RUNNING = /\.(?:todo|skip|skipIf|todoIf)\b/;
+
+/** Opens a `describe`/`test`/`it` title, allowing `.each(...)`, `.only`, `.skip`, `.todo`. */
+const TITLE_CALL = /\b(?:describe|test|it)\s*((?:\.\w+\s*(?:\([^)]*\))?\s*)*)\(\s*$/;
+
+/**
+ * THE single exported predicate for whether a title call declares coverage,
+ * for the same reason `commentClaimForm` is: one binding to mutate.
+ */
+export function titleCall(before: string): TitleCall | null {
+  const m = TITLE_CALL.exec(before);
+  if (m === null) return null;
+  return NON_RUNNING.test(m[1] ?? "") ? "never-runs" : "runs";
+}
