@@ -15,10 +15,20 @@
  *
  * The suite is the enforcement; this is where the collector is proven able to
  * fail. Measured, and it is the reason this file exists rather than a note in
- * the PR: short-circuiting `configAccessViolations` to `return []` scored
- * **ZERO** against the conformity suite alone. The tree sits AT its ratchet,
- * so the real collector also returns `[]`, and the two are indistinguishable
- * on a green tree. Every refusal case below drives a PLANTED scan.
+ * the PR: short-circuiting the collector to `return []` scored **ZERO**
+ * against the conformity suite alone. The tree sits AT its ratchet, so the
+ * real collector also returns `[]`, and the two are indistinguishable on a
+ * green tree. Every refusal case below drives a PLANTED scan.
+ *
+ * **The collector is `configAccessViolationRecords`, not
+ * `configAccessViolations`** (#517 review). The second is a pure projection
+ * of the first and is now used only by this file and
+ * `test/config-access-mentions.test.ts`; both production validators go
+ * through the records API. Short-circuiting the projection still scores 9
+ * red, which is why the drift was invisible — but not one of those 9 is a
+ * production path, so the number stayed the same while its meaning changed.
+ * Short-circuiting the real decider scores 15. Point mutations at the
+ * records function.
  *
  * That is ADR-002 D4's own warning turned on the check: "a conformity check
  * that silently scans zero files reports zero violations and is
@@ -667,6 +677,159 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       if (r.file === "") continue;
       expect(Object.keys(s.counts), `${r.file} is not a file the scan saw`).toContain(r.file);
     }
+  });
+
+  /**
+   * CONFIG-2's half of the same change, and the three producer branches the
+   * battery above reads as covered without covering (#528 review).
+   *
+   * Measured by sec-517: reverting **only** `runPromptConfigAccessValidation`
+   * to the old parse, while CONFIG-1 keeps the fix, is **0 red over 902
+   * tests** — including `test/scaffold-conformity.test.ts`, which runs the
+   * real validator. The CONFIG-1-only equivalent is 1 red. One test was
+   * holding up one of the two call sites and nothing was holding up the
+   * other, which reads identically from the diff.
+   *
+   * The cause is structural rather than an oversight: there was a `config1`
+   * probe and no `config2`, and `runPromptConfigAccessValidation` is only
+   * ever invoked against the real repo root, where it emits zero violations.
+   * Its `addFinding` loop body had never executed under test.
+   */
+  const config2 = (root: string) => {
+    const file = join(mkdtempSync(join(tmpdir(), "rungate-517-c2-")), "probe.test.ts");
+    scratch.push(dirname(file));
+    writeFileSync(
+      file,
+      `import { test } from "bun:test";\n` +
+        `import { runPromptConfigAccessValidation, getFindings, clearFindings } from ${JSON.stringify(CONFORMITY)};\n` +
+        `clearFindings();\n` +
+        `runPromptConfigAccessValidation(${JSON.stringify(root)});\n` +
+        `test("zz-report", () => {\n` +
+        `  console.log("F:" + JSON.stringify(getFindings().filter(f => f.ruleId === "CONFIG-2")));\n` +
+        `});\n`,
+    );
+    const r = spawnSync("bun", ["test", file], { cwd: REPO, encoding: "utf-8" });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    const findings = JSON.parse(out.match(/F:(\[.*\])/)?.[1] ?? "null") as
+      | Array<{ severity: string; message: string; file: string }>
+      | null;
+    if (findings === null) throw new Error(`the probe suite never reported findings:\n${out}`);
+    const fails = findings.filter(f => f.severity === "FAIL");
+    return {
+      violations: fails.map(f => f.message),
+      failFiles: fails.map(f => f.file),
+      red: /\b[1-9]\d* fail/.test(out),
+    };
+  };
+
+  test("#528: CONFIG-2's scan refusal reports no file either", () => {
+    // A `workflows/` directory holding no `.js` has `filesScanned === 0`
+    // and `found === true`, so the waiver is declined and this falls
+    // through to the refusal — the one input that reaches CONFIG-2's
+    // addFinding loop on the scan branch. Under the old parse this
+    // reported `file: "the"`, with the suite green.
+    const root = project({ "workflows/README.md": "# not a workflow", "README.md": "# d" });
+    const got = config2(root);
+    expect(got.red, "CONFIG-2 did not refuse, so there is no finding to inspect").toBe(true);
+    expect(got.violations.join("\n"), "a different violation fired").toContain("read NO files");
+    expect(got.failFiles, `the scan refusal reported a path: ${JSON.stringify(got.failFiles)}`)
+      .toEqual([""]);
+    expect(got.failFiles[0], "the stopword is back").not.toBe("the");
+  });
+
+  test("#528: a workflow filename containing a SPACE survives intact", () => {
+    // The case that kills the cheap wrong fix. The 5pm repair for "the
+    // parse yields `the`" is not "produce the field" — it is "keep the
+    // parse, but only accept it when it looks like a path":
+    //
+    //     file: (v.message.split(": ")[1]?.split(" ")[0] || "").includes("/") ? … : ""
+    //
+    // That satisfies both #517 value cases by construction — `the` has no
+    // `/` so it becomes `""`, and `lib/reader.ts` has one so it survives —
+    // and sec-517 measured it at 0 red. It also reinstates exactly the
+    // architecture this change removes, and it is wrong on the first
+    // filename with a space in it, which is what this plants.
+    const root = project({
+      "workflows/my ship.js": `const c = require("./.claude/rungate.json");\n`,
+      "README.md": "# d",
+    });
+    const got = config2(root);
+    expect(got.red, "a direct config read in a workflow did not fail CONFIG-2").toBe(true);
+    expect(got.failFiles, `the path was truncated at the space: ${JSON.stringify(got.failFiles)}`)
+      .toEqual(["workflows/my ship.js"]);
+  });
+
+  test("#528: the parse is gone from the source, not merely out-ranked by it", () => {
+    // The structural backstop for the case above. Both are needed and
+    // neither is redundant: the behavioural case proves the VALUE is right
+    // today, and this proves nobody reinstated the mechanism that was
+    // wrong — a future violation message with no space in its path would
+    // make a re-parsed field correct again, and the behavioural case alone
+    // would go quiet.
+    // Comment lines are cut first, because the docstring above the producer
+    // QUOTES the parse it exists to explain — and a search for a token,
+    // run over a document that discusses the token, finds it every time.
+    // That is `.claude/rules/checks-must-be-able-to-fail.md`'s "search the
+    // slice, not the document", which this assertion walked straight into
+    // on its first run.
+    //
+    // A line filter rather than a regex comment-stripper on purpose: this
+    // repo has a worked example of a regex stripper pairing backticks
+    // across unrelated code and deleting 61% of a file while the guard
+    // reported clean. Crude and inspectable beats clever here.
+    const src = readFileSync(CONFORMITY, "utf-8");
+    const code = src
+      .split("\n")
+      .filter(l => {
+        const t = l.trim();
+        return t.length > 0 && !t.startsWith("*") && !t.startsWith("//") && !t.startsWith("/*");
+      })
+      .join("\n");
+    // A slice that failed to find its own content is an empty string, and
+    // an empty string contains nothing, which is indistinguishable from a
+    // clean result.
+    expect(code.length, "the comment filter ate the file, so this asserted nothing")
+      .toBeGreaterThan(src.length / 3);
+    expect(code, "the quoted parse must survive the filter, or this is testing the filter")
+      .not.toContain("v.split");
+    const parses = code.match(/split\(": "\)\[1\]/g) ?? [];
+    expect(parses, `a path is being parsed back out of a message at ${parses.length} site(s)`)
+      .toEqual([]);
+  });
+
+  test("#528: all three per-file producer branches name their file", () => {
+    // The M2 row in this PR's battery mutated all three at once and scored
+    // 1 red. sec-517 isolated them: that red comes entirely from the
+    // OVER-ratchet branch, and the other two are 0. The battery read as
+    // covering the producer and covered a third of it.
+    //
+    // Each branch gets its own assertion, so each has a row of its own.
+    const under = configAccessViolationRecords(scan({ "lib/a.ts": 1 }), { "lib/a.ts": 5 }, "CONFIG-1");
+    expect(under.length, "the under-ratchet branch did not fire").toBe(1);
+    expect(under[0].file, "the under-ratchet violation did not name its file").toBe("lib/a.ts");
+
+    const absent = configAccessViolationRecords(scan({ "lib/a.ts": 1 }), { "lib/gone.ts": 2 }, "CONFIG-1");
+    const banked = absent.find(v => v.message.includes("lib/gone.ts"));
+    expect(banked, `the banked-but-absent branch did not fire: ${absent.map(v => v.message).join(" | ")}`)
+      .toBeDefined();
+    expect(banked!.file, "the banked-but-absent violation did not name its ratchet entry")
+      .toBe("lib/gone.ts");
+
+    const over = configAccessViolationRecords(scan({ "lib/a.ts": 3 }), { "lib/a.ts": 1 }, "CONFIG-1");
+    expect(over.length, "the over-ratchet branch did not fire").toBe(1);
+    expect(over[0].file).toBe("lib/a.ts");
+  });
+
+  test("#528: the zero-bytes refusal is about the scan, so it names no file", () => {
+    // Mutating this one to `String(scan.filesScanned)` is 0 red, and the
+    // producer's own comment calls out a count-rendered-as-a-path as the
+    // thing to avoid. A count in a column headed `file` is the original
+    // defect with a different stopword.
+    const empty = { filesScanned: 2, bytesScanned: 0, counts: {} } as ConfigAccessScan;
+    const records = configAccessViolationRecords(empty, {}, "CONFIG-1");
+    expect(records.length, "the zero-bytes refusal did not fire").toBe(1);
+    expect(records[0].message, "a different refusal fired").toContain("none had any content");
+    expect(records[0].file, "the file field holds a count rendered as a path").toBe("");
   });
 });
 

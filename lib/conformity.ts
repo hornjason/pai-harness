@@ -3053,7 +3053,22 @@ export function readConfigAccessRatchet(
  * entirely rather than handling it.
  */
 export interface ConfigAccessViolation {
-  /** The file in violation, or `""` when the violation is about the scan. */
+  /**
+   * The file in violation, or `""` when the violation is not about one.
+   *
+   * **`""` is not a one-meaning sentinel, and saying it was would be the
+   * silent-default shape.** `scan.counts` keys can never be empty —
+   * `walkSources` seeds every one from a scan directory and
+   * `scanPromptConfigAccess` prefixes `workflows/`, so all of them contain
+   * a `/`. `banked` keys CAN be: `readConfigAccessRatchet` validates only
+   * that the VALUE is a number, so a ratchet carrying `{"": 2}` produces a
+   * banked-but-absent violation whose `file` is `""` — a violation that IS
+   * about a ratchet entry, indistinguishable here from one about the scan.
+   *
+   * Measured by sec-517, and not a regression: the parse this replaced
+   * produced `""` there too. Recorded because the sentence it replaces
+   * claimed a guarantee the code does not make.
+   */
   file: string;
   message: string;
 }
@@ -3077,6 +3092,21 @@ export function configAccessViolations(
     .map(v => v.message);
 }
 
+/**
+ * Turn a scan into refusals, as RECORDS. The one binding that decides what
+ * a config-access violation is.
+ *
+ * Empty allows. The ratchet refuses in BOTH directions: over its number
+ * fails, under its number fails, and a file absent from the ratchet is
+ * allowed nothing — so a new reader fails the suite even while the total is
+ * above zero, and clearing a file means deleting its entry in the same
+ * commit.
+ *
+ * **This is the mutation target, not `configAccessViolations`.** That one
+ * is now a pure projection used only by tests; short-circuiting it to
+ * `return []` still scores red, but not one of those reds is a production
+ * path, so the score would be unchanged and the meaning would not.
+ */
 export function configAccessViolationRecords(
   scan: ConfigAccessScan,
   banked: Record<string, number>,
