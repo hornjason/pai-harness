@@ -3,7 +3,8 @@ import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
-import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift } from "./helpers/scaffold-fixture";
+import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift, generatedProseWords } from "./helpers/scaffold-fixture";
+
 
 const OUTPUT = "/tmp/rungate-phase0-test";
 const ROLES_OUTPUT = "/tmp/rungate-phase0-roles-test";
@@ -155,11 +156,12 @@ describe("Phase 0: Pre-flight + static files", () => {
     });
 
     test("SC-139: AGENTS.md rules content under 200 words", () => {
-      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
-      const lines = content.split("\n")
-        .filter(l => !l.startsWith("#") && !l.startsWith("|") && !l.startsWith("```") && l.trim().length > 0);
-      const words = lines.join(" ").split(/\s+/).length;
-      expect(words).toBeLessThanOrEqual(200);
+      const reading = generatedProseWords(join(OUTPUT, "AGENTS.md"));
+      // The fixture carries a Hard Constraints section since #568, and the
+      // cap is on what the HARNESS writes — see the helper for why.
+      expect(reading.preserved, "the fixture lost its constraints, so the exclusion hides nothing").not.toBeNull();
+      expect(reading.words).toBeLessThanOrEqual(200);
+      expect(reading.stillOnDisk, "the excluded section is not in the file either").toBe(true);
     });
 
     test("SC-140/SC-145: identity before methodology in brief", () => {

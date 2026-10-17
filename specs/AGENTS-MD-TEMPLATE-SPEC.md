@@ -525,3 +525,106 @@ fallback, and shortening the TODO back to its old wording.
 - [x] SC-1894: test/agents-md-spec-listing.test.ts contains [SPEC-TEMPLATE.md is not a spec] — one binding, asked of the scanner's routing table and of the audit over the same tree
 - [x] SC-1895: test/agents-md-spec-listing.test.ts contains [every rule the generator writes is a surface the audit searches] — the anti-drift link, and the reason the surfaces are a directory rather than a filename
 - [x] SC-1896: test/agents-md-spec-listing.test.ts contains [a spec mentioned in prose is not a spec that is listed] — found by a mutation row measuring 1 where 2 was predicted, and the row that stayed green was the live tree
+
+## The one section the spec guarantees survives, deleted by a run that reported success (#568)
+
+`specs/bootstrap-data-flow/problem-statement.md` makes exactly one promise
+about user content:
+
+> **Everything is regenerable.** All harness-managed files can be rebuilt
+> from scratch by re-running scaffold. **The only user-owned content that
+> survives regeneration is Hard Constraints in AGENTS.md** (preserved
+> between markers).
+
+Nothing implemented it. `lib/scaffold/write-steps.ts` built the file from
+the template and called `writeFileSync`. Measured on a consumer: one run
+removed **37 constraint lines** — the test-container promotion sequence, a
+permanently-disabled endpoint, the deploy command — and reported
+`REGENERATED: AGENTS.md`, exit 0. The diff reads `M`, not `D`.
+
+Four weeks later an agent on that project removed a flag an earlier issue
+had deliberately set, because nothing in the repo said why. That is the
+cost in its proper unit: not a file, a decision somebody had to make twice.
+
+### AGENTS.md was the only rewritten file with no declared strategy
+
+The `OWNED_FILES` table in `lib/scaffold/owned-files.ts` is #208's answer to
+exactly this: a file the harness rewrites must declare HOW, and
+`decideOwnedWrite` is the one binding every write routes through. AGENTS.md
+— the most-rewritten file in any consumer tree — was absent from both. It
+is now `section-preserving`, which is a fifth strategy rather than a
+special case at the call site, because a strategy implemented at a call
+site is how this one got lost.
+
+Routing it through the writer also closed a hole in #507: a bare
+`writeFileSync` FOLLOWS a symlink, so every other owned file had the
+refusal and the one file every consumer has did not.
+
+### The unit is the section, not the marker pair
+
+The spec says "between markers", and `scripts/extract-constraints.ts` does
+write between `<!-- BEGIN AUTO-EXTRACTED -->` and its `END`. On the
+consumer that lost them, **most of the section was outside the markers**:
+eight extracted lines between them, twenty-nine hand-written after.
+Anchoring on the markers would have rescued the lines a machine can
+regenerate and dropped the ones only a human holds — the most valuable
+content in the file, selected against by the mechanism that was easiest to
+anchor on.
+
+So the preserved unit is the heading and everything up to the next `##`.
+The markers are ordinary lines inside it, and a project that has never run
+the extractor behaves identically.
+
+### The post-condition is the check
+
+`preserveSections` could be wrong in several ways — a missing anchor, a
+heading at EOF, a template that one day grows its own Hard Constraints
+section. Rather than reason about each, it compares the lines it read
+against the lines it produced and reports the difference, and
+`decideOwnedWrite` refuses the write when that difference is non-empty,
+naming every line. A merge that silently drops something is the defect
+this issue is about; a merge that names what it dropped is a decision for a
+human.
+
+### SC-139's word cap counted content the harness does not own
+
+The golden fixture now carries a Hard Constraints section, so the
+preservation is covered by the primary oracle rather than by a bespoke
+test — and that immediately turned SC-139 red. Its 200-word cap is on the
+prose **rungate writes**; counting a consumer's constraints against it
+means a project with many non-inferable rules fails a check about the
+harness's verbosity, and the cheapest way to pass is to delete
+constraints. The cap now excludes the preserved section through the same
+binding that preserves it, and asserts the section is present before
+excluding it, so the exclusion cannot hide an empty one.
+
+### What was broken to prove it
+
+Five mutations over 134 tests across six files. Baseline 134 pass, 0 fail,
+re-read three times before any mutation row. None is left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the call site back to a bare `writeFileSync` | 2 | 2 |
+| the `section-preserving` branch skipped in `decideOwnedWrite` | 2 | 2 |
+| `readHardConstraints` never finds the section | 3 | 3 |
+| the loss post-condition blinded to `[]` | 1 | 1 |
+| the empty-section guard widened to admit a bare heading | 1 | 1 |
+
+One row needs its history stated rather than its number: the second
+mutation measured **3** on its first run and **2** on the four runs after
+it, with the same two named failures each time, while the unmutated
+baseline measured 134 pass / 0 fail three times in a row. The extra red was
+not reproducible and is not explained. It is recorded because a battery row
+that moved once is a fact about the instrument, and
+`.claude/rules/checks-must-be-able-to-fail.md` is explicit that a count
+read from a different run than the names beside it is two measurements, not
+one.
+
+### Success Criteria
+
+- [x] SC-1950: test/agents-md-sections.test.ts contains [a re-scaffold leaves every Hard Constraints line where it found it] — the real scaffold run twice over a real project, asserted line by line, with the regeneration itself asserted first so a run that skipped the file cannot pass
+- [x] SC-1951: test/agents-md-sections.test.ts contains [a project with no such section is regenerated as before] — the positive control, plus the empty-section case that separates "preserved nothing" from "preserved something"
+- [x] SC-1952: test/agents-md-sections.test.ts contains [a merge that would drop a line refuses, and names the line] — reached through `decideOwnedWrite`, with the ordinary write still happening so the refusal is not a writer that refuses everything
+- [x] SC-1953: test/agents-md-sections.test.ts contains [AGENTS.md is written through the owned-file writer] — the #507 refusal reaching the one file it never covered, asserted on behaviour and on the call site
+- [x] SC-1954: test/agents-md-sections.test.ts contains [the section is read as a section, not as a prefix match] — the boundaries, each of which was a way to lose content: the next `##` ends it, a `###` belongs to it, a heading at EOF has no terminator

@@ -9,6 +9,7 @@ import { execSync } from "child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { initFixtureRepo, commitFixture } from "./git-fixture";
+import { readHardConstraints, type SectionReading } from "../../lib/agents-md-sections";
 
 // bootstrap re-hashed 2026-10-05 (#80): redirect-stub `governs` was "TODO".
 const SPEC_HASHES: Record<string, string> = { bootstrap: "05f388d8b3a2e036", testPlan: "352ebe436fbd3330" };
@@ -146,5 +147,43 @@ export function seedRolesConfig(dest: string): () => void {
         model: ROLES_CANARY_MODEL,
       },
     }, null, 2) + "\n");
+  };
+}
+
+export interface ProseReading {
+  /** Words of prose the HARNESS wrote — the subject of SC-139's 200-word cap. */
+  words: number;
+  /** The user-owned section excluded from the count, or null if there is none. */
+  preserved: SectionReading | null;
+  /** Whether that section is still in the file. Excluding it is not deleting it. */
+  stillOnDisk: boolean;
+}
+
+/**
+ * Count the generated prose in an AGENTS.md, excluding the one section the
+ * harness does not own (#568).
+ *
+ * SC-139 caps AGENTS.md prose at 200 words, and the cap is about rungate's
+ * verbosity. Since #568 a consumer's `## Hard Constraints` section is
+ * carried forward verbatim, so counting it would mean a project with many
+ * non-inferable rules fails a check about the harness — and the cheapest
+ * way to pass would be to delete constraints, which is the thing #568
+ * exists to stop happening.
+ *
+ * The exclusion goes through `readHardConstraints`, the same binding that
+ * does the preserving, so there is one definition of where the section
+ * ends rather than a second one here that can drift from it.
+ */
+export function generatedProseWords(agentsMdPath: string): ProseReading {
+  const content = readFileSync(agentsMdPath, "utf-8");
+  const preserved = readHardConstraints(content);
+  const generated = preserved === null ? content : content.replace(preserved.text, "");
+  const lines = generated
+    .split("\n")
+    .filter(l => !l.startsWith("#") && !l.startsWith("|") && !l.startsWith("```") && l.trim().length > 0);
+  return {
+    words: lines.join(" ").split(/\s+/).filter(w => w !== "").length,
+    preserved,
+    stillOnDisk: preserved === null || content.includes(preserved.text),
   };
 }

@@ -53,6 +53,8 @@
 
 import { createHash } from "crypto";
 
+import { preserveSections } from "../agents-md-sections";
+
 /** How the generator writes one owned file. */
 export type WriteStrategy =
   /** Rewritten every run. Reported CHANGED only when the bytes differ. */
@@ -61,6 +63,8 @@ export type WriteStrategy =
   | "provenance"
   /** The harness owns named jobs inside a file a consumer also writes to. */
   | "job-preserving"
+  /** The harness owns the file except for named sections, which carry forward (#568). */
+  | "section-preserving"
   /** Seeded once and never rewritten. Someone else owns the content. */
   | "create-only";
 
@@ -81,6 +85,16 @@ export interface OwnedFile {
  * code does not have — which is the whole of #208.
  */
 export const OWNED_FILES: OwnedFile[] = [
+  {
+    // Absent from this list until #568, which is how a run could delete 37
+    // lines of a consumer's Hard Constraints and report `REGENERATED`: the
+    // most-rewritten file in the tree was the one file with no declared
+    // strategy and no route through `decideOwnedWrite`.
+    path: "AGENTS.md",
+    strategy: "section-preserving",
+    customize: "Everything but `## Hard Constraints` is generated from the scan and `.claude/rungate/`; put non-inferable project rules in that section and they carry forward",
+    avoid: "Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it",
+  },
   {
     path: ".github/workflows/ci.yml",
     strategy: "job-preserving",
@@ -206,9 +220,9 @@ export function stampComment(generated: string): string {
 }
 
 export interface WriteDecision {
-  action: "create" | "unchanged" | "changed" | "preserve";
+  action: "create" | "unchanged" | "changed" | "preserve" | "refuse";
   reason: string;
-  /** The bytes to write. Absent for `unchanged` and `preserve`. */
+  /** The bytes to write. Absent for `unchanged`, `preserve` and `refuse`. */
   content?: string;
 }
 
@@ -247,6 +261,32 @@ export function decideOwnedWrite(
 
   if (strategy === "create-only") {
     return { action: "unchanged", reason: "seeded once; its content is not the harness's" };
+  }
+
+  if (strategy === "section-preserving") {
+    // The merge is in `lib/agents-md-sections.ts`; what belongs HERE is the
+    // decision, so a strategy cannot be implemented at a call site and left
+    // out of the one binding every owned file routes through.
+    const merged = preserveSections(existing, generated);
+    if (merged.lost.length > 0) {
+      return {
+        action: "refuse",
+        reason:
+          `${merged.lost.length} line(s) of user-owned content would be lost, and the spec ` +
+          `guarantees they survive regeneration: ${merged.lost.join(" | ")}`,
+      };
+    }
+    if (bytesIdentical(existing, merged.content)) {
+      return { action: "unchanged", reason: "regenerated output is byte-identical" };
+    }
+    return {
+      action: "changed",
+      reason:
+        merged.preserved === null
+          ? "regenerated output differs"
+          : `regenerated output differs; ${merged.preserved.lines.length} line(s) of user-owned content carried forward`,
+      content: merged.content,
+    };
   }
 
   if (strategy === "provenance") {

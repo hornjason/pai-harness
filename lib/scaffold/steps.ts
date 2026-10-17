@@ -188,6 +188,15 @@ export function regenerateOwned(
     );
     return;
   }
+  if (decision.action === "refuse") {
+    // Not the same thing as `preserve`, and the advice is the opposite:
+    // `preserve` means the file on disk is yours and the generator stood
+    // down, so deleting it accepts the generator. This means the generator
+    // cannot produce an output that keeps a promise the spec makes, and
+    // deleting the file would destroy exactly the content at issue.
+    actions.push(`${SCAFFOLD_REFUSE}: ${label} not written — ${decision.reason}`);
+    return;
+  }
   if (decision.action === "unchanged") {
     actions.push(`UNCHANGED: ${label} (${decision.reason})`);
     return;
