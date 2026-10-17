@@ -140,7 +140,53 @@ describe("#531: the changed-file list is branch-relative", () => {
     const ok = readBranchDiff("a".repeat(40), spy, "prove-evidence-type");
     expect(ok.files).toEqual([]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toEqual(["diff", "--name-only", `${"a".repeat(40)}...HEAD`]);
+    expect(calls[0]).toEqual(["diff", "--name-only", "-z", `${"a".repeat(40)}...HEAD`]);
+  });
+
+  test("SC-1883: a UI file with a non-ASCII name is still a UI file", () => {
+    // `git diff --name-only` C-QUOTES any path holding a non-ASCII byte, a
+    // quote, a tab or a newline — `"caf\303\251.tsx"`, quotes included. Every
+    // consumer of this list is a filename regex, and `/\.(tsx)$/i` does not
+    // match a string ending in `"`, so an accented component walks straight
+    // past `local-ui-validated` and `quinn-on-ui-change`. Same defect as the
+    // dot count — a changed-file list that is wrong about what changed —
+    // through the encoding instead.
+    //
+    // `scripts/verify-merge-content.ts` hit this first: two dropped files
+    // compared ABSENT to ABSENT and the merge printed "2 file(s) landed as
+    // reviewed". `-z` is the house fix and it is used here for the same
+    // reason.
+    const root = mkdtempSync(join(tmpdir(), "branch-diff-utf8-"));
+    scratch.push(root);
+    git(root, "init", "-q", "-b", "main");
+    git(root, "config", "user.email", "t@example.com");
+    git(root, "config", "user.name", "t");
+    writeFileSync(join(root, "base.txt"), "base\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "A");
+    const base = git(root, "rev-parse", "HEAD");
+
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "café.tsx"), "export const x = 1;\n");
+    git(root, "add", "-A");
+    git(root, "commit", "-q", "-m", "B");
+
+    const reading = readBranchDiff(base, runner(root), "quinn-tested-changed-files");
+    expect(reading.files, `could not read the diff — ${reading.reason}`).not.toBeNull();
+    expect(reading.files).toEqual(["src/café.tsx"]);
+    // The property the gates actually ask, spelled the way they ask it.
+    expect(reading.files!.filter(f => /\.(tsx|jsx|css|scss|html|svg|less)$/i.test(f)))
+      .toEqual(["src/café.tsx"]);
+
+    // The instrument: without `-z` git really does quote this path, so the
+    // row above is not passing because the fixture happens to be plain.
+    const quoted = execFileSync(
+      "git", ["diff", "--name-only", `${base}...HEAD`],
+      { cwd: root, encoding: "utf-8" },
+    ).trim();
+    expect(quoted, "git did not quote the path, so this fixture cannot witness the fix")
+      .toBe('"src/caf\\303\\251.tsx"');
+    expect(/\.(tsx)$/i.test(quoted), "the quoted form matched the UI regex after all").toBe(false);
   });
 
   test("SC-1881: the scope commit is read from the tree under test", () => {
@@ -167,7 +213,7 @@ describe("#531: the changed-file list is branch-relative", () => {
       projectRoot: root, treeUnderTest: wt, acs: [], gates: {}, changelog: [],
     }));
 
-    writeGateResult(sf, "scope", 1, 0, 0, [{ check: "c", result: "PASS" }], root);
+    writeGateResult(sf, "scope", 1, 0, 0, [{ check: "c", result: "PASS", detail: "passed" }], root);
     const recorded = JSON.parse(readFileSync(sf, "utf-8")).gates.scope.commitSha;
     expect(recorded, "the gate recorded the main checkout's HEAD, not the tree it measured")
       .toBe(worktreeHead);
@@ -206,7 +252,12 @@ describe("#531: the call sites go through the reading", () => {
       expect(SRC, `${check} no longer reads the branch diff through the shared binding`)
         .toContain(`readBranchDiff(scopeSha, a => execArgvOf("git", a, root), "${check}")`);
     }
-    expect(branchDiffArgs("abc1234")[2], "the shared binding stopped using three dots")
-      .toBe("abc1234...HEAD");
+    // Asserted by VALUE rather than by index: an argument added or removed
+    // ahead of the revision shifts the position, and a positional assertion
+    // then reports the dot count as broken when nothing about it changed.
+    expect(branchDiffArgs("abc1234"), "the shared binding stopped using three dots")
+      .toContain("abc1234...HEAD");
+    expect(branchDiffArgs("abc1234"), "the shared binding stopped asking for NUL-separated paths")
+      .toContain("-z");
   });
 });

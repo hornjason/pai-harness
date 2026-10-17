@@ -8846,3 +8846,82 @@ symlink in it.
 ### Success Criteria
 
 - [x] SC-1877: test/config-access-conformity.test.ts contains [a declined entry that is not a symlink is answered without a syscall] — a dirent that disagrees with the filesystem is the only way a saved syscall shows up in a test
+
+## A changed-file list that carried the other side of the fork (#531)
+
+Three gate checks — `prove-evidence-type`, `contextual-skip-validation` and
+`quinn-tested-changed-files` — decide what a run must prove from the files it
+changed, and all three built that list with
+
+```
+git diff --name-only ${scopeSha}..HEAD
+```
+
+**Two dots compares two commits directly.** When `scopeSha` is not an
+ancestor of HEAD the output also carries everything on the other side of the
+fork, and the gate attributes all of it to this branch. Measured on run
+`wf_e230fddc-a71`, whose `gates.scope.commitSha` was `247afba4`:
+
+```
+git merge-base --is-ancestor 247afba4 HEAD        -> false
+git diff --name-only 247afba4..HEAD   | wc -l     -> 78
+git diff --name-only 247afba4...HEAD  | wc -l     ->  3
+```
+
+The branch touched three files. The gate saw seventy-eight and refused twice
+— over a `Dockerfile` and over seven `.tsx` files that do not exist on it.
+Three dots diffs against the MERGE BASE, which is the question all three
+checks are actually asking.
+
+### The sha was also recorded from the wrong tree, and either half alone
+### still mis-attributes
+
+`247afba4` was the tip of the branch the MAIN CHECKOUT happened to be sitting
+on, while the run was shipping a worktree. `writeGateResult` recorded
+`gitSha(state.projectRoot)`. The state names `treeUnderTest` correctly, so
+the right value was available and the writer read HEAD from somewhere else —
+`.claude/rules/checks-must-be-able-to-fail.md`'s *"a consumer reads a name, a
+producer writes a different name"* in its smallest form. The precedent for
+the fix was already in the tree: the test census reads `censusRoot =
+state.treeUnderTest || state.projectRoot`.
+
+### An unusable diff is UNMEASURED
+
+The call sites read `if (!diff.ok || !diff.output) return; // no changed
+files`. Those are opposite facts, and the first is the one a check should be
+loudest about: every file-matched gate below reads this list, and an empty
+one waves all of them through. `files: null` is "could not measure",
+`files: []` is "measured, nothing changed".
+
+The sha is also validated as `[0-9a-f]{7,64}` before any command is built,
+and the runner is argv-form rather than a shell string. It comes out of
+`workflow-state.json`, which this run's own agents write, and the three old
+call sites interpolated it into `sh`.
+
+### What was broken to prove it
+
+Five mutations over 5 tests in `test/branch-diff.test.ts`. Every count was
+predicted before the run and every one matched. None is left in the tree.
+
+| Mutation | Red | First prediction |
+|---|---|---|
+| `branchDiffArgs` back to two dots | 3 | 3 |
+| a failed diff returns `[]` instead of `null` | 1 | 1 |
+| the sha validation widened to anything non-empty | 1 | 1 |
+| the scope sha recorded from `projectRoot` again | 1 | 1 |
+| one call site spells the two-dot diff inline again | 1 | 1 |
+
+The first row's 3 is the fork case, the argv assertion, and the
+reintroduction guard — three different questions about one dot.
+
+SC-1878 measures its own fixture before trusting it: the two-dot answer is
+asserted to be the three-file list, because a fixture whose branches share a
+tip gives the same answer both ways and looks identical in the diff.
+
+### Success Criteria
+
+- [x] SC-1878: test/branch-diff.test.ts contains [a commit on the other side of the fork is not this branch] — over a real repository with a real fork, with the two-dot answer measured so the fixture cannot agree with itself
+- [x] SC-1879: test/branch-diff.test.ts contains [a diff git could not answer is UNMEASURED] — and a branch that changed nothing is an empty list, which is a measurement
+- [x] SC-1880: test/branch-diff.test.ts contains [a scope sha that is not a git object name gets no command built for it] — the value comes from a file this run's own agents write
+- [x] SC-1881: test/branch-diff.test.ts contains [the scope commit is read from the tree under test] — through a real worktree whose HEAD is asserted to differ from the main checkout's
+- [x] SC-1882: test/branch-diff.test.ts contains [no gate check builds a two-dot diff against the scope sha] — the reintroduction guard the library tests cannot provide

@@ -48,6 +48,16 @@
  * gate below it then passes for want of input. The reading keeps them apart:
  * `files: null` is "could not measure", `files: []` is "measured, nothing
  * changed" (`.claude/rules/config-access.md`, Silent Default Substitution).
+ *
+ * **The call sites still RETURN on `null`, and that is deliberate rather
+ * than an oversight.** An unreachable scope sha is an ORDINARY outcome, not
+ * an anomaly: a rebase during the run — which this project does on nearly
+ * every PR — leaves `gates.scope.commitSha` pointing at a commit no longer
+ * in the branch's history, and `A...HEAD` then fails. Refusing on it would
+ * red every rebased run, so the reading is printed as `WARN: … UNMEASURED`
+ * and the check declines to decide. The difference from before is that the
+ * decline is now visible in the gate log instead of being spelled
+ * `// no changed files`.
  */
 
 /** What one reading of the branch diff says. */
@@ -75,10 +85,23 @@ export type DiffRunner = (args: string[]) => { ok: boolean; output: string };
 /** A git object name and nothing else. */
 const SHA = /^[0-9a-f]{7,64}$/;
 
-/** The argv. One place, so the dot count has one binding to mutate. */
+/**
+ * The argv. One place, so the dot count has one binding to mutate.
+ *
+ * `-z` for the same reason `scripts/verify-merge-content.ts` uses it:
+ * `git diff --name-only` C-QUOTES any path holding a non-ASCII byte, a
+ * quote, a tab or a newline — `"caf\303\251.tsx"`, quotes included. Every
+ * consumer of this list is a regex on the filename, and
+ * `/\.(tsx|jsx|css)$/i` does not match a string ending in `"`. So a UI file
+ * with an accent in its name walks past `local-ui-validated` and
+ * `quinn-on-ui-change` without matching anything, which is #531's own defect
+ * — a changed-file list that is wrong about what changed — arriving through
+ * the encoding instead of through the dot count. `-z` emits raw bytes,
+ * NUL-separated, and nothing is ever re-parsed.
+ */
 export function branchDiffArgs(scopeSha: string): string[] {
   // THREE dots. See the docstring: two dots is the whole of #531.
-  return ["diff", "--name-only", `${scopeSha}...HEAD`];
+  return ["diff", "--name-only", "-z", `${scopeSha}...HEAD`];
 }
 
 /**
@@ -110,5 +133,7 @@ export function readBranchDiff(
         `this list, and an empty one waves all of them through (#531).`,
     };
   }
-  return { files: r.output.split("\n").map(f => f.trim()).filter(Boolean) };
+  // NUL, not newline, and no `trim` on the paths themselves — a filename may
+  // legally contain a newline, and trimming one would rewrite it.
+  return { files: r.output.split("\0").filter(Boolean) };
 }
