@@ -9794,3 +9794,58 @@ block is now asserted directly and the row is 1.
 - [x] SC-1927: test/report-provenance.test.ts contains [a currency it could not establish is never a pass] — no repository, detached HEAD and an unresolvable ref, with a current reading as the positive control
 - [x] SC-1928: test/report-provenance.test.ts contains [origin is preferred over the local branch] — against a real bare remote, so an unpushed commit reads as not current rather than as the tip
 - [x] SC-1929: test/report-provenance.test.ts contains [the CLI exits non-zero on a stale reading] — every library case stays green if the script prints the block and exits 0, which is the one line that makes a reviewer stop
+
+## A refusal proven on one strategy and described as belonging to all of them (#507)
+
+`existsSync` RESOLVES a symlink and `writeFileSync` FOLLOWS one, so the two
+disagree about exactly one input: a dangling link is absent to the guard and
+a live write target to the writer. Measured before the fix: a symlink
+planted at `project-state.json` made the scaffold create
+`/tmp/dang/victim/newfile.json`, outside the project root, and report
+`CREATED: project-state.json`.
+
+The hole was found by the security review of PR #502 and fixed there, in
+`regenerateOwned` — the writer that **every** owned file goes through, which
+makes the fix older and wider than the PR that carried it. #507 exists
+because the pre-existing half was otherwise buried in a PR about SUCCESS.md
+seeding.
+
+### What this issue actually had left to do
+
+The fix is on main and it works. What shipped with it is one case driving
+`seedSuccessDoc`, and it says so in its own comment: *"Asserted through
+SUCCESS.md because that is this PR's file."* SUCCESS.md is `create-only`.
+**Every other owned file is `regenerate` or `provenance`** — CODE-MAP.md,
+the agent briefs, the conformity test, the rules files — and those are the
+ones rewritten on every run.
+
+A refusal measured on one strategy and claimed for all of them is a check
+narrower than its description, so SC-1949 measures the other strategies
+rather than recording them. The live-link half matters on its own: there
+`existsSync` and `writeFileSync` AGREE, and what they agree on is
+overwriting a file outside the project.
+
+### What was broken to prove it
+
+Two mutations over 151 tests — every file that drives `regenerateOwned`,
+`ownedStrategy` or `safeWrite`, so a refusal that moved to a second site
+would show up as a row that did not move. Baseline 151 pass, 0 fail, read
+before either mutation row. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| the symlink refusal is removed | 3 | 3 |
+| `lstatSync` back to `existsSync` + `statSync` | 3 | 2 |
+
+**The first row was 1 before SC-1949 existed**, which is the whole of this
+issue in one number: the refusal was real, and only one of the strategies it
+covers could witness it.
+
+The second row's extra red is the live-symlink case, and it is about the
+mutation: `statSync` on a live link describes the TARGET, so the link reads
+as an ordinary existing file and the refusal never fires. The prediction
+counted only the dangling case, which is the one the original finding named.
+
+### Success Criteria
+
+- [x] SC-1949: test/scaffold-ownership.test.ts contains [no owned file is written through a symlink] — a dangling link on a `regenerate` file, a live link to a file outside the project, and a real file on the same strategy as the positive control

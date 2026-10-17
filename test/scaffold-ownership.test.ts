@@ -434,3 +434,72 @@ describe("#208 AC-2: measured on this repo", () => {
       .not.toBe("// drifted\n");
   }, 240_000);
 });
+
+/**
+ * #507: the symlink refusal belongs to the WRITER, not to one file.
+ *
+ * The hole was found by the security review of PR #502 and fixed there, in
+ * `regenerateOwned` — the writer every owned file goes through. The case
+ * that shipped with it drives `seedSuccessDoc`, which is `create-only`, and
+ * says so: *"Asserted through SUCCESS.md because that is this PR's file."*
+ *
+ * Every other owned file is `regenerate` or `provenance`, and those are the
+ * ones rewritten on every run. A refusal proven on one strategy and
+ * described as belonging to all of them is the gap #507 exists to record,
+ * so it is measured here rather than recorded.
+ */
+describe("#507 SC-1949: no owned file is written through a symlink, whatever its strategy", () => {
+  const victimRoot = () => {
+    const d = mkdtempSync(join(tmpdir(), "rungate-507-victim-"));
+    scratch.push(d);
+    return d;
+  };
+
+  test("a DANGLING symlink is refused on a regenerate-strategy file", () => {
+    // Dangling is the input the two calls disagree about: `existsSync`
+    // resolves the link and reports absent, `writeFileSync` follows it and
+    // creates the target. Anywhere on the filesystem.
+    const root = dir();
+    const outside = victimRoot();
+    const escaped = join(outside, "escaped.md");
+    symlinkSync(escaped, join(root, "CODE-MAP.md"));
+    expect(ownedStrategy("CODE-MAP.md"), "the fixture is not on the strategy it claims")
+      .toBe("regenerate");
+    expect(existsSync(join(root, "CODE-MAP.md")), "the fixture's link is not dangling").toBe(false);
+
+    const actions: string[] = [];
+    regenerateOwned(join(root, "CODE-MAP.md"), "# generated\n", "CODE-MAP.md", actions);
+
+    expect(actions.join("\n"), "the writer wrote through the link").toContain(SCAFFOLD_REFUSE);
+    expect(actions.join("\n")).toContain("is a symlink");
+    expect(existsSync(escaped), "the scaffold wrote outside the project root").toBe(false);
+  });
+
+  test("a LIVE symlink to a file outside the project is refused too", () => {
+    // The other half, and the one a dangling-only fix would miss: the
+    // target exists, so `existsSync` and `writeFileSync` agree — and they
+    // agree on overwriting somebody else's file.
+    const root = dir();
+    const outside = victimRoot();
+    const victim = join(outside, "theirs.md");
+    writeFileSync(victim, "do not touch\n");
+    symlinkSync(victim, join(root, "AGENTS.md"));
+
+    const actions: string[] = [];
+    regenerateOwned(join(root, "AGENTS.md"), "# generated\n", "AGENTS.md", actions);
+
+    expect(actions.join("\n")).toContain("is a symlink");
+    expect(readFileSync(victim, "utf-8"), "the generator overwrote a file outside the project")
+      .toBe("do not touch\n");
+  });
+
+  test("a real file on the same strategy is still written — the positive control", () => {
+    // Without this, a writer that refused everything would satisfy both
+    // cases above and the scaffold would be inert.
+    const root = dir();
+    const actions: string[] = [];
+    regenerateOwned(join(root, "CODE-MAP.md"), "# generated\n", "CODE-MAP.md", actions);
+    expect(readFileSync(join(root, "CODE-MAP.md"), "utf-8")).toContain("# generated");
+    expect(actions.join("\n")).not.toContain(SCAFFOLD_REFUSE);
+  });
+});

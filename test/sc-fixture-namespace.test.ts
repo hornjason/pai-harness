@@ -43,7 +43,7 @@ import {
   FIXTURE_SC_FLOOR, isFixtureScId, scIdsSpelledInSource, strayFixtureIds,
   buildScRegistry, SC_SOURCE_DIRS,
 } from "../lib/sc-ids";
-import { nextSCNumber } from "../lib/create-sc";
+import { allocateScNumber, nextSCNumber } from "../lib/create-sc";
 
 const ROOT = join(import.meta.dir, "..");
 
@@ -294,7 +294,30 @@ describe("SC-1525: the CLI asks the allocator the whole question", () => {
     const before = readFileSync(spec, "utf-8");
     const specOnly = nextSCNumber("", registry);
     const probeFile = join(ROOT, "test", "zz-399-cli-probe.ts");
-    const probeId = specOnly + 7;
+    // Above the WHOLE namespace, not just this tree's spec registry (#503).
+    // `nextSCNumber` is `max(ids) + 1`, so this case only witnesses anything
+    // while the probe is the maximum: step it over, and the answer moves.
+    // Since `allocateScNumber` reads sibling worktrees and every branch ref,
+    // another session's in-flight block can sit above `specOnly`, and then
+    // the probe is not the maximum and the number this asserts stops being
+    // a statement about the planted id at all. Measured the day it happened:
+    // a peer's unmerged branch held a block of nineteen ids above the
+    // registry answer, the probe landed inside it, and the CLI correctly
+    // allocated past the whole block.
+    //
+    // The visible symptom is a red case, which is the harmless half. The
+    // half worth the comment is the one-id window where the probe lands
+    // EXACTLY on the namespace maximum: then `probeId + 1` is the right
+    // answer for both the real allocator and one that never read the probe
+    // file, and the case goes green having witnessed nothing. The width of
+    // that window is not something this fixture controls — another session
+    // does — so the fix is to compute the probe above everything rather
+    // than to hope.
+    //
+    // Computed, never spelled: a literal id here would be a stray in this
+    // very file, and the guard below would report its own test.
+    const probeId = allocateScNumber(ROOT, "").number + 7;
+    expect(probeId, "the probe is not above the registry answer it must beat").toBeGreaterThan(specOnly);
     try {
       writeFileSync(probeFile, `// scratch probe written by test/sc-fixture-namespace.ts\nconst id = "SC-${probeId}";\n`);
       const r = spawnSync("bun", [join(ROOT, "scripts", "create-sc.ts"),

@@ -712,6 +712,40 @@ count rather than by reading:
   "symlink" twice. Deleting the clause that names it as a cause left the
   sentence explaining the policy, and the row was 0.
 
+#### …and a fixture can lose its witness to an input it does not control (#507)
+
+The three above are fixtures that were never witnesses. This one was, and
+stopped being one while nobody touched it — which is worse, because the
+thing that changed is not in the diff, not in the repository, and not
+anything the author could have read.
+
+`test/sc-fixture-namespace.test.ts` plants an SC id in a scratch source file
+and asserts the CLI allocates exactly one above it. `nextSCNumber` is
+`max(ids) + 1`, so the case witnesses the feature only while **the planted
+id is the maximum** — step over the probe and the answer moves. The probe
+was computed as "this tree's spec registry answer, plus seven", which was
+above everything on the day it was written.
+
+Then #503 widened the allocator to read sibling worktrees and every branch
+ref, and a peer session allocated nineteen criteria on an unmerged branch.
+The probe landed inside that block. The CLI correctly allocated past the
+whole block, the case went red, and the red was the harmless half: there is
+a one-id window — probe lands exactly on the namespace maximum — where
+`probe + 1` is the right answer for both the real allocator and one that
+never read the probe file at all, and the case goes green having witnessed
+nothing.
+
+**What makes it a shape rather than an anecdote: the margin was set by
+something outside the fixture.** Another session, in another worktree, at an
+unknown time. No count catches this, because on the day you run the battery
+the margin is whatever it is and every row is correct; and the author cannot
+read their way to it either, because the input does not exist yet.
+
+So when a fixture needs to clear a maximum, **compute it from the same
+reading the code under test uses** — not from a narrower one that happened
+to agree. The narrower reading is the tempting one precisely because it is
+the cheap local call, and it agrees right up until it does not.
+
 ### When the guard is a spawn, not a comparison (#171)
 
 #169's refusal was correct and incomplete: it stopped a run whose branch had
