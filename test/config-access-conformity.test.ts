@@ -1268,16 +1268,35 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
     // The property is an ORDER, so the order is what gets asserted: ranked
     // first (entries that can plausibly hold first-party code before ones
     // that cannot), alphabetical within a rank.
+    //
+    // The fixture carries a dot-FILE and a FILE named `vendor` as well as
+    // the directories, and both were added because sec-518's battery found
+    // the ordering unpinned (F2, F3). Ranking `dot-file` alongside
+    // `dot-directory` was **0 red of 71**: this was the only ordering
+    // assertion and its fixture had no dot-file in it, so the one part of
+    // #518 that changes ordering had nothing holding it.
+    //
+    // The two ranks are different on purpose. `.github/` can hide a release
+    // script, so a dot-DIRECTORY ranks 3 and survives truncation; `.env`
+    // cannot hide anything, so a dot-FILE falls to 5 and is cut first.
     const root = project({ "README.md": "# docs" });
     for (const d of [".zeta", ".alpha", "dist", "coverage", "build"]) {
       mkdirSync(join(root, d), { recursive: true });
       writeFileSync(join(root, d, "f.js"), "export const x = 1;\n");
     }
+    writeFileSync(join(root, ".env"), "SECRET=1\n");
+    writeFileSync(join(root, "vendor"), "a manifest, not a directory\n");
     expect(projectSourceEvidence(root).skipped, "the decline list is not in ranked order")
       .toEqual([
         "build/ (build output or dependency)",
+        // Rank 2 with no trailing slash — F3. Before the regex was widened
+        // this sorted to the bottom, because `/^(?:build|vendor)\//` was
+        // matching the slash #518 removes from a declined file.
+        "vendor (build output or dependency)",
         ".alpha/ (dot-directory, tooling)",
         ".zeta/ (dot-directory, tooling)",
+        // Rank 5: below every dot-DIRECTORY, which is the whole point.
+        ".env (dot-file, tooling)",
         "coverage/ (build output or dependency)",
         "dist/ (build output or dependency)",
       ]);
@@ -1309,3 +1328,194 @@ describe("#500 re-review (sec-500): a decline is recorded, not asserted away", (
       .toBeNull();
   });
 });
+
+/**
+ * #518: a declined entry is written down as the kind it actually is.
+ *
+ * The three decline-by-name branches matched a NAME and then wrote
+ * `${rel}/` with a directory-shaped label, without ever asking whether the
+ * entry was a directory. So every dot-FILE was recorded as a dot-directory
+ * with a trailing slash.
+ *
+ * This is a regression from #512, and a small instance of the class #500 was
+ * filed to kill: a message that asserts something false about the tree it
+ * just walked. The verdict is right in every case — only the label lies.
+ * Before #512 that branch was a bare `continue` and recorded nothing, so the
+ * false label arrived with the fix that made declines visible at all.
+ *
+ * Measured before the fix, on two real trees rather than fixtures:
+ *
+ * | Tree | False "directory" entries |
+ * |---|---|
+ * | this repo | 8 of 369 — `.gitignore/`, `.mcp.json/`, `gates/.gate-salt/`, `.git/` |
+ * | `pov-plugin` (a consumer) | **5 of 13** — four `.DS_Store/` and `.gitignore/` |
+ *
+ * `.git` is the row worth naming: in a WORKTREE it is a gitfile, not a
+ * directory, so that branch was wrong in every worktree this project
+ * develops in and right only in the main checkout.
+ *
+ * ## The wrong fix, named (`.claude/rules/checks-must-be-able-to-fail.md`)
+ *
+ * The cheapest way to make a dot-file stop reading as a dot-directory is to
+ * stop recording dot-files. The two classes then "differ" because one is
+ * absent, every label left in the list is true, and the check certifies the
+ * regression — `undefined !== "dot-directory"` holds. So the first case
+ * below asserts PRESENCE before it compares anything, and the comparison is
+ * written against the entry it just proved is there.
+ */
+describe("#518: a declined entry is written down as the kind it actually is", () => {
+  /** The entry for `rel`, or `undefined` — the thing the wrong fix removes. */
+  const entryFor = (skipped: string[], rel: string): string | undefined =>
+    skipped.find(s => s === rel || s.startsWith(`${rel} (`) || s.startsWith(`${rel}/ (`));
+
+  test("a dot-FILE is recorded, keeps no trailing slash, and is not called a directory", () => {
+    const root = project({
+      ".gitignore": "node_modules\n",
+      ".github/scripts/release.js": READS_CONFIG,
+      "README.md": "# docs",
+    });
+    const e = projectSourceEvidence(root);
+
+    // PRESENCE FIRST. Deleting the dot-file from the record satisfies every
+    // assertion below it and is the repair a hurried reader reaches for.
+    const dotFile = entryFor(e.skipped, ".gitignore");
+    expect(dotFile, `the dot-file stopped being recorded; skipped was [${e.skipped.join(", ")}]`)
+      .toBeDefined();
+    expect(dotFile, "a regular file was written down with a directory's trailing slash")
+      .not.toContain(".gitignore/");
+    expect(dotFile, "a regular file was labelled a directory").not.toContain("directory");
+    expect(dotFile).toContain("dot-file");
+
+    // And the dot-DIRECTORY in the same tree keeps both. Without this the
+    // fix could flatten every entry to the file spelling and still be green.
+    const dotDir = entryFor(e.skipped, ".github");
+    expect(dotDir, `the dot-directory stopped being recorded; skipped was [${e.skipped.join(", ")}]`)
+      .toBeDefined();
+    expect(dotDir).toContain(".github/");
+    expect(dotDir).toContain("dot-directory");
+  });
+
+  test("a symlinked directory is still a directory — `Dirent.isDirectory()` says otherwise", () => {
+    // The reason the fix is a stat and not `e.isDirectory()`. A symlinked
+    // `node_modules` is the ordinary pnpm / npm-workspace shape, and the
+    // cheap predicate writes it down as a file. Both decline-by-name
+    // branches that can see a symlink are exercised here.
+    const root = project({ "vendor-real/pkg/index.js": "x\n", "tooling-real/note.md": "# n" });
+    symlinkSync(join(root, "vendor-real"), join(root, "node_modules"), "dir");
+    symlinkSync(join(root, "tooling-real"), join(root, ".cache"), "dir");
+    const e = projectSourceEvidence(root);
+
+    expect(entryFor(e.skipped, "node_modules"), "a symlinked node_modules lost its slash")
+      .toContain("node_modules/");
+    const cache = entryFor(e.skipped, ".cache");
+    expect(cache, `skipped was [${e.skipped.join(", ")}]`).toBeDefined();
+    expect(cache, "a symlinked dot-directory was written down as a file").toContain(".cache/");
+    expect(cache).toContain("dot-directory");
+  });
+
+  test("`.git` as a GITFILE loses the slash — the shape of every worktree", () => {
+    // `NEVER_PROJECT_SOURCE`, not the dot branch, and a different label:
+    // "dependency or VCS metadata" never said "directory", so only the
+    // trailing slash was false. It was false in every worktree.
+    const root = project({ ".git": "gitdir: /elsewhere/.git/worktrees/wt\n", "README.md": "# d" });
+    const git = entryFor(projectSourceEvidence(root).skipped, ".git");
+    expect(git, "the gitfile stopped being recorded").toBeDefined();
+    expect(git, "a gitfile was written down as a directory").not.toContain(".git/");
+    expect(git).toContain("VCS metadata");
+  });
+
+  test("a FILE named `dist` is not written down as `dist/`", () => {
+    // `SOURCE_SKIP_DIRS`, the third branch. No instance on either tree
+    // measured above, which is exactly why it gets a case: the defect is in
+    // the branch, and a branch with no fixture is the one that survives.
+    const root = project({ "dist": "a build manifest, not a directory\n", "README.md": "# d" });
+    const dist = entryFor(projectSourceEvidence(root).skipped, "dist");
+    expect(dist, "the file stopped being recorded").toBeDefined();
+    expect(dist, "a regular file was written down as a build directory").not.toContain("dist/");
+    expect(dist).toContain("build output");
+  });
+
+  test("a dot-symlink that cannot be resolved is a LABEL, never a refusal", () => {
+    // sec-518's F1, and the mutation that found it came back **0 of 71**:
+    // `declinedIsDir`'s `catch` was the only thing deciding whether a
+    // failed stat stays a label or escapes, and no fixture reached it.
+    // Every symlink in this file's fixtures resolves.
+    //
+    // Both halves matter and they fail differently.
+    //
+    // Deleting the `catch` lets the throw escape `projectSourceEvidence`
+    // into the surrounding `test()`, so a consumer with one dangling
+    // symlink — `.broken -> ./gone`, or a symlinked `node_modules` whose
+    // store was pruned — gets a HARD CONFIG-1 FAILURE over an entry the
+    // walk declines as tooling either way. That is the over-refusal the
+    // dangling-symlink note forbids, arriving through the label path.
+    //
+    // Returning `true` instead of `false` is the other direction: the
+    // entry gets a trailing slash and is written down as a directory that
+    // is not there, which is #518 reintroduced for the unresolvable case.
+    const root = project({ "README.md": "# docs", "src/app.ts": READS_CONFIG });
+    const locked = mkdtempSync(join(tmpdir(), "rungate-476-locked-"));
+    scratch.push(locked);
+    mkdirSync(join(locked, "inner"), { recursive: true });
+    symlinkSync(join(root, "gone"), join(root, ".broken"));      // ENOENT
+    symlinkSync(join(locked, "inner"), join(root, ".vault"));    // EACCES below
+    symlinkSync(join(root, ".loopB"), join(root, ".loopA"));     // ELOOP
+    symlinkSync(join(root, ".loopA"), join(root, ".loopB"));
+    chmodSync(locked, 0o000);
+    try {
+      let ev;
+      expect(() => { ev = projectSourceEvidence(root); }, "an unresolvable symlink escaped as a throw")
+        .not.toThrow();
+      const e = ev!;
+      for (const name of [".broken", ".vault", ".loopA", ".loopB"]) {
+        const entry = e.skipped.find((s: string) => s.startsWith(`${name} (`) || s.startsWith(`${name}/ (`));
+        expect(entry, `${name} was not recorded at all; skipped was [${e.skipped.join(", ")}]`)
+          .toBeDefined();
+        expect(entry, `${name} resolves to nothing but was written down as a directory`)
+          .not.toContain(`${name}/`);
+      }
+      // And none of it reached the verdict. `unreadable` is what turns an
+      // UNMEASURED into a refusal, and a declined-by-name entry must never
+      // put anything in it — the project is declined as tooling regardless.
+      expect(e.unreadable, "a declined dot-symlink was reported as unreadable").toEqual([]);
+      expect(e.found, "the real source stopped being found").toBe(true);
+    } finally {
+      chmodSync(locked, 0o700);
+    }
+  });
+
+  test("only the label moved: the verdict and the counts are unchanged", () => {
+    // The control. Relabelling must not turn a declined entry into source,
+    // must not make a dot-file unreadable, and must not change how many
+    // entries the walk declines.
+    const root = project({
+      ".gitignore": "x\n",
+      ".DS_Store": "\x00\x01binary",
+      ".github/x.md": "# t",
+      "src/app.ts": READS_CONFIG,
+    });
+    const e = projectSourceEvidence(root);
+    expect(e.found, "a declined dot-file became project source").toBe(true);
+    expect(e.unreadable, "declining an entry started reporting it as unreadable").toEqual([]);
+    expect(e.skipped.length, `skipped was [${e.skipped.join(", ")}]`).toBe(3);
+    expect(unmeasuredScanReason(scanConfigAccess(root), e, "CONFIG-1", "ts"), "a project with source was waived")
+      .toBeNull();
+  });
+
+  test("the message collapses the two classes separately", () => {
+    // `summariseDeclines` groups by the parenthetical, so a second label is
+    // supposed to cost nothing. Asserted rather than assumed, because the
+    // issue predicted it and a prediction is not a measurement.
+    const root = project({
+      ".gitignore": "x\n",
+      ".npmrc": "registry=\n",
+      ".github/scripts/release.js": READS_CONFIG,
+      "README.md": "# d",
+    });
+    const msg = unmeasuredScanReason(scanConfigAccess(root), projectSourceEvidence(root), "CONFIG-1", "ts");
+    expect(msg, "the project was not waived at all").toContain("UNMEASURED");
+    expect(msg, "the two dot-files did not collapse into one counted class").toContain("dot-file, tooling: 2");
+    expect(msg, "the dot-directory was absorbed into the file class").toContain("dot-directory, tooling: 1");
+  });
+});
+
