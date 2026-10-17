@@ -104,7 +104,10 @@ if (fix) {
     // actually do rather than what it would do with different settings (#398).
     runScaffoldWriteSteps(rehearsal.dir, projectType, actions, { force, commit: false, rehearsing: true, profile, autoFix, pruneConsumers });
   } finally {
-    discardRehearsal(rehearsal);
+    // #549: a cleanup failure is a sentence, not an exception. The report
+    // has already printed by now, and throwing here threw it away.
+    const leaked = discardRehearsal(rehearsal);
+    if (leaked) console.error(`WARNING: ${leaked}`);
   }
 }
 
