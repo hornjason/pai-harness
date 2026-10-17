@@ -9052,9 +9052,33 @@ rather than lossy. Verified end-to-end: `bun bin/rungate.ts scaffold
 left behind, reporting `Total: 0 created, 0 replaced, 0 auto-fixed, 17
 skipped, 0 refused`.
 
+### The same defect, one function earlier, found by Linux CI
+
+The first green-on-macOS version of this threw `EACCES: permission denied,
+rm` out of SC-1884's control case on CI. `copyTreeExcluding` empties its
+destination before copying, because a failed `cp -Rc` leaves a PARTIAL clone
+and falling back on top of it under-reports. It emptied it with a bare
+`rmSync` — and what the failed attempt leaves behind is *whatever made it
+fail*, here an unreadable directory `rmSync` cannot list to empty. The throw
+escapes `cloneForRehearsal` as a raw errno instead of its refusal sentence,
+which is **exactly the defect this issue is about, arriving one function
+earlier** than the one it was filed for.
+
+Both removals now go through one `removeTree`, which clears BSD flags and
+restores owner `rwX` before deleting and falls back to `/bin/rm -rf`. One
+binding, so the flag-clearing and the mode-clearing cannot drift apart
+between the two places that delete a tree this module made.
+
+The platform difference is the point and not an accident of CI: macOS's `cp`
+left nothing the delete objected to, so the case passed locally for a reason
+unrelated to the code being correct. The regression case therefore drives
+`copyTreeExcluding` against a destination built by hand, and asserts the
+destination really is one a plain `rmSync` refuses — a fixture that does not
+depend on what a platform's `cp` leaves behind after it fails.
+
 ### What was broken to prove it
 
-Six mutations over 27 tests in `test/scaffold-rehearsal-excludes.test.ts` +
+Nine mutations over 28 tests in `test/scaffold-rehearsal-excludes.test.ts` +
 `test/scaffold-rehearsal-safety.test.ts`. Every count was predicted before the
 run and every one matched. None is left in the tree.
 
@@ -9066,6 +9090,9 @@ run and every one matched. None is left in the tree.
 | a failed discard throws again | 1 | 1 |
 | a walked directory is created without the source's mode | 1 | 1 |
 | the generated specs table drops a row | 2 | 2 |
+| the destination is emptied with a bare `rmSync` again | 1 | 1 |
+| `removeTree` stops restoring owner `rwX` | 1 | 1 |
+| `removeTree` stops clearing BSD flags | 1 | 1 |
 
 The first row's six are SC-1884, SC-1885 and SC-1887 plus three existing
 cases in `scaffold-rehearsal-safety.test.ts` — SC-1513 and SC-1516 — which
@@ -9079,7 +9106,7 @@ a passing grade: the mode was being lost and nothing could see it.
 
 ### Success Criteria
 
-- [x] SC-1884: test/scaffold-rehearsal-excludes.test.ts contains [a clone succeeds over an excluded directory that cannot be opened] — the differential absence cannot witness, with a mode-000 directory outside the exclude list as the instrument
+- [x] SC-1884: test/scaffold-rehearsal-excludes.test.ts contains [a clone succeeds over an excluded directory that cannot be opened] — the differential absence cannot witness, with a mode-000 directory outside the exclude list as the instrument; and a second case for the destination a failed first attempt could not empty
 - [x] SC-1885: test/scaffold-rehearsal-excludes.test.ts contains [no copy is issued for anything under an excluded path] — the invocation list through an injected runner, re-measured after a thousand files are added under the exclude
 - [x] SC-1886: test/scaffold-rehearsal-excludes.test.ts contains [a symlinked ancestor of an exclude is copied as a link] — and the clone is then refused, or the row is satisfied by a copier that previews the consumer's tree
 - [x] SC-1887: test/scaffold-rehearsal-excludes.test.ts contains [an excluded path that is itself a link is skipped and its target survives] — the pre-push hook's node_modules, previously copied and then unlinked
