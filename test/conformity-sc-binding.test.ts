@@ -58,9 +58,12 @@ const CHECKED_SC_BASELINE = 261;
  *
  * `test/sc-binding-split.test.ts` carries both halves now, and the
  * replacement is strictly tighter rather than a ratchet deleted for green:
- * 154 unclaimed bounded above, plus 100 claimed-but-unbindable bounded in
- * BOTH directions — 254 against the 258 this allowed, with the half that
- * used to rise freely now pinned exactly.
+ * 154 unclaimed bounded above, plus the claimed-but-unbindable half bounded
+ * in BOTH directions — 254 against the 258 this allowed when the split
+ * landed, with the half that used to rise freely now pinned exactly. The
+ * second number is banked in that file rather than quoted here; it went 100
+ * -> 66 in #574, and a count repeated in two places is a count that drifts
+ * in one of them.
  */
 const UNMATCHED_BACKSTOP = 300;
 function specFiles(): string[] {

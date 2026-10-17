@@ -16,7 +16,7 @@
 
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { commentMask, enclosingComment, stripJsComments } from "../lib/strip-js-comments";
-import { commentClaimForm, type ClaimForm } from "../lib/sc-claim-forms";
+import { commentClaimForm, titleCall, type ClaimForm } from "../lib/sc-claim-forms";
 import { join } from "path";
 import { execSync } from "child_process";
 import { matchPattern, isBehavioralSC, type ParsedSC } from "../lib/conformity";
@@ -101,8 +101,6 @@ export function findUncheckedSCs(specsDir?: string): UncheckedSC[] {
  */
 export const scMentionPattern = oneScMentionPattern;
 
-/** Opens a `describe`/`test`/`it` title, allowing `.each(...)`, `.only`, `.skip`. */
-const TITLE_CALL = /\b(?:describe|test|it)\s*(?:\.\w+\s*(?:\([^)]*\))?\s*)*\(\s*$/;
 
 /**
  * The success criteria a source file CLAIMS to cover (#149).
@@ -189,7 +187,7 @@ export interface ClaimSite {
    * Where it was written. A comment is a claim for an unambiguous id and is
    * NOT enough for an ambiguous one — see `findTestFilesForSCs`.
    */
-  kind: "comment" | "title" | "bare";
+  kind: "comment" | "title" | "unrun-title" | "bare";
   /**
    * For a comment, WHICH structural declaring form it occupies, or `null` for
    * a bare mention inside running prose (#360). Always `null` for the other
@@ -243,7 +241,15 @@ export function coverageClaimSites(source: string): ClaimSite[] {
     while (open > 0 && !/['"`]/.test(codeOnly[open])) open--;
     if (!/['"`]/.test(codeOnly[open] ?? "")) continue;
 
-    if (TITLE_CALL.test(codeOnly.slice(Math.max(0, open - 120), open))) add(id, at, "title");
+    // A title is a declaring position; a title that never runs is a
+    // declaration of INTENT (#574). `test.todo("SC-N: …")` is the honest way
+    // to write down work you have not done, and crediting it ticked 37
+    // criteria whose only test was the word todo. Kept as a site rather than
+    // dropped, so the sync can report it as UNMEASURED — dropping it would
+    // make "nobody wrote this test" look like "nobody mentioned this id".
+    const call = titleCall(codeOnly.slice(Math.max(0, open - 120), open));
+    if (call === "runs") add(id, at, "title");
+    else if (call === "never-runs") add(id, at, "unrun-title");
   }
 
   return claims;
@@ -324,6 +330,10 @@ export function findTestFilesForSCs(
       // project declares coverage and where it explains itself, and a bare id
       // inside a running sentence is a citation.
       if (kind === "comment" && !form) continue;
+      // #574. The direction this is allowed to be wrong in is toward NOT
+      // crediting, and a todo is the clearest case there is: nothing can go
+      // red, so nothing can be measured.
+      if (kind === "unrun-title") continue;
       for (const specFile of wanted.get(id) ?? []) {
         if (requiresQualification(id, reg) && !(kind === "title" && isQualifiedBy(source, at, specFile))) continue;
         if (!credits.some(c => c.id === id && c.specFile === specFile)) {
@@ -333,6 +343,36 @@ export function findTestFilesForSCs(
     }
     if (credits.length > 0) out.set(file, credits);
   }
+  return out;
+}
+
+/**
+ * Ids whose only declaring position in the test tree is a title that never
+ * runs (#574), with the files that name them.
+ *
+ * An id that ALSO has a running title or a declaring comment anywhere is
+ * not here: the question is whether anything can measure it, not whether a
+ * todo exists. That distinction is the whole report — otherwise every
+ * criterion with a todo beside a real test would be listed as unmeasured
+ * and the list would be ignored within a week.
+ */
+export function intendedOnly(testDir: string): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  if (!existsSync(testDir)) return out;
+  const measured = new Set<string>();
+  const intended = new Map<string, string[]>();
+  for (const file of readdirSync(testDir).filter(f => f.endsWith(".test.ts"))) {
+    for (const site of coverageClaimSites(readFileSync(join(testDir, file), "utf-8"))) {
+      if (site.kind === "unrun-title") {
+        const files = intended.get(site.id) ?? [];
+        if (!files.includes(file)) files.push(file);
+        intended.set(site.id, files);
+      } else if (site.kind === "title" || (site.kind === "comment" && site.form)) {
+        measured.add(site.id);
+      }
+    }
+  }
+  for (const [id, files] of intended) if (!measured.has(id)) out.set(id, files);
   return out;
 }
 
@@ -629,6 +669,18 @@ if (isDirectExecution) {
   if (unqualified.size > 0) {
     console.log(`\n⚠️  ${unqualified.size} ambiguous SC mention(s) credited to nothing:`);
     for (const line of [...unqualified.values()].sort()) console.log(line);
+  }
+
+  // #574. A criterion whose only test is a `.todo` is UNMEASURED, and
+  // UNMEASURED has to be loud: `0`, `{}`, `null` and silence are all
+  // indistinguishable from success. Reported by name, with the file, so the
+  // list is a backlog rather than a number.
+  const intended = intendedOnly(TEST_DIR);
+  if (intended.size > 0) {
+    console.log(`\n⚠️  UNMEASURED: ${intended.size} SC(s) named only by a test that never runs:`);
+    for (const [id, files] of [...intended].sort()) {
+      console.log(`  ${id}: ${files.join(", ")} — a .todo or .skip title is a declaration of intent, not coverage`);
+    }
   }
 
   // Step 3: Run hand-written tests — scope by spec file

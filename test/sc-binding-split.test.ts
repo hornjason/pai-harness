@@ -65,7 +65,11 @@ const UNCLAIMED_RATCHET = 154;
  * notices it moving, and a number nothing can refuse is a number nobody
  * lowers.
  */
-const CLAIMED_UNBINDABLE = 100;
+// 100 -> 66 on 2026-10-17 (#574). A criterion whose only test was a
+// `test.todo` was being counted as claimed, and a todo claims nothing: 34
+// of the 100 were ids named by a test that can never run. The number moved
+// because the question got stricter, not because anything was bound.
+const CLAIMED_UNBINDABLE = 66;
 
 function split() {
   return splitUnmatchedChecked({ projectRoot: REPO, claimed: claimedScKeys(SPECS), scopedKey });

@@ -129,7 +129,7 @@ testable: true
 - [ ] SC-166: Agent brief environment values match rungate.json dev section — mismatch produces FAIL with fixCommand "Re-run scaffold" (brief-level extension of SC-3/SC-4)
 - [ ] SC-167: AGENTS.md Specs table governs and testable fields match actual spec frontmatter — cross-references AGENTS.md routing table against spec file metadata (distinct from SC-75 spec file validation)
 - [x] SC-168: CODE-MAP.md exists for code projects and is under 3,000 tokens — over-budget produces WARN
-- [x] SC-169: scaffold output .git/hooks/ files match mode 755 and contain scaffold-generated shebang line
+- [ ] SC-169: scaffold output .git/hooks/ files match mode 755 and contain scaffold-generated shebang line
 
 - [ ] SC-170: Tier 1 files containing content not produced by scaffold trigger WARN OWNERSHIP-TIER1-EXTRA with fixCommand to relocate (extends SC-104 with extra-content detection)
 - [ ] SC-173: Ownership tier assignment for every harness-touched file declared in lib/ownership-manifest.ts
@@ -151,7 +151,7 @@ testable: true
 - [ ] SC-185: Agent instruction files contain no TODO/FIXME — wrap agentsmd todo-rot
 - [ ] SC-186: No contradictory instructions across files — wrap ccinspect contradiction-keywords
 - [ ] SC-187: No secrets/credentials in agent instruction files — wrap ctxlint content-secrets
-- [x] SC-188: Conformity wraps ctxlint dead-hook — settings.json hook command paths resolve to present files
+- [ ] SC-188: Conformity wraps ctxlint dead-hook — settings.json hook command paths resolve to present files
 - [ ] SC-189: No machine-specific absolute paths in instruction files — wrap agentsmd/agnix
 - [ ] SC-190: Total instruction count across always-loaded files under 150 (distinct from SC-17 line count and SC-139 word count — this counts discrete instructions)
 - [ ] SC-191: Agent briefs reference AGENTS.md — never duplicate Hard Constraints inline
@@ -255,54 +255,54 @@ testable: true
 
 ### Phase 4 — Knowledge Mining
 
-- [x] SC-205: rungate temporal-coupling command analyzes git co-change history → .rungate/temporal-couplings.json
-- [x] SC-206: Temporal coupling JSON has fileA, fileB, coChanges, hasImportLink, auto-generated rule
-- [x] SC-207: File pairs ≥10 co-changes with hasImportLink: false produce candidate rules routed to review queue (SC-201 flow) — not auto-inserted into briefs
-- [x] SC-208: Scaffold reads temporal-couplings.json and includes only review-approved coupling rules (status=applied) in briefs
+- [ ] SC-205: rungate temporal-coupling command analyzes git co-change history → .rungate/temporal-couplings.json
+- [ ] SC-206: Temporal coupling JSON has fileA, fileB, coChanges, hasImportLink, auto-generated rule
+- [ ] SC-207: File pairs ≥10 co-changes with hasImportLink: false produce candidate rules routed to review queue (SC-201 flow) — not auto-inserted into briefs
+- [ ] SC-208: Scaffold reads temporal-couplings.json and includes only review-approved coupling rules (status=applied) in briefs
 
-- [x] SC-209: rungate analyze-deps runs dependency-cruiser → .rungate/dependency-analysis.json
-- [x] SC-210: Circular deps produce WARN — lists participating modules and hub module
-- [x] SC-211: Orphan modules produce INFO with fixCommand
-- [x] SC-212: Module boundary violations (data importing routes) produce WARN — graduates to FAIL after validation across projects
+- [ ] SC-209: rungate analyze-deps runs dependency-cruiser → .rungate/dependency-analysis.json
+- [ ] SC-210: Circular deps produce WARN — lists participating modules and hub module
+- [ ] SC-211: Orphan modules produce INFO with fixCommand
+- [ ] SC-212: Module boundary violations (data importing routes) produce WARN — graduates to FAIL after validation across projects
 
-- [x] SC-213: rungate analyze-dead-code runs Knip → .rungate/dead-code.json filtered for entry points
-- [x] SC-214: Knip entry points configurable in rungate.json analysis.entryPoints
-- [x] SC-215: Unused backend files produce WARN DEAD-FILE
-- [x] SC-216: Unresolved imports produce FAIL BROKEN-IMPORT (Knip-specific detection — distinct from fallow suite SC-24 which uses different heuristics)
+- [ ] SC-213: rungate analyze-dead-code runs Knip → .rungate/dead-code.json filtered for entry points
+- [ ] SC-214: Knip entry points configurable in rungate.json analysis.entryPoints
+- [ ] SC-215: Unused backend files produce WARN DEAD-FILE
+- [ ] SC-216: Unresolved imports produce FAIL BROKEN-IMPORT (Knip-specific detection — distinct from fallow suite SC-24 which uses different heuristics)
 
-- [x] SC-217: rungate analyze-hotspots computes hotspot score → .rungate/hotspots.json
-- [x] SC-218: Top 5 hotspot files produce INFO — surfaced in briefs as "high-risk files"
+- [ ] SC-217: rungate analyze-hotspots computes hotspot score → .rungate/hotspots.json
+- [ ] SC-218: Top 5 hotspot files produce INFO — surfaced in briefs as "high-risk files"
 
-- [x] SC-219: Tier 1 regex pre-filter uses signal-phrases.ts
-- [x] SC-220: Tier 2 heuristic scorer assigns 0-5 using 5 checks (modal+action, actor subject, list item, imperative, code reference)
-- [x] SC-221: Score ≥5 auto-promoted to high-confidence
-- [x] SC-222: Score 3-4 sent to Tier 3 LLM classification
-- [x] SC-223: Score ≤2 auto-filtered as noise
-- [x] SC-224: Tier 3 LLM uses ≤200 tokens per candidate, total under $0.05
-- [x] SC-225: Deduplicated cross-file — same rule appears once with all sources
-- [x] SC-226: Top 20 candidates in findings JSON constraintCandidates array (extends SC-154), full list in .rungate/all-constraints.json
+- [ ] SC-219: Tier 1 regex pre-filter uses signal-phrases.ts
+- [ ] SC-220: Tier 2 heuristic scorer assigns 0-5 using 5 checks (modal+action, actor subject, list item, imperative, code reference)
+- [ ] SC-221: Score ≥5 auto-promoted to high-confidence
+- [ ] SC-222: Score 3-4 sent to Tier 3 LLM classification
+- [ ] SC-223: Score ≤2 auto-filtered as noise
+- [ ] SC-224: Tier 3 LLM uses ≤200 tokens per candidate, total under $0.05
+- [ ] SC-225: Deduplicated cross-file — same rule appears once with all sources
+- [ ] SC-226: Top 20 candidates in findings JSON constraintCandidates array (extends SC-154), full list in .rungate/all-constraints.json
 
-- [x] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
-- [x] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
-- [x] SC-229: Candidates unreviewed >90 days auto-transition to deferred
+- [ ] SC-227: Candidates have status field: pending/applied/rejected/deferred + reviewedAt
+- [ ] SC-228: Output adapts to AgentGrit inbox Pattern type when installed
+- [ ] SC-229: Candidates unreviewed >90 days auto-transition to deferred
 
 ### Phase 5 — Instruction Compliance
 
-- [x] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json (behavioral)
+- [ ] SC-236: `rungate test-navigability` spawns fresh agent with standard task, auditor scores transcript → .rungate/navigability-score.json (behavioral)
 - [x] SC-237: navigability-score.json schema includes fileLoadRate, directHitRate, complianceRate, toolCallCount, canaryResults, timestamp
 - [x] SC-238: Canary values planted in generated files are checked by auditor — score = canaries triggered correctly / total canaries
-- [x] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
+- [ ] SC-239: `rungate rule-health` cross-references instruction quality (agnix/RepoRails scores) with behavioral compliance (auditor data) → .rungate/rule-health.json with KEEP/RETIRE/FAILING/STALE verdicts
 - [x] SC-240: `lib/compliance.ts → runTemplateCompliance()` runs agnix + RepoRails on instruction files (prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md) via Bun.spawnSync — consumes their JSON output, does NOT reimplement scoring with regex
-- [x] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
-- [x] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates (behavioral)
-- [x] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
-- [x] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
+- [ ] SC-241: `lib/compliance.ts → runGeneratedCompliance()` scores generated files after scaffold, compares against template baseline — scaffold cannot degrade instruction quality (score drop >0.05 = FAIL)
+- [ ] SC-242: `lib/compliance.ts → runBehavioralCompliance()` spawns fresh agent + auditor, checks each instruction followed or not, produces compliance-score.json with per-instruction rates (behavioral)
+- [ ] SC-243: Hill climb loop: FAIL instruction → apply 7 compliance factors to rewrite → re-score → max 5 iterations → escalate to mechanical (hook/gate) if still failing
+- [ ] SC-244: 7 compliance factors scored per instruction: specific (names file/command), strong-modal (must/always/never), positive (do Y not just don't X), observable (grep-able), positioned (top 20%), short-file (<120 lines), temporal-anchor (BEFORE/AFTER trigger)
 - [x] SC-245: Compliance surface is exactly 4 file types: prompts/*.md, AGENTS.md, .claude/agents/*.md, CLAUDE.md — NOT hooks, workflows, CODE-MAP, .gitignore, tests
-- [x] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
-- [x] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
-- [x] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json (behavioral)
+- [ ] SC-246: Instructions that fail behavioral compliance after 5 hill-climb iterations escalate to mechanical enforcement (hook or gate) with ESCALATED-TO-MECHANICAL tag
+- [ ] SC-247: Compliance report written to .rungate/compliance-report.json with layer, surface, per-file scores, overall score, findings with factor/severity/suggestion
+- [ ] SC-248: Post-completion auditor spawns after every agent (Marcus, Quinn, Rook) — reads full transcript, classifies each action as FOUND-FROM-REPO / HAD-TO-DISCOVER / GOT-WRONG / MISSED, outputs to .rungate/navigability-score.json (behavioral)
 - [x] SC-249: Agent briefs load only when spawned with matching `agentType` — ship/prove workflows must use `agentType: 'marcus'` not `'Engineer'`, matching `.claude/agents/{name}.md` filename
-- [x] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
+- [ ] SC-250: Five-layer measurement model: (1) file loading — right files read, (2) content routing — pointers resolve, (3) prompt compliance — instructions followed, (4) context cost — tokens burned, (5) drift — trend across runs
 
 ### Anti-Criteria
 

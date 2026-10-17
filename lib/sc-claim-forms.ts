@@ -169,11 +169,86 @@ const IDS_ONLY =
  */
 const PAREN_LABEL = /^\s*(?:SC|AC)-[A-Z]?\d+\s*:/;
 
+/**
+ * A RANGE inside a parenthetical — `(SC-1930..SC-1948)`.
+ *
+ * An attribution names THE criterion a statement is about. A range names a
+ * group, which is how prose refers to a set it is discussing rather than
+ * claiming, and the scanner can only see the two ids that are literally
+ * written: a range of nineteen credits its two endpoints and silently not
+ * the seventeen between them. A form that credits 2 of the 19 ids it names
+ * is not measuring anything.
+ *
+ * Found in #574, on this sentence:
+ *
+ *     * The spec's 19 behavioural criteria (SC-1930..SC-1948) are NOT
+ *     * covered here.
+ *
+ * — which credited SC-1930 and SC-1948 and ticked both boxes. The
+ * self-reference this area keeps producing, now in its sharpest form: a
+ * comment saying the criteria are not covered was the evidence that they
+ * were.
+ *
+ * Measured before narrowing, because narrowing a detector is the change
+ * most likely to buy green with blindness: of 32 attribution credits in the
+ * tree, 30 are plain and 2 are ranges — and the 2 are these. A range at the
+ * START of a line is still a claim, by the `line` form, which is where
+ * `* SC-561..SC-564 (SPEC.md)` is credited and is unaffected.
+ */
+const PAREN_RANGE = /\.\.+/;
+
 function inIdOnlyParenthetical(line: string, at: number): boolean {
   const open = line.lastIndexOf("(", at);
   if (open < 0) return false;
   const close = line.indexOf(")", open);
   if (close < 0 || close < at) return false;
   const inner = line.slice(open + 1, close);
+  if (PAREN_RANGE.test(inner)) return false;
   return IDS_ONLY.test(inner) || PAREN_LABEL.test(inner);
+}
+
+/**
+ * A `describe`/`test`/`it` call that opens a title literal, and whether it
+ * will ever run (#574).
+ *
+ * A test title is the project's oldest coverage convention and the one
+ * position that needed no rule — until `test.todo("SC-1930: …")` turned out
+ * to be a title too. A todo is the one test guaranteed never to fail, so
+ * crediting it produces a tick indistinguishable from a tick earned by a
+ * test that can go red. Measured when this was found: 64 ids named only
+ * inside a `.todo`, 37 of them ticked `[x]` in a spec, and 19 more about to
+ * flip on the next run of the sync — one of them from a file whose own
+ * comment says, four lines from the top, that none of its criteria are
+ * covered here.
+ *
+ * `.skip` is the same fact with a different word, and there are five of
+ * those. `.skipIf` and `.todoIf` take a condition, so whether they ran is
+ * not answerable from the source at all; there are none today and they are
+ * named anyway, because a predicate narrower than what it detects is this
+ * repo's third defect shape and the cost of naming them is one word each.
+ *
+ * `.only`, `.each`, `.failing` and `.concurrent` all RUN, so they still
+ * credit — `.failing` included, because a test expected to fail is still a
+ * test that goes red when the expectation stops holding.
+ *
+ * Returns `null` when the text does not open a title call at all. The three
+ * answers are distinct on purpose: a non-running title must be reported as
+ * UNMEASURED rather than dropped, and dropping it would make "nobody has
+ * written this test" look exactly like "nobody has mentioned this id".
+ */
+export type TitleCall = "runs" | "never-runs";
+
+const NON_RUNNING = /\.(?:todo|skip|skipIf|todoIf)\b/;
+
+/** Opens a `describe`/`test`/`it` title, allowing `.each(...)`, `.only`, `.skip`, `.todo`. */
+const TITLE_CALL = /\b(?:describe|test|it)\s*((?:\.\w+\s*(?:\([^)]*\))?\s*)*)\(\s*$/;
+
+/**
+ * THE single exported predicate for whether a title call declares coverage,
+ * for the same reason `commentClaimForm` is: one binding to mutate.
+ */
+export function titleCall(before: string): TitleCall | null {
+  const m = TITLE_CALL.exec(before);
+  if (m === null) return null;
+  return NON_RUNNING.test(m[1] ?? "") ? "never-runs" : "runs";
 }

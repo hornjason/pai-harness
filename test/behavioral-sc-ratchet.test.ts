@@ -67,8 +67,15 @@ const SPECS = join(ROOT, "specs");
  * ever seen it and why the tick survived. Unticked, banked here, and the
  * removal filed as #395. This is the ratchet doing the thing it was built
  * for, from the other end.
+ *
+ * 39 -> 35 on 2026-10-17 (#574), by the first honest way — four of the
+ * ticks were never earned. `sync-sc-status.ts` credited a criterion whose
+ * only test was a `test.todo`, which is the one test guaranteed never to
+ * fail; 40 ticks across the tree rested on that and four of them were
+ * behavioural. Nothing about those four criteria changed. The measurement
+ * did.
  */
-const BEHAVIORAL_TICKED_RATCHET = 39;
+const BEHAVIORAL_TICKED_RATCHET = 35;
 
 function allSCs(): { id: string; statement: string; checked: boolean; specFile: string }[] {
   const out: { id: string; statement: string; checked: boolean; specFile: string }[] = [];
