@@ -8758,6 +8758,20 @@ the file path also stops matching the `(fail)` marker, which SC-1872 checks
 from the failure side. The prediction was wrong and the coverage is better
 than it looked.
 
+### The same proxy mistake, a second time, caught by CI
+
+SC-1870 closed with `resolved.length === checksRun.length - failed.length`.
+Green locally, red on CI: **117 resolved where the subtraction predicted
+116.** The arithmetic assumes the failure ledger holds no two entries with one
+name, and bun 1.4.3 produced exactly that — `checksRun` is de-duplicated by
+`unionNames` and `failures` is not, so two checks sharing a full name are one
+entry in the witness and two in the ledger. Nothing was wrong with the code.
+
+It is the skip-count mistake again, in the same PR, written by the same hand
+an hour after the first one was fixed: a count standing in for a property. The
+row now asserts that no failing check comes back resolved and that every other
+measured one does, which is true under either runner.
+
 ### Success Criteria
 
 - [x] SC-1864: test/gate-refusal-currency.test.ts contains [the resolved check is retired and the others are kept] — driven over both copies of the rule

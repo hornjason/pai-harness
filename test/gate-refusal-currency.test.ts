@@ -356,9 +356,24 @@ describe("#532: the gate runner records what it measured, not only what it faile
     expect(missing, `checksRun omits checks this gate failed:\n${missing.join("\n")}`).toEqual([]);
 
     // And the consumer agrees with the producer over the real record.
+    //
+    // Asserted as MEMBERSHIP rather than as `checksRun.length -
+    // failed.length`, which is the same proxy-for-the-property mistake the
+    // skip count was. That arithmetic assumes the failure ledger holds no
+    // two entries with one name, and CI (bun 1.4.3) produced exactly that:
+    // 117 resolved where the subtraction predicted 116. `checksRun` is
+    // de-duplicated by `unionNames` and `failures` is not, so two checks
+    // sharing a full name are one entry in the witness and two in the
+    // ledger. The property is that no failing check comes back resolved and
+    // every other measured one does — which is true either way.
     const resolved = libResolved({ checksRun: gate.checksRun, failedChecks: failed });
     expect(resolved).not.toBeNull();
-    expect(resolved!.length).toBe(gate.checksRun.length - failed.length);
+    const failedSet = new Set<string>(failed);
+    expect(
+      resolved!.filter((c: string) => failedSet.has(c)),
+      "a check this gate failed came back as resolved",
+    ).toEqual([]);
+    expect(resolved!.length + failedSet.size).toBe(gate.checksRun.length);
   }, 180000);
 });
 
