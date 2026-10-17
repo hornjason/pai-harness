@@ -360,3 +360,101 @@ table that lives in `.claude/rules/docs-routing.md`. Both warn falsely on
 every run, for the same underlying reason as this issue. They are a
 different detector, and one of them needs a decision about whether
 `SPEC-TEMPLATE.md` is a spec, so they get their own change.
+
+## The two checks that wanted the tables D-15 moved (#382, #552)
+
+The sibling defect above, now fixed. `refreshAgentsMd` asked whether every
+file in `specs/` is named in AGENTS.md, and whether `CODE-MAP.md` is. D-15
+capped AGENTS.md at 100 lines and moved the specs table into
+`.claude/rules/specs-routing.md` and the routing table into
+`.claude/rules/docs-routing.md`. Neither check followed, so both reported on
+every `--fix` run — 23 filenames and a CODE-MAP line on this repo, all
+false.
+
+**Both were unfixable from the document's side, which is what makes a
+standing false positive worse than noise.** Satisfying `UNLISTED specs`
+means pasting 23 filenames back into AGENTS.md, breaking the line cap D-15
+moved them out to respect: the detector asking for the thing the
+architecture forbids. #552 measured the consumer-facing half of that — a
+consumer who adds the table by hand gets it deleted by the next
+`REGENERATED: AGENTS.md`, so the warning cannot be cleared at all, and the
+block it sits in also carries a real finding nobody will now read.
+
+`lib/spec-listing.ts` is the one binding. `listingSurfaces` searches
+AGENTS.md and every `.claude/rules/*.md`.
+
+### Why the surfaces are a directory and not a filename
+
+Naming `specs-routing.md` in the check would make it a second decider for a
+question the generator already answers, which is the shape that produced
+this defect. Reading the directory means a rule the generator renames stays
+covered, while a spec listed in no agent-facing document at all is still
+reported — the half that has to keep working. SC-1895 asserts the link
+directly: every filename `generateScopedRules` writes must be a surface the
+audit reads.
+
+### `SPEC-TEMPLATE.md` is not a spec
+
+#382 asked for this decision explicitly rather than letting it be absorbed
+by whichever file a check happens to read. It is the file `create-spec`
+copies to start a new spec: it governs nothing, and a reader sent to it by a
+routing table learns nothing about the project. `scanSpecs` has always
+excluded it from `specs-routing.md`; the audit has always included it. That
+is why it appeared in the warning list as the one entry that was never going
+to be listed anywhere — two deciders disagreeing, with the disagreement
+showing up as a permanent warning rather than as an error.
+
+Both sides now import `isSpecFile` from `lib/spec-listing.ts`, and the
+exclusion is a named list of exact filenames rather than a pattern, so
+adding to it is a visible decision.
+
+### A third thing in the same function, deleted rather than fixed
+
+`updateSpecsTable` was called from `write-steps.ts` immediately after the
+generator rewrote AGENTS.md. It edited an EXISTING table, matched on a
+header row containing `Spec`, inside an `if` with no `else` — and the
+generator emits no such table, so the match never succeeded. Its action
+string `UPDATED: AGENTS.md specs table from frontmatter` has never appeared
+in a scaffold report, no test referenced it, and a docstring elsewhere in
+the file cited it as something AGENTS.md "has already been through".
+
+It also held a third copy of the frontmatter parse and of the what-is-a-spec
+filter. Deleting it is the fix: the table it was meant to maintain is
+generated into `.claude/rules/specs-routing.md`, which is where the audit
+now looks.
+
+### Where this check can still fail
+
+The audit runs inside the rehearsal clone, where the rules have just been
+regenerated, so the obvious worry is that it is now green by construction.
+It is not. `specs-routing.md` is provenance-preserved (#370): a hand-edited
+one is reported `PRESERVED: … generator output withheld`, and a spec added
+after that edit appears in no surface. That is the live condition this check
+exists for, and it is the one #549 retired a divergence over.
+
+### What was broken to prove it
+
+Five mutations over 6 tests in `test/agents-md-spec-listing.test.ts`. Every
+count was predicted before the run and every one matched. None is left in
+the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| `listingSurfaces` reads AGENTS.md only | 3 | 3 |
+| `unlistedSpecs` returns `[]` | 2 | 2 |
+| `isSpecFile` stops excluding `SPEC-TEMPLATE.md` | 2 | 2 |
+| `codeMapUnreferenced` returns `false` | 1 | 1 |
+| the audit stops calling `unlistedSpecs` | 2 | 2 |
+
+Every case EXECUTES `refreshAgentsMd` and counts what it printed. SC-848 in
+the section above was asserted by grepping this same function's source and
+stayed green when the call it grepped for was replaced with an empty list,
+because the comment above the call used the same word.
+
+### Success Criteria
+
+- [x] SC-1891: test/agents-md-spec-listing.test.ts contains [this repo reports no unlisted spec and no unreferenced CODE-MAP] — the live case, with the spec count and the surface count asserted so an audit that looked at nothing cannot pass it
+- [x] SC-1892: test/agents-md-spec-listing.test.ts contains [a spec named by no surface is still reported] — the other direction, without which the rows above are satisfied by a check that returns an empty list
+- [x] SC-1893: test/agents-md-spec-listing.test.ts contains [a spec listed only in .claude/rules/ is listed] — the exact shape D-15 created, with the same fixture one line different as the control
+- [x] SC-1894: test/agents-md-spec-listing.test.ts contains [SPEC-TEMPLATE.md is not a spec] — one binding, asked of the scanner's routing table and of the audit over the same tree
+- [x] SC-1895: test/agents-md-spec-listing.test.ts contains [every rule the generator writes is a surface the audit searches] — the anti-drift link, and the reason the surfaces are a directory rather than a filename
