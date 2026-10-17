@@ -9219,3 +9219,70 @@ check was **0 red over 9,652 tests**.
 - [x] SC-1899: test/config-access-conformity.test.ts contains [CONFIG-1 does not call CONFIG-2's territory evidence that it is blind] — with source in a directory nobody measures as the control, because this is a hand-off and not a waiver
 - [x] SC-1900: test/config-access-conformity.test.ts contains [the hand-off holds at every depth CONFIG-2 reads] — a nested workflow CONFIG-2 did not reach would be read by neither check
 - [x] SC-1901: test/config-access-conformity.test.ts contains [test/ is still evidence that CONFIG-1 is blind] — the policy exclusion and the hand-off are different facts, and collapsing them waives #500's own case
+
+## Six extensions the walk counted and the scan could not read (#506)
+
+`walkSources` states the invariant in its own comment: *"the evidence walk
+must not claim source the scan would never read"*, one-directional, the
+scan may read more. It was violated for six extensions. The walk counts
+`SOURCE_EXTENSIONS` — `.ts .tsx .js .jsx .mjs .cjs .mts .cts` — and the
+scan filtered on `/\.(ts|js)$/`.
+
+Measured on a project whose only code is `lib/app.tsx` holding a live
+direct config read:
+
+```
+scanConfigAccess  -> filesScanned: 0
+projectSourceEvidence -> found: true, examples: ["lib/app.tsx"]
+CONFIG-1: the scan read NO files … This project DOES contain source —
+          lib/app.tsx — none of it in the directories this check reads
+```
+
+**Three failures from one missing extension**, and the middle one is the
+worst: `lib/` is the FIRST directory this check reads, so the refusal's
+sentence is false about the file it names. A consumer on an ordinary React
+layout gets an unclearable red that misdiagnoses itself, and the config
+read it is refusing over goes uncaught.
+
+SC-1903 asserts the property rather than a filename: every extension
+`SOURCE_EXTENSIONS` declares must be read by the scan, with the extension
+list parsed out of the regex itself so a seventh one added there and not
+here cannot pass unnoticed.
+
+### What was NOT fixed, and why it is a decision rather than an oversight
+
+#506's headline case — a content project with `docs/assets/search.js` —
+remains. That file is outside every scanned directory, so the walk's claim
+is TRUE and the refusal is accurate; it is just unsatisfiable. The issue
+lists four options and the choice is a scope decision about what CONFIG-1
+is responsible for, not a lookup:
+
+| Option | Cost |
+|---|---|
+| exclude `docs/` | wrong for projects with runnable examples there, and narrowing a detector is the change most likely to buy green with blindness |
+| let the project declare it | new config surface |
+| widen the scan to whatever the walk found | subsumes it, and makes `coverageShortfall` vacuous — a second behavioural change riding inside the first |
+| leave it | loud, names the file, errs toward refusing |
+
+The extension gap above needed no such decision: it is wrong under all
+four, because the file is inside a directory the check already claims.
+
+### What was broken to prove it
+
+Two mutations over 99 tests in `test/config-access-conformity.test.ts`.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| the scan's filter back to `/\.(ts\|js)$/` | 2 | 2 |
+| `SOURCE_EXTENSIONS` itself narrowed to `.ts\|.js` | 4 | 2 |
+
+The second row's extra reds are F1's existing layout cases, and they are
+genuinely about the mutation: narrowing the constant moves the evidence
+walk as well as the scan, so the two sides agree again — at a worse place.
+The prediction was wrong because it treated the constant as the scan's
+alone.
+
+### Success Criteria
+
+- [x] SC-1902: test/config-access-conformity.test.ts contains [a .tsx file in a scanned directory is scanned] — the refusal's own sentence was false about the file it named
+- [x] SC-1903: test/config-access-conformity.test.ts contains [every extension the walk counts as source, the scan reads] — the extension list is parsed out of SOURCE_EXTENSIONS, so a seventh one added there and not here cannot pass unnoticed

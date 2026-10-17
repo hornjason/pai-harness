@@ -49,6 +49,7 @@ import {
   CONFIG_1_DECLINES,
   readConfigAccessRatchet,
   scanConfigAccess,
+  SOURCE_EXTENSIONS,
   projectSourceEvidence,
   scanPromptConfigAccess,
   unmeasuredScanReason,
@@ -1209,6 +1210,49 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
         .toBe(1);
       expect(config2(root).failFiles, "a nested workflow is measured by nobody")
         .toEqual(["workflows/lib/helper.ts"]);
+    });
+
+    /**
+     * #506 — the walk counted six extensions the scan could not read.
+     *
+     * The invariant `walkSources` states in its own comment is
+     * one-directional: the evidence walk must not claim source the scan
+     * would never read. It was violated for `.tsx .jsx .mjs .cjs .mts
+     * .cts`, which `SOURCE_EXTENSIONS` counts and `/\.(ts|js)$/` did not.
+     */
+    test("SC-1902: a .tsx file in a scanned directory is scanned", () => {
+      // Three failures from one missing extension, and the middle one is
+      // the worst: the refusal's sentence says the source is "none of it in
+      // the directories this check reads" about a file in `lib/`, the first
+      // directory it reads.
+      const root = project({ "lib/app.tsx": READS_CONFIG, "README.md": "# d" });
+      expect(scanConfigAccess(root).filesScanned, "a .tsx in lib/ is still invisible to the scan")
+        .toBe(1);
+      const got = config1(root);
+      expect(got.unmeasured, "a project with TypeScript was reported as unmeasured").toBeNull();
+      expect(got.violations.join("\n"), "the direct read in the .tsx was not caught")
+        .toContain("lib/app.tsx");
+      expect(got.violations.join("\n")).not.toContain("read NO files");
+    });
+
+    test("SC-1903: every extension the walk counts as source, the scan reads", () => {
+      // The property, rather than one filename. A seventh extension added
+      // to `SOURCE_EXTENSIONS` and not to the scan reintroduces this with
+      // nothing able to notice — the two lists are the same list or they
+      // are the defect.
+      const files: Record<string, string> = { "README.md": "# d" };
+      const exts = ["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"];
+      for (const e of exts) files[`lib/a_${e}.${e}`] = READS_CONFIG;
+      const root = project(files);
+      const scanned = Object.keys(scanConfigAccess(root).counts).sort();
+      expect(scanned, "an extension the walk counts as source went unread")
+        .toEqual(exts.map(e => `lib/a_${e}.${e}`).sort());
+      // The INSTRUMENT: the list is the one `SOURCE_EXTENSIONS` actually
+      // declares, so adding an extension there without adding a fixture
+      // here leaves a hole this row would not see.
+      const declared = (/\(([a-z|]+)\)/.exec(SOURCE_EXTENSIONS.source)?.[1] ?? "").split("|");
+      expect(declared.sort(), "SOURCE_EXTENSIONS changed and this case did not")
+        .toEqual([...exts].sort());
     });
 
     test("SC-1901: test/ is still evidence that CONFIG-1 is blind", () => {

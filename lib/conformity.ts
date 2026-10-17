@@ -2976,7 +2976,19 @@ function walkSources(dir: string, rel: string, out: Array<{ path: string; text: 
       walkSources(abs, relPath, out);
       continue;
     }
-    if (!/\.(ts|js)$/.test(e.name) || /\.test\.ts$/.test(e.name)) continue;
+    // `SOURCE_EXTENSIONS`, not `/\.(ts|js)$/`. The evidence walk counts
+    // `.tsx .jsx .mjs .cjs .mts .cts` as source and this scan could not read
+    // any of them, so the invariant stated above — the walk must not claim
+    // source the scan would never read — was violated for six extensions
+    // (#506).
+    //
+    // Measured: a project whose only code is `lib/app.tsx` holding a live
+    // direct config read scans ZERO files, and CONFIG-1 refuses with *"This
+    // project DOES contain source — lib/app.tsx — none of it in the
+    // directories this check reads"*. `lib/` is the first directory this
+    // check reads. The sentence is false, the refusal is unclearable, and
+    // the read goes uncaught — three failures from one missing extension.
+    if (!SOURCE_EXTENSIONS.test(e.name) || /\.test\.ts$/.test(e.name)) continue;
     out.push({ path: relPath, text: readFileSync(abs, "utf-8") });
   }
 }
@@ -3329,7 +3341,7 @@ export function configAccessViolationRecords(
  * refusal had never been reachable.
  */
 /** Anything that can carry code. Deliberately WIDER than any scanner's filter. */
-const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+export const SOURCE_EXTENSIONS = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
 /** Directories that hold code nobody wrote, or output nobody edits. */
 const SOURCE_SKIP_DIRS = new Set([
