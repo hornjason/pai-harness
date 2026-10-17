@@ -160,7 +160,21 @@ registry, and goes red when either drifts. Bumping `package.json` without
 updating this line turns it red, which is what makes a release a two-commit
 operation rather than a tag somebody remembers to annotate.
 
-- **Distribution standing (2026-10-17)** — tree `0.5.0`, published `rungate@0.4.1`.
+- **Distribution standing (2026-10-17)** — tree `0.5.0`, published `rungate@0.5.0`.
+
+**The release pipeline reported a success for the first time.** `v0.3.0`,
+`v0.4.0` and `v0.4.1` all published correctly and all three ended in a red
+job, because the postflight asked the slow question and only the slow
+question. #472 shipped in this release and the run proves it: `Publish`
+succeeded, the postflight read the receipt npm writes synchronously, and the
+job went green without waiting on the packument to propagate. Three releases
+of "the guard is working as intended and the budget is a guess" is now a
+guard that measures the thing it can measure.
+
+Verified against the artifact rather than the tag: `npm pack rungate@0.5.0`
+carries `config/` (9 files, including `matcher-registry.json`) and
+`templates/` (8 files). Those are the paths #484 found missing, and they are
+the ones a consumer's first `bunx rungate scaffold .` needs.
 
 **Why this release is `0.5.0` and not `0.4.2`.** It was planned as a patch and
 the plan was wrong, on this file's own stated test: *observable behaviour
