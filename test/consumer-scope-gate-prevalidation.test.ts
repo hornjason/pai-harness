@@ -263,14 +263,28 @@ describe("#274 AC-4: the recorded reading and the gate check that reads it", () 
     expect(reading.verdict, "a broken evidence command did not move the verdict").toBe("FAIL");
     expect(reading.reason, "a measured verdict carried an UNMEASURED reason").toBeNull();
 
-    // The broken AC is named in the reading itself. This is the only place the
-    // id survives the reduction — the reading carries `acs`, and there is no
-    // `broken` field for a consumer of it to read. That absence is #295.
-    expect(reading.acs.filter((a) => a.status === "broken").map((a) => a.id)).toEqual(["AC-2"]);
-    expect(
-      (reading as Record<string, unknown>).broken,
-      "the reading grew a `broken` field",
-    ).toBeUndefined();
+    // The broken AC is named in the reading itself.
+    //
+    // When this was written the id survived only in `acs`, and the absence of
+    // a `broken` field was asserted and filed as #295 — `prevalidationViolations`
+    // read `reading.broken`, which no writer produced, so every pre-validation
+    // refusal was unable to say which AC was broken. **#295 closed on
+    // 2026-10-11 at 23:30Z, about five hours after this branch's last commit**,
+    // and the writer now produces the field. The assertion is inverted rather
+    // than deleted: a field a refusal depends on is exactly the thing to pin.
+    const fromAcs = reading.acs.filter((a) => a.status === "broken").map((a) => a.id);
+    expect(fromAcs).toEqual(["AC-2"]);
+
+    const broken = (reading as Record<string, unknown>).broken;
+    expect(broken, "the reading lost the `broken` field #295 added — the refusal cannot name an AC")
+      .toEqual(["AC-2"]);
+
+    // And the two have to AGREE. A derived field that disagrees with the
+    // classification it is derived from is worse than no field at all: the
+    // refusal names one AC and the evidence names another, and nothing
+    // compares them. Asserting each against a literal would let them drift
+    // apart in opposite directions while both cases stayed green.
+    expect(broken, "`broken` and the `acs` classification name different ACs").toEqual(fromAcs);
 
     // The whole classification survives the reduction, not just the failures:
     // `empty` is a warning rather than a refusal, and a warning that does not

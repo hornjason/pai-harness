@@ -44,12 +44,27 @@ const FIXTURE_ROOT = join(REPO_ROOT, "test", "fixtures", "consumer-ui-project");
  * Every file #274 adds, listed and then CHECKED against the directory so the
  * list cannot quietly fall behind the issue.
  */
-const ADDED_FILES = [
+/**
+ * Every file this scan covers.
+ *
+ * It began as exactly the set #274 adds, and the constant was called
+ * `ADDED_FILES` to say so. It is no longer that: `consumer-fixture-gates.test.ts`
+ * arrived from #44 while this branch sat unmerged, and the on-disk check below
+ * caught it — which is the check doing its job, not a stale list.
+ *
+ * Renamed rather than extended quietly, because the two names make different
+ * promises. "What this issue adds" is a fact about one commit and goes stale.
+ * "What this scan covers" is the property the scan is for, and it is the one
+ * the on-disk check actually enforces.
+ */
+const SCANNED_FILES = [
   "test/consumer-ceremony-fixture.test.ts",
   "test/consumer-tier-gated-subsystems.test.ts",
   "test/consumer-tier-downgrade-mutation.test.ts",
   "test/consumer-scope-gate-prevalidation.test.ts",
   "test/consumer-no-rebuild-delegation.test.ts",
+  // Not #274's. Added by #44 and swept in by the on-disk check below.
+  "test/consumer-fixture-gates.test.ts",
   "test/helpers/consumer-ship-sites.ts",
   "test/fixtures/consumer-ui-project/.claude/rungate.json",
   "test/fixtures/consumer-ui-project/workflow-state.json",
@@ -206,29 +221,31 @@ export function rebuildInstructions(source: string): string[] {
 
 // ── The scan ─────────────────────────────────────────────────────────────
 
-describe("#274 AC-6: the scanned set is the set this issue adds", () => {
+describe("#274 AC-6: the scanned set is every consumer file on disk", () => {
   test("every listed file exists", () => {
-    for (const rel of ADDED_FILES) {
+    for (const rel of SCANNED_FILES) {
       expect(existsSync(join(REPO_ROOT, rel)), `${rel} is listed but missing`).toBe(true);
     }
   });
 
   test("no consumer-* file on disk escapes the list", () => {
-    // Without this the list is a promise. With it, a seventh consumer file
-    // added later is scanned or turns this red.
+    // Without this the list is a promise. With it, a consumer file added
+    // later is scanned or turns this red — which is what it did: #44's
+    // `consumer-fixture-gates.test.ts` landed on main while this branch was
+    // unmerged, and this assertion is the only thing that noticed.
     for (const rel of consumerFilesOnDisk()) {
-      expect(ADDED_FILES, `${rel} is not in the scanned set`).toContain(rel);
+      expect(SCANNED_FILES, `${rel} is not in the scanned set`).toContain(rel);
     }
     expect(consumerFilesOnDisk().length).toBeGreaterThanOrEqual(5);
   });
 
   test("this file is inside its own scanned set", () => {
-    expect(ADDED_FILES).toContain("test/consumer-no-rebuild-delegation.test.ts");
+    expect(SCANNED_FILES).toContain("test/consumer-no-rebuild-delegation.test.ts");
   });
 });
 
 describe("#274 AC-6: no added file executes a rebuild", () => {
-  for (const rel of ADDED_FILES) {
+  for (const rel of SCANNED_FILES) {
     test(`${rel} hands no rebuild to an execution construct`, () => {
       const found = rebuildExecutions(read(rel));
       expect(
@@ -313,7 +330,7 @@ describe("#274 AC-6: the fixture's rebuild command is inert", () => {
 
   test("that exact value is never handed to an execution construct", () => {
     const value = fixture.container?.rebuildCommand ?? "";
-    for (const rel of ADDED_FILES) {
+    for (const rel of SCANNED_FILES) {
       for (const site of executionSites(read(rel))) {
         expect(site.args.includes(value), `${rel}:${site.line} executes the fixture's rebuild`).toBe(
           false,
