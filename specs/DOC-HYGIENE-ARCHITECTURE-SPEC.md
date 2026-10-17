@@ -177,6 +177,39 @@ throws EISDIR — a plan naming a file it could never read.
 
 #### What was broken to prove it (#508)
 
+Run and counted over `test/extract-constraints-coverage.test.ts` +
+`test/doc-scan-targets.test.ts` (34 tests, baseline 34 pass / 0 fail measured
+before each row). None is left in the tree; all were run and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| a planned file that cannot be read is dropped instead of recorded | 1 of 34 | 1 |
+| `coverage.read` reports every planned file as read | 1 of 34 | 1 |
+| the flat root scan stops asking the filesystem (`statSync().isFile()` removed) | 1 of 34 | 1 |
+
+Before believing any of those counts, the input on which mutant and original
+differ, per `.claude/rules/checks-must-be-able-to-fail.md`: the three-document
+fixture with its middle document removed after the plan is taken — original
+`read: 2, unread: ["docs/DOC-1.md"]`, first mutant `unread: []`, second mutant
+`read: 3`. For the third, a project carrying a DIRECTORY named `NOTES.md` —
+original plans 2 files, mutant plans 3.
+
+**The second row is a 1 that deserves its own sentence.** Only SC-1964 can see
+a coverage number that lies, because it is the only case whose tree has
+anything unreadable in it — everywhere else `read` and `planned` are
+legitimately equal and no assertion could tell a measurement from a constant.
+That is #492's shape (*a battery whose fixtures all meet a precondition
+measures nothing past it*) with the precondition met by exactly one fixture,
+which is the minimum that is not zero. It is recorded rather than padded: a
+second case of the same shape at a different size would raise the number
+without widening the question.
+
+The wiring is observed rather than asserted — `bun test
+test/scaffold-conformity.test.ts -t HYGIENE-6` prints
+`HYGIENE-6 coverage: read 93 of 93 planned documents from 7 directories
+(routing)` and completes in 232ms, against the 5001ms timeout that was the
+check's only possible red before.
+
 ## Constraints
 
 - All new content-alignment checks MUST start as WARN, not FAIL (spec-policies.json Decision #9)
