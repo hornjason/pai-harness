@@ -8467,3 +8467,37 @@ reader-only proof cannot catch a producer that stopped producing (#235).
 - [x] SC-1851: test/ship-local-env-clause.test.ts contains [the prompt carries both commands and forbids a typed verdict] — and names none of the flags the recorder refuses, because an agent reading a flag in prose types it
 - [x] SC-1852: test/ship-local-env-clause.test.ts contains [the api and ui clauses reach it] — one producer of the wording, and no config file named
 - [x] SC-1853: test/ship-local-env-clause.test.ts contains [the call site measures the worktree, not main] — a suite measured on main is a measurement of somebody else's commit
+
+### The second instance, found while fixing the first
+
+The review-currency probe at the Verify phase asks an agent for two values
+and hands them to `suiteCurrency`. It asked for `environments.local.testsSha`
+for its whole life. **Nothing has ever written that field.** It appeared in
+exactly one place in the tree — that prompt — and it is not a key
+`EnvironmentLocalSchema` declares. The recorder has written the SHA to
+`suiteMeasurement.measuredSha` since #224.
+
+So `suiteMeasuredSha` was the empty string on every run, `suiteCurrency`
+returned UNRECORDED on every run, and the `SUITE_MEASUREMENT_STALE` refusal
+twenty lines below it has never once been able to fire. The whole of #224's
+*"a count with no SHA is not evidence"* was comparing nothing against nothing,
+and the only visible symptom was a terminal status capped to UNMEASURED for a
+reason that had nothing to do with the run.
+
+Same shape as #530 itself, one step away in the same phase: a consumer reading
+a name no producer writes.
+
+**A written state file cannot witness this, and that is the useful part.**
+`writeWorkflowState` calls `WorkflowStateSchema.passthrough().parse(state)`
+and then writes the ORIGINAL object, so an undeclared key validates and
+persists — the first instrument anyone reaches for reports nothing. The check
+walks the Zod shape instead: every `environments.*`, `suiteMeasurement.*` and
+`agents.*` path the probe's PROMPT names must be a path the schema declares.
+The prompt literal is sliced out first, because the comments around it discuss
+the old name on purpose and a whole-block search would report this file's own
+history as a live instruction.
+
+Restoring the old name is 1 red, and the failure message names the path.
+
+- [x] SC-1854: test/suite-measurement-parity.test.ts contains [every state path the probe sends an agent to is one the schema declares] — walked over the Zod shape, because a written state file persists an undeclared key and cannot see the defect
+- [x] SC-1855: test/suite-measurement-parity.test.ts contains [the path walker can say no - the old name and the new one differ] — the control, without which a walker returning true for everything satisfies the row above
