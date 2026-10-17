@@ -9133,3 +9133,89 @@ a passing grade: the mode was being lost and nothing could see it.
 - [x] SC-1888: test/scaffold-rehearsal-excludes.test.ts contains [an immutable file in the clone does not survive the discard] — with the uchg flag asserted present on the clone first, and a second case for a clone that truly cannot be removed
 - [x] SC-1889: test/scaffold-rehearsal-excludes.test.ts contains [a directory the walk creates keeps the mode it had] — mkdirSync uses the umask, so only the ancestors of an exclude were at risk
 - [x] SC-1890: test/scaffold-rehearsal-excludes.test.ts contains [a spec the scan can see gets a generated row] — the property rather than a spec filename, which would measure which checkout the suite is running in
+
+## Two unsatisfiable red checks over a directory each one thought the other had (#501)
+
+A consumer whose only code is `workflows/*.ts` got **two** refusals and
+could clear neither:
+
+```
+CONFIG-1: the scan read NO files … This project DOES contain source —
+          workflows/w.ts — none of it in the directories this check reads
+CONFIG-2: the scan read NO files …
+```
+
+Both sentences are true. `CONFIG_1_DECLINES` holds `workflows` on purpose —
+the two ratchets are scoped separately, so CONFIG-1 walking it would make
+each check's green require the other's red — and `scanPromptConfigAccess`
+read `.js` only, non-recursively, because rungate's own workflows are flat
+`.js` (they cannot import, #69).
+
+So CONFIG-1 declined the directory on the grounds that CONFIG-2 owns it,
+and CONFIG-2 could not see the language it was written in. **This is #476's
+original complaint — a permanently red, unsatisfiable check — reintroduced
+for a different project shape**, and the only way out was to rewrite the
+workflows in another language.
+
+### The two halves are a pair, and each alone is worse than neither
+
+- Widening CONFIG-2's extensions without teaching CONFIG-1's evidence walk
+  about the hand-off leaves CONFIG-1 refusing: `workflows/w.ts` still sets
+  `found`, which is what turns an empty scan into a refusal.
+- Teaching the walk without widening CONFIG-2 makes CONFIG-1 **waive** a
+  directory nobody measures — the fail-open the whole empty-scan refusal
+  exists to prevent.
+
+`found` now means *source CONFIG-1 is responsible for*. A file whose
+top-level directory is in `CONFIG_1_DECLINES` is recorded as a decline —
+`workflows/w.ts (measured by CONFIG-2, which reads workflows/)` — so the
+UNMEASURED sentence names the hand-off instead of implying the tree is
+empty.
+
+### `CONFIG_1_DECLINES`, deliberately not `measuredElsewhere`
+
+The gap between the two predicates is the fix, not an oversight.
+`workflows/` is handed to a sibling check that FAILS the suite; `test/` is
+excluded by ADR-002 D4 policy with nobody measuring it. Collapsing them
+waives #500's own case — a project whose only source is `tests/helper.ts`
+holding a live direct config read — and SC-1901 is the row that blocks it.
+Measured: widening the predicate to `measuredElsewhere` is 4 red, three of
+them #500's test-directory cases.
+
+### CONFIG-2 recurses, and that is load-bearing
+
+CONFIG-1 declines `workflows/` **entirely**. A depth CONFIG-2 does not
+reach is therefore a depth NEITHER check reads — a blind spot the hand-off
+would create rather than one it inherits. `workflows/lib/helper.ts` is the
+fixture, and SC-1900 is the row.
+
+### What was broken to prove it
+
+Four mutations over 97 tests in `test/config-access-conformity.test.ts`.
+None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| `WORKFLOW_MODULE` back to `.js` only | 2 | 2 |
+| `workflowModules` stops recursing | 1 | 1 |
+| the `CONFIG_1_DECLINES` decline removed | 1 | 1 |
+| the decline widened to `measuredElsewhere` | 4 | 1 |
+
+The last row's three extra reds are #500's test-directory cases and they
+are genuinely about the mutation: widening the predicate drops `test/`
+source out of the evidence walk, which is exactly what those cases exist to
+notice. The prediction was wrong and the boundary is better guarded than it
+looked.
+
+Every case runs the REAL validator in a spawned suite and reads
+`getFindings()`. The helper's own docstring records why: an earlier version
+reimplemented the composition, and deleting the whole
+`if (unmeasured) { addFinding(...); return; }` block from the production
+check was **0 red over 9,652 tests**.
+
+### Success Criteria
+
+- [x] SC-1898: test/config-access-conformity.test.ts contains [CONFIG-2 measures a TypeScript workflow rather than refusing it] — the read inside the .ts is attributed to it, so a widening that only stopped the refusal would not satisfy this
+- [x] SC-1899: test/config-access-conformity.test.ts contains [CONFIG-1 does not call CONFIG-2's territory evidence that it is blind] — with source in a directory nobody measures as the control, because this is a hand-off and not a waiver
+- [x] SC-1900: test/config-access-conformity.test.ts contains [the hand-off holds at every depth CONFIG-2 reads] — a nested workflow CONFIG-2 did not reach would be read by neither check
+- [x] SC-1901: test/config-access-conformity.test.ts contains [test/ is still evidence that CONFIG-1 is blind] — the policy exclusion and the hand-off are different facts, and collapsing them waives #500's own case
