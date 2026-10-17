@@ -4037,6 +4037,321 @@ Report: committed (true only if git commit exited zero), sha, and the branch.
 }
 // ──── RUN-REF-END ────
 
+// Declared here, above the top-level `runDecomposedShip` call below, because
+// `SINGLE_WORKTREE_EXEMPT` inside it is a module-level `const`: a decomposed
+// run reaches auditWorktreeClaims during module evaluation, and from further
+// down the file that read is a temporal-dead-zone ReferenceError rather than
+// a value. The block is extracted by marker in
+// test/collect-claim-enforcement.test.ts, so it moves whole and the mutant
+// still finds its flag.
+// ──── COLLECT-CLAIM-START ────
+/**
+ * Whether the only worktree in a run is held to its own claim (#228).
+ *
+ * Declared ONCE, as a flag, so a test can build a mutant copy of this block
+ * with it set to false and watch the exemption's removal re-break the run it
+ * was added for — .claude/rules/checks-must-be-able-to-fail.md. Without that,
+ * "the lone worktree was not refused" is indistinguishable from an audit that
+ * refuses nothing at all, which is the defect this repo has shipped most.
+ */
+const SINGLE_WORKTREE_EXEMPT = true
+
+/**
+ * Paths that belong to the RUN rather than to any sub-issue (#296).
+ *
+ * A claim is written from the decomposition plan before the work exists, so it
+ * can only name files the planner foresaw. It can never name a shared registry
+ * that the repo's own tooling makes EVERY contributor touch:
+ * `.claude/conformity-allowlists.json` is a ratchet the pre-push hook requires
+ * writing, and on run wf_536df065-969 one agent wrote it, no sub-issue had
+ * claimed it, and 2,290 lines of validated work were refused over it.
+ *
+ * Enumerating such files as prohibitions in the agent prompt is a treadmill —
+ * that run already carried a prohibition naming project-state.json, and died
+ * on the two filenames nobody had thought to list. So the fix is an ownership
+ * CLASS here, consulted by the audit, rather than more prose upstream.
+ *
+ * One writer per run is collectable. Two is still refused: collection copies
+ * whole files, so taking either copy drops the other worktree's entries with
+ * no diff anyone would notice — the #178 failure mode this guard exists for.
+ * Matched on the whole normalised key, never a suffix or a directory, or every
+ * unclaimed file in `.claude/` would ride in on the registry's exemption.
+ */
+const CO_OWNED_FILES = new Set(['.claude/conformity-allowlists.json'])
+
+/**
+ * Paths no worktree may write at all — the DA owns them (#296).
+ *
+ * These are a single shared state document. Four parallel worktrees each
+ * updating their own copy produce four conflicting versions, and on run
+ * wf_0b15a933-b2b that cost four worktrees and 2,565 lines of correct,
+ * validated work, because an agent read CLAUDE.md's "update PROJECT-STATE.md
+ * at milestones" line and did what it said.
+ *
+ * This is a PROHIBITION, not an exemption from the claim, so it is checked
+ * before the single-worktree exemption and before the claim itself: a plan
+ * that claims one of these cannot authorise it, because the plan is written by
+ * a model too. The refusal names DA ownership and the issue, because a refusal
+ * that reads like scope creep teaches the next agent nothing and it does the
+ * same thing tomorrow.
+ */
+const DA_OWNED_FILES = new Set(['project-state.json', 'PROJECT-STATE.md', 'SUCCESS.md'])
+
+/**
+ * A worktree's reported path, as the collector will see it (#178).
+ *
+ * `groupFilesByWorktree` accepts both an absolute path inside the worktree and
+ * a worktree-relative one, and normalises to the latter. The claim comparison
+ * has to use the SAME normalisation or it compares
+ * "/…/wf_a/workflows/ship.js" against the claim "workflows/ship.js", finds no
+ * match, and refuses the entire collection on the most common reporting style.
+ *
+ * Anything that does not reduce to a path inside the worktree — another
+ * worktree's absolute path, a `..` segment — is deliberately left as-is. It
+ * then matches no claim and is refused, which is the right answer: the
+ * collector would discard it anyway, silently.
+ */
+function claimKey(worktreePath, p) {
+  let s = String(p == null ? '' : p).trim()
+  if (!s) return ''
+  const wt = String(worktreePath == null ? '' : worktreePath).trim().replace(/\/+$/, '')
+  if (wt && s.startsWith(`${wt}/`)) s = s.slice(wt.length + 1)
+
+  // One rule over segments, rather than four chained regexes (#229).
+  //
+  // The regex version stripped a LEADING `./` only — `^(?:\.\/)+` — so
+  // `a/./b.ts` survived as a key distinct from `a/b.ts`, and that is the
+  // whole bypass: worktree A claims `a/b.ts`, worktree B claims and reports
+  // `a/./b.ts`, the audit finds no owner for B's key and raises nothing, and
+  // the collector resolves it with `realpathSync` onto A's file and writes
+  // over it. Duplicate slashes and a trailing slash had the same shape and
+  // were each a separate regex; dropping empty and `.` segments is the one
+  // rule all three were approximating.
+  //
+  // `..` is deliberately NOT dropped. It is REFUSED, by `pathRefusal` (#400).
+  // Collapsing it textually would reintroduce the very differential this
+  // closes: where a component is a symlink, `a/../b` collapses textually to
+  // `b` while the collector's `realpathSync` resolves it somewhere else — a
+  // key that looks canonical and is not. Refusal has no such failure mode.
+  // A segment that is exactly `.` cannot be a symlink, so collapsing it is
+  // the same path on every filesystem.
+  const absolute = s.startsWith('/')
+  const segments = s.split('/').filter(seg => seg !== '' && seg !== '.')
+  // An absolute path stays absolute so `pathRefusal` still refuses it.
+  return (absolute ? '/' : '') + segments.join('/')
+}
+
+/**
+ * Whether this worktree's report of `key` is permitted by the claim it issued.
+ *
+ * ONE declaration, on one line, because it is the site the #296 mutation
+ * targets — `test/collect-claim-ownership.test.ts` rebuilds this block with
+ * the old `claimant === null ||` fallthrough restored and watches it keep
+ * every file the real block refuses. A second permission path would survive
+ * that mutation and the proof would be decorative.
+ *
+ * The fallthrough was the fail-open. When NO result carries `claimedFiles` the
+ * ownership map is empty, so `claimant` is null for every path and
+ * "nobody claimed it" read as permission — a decomposition that emitted no
+ * claims silently disabled SC-413 for the entire run. An absent claim in a
+ * contested run now permits nothing; the lone-worktree case is handled by
+ * SINGLE_WORKTREE_EXEMPT above, where it belongs, and is the only place an
+ * unclaimed file is collectable.
+ *
+ * `claimant === wt` is still reachable and still right: a worktree that
+ * reports in two parts (#228) can claim in one row and report in the other.
+ */
+function claimPermits(claims, key, claimant, wt) {
+  return Array.isArray(claims) ? claims.includes(key) : claimant === wt
+}
+
+/**
+ * Check what each agent actually changed against what it was told it owned.
+ *
+ * SC-413 of PARALLEL-AGENT-COORDINATION-SPEC.md: "Post-wave integration check
+ * detects unclaimed file modifications". Until this existed, the claim was
+ * PROSE in the sub-issue prompt ("## Files — modify ONLY these") and nothing
+ * downstream compared the reply to it. On wf_2b3ff032-a4b three of four
+ * worktrees changed workflows/ship.js; exactly one had claimed it, so SC-411's
+ * pairwise overlap check had nothing to catch, and the collection copied all
+ * three in sequence. The commit that resulted described controls that were not
+ * in the file it committed.
+ *
+ * Returns both halves on purpose, because either alone is insufficient:
+ *
+ *   violations — the refusal. Each names the worktree, the path, and the
+ *                claimant, because "an unclaimed file was modified" is not
+ *                actionable without knowing whose work is about to be lost.
+ *   candidates — the collection input, pruned to claimed files only. This is
+ *                what gets written to the groups file, so the claimant's copy
+ *                is the only copy of a contested file that can ever be
+ *                written, independently of whether the refusal fires.
+ *
+ * A missing `claimedFiles` means NO CLAIM WAS ISSUED — the single-agent and
+ * remediation paths, where there is one worktree and nothing to contest.
+ * Reading that as "claimed nothing" would refuse every ordinary run. Such an
+ * agent is unconstrained, with one exception: it still cannot contribute a
+ * file some other worktree explicitly claimed.
+ *
+ * #228: that exemption was conditioned on the WRONG THING — on `claimedFiles`
+ * being absent, rather than on there being another worktree to contest with.
+ * A lone agent that reported a claim naming fewer files than it changed took
+ * the strict branch and had its whole collection refused over a file nobody
+ * else was touching. Run wf_74366574-136: correct work, refused, SHIP_FAILED,
+ * only copy left loose in the worktree. What makes a claim meaningful is a
+ * second claimant, so the exemption is now keyed on the number of
+ * PARTICIPATING WORKTREES, which is what the docblock above always described.
+ *
+ * It is an exemption from the CLAIM, not from the worktree boundary: a path
+ * that does not reduce to a location inside the reporting worktree is refused
+ * whatever the claim says, because the collector would discard it anyway and
+ * a silent discard is how work goes missing.
+ *
+ * #400 replaced `escapesWorktree` here with `pathRefusal` in the
+ * SECURITY-HELPERS block. It was a second copy of two of that table's rules,
+ * and a second copy survives any mutation of the first — so there is now one
+ * decider, asked by staging and by this audit, and `refusal.boundary` is how
+ * this site asks it the narrower question `escapesWorktree` used to answer.
+ */
+function auditWorktreeClaims(results) {
+  const violations = []
+  const candidates = []
+  if (!Array.isArray(results)) return { violations, candidates }
+
+  // Participants, not result ROWS: a worktree that reports in two parts is
+  // still one worktree, and counting rows would reinstate #228 for it.
+  const participants = [...new Set(
+    results.map(r => String(r && r.worktreePath || '').trim()).filter(Boolean),
+  )]
+  const unconstrained = SINGLE_WORKTREE_EXEMPT && participants.length === 1
+
+  // Ownership first, across every worktree — a file's claimant has to be known
+  // before any worktree's report can be judged against it.
+  const claimants = {}
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt || !Array.isArray(r.claimedFiles)) continue
+    for (const c of r.claimedFiles) {
+      const key = claimKey(wt, c)
+      if (!key) continue
+      if (!claimants[key]) claimants[key] = []
+      if (!claimants[key].includes(wt)) claimants[key].push(wt)
+    }
+  }
+
+  // Who actually WROTE each co-owned registry, counted the same way
+  // participants are: by worktree, so a worktree reporting in two rows is one
+  // writer. A claim cannot settle this, so the reports are what decide it.
+  const coOwnedWriters = {}
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt) continue
+    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
+      const key = claimKey(wt, raw)
+      if (!key || !CO_OWNED_FILES.has(key)) continue
+      if (!coOwnedWriters[key]) coOwnedWriters[key] = []
+      if (!coOwnedWriters[key].includes(wt)) coOwnedWriters[key].push(wt)
+    }
+  }
+
+  for (const r of results) {
+    const wt = String(r && r.worktreePath || '').trim()
+    if (!wt) continue
+    const claims = Array.isArray(r.claimedFiles)
+      ? r.claimedFiles.map(c => claimKey(wt, c)).filter(Boolean)
+      : null
+    const kept = []
+
+    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
+      const key = claimKey(wt, raw)
+      if (!key) continue
+      // Path safety, checked before any exemption, and asked of the same
+      // table staging asks (#400). Two outcomes, because they are different
+      // things for an operator to act on:
+      //
+      //   boundary — claimKey only strips the worktree prefix off paths that
+      //              are inside it, so anything still absolute or still
+      //              carrying a `..` segment names somewhere else entirely:
+      //              another worktree's copy, or something outside the repo.
+      //   otherwise — the path IS inside this worktree and still cannot be
+      //              handled: `git add` would refuse it at staging time, and
+      //              before #400 it did, two phases later and under a
+      //              different message, after the audit had reported clean.
+      //
+      // Both name the rule, because "not inside its own worktree" is a wrong
+      // sentence to print about `lib/a;rm.ts`.
+      const refusal = pathRefusal(key)
+      if (refusal) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: refusal.boundary
+            ? `${wt} reported ${key}, which is not inside its own worktree (${refusal.rule}) — a worktree may only contribute files beneath its own directory`
+            : `${wt} reported ${key}, which is inside its worktree but cannot be staged (${refusal.rule}) — git add refuses the path, so collecting it would fail later and in another phase`,
+        })
+        continue
+      }
+      // Ownership classes come before the claim and before the exemption,
+      // for the same reason the boundary above does: they are facts about the
+      // FILE, and no claim and no run shape can change them (#296).
+      if (DA_OWNED_FILES.has(key)) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, which is DA-owned — ${[...DA_OWNED_FILES].join(', ')} are a single shared state document written by the DA, never from a worktree (CLAUDE.md, #296). Say what needs changing in your findings as prose and the DA will write it.`,
+        })
+        continue
+      }
+      if (CO_OWNED_FILES.has(key)) {
+        const writers = coOwnedWriters[key] || [wt]
+        if (writers.length === 1) {
+          // A shared registry no plan could have claimed, written by exactly
+          // one worktree. Nothing is contested, so it collects (#296).
+          kept.push(key)
+          continue
+        }
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, a co-owned registry that ${writers.length} worktrees wrote in this run (${writers.join(', ')}) — collection copies whole files, so taking one copy would drop the other edits. Merge them in one place (#296).`,
+        })
+        continue
+      }
+      // One worktree in the run means nothing is contested and the claim has
+      // no one to protect anything from (#228).
+      if (unconstrained) {
+        kept.push(key)
+        continue
+      }
+      const owners = claimants[key] || []
+      // Exactly one owner is the only state in which a claimant exists. Two
+      // worktrees claiming one file is a scheduling failure SC-411 should have
+      // caught; collecting both copies is the #178 bug with extra steps.
+      const claimant = owners.length === 1 ? owners[0] : null
+
+      if (owners.length > 1) {
+        violations.push({
+          worktreePath: wt, path: key, claimant: null,
+          detail: `${wt} reported ${key}, which ${owners.length} worktrees claim (${owners.join(', ')}) — a file may have one claimant`,
+        })
+        continue
+      }
+      if (claimPermits(claims, key, claimant, wt)) {
+        kept.push(key)
+        continue
+      }
+      violations.push({
+        worktreePath: wt, path: key, claimant,
+        detail: claimant
+          ? `${wt} reported ${key}, which it did not claim — that file is claimed by ${claimant}`
+          : `${wt} reported ${key}, which it did not claim — no worktree claimed that file`,
+      })
+    }
+
+    if (kept.length > 0) candidates.push({ worktreePath: wt, filesChanged: kept })
+  }
+
+  return { violations, candidates }
+}
+// ──── COLLECT-CLAIM-END ────
+
 // ──── DECOMPOSED-SHIP-START ────
 // ── M-size sub-issue shipping: disjoint sub-issues run concurrently, overlapping ones serialize ──
 // ──── WAVE-DISPATCH-START ────
@@ -4737,314 +5052,6 @@ function collectTarget(worktrees, marcusPath, projectRoot = PROJECT_ROOT, harnes
   return projectRoot
 }
 // ──── COLLECT-TARGET-END ────
-
-// ──── COLLECT-CLAIM-START ────
-/**
- * Whether the only worktree in a run is held to its own claim (#228).
- *
- * Declared ONCE, as a flag, so a test can build a mutant copy of this block
- * with it set to false and watch the exemption's removal re-break the run it
- * was added for — .claude/rules/checks-must-be-able-to-fail.md. Without that,
- * "the lone worktree was not refused" is indistinguishable from an audit that
- * refuses nothing at all, which is the defect this repo has shipped most.
- */
-const SINGLE_WORKTREE_EXEMPT = true
-
-/**
- * Paths that belong to the RUN rather than to any sub-issue (#296).
- *
- * A claim is written from the decomposition plan before the work exists, so it
- * can only name files the planner foresaw. It can never name a shared registry
- * that the repo's own tooling makes EVERY contributor touch:
- * `.claude/conformity-allowlists.json` is a ratchet the pre-push hook requires
- * writing, and on run wf_536df065-969 one agent wrote it, no sub-issue had
- * claimed it, and 2,290 lines of validated work were refused over it.
- *
- * Enumerating such files as prohibitions in the agent prompt is a treadmill —
- * that run already carried a prohibition naming project-state.json, and died
- * on the two filenames nobody had thought to list. So the fix is an ownership
- * CLASS here, consulted by the audit, rather than more prose upstream.
- *
- * One writer per run is collectable. Two is still refused: collection copies
- * whole files, so taking either copy drops the other worktree's entries with
- * no diff anyone would notice — the #178 failure mode this guard exists for.
- * Matched on the whole normalised key, never a suffix or a directory, or every
- * unclaimed file in `.claude/` would ride in on the registry's exemption.
- */
-const CO_OWNED_FILES = new Set(['.claude/conformity-allowlists.json'])
-
-/**
- * Paths no worktree may write at all — the DA owns them (#296).
- *
- * These are a single shared state document. Four parallel worktrees each
- * updating their own copy produce four conflicting versions, and on run
- * wf_0b15a933-b2b that cost four worktrees and 2,565 lines of correct,
- * validated work, because an agent read CLAUDE.md's "update PROJECT-STATE.md
- * at milestones" line and did what it said.
- *
- * This is a PROHIBITION, not an exemption from the claim, so it is checked
- * before the single-worktree exemption and before the claim itself: a plan
- * that claims one of these cannot authorise it, because the plan is written by
- * a model too. The refusal names DA ownership and the issue, because a refusal
- * that reads like scope creep teaches the next agent nothing and it does the
- * same thing tomorrow.
- */
-const DA_OWNED_FILES = new Set(['project-state.json', 'PROJECT-STATE.md', 'SUCCESS.md'])
-
-/**
- * A worktree's reported path, as the collector will see it (#178).
- *
- * `groupFilesByWorktree` accepts both an absolute path inside the worktree and
- * a worktree-relative one, and normalises to the latter. The claim comparison
- * has to use the SAME normalisation or it compares
- * "/…/wf_a/workflows/ship.js" against the claim "workflows/ship.js", finds no
- * match, and refuses the entire collection on the most common reporting style.
- *
- * Anything that does not reduce to a path inside the worktree — another
- * worktree's absolute path, a `..` segment — is deliberately left as-is. It
- * then matches no claim and is refused, which is the right answer: the
- * collector would discard it anyway, silently.
- */
-function claimKey(worktreePath, p) {
-  let s = String(p == null ? '' : p).trim()
-  if (!s) return ''
-  const wt = String(worktreePath == null ? '' : worktreePath).trim().replace(/\/+$/, '')
-  if (wt && s.startsWith(`${wt}/`)) s = s.slice(wt.length + 1)
-
-  // One rule over segments, rather than four chained regexes (#229).
-  //
-  // The regex version stripped a LEADING `./` only — `^(?:\.\/)+` — so
-  // `a/./b.ts` survived as a key distinct from `a/b.ts`, and that is the
-  // whole bypass: worktree A claims `a/b.ts`, worktree B claims and reports
-  // `a/./b.ts`, the audit finds no owner for B's key and raises nothing, and
-  // the collector resolves it with `realpathSync` onto A's file and writes
-  // over it. Duplicate slashes and a trailing slash had the same shape and
-  // were each a separate regex; dropping empty and `.` segments is the one
-  // rule all three were approximating.
-  //
-  // `..` is deliberately NOT dropped. It is REFUSED, by `pathRefusal` (#400).
-  // Collapsing it textually would reintroduce the very differential this
-  // closes: where a component is a symlink, `a/../b` collapses textually to
-  // `b` while the collector's `realpathSync` resolves it somewhere else — a
-  // key that looks canonical and is not. Refusal has no such failure mode.
-  // A segment that is exactly `.` cannot be a symlink, so collapsing it is
-  // the same path on every filesystem.
-  const absolute = s.startsWith('/')
-  const segments = s.split('/').filter(seg => seg !== '' && seg !== '.')
-  // An absolute path stays absolute so `pathRefusal` still refuses it.
-  return (absolute ? '/' : '') + segments.join('/')
-}
-
-/**
- * Whether this worktree's report of `key` is permitted by the claim it issued.
- *
- * ONE declaration, on one line, because it is the site the #296 mutation
- * targets — `test/collect-claim-ownership.test.ts` rebuilds this block with
- * the old `claimant === null ||` fallthrough restored and watches it keep
- * every file the real block refuses. A second permission path would survive
- * that mutation and the proof would be decorative.
- *
- * The fallthrough was the fail-open. When NO result carries `claimedFiles` the
- * ownership map is empty, so `claimant` is null for every path and
- * "nobody claimed it" read as permission — a decomposition that emitted no
- * claims silently disabled SC-413 for the entire run. An absent claim in a
- * contested run now permits nothing; the lone-worktree case is handled by
- * SINGLE_WORKTREE_EXEMPT above, where it belongs, and is the only place an
- * unclaimed file is collectable.
- *
- * `claimant === wt` is still reachable and still right: a worktree that
- * reports in two parts (#228) can claim in one row and report in the other.
- */
-function claimPermits(claims, key, claimant, wt) {
-  return Array.isArray(claims) ? claims.includes(key) : claimant === wt
-}
-
-/**
- * Check what each agent actually changed against what it was told it owned.
- *
- * SC-413 of PARALLEL-AGENT-COORDINATION-SPEC.md: "Post-wave integration check
- * detects unclaimed file modifications". Until this existed, the claim was
- * PROSE in the sub-issue prompt ("## Files — modify ONLY these") and nothing
- * downstream compared the reply to it. On wf_2b3ff032-a4b three of four
- * worktrees changed workflows/ship.js; exactly one had claimed it, so SC-411's
- * pairwise overlap check had nothing to catch, and the collection copied all
- * three in sequence. The commit that resulted described controls that were not
- * in the file it committed.
- *
- * Returns both halves on purpose, because either alone is insufficient:
- *
- *   violations — the refusal. Each names the worktree, the path, and the
- *                claimant, because "an unclaimed file was modified" is not
- *                actionable without knowing whose work is about to be lost.
- *   candidates — the collection input, pruned to claimed files only. This is
- *                what gets written to the groups file, so the claimant's copy
- *                is the only copy of a contested file that can ever be
- *                written, independently of whether the refusal fires.
- *
- * A missing `claimedFiles` means NO CLAIM WAS ISSUED — the single-agent and
- * remediation paths, where there is one worktree and nothing to contest.
- * Reading that as "claimed nothing" would refuse every ordinary run. Such an
- * agent is unconstrained, with one exception: it still cannot contribute a
- * file some other worktree explicitly claimed.
- *
- * #228: that exemption was conditioned on the WRONG THING — on `claimedFiles`
- * being absent, rather than on there being another worktree to contest with.
- * A lone agent that reported a claim naming fewer files than it changed took
- * the strict branch and had its whole collection refused over a file nobody
- * else was touching. Run wf_74366574-136: correct work, refused, SHIP_FAILED,
- * only copy left loose in the worktree. What makes a claim meaningful is a
- * second claimant, so the exemption is now keyed on the number of
- * PARTICIPATING WORKTREES, which is what the docblock above always described.
- *
- * It is an exemption from the CLAIM, not from the worktree boundary: a path
- * that does not reduce to a location inside the reporting worktree is refused
- * whatever the claim says, because the collector would discard it anyway and
- * a silent discard is how work goes missing.
- *
- * #400 replaced `escapesWorktree` here with `pathRefusal` in the
- * SECURITY-HELPERS block. It was a second copy of two of that table's rules,
- * and a second copy survives any mutation of the first — so there is now one
- * decider, asked by staging and by this audit, and `refusal.boundary` is how
- * this site asks it the narrower question `escapesWorktree` used to answer.
- */
-function auditWorktreeClaims(results) {
-  const violations = []
-  const candidates = []
-  if (!Array.isArray(results)) return { violations, candidates }
-
-  // Participants, not result ROWS: a worktree that reports in two parts is
-  // still one worktree, and counting rows would reinstate #228 for it.
-  const participants = [...new Set(
-    results.map(r => String(r && r.worktreePath || '').trim()).filter(Boolean),
-  )]
-  const unconstrained = SINGLE_WORKTREE_EXEMPT && participants.length === 1
-
-  // Ownership first, across every worktree — a file's claimant has to be known
-  // before any worktree's report can be judged against it.
-  const claimants = {}
-  for (const r of results) {
-    const wt = String(r && r.worktreePath || '').trim()
-    if (!wt || !Array.isArray(r.claimedFiles)) continue
-    for (const c of r.claimedFiles) {
-      const key = claimKey(wt, c)
-      if (!key) continue
-      if (!claimants[key]) claimants[key] = []
-      if (!claimants[key].includes(wt)) claimants[key].push(wt)
-    }
-  }
-
-  // Who actually WROTE each co-owned registry, counted the same way
-  // participants are: by worktree, so a worktree reporting in two rows is one
-  // writer. A claim cannot settle this, so the reports are what decide it.
-  const coOwnedWriters = {}
-  for (const r of results) {
-    const wt = String(r && r.worktreePath || '').trim()
-    if (!wt) continue
-    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
-      const key = claimKey(wt, raw)
-      if (!key || !CO_OWNED_FILES.has(key)) continue
-      if (!coOwnedWriters[key]) coOwnedWriters[key] = []
-      if (!coOwnedWriters[key].includes(wt)) coOwnedWriters[key].push(wt)
-    }
-  }
-
-  for (const r of results) {
-    const wt = String(r && r.worktreePath || '').trim()
-    if (!wt) continue
-    const claims = Array.isArray(r.claimedFiles)
-      ? r.claimedFiles.map(c => claimKey(wt, c)).filter(Boolean)
-      : null
-    const kept = []
-
-    for (const raw of (Array.isArray(r.filesChanged) ? r.filesChanged : [])) {
-      const key = claimKey(wt, raw)
-      if (!key) continue
-      // Path safety, checked before any exemption, and asked of the same
-      // table staging asks (#400). Two outcomes, because they are different
-      // things for an operator to act on:
-      //
-      //   boundary — claimKey only strips the worktree prefix off paths that
-      //              are inside it, so anything still absolute or still
-      //              carrying a `..` segment names somewhere else entirely:
-      //              another worktree's copy, or something outside the repo.
-      //   otherwise — the path IS inside this worktree and still cannot be
-      //              handled: `git add` would refuse it at staging time, and
-      //              before #400 it did, two phases later and under a
-      //              different message, after the audit had reported clean.
-      //
-      // Both name the rule, because "not inside its own worktree" is a wrong
-      // sentence to print about `lib/a;rm.ts`.
-      const refusal = pathRefusal(key)
-      if (refusal) {
-        violations.push({
-          worktreePath: wt, path: key, claimant: null,
-          detail: refusal.boundary
-            ? `${wt} reported ${key}, which is not inside its own worktree (${refusal.rule}) — a worktree may only contribute files beneath its own directory`
-            : `${wt} reported ${key}, which is inside its worktree but cannot be staged (${refusal.rule}) — git add refuses the path, so collecting it would fail later and in another phase`,
-        })
-        continue
-      }
-      // Ownership classes come before the claim and before the exemption,
-      // for the same reason the boundary above does: they are facts about the
-      // FILE, and no claim and no run shape can change them (#296).
-      if (DA_OWNED_FILES.has(key)) {
-        violations.push({
-          worktreePath: wt, path: key, claimant: null,
-          detail: `${wt} reported ${key}, which is DA-owned — ${[...DA_OWNED_FILES].join(', ')} are a single shared state document written by the DA, never from a worktree (CLAUDE.md, #296). Say what needs changing in your findings as prose and the DA will write it.`,
-        })
-        continue
-      }
-      if (CO_OWNED_FILES.has(key)) {
-        const writers = coOwnedWriters[key] || [wt]
-        if (writers.length === 1) {
-          // A shared registry no plan could have claimed, written by exactly
-          // one worktree. Nothing is contested, so it collects (#296).
-          kept.push(key)
-          continue
-        }
-        violations.push({
-          worktreePath: wt, path: key, claimant: null,
-          detail: `${wt} reported ${key}, a co-owned registry that ${writers.length} worktrees wrote in this run (${writers.join(', ')}) — collection copies whole files, so taking one copy would drop the other edits. Merge them in one place (#296).`,
-        })
-        continue
-      }
-      // One worktree in the run means nothing is contested and the claim has
-      // no one to protect anything from (#228).
-      if (unconstrained) {
-        kept.push(key)
-        continue
-      }
-      const owners = claimants[key] || []
-      // Exactly one owner is the only state in which a claimant exists. Two
-      // worktrees claiming one file is a scheduling failure SC-411 should have
-      // caught; collecting both copies is the #178 bug with extra steps.
-      const claimant = owners.length === 1 ? owners[0] : null
-
-      if (owners.length > 1) {
-        violations.push({
-          worktreePath: wt, path: key, claimant: null,
-          detail: `${wt} reported ${key}, which ${owners.length} worktrees claim (${owners.join(', ')}) — a file may have one claimant`,
-        })
-        continue
-      }
-      if (claimPermits(claims, key, claimant, wt)) {
-        kept.push(key)
-        continue
-      }
-      violations.push({
-        worktreePath: wt, path: key, claimant,
-        detail: claimant
-          ? `${wt} reported ${key}, which it did not claim — that file is claimed by ${claimant}`
-          : `${wt} reported ${key}, which it did not claim — no worktree claimed that file`,
-      })
-    }
-
-    if (kept.length > 0) candidates.push({ worktreePath: wt, filesChanged: kept })
-  }
-
-  return { violations, candidates }
-}
-// ──── COLLECT-CLAIM-END ────
 
 // ──── PRESERVE-REFUSED-START ────
 /**
