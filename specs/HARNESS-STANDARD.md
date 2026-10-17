@@ -3296,6 +3296,75 @@ What was broken to prove it, run and counted rather than asserted, over
 
 None is left in the tree; all were run and reverted.
 
+#### A five-second test around a three-hundred-second subprocess (#508)
+
+Seven of those nine cases failed in two separate full runs and passed
+standalone every time. The budget arithmetic is why nobody could say which
+seven meant:
+
+| | budget |
+|---|---|
+| each `test(...)` in that file | 5000ms — bun's default, never overridden |
+| the `execSync` inside it | 300000ms |
+| one gate spawn, measured idle | 398 / 328 / 374 / 358 ms |
+
+The inner budget was sixty times the outer one, so it could never be reached:
+bun's clock always won, and what it reported was its own generic timeout,
+naming nothing. Beneath it, one `catch` mapped a run killed by the budget and
+a gate that refused on the merits onto the same value — `e?.stdout || ""` —
+and a killed run's stdout is empty. The assertion that then fired reads *"the
+verify gate never recorded a result"*: true of the file, false about the
+cause. That is fail-open error handling, shape one in
+`.claude/rules/checks-must-be-able-to-fail.md`, and the misattribution is what
+made triage cost two full runs.
+
+**Which of the issue's two readings it is.** A full `bun test` on 2026-10-17
+ran the file in its natural position after every one of its neighbours and all
+nine passed — 11857 pass, 0 fail, 12628 tests across 342 files. Order
+dependence reproduces given the same order; this did not. Fourteen times'
+headroom does not evaporate from ordinary variance, and it does under the
+memory pressure the issue records beside two runs that died at exit 144. So:
+**resource contention**, and the fix belongs in the harness.
+
+Unlike #508's first half, there is no slowness to remove. The spawn IS the
+subject — every case runs the real gate executor precisely so that none of
+them reads the source — and nine cases at 360ms is irreducible work. So the
+subprocess budget is sized to be reached only by a stuck run (45s against a
+measured 360ms), the test ceiling is set strictly above twice it because the
+heal case spawns twice, and exhausting it is a named refusal quoting both
+numbers rather than silence that reads like a verdict.
+
+- [x] SC-1968: test/gate-run-budget.test.ts contains [a run killed by its budget is reported as timed out, with the clock] — the starved spawn reproduced without a starved machine, and the refusal quotes the elapsed time and the budget, because "it timed out" sends a reader to the machine and "after 600ms of a 600ms budget" sends them to the budget
+- [x] SC-1969: test/gate-run-budget.test.ts contains [a run that refuses on the merits is not a timeout, and its output survives] — the positive control and the case the old catch existed for: half these gates are supposed to exit non-zero, so a reading that called every failure a timeout would satisfy the case above and break all of them
+- [x] SC-1970: test/gate-run-budget.test.ts contains [the test ceiling is above the subprocess budget, not below it] — the arrangement that produced this defect, asserted so that sizing the two independently reintroduces it as a red rather than as a misattributed timeout
+
+What was broken to prove it, run and counted rather than asserted, over
+`test/gate-run-budget.test.ts` + `test/evidence-prevalidation-at-verify.test.ts`
+(12 tests, baseline 12 pass / 0 fail). None is left in the tree; all were run
+and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `timedOut` hard-coded false — a killed run is never reported as one | 1 of 12 | 1 |
+| `timedOut: !proc.success` — the cheap version, where any failed run is a timeout | **10 of 12** | 5 |
+| `gateRunRefusal` short-circuited to `return null` | 1 of 12 | 1 |
+| `GATE_TEST_TIMEOUT_MS` dropped below `GATE_RUN_BUDGET_MS` — the defect, reintroduced | 1 of 12 | 1 |
+
+**The second row missed HIGH, and the extra reds are the interesting part.**
+`.claude/rules/checks-must-be-able-to-fail.md` says to read which tests went
+red before concluding anything, because a crashing mutant and an
+unexpectedly load-bearing binding both come back high. These are the second:
+every extra red is a case that calls `gateRunRefusal` on a run the mutant now
+calls a timeout, so they are squarely about the mutated behaviour.
+
+What the prediction got wrong is a fact about this repo rather than about the
+mutation. The file's own comment says *"half these cases are supposed to
+fail"*, and five was predicted from it. All **nine** planted fixtures exit
+non-zero — which is only visible because the mutant turned every non-zero
+exit into a refusal and all nine went red together. The positive control in
+SC-1969 therefore has nine live witnesses behind it rather than the four the
+comment implies.
+
 #### Two of this workflow's own rules in contradiction (2026-10-10, #267)
 
 The third refusal-the-branch-cannot-satisfy found in one day, and the only one

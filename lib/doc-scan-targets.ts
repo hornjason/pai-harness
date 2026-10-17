@@ -393,6 +393,15 @@ export function planDocScan(projectPath: string): DocScanPlan {
       if (real === null) { st.refused.push(path); continue; }
       if (st.seen.has(real)) continue;
       st.seen.add(real);
+      // A name is not a file type. `walkMarkdown` asks `statSync` before it
+      // decides; this loop asked only the suffix, so a DIRECTORY called
+      // `NOTES.md` at the project root was planned as a document and handed
+      // to `readFileSync`, which throws EISDIR — the plan claimed a file it
+      // could never read (#508). Nothing reports it either way: a directory
+      // with a markdown name carries no prose.
+      let isFile: boolean;
+      try { isFile = statSync(real).isFile(); } catch { continue; }
+      if (!isFile) continue;
       if (st.files.length >= MAX_SCAN_FILES) { st.truncatedFiles++; continue; }
       st.files.push(anchored(projectPath, st.rootReal, real));
     }

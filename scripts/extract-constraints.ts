@@ -4,6 +4,7 @@ import { join, relative } from "path";
 import { createHash } from "crypto";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 import { planDocScan, type DocScanPlan } from "../lib/doc-scan-targets";
+import { lastCommitDates } from "../lib/git-dates";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -21,6 +22,37 @@ export interface StalenessEntry {
   type: string;
 }
 
+/**
+ * What the scan planned against what it actually read (#508).
+ *
+ * `scan` below says what the walk could SEE. Nothing said what the extractor
+ * then managed to READ, and the two are different questions: a candidate
+ * count of zero from a scan that read 91 documents and a candidate count of
+ * zero from a scan that read 4 are the same line of output.
+ *
+ * `.claude/rules/checks-must-be-able-to-fail.md` states the general form
+ * after #492 measured it — *a scan that reports a verdict should report its
+ * own coverage* — and HYGIENE-6 is the verdict in question: it ended in
+ * `expect(true).toBe(true)`, so a timeout was the only red it could produce.
+ */
+export interface ScanCoverage {
+  /** Documents the plan listed. */
+  planned: number;
+  /** Documents whose bytes reached `extractSignalPhrases`. */
+  read: number;
+  /**
+   * Planned documents the read could not take, with the error that stopped
+   * it — `ENOENT` for a file that moved between the walk and the read,
+   * `EISDIR`, `EACCES`.
+   *
+   * Recorded rather than thrown, and recorded rather than dropped. A throw
+   * takes an advisory backlog report down over one transient file; a drop
+   * makes a partial scan indistinguishable from a complete one, which is
+   * the failure this whole interface exists to stop.
+   */
+  unread: Array<{ file: string; reason: string }>;
+}
+
 export interface ExtractResult {
   candidates: Candidate[];
   deduped: {
@@ -29,6 +61,8 @@ export interface ExtractResult {
     candidatesRemoved: number;
   };
   staleness: StalenessEntry[];
+  /** What was planned against what was read. Never inferred from `candidates`. */
+  coverage: ScanCoverage;
   /**
    * What was scanned and what could not be (#440).
    *
@@ -111,24 +145,44 @@ function loadRejectedHashes(projectPath: string): Set<string> {
   return hashes;
 }
 
+/**
+ * One git subprocess for every document, not one per document (#508).
+ *
+ * This was `Bun.spawnSync(["git", …, "log", "-1", …, "--", rel])` inside
+ * the loop — the exact code #323 removed from `runDocHygiene`, in a file
+ * #323 did not touch. 92 documents meant 92 serial subprocesses against
+ * the same repository, and nothing was wrong with any single one: the
+ * check was load-sensitive by construction, so a busy machine, a cold
+ * cache or another suite holding the index pushed it past the 5000ms
+ * default test timeout. Measured before the change at 4169ms, 4521ms and
+ * 3969ms on an IDLE machine with a warm cache; HYGIENE-6 had been seen red
+ * four times in full runs and green standalone every time.
+ *
+ * `lastCommitDates` walks the whole history newest-first with `--name-only`
+ * and returns every path's latest commit date from one call. Imported from
+ * `lib/git-dates.ts` rather than copied, because two implementations of
+ * one question are behaviourally one and no test can tell them apart.
+ */
 function computeStaleness(projectPath: string, files: string[]): StalenessEntry[] {
+  const considered = files
+    .map(f => relative(projectPath, f))
+    .filter(rel => !(rel.includes("docs/adr/") || /ADR/i.test(rel)));
+  // The exact lookup set is the pathspec, so the keys and the query cannot
+  // drift — #323 got this wrong first time by passing the directories.
+  const lastCommit = lastCommitDates(projectPath, considered);
+
   const stale: StalenessEntry[] = [];
-  for (const filePath of files) {
-    const rel = relative(projectPath, filePath);
-    const isAdr = rel.includes("docs/adr/") || /ADR/i.test(rel);
-    if (isAdr) continue;
-    try {
-      const result = Bun.spawnSync(["git", "-C", projectPath, "log", "-1", "--format=%ci", "--", rel], { timeout: 5_000 });
-      const dateStr = result.stdout.toString().trim().split(" ")[0];
-      if (!dateStr) continue;
-      const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
-      const isSpec = rel.startsWith("specs/");
-      const threshold = isSpec ? 90 : 180;
-      const type = isSpec ? "spec" : "guide";
-      if (daysSince > threshold) {
-        stale.push({ file: rel, daysSince: Math.floor(daysSince), threshold, type });
-      }
-    } catch {}
+  for (const rel of considered) {
+    const dateStr = lastCommit.get(rel);
+    // No commit means untracked or newly added, which is the opposite of stale.
+    if (!dateStr) continue;
+    const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+    const isSpec = rel.startsWith("specs/");
+    const threshold = isSpec ? 90 : 180;
+    const type = isSpec ? "spec" : "guide";
+    if (daysSince > threshold) {
+      stale.push({ file: rel, daysSince: Math.floor(daysSince), threshold, type });
+    }
   }
   return stale;
 }
@@ -171,16 +225,32 @@ function applyToAgentsMd(projectPath: string, candidates: Candidate[]): void {
 
 export async function extractConstraints(
   projectPath: string,
-  options?: { apply?: boolean }
+  options?: { apply?: boolean; plan?: DocScanPlan }
 ): Promise<ExtractResult> {
-  const scan = planDocScan(projectPath);
+  // `plan` is a seam, and it is here for one reason worth stating: the
+  // unread branch below is unreachable from outside this function, because
+  // the walk that produces the plan only lists files it has just stat'd. A
+  // branch no test can reach is the subject of this repo's central rule, so
+  // the plan is an input a caller may supply — which is also the race the
+  // branch is about, a plan taken a moment before the tree moved.
+  const scan = options?.plan ?? planDocScan(projectPath);
   const scanFiles = scan.files;
   const existingConstraints = loadExistingConstraints(projectPath);
   const rejectedHashes = loadRejectedHashes(projectPath);
 
   let allCandidates: Candidate[] = [];
+  const unread: ScanCoverage["unread"] = [];
+  let read = 0;
   for (const filePath of scanFiles) {
-    const content = readFileSync(filePath, "utf-8");
+    let content: string;
+    try {
+      content = readFileSync(filePath, "utf-8");
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      unread.push({ file: relative(projectPath, filePath), reason: e.code ?? e.name });
+      continue;
+    }
+    read++;
     allCandidates.push(...extractSignalPhrases(content, filePath, projectPath));
   }
 
@@ -215,6 +285,7 @@ export async function extractConstraints(
       candidatesRemoved: existingRemoved + rejectedRemoved,
     },
     staleness,
+    coverage: { planned: scanFiles.length, read, unread },
     scan,
   };
 }
