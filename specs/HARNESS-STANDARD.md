@@ -9064,21 +9064,40 @@ escapes `cloneForRehearsal` as a raw errno instead of its refusal sentence,
 which is **exactly the defect this issue is about, arriving one function
 earlier** than the one it was filed for.
 
-Both removals now go through one `removeTree`, which clears BSD flags and
-restores owner `rwX` before deleting and falls back to `/bin/rm -rf`. One
-binding, so the flag-clearing and the mode-clearing cannot drift apart
-between the two places that delete a tree this module made.
+**Three** places delete a tree this module made — the destination before a
+copy, the refusal path in `cloneForRehearsal`, and `discardRehearsal` — and
+the first two were both bare `rmSync`. All three now go through one
+`removeTree`, which clears BSD flags, restores owner `rwX`, deletes, and
+falls back to `/bin/rm -rf`. One binding, so the flag-clearing and the
+mode-clearing cannot drift apart between them.
 
-The platform difference is the point and not an accident of CI: macOS's `cp`
-left nothing the delete objected to, so the case passed locally for a reason
-unrelated to the code being correct. The regression case therefore drives
-`copyTreeExcluding` against a destination built by hand, and asserts the
-destination really is one a plain `rmSync` refuses — a fixture that does not
-depend on what a platform's `cp` leaves behind after it fails.
+### The fixture that made the first fix look done
+
+The platform difference is the point and not an accident of CI. GNU `cp -R`
+creates its destination directory with the SOURCE's mode, so an unreadable
+source leaves an unreadable leftover; macOS's `cp` creates it from the umask
+and fails before chmodding it, so the leftover is `0o700` and a plain
+`rmSync` removes it happily. **The case passed locally for a reason
+unrelated to the code being correct**, which is the one thing a mutation
+battery cannot tell you — every mutation measured exactly its prediction on
+a tree that crashed on Linux.
+
+The control's unreadable directory is therefore `.claude`, which is an
+ANCESTOR of an exclude and so is WALKED rather than handed to `cp`. The walk
+`mkdir`s it and copies the source's mode onto it before failing to read it,
+so the aborted clone holds a mode-000 directory on every platform and the
+removal is exercised everywhere. The separate regression case drives
+`copyTreeExcluding` against a destination built by hand and asserts it is
+one a plain `rmSync` really refuses, so neither case depends on what a `cp`
+leaves behind after it fails.
+
+**The generalisation: when a fixture's shape is produced by a tool rather
+than by the test, the test is measuring that tool's behaviour on the machine
+it ran on.** Build the shape the case needs.
 
 ### What was broken to prove it
 
-Nine mutations over 28 tests in `test/scaffold-rehearsal-excludes.test.ts` +
+Ten mutations over 28 tests in `test/scaffold-rehearsal-excludes.test.ts` +
 `test/scaffold-rehearsal-safety.test.ts`. Every count was predicted before the
 run and every one matched. None is left in the tree.
 
@@ -9090,8 +9109,9 @@ run and every one matched. None is left in the tree.
 | a failed discard throws again | 1 | 1 |
 | a walked directory is created without the source's mode | 1 | 1 |
 | the generated specs table drops a row | 2 | 2 |
-| the destination is emptied with a bare `rmSync` again | 1 | 1 |
-| `removeTree` stops restoring owner `rwX` | 1 | 1 |
+| the destination is emptied with a bare `rmSync` again | 2 | 2 |
+| the refusal path is emptied with a bare `rmSync` again | 1 | 1 |
+| `removeTree` stops restoring owner `rwX` | 2 | 2 |
 | `removeTree` stops clearing BSD flags | 1 | 1 |
 
 The first row's six are SC-1884, SC-1885 and SC-1887 plus three existing
