@@ -151,7 +151,7 @@ criteria` block, contradicting the one above it. Both claimed to describe
 | Input also carries `projectRoot`, `issueRepo` | `GateExecutorInput` is `gate, slug, issue, workDir, stateFilePath, harnessRoot` and nothing else. Both names are read off `state` inside the executor, not passed in. |
 | Output carries `testOutput`, and no `resultVal`/`attempt`/`exitCode` | `GateExecutorResult` is `resultVal, passes, fails, warns, results, attempt, exitCode`. There is no `testOutput` field. |
 
-`executeGate` at `gates/gate-executor.ts:1725` is the only entry point, so
+`executeGate` at `gates/gate-executor.ts@"export async function executeGate(input: GateExecutorInput)"` is the only entry point, so
 there was no second function for the second block to be describing. It was a
 pre-#190 design that the `harnessRoot` work superseded and nobody deleted —
 and because a duplicate heading is still a heading, the registry read it as a
@@ -627,7 +627,7 @@ context cost twice.
 |---|---|---|
 | `lib/transcript-checker.ts` | `textLower.includes("make rebuild")` | The forbidden-command directive fell through to `N/A`, which `computeScore` drops from its denominator. The rule went unenforced, the score did not move, and nothing named the directive that had stopped being measured. |
 | `lib/create-brief.ts`, `gates/brief-assembler.ts` | "Never run \`make rebuild\`" | One consumer's prohibition emitted into every consumer's agent brief. The agent obeys it; nobody finds out it was invented. |
-| `lib/scaffold/steps.ts` | `existsSync(makefile) ? "make rebuild"` | Inferred from a Makefile EXISTING, not from the target existing. A project with a Makefile and no `rebuild` target got a `prod.rebuild` that cannot run. `scripts/scaffold-rungate-config.ts:66` already checked the target; the two are now consistent. |
+| `lib/scaffold/steps.ts` | `existsSync(makefile) ? "make rebuild"` | Inferred from a Makefile EXISTING, not from the target existing. A project with a Makefile and no `rebuild` target got a `prod.rebuild` that cannot run. `scripts/scaffold-rungate-config.ts@"if (/^rebuild/m.test(mf)) rebuildCmd ="` already checked the target; the two are now consistent. |
 | `workflows/verify.js`, `workflows/batch-ship.js` | ports, container name, app root, test dir, two routes | Three produce a loud false FAIL. The test directory produces a false **PASS** — `bun test --isolate test/unit/` against a project with no such directory runs zero tests and reports success with a count of nothing. |
 | `gates/workflow.test.ts` | `if (port !== 7776)` | `quinn-container-port` warned that a consumer's correct port was wrong, naming a port they do not run. |
 
@@ -1293,7 +1293,7 @@ gets disabled; a check that fires on nothing is the one being replaced.
 
 Zero tolerance is safe here precisely because it was not safe above: the
 correct form already exists and costs one token. Evidence commands run with
-`cwd: projectRoot` (`lib/evidence-prevalidator.ts:208`), so the project's own
+`cwd: projectRoot` (`lib/evidence-prevalidator.ts@"cwd: projectRoot,"`), so the project's own
 files need no prefix, and the harness root has had `$HARNESS_ROOT` since
 `gates/run-gate.ts` — which is what all 55 of those references spell out
 longhand.
@@ -1645,7 +1645,7 @@ The test environment itself, through the `container` block declared by
 | `container.healthPath` | the path a probe calls to decide it came up |
 | `container.hosts` | where to look for it |
 
-`workflows/ship.js:5947` reads it, and on STANDARD+ runs the rebuild happens
+`workflows/ship.js@"const containerConfig = projectConfig.container"` reads it, and on STANDARD+ runs the rebuild happens
 and container Quinn is pointed at `http://<host>:<port>`. Before the schema
 change the key existed in prompts and in no validator, so a config that went
 through zod lost it — the block was there, and the container path rested on a
@@ -1670,7 +1670,7 @@ configure `prod.rebuild: "<cmd>"` and `forbiddenCommands: ["<cmd>"]` at the
 same time and nothing notices the contradiction — the brief tells the agent
 never to run it while the config declares it as this project's rebuild.
 `container.rebuildCommand` is interpolated directly into an agent prompt at
-`ship.js:5960`, so a consumer that puts its production command behind that key
+`workflows/ship.js@"${rebuildCmd} 2>&1 | tail -20"`, so a consumer that puts its production command behind that key
 has armed exactly the thing its own rules forbid, and no check looks.
 
 ### The record-env site, which is not where #274 said
@@ -1682,7 +1682,7 @@ forbid the agent from running it.
 
 **That site is gone.** #183 replaced it. All three arms of the production
 record now write `SKIP` with a reason naming what was not measured
-(`ship.js:6966`, `:6969`, `:6977`), the health-check arm says in so many words
+(`workflows/ship.js@"s.environments.prod.smoke = 'PASS';"`, `workflows/ship.js@"s.environments.prod.smokeSkipReason = 'test container not running';"`, `workflows/ship.js@"prod = {rebuild:'SKIP',rebuildSkipReason:'no container'"`), the health-check arm says in so many words
 that a 200 means a container answered and not that it was built from this
 commit, and `container-has-fix` compares the image revision against HEAD. The
 honest value #274 asked for is the value the code writes.
@@ -1694,7 +1694,7 @@ loader side: `normaliseConfig` resolves `dev.testCmd ?? test.command` into one
 normalised `test.command`, and `captureTestBaseline` reads the normalised
 name.
 
-**The gate checks did not move.** `gates/workflow.test.ts:87` still has its
+**The gate checks did not move.** `gates/workflow.test.ts@"function loadProjectHarness(): any {"` still has its
 own `loadProjectHarness()`, and it is monolith-only — `join(root, ".claude",
 "rungate.json")`, `existsSync`, `null`. Ten checks sit behind it, and
 `tests-pass` at `:859` reads the raw `dev.testCmd`:
@@ -1748,3 +1748,135 @@ a predicted number coming back wrong, which is the cheaper instrument.
 load, so bun reports one failed FILE rather than three failed tests. The
 prediction was wrong about the counting, not about the behaviour — nothing in
 the file can pass without the section, which is what the row was for.
+
+## Citing source by what it says, not by where it sits (#514)
+
+This document cited seven source locations by line number. Three sat under
+`test/gate-env-expressibility.test.ts` SC-1719, which checks them rather than
+believing them; keeping that green cost three hand edits of five numbers
+across two PRs, because every insertion into `workflows/ship.js` moves them.
+
+The other four had no guard, and this is the measurement the issue predicted
+and nobody had:
+
+| cited | pointed at | should have been |
+|---|---|---|
+| `gate-executor.ts`, line 1725 | a `parseFloat` | 2109 |
+| `evidence-prevalidator.ts`, line 208 | a comment | 245 |
+| `scaffold-rungate-config.ts`, line 66 | an unrelated `existsSync` | 61 |
+| `workflow.test.ts`, line 87 | `loadProjectHarness` | correct |
+
+The table writes those in prose rather than in the live citation form: a
+record of citations that were wrong, written in the form the ratchet below
+enforces, would make the document refuse itself.
+
+**Three of the four unguarded citations were already wrong**, each pointing at
+a plausible-looking line in the right file. The three guarded ones were
+correct. The only citations that stayed true are the ones something executed.
+
+### The form
+
+    `workflows/ship.js@"const containerConfig = projectConfig.container"`
+
+`lib/source-anchor.ts` resolves it, and resolution is **total**: not-found and
+found-twice are both refusals. The second one carries more weight than it
+looks. Taking the first of several matches would make every ambiguous
+citation resolve, and "resolves to a plausible line" is exactly what the line
+numbers were doing for three citations in this file. An anchor under twelve
+characters is refused too — unique today is one unrelated edit away from not
+being, and a short anchor that stays unique is indistinguishable from one
+that does not until it is too late.
+
+A **historical** citation stays prose. "line 4462 of `ship.js` as it then
+stood" names a line that no longer exists, which is the point of the
+paragraph using it, and the resolver would rightly refuse it.
+
+### What this does not cover
+
+134 line citations remain in ten other documents — 48 in
+`specs/HARNESS-STANDARD.md`, 45 and 22 in the two config-loader ADRs. The
+ratchet below is scoped to this file on purpose: widening it would make it a
+known-violations list rather than a rule, and each conversion should surface
+its own wrong citations the way this one did rather than being buried in a
+134-line diff. That population is a separate issue, with the counts recorded.
+
+### Mutations, predicted before running and measured after
+
+Over `test/source-anchor-citations.test.ts` and
+`test/gate-env-expressibility.test.ts` (11 tests). Every anchor was checked
+for uniqueness before being applied.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| a double match takes the first instead of refusing | 2 | **1** |
+| a missing anchor resolves anyway | 2 | **1** |
+| the short-anchor floor is removed | 1 | 1 |
+| a multi-line anchor reports its first line | 1 | 1 |
+| a missing file resolves anyway | 1 | 1 |
+| the citation pattern stops matching | 4 | 4 |
+| the pattern swallows a bare path in a code span | 3 | 3 |
+| the spec goes back to a line number | 2 | 2 |
+| a citation is edited so it no longer matches source | 1 | 1 |
+| a citation is deleted outright | 1 | 1 |
+| the absolute-path refusal is removed | 1 | 1 |
+| the lexical containment check is removed | 1 | 1 |
+| the symlink check is removed | 1 | 1 |
+| a traversal refuses for absence instead of for leaving | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+The first two came back low for the same reason, and it is a fact about the
+document rather than about the resolver: every anchor in this spec is present
+and unique, so disabling the not-found and found-twice refusals changes
+nothing about what the spec resolves to. Those refusals are proved by
+SC-1816 and SC-1817, which ask them directly.
+
+### The path guards, and the pair the battery found
+
+The commit security review flagged path traversal: the path comes out of a
+markdown document and `resolveCitation` reads whatever it names. No live
+document does that — every citation here is written by someone with commit
+access — but "the input happens to be trusted today" is not a property of a
+library, and a spec is exactly the sort of file a consumer generates.
+
+The first draft had four checks. **Two of them measured 0 red**, because a
+`..`-segment spelling rule and the lexical containment check answer one
+question: `resolve` normalises `..`, so either could be deleted with
+nothing to say which. The draft's comment asserted they differed, on the
+grounds that containment sees "a symlinked directory inside the tree". It
+does not — `resolve` is purely lexical and cannot see a link at all.
+
+Three remain, each with an input only it reaches:
+
+| input | the only check that catches it |
+|---|---|
+| an absolute path | the leading-slash refusal — `join` CONCATENATES a leading slash rather than absorbing it, so the path stays inside the tree and containment has nothing to say |
+| a `..` traversal | lexical containment |
+| a symlink inside the tree whose target is outside | `realpathSync`, the only thing that follows it |
+
+The absolute-path case is not an escape: `join(root, "/etc/passwd")` reads
+`<root>/etc/passwd`. It is refused because a citation written absolute means
+something other than what its author thinks it means, and a confident
+citation to the wrong file is this entire issue.
+
+The symlink fixture's target is reachable ONLY through the link, outside the
+walked tree entirely. A fixture that can satisfy its assertion by another
+route measures nothing about the feature (#500).
+
+The last two rows were added after the battery's first pass. The count floor
+on the resolving row had been set below the real number of citations, so
+deleting one outright was 0 red — a floor under the true count is a floor
+that cannot see a loss. Set to the measured 9, both rows are 1.
+
+### Success criteria
+
+- [x] SC-1815: test/source-anchor-citations.test.ts contains [an anchor that names one line resolves and reports where] — the position is reported rather than asserted, since a number here would be the thing this issue removed
+- [x] SC-1816: test/source-anchor-citations.test.ts contains [an anchor the file no longer contains is a refusal] — a citation to text that is gone is a sharper signal than a line still matching a loose regex
+- [x] SC-1817: test/source-anchor-citations.test.ts contains [an anchor matching twice is a refusal - not the first match] — an ambiguous anchor is how a stale citation lands somewhere believable
+- [x] SC-1818: test/source-anchor-citations.test.ts contains [a short anchor is refused before it becomes ambiguous] — unique today is one unrelated edit away from not being
+- [x] SC-1823: test/source-anchor-citations.test.ts contains [a citation cannot read outside the repository] — flagged by the commit security review: the path comes out of a document and this function reads whatever it names, and refused for leaving rather than for being absent
+- [x] SC-1824: test/source-anchor-citations.test.ts contains [a symlink inside the tree pointing out of it is refused] — the input the lexical check cannot reach, with a target reachable only through the link
+- [x] SC-1819: test/source-anchor-citations.test.ts contains [a missing file and a multi-line anchor both refuse] — reporting the first line of a spanning fragment is the near-enough that put three wrong numbers here
+- [x] SC-1820: test/source-anchor-citations.test.ts contains [all of them resolve] — with the count floor at today's number, so a citation cannot be deleted without the row saying so
+- [x] SC-1821: test/source-anchor-citations.test.ts contains [the line-number form is gone and does not come back] — converting seven is worth nothing if the eighth is written the old way next week
+- [x] SC-1822: test/source-anchor-citations.test.ts contains [the citation form itself round-trips] — a form the parser cannot see is a citation nothing checks, which reads exactly like one that passes
