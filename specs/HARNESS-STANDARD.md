@@ -8787,3 +8787,62 @@ measured one does, which is true under either runner.
 - [x] SC-1874: test/junit-checks.test.ts contains [a report that cannot be read is null] — and a report that lists nothing is an empty list
 - [x] SC-1875: test/junit-checks.test.ts contains [the verdicts the gate reaches on its own are in the witness too] — the union is what keeps checksRun a superset of failures
 - [x] SC-1876: test/junit-checks.test.ts contains [JUnit report names far more checks than it failed] — 118 measured where the failure-list witness gave 2
+
+## A cost guard nothing could witness, and two findings that were already closed (#543)
+
+#543 carried three findings from sec-518's post-merge review of PR #521. Two
+of them were measured against main before any code was written, and **both
+are already fixed**:
+
+| Finding | Mutation | Red |
+|---|---|---|
+| the `catch` in `declinedIsDir` has no fixture | the `catch` deleted | 1 of 92 |
+| a failed stat labelled as a directory | `catch { return false }` → `return true` | 1 of 92 |
+| the dot-file rank is unpinned | `dot-file` ranked 3 alongside `dot-directory` | 1 of 92 |
+
+`test/config-access-conformity.test.ts` grew "a dot-symlink that cannot be
+resolved is a LABEL, never a refusal" — ENOENT, EACCES and ELOOP in one tree —
+and the N-1 ordering fixture grew `.env` and a FILE named `vendor`. Both
+landed after the issue was filed. Measuring first rather than reading the
+issue first is what kept this from being a second implementation of a fix that
+was already there.
+
+### The one that was still open is about cost, not behaviour
+
+`if (!e.isSymbolicLink()) return false` in `declinedIsDir` is a COST guard.
+`statSync` on a regular file answers what the dirent already answered, so
+removing it changes no label on any real tree: **0 red of 92**, and the
+64-shape pre/post differential sec-518 ran found zero verdict divergence
+anywhere in `#518`.
+
+What it changes is syscalls. Before #518 a declined `.git`, `node_modules`,
+`dist`, `build`, `coverage`, `.next`, `.output`, `vendor` or dot-name cost
+zero; afterwards each costs one when it is a symlink. Those are the names
+people symlink onto network paths, and `statSync` on a stale NFS or autofs
+target blocks uninterruptibly with no timeout available.
+
+A cost is not observable from a test. The guard is therefore pinned by the one
+thing that is — **a dirent that disagrees with the filesystem.** Hand the
+function "not a directory, not a symlink" together with a path that IS a
+directory: today `false`, without the guard `true`. That is the syscall, made
+visible, and it is the half of the finding this repo owns.
+
+The half it does not own is said out loud in the docstring rather than left
+implicit: a declined SYMLINK still costs one stat, kept deliberately because
+dropping it writes a symlinked `node_modules` down as a file — the commonest
+real instance of the thing #518 fixed — and that stat crosses the project
+boundary without consulting `insideProject`. The walk does not follow the
+link, so containment holds; the residual is one bit about a path outside the
+project, in a message, reachable only by someone who could already plant a
+symlink in it.
+
+### What was broken to prove it
+
+| Mutation | Red | First prediction |
+|---|---|---|
+| the symlink guard removed, before SC-1877 | 0 of 92 | 0 — the finding |
+| the symlink guard removed, after SC-1877 | 1 of 93 | 1 |
+
+### Success Criteria
+
+- [x] SC-1877: test/config-access-conformity.test.ts contains [a declined entry that is not a symlink is answered without a syscall] — a dirent that disagrees with the filesystem is the only way a saved syscall shows up in a test

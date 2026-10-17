@@ -3461,9 +3461,47 @@ const NEVER_PROJECT_SOURCE = new Set([".git", "node_modules"]);
  * dangling-symlink note further down already rules out for the same reason.
  * A link that resolves to nothing is not somewhere a reader can go looking,
  * which is the only thing the trailing slash claims.
+ *
+ * ## The dirent is authoritative for everything that is not a symlink (#543)
+ *
+ * `if (!e.isSymbolicLink()) return false` is a COST guard, not a correctness
+ * one — `statSync` on a regular file answers the same thing the dirent
+ * already did, so removing it changes no label on any real tree and was
+ * **0 red of 92**. What it changes is syscalls. Before #518 an entry named
+ * `.git`, `node_modules`, `dist`, `build`, `coverage`, `.next`, `.output`,
+ * `vendor` or any dot-name cost zero; this function made it cost one, and
+ * those are exactly the names people symlink onto network paths — a shared
+ * `node_modules`, a pnpm store, `dist` on a build mount. `statSync` on a
+ * stale NFS or autofs target blocks uninterruptibly and there is no timeout
+ * to give it.
+ *
+ * A cost is not observable from a test, so the guard is pinned by the one
+ * thing that is: a dirent that DISAGREES with the filesystem. Hand this
+ * function "not a directory, not a symlink" together with a path that is a
+ * directory, and today it answers `false`; without the guard the stat runs
+ * and it answers `true`. That is the syscall, made visible.
+ *
+ * **Two residuals, stated rather than silently carried:**
+ *
+ *  - A declined SYMLINK still costs one `statSync`, and that is the stale-
+ *    mount exposure. It is kept deliberately: dropping it writes a symlinked
+ *    `node_modules` down as a file, which is the commonest real instance of
+ *    the thing #518 fixed. `readlinkSync` would resolve the name without
+ *    touching the target, but a monorepo's `node_modules -> ../../node_modules`
+ *    is outside the project and still a directory, so the cheap answer is
+ *    wrong for the case that motivates the stat.
+ *  - That stat crosses the project boundary without consulting
+ *    `insideProject`. The walk does not follow the link — all three branches
+ *    `continue` — so containment holds, verified over a 64-shape matrix; the
+ *    residual is that the waiver message asserts one bit about a path
+ *    outside the project, reachable only by someone who could already plant
+ *    a symlink inside it.
  */
-function declinedIsDir(e: Dirent, abs: string): boolean {
+export function declinedIsDir(e: Dirent, abs: string): boolean {
   if (e.isDirectory()) return true;
+  // Not a correctness branch — see the note above. A dirent that says
+  // "regular file" is the answer; going to the filesystem to ask again is a
+  // syscall on a path that may be a stale mount.
   if (!e.isSymbolicLink()) return false;
   try {
     return statSync(abs).isDirectory();
