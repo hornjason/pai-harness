@@ -43,6 +43,7 @@ import { dirname, join } from "path";
 import {
   configAccessViolations,
   configAccessViolationRecords,
+  declinedIsDir,
   coverageShortfall,
   CONFIG_SCAN_DIRS,
   CONFIG_1_DECLINES,
@@ -2031,6 +2032,39 @@ describe("#518: a declined entry is written down as the kind it actually is", ()
     } finally {
       chmodSync(locked, 0o700);
     }
+  });
+
+  test("SC-1877: a declined entry that is not a symlink is answered without a syscall", () => {
+    // sec-518's F4, and the mutation is **0 red of 92** without this case:
+    // removing `if (!e.isSymbolicLink()) return false` changes no label on
+    // any real tree, because `statSync` on a regular file answers what the
+    // dirent already answered. It changes COST, and before #518 a declined
+    // `.DS_Store`, `node_modules`, `dist` or `vendor` cost zero syscalls.
+    // Those are the names people symlink onto network paths, and `statSync`
+    // on a stale NFS or autofs target blocks uninterruptibly.
+    //
+    // A cost is not directly observable from a test, so the guard is pinned
+    // by the one thing that IS: a dirent that disagrees with the filesystem.
+    // The path below is a real directory; the dirent says it is neither a
+    // directory nor a symlink. Today the dirent wins and nothing is statted.
+    // Delete the guard and the stat happens and returns `true` — which is
+    // the syscall, made visible.
+    const realDir = mkdtempSync(join(tmpdir(), "rungate-543-"));
+    scratch.push(realDir);
+    const plainFile = { isDirectory: () => false, isSymbolicLink: () => false } as any;
+    expect(
+      declinedIsDir(plainFile, realDir),
+      "the filesystem was consulted for an entry the dirent had already answered",
+    ).toBe(false);
+
+    // The control, without which the row above is satisfied by a function
+    // that returns `false` for everything: the two branches that MUST reach
+    // the filesystem, or not need to, still say yes.
+    const dirDirent = { isDirectory: () => true, isSymbolicLink: () => false } as any;
+    expect(declinedIsDir(dirDirent, join(realDir, "no-such-path"))).toBe(true);
+    const linkDirent = { isDirectory: () => false, isSymbolicLink: () => true } as any;
+    expect(declinedIsDir(linkDirent, realDir), "a symlinked directory stopped being a directory")
+      .toBe(true);
   });
 
   test("only the label moved: the verdict and the counts are unchanged", () => {
