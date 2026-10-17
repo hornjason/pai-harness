@@ -1,4 +1,4 @@
-import { test, expect, describe } from "bun:test";
+import { test, expect, describe, setDefaultTimeout } from "bun:test";
 import { readFileSync, existsSync, readdirSync } from "fs";
 import { execSync, execFileSync, spawnSync } from "child_process";
 import { createHash } from "crypto";
@@ -20,10 +20,25 @@ import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
 import { readSuiteMeasurement, type SuiteReading } from "../lib/suite-measurement";
 import {
+  EXEC_TIMEOUT_MS,
+  GATE_TEST_TIMEOUT_MS,
+  TYPECHECK_TIMEOUT_MS,
+} from "../lib/gate-timeouts";
+import {
   outcomeEvidenceViolations,
   goalKeywordCoverage,
   GOAL_COVERAGE_WARN_BELOW,
 } from "../lib/ac-quality";
+
+/**
+ * Every check in this file gets longer than the processes it starts (#550).
+ *
+ * File level and not per-test on purpose: `}, 120000);` on `tsc-pass` alone
+ * fixes one check, and the exec helpers below are called from dozens. The
+ * ordering against the spawns is owned by lib/gate-timeouts.ts and asserted
+ * in test/gate-suite-timeouts.test.ts.
+ */
+setDefaultTimeout(GATE_TEST_TIMEOUT_MS);
 
 const STANDALONE = !process.env.TEST_WORK_DIR;
 const TEST_DIR = process.env.TEST_WORK_DIR || "/tmp/gate-viability-test";
@@ -48,7 +63,7 @@ function sf(path: string): any {
 
 function exec(cmd: string, cwd?: string): { ok: boolean; output: string } {
   try {
-    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    const output = execSync(cmd, { cwd, encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
     return { ok: true, output };
   } catch (e: any) {
     return { ok: false, output: (e.stdout ?? "").trim() };
@@ -69,7 +84,7 @@ function exec(cmd: string, cwd?: string): { ok: boolean; output: string } {
  */
 function execArgvOf(bin: string, args: string[], cwd?: string): { ok: boolean; output: string } {
   try {
-    const output = execFileSync(bin, args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    const output = execFileSync(bin, args, { cwd, encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
     return { ok: true, output };
   } catch (e: any) {
     return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
@@ -78,7 +93,7 @@ function execArgvOf(bin: string, args: string[], cwd?: string): { ok: boolean; o
 
 function execArgv(args: string[], cwd?: string): { ok: boolean; output: string } {
   try {
-    const output = execFileSync("git", args, { cwd, encoding: "utf-8", timeout: 30000 }).trim();
+    const output = execFileSync("git", args, { cwd, encoding: "utf-8", timeout: EXEC_TIMEOUT_MS }).trim();
     return { ok: true, output };
   } catch (e: any) {
     return { ok: false, output: `${e?.stdout ?? ""}${e?.stderr ?? ""}`.trim() || String(e?.message ?? e) };
@@ -959,7 +974,7 @@ describe("verify checks", () => {
     const run = spawnSync("bunx", ["tsc", "--noEmit"], {
       cwd: root,
       encoding: "utf-8",
-      timeout: 240000,
+      timeout: TYPECHECK_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
     });
     const failures = run.error

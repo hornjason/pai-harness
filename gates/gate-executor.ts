@@ -12,6 +12,7 @@ import {
 } from "./orchestrator";
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
+import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import { DEFAULT_TEST_TIMEOUT, resolveConfig, type ResolvedConfig } from "../lib/config-loader";
 import { censusOf, censusRegressions } from "../lib/test-census";
@@ -47,6 +48,32 @@ import {
 } from "./spec-compliance-probe";
 // ── Test output parser (moved here from run-gate.ts to break circular dep) ──
 
+/**
+ * Bun's timeout explanation, which is printed AFTER its own `(fail)` marker
+ * where every other kind of detail is printed before it (#550).
+ *
+ * Captured from bun 1.3.14 rather than written from memory:
+ * `  ^ this test timed out after 300ms.`
+ */
+const TIMEOUT_EXPLANATION = /^\s*\^\s*this test timed out after\b/;
+
+/**
+ * What a failure's detail says when the runner printed no reason for it.
+ *
+ * It used to be the bare string `"failed"`, which is a refusal with no
+ * reason in the one field a heal prompt reads — and worse, it reads like
+ * something the runner said rather than like the parser giving up. On the
+ * run that produced #550 the reader went looking for a check that had
+ * reported "failed" and found a check whose output said `Type check PASS`.
+ *
+ * So it names the component that had nothing to say. The behaviour is
+ * unchanged; what changed is where it sends the next reader.
+ */
+const UNEXPLAINED_FAILURE =
+  "no explanation was captured for this failure — the runner printed nothing between this " +
+  "check's marker and the previous one, and gate-executor.ts's parseTestResults has no reason " +
+  "to report. The check failed; why it failed was not recorded (#550).";
+
 export function parseTestResults(output: string): GateResult[] {
   const results: GateResult[] = [];
   const lines = output.split("\n");
@@ -63,14 +90,33 @@ export function parseTestResults(output: string): GateResult[] {
       // marker (#314). Scanning forward gave every entry the NEXT failure's
       // detail and left the last one holding the run summary, which is what
       // the heal prompt was being fed on run wf_5cdce852-1e2.
+      //
+      // #550: a TIMEOUT is the one exception, and it goes the other way.
+      // Bun prints `^ this test timed out after Nms.` AFTER the marker, so
+      // the backward scan from the NEXT failure walked over it and took it,
+      // while the test it belonged to was left with nothing. Observed live:
+      // `tsc-pass` recorded `detail: "failed"` and `local-api-validated`'s
+      // detail opened with a timeout that was not its own — which reads as a
+      // diagnosis of the wrong check, and was read that way.
+      const own: string[] = [];
+      for (let j = i + 1; j < lines.length && TIMEOUT_EXPLANATION.test(lines[j]); j++) {
+        own.push(lines[j].trim());
+      }
       const detailLines: string[] = [];
       for (let j = i - 1; j >= 0; j--) {
         if (/\(pass\)\s+/.test(lines[j]) || /\(fail\)\s+/.test(lines[j])) break;
         if (/^bun test v/.test(lines[j])) break;
+        // Belongs to the marker above it, not to this one.
+        if (TIMEOUT_EXPLANATION.test(lines[j])) break;
         const trimmed = lines[j].trim();
         if (trimmed) detailLines.unshift(trimmed);
       }
-      results.push({ check: fm[1].trim(), result: "FAIL", detail: detailLines.length > 0 ? detailLines.join("\n") : "failed" });
+      const detail = [...own, ...detailLines];
+      results.push({
+        check: fm[1].trim(),
+        result: "FAIL",
+        detail: detail.length > 0 ? detail.join("\n") : UNEXPLAINED_FAILURE,
+      });
     }
   }
   return results;
@@ -1380,7 +1426,7 @@ function runGateTests(gate: string, workDir: string, state: Record<string, any>,
       `bun test gates/ --test-name-pattern "${gate === 'scope' ? 'schema|scope' : gate === 'verify' ? 'schema|scope|verify|B1|B2' : gate === 'ship' ? 'schema|scope|verify|ship|B1|B2' : gate === 'prove' ? 'prove' : '.*'}" 2>&1`,
       {
         encoding: "utf-8",
-        timeout: 120000,
+        timeout: GATE_SUITE_TIMEOUT_MS,
         cwd: harnessRoot,
         env: { ...process.env, TEST_WORK_DIR: workDir, GATE: gate, PROJECT_ROOT: state.projectRoot || process.cwd() },
       },

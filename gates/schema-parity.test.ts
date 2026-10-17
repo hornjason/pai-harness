@@ -212,14 +212,107 @@ describe("GI-1: gate failure detail includes Zod error paths", () => {
     expect(fail!.detail).not.toBe("failed");
   });
 
-  test("parseTestResults falls back to 'failed' when no detail lines follow (fail)", () => {
+  test("SC-1860: a failure the parser cannot explain says so, and names the parser", () => {
+    // Revised from "falls back to 'failed'" (#550). That case documented the
+    // fallback as acceptable, and it is not: `detail: "failed"` is a refusal
+    // with no reason, in the field a heal prompt reads. It also reads like
+    // data the runner produced rather than like the parser giving up, which
+    // is the distinction that sent #530's first pass to the wrong file.
+    //
+    // The behaviour is unchanged — the parser still has nothing to say here.
+    // What changed is that it says which component had nothing to say.
     const bunOutput = [
       "(fail) some-check",
       "(pass) another-check",
     ].join("\n");
     const results = parseTestResults(bunOutput);
     const fail = results.find(r => r.result === "FAIL");
-    expect(fail!.detail).toBe("failed");
+    expect(fail!.detail, "a bare 'failed' is a refusal with no reason").not.toBe("failed");
+    expect(fail!.detail).toContain("parseTestResults");
+    // Named so a reader goes to the parser rather than to the check.
+    expect(fail!.detail).toContain("no explanation");
+  });
+});
+
+// ── #550: bun prints a timeout's reason AFTER its marker ──────────────────
+
+/**
+ * Covers SC-1858, SC-1859 (HARNESS-STANDARD.md), #550.
+ *
+ * Every other failure bun prints puts its excerpt, error and stack BEFORE the
+ * `(fail)` line, which is why #314 made the detail scan backward. A TIMEOUT
+ * is the exception: the marker comes first and the explanation follows it. So
+ * the backward scan from the NEXT failure walks straight over it, and the
+ * timed-out test is left with nothing.
+ *
+ * Observed on `/Users/jhorn/.rungate/.../workflow-state.json`: `tsc-pass`
+ * recorded `detail: "failed"` while the following check's detail OPENED with
+ * `^ this test timed out after 5000ms.` — a diagnosis of a different check,
+ * which is how it was first read.
+ */
+describe("#550: a timed-out failure keeps its own explanation", () => {
+  // CAPTURED, not imagined. Run on bun 1.3.14 over a file with one test given
+  // a 300ms budget and a 2000ms body, followed by an ordinary failure. The
+  // literal below is that run's output with the temp paths shortened; the
+  // ORDER — marker, timeout line, then the next failure's excerpt — is the
+  // whole subject and is reproduced exactly.
+  const CAPTURED = [
+    "bun test v1.3.14 (d1632b29)",
+    "",
+    "x.test.ts:",
+    "(fail) a slow one [302.03ms]",
+    "  ^ this test timed out after 300ms.",
+    '1 | import { test, expect } from "bun:test";',
+    '2 | test("a slow one", async () => { await new Promise(r => setTimeout(r, 2000)); }, 300);',
+    '3 | test("an ordinary failure", () => { expect(1).toBe(2); });',
+    "                                                  ^",
+    "error: expect(received).toBe(expected)",
+    "",
+    "Expected: 2",
+    "Received: 1",
+    "",
+    "      at <anonymous> (/tmp/x.test.ts:3:47)",
+    "(fail) an ordinary failure [0.47ms]",
+  ].join("\n");
+
+  test("SC-1858: the timed-out test's detail is its own timeout line", () => {
+    const results = parseTestResults(CAPTURED);
+    const timedOut = results.find(r => r.check === "a slow one");
+    expect(timedOut, "the timed-out failure was not parsed at all").toBeTruthy();
+    expect(timedOut!.result).toBe("FAIL");
+    expect(timedOut!.detail, "the timed-out check still records a refusal with no reason")
+      .toContain("timed out after 300ms");
+  });
+
+  test("SC-1859: the following failure does not acquire it", () => {
+    // The half that cost the time. A detail opening with another check's
+    // timeout reads like a diagnosis of this one.
+    const results = parseTestResults(CAPTURED);
+    const next = results.find(r => r.check === "an ordinary failure");
+    expect(next, "the following failure was not parsed").toBeTruthy();
+    expect(next!.detail, "the next failure inherited the previous one's timeout line")
+      .not.toContain("timed out after");
+    // And it keeps its own, so the fix is a reattribution rather than a
+    // deletion — without this a parser that dropped every timeout line
+    // satisfies the assertion above.
+    expect(next!.detail).toContain("expect(received).toBe(expected)");
+    expect(next!.detail).toContain("Expected: 2");
+  });
+
+  test("SC-1861: an ordinary failure's backward scan is unchanged", () => {
+    // The control for the control. The timeout line is a new stopping
+    // condition in the backward scan, and a stopping condition that fires too
+    // eagerly truncates every ordinary detail — which would be invisible,
+    // because a shorter detail is still a detail.
+    const ordinary = [
+      "(pass) first-check",
+      "  acs.0.threshold.op: Invalid enum value",
+      "  acs.1.statement: AC-2: statement too short",
+      "(fail) second-check",
+    ].join("\n");
+    const fail = parseTestResults(ordinary).find(r => r.result === "FAIL");
+    expect(fail!.detail).toContain("Invalid enum value");
+    expect(fail!.detail).toContain("statement too short");
   });
 });
 
