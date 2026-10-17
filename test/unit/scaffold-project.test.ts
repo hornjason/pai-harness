@@ -6,11 +6,21 @@
  * Validates: project type detection, directory creation, AGENTS.md generation,
  * test file creation, spec frontmatter injection, no-overwrite guarantee.
  */
-import { describe, test, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
+import { describe, test as bunTest, expect, beforeEach, afterEach, setDefaultTimeout } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 import { writtenPath } from "../../lib/scaffold/steps";
+import {
+  BUDGET_FLOOR_MS,
+  calibrateScaffold,
+  isScaffoldUnmeasured,
+  runScaffoldProcess,
+  ScaffoldCensus,
+  ScaffoldUnmeasured,
+  scaffoldBudget,
+  scaffoldTestTimeout,
+} from "../helpers/scaffold-budget";
 
 const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.ts");
 
@@ -38,10 +48,55 @@ const SCRIPT = join(import.meta.dir, "..", "..", "scripts", "scaffold-project.ts
  * the code — the same defect as a check that cannot fail, pointed the other
  * way. The fix is one budget, derived in both places, with the ordering
  * asserted below rather than left as a comment.
+ *
+ * ## The raise did not hold, so the mechanism changed (#478)
+ *
+ * On 2026-10-16 the SAME case, by name, died at 15007.04ms — the raised
+ * budget, exactly. Raising it again is #445's move, and #445 is in this
+ * repo's history because guessing bigger does not converge.
+ *
+ * The budget is now a RATIO to a calibration run taken on this machine at
+ * module load, so a loaded runner moves the calibration and the budget
+ * together. `BUDGET_FLOOR_MS` is still 15_000 — deliberately not raised —
+ * acting as a floor under the calibrated number rather than as the number.
+ * And a case killed by its budget is recorded UNMEASURED rather than FAILED,
+ * because an over-budget run did not observe the code being wrong. See
+ * `test/helpers/scaffold-budget.ts` for the whole argument.
  */
-const SCAFFOLD_TIMEOUT_MS = 15_000;
-const TEST_TIMEOUT_MS = SCAFFOLD_TIMEOUT_MS + 5_000;
+const CALIBRATION = calibrateScaffold(SCRIPT);
+const SCAFFOLD_TIMEOUT_MS = scaffoldBudget(CALIBRATION);
+const TEST_TIMEOUT_MS = scaffoldTestTimeout(SCAFFOLD_TIMEOUT_MS);
 setDefaultTimeout(TEST_TIMEOUT_MS);
+
+const CENSUS = new ScaffoldCensus();
+
+/**
+ * `test`, with the starved-run case converted into a recorded UNMEASURED.
+ *
+ * Shadowing the import rather than renaming 39 call sites, so there is ONE
+ * binding that decides what a timeout means and no second copy to hold a
+ * case up after the first is broken. `ScaffoldUnmeasured` is a class and
+ * nothing else is caught: an ordinary assertion failure that happens to
+ * mention a timeout still goes red.
+ *
+ * What stops this becoming a file that passes having measured nothing is the
+ * coverage case at the bottom, which prints `measured N of M` and refuses
+ * when N is zero.
+ */
+function test(name: string, body: () => void): void {
+  bunTest(name, () => {
+    try {
+      body();
+      CENSUS.recordMeasured();
+    } catch (e) {
+      if (isScaffoldUnmeasured(e)) {
+        CENSUS.recordUnmeasured(name, e.reading);
+        return;
+      }
+      throw e;
+    }
+  });
+}
 
 function createTempDir(): string {
   const dir = join("/tmp", `scaffold-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -52,16 +107,19 @@ function createTempDir(): string {
 function runScaffold(projectPath: string, opts?: { expectFail?: boolean; fix?: boolean; args?: string[] }): string {
   const extraArgs: string[] = opts?.args || [];
   if (opts?.fix) extraArgs.push("--fix");
-  const argStr = extraArgs.length > 0 ? " " + extraArgs.join(" ") : "";
-  try {
-    return execSync(`bun ${SCRIPT} ${projectPath}${argStr}`, {
-      encoding: "utf-8",
-      timeout: SCAFFOLD_TIMEOUT_MS,
-    });
-  } catch (e: any) {
-    if (opts?.expectFail) return e.stderr || e.stdout || "";
-    throw e;
+  const r = runScaffoldProcess({
+    script: SCRIPT,
+    projectPath,
+    args: extraArgs,
+    budgetMs: SCAFFOLD_TIMEOUT_MS,
+  });
+  // Killed by the budget is not "the scaffold failed" — it is no reading at
+  // all, and the two used to arrive at the caller as the same empty string.
+  if (r.timedOut) throw new ScaffoldUnmeasured(r);
+  if (r.exitCode !== 0 && !opts?.expectFail) {
+    throw new Error(`scaffold exited ${r.exitCode} for ${projectPath}:\n${r.output}`);
   }
+  return r.output;
 }
 
 describe("scaffold-project: the test budget must outlast the thing it measures", () => {
@@ -69,10 +127,11 @@ describe("scaffold-project: the test budget must outlast the thing it measures",
     // If this ever inverts, every one of the spawning cases in this file can
     // be killed before `runScaffold` is allowed to fail, and the failure
     // report loses the scaffold's output — which is the only thing in it that
-    // says what went wrong.
+    // says what went wrong. Earned in #454 and kept verbatim through #478;
+    // the derivation moved into the helper, the guarantee did not.
     expect(
       TEST_TIMEOUT_MS,
-      "bun would kill the test before execSync times out, discarding the scaffold's output",
+      "bun would kill the test before the scaffold's budget runs out, discarding its output",
     ).toBeGreaterThan(SCAFFOLD_TIMEOUT_MS);
   });
 
@@ -90,6 +149,15 @@ describe("scaffold-project: the test budget must outlast the thing it measures",
     const APPLIED = /^setDefaultTimeout\(TEST_TIMEOUT_MS\);$/m;
     const src = readFileSync(join(import.meta.dir, "scaffold-project.test.ts"), "utf-8");
     expect(APPLIED.test(src), "the budget is declared but never applied").toBe(true);
+  });
+
+  test("the budget was calibrated on this machine, not read off a constant", () => {
+    // The half that would otherwise be invisible: a calibration that silently
+    // returned zero gives `scaffoldBudget` the floor, which is exactly the
+    // old behaviour wearing a new mechanism's name.
+    expect(CALIBRATION.elapsedMs, "the calibration run was never timed").toBeGreaterThan(0);
+    expect(CALIBRATION.note, "the calibration does not say what it measured").toMatch(/\d+ms/);
+    expect(SCAFFOLD_TIMEOUT_MS).toBeGreaterThanOrEqual(BUDGET_FLOOR_MS);
   });
 });
 
@@ -725,5 +793,31 @@ describe("scaffold-project: fix mode preserves existing content", () => {
     // Should NOT have a second governs field
     const governsCount = (content.match(/governs:/g) || []).length;
     expect(governsCount).toBe(1);
+  });
+});
+
+/**
+ * Declared last so it runs last: bun runs a file's cases in declaration
+ * order, and this one reads what the ones above it recorded.
+ */
+describe("scaffold-project: what this run actually measured", () => {
+  bunTest("the coverage of this file's cases is reported, and is not zero", () => {
+    // UNMEASURED without a count is silence, and silence reads as success —
+    // the whole reason `.claude/rules/config-access.md` names Silent Default
+    // Substitution. So the census is printed on every run, named cases and
+    // all, whether or not anything was starved.
+    console.log(CENSUS.summary(SCAFFOLD_TIMEOUT_MS, CALIBRATION));
+
+    // One starved case on a busy runner is a hiccup this file now survives
+    // and names. EVERY case starved is an instrument that stopped reporting,
+    // and that is not something to pass over.
+    expect(
+      CENSUS.measured,
+      `every case was killed by the ${SCAFFOLD_TIMEOUT_MS}ms scaffold budget, so this file measured nothing`,
+    ).toBeGreaterThan(0);
+
+    // The arm that keeps the line above from being satisfied by a census
+    // nobody feeds: this file has 39 cases and the count has to look like it.
+    expect(CENSUS.total, "the census recorded almost nothing, so it is not counting the file").toBeGreaterThan(30);
   });
 });
