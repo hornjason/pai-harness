@@ -25,7 +25,7 @@
  * correct answer; a refusal naming the count is not.
  */
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { join, resolve, sep } from "path";
 
 /** `path@"anchor"` inside a single markdown code span. */
 export const ANCHOR_CITATION = /`([A-Za-z0-9_./-]+)@"([^"`]*)"`/g;
@@ -68,7 +68,27 @@ export function resolveCitation(root: string, cite: Citation): Resolution {
     return fail(`the anchor "${anchor}" is ${anchor.trim().length} characters — too short to stay unique`);
   }
 
+  // The path comes out of a markdown document, and this function reads
+  // whatever it names. Flagged by the commit security review: `ANCHOR_CITATION`
+  // admits `.` and `/`, so `../../../../etc/passwd` is a well-formed citation
+  // and `join` resolves it happily out of the tree.
+  //
+  // No live document does that — every citation here is written by someone
+  // with commit access — but "the input happens to be trusted today" is not a
+  // property of a library, and a spec is exactly the sort of file a consumer
+  // generates. Refused rather than normalised: a citation that climbs out of
+  // the repository is not a citation with a fixable path, it is a citation to
+  // something this function has no business reading.
+  if (path.startsWith("/")) return fail("the path is absolute — citations are repository-relative");
+  if (path.split("/").includes("..")) return fail("the path contains a `..` segment, so it may leave the repository");
+
   const full = join(root, path);
+  // And the containment is checked rather than inferred from the two rules
+  // above, because those are about the spelling and this is about where the
+  // path actually landed. A symlinked directory inside the tree is the case
+  // no spelling rule can see.
+  const contained = resolve(root) + sep;
+  if (!resolve(full).startsWith(contained)) return fail("the path resolves outside the repository");
   if (!existsSync(full)) return fail("no such file in the repository");
 
   const source = readFileSync(full, "utf-8");

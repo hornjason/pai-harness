@@ -1748,3 +1748,98 @@ a predicted number coming back wrong, which is the cheaper instrument.
 load, so bun reports one failed FILE rather than three failed tests. The
 prediction was wrong about the counting, not about the behaviour — nothing in
 the file can pass without the section, which is what the row was for.
+
+## Citing source by what it says, not by where it sits (#514)
+
+This document cited seven source locations by line number. Three sat under
+`test/gate-env-expressibility.test.ts` SC-1719, which checks them rather than
+believing them; keeping that green cost three hand edits of five numbers
+across two PRs, because every insertion into `workflows/ship.js` moves them.
+
+The other four had no guard, and this is the measurement the issue predicted
+and nobody had:
+
+| cited | pointed at | should have been |
+|---|---|---|
+| `gate-executor.ts`, line 1725 | a `parseFloat` | 2109 |
+| `evidence-prevalidator.ts`, line 208 | a comment | 245 |
+| `scaffold-rungate-config.ts`, line 66 | an unrelated `existsSync` | 61 |
+| `workflow.test.ts`, line 87 | `loadProjectHarness` | correct |
+
+The table writes those in prose rather than in the live citation form: a
+record of citations that were wrong, written in the form the ratchet below
+enforces, would make the document refuse itself.
+
+**Three of the four unguarded citations were already wrong**, each pointing at
+a plausible-looking line in the right file. The three guarded ones were
+correct. The only citations that stayed true are the ones something executed.
+
+### The form
+
+    `workflows/ship.js@"const containerConfig = projectConfig.container"`
+
+`lib/source-anchor.ts` resolves it, and resolution is **total**: not-found and
+found-twice are both refusals. The second one carries more weight than it
+looks. Taking the first of several matches would make every ambiguous
+citation resolve, and "resolves to a plausible line" is exactly what the line
+numbers were doing for three citations in this file. An anchor under twelve
+characters is refused too — unique today is one unrelated edit away from not
+being, and a short anchor that stays unique is indistinguishable from one
+that does not until it is too late.
+
+A **historical** citation stays prose. "line 4462 of `ship.js` as it then
+stood" names a line that no longer exists, which is the point of the
+paragraph using it, and the resolver would rightly refuse it.
+
+### What this does not cover
+
+134 line citations remain in ten other documents — 48 in
+`specs/HARNESS-STANDARD.md`, 45 and 22 in the two config-loader ADRs. The
+ratchet below is scoped to this file on purpose: widening it would make it a
+known-violations list rather than a rule, and each conversion should surface
+its own wrong citations the way this one did rather than being buried in a
+134-line diff. That population is a separate issue, with the counts recorded.
+
+### Mutations, predicted before running and measured after
+
+Over `test/source-anchor-citations.test.ts` and
+`test/gate-env-expressibility.test.ts` (11 tests). Every anchor was checked
+for uniqueness before being applied.
+
+| Mutation | Predicted | Measured |
+|---|---|---|
+| a double match takes the first instead of refusing | 2 | **1** |
+| a missing anchor resolves anyway | 2 | **1** |
+| the short-anchor floor is removed | 1 | 1 |
+| a multi-line anchor reports its first line | 1 | 1 |
+| a missing file resolves anyway | 1 | 1 |
+| the citation pattern stops matching | 4 | 4 |
+| the pattern swallows a bare path in a code span | 3 | 3 |
+| the spec goes back to a line number | 2 | 2 |
+| a citation is edited so it no longer matches source | 1 | 1 |
+| a citation is deleted outright | 1 | 1 |
+
+None is left in the tree; all were run and reverted.
+
+The first two came back low for the same reason, and it is a fact about the
+document rather than about the resolver: every anchor in this spec is present
+and unique, so disabling the not-found and found-twice refusals changes
+nothing about what the spec resolves to. Those refusals are proved by
+SC-1816 and SC-1817, which ask them directly.
+
+The last two rows were added after the battery's first pass. The count floor
+on the resolving row had been set below the real number of citations, so
+deleting one outright was 0 red — a floor under the true count is a floor
+that cannot see a loss. Set to the measured 9, both rows are 1.
+
+### Success criteria
+
+- [x] SC-1815: test/source-anchor-citations.test.ts contains [an anchor that names one line resolves and reports where] — the position is reported rather than asserted, since a number here would be the thing this issue removed
+- [x] SC-1816: test/source-anchor-citations.test.ts contains [an anchor the file no longer contains is a refusal] — a citation to text that is gone is a sharper signal than a line still matching a loose regex
+- [x] SC-1817: test/source-anchor-citations.test.ts contains [an anchor matching twice is a refusal - not the first match] — an ambiguous anchor is how a stale citation lands somewhere believable
+- [x] SC-1818: test/source-anchor-citations.test.ts contains [a short anchor is refused before it becomes ambiguous] — unique today is one unrelated edit away from not being
+- [x] SC-1823: test/source-anchor-citations.test.ts contains [a citation cannot read outside the repository] — flagged by the commit security review: the path comes out of a document and this function reads whatever it names, and refused for leaving rather than for being absent
+- [x] SC-1819: test/source-anchor-citations.test.ts contains [a missing file and a multi-line anchor both refuse] — reporting the first line of a spanning fragment is the near-enough that put three wrong numbers here
+- [x] SC-1820: test/source-anchor-citations.test.ts contains [all of them resolve] — with the count floor at today's number, so a citation cannot be deleted without the row saying so
+- [x] SC-1821: test/source-anchor-citations.test.ts contains [the line-number form is gone and does not come back] — converting seven is worth nothing if the eighth is written the old way next week
+- [x] SC-1822: test/source-anchor-citations.test.ts contains [the citation form itself round-trips] — a form the parser cannot see is a citation nothing checks, which reads exactly like one that passes

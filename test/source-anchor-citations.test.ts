@@ -94,6 +94,41 @@ describe("#514: a citation resolves to exactly one site, or it refuses", () => {
     expect(empty.ok).toBe(false);
   });
 
+  test("SC-1823: a citation cannot read outside the repository", () => {
+    // Flagged by the commit security review. The path comes out of a markdown
+    // document and this function reads whatever it names; `ANCHOR_CITATION`
+    // admits `.` and `/`, so a traversal is a well-formed citation.
+    //
+    // No live document does that — every citation here is written by someone
+    // with commit access — but "the input happens to be trusted today" is not
+    // a property of a library, and a spec is exactly the sort of file a
+    // consumer generates.
+    for (const path of [
+      "../../../../etc/passwd",
+      "specs/../../etc/passwd",
+      "/etc/passwd",
+      "/Users/anybody/.ssh/id_rsa",
+    ]) {
+      const r = resolveCitation(ROOT, { path, anchor: "an anchor long enough to pass the floor" });
+      expect(r.ok, `${path} was read`).toBe(false);
+      if (r.ok) continue;
+      // Refused for LEAVING, not for being absent. "no such file" would be
+      // the same verdict reached by luck, and it would flip to a read the
+      // day the file exists.
+      expect(r.reason, `${path} was refused for the wrong reason: ${r.reason}`)
+        .not.toContain("no such file");
+    }
+
+    // The control: an ordinary nested path still resolves, or a traversal
+    // guard that refused everything would satisfy every row above while
+    // making the whole mechanism useless.
+    const ok = resolveCitation(ROOT, {
+      path: "specs/GATE-CONTRACTS-SPEC.md",
+      anchor: "Citing source by what it says, not by where it sits",
+    });
+    expect(ok.ok, ok.ok ? "" : ok.reason).toBe(true);
+  });
+
   test("SC-1819: a missing file and a multi-line anchor both refuse", () => {
     const gone = resolveCitation(ROOT, { path: "lib/no-such-module.ts", anchor: "anything at all here" });
     expect(gone.ok).toBe(false);
@@ -116,9 +151,14 @@ describe("#514: a citation resolves to exactly one site, or it refuses", () => {
 describe("#514: every citation in GATE-CONTRACTS-SPEC still names a site", () => {
   test("SC-1820: all of them resolve", () => {
     const cites = anchorCitations(SPEC);
-    // Non-vacuous. A regex that stopped matching turns this row green over a
-    // document full of broken citations, which is the whole failure mode.
-    expect(cites.length, "no anchor citations were found in the spec at all").toBeGreaterThanOrEqual(7);
+    // Non-vacuous, and the floor is TODAY'S count rather than a comfortable
+    // number below it. A regex that stopped matching turns this row green
+    // over a document full of broken citations, which is the whole failure
+    // mode — and a floor set below the real count means a citation can be
+    // deleted without anything saying so. Measured at 9: the seven
+    // converted in #514, one of which was a parenthetical naming three
+    // sites. Adding one is a one-line bump here.
+    expect(cites.length, "anchor citations have gone missing from the spec").toBeGreaterThanOrEqual(9);
     expect(citationFailures(ROOT, SPEC)).toEqual([]);
 
     // Every one of the seven points into a real file, and more than one file
