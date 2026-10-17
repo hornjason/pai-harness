@@ -176,6 +176,16 @@ export function writeGateResult(
   // named the right tree the whole time; the writer read HEAD from somewhere
   // else. Same precedent as the test census at
   // `gates/gate-executor.ts`'s `censusRoot`.
+  //
+  // `treeUnderTest` comes out of the state file, so it is a state-controlled
+  // working directory. Three things bound that, and they are written down
+  // because "it was already like this" is not a containment argument:
+  // `gitSha` spawns a FIXED command and passes the path as `cwd`, not into a
+  // shell, so there is nothing to inject; it is the same value `treeRoot()`
+  // already hands to the three diff reads and `censusRoot` to the census, so
+  // this introduces no new trust; and a path that is not a git tree yields
+  // `"unknown"`, which `lib/branch-diff.ts` refuses by name rather than
+  // sending to git as a revision.
   const sha = gitSha(state.treeUnderTest || projectRoot);
 
   const failures = results.filter(r => r.result === "FAIL");

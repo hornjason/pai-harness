@@ -8910,6 +8910,7 @@ predicted before the run and every one matched. None is left in the tree.
 | the sha validation widened to anything non-empty | 1 | 1 |
 | the scope sha recorded from `projectRoot` again | 1 | 1 |
 | one call site spells the two-dot diff inline again | 1 | 1 |
+| `-z` removed and the split back to newlines | 3 | 3 |
 
 The first row's 3 is the fork case, the argv assertion, and the
 reintroduction guard — three different questions about one dot.
@@ -8918,6 +8919,38 @@ SC-1878 measures its own fixture before trusting it: the two-dot answer is
 asserted to be the three-file list, because a fixture whose branches share a
 tip gives the same answer both ways and looks identical in the diff.
 
+### A second way the same list can be wrong, found by the commit review
+
+`git diff --name-only` **C-quotes** any path holding a non-ASCII byte, a
+quote, a tab or a newline — `"caf\303\251.tsx"`, quotes included. Every
+consumer of this list is a filename regex, and `/\.(tsx|jsx|css)$/i` does
+not match a string ending in `"`. So a UI file with an accent in its name
+walks past `local-ui-validated` and `quinn-on-ui-change` matching nothing:
+#531's own defect — a changed-file list that is wrong about what changed —
+arriving through the encoding instead of through the dot count.
+
+`scripts/verify-merge-content.ts` hit this first and `-z` is the house fix,
+so it is what this uses. SC-1883 asserts the unquoted path AND measures that
+git really does quote it without `-z`, because a fixture with a plain ASCII
+name would pass either way.
+
+### Two things the call sites still do, said out loud rather than left implicit
+
+**They RETURN when the diff is UNMEASURED.** An unreachable scope sha is an
+ORDINARY outcome: a rebase during the run — which this project does on
+nearly every PR — leaves `gates.scope.commitSha` out of the branch's
+history, and `A...HEAD` then fails. Refusing would red every rebased run.
+What changed is that the decline prints `WARN: … UNMEASURED` into the gate
+log instead of being spelled `// no changed files`.
+
+**`treeUnderTest` is a state-controlled working directory.** `gitSha` spawns
+a fixed command and passes the path as `cwd`, not into a shell, so there is
+nothing to inject; it is the same value `treeRoot()` already hands to the
+three diff reads and `censusRoot` to the census, so no new trust is
+introduced; and a path that is not a git tree yields `"unknown"`, which
+`readBranchDiff` refuses by name rather than sending to git as a revision —
+which is SC-1880.
+
 ### Success Criteria
 
 - [x] SC-1878: test/branch-diff.test.ts contains [a commit on the other side of the fork is not this branch] — over a real repository with a real fork, with the two-dot answer measured so the fixture cannot agree with itself
@@ -8925,3 +8958,4 @@ tip gives the same answer both ways and looks identical in the diff.
 - [x] SC-1880: test/branch-diff.test.ts contains [a scope sha that is not a git object name gets no command built for it] — the value comes from a file this run's own agents write
 - [x] SC-1881: test/branch-diff.test.ts contains [the scope commit is read from the tree under test] — through a real worktree whose HEAD is asserted to differ from the main checkout's
 - [x] SC-1882: test/branch-diff.test.ts contains [no gate check builds a two-dot diff against the scope sha] — the reintroduction guard the library tests cannot provide
+- [x] SC-1883: test/branch-diff.test.ts contains [a UI file with a non-ASCII name is still a UI file] — git C-quotes the path out of every filename regex downstream unless the diff is asked for with -z
