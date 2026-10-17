@@ -24,7 +24,9 @@
  * them to drift, and the drift is silent.
  */
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 import {
@@ -264,6 +266,88 @@ describe("#532: the inlined copy and the library agree", () => {
     // either way, which is why picking a row by name was the wrong method.
     expect(separating).not.toContain("failedChecks absent");
   });
+});
+
+// ── the producer ────────────────────────────────────────────────────────────
+
+/**
+ * Everything above is the CONSUMER. `checksRun` is the positive witness the
+ * whole rule rests on, and a consumer with no producer is the defect #530
+ * had just finished being — so the gate runner is executed here and the
+ * field read back off the state it wrote.
+ */
+describe("#532: the gate runner records what it measured, not only what it failed", () => {
+  const WORK = mkdtempSync(join(tmpdir(), "refusal-currency-"));
+
+  test("SC-1870: a real gate run writes checksRun, and it is a superset of its failures", () => {
+    const dir = join(WORK, "light");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "workflow-state.json"),
+      JSON.stringify({
+        schemaVersion: 2,
+        issue: 9999,
+        repo: "test/repo",
+        issueRepo: "test/repo",
+        projectRoot: "/tmp/test",
+        slug: "light",
+        phase: "DONE",
+        issueGoal: "the gate records every check it measured",
+        sizing: { predicted: "XS", ceremonyTier: "LIGHT" },
+        acs: [
+          {
+            id: "AC-1",
+            type: "CODE",
+            statement: "the gate records every check it measured",
+            threshold: { op: ">=", value: 1 },
+            evidenceMethod: { type: "BUN_TEST", command: "bun test" },
+            evidence: { type: "command-output", content: "24 pass" },
+            verdict: "PASS",
+          },
+        ],
+        gates: {},
+        environments: { local: { api: "PASS", ui: "PASS", tests: "PASS" } },
+        agents: { marcus: { spawned: true, verdict: "PASS" } },
+        buildCommit: "abc1234",
+        changelog: [],
+        bootstrappedFrom: "ship-workflow",
+      }),
+    );
+
+    const runner = join(REPO_ROOT, "gates", "run-gate.ts");
+    spawnSync(
+      "bun",
+      ["run", runner, "--gate", "scope", "--slug", "light", "--issue", "9999",
+       "--tree-under-test", "/tmp/test", "--force"],
+      {
+        encoding: "utf-8",
+        timeout: 120000,
+        cwd: REPO_ROOT,
+        env: { ...process.env, RUNGATE_WORK_DIR: WORK, RUNGATE_SKIP_AGENTS: "1", GITHUB_TOKEN: "", GH_TOKEN: "" },
+      },
+    );
+
+    const written = JSON.parse(readFileSync(join(dir, "workflow-state.json"), "utf-8"));
+    const gate = written.gates?.scope;
+    expect(gate, "the gate recorded no result at all").toBeTruthy();
+    expect(Array.isArray(gate.checksRun), "the gate recorded no checksRun — the witness has no producer")
+      .toBe(true);
+    // Non-empty, because an empty list retires nothing and would make every
+    // consumer row above vacuous against a real run.
+    expect(gate.checksRun.length, "the gate ran and measured nothing").toBeGreaterThan(3);
+
+    // The superset property is what makes the subtraction meaningful: a
+    // `checksRun` that omitted failures would report a failing check as
+    // resolved, which is worse than the bug this closes.
+    const failed = (gate.failures || []).map((f: any) => f?.check).filter(Boolean);
+    const missing = failed.filter((c: string) => !gate.checksRun.includes(c));
+    expect(missing, `checksRun omits checks this gate failed:\n${missing.join("\n")}`).toEqual([]);
+
+    // And the consumer agrees with the producer over the real record.
+    const resolved = libResolved({ checksRun: gate.checksRun, failedChecks: failed });
+    expect(resolved).not.toBeNull();
+    expect(resolved!.length).toBe(gate.checksRun.length - failed.length);
+  }, 180000);
 });
 
 // ── the wiring ──────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ import {
 import { writeWitness } from "./witness";
 import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { GATE_SUITE_TIMEOUT_MS } from "../lib/gate-timeouts";
+import { checksRunFrom, readJunitCheckNames } from "../lib/junit-checks";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import { DEFAULT_TEST_TIMEOUT, resolveConfig, type ResolvedConfig } from "../lib/config-loader";
 import { censusOf, censusRegressions } from "../lib/test-census";
@@ -1418,12 +1419,26 @@ function runTypeCheck(state: Record<string, any>): void {
 
 // ── Test execution ──────────────────────────────────────────────────────
 
-function runGateTests(gate: string, workDir: string, state: Record<string, any>, harnessRoot: string): { testOutput: string; testExitCode: number } {
+/**
+ * Where the run's JUnit report goes (#532).
+ *
+ * The console output names only the FAILURES — bun 1.3.14 prints no `(pass)`
+ * markers at all — so it cannot say which checks a gate ran and did not
+ * fail, which is the one thing refusal retirement needs. The JUnit reporter
+ * writes alongside the console output rather than replacing it, so a single
+ * spawn still feeds the detail parser its `(fail)` lines.
+ */
+export function junitReportPath(workDir: string, gate: string): string {
+  return join(workDir, `gate-${gate}-junit.xml`);
+}
+
+function runGateTests(gate: string, workDir: string, state: Record<string, any>, harnessRoot: string): { testOutput: string; testExitCode: number; junitPath: string } {
   let testOutput: string;
   let testExitCode = 0;
+  const junitPath = junitReportPath(workDir, gate);
   try {
     testOutput = execSync(
-      `bun test gates/ --test-name-pattern "${gate === 'scope' ? 'schema|scope' : gate === 'verify' ? 'schema|scope|verify|B1|B2' : gate === 'ship' ? 'schema|scope|verify|ship|B1|B2' : gate === 'prove' ? 'prove' : '.*'}" 2>&1`,
+      `bun test gates/ --test-name-pattern "${gate === 'scope' ? 'schema|scope' : gate === 'verify' ? 'schema|scope|verify|B1|B2' : gate === 'ship' ? 'schema|scope|verify|ship|B1|B2' : gate === 'prove' ? 'prove' : '.*'}" --reporter=junit --reporter-outfile=${JSON.stringify(junitPath)} 2>&1`,
       {
         encoding: "utf-8",
         timeout: GATE_SUITE_TIMEOUT_MS,
@@ -1435,7 +1450,7 @@ function runGateTests(gate: string, workDir: string, state: Record<string, any>,
     testOutput = e.stdout || "";
     testExitCode = e.status || 1;
   }
-  return { testOutput, testExitCode };
+  return { testOutput, testExitCode, junitPath };
 }
 
 // ── Result parsing ──────────────────────────────────────────────────────
@@ -2266,7 +2281,7 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
   }
 
   // Run tests
-  const { testOutput, testExitCode } = runGateTests(gate, workDir, state, harnessRoot);
+  const { testOutput, testExitCode, junitPath } = runGateTests(gate, workDir, state, harnessRoot);
 
   // Parse results
   let { passes, fails, warns, results } = parseGateResults(testOutput, earlyResults, earlyFails);
@@ -2430,8 +2445,28 @@ export async function executeGate(input: GateExecutorInput): Promise<GateExecuto
     }
   }
 
+  // What this gate RAN, not only what it failed (#532).
+  //
+  // Read here rather than inside `writeGateResult` so the reading is taken
+  // after every late push to `results` above — the AC-verdict failures, the
+  // census WARN, the liveness probe. Those have no testcase behind them and
+  // the JUnit report cannot know about them, so they are unioned in; a
+  // `checksRun` that omitted them would not cover the failure ledger, and
+  // the subtraction in lib/gate-refusal-currency.ts would read a check that
+  // is still failing as resolved.
+  const junit = readJunitCheckNames(junitPath);
+  const checksRun = checksRunFrom(junit, results.map(r => r.check));
+  if (checksRun === null) {
+    // UNMEASURED, said out loud. An absent `checksRun` retires nothing, which
+    // is the safe direction — but silence is how that becomes "this gate ran
+    // nothing", and those are opposite facts.
+    console.warn(`checksRun: UNMEASURED — ${junit.reason || "no reading"} (${junitPath})`);
+  } else {
+    console.log(`checksRun: ${checksRun.length} check(s) ran, ${junit.skipped} filtered out or skipped`);
+  }
+
   // Write gate result
-  const { resultVal, attempt } = writeGateResult(sf, gate, passes, fails, warns, results, state.projectRoot);
+  const { resultVal, attempt } = writeGateResult(sf, gate, passes, fails, warns, results, state.projectRoot, checksRun);
   console.log(`Gate ${gate}: ${resultVal} (attempt ${attempt})`);
 
   // Persist B1/B2 agent results
