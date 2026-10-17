@@ -9,7 +9,9 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import type { ScRegistry } from "./sc-ids";
-import { isFixtureScId } from "./sc-ids";
+import { isFixtureScId, scIdsSpelledInSource } from "./sc-ids";
+import type { ScNamespaceReading } from "./sc-id-cross-tree";
+import { readScNamespace } from "./sc-id-cross-tree";
 import { tryLoadRungateConfig } from "./config-loader";
 
 // ── Types ─────────────────────────────────────────────────────
@@ -284,6 +286,35 @@ export function nextSCNumber(
   for (const id of spelledInSource ?? []) if (!isFixtureScId(id)) take(id);
   if (ids.length === 0) return 1;
   return Math.max(...ids) + 1;
+}
+
+/**
+ * The next free SC number for a project, over every namespace this machine
+ * can see (#503).
+ *
+ * `nextSCNumber` answers the question for the arguments it is handed, and
+ * three widths of that question have each been wrong in turn: one spec's
+ * content (#392), the spec registry without test fixtures (#399), and the
+ * registry of whichever working tree the command ran in (#503). This is the
+ * composition, in one place, so a caller cannot assemble two of the three and
+ * believe it asked.
+ *
+ * It returns the reading alongside the number because the number is a FLOOR:
+ * a clone on another machine is outside anything this process can reach, and
+ * a caller that printed only the number would be claiming a guarantee the
+ * reading explicitly does not give.
+ */
+export function allocateScNumber(
+  root: string,
+  specContent: string,
+  reg?: ScRegistry,
+): { number: number; namespace: ScNamespaceReading } {
+  const namespace = readScNamespace(root);
+  const number = nextSCNumber(specContent, reg, [
+    ...scIdsSpelledInSource(root).keys(),
+    ...namespace.ids.keys(),
+  ]);
+  return { number, namespace };
 }
 
 /**
