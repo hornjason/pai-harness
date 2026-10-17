@@ -9365,3 +9365,90 @@ through one config field and asserting both outputs move.
 - [x] SC-1905: test/test-command-binding.test.ts contains [a consumer declaring neither still gets bun test] — all three rungs, including the verbatim script value and config beating script
 - [x] SC-1906: test/test-command-binding.test.ts contains [the CI step and the AGENTS.md row move together] — two sites holding the same literal pass every other case here; one value moving both outputs is the only witness that the binding is shared
 - [x] SC-1907: test/test-command-binding.test.ts contains [a malformed package.json loses the scan] — the scaffold must not die on a file it consulted for a default
+
+## A uniqueness guard that measured one checkout of a repository with 110 (#503)
+
+On 2026-10-16 two sessions allocated `SC-1706..1710` within minutes of each
+other — one into `specs/HARNESS-STANDARD.md`, one into
+`specs/CONFIG-DIRECTORY-STRUCTURE-SPEC.md`, in two worktrees of this
+repository. Each read the highest id it could see and took the next block.
+Each was right about its own tree. `test/spec-sc-ids-unique.test.ts` was
+green in both, independently, until a rebase put the two blocks in one place.
+
+The second shape in `.claude/rules/checks-must-be-able-to-fail.md`: a
+detector narrower than what it detects. The question is "is this number free
+in the project"; both the guard and the allocator answered "is this number
+free in this checkout". The two differ exactly when more than one session is
+working, which here is the normal case — this machine has **110 worktrees of
+this repository on disk**.
+
+`lib/sc-id-cross-tree.ts` widens the question from the checkout to the
+machine, over two sources, because the collision lives in the gap between
+them:
+
+| Source | Catches | Misses |
+|---|---|---|
+| sibling worktrees' `specs/` | **uncommitted** ids in another session's tree | a branch whose worktree was removed |
+| every local and remote-tracking ref | committed ids on any branch, pushed or not | work that exists only on another machine |
+
+`allocateScNumber` is where all three widths compose — one spec's content
+(#392), the registry plus source-spelled fixture ids (#399), and the
+cross-tree namespace — so a caller cannot assemble two of them and believe it
+asked. It returns the reading with the number, because the number is a floor:
+a clone on another machine is outside anything this process can reach, and
+the reading says so on every run rather than passing silently.
+
+### What this deliberately does NOT do
+
+It does not refuse on a cross-tree duplicate, and that is a measurement
+rather than a shrug. Across the 110 worktrees: **30 ids are declared in more
+than one spec file.** `SC-A1`/`SC-A2` are anti-criteria that several specs
+legitimately carry; `SC-694..703` is a real collision from months ago,
+resolved on main by renumbering and preserved forever in the stale trees
+still holding the losing side. A guard over that population is permanently
+red for reasons nobody can act on, which is the fastest way to build a
+refusal everyone learns to click past. Fix the allocator that mints
+collisions; do not alarm on the fossils.
+
+Erring toward "taken" is the safe direction and it is chosen on purpose. A
+stale worktree contributes ids nothing will claim, and the allocator skips
+them — a gap in the numbering, which costs nothing, because SC ids are opaque
+join keys and not an ordering anyone reads. The other direction costs two
+spec lines one test can bind to, with no way to see which one it bound to.
+
+### What was broken to prove it
+
+Seven mutations over 103 tests in `test/sc-id-cross-tree.test.ts`,
+`test/sc-fixture-namespace.test.ts`, `test/sc-id-namespace.test.ts` and
+`test/spec-sc-ids-unique.test.ts`. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| sibling worktrees are not read | 4 | 3 |
+| branch refs are not read | 1 | 1 |
+| an unreadable worktree is skipped without being recorded | 1 | 1 |
+| the unmeasured remainder is dropped on a clean read | 2 | 1 |
+| the 9000 fixture reservation stops being honoured | 1 | 1 |
+| `siblingWorktrees` reports a git failure as "no siblings" | 1 | 1 |
+| `allocateScNumber` passes the registry but not the namespace | 1 | 1 |
+
+Two rows came in above their prediction, and both extras are about the
+mutated behaviour rather than a broken mutant. The first row's fourth red is
+SC-1910, whose unreadable-worktree half has nothing to report when no
+worktree is read at all — the worktree source is its subject, so it is a
+genuine dependency the prediction missed. The fourth row is 2 because
+SC-1912 asserts the reading travels with the allocated number, which is the
+same property from the caller's side.
+
+The first version of this module hit `ENOBUFS` grepping a thousand refs at
+once and reported it as a **skipped source with a reason** rather than as an
+empty result — the reading behaving correctly over its own bug, found by
+running it rather than by reading it.
+
+### Success Criteria
+
+- [x] SC-1908: test/sc-id-cross-tree.test.ts contains [an id only a sibling worktree has typed is already taken] — uncommitted in the sibling, which is the state the collision happened in; the fixture asserts the id is in no file and no commit of the root tree first
+- [x] SC-1909: test/sc-id-cross-tree.test.ts contains [an id committed on a branch with no worktree is already taken] — the worktree is removed with `worktree remove`, because `prune` honours a three-month expiry and would leave the fixture testing nothing
+- [x] SC-1910: test/sc-id-cross-tree.test.ts contains [a source it could not read is named] — and the remainder is non-empty even on a clean read, because a reading that claims to be complete is the silent default this rule forbids
+- [x] SC-1911: test/sc-id-cross-tree.test.ts contains [the allocator does not re-issue a sibling's number] — driven with two different sibling values, since one cannot tell reading the namespace from adding a constant
+- [x] SC-1912: test/sc-id-cross-tree.test.ts contains [the allocator composes all three widths] — SC-1911 hands `nextSCNumber` ids the test assembled, so only this can witness a caller that reads the namespace and forgets to pass it

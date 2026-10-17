@@ -11,13 +11,13 @@
  */
 import { readFileSync, writeFileSync, existsSync } from "fs";
 import {
+  allocateScNumber,
   generateSCText,
   listPatterns,
-  nextSCNumber,
   formatSCLine,
 } from "../lib/create-sc";
 import { readScRegistry } from "./sync-sc-status";
-import { scIdsSpelledInSource } from "../lib/sc-ids";
+import { describeReading } from "../lib/sc-id-cross-tree";
 import { join } from "path";
 
 /** Same resolution sync-sc-status uses, so both halves read one tree. */
@@ -83,17 +83,27 @@ try {
     // spell SC ids in the same namespace without appearing in any registry,
     // so an allocation that consults only the registry can mint a criterion
     // out of a number a fixture already depends on.
-    const scNumber = nextSCNumber(
-      content,
-      readScRegistry(),
-      scIdsSpelledInSource(ROOT).keys(),
-    );
+    //
+    // And a THIRD half, which is the one the first two could not see (#503):
+    // the registry is `specs/` in whichever working tree this command runs
+    // in. Two sessions in two worktrees both read "highest + 1" correctly and
+    // both got the same number.
+    //
+    // All three widths compose inside `allocateScNumber`, so this CLI cannot
+    // assemble two of them and believe it asked.
+    const { number: scNumber, namespace } = allocateScNumber(ROOT, content, readScRegistry());
     const scLine = formatSCLine(scNumber, statement);
 
     // Append SC line to the end of the file
     const newContent = content.trimEnd() + "\n" + scLine + "\n";
     writeFileSync(specPath, newContent);
     console.log(`Appended to ${specPath}: ${scLine}`);
+    // What the number is a floor over, stated rather than implied. A clone on
+    // another machine is outside anything this process can reach, and an
+    // allocator that printed only the number would be claiming a guarantee it
+    // cannot give (`.claude/rules/config-access.md`).
+    console.log(`  namespace: ${describeReading(namespace)}`);
+    for (const gap of namespace.unmeasured) console.log(`  UNMEASURED: ${gap}`);
   } else {
     // Output to stdout for piping
     const scLine = formatSCLine(0, statement);
