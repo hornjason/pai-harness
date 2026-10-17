@@ -332,9 +332,15 @@ describe("#532: the gate runner records what it measured, not only what it faile
     expect(gate, "the gate recorded no result at all").toBeTruthy();
     expect(Array.isArray(gate.checksRun), "the gate recorded no checksRun — the witness has no producer")
       .toBe(true);
-    // Non-empty, because an empty list retires nothing and would make every
-    // consumer row above vacuous against a real run.
-    expect(gate.checksRun.length, "the gate ran and measured nothing").toBeGreaterThan(3);
+    // Not merely non-empty. The first implementation sourced `checksRun`
+    // from the `results` array, which bun 1.3.14 leaves holding only the
+    // FAILURES — measured, that was 2 names out of 118 checks, and a
+    // witness that small retires nothing on any run. The threshold
+    // separates those two numbers: far above 2, far below the 118 measured
+    // on 2026-10-17, so churn in `gates/` cannot turn it red.
+    // test/junit-checks.test.ts owns the reading itself.
+    expect(gate.checksRun.length, "the witness names about as few checks as the failure list did")
+      .toBeGreaterThan(50);
 
     // The superset property is what makes the subtraction meaningful: a
     // `checksRun` that omitted failures would report a failing check as
