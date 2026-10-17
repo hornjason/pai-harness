@@ -2,7 +2,7 @@
  * Covers the structural integrity of
  * `specs/RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md` (#544).
  *
- * The spec's 19 behavioural criteria (SC-1667..SC-1685) are NOT covered here.
+ * The spec's 19 behavioural criteria (SC-1930..SC-1948) are NOT covered here.
  * Nothing implements them yet, and a test that asserts an unimplemented
  * criterion either fails the suite or — far worse — passes vacuously and
  * certifies work that was never done. `.claude/rules/checks-must-be-able-to-
@@ -29,7 +29,7 @@ const SPEC_REL = "specs/RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md";
 const SPEC = join(ROOT, SPEC_REL);
 
 /** The block #544 reserved. Widening this is a decision, not a typo fix. */
-const SC_RANGE = { lo: 1667, hi: 1685 } as const;
+const SC_RANGE = { lo: 1930, hi: 1948 } as const;
 
 function specBody(): string {
   expect(existsSync(SPEC)).toBe(true);
@@ -53,7 +53,7 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
   test("every SC is declared in a position the status sync can read", () => {
     const scs = declaredSCs(specBody());
     expect(scs.length).toBeGreaterThan(0);
-    // A bare `SC-1670` mid-sentence is a citation, not a claim — see
+    // A bare `SC-1933` mid-sentence is a citation, not a claim — see
     // .claude/rules/claiming-sc-coverage.md. The count below is of claims.
     expect(scs.length).toBe(19);
   });
@@ -95,23 +95,23 @@ describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: document integrity", () => {
 describe("RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC: behaviour (unimplemented)", () => {
   // One todo per criterion. These become real tests in the implementation PR;
   // until then they are visible as outstanding rather than silently absent.
-  test.todo("SC-1667: baseline rules carry no `paths:` key in frontmatter");
-  test.todo("SC-1668: baseline rule bodies contain no repo-specific identifier");
-  test.todo("SC-1669: every mined rule carries a `paths:` list scoped to the code it governs");
-  test.todo("SC-1670: scaffold computes and reports max-concurrent-load per file");
-  test.todo("SC-1671: over-budget concurrent load FAILs and names the overlapping rules");
-  test.todo("SC-1672: total rule count is not capped — only concurrent load is");
-  test.todo("SC-1673: a mined rule matching every file is reported as unscoped");
-  test.todo("SC-1674: glob expansion stays within 1,000 patterns and 4 MiB per rule");
-  test.todo("SC-1675: a zero-interaction scaffold run produces a populated, scoped rule set");
-  test.todo("SC-1676: promotion ranks on the mechanical evidence score");
-  test.todo("SC-1677: a rejected rule's hash is recorded and never re-promoted");
-  test.todo("SC-1678: a rule citing an unresolvable file:line is auto-retired");
-  test.todo("SC-1679: eval-gated retention stays disabled until its measurement can fail");
-  test.todo("SC-1680: Makefile, package.json scripts and CI workflows are scanned");
-  test.todo("SC-1681: CODE-MAP.md is excluded from constraint sources");
-  test.todo("SC-1682: a consumer with zero mined rules is reported as such");
-  test.todo("SC-1683: scaffolding the golden fixture twice is byte-identical");
-  test.todo("SC-1684: extraction runs as part of scaffold and re-scaffold");
-  test.todo("SC-1685: hand-edited rule files are preserved and reported");
+  test.todo("SC-1930: baseline rules carry no `paths:` key in frontmatter");
+  test.todo("SC-1931: baseline rule bodies contain no repo-specific identifier");
+  test.todo("SC-1932: every mined rule carries a `paths:` list scoped to the code it governs");
+  test.todo("SC-1933: scaffold computes and reports max-concurrent-load per file");
+  test.todo("SC-1934: over-budget concurrent load FAILs and names the overlapping rules");
+  test.todo("SC-1935: total rule count is not capped — only concurrent load is");
+  test.todo("SC-1936: a mined rule matching every file is reported as unscoped");
+  test.todo("SC-1937: glob expansion stays within 1,000 patterns and 4 MiB per rule");
+  test.todo("SC-1938: a zero-interaction scaffold run produces a populated, scoped rule set");
+  test.todo("SC-1939: promotion ranks on the mechanical evidence score");
+  test.todo("SC-1940: a rejected rule's hash is recorded and never re-promoted");
+  test.todo("SC-1941: a rule citing an unresolvable file:line is auto-retired");
+  test.todo("SC-1942: eval-gated retention stays disabled until its measurement can fail");
+  test.todo("SC-1943: Makefile, package.json scripts and CI workflows are scanned");
+  test.todo("SC-1944: CODE-MAP.md is excluded from constraint sources");
+  test.todo("SC-1945: a consumer with zero mined rules is reported as such");
+  test.todo("SC-1946: scaffolding the golden fixture twice is byte-identical");
+  test.todo("SC-1947: extraction runs as part of scaffold and re-scaffold");
+  test.todo("SC-1948: hand-edited rule files are preserved and reported");
 });

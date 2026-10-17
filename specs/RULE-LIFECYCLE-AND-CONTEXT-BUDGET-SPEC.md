@@ -195,7 +195,7 @@ points. Both are amended by this spec:
 - `problem-statement.md:22` — Hard Constraints in `AGENTS.md` as the only
   surviving user-owned content. The target becomes `.claude/rules/*.md`.
 
-SC-176 (`Hard Constraints >20 rules produces WARN`) is superseded by SC-1670
+SC-176 (`Hard Constraints >20 rules produces WARN`) is superseded by SC-1933
 below: the budget is concurrent load, and it FAILs rather than warns.
 
 The constraint SCs in `specs/bootstrap-data-flow/success-criteria.md` must be
@@ -209,37 +209,37 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 ### Tiers and ownership
 
-- [ ] SC-1667: Baseline rules carry no `paths:` key in frontmatter
-- [ ] SC-1668: Baseline rule bodies contain no repo-specific identifier — no issue number, date, file path or incident from a single project
-- [ ] SC-1669: Every mined rule carries a `paths:` list scoped to the code it governs
+- [ ] SC-1930: Baseline rules carry no `paths:` key in frontmatter
+- [ ] SC-1931: Baseline rule bodies contain no repo-specific identifier — no issue number, date, file path or incident from a single project
+- [ ] SC-1932: Every mined rule carries a `paths:` list scoped to the code it governs
 
 ### Budget
 
-- [ ] SC-1670: Scaffold computes max-concurrent-load per file and reports the maximum with the file producing it
-- [ ] SC-1671: Max-concurrent-load over budget is a FAIL naming the overlapping rules, with glob-narrowing as the first fix command
-- [ ] SC-1672: Total rule count is not capped — only concurrent load is
-- [ ] SC-1673: A mined rule whose globs match every file in the repo is reported as unscoped
-- [ ] SC-1674: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
+- [ ] SC-1933: Scaffold computes max-concurrent-load per file and reports the maximum with the file producing it
+- [ ] SC-1934: Max-concurrent-load over budget is a FAIL naming the overlapping rules, with glob-narrowing as the first fix command
+- [ ] SC-1935: Total rule count is not capped — only concurrent load is
+- [ ] SC-1936: A mined rule whose globs match every file in the repo is reported as unscoped
+- [ ] SC-1937: Glob expansion per rule stays within 1,000 expanded patterns and 4 MiB
 
 ### Promotion and lifecycle
 
-- [ ] SC-1675: A scaffold run with zero human interaction produces a populated, scoped rule set
-- [ ] SC-1676: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
-- [ ] SC-1677: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
-- [ ] SC-1678: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
-- [ ] SC-1679: Eval-gated retention is disabled until its delta measurement has a mutation test proving it goes red
+- [ ] SC-1938: A scaffold run with zero human interaction produces a populated, scoped rule set
+- [ ] SC-1939: Promotion ranks on the mechanical evidence score — a candidate with no evidence never outranks one with evidence
+- [ ] SC-1940: Rejecting a promoted rule writes its hash to `reference/rejected-constraints.md` and it is never re-promoted
+- [ ] SC-1941: A rule whose cited `file:line` no longer resolves is auto-retired, not warned about
+- [ ] SC-1942: Eval-gated retention is disabled until its delta measurement has a mutation test proving it goes red
 
 ### Sources
 
-- [ ] SC-1680: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
-- [ ] SC-1681: `CODE-MAP.md` is excluded from constraint sources
-- [ ] SC-1682: A consumer scaffolded with zero mined rules is reported as such, not as a complete rule set
+- [ ] SC-1943: Makefile targets, `package.json` scripts and CI workflow files are scanned for constraints alongside markdown
+- [ ] SC-1944: `CODE-MAP.md` is excluded from constraint sources
+- [ ] SC-1945: A consumer scaffolded with zero mined rules is reported as such, not as a complete rule set
 
 ### Idempotency
 
-- [ ] SC-1683: Running scaffold twice over the golden fixture produces byte-identical rules directories
-- [ ] SC-1684: Constraint extraction runs as part of scaffold and re-scaffold, not only as a separate command
-- [ ] SC-1685: Hand-edited rule files are preserved across all of the above and reported, not silently regenerated
+- [ ] SC-1946: Running scaffold twice over the golden fixture produces byte-identical rules directories
+- [ ] SC-1947: Constraint extraction runs as part of scaffold and re-scaffold, not only as a separate command
+- [ ] SC-1948: Hand-edited rule files are preserved across all of the above and reported, not silently regenerated
 
 ## Proving it
 
