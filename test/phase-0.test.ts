@@ -3,8 +3,8 @@ import { existsSync, readFileSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 import { runScaffoldConformity } from "../lib/conformity";
-import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift } from "./helpers/scaffold-fixture";
-import { readHardConstraints } from "../lib/agents-md-sections";
+import { scaffoldFixture, seedRolesConfig, ROLES_CANARY_MODEL, checkSpecDrift, generatedProseWords } from "./helpers/scaffold-fixture";
+
 
 const OUTPUT = "/tmp/rungate-phase0-test";
 const ROLES_OUTPUT = "/tmp/rungate-phase0-roles-test";
@@ -156,24 +156,12 @@ describe("Phase 0: Pre-flight + static files", () => {
     });
 
     test("SC-139: AGENTS.md rules content under 200 words", () => {
-      const content = readFileSync(join(OUTPUT, "AGENTS.md"), "utf-8");
-      // The cap is on what the HARNESS writes. Since #568 the fixture also
-      // carries a Hard Constraints section, which is the consumer's own
-      // content and is carried forward verbatim — counting it here would
-      // make a project with many non-inferable rules fail a check about
-      // rungate's verbosity, and the cheapest way to pass would be to
-      // delete constraints. Removed through the same binding that preserves
-      // it, so there is one definition of where the section ends.
-      const preserved = readHardConstraints(content);
-      expect(preserved, "the fixture lost its constraints, so the exclusion below hides nothing").not.toBeNull();
-      const generated = content.replace(preserved!.text, "");
-      const lines = generated.split("\n")
-        .filter(l => !l.startsWith("#") && !l.startsWith("|") && !l.startsWith("```") && l.trim().length > 0);
-      const words = lines.join(" ").split(/\s+/).length;
-      expect(words).toBeLessThanOrEqual(200);
-      // …and the exclusion is not a licence: the words it removed are still
-      // on disk, so the file a consumer reads is the sum of both.
-      expect(content).toContain(preserved!.text);
+      const reading = generatedProseWords(join(OUTPUT, "AGENTS.md"));
+      // The fixture carries a Hard Constraints section since #568, and the
+      // cap is on what the HARNESS writes — see the helper for why.
+      expect(reading.preserved, "the fixture lost its constraints, so the exclusion hides nothing").not.toBeNull();
+      expect(reading.words).toBeLessThanOrEqual(200);
+      expect(reading.stillOnDisk, "the excluded section is not in the file either").toBe(true);
     });
 
     test("SC-140/SC-145: identity before methodology in brief", () => {
