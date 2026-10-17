@@ -1020,6 +1020,30 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
         .toContain("1 more source file(s)");
     });
 
+    test("#540 review: every CONFIG_1_DECLINES entry is a directory CONFIG-2 really reads", () => {
+      // The precondition the exclusion above rests on, executed rather
+      // than asserted in a comment. "Measured elsewhere" is only a reason
+      // to stay quiet while somebody is actually measuring: if `workflows`
+      // left CONFIG-2's reach while staying in `CONFIG_1_DECLINES`, it
+      // would be unscanned by CONFIG-1, unscanned by CONFIG-2, and
+      // unreported by the warning whose job is to name exactly that — a
+      // blind spot created by the fix for a blind spot.
+      //
+      // `both checks are registered by the GENERATOR` above holds the
+      // other half: that a consumer's suite runs CONFIG-2 at all. Together
+      // they are the whole claim; separately neither is.
+      const prompt = scanPromptConfigAccess(REPO);
+      const scanned = Object.keys(prompt.counts);
+      expect(scanned.length, "CONFIG-2 read nothing, so it is measuring nothing for CONFIG-1")
+        .toBeGreaterThan(0);
+      for (const d of CONFIG_1_DECLINES) {
+        expect(
+          scanned.filter(f => f.startsWith(`${d}/`)).length,
+          `CONFIG-1 declines ${d}/ as "CONFIG-2's territory", but CONFIG-2 reads no file there`,
+        ).toBeGreaterThan(0);
+      }
+    });
+
     test("#540 review: ONE unread file is a shortfall, and ONE scanned file is a scan", () => {
       // Both guards in `coverageShortfall` are `=== 0`, and every fixture
       // in the battery sat at unread=61 / filesScanned=1 / bytesScanned=22.
