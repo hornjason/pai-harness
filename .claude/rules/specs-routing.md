@@ -7,6 +7,10 @@ paths:
   - "hooks/**"
   - "scripts/**"
 generated-sha: 19fcf79a175ef0d9
+doc-type: reference
+status: active
+owner: jason
+updated: 2026-10-17
 ---
 
 Read the governing spec BEFORE making changes in that area.
@@ -26,6 +30,7 @@ Read the governing spec BEFORE making changes in that area.
 | CONFIG-DRIVEN-TESTING-SPEC.md | Test architecture — config-driven testing, matcher expansion, zero SC fallthrough, phase test migration | true |
 | GITHUB-API-MIGRATION-SPEC.md | GitHub API access — two-layer architecture replacing gh CLI with MCP (agent prompts) and Octokit (TypeScript infrastruct | true |
 | HARNESS-STANDARD.md | Harness workflow — the GOAL → DISCOVERY → EXECUTION → VERIFICATION loop and how skills chain | true |
+| RULE-LIFECYCLE-AND-CONTEXT-BUDGET-SPEC.md | Agent rule lifecycle — baseline vs mined tiers, path-scoped loading, concurrent-load budget, automatic promotion and retirement | true |
 | HARNESS-SKILL-CONTRACT.md | Skill interface contracts — inputs, outputs, artifacts, and handoff protocols between skills | true |
 | BOOTSTRAP-TEST-PLAN.md | Test strategy for BOOTSTRAP-DATA-FLOW-SPEC.md — verification approach, phased implementation, golden fixture, content as | true |
 | GATE-CONTRACTS-SPEC.md | Gate contracts — what gates exist, their inputs/outputs, pass/fail criteria, and how they chain | true |
