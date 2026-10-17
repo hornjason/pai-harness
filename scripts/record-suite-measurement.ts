@@ -32,14 +32,43 @@
  * documented usage for its whole life and a caller still passing it deserves
  * to be told what replaced it.
  *
+ * WHY THERE IS NO --failures, since #469/#490. That was the last value a
+ * caller still chose, and it is the one the defect arrives through: an agent
+ * read `0 fail` off a summary and typed it. A run whose test files had all
+ * vanished printed no summary at all and exited 0, and a run whose only test
+ * file declares no tests prints `0 pass / 0 fail / Ran 0 tests across 1 file.`
+ * and also exits 0. Both are a count of zero that an agent can honestly read
+ * and that means nothing. The output itself is the argument now, and
+ * `lib/suite-run-reading.ts` decides whether there is a result in it.
+ *
+ * WHAT --output IS NOT. It is not provenance. The file is written by the
+ * step above it in the same prompt, into a directory the agent can write, so
+ * an agent determined to record a clean suite can still author one. Flagged
+ * by the commit security review, and it is a real limit — but it is not a
+ * regression and not the thing this flag is for. `--failures 0` was the same
+ * hole needing one token instead of a crafted summary, and #224 answered the
+ * forgery question in a different place on purpose: the provenance is the
+ * COMMIT, read from the tree by `measuredSha` and compared against the
+ * branch tip at ship time by `suiteCurrency`. What `--output` buys is that
+ * the honest path can no longer produce a wrong answer by accident, which is
+ * how every instance of this has actually arrived.
+ *
+ * WHY AN UNMEASURED RUN IS REFUSED RATHER THAN RECORDED. `lib/suite-measurement.ts`
+ * says it: UNMEASURED is not a result, it is the statement that this run has
+ * no suite evidence, and it is deliberately not writable — a recorded
+ * UNMEASURED would be a way to park an unmeasured run in the field that
+ * proves the suite ran. So this script refuses, nothing is written, and the
+ * absent record reads UNMEASURED, which is what absence already means.
+ *
  * Usage:
  *   bun scripts/record-suite-measurement.ts --state <workflow-state.json> \
- *     --project <project root> --failures <n>
+ *     --project <project root> --output <file holding the suite's output>
  */
 
 import { execFileSync } from "child_process";
 import { readFileSync } from "fs";
 import { writeWorkflowState } from "../gates/orchestrator";
+import { readSuiteRun, type MeasuredRun } from "../lib/suite-run-reading";
 
 /**
  * The one exit code every refusal goes through.
@@ -51,7 +80,7 @@ import { writeWorkflowState } from "../gates/orchestrator";
  */
 export const REFUSE_EXIT = 1;
 
-const OPTIONS = new Set(["state", "project", "failures"]);
+const OPTIONS = new Set(["state", "project", "output"]);
 const SHA = /^[0-9a-f]{7,40}$/i;
 
 /**
@@ -67,8 +96,11 @@ const RETIRED: Record<string, string> = {
     "provenance check answering itself.",
   result: "--result is not a flag — the verdict is derived from --failures and has no " +
     "other source. PASS means the count was zero; it cannot mean anything else.",
-  verdict: "--verdict is not a flag — the verdict is derived from --failures and has no " +
+  verdict: "--verdict is not a flag — the verdict is derived from the runner's output and has no " +
     "other source.",
+  failures: "--failures is no longer accepted — pass --output <file holding the suite's output> and " +
+    "the count is read from it. A number typed after reading a summary is a number, and the runs " +
+    "this guards against printed no summary (#469) or a summary of nothing (#490).",
 };
 
 class Refused extends Error {}
@@ -91,21 +123,37 @@ function parseArgs(argv: string[]): Record<string, string> {
 }
 
 /**
- * The failing-test count, as a count.
+ * What the suite run reported, read out of its captured output.
  *
- * `parseInt` is deliberately not used: `parseInt("none")` is NaN and
- * `parseInt(x) || 0` turns an unreadable input into "nothing failed" — the
- * budget-counter fail-open named in .claude/rules/checks-must-be-able-to-fail.md,
- * pointed at the one number this script exists to carry.
+ * The count is no longer an argument (#469, #490). `parseInt(x) || 0` is the
+ * fail-open .claude/rules/checks-must-be-able-to-fail.md names, and
+ * `--failures 0` typed by an agent who read a run that printed no summary is
+ * the same fail-open with a person in the middle of it.
+ *
+ * Refuses on UNMEASURED rather than recording it, and the reason the reader
+ * produced is carried through verbatim — an operator who gets this back needs
+ * to know whether their runner printed nothing, printed half a summary, or
+ * printed a clean summary over zero tests, because those are three different
+ * things to go and fix.
  */
-export function failureCount(raw: string | undefined): number {
-  if (raw === undefined) throw new Refused("--failures is required — a measurement with no count is not a measurement");
-  if (!/^\d+$/.test(raw.trim())) {
+export function measuredRun(outputPath: string | undefined): MeasuredRun {
+  if (outputPath === undefined) {
     throw new Refused(
-      `--failures "${String(raw).slice(0, 40)}" is not a count of failing tests (expected a non-negative integer)`,
+      "--output is required — it is the file holding what the test runner printed, and the " +
+        "failure count is read from it rather than supplied",
     );
   }
-  return Number(raw.trim());
+  let output: string;
+  try {
+    output = readFileSync(outputPath, "utf-8");
+  } catch (e: any) {
+    throw new Refused(
+      `could not read the suite output from ${outputPath}: ${String(e?.message || e).trim().slice(0, 200)}`,
+    );
+  }
+  const run = readSuiteRun(output);
+  if (run.status !== "MEASURED") throw new Refused(run.reason);
+  return run;
 }
 
 /**
@@ -159,12 +207,22 @@ export function shaFromGitOutput(projectRoot: string, out: string): string {
   return trimmed.toLowerCase();
 }
 
-/** The record to persist. PASS means zero failures; it cannot mean anything else. */
-export function buildMeasurement(sha: string, failures: number): Record<string, unknown> {
+/**
+ * The record to persist. PASS means zero failures; it cannot mean anything else.
+ *
+ * `tests` and `files` ride along as the run's own coverage (#490): a verdict
+ * with no coverage beside it cannot tell `0 fail` over three hundred files
+ * from `0 fail` over one empty one. They are written as `null` rather than
+ * omitted when the runner did not report them, because absent would mean
+ * "recorded by a harness older than this field".
+ */
+export function buildMeasurement(sha: string, run: MeasuredRun): Record<string, unknown> {
   return {
-    verdict: failures === 0 ? "PASS" : "FAIL",
+    verdict: run.fail === 0 ? "PASS" : "FAIL",
     measuredSha: sha,
-    failures,
+    failures: run.fail,
+    tests: run.tests,
+    files: run.files,
     measuredAt: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
   };
 }
@@ -174,21 +232,31 @@ if (import.meta.main) {
     const args = parseArgs(process.argv.slice(2));
     if (!args.state) throw new Refused("--state is required");
     const sha = measuredSha(args.project);
-    const failures = failureCount(args.failures);
+    const run = measuredRun(args.output);
 
     const state = JSON.parse(readFileSync(args.state, "utf-8"));
-    const measurement = buildMeasurement(sha, failures);
+    const measurement = buildMeasurement(sha, run);
     state.suiteMeasurement = measurement;
     state.changelog = state.changelog || [];
+    const coverage = run.files === null
+      ? `${run.pass + run.fail} test(s), file count not reported`
+      : `${run.pass + run.fail} test(s) across ${run.files} file(s)`;
     state.changelog.push({
       ts: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
       event: "suite-measurement",
-      detail: `${measurement.verdict}: ${failures} failing test(s) at ${sha}`,
+      detail: `${measurement.verdict}: ${run.fail} failing test(s) of ${coverage} at ${sha}`,
       actor: "gate-runner",
     });
 
     writeWorkflowState(args.state, state);
-    console.log(JSON.stringify({ ok: true, verdict: measurement.verdict, measuredSha: sha, failures }));
+    console.log(JSON.stringify({
+      ok: true,
+      verdict: measurement.verdict,
+      measuredSha: sha,
+      failures: run.fail,
+      tests: run.tests,
+      files: run.files,
+    }));
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`record-suite-measurement: ${msg}`);

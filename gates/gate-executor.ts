@@ -15,6 +15,7 @@ import { normalizeGitRefs } from "../lib/git-ref-normalizer";
 import { safeParseProjectHarness, type ProjectHarness } from "../lib/rungate-schema";
 import { DEFAULT_TEST_TIMEOUT, resolveConfig, type ResolvedConfig } from "../lib/config-loader";
 import { censusOf, censusRegressions } from "../lib/test-census";
+import { readSuiteRun } from "../lib/suite-run-reading";
 import {
   slugExists,
   shouldRebuildContainer,
@@ -141,6 +142,14 @@ export type TestBaselineReading =
  *   3. the suite ran and printed something unparseable
  *   4. the suite ran and nothing was failing
  *
+ * #490 added a fifth, which the four above could not distinguish because the
+ * reading was taken off the FAIL line alone: **the suite ran and executed
+ * nothing.** A renamed directory or a glob that stopped matching prints
+ * `0 pass / 0 fail / Ran 0 tests across 1 file.` and exits 0, and that was a
+ * `measured` baseline of zero — the strongest claim available about a tree
+ * nobody looked at, with the verify gate subtracting against it. The reading
+ * goes through `lib/suite-run-reading.ts` now, which refuses it.
+ *
  * Only the fourth is a clean tree, and a fabricated baseline is the worst
  * direction for this particular number to be wrong in: it asserts the
  * strongest claim available about the tree, and the verify gate subtracts
@@ -193,21 +202,15 @@ export function captureTestBaseline(state: Record<string, any>): TestBaselineRea
     output = e.stdout || "";
   }
 
-  const failures = parseTestFailureCount(output);
-  if (failures === null) {
-    const tail = output.trim();
+  const run = readSuiteRun(output);
+  if (run.status !== "MEASURED") {
     return {
       status: "unmeasured",
-      reason:
-        `"${testCmd}" produced no failure count this harness can read ` +
-        `(timeout ${timeout}ms) — ` +
-        (tail.length === 0
-          ? "it printed nothing"
-          : `it printed: ${tail.split("\n").slice(-3).join(" / ")}`),
+      reason: `"${testCmd}" did not measure this project (timeout ${timeout}ms) — ${run.reason}`,
     };
   }
 
-  return { status: "measured", failures, command: testCmd };
+  return { status: "measured", failures: run.fail, command: testCmd };
 }
 
 /**

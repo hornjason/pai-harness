@@ -458,21 +458,44 @@ function shellQuote(word) {
  * argument. Both sides were green because every test of this step asserted
  * on prompt TEXT and none ran the command.
  *
- * `--failures`, not `--result`: the verdict is derived from the count and has
- * no other source. A flag naming the verdict lets a caller hand the recorder
- * the word PASS over a suite that failed, which is #224 restated as an
- * argument.
+ * `--output`, not `--result` and no longer `--failures`: the verdict is
+ * derived from what the runner printed and has no other source. A flag naming
+ * the verdict lets a caller hand the recorder the word PASS over a suite that
+ * failed, which is #224 restated as an argument — and a flag naming the COUNT
+ * is the same thing one step quieter, because the runs that matter print a
+ * zero an agent can read honestly: no summary at all when the test files have
+ * vanished (#469), and `0 pass / 0 fail / Ran 0 tests across 1 file.` when the
+ * runner discovered nothing to run (#490). Both exit in a way a caller reads
+ * as clean.
  *
  * `--project`, not `--sha`: the measured commit comes from the tree. A SHA an
  * agent typed can agree with HEAD by construction, which is the comparison
  * quietly answering itself.
  */
+function suiteOutputPath(workDir) {
+  return `${workDir}/suite-output.txt`
+}
+
+/**
+ * Run the suite and keep what it printed, so the recorder has something to
+ * read (#469).
+ *
+ * `2>&1 | tee` and not `>`: the agent still needs to SEE the output to fix
+ * what the run found, and a redirect would hide it. The exit code of the
+ * pipeline is tee's rather than the runner's, which costs nothing here —
+ * #469's run exited 0 having measured nothing and the reproduction of it
+ * exits 1, so the exit code was never the thing being read.
+ */
+function suiteCaptureCommand(projectRoot, testCommand, workDir, quote) {
+  return `cd ${quote(projectRoot)} && ${testCommand} 2>&1 | tee ${quote(suiteOutputPath(workDir))}`
+}
+
 function recorderCommand(harnessRoot, workDir, projectRoot, quote) {
   return (
     `bun ${quote(`${harnessRoot}/scripts/record-suite-measurement.ts`)} \\\n` +
     `    --state ${quote(`${workDir}/workflow-state.json`)} \\\n` +
     `    --project ${quote(projectRoot)} \\\n` +
-    `    --failures <number of failing tests the suite printed>`
+    `    --output ${quote(suiteOutputPath(workDir))}`
   )
 }
 // ──── RECORDER-COMMAND-END ────
@@ -3103,11 +3126,15 @@ both the result and the commit it was measured against (#224). Two commands,
 in this order, and do NOT edit environments.local.tests by hand — a result
 with no SHA beside it is not evidence, and hand-writing one is how a count
 that predates the final commit got read as a clean suite:
-  cd ${PROJECT_ROOT} && ${testCommand}   # timeout: ${testTimeout}
+  ${suiteCaptureCommand(PROJECT_ROOT, testCommand, WORK_DIR, shellQuote)}   # timeout: ${testTimeout}
   cd ${PROJECT_ROOT} && ${recorderCommand(HARNESS_ROOT, WORK_DIR, PROJECT_ROOT, shellQuote)}
-Pass the count the suite actually printed — the verdict is derived from it, so
-there is no flag for the verdict. The recorder reads the commit from the
-project itself; do NOT pass it a SHA you typed.
+Do NOT type a count anywhere, and do NOT add flags. The recorder reads the
+summary out of the file the first command captured and derives both the count
+and the verdict from it, so there is no flag for either (#469). It reads the
+commit from the project itself; do NOT pass it a SHA you typed. If it refuses
+because the run printed no summary or executed no tests, that is the finding:
+the suite did not measure this project, and what needs fixing is the run, not
+the number.
 For local-api-validated: ${localApiClause}
 For local-ui-validated: ${localUiClause}
 Edit workflow-state.json ONLY via writeWorkflowState():

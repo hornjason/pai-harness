@@ -272,6 +272,16 @@ const SuiteMeasurementShape = {
   measuredSha: z.string().regex(MEASURED_SHA, "measuredSha must be a commit SHA (7-40 hex), not a ref name"),
   failures: z.number().int().nonnegative(),
   measuredAt: z.string().optional(),
+  // #490 — what the run covered, beside what it found. A verdict with no
+  // coverage beside it cannot tell `0 fail` over 324 files from `0 fail` over
+  // one empty one, and both print the same summary.
+  //
+  // `.nullable()`, and the recorder writes null rather than omitting the key
+  // when a runner does not report a count: absent means "a harness older than
+  // this field", null means "this runner was asked and did not say", and 0
+  // means "it said none". Collapsing those is the defect one level down.
+  tests: z.number().int().nonnegative().nullable().optional(),
+  files: z.number().int().positive().nullable().optional(),
 };
 
 /**
@@ -296,6 +306,25 @@ export const SuiteMeasurementSchema = z.object(SuiteMeasurementShape).superRefin
       code: z.ZodIssueCode.custom,
       message: "suiteMeasurement: FAIL with no failing tests — a FAIL must name at least one",
       path: ["failures"],
+    });
+  }
+  // #490. `files: z.number().positive()` refuses a run over no files, and on
+  // its own that would be the PROXY enforced in place of the property: one
+  // empty file satisfies it and measures nothing. A recorded `tests: 0` is
+  // the property, and it is the shape this field exists to make visible.
+  if (m.tests === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        'suiteMeasurement: a record carrying "tests": 0 is not a measurement — a runner that ' +
+        "discovered nothing to run exits exactly like a clean suite (#490)",
+      // Worded so it cannot be mistaken for `lib/suite-run-reading.ts`'s
+      // refusal, which says "executed 0 tests". The two are a legitimate
+      // pair — this one also catches a state the recorder did not produce —
+      // but a test asserting on the reading's sentence must not be able to
+      // pass on this one's. Measured: with identical wording, disabling the
+      // reading's refusal left two rows green that exist to witness it.
+      path: ["tests"],
     });
   }
 });
