@@ -1,13 +1,14 @@
 ---
 description: Files managed by rungate scaffold — do not edit directly
 paths:
+  - "AGENTS.md"
   - ".github/workflows/ci.yml"
   - ".github/workflows/gates.yml"
   - ".claude/agents/**"
   - ".claude/rules/**"
   - "test/scaffold-conformity.test.ts"
   - "CODE-MAP.md"
-generated-sha: e23a0179b29b0cf6
+generated-sha: 2cc4b0ad0daa53df
 ---
 
 These files are managed by rungate. **Do not edit them directly.** What
@@ -17,6 +18,7 @@ forever.
 
 | File | Strategy | How to customize | What NOT to do |
 |------|----------|-----------------|----------------|
+| `AGENTS.md` | section-preserving | Everything but `## Hard Constraints` is generated from the scan and `.claude/rungate/`; put non-inferable project rules in that section and they carry forward | Don't hand-edit the generated sections — a re-scaffold rewrites them without reporting it |
 | `.github/workflows/ci.yml` | job-preserving | Set `ci` fields in `.claude/rungate/config.json`; add your own jobs alongside the generated `test` job | Don't edit the generated `test` job |
 | `.github/workflows/gates.yml` | job-preserving | Settings from `.claude/rungate/config.json`; add your own jobs alongside the generated `gates` job | Don't edit the generated `gates` job |
 | `.claude/agents/*.md` | regenerate | Settings from `.claude/rungate/roles.json` | Don't edit briefs |
@@ -32,7 +34,26 @@ forever.
 | regenerate | Rewrites it every run; reports CHANGED only when the bytes differ |
 | provenance | Rewrites it unless you edited it, in which case it is preserved and reported (#370) |
 | job-preserving | Owns named jobs inside a file you also write to; your jobs are carried forward |
+| section-preserving | Rewrites the file every run except for named sections, which are carried forward verbatim |
 | create-only | Seeds it once and never touches it again — the content is yours, not the harness's |
+
+### AGENTS.md is section-owned (#568)
+
+Everything in `AGENTS.md` is generated from the scan and your
+`.claude/rungate/` config, with one exception: a `## Hard Constraints`
+section is yours, and a re-scaffold carries it forward verbatim —
+including the `<!-- BEGIN AUTO-EXTRACTED -->` block, and including any
+lines you wrote outside it.
+
+That is the only user-owned content in the tree that survives
+regeneration, which is a promise `specs/bootstrap-data-flow/` makes and
+nothing kept until #568: one run on a consumer removed 37 constraint
+lines and reported `REGENERATED: AGENTS.md`, exit 0. Put non-inferable
+project rules there — the ones an agent cannot read off the code — and
+nowhere else in the file.
+
+If a run cannot carry every one of those lines forward it **refuses the
+write**, names the lines, and leaves your file untouched.
 
 ### The workflow files are job-owned, not file-owned (#216)
 
