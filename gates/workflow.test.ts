@@ -18,6 +18,7 @@ import {
 import { evidencePortabilityViolations } from "../lib/evidence-portability";
 import { proveLabelGateVerdict, type LabelRead } from "../lib/prove-label-gate";
 import { worktreeDiskIdentity, type RemoteReading } from "../lib/worktree-repo";
+import { readSuiteMeasurement, type SuiteReading } from "../lib/suite-measurement";
 import {
   outcomeEvidenceViolations,
   goalKeywordCoverage,
@@ -303,8 +304,20 @@ const isDone = () => sf("phase") === "DONE";
  * Absent is a refusal, not a pass. That is the whole of #224: the run that
  * reported `regressions: 0` over one failing test had measured nothing, and
  * nothing was read as zero.
+ *
+ * #530 added the second argument. `environments.local.tests` is an enum with
+ * no provenance in it, and until #530 nothing in the harness wrote it — the
+ * recorder wrote `suiteMeasurement` and the field was left to a sentence in
+ * a heal prompt that only runs when the scope gate fails. Now the recorder
+ * writes both in one write, and this reads both: a PASS the measurement does
+ * not back is refused, which is the hand-written verdict the ship prompt has
+ * only ever forbidden in prose.
+ *
+ * The clauses do not overlap. An absent field, a `FAIL`, and a declared
+ * `SKIP` are each decided before the measurement is consulted at all, and
+ * `{tests: "PASS"}` with no `suiteMeasurement` is reached by nothing else.
  */
-export function suiteVerdictViolations(val: unknown): string[] {
+export function suiteVerdictViolations(val: unknown, measurement?: SuiteReading): string[] {
   if (val === undefined || val === null || val === "") {
     return [
       "local.tests not set — PASS or SKIP required when dev.testCmd is configured. " +
@@ -313,6 +326,17 @@ export function suiteVerdictViolations(val: unknown): string[] {
   }
   if (val === "SKIP") return []; // SKIP is allowed — it says so, rather than implying PASS
   if (val !== "PASS") return [`tests: ${String(val)} — expected PASS`];
+  // A PASS has to be backed by the measurement that produced it. Called
+  // without one this is the pre-#530 behaviour, which is what every caller
+  // that has no state to read should get — an argument nobody passed must
+  // not become evidence of anything.
+  if (measurement && measurement.verdict !== "PASS") {
+    return [
+      `tests: PASS, but the suite measurement behind it reads ${measurement.verdict} — ` +
+        `${measurement.reason || "the two disagree"} (#530). A verdict no measurement backs is a ` +
+        `verdict somebody typed.`,
+    ];
+  }
   return [];
 }
 
@@ -857,7 +881,13 @@ describe("verify checks", () => {
     if (!isVerifyPlus()) return;
     const harness = loadProjectHarness();
     if (!harness?.dev?.testCmd) return;
-    const violations = suiteVerdictViolations(sf("environments")?.local?.tests);
+    // Both halves of one fact, read from one state (#530). The enum is what
+    // this check has always read; the measurement is what produced it, and a
+    // PASS with nothing behind it is the case the enum alone cannot see.
+    const violations = suiteVerdictViolations(
+      sf("environments")?.local?.tests,
+      readSuiteMeasurement(loadRaw()),
+    );
     expect(violations, violations.join("\n")).toEqual([]);
   });
 
