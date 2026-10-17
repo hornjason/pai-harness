@@ -48,7 +48,7 @@
  */
 
 import { spawnSync } from "child_process";
-import { mkdtempSync, rmSync, lstatSync, readdirSync, readlinkSync, realpathSync } from "fs";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, lstatSync, readdirSync, readlinkSync, realpathSync, statSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve, sep } from "path";
 
@@ -189,8 +189,16 @@ export function cloneForRehearsal(root: string): Rehearsal {
   const parent = mkdtempSync(join(tmpdir(), "rungate-rehearsal-"));
   const dir = join(parent, "tree");
   const fail = (why: string): never => {
-    rmSync(parent, { recursive: true, force: true });
-    throw new Error(`audit did NOT run: ${why}`);
+    // Through `removeTree`: what a failed copy leaves behind is whatever
+    // made it fail, and a bare `rmSync` here throws that errno in place of
+    // the refusal below — so the caller is told the audit crashed rather
+    // than why it declined. A clone we cannot clean up is still a decline,
+    // so a leftover is appended to the sentence rather than replacing it.
+    const leaked = removeTree(parent);
+    throw new Error(
+      `audit did NOT run: ${why}` +
+      (leaked === null ? "" : ` (and the clone is still on disk: ${parent} — ${leaked})`),
+    );
   };
 
   // `-c` asks for an APFS clonefile. It fails on filesystems that cannot do
@@ -206,27 +214,11 @@ export function cloneForRehearsal(root: string): Rehearsal {
   // on, so no test could ever reach the second branch. One shared helper
   // removes the ordering rather than testing it.
   let method: Rehearsal["method"] = "clone";
-  if (attemptCopy(["-Rc", root, dir], 300_000) !== 0) {
-    if (attemptCopy(["-R", root, dir], 600_000) !== 0) {
+  if (attemptCopy(root, dir, "-Rc", 300_000) !== 0) {
+    if (attemptCopy(root, dir, "-R", 600_000) !== 0) {
       return fail("the tree could not be copied");
     }
     method = "copy";
-  }
-
-  // Pruning happens through `rmSync(..., { recursive: true })`, which
-  // follows a symlinked PARENT. `.claude/worktrees` in a tree where
-  // `.claude -> /real/.claude` therefore resolves outside the clone and
-  // deletes the consumer's real worktrees — a destructive path traversal
-  // performed by the mode that promises to write nothing. Found by the
-  // commit security review.
-  //
-  // So nothing is deleted through a symlink. Each excluded path is walked
-  // component by component; the moment a component is a link, the link
-  // itself is unlinked (never followed) and the walk stops. `node_modules`
-  // being a symlink is the common case — the pre-push hook makes one — and
-  // must stay cheap rather than refusing the audit.
-  for (const rel of REHEARSAL_EXCLUDES) {
-    prunePathWithoutFollowingLinks(dir, rel);
   }
 
   const missing = missingTopLevel(root, dir);
@@ -248,15 +240,157 @@ export function cloneForRehearsal(root: string): Rehearsal {
 }
 
 /**
- * Copy into `dir`, having first removed whatever is there.
- *
- * The clear is unconditional so there is one code path rather than two with
- * an ordering between them. See `cloneForRehearsal` for why.
+ * One `cp` invocation. Injectable so a test can record what was copied
+ * rather than infer it from the result — "this path is absent from the
+ * clone" is true under BOTH orderings, so absence cannot witness the fix.
  */
-function attemptCopy(args: string[], timeout: number): number {
-  const dest = args[args.length - 1]!;
-  rmSync(dest, { recursive: true, force: true });
-  return spawnSync("cp", args, { encoding: "utf-8", timeout }).status ?? 1;
+export type CopyRunner = (args: string[], timeout: number) => number;
+
+const realCp: CopyRunner = (args, timeout) =>
+  spawnSync("cp", args, { encoding: "utf-8", timeout }).status ?? 1;
+
+/**
+ * Copy `src` to `dst`, never reading an excluded path (#549).
+ *
+ * The exclusion used to be applied AFTER the clone: `cp -R` copied the whole
+ * tree and `prunePathWithoutFollowingLinks` then deleted
+ * `.claude/worktrees`. On this repository that directory is **737 MB across
+ * 104 worktrees**, and the recursive `rm` died with `EFAULT: bad address in
+ * system call argument`. So `bunx rungate scaffold .` could not run on
+ * rungate — the harness could not scaffold itself, which is SUCCESS.md
+ * claim 5 pointed inward. The exclude list was right the whole time; the
+ * ORDERING defeated it, and a consumer with a merely LARGE gitignored
+ * directory got a preview that silently spent minutes copying files it was
+ * about to delete.
+ *
+ * ## How the level walk works, and why it is not a full recursive copy
+ *
+ * Only directories that are an ANCESTOR of an exclude are walked. Everything
+ * else is handed to `cp` whole, so the APFS clonefile still applies to the
+ * subtree and the cost stays bounded by metadata. On this repo that is two
+ * walked directories — the root and `.claude` — and one `cp` per top-level
+ * entry.
+ *
+ * ## Symlinks keep the answers `prunePathWithoutFollowingLinks` worked out
+ *
+ * They were paid for by a commit security review and the reasons have not
+ * changed; what changed is that they are now decisions about what to COPY
+ * rather than about what to delete, which is strictly safer because a
+ * decision not to copy cannot escape the clone.
+ *
+ * - **An excluded path that is itself a link** (`node_modules -> /elsewhere`,
+ *   which the pre-push hook creates): skipped. Previously it was copied and
+ *   then unlinked; now it is never read. Same clone, one fewer traversal.
+ * - **A link that is an ANCESTOR of an exclude** (`.claude -> /real/.claude`
+ *   while excluding `.claude/worktrees`): copied AS A LINK and not descended
+ *   into. Descending would read the consumer's real tree, and deleting
+ *   through it is what the old code's `rmSync(..., { recursive: true })`
+ *   would have done. The link then reaches `escapingSymlinks`, which refuses
+ *   the audit — which is what an ancestor pointing out of the clone is for.
+ *
+ * Returns the first non-zero `cp` status, or 0.
+ */
+/**
+ * Remove a tree we own, clearing what makes a removal refuse first.
+ * Returns `null` when the path is gone, or the reason it is not.
+ *
+ * Two things stop `rm` on a tree this module created, and neither is a
+ * permission the owner actually lacks:
+ *
+ * - **BSD file flags.** `cp -Rc` is a clonefile and a clonefile carries
+ *   flags, so a clone of this repo holds the `uchg` files it sets on
+ *   `gates/prompts/*.md`. `rm` answers "Operation not permitted" and bun
+ *   reports it as `EFAULT: bad address in system call argument`, naming
+ *   neither the file nor the flag. That is #549's error message.
+ * - **A directory with no owner-read or owner-execute bit.** An unreadable
+ *   directory is one `cp` cannot copy, so it is exactly what a failed first
+ *   attempt leaves behind — and `rmSync` cannot list it to empty it. The
+ *   owner can always chmod it; `rm -rf` never does.
+ *
+ * Both are best-effort: `chflags` does not exist on Linux, where there are
+ * no BSD flags either, and a failing `chmod` is a tree we do not own, which
+ * the removal below will report in its own words.
+ */
+function removeTree(path: string): string | null {
+  spawnSync("chflags", ["-R", "nouchg,noschg", path], { timeout: 60_000 });
+  spawnSync("chmod", ["-R", "u+rwX", path], { timeout: 60_000 });
+  try {
+    rmSync(path, { recursive: true, force: true });
+    return null;
+  } catch (err) {
+    if (spawnSync("rm", ["-rf", path], { encoding: "utf-8", timeout: 120_000 }).status === 0) {
+      return null;
+    }
+    return (err as Error).message;
+  }
+}
+
+export function copyTreeExcluding(
+  src: string,
+  dst: string,
+  excludes: readonly string[],
+  cpFlag: string,
+  timeout: number,
+  run: CopyRunner = realCp,
+): number {
+  // Unconditional, so there is one code path rather than two with an
+  // ordering between them: a failed `cp -Rc` may have copied part of the
+  // tree, and falling back on top of that leaves a PARTIAL clone whose
+  // steps report less than `--fix` will do.
+  //
+  // Through `removeTree`, not a bare `rmSync`. What the first attempt left
+  // behind is whatever made it fail — on Linux CI an unreadable directory
+  // `cp -R` could not copy and `rmSync` then cannot remove — and a throw
+  // here escapes `cloneForRehearsal` as a raw EACCES instead of its refusal
+  // sentence. That is the same defect as the one in `discardRehearsal`
+  // below, one function earlier.
+  if (removeTree(dst) !== null) return 1;
+  const paths = excludes.map(e => e.split("/").filter(Boolean)).filter(p => p.length > 0);
+  return copyLevel(src, dst, paths, cpFlag, timeout, run);
+}
+
+function copyLevel(
+  src: string,
+  dst: string,
+  excludes: string[][],
+  cpFlag: string,
+  timeout: number,
+  run: CopyRunner,
+): number {
+  mkdirSync(dst, { recursive: true });
+  // The mode of a directory we created ourselves rather than let `cp`
+  // create. Without this an 0o700 `.claude` becomes 0o755 in the clone, and
+  // a step that reads permissions would see a tree that is not the
+  // consumer's.
+  try { chmodSync(dst, statSync(src).mode & 0o7777); } catch { /* best effort */ }
+
+  let entries;
+  try {
+    entries = readdirSync(src, { withFileTypes: true });
+  } catch {
+    return 1;
+  }
+
+  for (const e of entries) {
+    if (excludes.some(p => p.length === 1 && p[0] === e.name)) continue;
+    const deeper = excludes.filter(p => p.length > 1 && p[0] === e.name).map(p => p.slice(1));
+    // `isDirectory()` is false for a symlink, which is the behaviour this
+    // relies on: an ancestor link falls through to the `cp` below and is
+    // copied as a link rather than walked.
+    if (deeper.length > 0 && e.isDirectory()) {
+      const st = copyLevel(join(src, e.name), join(dst, e.name), deeper, cpFlag, timeout, run);
+      if (st !== 0) return st;
+      continue;
+    }
+    const st = run([cpFlag, join(src, e.name), join(dst, e.name)], timeout);
+    if (st !== 0) return st;
+  }
+  return 0;
+}
+
+/** Copy into `dir`, excluding what the clone does not want. */
+function attemptCopy(root: string, dir: string, cpFlag: string, timeout: number): number {
+  return copyTreeExcluding(root, dir, REHEARSAL_EXCLUDES, cpFlag, timeout);
 }
 
 /**
@@ -281,54 +415,54 @@ export function missingTopLevel(root: string, dir: string): string[] {
 }
 
 /**
- * Remove `root/rel`, never passing through a symlink on the way.
+ * Throw the clone away. Safe to call twice. Returns why it could not, or
+ * `null`.
  *
- * Two different answers, depending on WHERE the link is:
+ * ## The clone can contain files that refuse to be deleted (#549)
  *
- * - **The link is the path itself** (`node_modules -> /elsewhere/mods`):
- *   unlink it. `rmSync` on a link removes the link and leaves the target
- *   alone, and an excluded directory is one we did not want in the clone
- *   anyway. This is the common case — the pre-push hook makes exactly this
- *   link — and it has to stay cheap rather than refusing the audit.
+ * `cp -Rc` is a clonefile, and a clonefile carries the source's BSD FILE
+ * FLAGS. This repository sets `uchg` on `gates/prompts/*.md` — that is the
+ * prompt-immutability feature working as designed — so the clone contains
+ * immutable files and `rm` refuses them:
  *
- * - **The link is an ANCESTOR** (`.claude -> /real/.claude`, pruning
- *   `.claude/worktrees`): leave it entirely alone. Unlinking it would throw
- *   away `.claude` — rules, agents, config — and the steps would then run
- *   over a tree missing the directory half of them read, reporting less than
- *   `--fix` will do. That is #398 itself, reintroduced by its own fix. It is
- *   also invisible to the completeness check, which cannot ask for `.claude`
- *   back while `.claude/worktrees` is on the exclude list.
+ * ```
+ * rm: .../tree/gates/prompts/evidence-validator.md: Operation not permitted
+ * ```
  *
- *   Deleting through it is worse still: `rmSync(..., { recursive: true })`
- *   follows a symlinked parent, so the consumer's real worktrees go. So
- *   neither — the link stays, and `escapingSymlinks` refuses the audit a
- *   moment later because an ancestor pointing out of the clone is exactly
- *   what it is for. Found by the commit security review.
+ * bun reports that as `EFAULT: bad address in system call argument, rm`,
+ * which names neither the file nor the flag, and the THROW took down a
+ * scaffold run whose report had already printed. That is the whole of #549's
+ * symptom: `bunx rungate scaffold .` could not complete on rungate itself.
+ * The 737 MB `.claude/worktrees` directory the issue identified made it
+ * slower and held most of the flagged copies, and excluding it from the copy
+ * is right and necessary — but the thing `rm` was actually refusing was a
+ * flag, not a size.
+ *
+ * So the flags are cleared in the CLONE before it is removed. Only in the
+ * clone: `r.parent` always comes from `mkdtemp`, the consumer's own files
+ * are never touched, and the flags are deliberately left intact DURING the
+ * rehearsal so the steps see the tree the consumer has rather than a more
+ * permissive one.
+ *
+ * ## A cleanup failure is reported, not thrown
+ *
+ * The report is already printed by the time this runs. Turning a leaked temp
+ * directory into a non-zero exit loses the audit; saying nothing loses the
+ * leak, which is #437. So it returns the sentence and the caller prints it.
  */
-function prunePathWithoutFollowingLinks(root: string, rel: string): void {
-  let current = root;
-  const parts = rel.split("/").filter(Boolean);
-  for (let i = 0; i < parts.length; i++) {
-    current = join(current, parts[i]!);
-    let st;
-    try { st = lstatSync(current); } catch { return; }   // absent: nothing to prune
-    const last = i === parts.length - 1;
-    if (st.isSymbolicLink()) {
-      if (last) rmSync(current, { force: true });
-      return;   // an ancestor link: prune nothing, and let the refusal catch it
-    }
-    if (!last && !st.isDirectory()) return;
-  }
-  rmSync(current, { recursive: true, force: true });
-}
-
-/** Throw the clone away. Safe to call twice. */
-export function discardRehearsal(r: Rehearsal): void {
+export function discardRehearsal(r: Rehearsal): string | null {
   // `r.parent`, not `join(r.dir, "..")`. Deriving a deletion target by
   // walking up from a path is how a cleanup ends up removing something it
   // does not own; the owner is recorded at creation instead. Leaving the
   // mkdtemp behind is the leak #437 is about, so it is the parent that goes.
-  rmSync(r.parent, { recursive: true, force: true });
+  //
+  // One binding with the copy's own cleanup, so the flag-clearing and the
+  // mode-clearing cannot drift apart between the two places that delete a
+  // tree this module made.
+  const why = removeTree(r.parent);
+  if (why === null) return null;
+  return `the rehearsal clone could not be removed and is still on disk: ${r.parent} — ` +
+    `${why}. Remove it by hand; nothing in the consumer's tree was touched.`;
 }
 
 /**
