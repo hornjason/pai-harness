@@ -45,6 +45,7 @@
     "posttest": "bun scripts/sync-sc-status.ts",
     "sync-scs": "bun scripts/sync-sc-status.ts",
     "typecheck": "bun scripts/typecheck.ts",
+    "verify-merge": "bun scripts/verify-merge-content.ts",
     "test:structure": "bun test test/structure.test.ts",
     "test:external-deps": "bun test test/external-deps.test.ts"
   },
