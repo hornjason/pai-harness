@@ -3029,19 +3029,58 @@ export function scanConfigAccess(root: string): ConfigAccessScan {
  * through both scans and asserts they disagree, so the collapse cannot be made
  * quietly in the name of consistency.
  */
+/**
+ * Every module in `workflows/`, in any language this project writes them in.
+ *
+ * It was `.js` only, non-recursively, because rungate's own workflows are
+ * flat `.js` — they cannot import (#69). A consumer keeping TypeScript
+ * workflows got CONFIG-2 reading zero files over a directory full of code,
+ * which the empty-scan refusal then reported as `the scan read NO files`,
+ * unsatisfiable without converting the workflows to `.js` (#501).
+ *
+ * `.d.ts` is excluded for the same reason the CONFIG-1 walk excludes it:
+ * declarations contain no calls.
+ */
+const WORKFLOW_MODULE = /\.(js|mjs|cjs|ts|mts|cts)$/;
+
+function workflowModules(dir: string, rel: string, out: string[]): void {
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    const childRel = rel ? `${rel}/${e.name}` : e.name;
+    // RECURSIVE, and that is load-bearing rather than tidy. CONFIG-1
+    // declines `workflows/` entirely on the grounds that CONFIG-2 owns it,
+    // so a depth CONFIG-2 does not reach is a depth NEITHER check reads —
+    // a blind spot the hand-off would create rather than one it inherits.
+    if (e.isDirectory()) {
+      if (e.name === "node_modules") continue;
+      workflowModules(join(dir, e.name), childRel, out);
+      continue;
+    }
+    if (!e.isFile()) continue;
+    if (!WORKFLOW_MODULE.test(e.name) || e.name.endsWith(".d.ts")) continue;
+    out.push(childRel);
+  }
+}
+
 export function scanPromptConfigAccess(root: string): ConfigAccessScan {
   const dir = join(root, "workflows");
   const counts: Record<string, number> = {};
   let filesScanned = 0;
   let bytesScanned = 0;
-  let entries: string[];
-  try {
-    entries = readdirSync(dir).filter(f => f.endsWith(".js"));
-  } catch {
-    return { counts, filesScanned: 0, bytesScanned: 0 };
-  }
-  for (const f of entries) {
-    const text = readFileSync(join(dir, f), "utf-8");
+  const entries: string[] = [];
+  workflowModules(dir, "", entries);
+  for (const f of entries.sort()) {
+    let text: string;
+    try {
+      text = readFileSync(join(dir, f), "utf-8");
+    } catch {
+      continue;
+    }
     filesScanned++;
     bytesScanned += text.length;
     const n = (stripJsComments(text).match(configAccessPattern()) || []).length;
@@ -3731,6 +3770,26 @@ export function projectSourceEvidence(root: string): SourceEvidence {
         // the scan does not walk either — `index.ts` is an ordinary shape
         // and leaving it out would be the same blind spot one level up.
         const top = childRel.includes("/") ? childRel.slice(0, childRel.indexOf("/")) : ".";
+        // Source another CHECK measures is not evidence that this one is
+        // blind (#501). `workflows/w.ts` set `found`, so a project whose
+        // only code is a workflow was told CONFIG-1 "DOES contain source …
+        // none of it in the directories this check reads" — true, and
+        // unsatisfiable, because CONFIG-1 declines that directory precisely
+        // so CONFIG-2 can own it. Two red checks, neither fixable without
+        // rewriting the project in another language.
+        //
+        // `CONFIG_1_DECLINES` and NOT `measuredElsewhere`, and the gap
+        // between the two is deliberate: `test/` is excluded by ADR-002 D4
+        // with nobody measuring it, so a project whose only source is a test
+        // directory must still refuse — that is #500's own case, and
+        // collapsing the two predicates would waive it.
+        //
+        // Recorded rather than skipped silently, so the UNMEASURED sentence
+        // names the hand-off instead of implying the tree is empty.
+        if (CONFIG_1_DECLINES.has(top)) {
+          skipped.push(`${childRel} (measured by CONFIG-2, which reads ${top}/)`);
+          continue;
+        }
         if (!CONFIG_SCAN_DIRS.includes(top) && !measuredElsewhere(top)) {
           unscannedDirs.add(top);
           unscannedSourceCount++;

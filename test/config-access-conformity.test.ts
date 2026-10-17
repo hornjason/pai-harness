@@ -1136,6 +1136,94 @@ describe("#476: an empty scan is UNMEASURED or a refusal, and which one is decid
       expect([...CONFIG_1_DECLINES], "the exclusion set was emptied, so the guard asserts nothing")
         .toEqual(["workflows"]);
     });
+
+    /**
+     * #501 — `workflows/` is CONFIG-2's, and CONFIG-2 could only read `.js`.
+     *
+     * So a project whose only code is `workflows/w.ts` got TWO refusals and
+     * neither was satisfiable: CONFIG-1 declines the directory by design,
+     * and CONFIG-2 owns it but could not see the language it is written in.
+     * That is #476's original complaint — a permanently red, unsatisfiable
+     * check — reintroduced for a different project shape.
+     *
+     * The two halves are a PAIR and the cases say so. Widening CONFIG-2's
+     * extensions without teaching CONFIG-1's evidence walk about the hand-off
+     * leaves CONFIG-1 refusing; teaching the walk without widening CONFIG-2
+     * makes CONFIG-1 waive a directory nobody measures, which is the
+     * fail-open this whole block exists to prevent.
+     */
+    test("SC-1898: CONFIG-2 measures a TypeScript workflow rather than refusing it", () => {
+      const root = project({ "workflows/w.ts": READS_CONFIG, "README.md": "# d" });
+      const got = config2(root);
+      // MEASURED, not merely silent: the read in the `.ts` is reported as a
+      // violation. A widening that only stopped the refusal would be the
+      // cheap wrong fix — green because the check stopped asking.
+      expect(got.violations.join("\n"), "the scan still cannot see a .ts workflow")
+        .not.toContain("read NO files");
+      expect(got.failFiles, "the direct read in a .ts workflow was not attributed to it")
+        .toEqual(["workflows/w.ts"]);
+
+      // And the same file with nothing to find is a PASS, not a refusal —
+      // the shape #501 was filed about.
+      const clean = project({ "workflows/w.ts": "export const x = 1;\n", "README.md": "# d" });
+      expect(config2(clean).red, "a clean TypeScript workflow still fails the suite").toBe(false);
+      expect(scanPromptConfigAccess(clean).filesScanned, "the scan read nothing").toBe(1);
+    });
+
+    test("SC-1899: CONFIG-1 does not call CONFIG-2's territory evidence that it is blind", () => {
+      // CONFIG-1's refusal fires when the scan read nothing AND the walk
+      // found source. `workflows/w.ts` made `found` true, so a project whose
+      // only code is a workflow was told CONFIG-1 is blind — when the
+      // directory is declined precisely because another check that fails the
+      // suite reads it. `found` now means source CONFIG-1 is RESPONSIBLE for.
+      const root = project({ "workflows/w.ts": "export const x = 1;\n", "README.md": "# d" });
+      const got = config1(root);
+      expect(got.red, "CONFIG-1 refused over a directory CONFIG-2 measures").toBe(false);
+      expect(got.violations).toEqual([]);
+      // Silence is not the answer either: the check genuinely measured
+      // nothing and has to say so.
+      expect(got.unmeasured, "CONFIG-1 passed quietly over a project it never read")
+        .not.toBeNull();
+      expect(got.unmeasured).toContain("UNMEASURED");
+      expect(got.unmeasured, "the decline does not name the directory it handed off")
+        .toContain("workflows");
+
+      // The CONTROL, and it is the whole reason this is not a waiver: the
+      // same project with its source one directory over, in a place nobody
+      // else measures, still refuses.
+      // `domain/` rather than `vendor/`: the walk classifies `vendor` as
+      // generated output and declines it, so that fixture would have been
+      // green for a reason nothing to do with the hand-off.
+      const elsewhere = config1(project({ "domain/w.ts": "export const x = 1;\n", "README.md": "# d" }));
+      expect(elsewhere.red, "source in an unmeasured directory stopped being a refusal").toBe(true);
+      expect(elsewhere.violations.join("\n")).toContain("read NO files");
+    });
+
+    test("SC-1900: the hand-off holds at every depth CONFIG-2 reads", () => {
+      // The exclusion in SC-1899 is honest only for files CONFIG-2 actually
+      // reads. The scan was a flat `readdirSync` of `workflows/`, so
+      // `workflows/lib/helper.ts` would have been excluded from CONFIG-1's
+      // evidence and read by nobody — a blind spot created by the fix.
+      const root = project({ "workflows/lib/helper.ts": READS_CONFIG, "README.md": "# d" });
+      expect(scanPromptConfigAccess(root).filesScanned, "the scan does not descend into workflows/")
+        .toBe(1);
+      expect(config2(root).failFiles, "a nested workflow is measured by nobody")
+        .toEqual(["workflows/lib/helper.ts"]);
+    });
+
+    test("SC-1901: test/ is still evidence that CONFIG-1 is blind", () => {
+      // The narrowing applies to `CONFIG_1_DECLINES` and NOT to the policy
+      // exclusions, and the difference is the point. `workflows/` is handed
+      // to a sibling check that fails the suite; `test/` is excluded by
+      // ADR-002 D4 with nobody measuring it. Collapsing the two would waive
+      // #500's own case — a project whose only source is `tests/helper.ts`
+      // holding a live direct config read — which is the regression this
+      // row exists to block.
+      const root = project({ "tests/helper.ts": READS_CONFIG, "README.md": "# d" });
+      const got = config1(root);
+      expect(got.red, "a project whose only source is a test directory stopped refusing").toBe(true);
+      expect(got.violations.join("\n")).toContain("read NO files");
+    });
   });
 });
 
