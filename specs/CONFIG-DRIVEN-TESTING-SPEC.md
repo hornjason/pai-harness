@@ -1016,3 +1016,78 @@ notices that the report has stopped reporting.
 - [x] SC-1957: test/sc-todo-credit.test.ts contains [a todo is credited to nothing and reported by name] — the report is non-empty, and no id in it is also credited by a test claim
 - [x] SC-1958: test/sc-todo-credit.test.ts contains [a range in a parenthetical is prose about a group, not an attribution] — the sentence from the tree verbatim, with the two attribution forms that must NOT move asserted beside it
 - [x] SC-1959: test/sc-todo-credit.test.ts contains [no ticked criterion in this repo rests on a test that never runs] — the live tree, through the conformity engine, so a tick backed by a mechanical match is not reported as a regression
+
+## A rewrite that replaces the requirement (#586)
+
+`bun bin/rungate.ts scaffold . --fix` calls `auditSpecs(root, {fix: true})`,
+which rewrites criteria the matcher registry cannot bind. On a clean tree it
+turned
+
+> `SC-1930: Baseline rules carry no `paths:` key in frontmatter`
+
+into
+
+> `SC-1930: all specs have frontmatter`
+
+A different property, and a weaker one. Two more criteria in the same run
+became `reference/rejected-constraints.md exists` and `package.json exists`,
+each from a sentence stating a behaviour.
+
+**The reporting was never the problem, and the first draft of #586 said it
+was.** #426 already emits `REWROTE: specs/<file> <id> as <pattern> — was:
+<original>`, one line per rewritten criterion. The issue was filed off the
+diff without reading the run's own output, which is the thing this repo's
+rules exist to stop; it is corrected in the issue rather than quietly
+dropped.
+
+### Three mechanisms, composing
+
+1. **The heuristic keyword test is `some`.** `keywords: ["all specs",
+   "frontmatter"]` fires on the bare word `frontmatter`, so a criterion about
+   one category of rule file bound to a rule about ALL specs.
+2. **The extractor is a constant.** `() => "all specs have frontmatter"`
+   never reads its argument, so every statement reaching it produces the
+   identical criterion.
+3. **It reported `ambiguous: false`**, and only an ambiguous rewrite writes
+   the `<!-- REVIEW: original — … -->` marker. So **the one case where the
+   rewrite cannot know what the statement said is the one case where the
+   original is not kept in the file.** It survived in stdout and nowhere
+   else.
+
+`decideRewrite`'s three guards all passed it: not already structured, a
+pattern was found, and no file token to protect.
+
+### The fourth guard is the general one
+
+A rewrite that retains none of the statement's distinguishing terms is a
+`keep`. That is the question the other three are each a special case of, and
+it catches the NEXT constant extractor rather than these two — `canary` has
+the same shape and is not the one that bit us.
+
+"Distinguishing" excludes the matched keyword on purpose. Counting the word
+that caused the heuristic to fire as retained content is how a constant
+rewrite reads as faithful: the proxy standing in for the property.
+
+### And the loose fallback fires on existence, not on any filename
+
+Found by running the fixed enricher over the tree rather than by reading it.
+The last-resort `file-exists` match took any filename-like token anywhere in
+a sentence, so a criterion about *writing a hash to* a file became a
+criterion about that file *existing*. Both survivors kept the filename, so
+the distinguishing-terms guard passed them — **a filename a criterion
+mentions is not what the criterion is about**, which is
+`lib/spec-listing.ts`'s "a mention is not a listing" arriving in a third
+place.
+
+After the fix, `auditSpecs(".", {fix: true})` rewrites **0** of 19 unmatched
+criteria and keeps all 19 intact with their reasons reported.
+
+### Success Criteria
+
+- [x] SC-1993: test/audit-specs-rewrite-fidelity.test.ts contains [the criterion the scaffold rewrote is now kept, by name] — pinned to the exact string, and kept by the keyword scoping rather than by the fourth guard, which is why SC-1994 carries the other input
+- [x] SC-1994: test/audit-specs-rewrite-fidelity.test.ts contains [a rewrite that drops every distinguishing word is refused] — the general guard over a statement unrelated to SC-1930, with a positive control that a bindable criterion is still rewritten
+- [x] SC-1995: test/audit-specs-rewrite-fidelity.test.ts contains [distinguishing terms are the statement's own words, not the matched keyword] — counting the matched keyword as retained content is how a constant rewrite reads as faithful
+- [x] SC-1996: test/audit-specs-rewrite-fidelity.test.ts contains [an extractor that ignores its input cannot claim to be unambiguous] — two statements differing in every word must not produce one unambiguous rewrite
+- [x] SC-1997: test/audit-specs-rewrite-fidelity.test.ts contains [a keyword list means all of its phrases, not any one of them] — with the rule still firing on the statement it is actually for
+- [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback fires on existence, not on any filename] — the two live survivors, plus a control phrased to reach the LOOSE path rather than the registry heuristic that shares its pattern name
+- [x] SC-1999: test/audit-specs-rewrite-fidelity.test.ts contains [a directory pattern is satisfied by its broader bare form, and not the reverse] — the `.gitignore` half, which was filed wrongly as non-idempotence; the reverse direction is pinned because widening this match is how `service-account*` comes back

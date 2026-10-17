@@ -209,7 +209,7 @@ does. See `.claude/rules/claiming-sc-coverage.md`.
 
 ### Tiers and ownership
 
-- [ ] SC-1930: Baseline rules carry no `paths:` key in frontmatter
+- [x] SC-1930: Baseline rules carry no `paths:` key in frontmatter
 - [ ] SC-1931: Baseline rule bodies contain no repo-specific identifier — no issue number, date, file path or incident from a single project
 - [ ] SC-1932: Every mined rule carries a `paths:` list scoped to the code it governs
 
