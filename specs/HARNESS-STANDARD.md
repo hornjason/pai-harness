@@ -9286,3 +9286,82 @@ alone.
 
 - [x] SC-1902: test/config-access-conformity.test.ts contains [a .tsx file in a scanned directory is scanned] — the refusal's own sentence was false about the file it named
 - [x] SC-1903: test/config-access-conformity.test.ts contains [every extension the walk counts as source, the scan reads] — the extension list is parsed out of SOURCE_EXTENSIONS, so a seventh one added there and not here cannot pass unnoticed
+
+## Four ladders for one question, and the CI one had no rungs (#488)
+
+`createCiWorkflows` emitted `- run: bun test` with `harness` in scope, four
+lines below three reads of `harness?.ci?.bunVersion`, `?.runner` and
+`?.branches`. Every other consumer of `dev.testCmd` honoured it, so a
+project that declared the field got agent briefs, an AGENTS.md row and a
+ship workflow carrying their command — and a CI workflow carrying a
+different one.
+
+The divergence is silent in both directions. If the consumer's command is a
+superset, CI is weaker than the gate every agent was told about. If `bun
+test` does not work in their project at all, CI is red for a reason no
+config change can fix, because the field that would fix it is not read.
+
+Four sites resolved one question four ways:
+
+| Site | Ladder |
+|---|---|
+| `createCiWorkflows` | `"bun test"` |
+| `generateAgentsMdContent` | `dev.testCmd \|\| "bun test"` |
+| `scanProject` | `package.json scripts.test \|\| "bun test"` |
+| `generateAgentBriefs` | `dev.testCmd \|\| scan.testCmd \|\| "bun test"` |
+
+`lib/test-command.ts` is now the one binding: `dev.testCmd`, then
+`package.json` `scripts.test` **verbatim**, then `bun test`. Verbatim
+because `bun run test` fires `pretest`/`posttest`, which on this repo means
+CI running `sync-sc-status.ts` and writing to the tree.
+
+`workflows/ship.js` is the fifth site and stays its own — it cannot import
+(#69), and the subprocess boundary is how workflows comply with
+`.claude/rules/config-access.md`. A known gap, recorded rather than fixed.
+
+### The caller that must survive a corrupt config
+
+`tryLoadRungateConfig` throws on malformed JSON by design: a corrupt config
+is never a missing config. Routing every site through it killed
+`generateOrAuditProjectHarness` — the config **repair** step — with
+`SyntaxError: JSON Parse error` over the very file it exists to repair.
+
+That site calls `inferredTestCommand`, the same ladder with the config rung
+removed, and the split is not a convenience: the value it is computing is
+what gets WRITTEN into `dev.testCmd`, so reading `dev.testCmd` to choose it
+is circular. Split rather than given a boolean parameter, because a flag
+makes the two behaviours one call site's argument rather than two named
+things. No `catch {}` was added anywhere — see `.claude/rules/config-access.md`.
+
+### What was broken to prove it
+
+Seven mutations over 363 tests across 19 files. None is left in the tree.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| `testCommandDecision` short-circuited to the default | 4 | 5 |
+| the CI step back to the hardcoded `bun test` literal | 3 | 3 |
+| the AGENTS.md row stops reading the binding | 1 | 1 |
+| the `package.json` rung dropped | 2 | 3 |
+| the `dev.testCmd` rung dropped | 3 | 3 |
+| the repair step routed through the throwing full decision | 1 | 1 |
+| a malformed `package.json` stops being survivable | 1 | 1 |
+
+Both low rows miss by the same case, and it is not a collapsed pair:
+`test/gen-agents-md.test.ts`'s "includes test command in output" hands
+`generateAgentsMd` a hand-built scan object carrying `testCmd: "npm test"`.
+It never reaches the decision, because it is a template test asserting that
+the row renders whatever the scan says. The prediction treated it as a
+binding test. It is downstream of one.
+
+The third row is the reason SC-1906 has the shape it does: mutating only
+the AGENTS.md side is 1 red, mutating only the CI side is 3, and the single
+case that goes red under **both** is the one driving two different values
+through one config field and asserting both outputs move.
+
+### Success Criteria
+
+- [x] SC-1904: test/test-command-binding.test.ts contains [the generated CI job runs the consumer's dev.testCmd] — by generating the real workflow and parsing its run lines, not by asserting on a template string
+- [x] SC-1905: test/test-command-binding.test.ts contains [a consumer declaring neither still gets bun test] — all three rungs, including the verbatim script value and config beating script
+- [x] SC-1906: test/test-command-binding.test.ts contains [the CI step and the AGENTS.md row move together] — two sites holding the same literal pass every other case here; one value moving both outputs is the only witness that the binding is shared
+- [x] SC-1907: test/test-command-binding.test.ts contains [a malformed package.json loses the scan] — the scaffold must not die on a file it consulted for a default

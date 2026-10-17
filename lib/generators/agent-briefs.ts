@@ -65,7 +65,10 @@ export function generateAgentBriefs(scan: ProjectScan): Record<string, string> {
   const harness = scan.harnessConfig;
   const devUi = harness?.dev?.uiBase || null;
   const devApi = harness?.dev?.apiBase || null;
-  const testCmd = harness?.dev?.testCmd || scan.testCmd || "bun test";
+  // #488 — `scan.testCmd` already IS the decision: `testCommandDecision`
+  // puts `dev.testCmd` on its first rung, so re-asking here was a second
+  // ladder that could disagree with the first and never be noticed.
+  const testCmd = scan.testCmd || "bun test";
   const typeCheck = harness?.dev?.typeCheck || "bunx tsc --noEmit";
   const pages = harness?.pages || {};
   const pagesTable = Object.keys(pages).length > 0

@@ -31,6 +31,7 @@ import { healthPathIn } from "../liveness-contradiction";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
+import { inferredTestCommand, testCommandDecision } from "../test-command";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
 import {
   readSuccessDoc,
@@ -442,14 +443,10 @@ export function generateAgentsMdContent(
     }
   }
 
-  // Detect test command
-  let testCmd = "bun test";
-  if (existsSync(pkgPath)) {
-    try {
-      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-      if (pkg.scripts?.test) testCmd = pkg.scripts.test;
-    } catch {}
-  }
+  // Detect test command — through the one binding (#488). This copy read
+  // package.json and nothing else, so AGENTS.md's Commands row ignored a
+  // `dev.testCmd` the agent briefs honoured and CI ignored both.
+  const testCmd = testCommandDecision(projectPath).command;
 
   // Scan reference files
   const refDir = join(projectPath, "reference");
@@ -887,7 +884,7 @@ export function generateAgentBriefsStep(root: string, actions: string[]): void {
     identity: projectIdentity,
     techStack: [],
     repoUrl: "",
-    testCmd: harness?.dev?.testCmd || "bun test",
+    testCmd: testCommandDecision(root).command,
     keyFiles: [],
     specs: [],
     testFiles: [],
@@ -957,13 +954,12 @@ export function generateOrAuditProjectHarness(root: string, actions: string[], o
     }
   }
 
-  // Scan test commands
+  // `inferredTestCommand`, not the full decision (#488). This value is what
+  // gets WRITTEN into `dev.testCmd`, so reading `dev.testCmd` to choose it
+  // is circular — and this step runs against trees whose config is
+  // malformed, which is what it exists to repair.
+  const testCmd = inferredTestCommand(root).command;
   const pkgPath = join(root, "package.json");
-  let testCmd = "bun test";
-  if (existsSync(pkgPath)) {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    if (pkg.scripts?.test) testCmd = pkg.scripts.test;
-  }
   // #87 — this defaulted to `bunx tsc --noEmit` for every project, including
   // one with no tsconfig, and `gates/gate-executor.ts` RUNS what lands here.
   // Without a tsconfig that command prints 147 lines of help and exits 1, so
@@ -2399,6 +2395,14 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   // `dev.typeCheck` read (#87). This site used to check for
   // `scripts/typecheck.ts` on disk, a branch `files:` makes unreachable for
   // every consumer, and never looked at a project's own `typecheck` script.
+  // #488. This was `- run: bun test`, hardcoded, while `harness` was in
+  // scope and three of its siblings read `harness?.ci?.*` four lines above.
+  // Same binding AGENTS.md's Commands row and the agent briefs read, for the
+  // same reason the typecheck step below it got one in #87: two sites that
+  // agree today are one decider too many, and only a mutation of a shared
+  // binding can show the agreement is load-bearing.
+  const test = testCommandDecision(root);
+
   const typecheck = typecheckDecision(root);
   const typecheckStep = typecheck.command
     ? `\n      - run: ${typecheck.command}`
@@ -2425,7 +2429,7 @@ ${baseRefStep}
         with:
           bun-version: "${bunVersion}"
       - run: bun install
-      - run: bun test${typecheckStep}
+      - run: ${test.command}${typecheckStep}
 `;
 
   const gatesYml = `# Managed by rungate — do not edit. Customize the ci section of .claude/rungate/config.json.

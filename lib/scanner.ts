@@ -17,6 +17,7 @@ import { resolveConfig } from "./config-loader";
 // instead of drifting apart (#380).
 import { isHarnessItself } from "./harness-identity";
 import { isSpecFile } from "./spec-listing";
+import { testCommandDecision } from "./test-command";
 import type {
   ProjectScan,
   ProjectType,
@@ -613,16 +614,13 @@ function scanAgentMeta(harness: Record<string, any> | null): Record<string, { de
 
 // ── Test command detection ─────────────────────────────────────
 
+/**
+ * Through the one binding (#488). This knew only about package.json, so a
+ * consumer who set `dev.testCmd` got it honoured by the agent briefs and
+ * ignored by every scan-driven surface — and the CI generator read neither.
+ */
 function detectTestCmd(root: string): string {
-  const pkgPath = join(root, "package.json");
-  if (!existsSync(pkgPath)) return "bun test";
-
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-    if (pkg.scripts?.test) return pkg.scripts.test;
-  } catch {}
-
-  return "bun test";
+  return testCommandDecision(root).command;
 }
 
 // ── Categories ─────────────────────────────────────────────────
