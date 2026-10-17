@@ -110,8 +110,12 @@ export function runScaffoldWriteSteps(
 
   // Phase 0.5: Generate AGENTS.md
   const agentsMd = generateAgentsMdContent(projectPath, projectType, actions, profile);
-  writeFileSync(join(projectPath, "AGENTS.md"), agentsMd);
-  actions.push("REGENERATED: AGENTS.md");
+  // Through the owned-file writer, not a bare `writeFileSync` (#568). Two
+  // things were missing here and both were invisible: the Hard Constraints
+  // section the spec guarantees survives regeneration, and the symlink
+  // refusal every other owned file has had since #507 — a raw write FOLLOWS
+  // a link, so an `AGENTS.md ->` anywhere was a write outside the project.
+  regenerateOwned(join(projectPath, "AGENTS.md"), agentsMd, "AGENTS.md", actions, "section-preserving");
   refreshAgentsMd(projectPath, projectType, actions);
 
   // Phase 0.6: Create copilot instructions

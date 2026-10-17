@@ -376,7 +376,26 @@ ${ownedFilesTable()}
 | regenerate | Rewrites it every run; reports CHANGED only when the bytes differ |
 | provenance | Rewrites it unless you edited it, in which case it is preserved and reported (#370) |
 | job-preserving | Owns named jobs inside a file you also write to; your jobs are carried forward |
+| section-preserving | Rewrites the file every run except for named sections, which are carried forward verbatim |
 | create-only | Seeds it once and never touches it again — the content is yours, not the harness's |
+
+### AGENTS.md is section-owned (#568)
+
+Everything in \`AGENTS.md\` is generated from the scan and your
+\`.claude/rungate/\` config, with one exception: a \`## Hard Constraints\`
+section is yours, and a re-scaffold carries it forward verbatim —
+including the \`<!-- BEGIN AUTO-EXTRACTED -->\` block, and including any
+lines you wrote outside it.
+
+That is the only user-owned content in the tree that survives
+regeneration, which is a promise \`specs/bootstrap-data-flow/\` makes and
+nothing kept until #568: one run on a consumer removed 37 constraint
+lines and reported \`REGENERATED: AGENTS.md\`, exit 0. Put non-inferable
+project rules there — the ones an agent cannot read off the code — and
+nowhere else in the file.
+
+If a run cannot carry every one of those lines forward it **refuses the
+write**, names the lines, and leaves your file untouched.
 
 ### The workflow files are job-owned, not file-owned (#216)
 
