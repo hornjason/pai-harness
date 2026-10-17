@@ -243,6 +243,16 @@ describe("#532: a real gate run writes a report the reader can use", () => {
     // The filtered-out tests are the majority and are NOT in the list.
     expect(reading.skipped, "nothing was filtered out — the gate ran the whole directory")
       .toBeGreaterThan(50);
+    // …and "not in the list" is asserted by MEMBERSHIP, not by the count.
+    // The count is unchanged by a reader that treats `<skipped />` as a
+    // check that ran — measured: that mutation leaves `skipped` at 279 and
+    // simply adds all 279 names. The scope gate's filter is
+    // `--test-name-pattern "schema|scope"`, so a name matching neither is a
+    // test this run did not execute, and retiring a refusal on it would
+    // erase a true refusal.
+    const offPattern = reading.names!.filter(n => !/schema|scope/.test(n));
+    expect(offPattern.slice(0, 5), `names the gate's own filter excluded: ${offPattern.length}`)
+      .toEqual([]);
 
     const state = JSON.parse(readFileSync(join(dir, "workflow-state.json"), "utf-8"));
     const failed = (state.gates?.scope?.failures || []).map((f: any) => f?.check).filter(Boolean);
