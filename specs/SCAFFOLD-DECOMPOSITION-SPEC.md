@@ -1221,6 +1221,11 @@ None is left in the tree; all were run and reverted.
 | `not-installed` stops saying no fetch was attempted | 2 of 12 | 2 |
 | `safeToolDetail` returns its input unchanged | 1 of 13 | 1 |
 
+The last row has a different denominator because it was measured after
+SC-1984 was added; the five above it were measured over the 12 tests that
+existed when they were run, and are not re-stated as 13 without being
+re-run.
+
 #### A finding the fix introduced, caught by the review of its own commit
 
 The `run-failed` reason quotes what fallow printed, and that string is
