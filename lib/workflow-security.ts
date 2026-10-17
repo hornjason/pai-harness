@@ -131,13 +131,28 @@ export function isSafeBranchName(name: unknown): name is string {
  */
 const REPO_SLUG_SEGMENT = /^[A-Za-z0-9._-]+$/;
 
+/**
+ * The refusals that are about what a slug MEANS rather than which characters
+ * it uses — the same shape `isSafeBranchName` takes below, where the regex
+ * is followed by git's own rules.
+ *
+ * A leading `-` is the one that matters and it is the reason that function
+ * gives: git and gh both read it as a flag. No GitHub owner or repository
+ * name may begin with `-` or `.` or end with `.` anyway, so refusing them
+ * costs nothing a real slug needs.
+ */
+function illegalSlugSegment(p: string): boolean {
+  if (!REPO_SLUG_SEGMENT.test(p)) return true;
+  return p === "." || p === ".." || p.startsWith("-") || p.startsWith(".") || p.endsWith(".");
+}
+
 export function repoSlugRefusal(argName: string, value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0) {
     return `${argName} must be a non-empty string of the form "owner/name"; got ${describeArg(value)}`;
   }
   if (value.length > 255) return `${argName} is ${value.length} characters, which is not a repository slug`;
   const parts = value.split("/");
-  if (parts.length !== 2 || parts.some(p => !REPO_SLUG_SEGMENT.test(p) || p === "." || p === "..")) {
+  if (parts.length !== 2 || parts.some(illegalSlugSegment)) {
     return (
       `${argName} must be "owner/name" using only letters, digits, dot, dash and underscore; ` +
       `got ${describeArg(value)} — it is interpolated unquoted into shell commands`

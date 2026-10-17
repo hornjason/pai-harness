@@ -346,6 +346,14 @@ function isSafeBranchName(name) {
 // run cd here". Same word, two questions, opposite answers.
 const REPO_SLUG_SEGMENT = /^[A-Za-z0-9._-]+$/
 
+// A leading `-` is read as a flag by git and by gh alike, which is the
+// reason isSafeBranchName gives for refusing it below; and no GitHub owner
+// or repository name may begin with `-` or `.` or end with `.`.
+function illegalSlugSegment(p) {
+  if (!REPO_SLUG_SEGMENT.test(p)) return true
+  return p === '.' || p === '..' || p.startsWith('-') || p.startsWith('.') || p.endsWith('.')
+}
+
 function describeArg(value) {
   if (typeof value !== 'string') return value === undefined ? 'nothing' : (JSON.stringify(value) ?? String(value))
   return JSON.stringify(value.length > 80 ? value.slice(0, 80) + '…' : value)
@@ -357,7 +365,7 @@ function repoSlugRefusal(argName, value) {
   }
   if (value.length > 255) return `${argName} is ${value.length} characters, which is not a repository slug`
   const parts = value.split('/')
-  if (parts.length !== 2 || parts.some(p => !REPO_SLUG_SEGMENT.test(p) || p === '.' || p === '..')) {
+  if (parts.length !== 2 || parts.some(illegalSlugSegment)) {
     return `${argName} must be "owner/name" using only letters, digits, dot, dash and underscore; ` +
       `got ${describeArg(value)} — it is interpolated unquoted into shell commands`
   }
@@ -583,7 +591,9 @@ function safeSSHCommand(host, remoteCmd) {
  * prompts — `repo` at 6 sites, `issueRepo` at 11, `harnessRoot` at 44 and
  * `projectRoot` at 33 — and the only check any of them had was that `repo`
  * was present. One function above this, the same file refuses an unsafe
- * BRANCH name before it reaches a `git push`.
+ * BRANCH name before it reaches the command that publishes it — the literal
+ * is not spelled here, because test/dry-run-evidence-quality.test.ts reads
+ * this region for exactly that string and cannot tell a mention from a call.
  *
  * HERE rather than beside the presence check thirteen lines up, because the
  * refusal functions close over regexes declared in the helpers block and a

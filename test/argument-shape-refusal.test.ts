@@ -59,6 +59,15 @@ const SLUGS: Array<[string, unknown, boolean]> = [
   ["a newline", "o/r\nmain", false],
   ["a traversal segment", "o/..", false],
   ["a dot segment", "./r", false],
+  // Flagged by the commit security review on this branch. Not a live hole —
+  // every site puts the value after `--repo`, where a parser reads it as
+  // that flag's value — but `isSafeBranchName` refuses a leading dash one
+  // function below with the reason that git and gh both read it as a flag,
+  // and no GitHub name may begin with `-` or `.` anyway.
+  ["a leading dash on the owner", "-o/r", false],
+  ["a leading dash on the name", "o/-r", false],
+  ["a leading dot", "o/.r", false],
+  ["a trailing dot", "o/r.", false],
   ["three segments", "o/r/x", false],
   ["one segment", "justaname", false],
   ["empty", "", false],
