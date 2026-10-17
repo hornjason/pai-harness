@@ -8276,20 +8276,46 @@ is how every instance of this has actually arrived.
 
 ### What was broken to prove it
 
-| Mutation | Red | Predicted |
-|---|---|---|
-| the incomplete-summary branch returns a clean MEASURED reading | 7 of 86 | 7 |
-| the executed-zero refusal disabled | 4 of 86 | 4 |
-| the zero-files contradiction disabled | 1 of 86 | 1 |
-| `files` defaulted to `0` instead of `null` | 2 of 86 | 2 |
-| `--failures` accepted by `OPTIONS` again | 3 of 86 | 3 |
-| the recorder records an unmeasured run instead of refusing | 4 of 86 | 4 |
-| `captureTestBaseline` reads the FAIL line alone again | 2 of 86 | 2 |
-| the schema's `tests: 0` refusal removed | 1 of 86 | 1 |
+Eight mutations over 97 tests in `test/suite-run-reading.test.ts`,
+`test/suite-verdict-binding.test.ts`, `test/recorder-command-executed.test.ts`
+and `test/test-baseline-unmeasured.test.ts`. None is left in the tree.
 
-Counted over `test/suite-run-reading.test.ts`, `test/suite-verdict-binding.test.ts`,
-`test/recorder-command-executed.test.ts` and `test/test-baseline-unmeasured.test.ts`,
-every count predicted before the run. None is left in the tree.
+| Mutation | Red | First prediction |
+|---|---|---|
+| the incomplete-summary branch returns a clean MEASURED reading | 9 | 7 |
+| the executed-zero refusal disabled | 5 | 4 |
+| the zero-files contradiction disabled | 1 | 1 |
+| `files` defaulted to `0` instead of `null` | 6 | 2 |
+| `--failures` accepted by `OPTIONS` again | 3 | 3 |
+| the recorder records an unmeasured run instead of refusing | 4 | 4 |
+| `captureTestBaseline` reads the FAIL line alone again | 2 | 2 |
+| the schema's `tests: 0` refusal removed | 1 | 1 |
+
+**Three rows missed, and the three misses are the useful part of the
+battery.** Each is read below rather than recorded as a number, because a
+high row and a low row mean opposite things and the count does not say which.
+
+*Two came back HIGH, and the extra reds are about the mutated behaviour.*
+The first prediction was written against three test files, before
+`captureTestBaseline` was found to be on the same binding — so the
+no-summary row reached `test/test-baseline-unmeasured.test.ts` too, which
+the prediction had no model of. The `files`-defaults-to-`0` row is the
+sharper one: it predicted 2 and measured 6, because every #307 baseline
+fixture prints `N pass / N fail` with no `Ran` line, so `files: 0` makes the
+zero-files contradiction fire over all of them. That is the strongest
+evidence in this issue that `null` and `0` are different facts — four tests
+that are not about this field at all go red when they are conflated.
+
+*One came back LOW, and that one was a real finding.* Disabling the
+executed-zero refusal was 3 red where 4 was predicted, and the two missing
+rows were green because **the schema's `tests: 0` refusal caught the same
+fixture and said the same sentence**. A legitimate pair — the schema also
+catches a state the recorder did not produce, and `readSuiteRun` also
+catches a runner that reports no file count — but the tests pinned only one
+of the two, and the wording made them indistinguishable. Fixed by giving the
+reading an input with no `tests` to record (` 0 pass\n 0 fail\n`, no `Ran`
+line) and by rewording the schema's message so no test can satisfy one
+assertion with the other's refusal. The row is 5 now.
 
 **One mutation was NOT run, and its absence is the point.** A separate
 `!passMatch && !failMatch` branch above the incomplete-summary refusal was in
