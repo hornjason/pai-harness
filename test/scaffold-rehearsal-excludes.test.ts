@@ -30,6 +30,8 @@ import { join } from "path";
 import {
   cloneForRehearsal, copyTreeExcluding, discardRehearsal, REHEARSAL_EXCLUDES,
 } from "../lib/scaffold/rehearsal";
+import { generateScopedRules } from "../lib/generators/agents-md";
+import { scanProject } from "../lib/scanner";
 
 const roots: string[] = [];
 const unlock: string[] = [];
@@ -133,6 +135,31 @@ describe("#549: an excluded path is never read, not merely absent afterwards", (
     expect(after).toEqual(calls);
   });
 
+  test("SC-1889: a directory the walk creates keeps the mode it had", () => {
+    // Only the ancestors of an exclude are created by `mkdirSync` rather
+    // than by `cp`, and `mkdirSync` uses the process umask. So a `.claude`
+    // at 0o700 silently became 0o755 in the clone, and a step that reads
+    // permissions would have reported on a tree that is not the
+    // consumer's — which is the one thing a rehearsal may never do.
+    // Measured: removing the chmod is 0 red without this case.
+    const root = project("modes");
+    mkdirSync(join(root, ".claude", "worktrees"), { recursive: true });
+    writeFileSync(join(root, ".claude", "settings.json"), "{}\n");
+    chmodSync(join(root, ".claude"), 0o700);
+
+    const dst = join(scratch("modes-dst"), "tree");
+    copyTreeExcluding(root, dst, REHEARSAL_EXCLUDES, "-R", 10_000);
+    expect(lstatSync(join(dst, ".claude")).mode & 0o777, "the walked directory was created with the umask")
+      .toBe(0o700);
+
+    // The control: a directory `cp` copies whole was never at risk, and
+    // saying so keeps the row pointed at the branch it is about.
+    chmodSync(join(root, "src"), 0o750);
+    const dst2 = join(scratch("modes-dst-2"), "tree");
+    copyTreeExcluding(root, dst2, REHEARSAL_EXCLUDES, "-R", 10_000);
+    expect(lstatSync(join(dst2, "src")).mode & 0o777).toBe(0o750);
+  });
+
   test("SC-1886: a symlinked ancestor of an exclude is copied as a link, never walked", () => {
     // `.claude -> /real/.claude` while excluding `.claude/worktrees`. The
     // old code's answer was "prune nothing and let `escapingSymlinks`
@@ -180,6 +207,57 @@ describe("#549: an excluded path is never read, not merely absent afterwards", (
     expect(existsSync(join(real, "installed.txt")), "the link's target was deleted").toBe(true);
     // The audit still ran — an excluded link must not refuse it.
     expect(existsSync(join(r.dir, "README.md"))).toBe(true);
+  });
+});
+
+describe("#549: the hand-added routing row the broken scaffold forced", () => {
+  function routingRows(root: string): string[] {
+    const routing = generateScopedRules(scanProject(root)).find(r => r.filename === "specs-routing.md");
+    expect(routing, `the generator produced no specs-routing.md for ${root}`).toBeTruthy();
+    return routing!.content.split("\n").filter(l => l.startsWith("| "));
+  }
+
+  test("SC-1890: a spec the scan can see gets a generated row, so no row needs adding by hand", () => {
+    // The cost #549 names beyond the error message. With `scaffold` unable to
+    // run, a new spec's row has to be added to `.claude/rules/specs-routing.md`
+    // by hand — which converts a GENERATED file into a provenance-preserved
+    // one (#370), so it stops regenerating and every subsequent spec needs the
+    // same manual step.
+    //
+    // Asserted as the PROPERTY rather than by naming one spec. A case that
+    // names the spec whose row was added by hand measures which checkout it is
+    // running in: the row is absent until that branch lands, present after,
+    // and the test reports the generator as broken in both of the states where
+    // it is working correctly. The property — the scan sees a spec, the
+    // generator writes its row — is what makes dropping the divergence safe,
+    // and it is true in every checkout.
+    const root = project("routing");
+    mkdirSync(join(root, "specs"), { recursive: true });
+    writeFileSync(join(root, "specs", "A-BRAND-NEW-SPEC.md"),
+      "---\ndoc-type: spec\ntestable: true\ngov0: x\ngoverns: something this project does\n---\n# A\n");
+
+    const rows = routingRows(root);
+    expect(rows.some(l => l.includes("A-BRAND-NEW-SPEC.md")),
+      `a spec dropped into specs/ produced no row; rows were:\n${rows.join("\n")}`).toBe(true);
+    // The instrument: `includes` over a table would also be true of a
+    // substring that drifted in from somewhere else, so a name the project
+    // does not have must NOT appear.
+    expect(rows.some(l => l.includes("A-SPEC-THAT-IS-NOT-THERE.md")),
+      "the table names a spec the project does not contain").toBe(false);
+  });
+
+  test("SC-1890: every spec this repo's scan found is in this repo's generated table", () => {
+    // The same property against the real tree, which is the one the hand edit
+    // was made in. Driven off the scan's own list rather than a filename, so
+    // adding or removing a spec cannot make it stale.
+    const root = join(import.meta.dir, "..");
+    const scan = scanProject(root);
+    expect(scan.specs.length, "the scan found no specs, so containing all of them proves nothing")
+      .toBeGreaterThan(10);
+
+    const rows = routingRows(root);
+    const absent = scan.specs.map(s => s.file).filter(f => !rows.some(l => l.includes(`| ${f} |`)));
+    expect(absent, `the scan found specs the routing table does not list`).toEqual([]);
   });
 });
 
