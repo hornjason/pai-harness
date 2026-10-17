@@ -3905,14 +3905,30 @@ point, one observation — and that observation asserts BOTH arms, so neither ca
 go quiet unnoticed. Splitting them would report five reds for one mutation
 applied to one branch point.
 
-- [x] SC-694: test/consumer-ceremony-fixture.test.ts contains [loadRungateConfig(FIXTURE_ROOT), the chain resolves the fixture's XS/LIGHT discovery to STANDARD] — the consumer fixture is read through the harness's own loader and ship.js's four tier statements are extracted and EXECUTED over it, rather than the test asserting that a file it wrote contains what it wrote
-- [x] SC-695: test/helpers/consumer-ship-sites.ts contains [loadRungateConfig(FIXTURE_ROOT)] — the consumer config is one fact in one place; run wf_536df065-969 had two worktrees independently typing a consumer config into TypeScript with different contents, and a fixture that disagrees with itself cannot be the thing a consumer run is compared against
-- [x] SC-696: test/consumer-tier-gated-subsystems.test.ts contains [scanAssertions(selfSource).readingCeremonyTier] — the prohibition on reading the tier back is COUNTED rather than left as a comment, with a positive control held in the helper so the scan is not satisfied or defeated by its own text
-- [x] SC-697: test/consumer-tier-downgrade-mutation.test.ts contains [could not build the mutant: ${label} appears ${hits} times] — the downgrade, the floor call and the tier raise are each located exactly once before anything is removed, and the builder THROWS when one of them moves; a mutation harness that silently returns an unmutated copy reports green over a mutation that never happened
-- [x] SC-698: test/consumer-tier-downgrade-mutation.test.ts contains [the mutation is local: every subsystem block is byte-identical in the mutant] — all ten extracted ship.js sites are compared between the real source and the mutant, so the four reds are caused by the tier the chain resolved and not by a mutant that damaged the blocks it is measured through
-- [x] SC-699: test/consumer-tier-downgrade-mutation.test.ts contains [exactly four tier-gated observations turn red] — green and red are compared as NAME lists read out of the junit report, and every verdict is read only after `ran === 5`, because a suite that failed to resolve its imports reports no failures and is indistinguishable from a suite that passed
-- [x] SC-702: test/consumer-scope-gate-prevalidation.test.ts contains [a zero-match grep is classified empty, and is not auto-widened] — the scope gate's pre-validator has never executed on a self-run, so #271's FIXED contract is exercised here over commands that really run: exit 1 from a bare grep is a RESULT, and classifying it must not set `fixedCommand` the way the `|| true` rewrite it replaced did
-- [x] SC-703: test/consumer-no-rebuild-delegation.test.ts contains [rebuildExecutions, EXECUTION_CONSTRUCTS] — the prohibition is scanned by EXECUTION CONSTRUCT and not by string presence, because the rebuild phrase is inert data in the fixture by design; a string check would ban the fixture and would be a check that cannot fail
+**On the SC numbers.** This section was written as SC-694..SC-699, SC-702 and
+SC-703, and sat unmerged for six days while `CONFIG-DRIVEN-TESTING-SPEC.md`
+claimed that whole block. Renumbered to SC-2004..SC-2011 — the later claimant
+renumbers, and in landing order that is this section. The numbers come from
+`allocateScNumber`, not from reading this file: #507's lesson is that a margin
+computed from a narrower reading than the allocator's own agrees right up until
+it does not, and a sibling worktree or an unmerged branch is exactly the input
+this file cannot see. There is no gap at 2000..2003 to explain — SC-1993..2003
+are #586's, merged yesterday.
+
+The collision was caught by five checks and not by review: `SD-4`, `#330: a
+global SC id belongs to one spec`, both halves of `SC-885`, and `#358`'s
+ambiguous-mention accounting. Worth recording that the full clean-env run
+carrying those five failures **exited 0**, which is #168 — the verdict was read
+off the `12203 pass / 5 fail` summary, not off the exit code.
+
+- [x] SC-2004: test/consumer-ceremony-fixture.test.ts contains [loadRungateConfig(FIXTURE_ROOT), the chain resolves the fixture's XS/LIGHT discovery to STANDARD] — the consumer fixture is read through the harness's own loader and ship.js's four tier statements are extracted and EXECUTED over it, rather than the test asserting that a file it wrote contains what it wrote
+- [x] SC-2005: test/helpers/consumer-ship-sites.ts contains [loadRungateConfig(FIXTURE_ROOT)] — the consumer config is one fact in one place; run wf_536df065-969 had two worktrees independently typing a consumer config into TypeScript with different contents, and a fixture that disagrees with itself cannot be the thing a consumer run is compared against
+- [x] SC-2006: test/consumer-tier-gated-subsystems.test.ts contains [scanAssertions(selfSource).readingCeremonyTier] — the prohibition on reading the tier back is COUNTED rather than left as a comment, with a positive control held in the helper so the scan is not satisfied or defeated by its own text
+- [x] SC-2007: test/consumer-tier-downgrade-mutation.test.ts contains [could not build the mutant: ${label} appears ${hits} times] — the downgrade, the floor call and the tier raise are each located exactly once before anything is removed, and the builder THROWS when one of them moves; a mutation harness that silently returns an unmutated copy reports green over a mutation that never happened
+- [x] SC-2008: test/consumer-tier-downgrade-mutation.test.ts contains [the mutation is local: every subsystem block is byte-identical in the mutant] — all ten extracted ship.js sites are compared between the real source and the mutant, so the four reds are caused by the tier the chain resolved and not by a mutant that damaged the blocks it is measured through
+- [x] SC-2009: test/consumer-tier-downgrade-mutation.test.ts contains [exactly four tier-gated observations turn red] — green and red are compared as NAME lists read out of the junit report, and every verdict is read only after `ran === 5`, because a suite that failed to resolve its imports reports no failures and is indistinguishable from a suite that passed
+- [x] SC-2010: test/consumer-scope-gate-prevalidation.test.ts contains [a zero-match grep is classified empty, and is not auto-widened] — the scope gate's pre-validator has never executed on a self-run, so #271's FIXED contract is exercised here over commands that really run: exit 1 from a bare grep is a RESULT, and classifying it must not set `fixedCommand` the way the `|| true` rewrite it replaced did
+- [x] SC-2011: test/consumer-no-rebuild-delegation.test.ts contains [rebuildExecutions, EXECUTION_CONSTRUCTS] — the prohibition is scanned by EXECUTION CONSTRUCT and not by string presence, because the rebuild phrase is inert data in the fixture by design; a string check would ban the fixture and would be a check that cannot fail
 
 What was broken to prove it, run and counted rather than asserted:
 
