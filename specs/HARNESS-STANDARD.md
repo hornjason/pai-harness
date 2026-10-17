@@ -1747,7 +1747,7 @@ config has required fields` read the monolith directly, so on a project using
 the directory layout `existsSync` was false, the test returned, and a config
 missing `project` or `repo` passed **by never being looked at**.
 
-- [x] SC-1427: lib/conformity.ts contains [export function configAccessViolations] — one exported collector turns a scan into refusals so the mutation harness has a single site and the ratchet refuses over its number and under it because an entry that stopped being a violation is one nobody removes
+- [x] SC-1427: lib/conformity.ts contains [export function configAccessViolationRecords] — one exported collector turns a scan into refusals so the mutation harness has a single site and the ratchet refuses over its number and under it because an entry that stopped being a violation is one nobody removes
 - [x] SC-1428: test/config-access-conformity.test.ts contains [zero files scanned is a refusal] — a scan that read nothing refuses instead of reporting clean because a check that silently scans zero files is indistinguishable from compliance
 - [x] SC-1429: lib/conformity.ts contains [export function scanPromptConfigAccess] — workflow prompt bodies are scanned as well as TypeScript sources because eleven sites live inside template literals handed to agents and a source-only scan is blind to every one of them
 - [x] SC-1430: test/config-access-conformity.test.ts contains [lib/conformity.ts reports zero against itself] — the file hosting the check is in the scanned set so its patterns are assembled from fragments that never appear adjacent and its own three reads were migrated rather than allowlisted

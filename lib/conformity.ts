@@ -3029,6 +3029,58 @@ export function readConfigAccessRatchet(
  * this repo's defining defect and would be the most embarrassing possible
  * place to reproduce it (ADR-002 D4, mutation 5).
  */
+/**
+ * A violation and the file it is about, produced together (#517).
+ *
+ * `file` is `""` when the violation is not about one file — the two
+ * empty-scan refusals below are about the SCAN. That is the same value
+ * `runConfigAccessValidation` already records for its UNMEASURED finding,
+ * so there is one spelling of "no file here" rather than two.
+ *
+ * It used to be recovered from the message by
+ * `v.split(": ")[1]?.split(" ")[0] || ""`, which reads a path out of
+ * `CONFIG-1: lib/scanner.ts has 3 direct reads` correctly and reads the
+ * word **`the`** out of `CONFIG-1: the scan read NO files…`. A findings
+ * report renders that under a column headed `file`: it looks like a path,
+ * it is a stopword, and nothing downstream could tell it from a real one.
+ *
+ * The defect is not the parser. It is that the violation string is the
+ * HUMAN rendering and `file` is the MACHINE one, and the second was being
+ * recovered from the first — by the producer, which had the fact all
+ * along and threw it away by formatting it into prose. The `|| ""`
+ * fallback then made "this is not about a file" and "my parse failed"
+ * the same value. Producing both together removes the second case
+ * entirely rather than handling it.
+ */
+export interface ConfigAccessViolation {
+  /**
+   * The file in violation, or `""` when the violation is not about one.
+   *
+   * **`""` is not a one-meaning sentinel, and saying it was would be the
+   * silent-default shape.** `scan.counts` keys can never be empty —
+   * `walkSources` seeds every one from a scan directory and
+   * `scanPromptConfigAccess` prefixes `workflows/`, so all of them contain
+   * a `/`. `banked` keys CAN be: `readConfigAccessRatchet` validates only
+   * that the VALUE is a number, so a ratchet carrying `{"": 2}` produces a
+   * banked-but-absent violation whose `file` is `""` — a violation that IS
+   * about a ratchet entry, indistinguishable here from one about the scan.
+   *
+   * Measured by sec-517, and not a regression: the parse this replaced
+   * produced `""` there too. Recorded because the sentence it replaces
+   * claimed a guarantee the code does not make.
+   */
+  file: string;
+  message: string;
+}
+
+/**
+ * The string rendering, derived from the records rather than beside them.
+ *
+ * A pure projection, so it cannot disagree with `file`. Keeping it means
+ * the fifteen existing call sites that assert on message text do not have
+ * to be rewritten to prove a path field, and there is still only one
+ * binding that DECIDES what a violation is.
+ */
 export function configAccessViolations(
   scan: ConfigAccessScan,
   banked: Record<string, number>,
@@ -3036,7 +3088,33 @@ export function configAccessViolations(
   requireNonEmpty = true,
   evidence?: SourceEvidence,
 ): string[] {
-  const out: string[] = [];
+  return configAccessViolationRecords(scan, banked, label, requireNonEmpty, evidence)
+    .map(v => v.message);
+}
+
+/**
+ * Turn a scan into refusals, as RECORDS. The one binding that decides what
+ * a config-access violation is.
+ *
+ * Empty allows. The ratchet refuses in BOTH directions: over its number
+ * fails, under its number fails, and a file absent from the ratchet is
+ * allowed nothing — so a new reader fails the suite even while the total is
+ * above zero, and clearing a file means deleting its entry in the same
+ * commit.
+ *
+ * **This is the mutation target, not `configAccessViolations`.** That one
+ * is now a pure projection used only by tests; short-circuiting it to
+ * `return []` still scores red, but not one of those reds is a production
+ * path, so the score would be unchanged and the meaning would not.
+ */
+export function configAccessViolationRecords(
+  scan: ConfigAccessScan,
+  banked: Record<string, number>,
+  label: string,
+  requireNonEmpty = true,
+  evidence?: SourceEvidence,
+): ConfigAccessViolation[] {
+  const out: ConfigAccessViolation[] = [];
   if (requireNonEmpty && scan.filesScanned === 0) {
     // Name the source that made this refusal happen. Without it the consumer
     // reads "the scan read NO files" on a project they believe has no code,
@@ -3052,37 +3130,54 @@ export function configAccessViolations(
         ? ` The source walk could not read ${evidence.unreadable.join(", ")}, so ` +
           `"no code here" could not be established.`
         : "";
+    // About the SCAN, not about a file. This is the violation whose
+    // message begins "the scan read NO files" and whose derived path was
+    // therefore the word `the`.
     return [
-      `${label}: the scan read NO files. A check that scans nothing reports ` +
-        `zero violations and cannot be told from compliance — refusing rather ` +
-        `than reporting clean (ADR-002 D4).${why}`,
+      {
+        file: "",
+        message:
+          `${label}: the scan read NO files. A check that scans nothing reports ` +
+          `zero violations and cannot be told from compliance — refusing rather ` +
+          `than reporting clean (ADR-002 D4).${why}`,
+      },
     ];
   }
   if (requireNonEmpty && scan.filesScanned > 0 && scan.bytesScanned === 0) {
-    return [`${label}: ${scan.filesScanned} files were walked and none had any content.`];
+    // About the scan too — `${scan.filesScanned}` is a COUNT, and the old
+    // parse reported it as a path.
+    return [
+      { file: "", message: `${label}: ${scan.filesScanned} files were walked and none had any content.` },
+    ];
   }
 
   for (const [file, n] of Object.entries(scan.counts).sort()) {
     const allowed = banked[file] ?? 0;
     if (n > allowed) {
-      out.push(
-        `${label}: ${file} has ${n} direct config access site(s), ${allowed} allowed. ` +
+      out.push({
+        file,
+        message:
+          `${label}: ${file} has ${n} direct config access site(s), ${allowed} allowed. ` +
           `Only ${CONFIG_LOADER} may read the config (ADR-002 D1). Use ` +
           `loadRungateConfig / tryLoadRungateConfig / resolveConfig.`,
-      );
+      });
     } else if (n < allowed) {
-      out.push(
-        `${label}: ${file} is banked at ${allowed} but only ${n} remain — lower the ` +
+      out.push({
+        file,
+        message:
+          `${label}: ${file} is banked at ${allowed} but only ${n} remain — lower the ` +
           `number in .claude/config-access-ratchet.json in the same commit that earned it.`,
-      );
+      });
     }
   }
   for (const [file, allowed] of Object.entries(banked).sort()) {
     if (allowed > 0 && !(file in scan.counts)) {
-      out.push(
-        `${label}: ${file} is banked at ${allowed} but has no violations left — ` +
+      out.push({
+        file,
+        message:
+          `${label}: ${file} is banked at ${allowed} but has no violations left — ` +
           `remove its entry from .claude/config-access-ratchet.json.`,
-      );
+      });
     }
   }
   return out;
@@ -3692,7 +3787,7 @@ export function runConfigAccessValidation(root: string) {
         });
         return;
       }
-      const violations = configAccessViolations(
+      const violations = configAccessViolationRecords(
         scan,
         readConfigAccessRatchet(root, "sources"),
         "CONFIG-1",
@@ -3703,12 +3798,13 @@ export function runConfigAccessValidation(root: string) {
         addFinding({
           ruleId: "CONFIG-1",
           severity: "FAIL",
-          file: v.split(": ")[1]?.split(" ")[0] || "",
-          message: v,
+          file: v.file,
+          message: v.message,
           fixCommand: "Route the read through lib/config-loader.ts",
         });
       }
-      expect(violations, violations.join("\n")).toEqual([]);
+      const messages = violations.map(v => v.message);
+      expect(messages, messages.join("\n")).toEqual([]);
     });
   });
 }
@@ -3743,7 +3839,7 @@ export function runPromptConfigAccessValidation(root: string) {
         });
         return;
       }
-      const violations = configAccessViolations(
+      const violations = configAccessViolationRecords(
         scan,
         readConfigAccessRatchet(root, "workflows"),
         "CONFIG-2",
@@ -3752,12 +3848,13 @@ export function runPromptConfigAccessValidation(root: string) {
         addFinding({
           ruleId: "CONFIG-2",
           severity: "FAIL",
-          file: v.split(": ")[1]?.split(" ")[0] || "",
-          message: v,
+          file: v.file,
+          message: v.message,
           fixCommand: "Point the prompt at the resolved-config artefact instead",
         });
       }
-      expect(violations, violations.join("\n")).toEqual([]);
+      const messages = violations.map(v => v.message);
+      expect(messages, messages.join("\n")).toEqual([]);
     });
   });
 }
