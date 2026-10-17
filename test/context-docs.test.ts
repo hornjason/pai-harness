@@ -21,7 +21,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync, readFileSync } from "fs";
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync, readFileSync, realpathSync } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import { assembleBrief } from "../gates/brief-assembler";
@@ -159,23 +159,31 @@ describe("SC-1615: a rejected entry is reported, not dropped", () => {
 
 describe("SC-1616: a path outside the project root is a recorded decision", () => {
   test("an absolute path reaches the brief, labelled external", async () => {
-    // THE DECISION. A brief NAMES files; it does not read them, and the
-    // config is written by the operator whose session the agent runs in. So
-    // an external doc is included and labelled rather than filtered out
-    // where nobody can see it. What is worth protecting is a reader's
-    // ability to notice that a brief reaches outside the repository.
+    // THE DECISION, revised by #497. #439 included an external doc and
+    // labelled it, on the premise that the config is written by the operator
+    // whose session the agent runs in. That is true of a project the
+    // operator scaffolded and false of one they cloned, where the config is
+    // a checked-in file written by somebody else — and a brief exists to be
+    // obeyed by an agent holding a Read tool.
+    //
+    // So it is REJECTED. #439's property is the part that survives and is
+    // asserted here too: it is named in the brief with a reason, never
+    // dropped where nobody can see it.
     const outside = join(base, "other-project");
     mkdirSync(outside, { recursive: true });
     writeFileSync(join(outside, "POV.md"), "pov\n");
     writeDirectoryConfig({ contextDocs: [join(outside, "POV.md")] });
 
     const text = await brief();
-    expect(text, "the use case that prompted the report is still dropped").toContain("POV.md");
-    expect(text).toContain("external to this project");
-    expect(text).toContain("EXTERNAL");
+    expect(text, "the entry vanished, which is the defect #439 fixed").toContain("POV.md");
+    expect(text).toContain("REJECTED");
+    expect(text, "the refusal does not say how to allow it").toContain("RUNGATE_TRUSTED_DOC_ROOTS");
+    // The instrument: the path is not offered as something to read.
+    expect(text.split("\n").some(l => /^\d+\. .*POV\.md/.test(l)), "it is still a numbered doc to read")
+      .toBe(false);
   });
 
-  test("SC-1620: a traversing path reaches the brief, labelled external", async () => {
+  test("SC-1620: a traversing path reaches the brief as a named rejection", async () => {
     const outside = join(base, "sibling");
     mkdirSync(outside, { recursive: true });
     writeFileSync(join(outside, "NOTES.md"), "n\n");
@@ -183,17 +191,17 @@ describe("SC-1616: a path outside the project root is a recorded decision", () =
 
     const text = await brief();
     expect(text).toContain("NOTES.md");
-    expect(text).toContain("external to this project");
+    expect(text).toContain("REJECTED");
   });
 
   test("a sibling directory whose name EXTENDS the root is still external", () => {
     // `relative`, not `startsWith`: `/x/project-backup` starts with
     // `/x/project` and is a different directory. A prefix comparison would
-    // call it internal and the label would be wrong in the dangerous
-    // direction.
-    const v = classifyContextDoc("/x/project", "/x/project-backup/SECRETS.md");
-    expect(v.kind).toBe("included");
-    expect(v.kind === "included" && v.external).toBe(true);
+    // call it internal, and now that external means refused, the error would
+    // be a path that is admitted rather than a label that is wrong.
+    const v = classifyContextDoc("/x/project", "/x/project-backup/SECRETS.md", {});
+    expect(v.kind).toBe("rejected");
+    expect(v.kind === "rejected" && v.reason).toContain("outside this project");
   });
 });
 
@@ -206,7 +214,10 @@ describe("SC-1617: each arm of the classifier, with a positive control", () => {
       expect(v.kind).toBe("included");
       expect(v.kind === "included" && v.external).toBe(false);
       expect(v.kind === "included" && v.missing).toBe(false);
-      expect(v.kind === "included" && v.resolved).toBe(resolve(root, "DOC.md"));
+      // The REAL path (#497): on macOS `/var` is a symlink to `/private/var`,
+      // and the whole point of resolving links is that the brief names where
+      // the file actually is.
+      expect(v.kind === "included" && v.resolved).toBe(join(realpathSync(root), "DOC.md"));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
