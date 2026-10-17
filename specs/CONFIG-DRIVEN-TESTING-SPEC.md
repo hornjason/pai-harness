@@ -1099,3 +1099,42 @@ criteria and keeps all 19 intact with their reasons reported.
 - [x] SC-1997: test/audit-specs-rewrite-fidelity.test.ts contains [a keyword list means all of its phrases, not any one of them] — with the rule still firing on the statement it is actually for
 - [x] SC-1998: test/audit-specs-rewrite-fidelity.test.ts contains [the loose file fallback fires on existence, not on any filename] — the two live survivors, plus a control phrased to reach the LOOSE path rather than the registry heuristic that shares its pattern name
 - [x] SC-1999: test/audit-specs-rewrite-fidelity.test.ts contains [a directory pattern is satisfied by its broader bare form, and not the reverse] — the `.gitignore` half, which was filed wrongly as non-idempotence; the reverse direction is pinned because widening this match is how `service-account*` comes back
+
+### What was broken to prove it (SC-1993..SC-1999)
+
+Run and counted over `test/audit-specs-rewrite-fidelity.test.ts` +
+`test/scaffold-conformity.test.ts` + `test/audit-specs.test.ts` (baseline
+1087 pass / 0 fail). None is left in the tree.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the keyword test back to `some` for every heuristic | 2 | 2 |
+| a constant extractor reports `ambiguous: false` again | 1 | 1 |
+| the distinguishing-terms guard removed | 1 | 1 |
+| the stopword filter removed from `distinguishingTerms` | **2** | 1 |
+| the loose fallback's existence narrowing removed | 1 | 1 |
+| `missingGitignorePatterns` back to exact matching | 1 | 1 |
+
+**Row four found two vacuous assertions in the file written to catch
+vacuous rewrites.** It was predicted to turn SC-1995 red and turned SC-1994
+instead. SC-1995's negative controls were `not.toContain("the")` and
+`not.toContain("no")` against `Baseline rules carry no paths: key in
+frontmatter` — `the` does not occur in that statement at all, and `no` is
+below the four-character floor whatever the stopword set says. Both held
+for reasons unrelated to the filter.
+
+The replacement asserts the thing that actually carries the case: the
+MATCHED keyword is excluded. `frontmatter` is in the statement, it is what
+fired the heuristic, and the constant rewrite contains it — so counting it
+as retained content is exactly what makes a constant rewrite read as
+faithful. With that in place the row is 2, and both reds are about the
+mutation.
+
+### A fourth self-reference trap, in this section
+
+The paragraph above explaining the preservation marker originally quoted
+it, and `AC-3` in `test/audit-specs.test.ts` greps every spec for that
+marker's literal text — so a spec describing the mechanism reported itself
+as a spec with an unresolved marker in it. It is named rather than quoted
+now. `.claude/rules/checks-must-be-able-to-fail.md` has caught this shape
+in prose four times; describing the detector is cheaper than widening it.

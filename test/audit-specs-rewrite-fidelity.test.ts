@@ -92,11 +92,25 @@ describe("#586: a rewrite keeps what the criterion was about", () => {
     expect(terms, "the criterion's own subject is not treated as distinguishing").toContain("baseline");
     expect(terms).toContain("paths");
 
-    // Stopwords and the matched keyword are not distinguishing. Without
-    // this, "all specs have frontmatter" retains `frontmatter` and the guard
-    // reads the rewrite as faithful.
-    expect(terms, "a stopword is being counted as content").not.toContain("the");
-    expect(terms, "a stopword is being counted as content").not.toContain("no");
+    // The MATCHED keyword is not distinguishing, and this is the assertion
+    // that carries the case: `frontmatter` is in the statement, it is what
+    // made the heuristic fire, and the constant rewrite contains it — so
+    // counting it as retained content makes the guard read the rewrite as
+    // faithful. Mutating the stopword filter must turn this red.
+    expect(terms, "the matched keyword is being counted as the criterion's own content")
+      .not.toContain("frontmatter");
+
+    // The first draft asserted `not.toContain("the")` and `not.toContain("no")`
+    // here, and the stopword mutation left it GREEN: neither word is in this
+    // statement, and `no` is under the four-character floor regardless. Two
+    // vacuous assertions in the file written to catch vacuous rewrites. The
+    // negative control now uses a statement that actually contains them.
+    const wordy = "the rule must have been written when there was no other option";
+    const wordyTerms = distinguishingTerms(wordy);
+    expect(wordyTerms, "a stopword is being counted as content").not.toContain("been");
+    expect(wordyTerms, "a stopword is being counted as content").not.toContain("there");
+    expect(wordyTerms, "every word was filtered, so the filter is not discriminating")
+      .toContain("option");
   });
 
   test("SC-1996: an extractor that ignores its input cannot claim to be unambiguous", () => {
