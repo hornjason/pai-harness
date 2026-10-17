@@ -486,8 +486,39 @@ the section above was asserted by grepping this same function's source and
 stayed green when the call it grepped for was replaced with an empty list,
 because the comment above the call used the same word.
 
+## A Repo line with no remote and nowhere to put one (#552)
+
+Filed inside #552 as having the same cause as the audit checks above. **It
+does not.** Those two read the wrong surface; this is a scan value with no
+second source, and the two share only the function they land in. Measured
+rather than inherited, on a git repo with no remote named `origin`:
+
+```
+scan.repoUrl                        -> ""
+occurrences of "TODO: Add repo URL" ->  2
+```
+
+`detectRepoUrl` is `git remote get-url origin`, so a project whose remote
+is named anything else — or which has none — gets an empty string, and the
+generator wrote `<!-- TODO: Add repo URL -->` into both places it emits the
+line. There was no way to answer it: `--profile=minimal` writes no
+`.claude/rungate/`, so no config key exists, and editing AGENTS.md by hand
+is undone by the next `REGENERATED: AGENTS.md`.
+
+**The frontmatter is the place, because it is the one part of this file
+that already survives regeneration.** `buildFrontmatter` carries forward
+every simple scalar the existing block declared — that is what it is for —
+so `repo:` written once by hand persists across every later run, and the
+git remote stays the default wherever there is one. The TODO now names the
+key, because a TODO that does not say where the answer goes is the dead end
+it replaced.
+
+Two mutations, both predicted 1 and measured 1: dropping the frontmatter
+fallback, and shortening the TODO back to its old wording.
+
 ### Success Criteria
 
+- [x] SC-1897: test/agents-md-spec-listing.test.ts contains [`repo:` in the frontmatter fills the Repo line git could not] — over a fixture whose missing origin is asserted first, with the round trip driven so the value is shown to survive regeneration
 - [x] SC-1891: test/agents-md-spec-listing.test.ts contains [this repo reports no unlisted spec and no unreferenced CODE-MAP] — the live case, with the spec count and the surface count asserted so an audit that looked at nothing cannot pass it
 - [x] SC-1892: test/agents-md-spec-listing.test.ts contains [a spec named by no surface is still reported] — the other direction, without which the rows above are satisfied by a check that returns an empty list
 - [x] SC-1893: test/agents-md-spec-listing.test.ts contains [a spec listed only in .claude/rules/ is listed] — the exact shape D-15 created, with the same fixture one line different as the control
