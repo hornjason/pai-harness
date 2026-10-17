@@ -4,6 +4,7 @@ import { join, relative } from "path";
 import { createHash } from "crypto";
 import { SIGNAL_PHRASE_PATTERNS } from "../lib/signal-phrases";
 import { planDocScan, type DocScanPlan } from "../lib/doc-scan-targets";
+import { lastCommitDates } from "../lib/git-dates";
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -111,24 +112,44 @@ function loadRejectedHashes(projectPath: string): Set<string> {
   return hashes;
 }
 
+/**
+ * One git subprocess for every document, not one per document (#508).
+ *
+ * This was `Bun.spawnSync(["git", …, "log", "-1", …, "--", rel])` inside
+ * the loop — the exact code #323 removed from `runDocHygiene`, in a file
+ * #323 did not touch. 92 documents meant 92 serial subprocesses against
+ * the same repository, and nothing was wrong with any single one: the
+ * check was load-sensitive by construction, so a busy machine, a cold
+ * cache or another suite holding the index pushed it past the 5000ms
+ * default test timeout. Measured before the change at 4169ms, 4521ms and
+ * 3969ms on an IDLE machine with a warm cache; HYGIENE-6 had been seen red
+ * four times in full runs and green standalone every time.
+ *
+ * `lastCommitDates` walks the whole history newest-first with `--name-only`
+ * and returns every path's latest commit date from one call. Imported from
+ * `lib/git-dates.ts` rather than copied, because two implementations of
+ * one question are behaviourally one and no test can tell them apart.
+ */
 function computeStaleness(projectPath: string, files: string[]): StalenessEntry[] {
+  const considered = files
+    .map(f => relative(projectPath, f))
+    .filter(rel => !(rel.includes("docs/adr/") || /ADR/i.test(rel)));
+  // The exact lookup set is the pathspec, so the keys and the query cannot
+  // drift — #323 got this wrong first time by passing the directories.
+  const lastCommit = lastCommitDates(projectPath, considered);
+
   const stale: StalenessEntry[] = [];
-  for (const filePath of files) {
-    const rel = relative(projectPath, filePath);
-    const isAdr = rel.includes("docs/adr/") || /ADR/i.test(rel);
-    if (isAdr) continue;
-    try {
-      const result = Bun.spawnSync(["git", "-C", projectPath, "log", "-1", "--format=%ci", "--", rel], { timeout: 5_000 });
-      const dateStr = result.stdout.toString().trim().split(" ")[0];
-      if (!dateStr) continue;
-      const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
-      const isSpec = rel.startsWith("specs/");
-      const threshold = isSpec ? 90 : 180;
-      const type = isSpec ? "spec" : "guide";
-      if (daysSince > threshold) {
-        stale.push({ file: rel, daysSince: Math.floor(daysSince), threshold, type });
-      }
-    } catch {}
+  for (const rel of considered) {
+    const dateStr = lastCommit.get(rel);
+    // No commit means untracked or newly added, which is the opposite of stale.
+    if (!dateStr) continue;
+    const daysSince = (Date.now() - new Date(dateStr).getTime()) / (1000 * 60 * 60 * 24);
+    const isSpec = rel.startsWith("specs/");
+    const threshold = isSpec ? 90 : 180;
+    const type = isSpec ? "spec" : "guide";
+    if (daysSince > threshold) {
+      stale.push({ file: rel, daysSince: Math.floor(daysSince), threshold, type });
+    }
   }
   return stale;
 }
