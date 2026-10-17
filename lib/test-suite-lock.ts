@@ -1179,24 +1179,37 @@ export function evaluateFullSuiteRequest(
   // rationed. Scope is decided here and only here: `wouldAllowFullSuite`
   // below must not answer the same question, or there would be two deciders
   // and no behavioural test could tell them apart.
+  //
+  // It exempts the BUDGET and not the concurrency slot, and the distinction
+  // is the whole of the design. The budget is a rate — the wrong unit for a
+  // one-second probe. The slot is simultaneity, which is what rebooted the
+  // machine in #67, and a scratch tree can be a full clone. Two further
+  // reasons it must not skip the slot: `TestSuiteRelease` releases on the
+  // same `isFullSuiteCommand` predicate with no notion of scope, so an
+  // acquire this side skipped would free a slot somebody else is holding;
+  // and "cd into /tmp to escape the cap" would be a bypass anyone could
+  // reach for.
   const scope = options.scope ?? runScope(options.cwd);
-  if (scope === "scratch") {
-    recordScratchRun(lockDir, now, options.cwd);
-    return {
-      allow: true,
-      exempt:
-        `not a run of this repository (${options.cwd ?? "unknown cwd"}), so it is not charged ` +
-        `against DIR-L29 — recorded in ${scratchRunsPath(lockDir)}`,
-    };
-  }
 
-  const predicted = wouldAllowFullSuite(sessionId, command, options);
+  const predicted = scope === "scratch" ? { allow: true } : wouldAllowFullSuite(sessionId, command, options);
   if (!predicted.allow) return predicted;
 
   // The prediction above is advisory; this is the atomic claim. Another session
   // can take the last slot in between, and then the acquirer's answer wins.
   const slot = acquireFullSuiteSlot(sessionId, options);
   if (!slot.ok) return concurrencyRefusal(sessionId, slot.holders ?? []);
+
+  if (scope === "scratch") {
+    recordScratchRun(lockDir, now, options.cwd);
+    return {
+      allow: true,
+      exempt:
+        `not a run of this repository (${options.cwd ?? "unknown cwd"}), so it is not charged ` +
+        `against DIR-L29 — recorded in ${scratchRunsPath(lockDir)}. It still holds a ` +
+        `concurrency slot, which is what the cap is actually for.`,
+      ...(slot.degraded ? { warning: degradedWarning(lockDir) } : {}),
+    };
+  }
 
   try {
     // Only the in-window runs are carried forward, and never more than the
@@ -1218,15 +1231,18 @@ export function evaluateFullSuiteRequest(
   }
 
   if (slot.degraded) {
-    return {
-      allow: true,
-      warning:
-        `Concurrency guard DEGRADED — lock directory ${lockDir} is unusable, so this run ` +
-        `was allowed without taking a slot. The cap is not being enforced right now. ` +
-        `Check with other sessions before starting a full suite.`,
-    };
+    return { allow: true, warning: degradedWarning(lockDir) };
   }
   return { allow: true };
+}
+
+/** One wording for the degraded case, so the two exits cannot drift apart. */
+function degradedWarning(lockDir: string): string {
+  return (
+    `Concurrency guard DEGRADED — lock directory ${lockDir} is unusable, so this run ` +
+    `was allowed without taking a slot. The cap is not being enforced right now. ` +
+    `Check with other sessions before starting a full suite.`
+  );
 }
 
 /**

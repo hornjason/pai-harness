@@ -22,6 +22,7 @@ import {
   DEFAULT_MAX_RUNS_PER_WORKER,
   deriveWorkerId,
   evaluateFullSuiteRequest,
+  releaseFullSuiteSlot,
   runScope,
   scratchRunsPath,
 } from "../lib/test-suite-lock";
@@ -95,6 +96,18 @@ describe("#510: the budget belongs to this repository's suite, not to every suit
     const real = evaluateFullSuiteRequest("reviewer", FULL, { ...base(dir), cwd: REPO_ROOT });
     expect(real.allow).toBe(true);
     expect(real.exempt, "a run of this repository was exempted").toBeUndefined();
+
+    // The exemption is the BUDGET and not the concurrency slot. A scratch
+    // tree can be a full clone, `TestSuiteRelease` frees a slot on the same
+    // predicate with no notion of scope, and "cd into /tmp" must not be a
+    // way past the cap that rebooted the machine in #67.
+    const narrow = mkdtempSync(join(tmpdir(), "rg-510-cap-"));
+    scratch.push(narrow);
+    const once = { lockDir: narrow, suitesRunning: () => false, capacity: 1 };
+    expect(evaluateFullSuiteRequest("first", FULL, { ...once, cwd: probe }).allow).toBe(true);
+    const second = evaluateFullSuiteRequest("second", FULL, { ...once, cwd: probe });
+    expect(second.allow, "two concurrent scratch suites were allowed").toBe(false);
+    expect(second.reason, "refused for some reason other than concurrency").toContain("already running");
   });
 
   test("SC-1923: a run of this repository is still charged, and the budget still refuses", () => {
@@ -202,6 +215,13 @@ describe("#510: the budget belongs to this repository's suite, not to every suit
       evaluateFullSuiteRequest(sessionId, FULL, { ...base(hookDir), cwd: REPO_ROOT, workerId }).allow,
       "the budget was not actually spent, so the hook below is asked nothing",
     ).toBe(false);
+
+    // Those runs each took a slot and none of them is still running, so hand
+    // them back: the hook asks with the default capacity, and a refusal over
+    // leftover slots would not be the question this case is asking.
+    for (let i = 0; i <= DEFAULT_MAX_RUNS_PER_WORKER; i++) {
+      releaseFullSuiteSlot(sessionId, { lockDir: hookDir, workerId });
+    }
 
     const p = Bun.spawnSync(["bun", HOOK], {
       stdin: Buffer.from(
