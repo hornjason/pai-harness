@@ -1090,3 +1090,33 @@ scaffold's budget — survives verbatim. Only its derivation moved.
 - [x] SC-1978: test/unit/scaffold-project.test.ts contains [a deliberately starved case is recorded UNMEASURED instead of failing] — the wrapper's conversion branch exercised where it lives and failing in BOTH directions, because every other fixture in that file meets its budget and #492 is the shape where a battery measures nothing past a precondition they all satisfy
 
 ### What was broken to prove it (SC-1971..1978)
+
+Run and counted over `test/scaffold-budget.test.ts` +
+`test/unit/scaffold-project.test.ts` (49 tests, baseline 49 pass / 0 fail,
+re-measured for every row after SC-1978 was added so the table has one
+baseline). None is left in the tree; all were run and reverted.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| `scaffoldBudget` ignores the calibration and returns the floor — the old behaviour, restored | 2 of 49 | 2 |
+| `timedOut` hard-coded false — a killed run is never reported as one | 2 of 49 | 2 |
+| `timedOut: !proc.success` — the cheap version, where any failed run is a timeout | 1 of 49 | 1 |
+| `NOT observed` dropped from the UNMEASURED message | 1 of 49 | 1 |
+| the census reports a count instead of naming the unmeasured case | 1 of 49 | 1 |
+| the `test` wrapper stops converting `ScaffoldUnmeasured` | 1 of 49 | 1 |
+| `runScaffold` stops raising on a killed run | 1 of 49 | 1 |
+
+The last two rows are the reason SC-1978 exists. Measured before it was
+added, both are **0** — not because the bindings are dead, but because every
+fixture in that file meets its budget, so the branch they live on is
+unreachable from the tree. That is #492's shape, and the response this file's
+own rules prescribe is to build the one fixture that does not meet the
+precondition rather than to record a zero.
+
+One deliberate zero is kept and not fixed: deleting the sentence *"this is
+the absence of a measurement, not a failing one"* from the UNMEASURED message
+is **0 of 49**. The mutant and the original differ — on that substring — and
+nothing asserts it, because it is explanatory prose beside three clauses that
+are asserted (`UNMEASURED`, the budget, and `NOT observed`). Recorded rather
+than padded: widening an assertion to cover prose would raise the number
+without widening the question.
