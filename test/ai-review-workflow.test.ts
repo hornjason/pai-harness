@@ -63,9 +63,12 @@ import {
   AI_REVIEW_AUTH_PRECEDENCE,
   AI_REVIEW_AUTH_STEP_ID,
   AI_REVIEW_JOB,
+  AI_REVIEW_RUN_STEP_ID,
   AI_REVIEW_WORKFLOW_FILE,
   buildAuthDetectScript,
   buildAuthDetectStep,
+  buildReviewRunScript,
+  buildReviewRunStep,
 } from "../lib/scaffold/ai-review-step";
 import { aiReviewAuthScript, aiReviewUnmeasuredViolations } from "../lib/conformity";
 
@@ -291,6 +294,104 @@ describe("AC-5: a configured credential emits no UNMEASURED annotation", () => {
     const run = runAuthScript(probe, {});
     expect(run.stdout, "the harness passed a real credential into the clean case")
       .not.toContain("LEAKED");
+  });
+});
+
+// ── AC-7: the other door into the same defect ────────────────────────────
+//
+// The auth-detect step makes mode `none` honest and says nothing about the
+// other three. On a repository that HAS a credential those are the only
+// modes reachable, so with the auth step alone a job named "AI Review"
+// concludes success on every pull request, having reviewed nothing, and
+// says nothing about it. Measured, not reasoned: the first run of this
+// workflow on PR #641 logged `ai-review auth mode: vertex` and emitted zero
+// annotations, because rungate has GCP_SA_KEY set.
+//
+// "No credential, so no review" and "a credential, but nothing wired to use
+// it" are the same state to a required check. Both are UNMEASURED.
+describe("AC-7: every mode the job can resolve says what it measured", () => {
+  test("AC-7: a resolved mode emits exactly one UNMEASURED warning and exits 0", () => {
+    const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "vertex" });
+    const warnings = run.stdout
+      .split("\n")
+      .filter(l => l.startsWith("::warning") && l.includes("UNMEASURED"));
+    expect(warnings.length, `a resolved mode reviewed nothing in silence\n${run.stdout}`).toBe(1);
+    expect(warnings[0]).toContain("#631");
+    expect(run.code, "a tree that has not opted in must not go red").toBe(0);
+  });
+
+  test("AC-7: every credentialed mode in the ladder annotates, not just the first", () => {
+    // Enumerated from the ladder rather than spot-checked: a fourth mode
+    // added later with its own quiet exit would otherwise ship unobserved.
+    for (const c of AI_REVIEW_AUTH_PRECEDENCE) {
+      const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: c.mode });
+      const warnings = run.stdout.split("\n").filter(l => l.includes("UNMEASURED"));
+      expect(warnings.length, `mode ${c.mode} passed quietly\n${run.stdout}`).toBe(1);
+    }
+  });
+
+  test("AC-7: mode none is silent here, because the auth step already said it", () => {
+    // One state reported once. Annotating `none` in both steps would make a
+    // single unmeasured review look like two.
+    const run = runAuthScript(buildReviewRunScript(), { AI_REVIEW_MODE: "none" });
+    expect(run.stdout).not.toContain("UNMEASURED");
+    expect(run.code).toBe(0);
+  });
+
+  test("AC-7: an unset mode is treated as none, not as a resolved credential", () => {
+    const run = runAuthScript(buildReviewRunScript(), {});
+    expect(run.stdout).not.toContain("UNMEASURED");
+    expect(run.code).toBe(0);
+  });
+
+  test("AC-7: a consumer who required a review and got none is refused", () => {
+    const run = runAuthScript(buildReviewRunScript(), {
+      AI_REVIEW_MODE: "vertex",
+      RUNGATE_REQUIRE_AI_REVIEW: "true",
+    });
+    expect(run.code, "the opt-in refusal did not fire for a missing reviewer").toBe(1);
+    expect(run.stderr).toContain("::error");
+    expect(run.stderr).toContain("#631");
+  });
+
+  test("AC-7: the refusal reads the variable exactly, like the auth step does", () => {
+    for (const value of ["TRUE", "True", "1", "yes", "truthy", "true "]) {
+      const run = runAuthScript(buildReviewRunScript(), {
+        AI_REVIEW_MODE: "vertex",
+        RUNGATE_REQUIRE_AI_REVIEW: value,
+      });
+      expect(run.code, `${JSON.stringify(value)} turned the gate on by accident`).toBe(0);
+    }
+  });
+
+  test("AC-7: the step is in the generated file, verbatim, and carries no `if`", () => {
+    expect(generated()).toContain(buildReviewRunStep());
+    const doc = Bun.YAML.parse(generated()) as any;
+    const steps = doc.jobs[AI_REVIEW_JOB].steps;
+    const step = steps.find((s: any) => s.id === AI_REVIEW_RUN_STEP_ID);
+    expect(step, `no step with id ${AI_REVIEW_RUN_STEP_ID}:\n${generated()}`).toBeDefined();
+    expect(Object.keys(step)).not.toContain("if");
+  });
+
+  test("AC-7: the mode reaches the script through env:, never interpolated into run:", () => {
+    // `${{ }}` is substituted into the script text before bash sees it. The
+    // mode is one of four literals we generated and is not attacker-reachable
+    // today — which is exactly the reasoning that makes an exception become a
+    // convention nobody can rely on.
+    const doc = Bun.YAML.parse(generated()) as any;
+    const step = doc.jobs[AI_REVIEW_JOB].steps.find((s: any) => s.id === AI_REVIEW_RUN_STEP_ID);
+    expect(step.run).not.toContain("${{");
+    expect(step.env.AI_REVIEW_MODE).toContain(`steps.${AI_REVIEW_AUTH_STEP_ID}.outputs.mode`);
+  });
+
+  test("AC-7: a review step that passes quietly is what this would have shipped", () => {
+    // The mutant, run rather than described: strip the annotation and the
+    // resolved-mode case becomes the silent green PR #641 actually produced.
+    const quiet = buildReviewRunScript().replace(/^echo "::warning.*$/m, ":");
+    expect(quiet, "the mutation did not apply").not.toBe(buildReviewRunScript());
+    const run = runAuthScript(quiet, { AI_REVIEW_MODE: "vertex" });
+    expect(run.stdout).not.toContain("UNMEASURED");
+    expect(run.code).toBe(0);
   });
 });
 

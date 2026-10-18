@@ -23,7 +23,7 @@ import {
   type MovedKey,
 } from "./managed-workflow";
 import { PRE_PUSH_MANAGED_MARKER, prePushHookScript } from "./pre-push-hook";
-import { AI_REVIEW_JOB, buildAuthDetectStep } from "./ai-review-step";
+import { AI_REVIEW_JOB, buildAuthDetectStep, buildReviewRunStep } from "./ai-review-step";
 import { loadComplianceConfig, tryLoadRungateConfig } from "../config-loader";
 import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
@@ -2689,6 +2689,10 @@ ${bunStep}
 # \`skipped\`, which a required status check can be configured to accept, and
 # that is a green check for a review that never ran. The credential check
 # happens inside \`run:\` instead, and reports UNMEASURED when there is none.
+#
+# The second step says the same thing for the other door: a credential that
+# resolved with no reviewer wired to use it (#631) has also not produced a
+# review, and a check that stays quiet about that is the same defect.
 name: AI Review
 
 on:
@@ -2703,7 +2707,7 @@ jobs:
   ${AI_REVIEW_JOB}:
     runs-on: ${runsOn}
     steps:
-${buildAuthDetectStep()}`;
+${buildAuthDetectStep()}${buildReviewRunStep()}`;
 
   // Not `writeFileSync`. The harness owns the `test` and `gates` jobs; it does
   // not own the file, and a consumer's own jobs have to survive the update
