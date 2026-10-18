@@ -677,3 +677,120 @@ None of the three mutations is left in the tree; all were run and reverted, and
 - **A report does not state its coverage.** 36 of 426 files scanned and 426 of
   426 are still the same PASS to a reader, which is #492's generalisation and a
   separate change.
+
+## #624 — the hill-climb loop wrote a brief nobody had chosen to write
+
+`applyHillClimb` composed a reinforcement bullet and then wrote the tracked
+agent brief at the bottom of the same loop, as a side effect of having
+composed it. Nobody had chosen that destination: measured on `main` at
+`26565f89`, no brief in this repository has ever carried a committed
+`REINFORCED (auto)` line, and `git status` reported exactly one — uncommitted,
+in `.claude/agents/discovery.md`. So every rule the loop has ever produced was
+either discarded by the next `git checkout` or left dirtying a tree that some
+later run had to work around.
+
+The inserted bullet was also malformed. The prefix opened with `\n` and closed
+with nothing, so the bullet butted straight against the heading that followed
+it:
+
+```markdown
+- **REINFORCED (auto):** NEVER read a file with cat…
+## Context (READ THIS FIRST)
+```
+
+A list item immediately followed by an ATX heading is not a reliably parsed
+construct, and these files are read by agents as context — so the rule the
+loop had just decided an agent keeps breaking was delivered in the shape most
+likely to be swallowed.
+
+### The destination contract
+
+- **Composing and writing are two things.** `applyHillClimb` builds the
+  reinforced content and hands it to `writeReinforcedBrief`, which is the only
+  site in the module that writes a brief. The write is no longer a consequence
+  of the composition having happened.
+- **Every write names its destination**, and the name is one of
+  `HILL_CLIMB_DESTINATIONS` — `COMMIT`, `UNTRACKED` or `DISCARD`. `COMMIT`
+  writes the tracked brief in place for a human to review; `UNTRACKED` writes
+  the reinforced copy to `untrackedBriefPath`, outside the brief's own
+  directory, so a proposal survives without dirtying the tree; `DISCARD`
+  composes, reports, and writes nothing.
+- **The result says what happened.** `applyHillClimb` returns a
+  `HillClimbWrite` carrying the destination and the path actually written, and
+  `null` when nothing was. A caller that printed "brief updated" without
+  reading it would be guessing — which is what the loop did for its whole
+  life.
+- **The applied line carries the destination**, so an operator reading the log
+  can tell where the rule went without re-deriving it.
+- **One default binding.** `DEFAULT_HILL_CLIMB_DESTINATION` is `COMMIT`, which
+  is exactly what every existing caller already got, so this change routes the
+  write without moving it. **Which destination the shipped loop should default
+  to is AC-2 and is deliberately not decided here**: flipping it has to move
+  `scripts/persist-compliance.ts`'s re-grade step with it, because re-grading
+  a brief that was not written measures the old one and reports the number as
+  if it were new.
+
+### The separator rule
+
+- **An inserted block is separated from a following ATX heading by a blank
+  line.** `insertReinforcement` decides it, from the text that follows the
+  insertion point, and that is the only place it is decided.
+- **The prefix literal is spelled once.** `REINFORCEMENT_PREFIX` replaces the
+  three sites at `:511`, `:515` and `:519` that each built the same string, so
+  a formatting change cannot be half-applied.
+- **The separator is not a newline inside the prefix.** That is the cheapest
+  repair for the reported symptom and it is the wrong one: it moves the rule's
+  text off its own bullet and leaves the heading exactly where it was.
+
+- [x] SC-2081: lib/compliance-report.ts contains [HILL_CLIMB_DESTINATIONS, writeReinforcedBrief] — every reinforcement write goes through one exported binding that names the destination COMMIT, UNTRACKED or DISCARD, so the brief is no longer written as a side effect of composing the text, and the result carries the destination and the path actually written
+- [x] SC-2082: lib/compliance-report.ts contains [DEFAULT_HILL_CLIMB_DESTINATION] — the destination is one defaulted binding a caller overrides per run, so there is one thing to change and one thing to mutate
+- [x] SC-2083: lib/compliance-report.ts contains [REINFORCEMENT_PREFIX, insertReinforcement] — the prefix literal appears exactly once and an inserted block is separated from a following ATX heading by a blank line, asserted by reading the two lines around the heading rather than searching the whole document
+
+### What was broken to prove it (SC-2083)
+
+Measured over `test/hill-climb-markdown.test.ts` (5 tests). Baseline before
+any mutation: **5 pass, 0 fail.**
+
+| Mutation | Predicted | Red |
+|---|---|---|
+| `insertReinforcement` restored to the pre-#624 splice — `slice(0, idx) + "\n" + prefix + text + slice(idx)` | 4 | **4 of 5** |
+| the same, plus the cheapest wrong fix: a trailing newline appended to `REINFORCEMENT_PREFIX` | 4 | **4 of 5** |
+
+Before believing either, the input on which mutant and original differ, named
+and run rather than assumed — the `## Never Do` fixture followed by
+`## Context (READ THIS FIRST)`:
+
+- **row 1** — the original renders the bullet, a blank line, then the heading.
+  The mutant renders the bullet and then the heading on the next line, so the
+  line directly above the heading is the reinforcement bullet.
+- **row 2** — the mutant renders a bare prefix on one line and the rule's text
+  on the next, so the line directly above the heading is
+  `NEVER read a file with cat, head, or tail via Bash — use Read with
+  offset/limit.` and the line above that is the prefix with nothing on it. The
+  measured failure is that assertion, not a string comparison against the
+  mutated prefix.
+
+**Row 2 is the row the case exists for.** Appending a newline to the prefix is
+a one-character repair in the one place the prefix is spelled, it is what
+somebody reaches for when the complaint is "there is no blank line before the
+heading", and it does not separate the block from the heading at all. The case
+survives it because it asserts BOTH lines around the heading: the line above
+the heading must be blank, and the line above THAT must carry the prefix and
+the reinforcement text together. A case asserting only the blank line would go
+green on a brief whose reinforcement had been split in half.
+
+Neither mutation is left in the tree; both were run and reverted, and
+`lib/compliance-report.ts` was confirmed byte-identical afterwards.
+
+### What this does NOT fix
+
+- **The shipped default still writes the tracked brief.** AC-2 chooses the
+  destination the loop runs with and is a separate change; this one makes the
+  choice expressible and names what it currently is.
+- **The re-grade step reads the brief, not the destination.**
+  `scripts/persist-compliance.ts` re-runs `test-brief.ts` after a
+  reinforcement to confirm the patched brief scores better. Under any
+  destination other than `COMMIT` that re-grade measures the unpatched brief
+  and reports the result as if it were the patched one — *Silent Default
+  Substitution* in `.claude/rules/config-access.md`, and it has to move in the
+  same change that flips the default.
