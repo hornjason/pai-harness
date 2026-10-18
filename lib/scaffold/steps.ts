@@ -33,6 +33,7 @@ import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
 import { inferredTestCommand, testCommandDecision } from "../test-command";
+import { bunVersionDecision, setupBunStep } from "../bun-version";
 import { codeMapUnreferenced, unlistedSpecs } from "../spec-listing";
 import {
   readSuccessDoc,
@@ -2352,7 +2353,16 @@ export function createCiWorkflows(root: string, actions: string[], opts: { force
   }
 
   const harness = loadHarnessConfig(root);
-  const bunVersion = harness?.ci?.bunVersion || "latest";
+  // #622. This was `harness?.ci?.bunVersion || "latest"`, spelled here and
+  // interpolated into both files below, while the caller-owned release
+  // workflow pinned 1.3.14 by hand — two spellings a full minor apart, and
+  // nothing compared them.
+  // The version now comes from `lib/bun-version.ts`, the same binding
+  // `scripts/test-clean-env.ts` compares the running bun against, and the
+  // STEP is emitted once rather than twice so the two workflows cannot
+  // drift from each other either.
+  const bun = bunVersionDecision(root);
+  const setupBun = setupBunStep(bun);
   const runner = harness?.ci?.runner || "ubuntu-latest";
   const branches = harness?.ci?.branches || ["main"];
   // Branch patterns are globs: a bare `*` is a YAML alias indicator and `*-dev`
@@ -2448,9 +2458,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 ${baseRefStep}
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "${bunVersion}"
+${setupBun}
       - run: bun install
       - run: ${test.command}${typecheckStep}
 `;
@@ -2471,9 +2479,7 @@ jobs:
     runs-on: ${runsOn}
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: "${bunVersion}"
+${setupBun}
       - run: bun install
       - name: Conformity + spec drift
         run: bun test test/scaffold-conformity.test.ts

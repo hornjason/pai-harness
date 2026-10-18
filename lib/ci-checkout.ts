@@ -62,7 +62,7 @@ export interface CheckoutModelResult {
 export const UNMODELLED: readonly string[] = [
   "the runner OS — CI is ubuntu-latest and this runs on the developer's machine, so anything platform-dependent (BSD vs GNU flags, path casing, file watchers) is still invisible here",
   "a fresh `bun install` — node_modules is linked from the working tree rather than installed, so a missing or mis-ranged dependency still passes locally",
-  "the bun version — CI pins `bun-version: latest` at the moment the job runs; this uses whichever bun is on PATH",
+  "the bun version — CI installs the version `ci.bunVersion` declares and this uses whichever bun is on PATH; since #622 the run REPORTS which one it is and whether it matches, but nothing here switches runtimes, so a mismatch is announced rather than removed",
   "the PR merge commit — `actions/checkout@v4` on a pull_request checks out a merge of the head into the base, while this checks out the head alone, so a conflict-free-but-broken merge is not modelled",
   "network and API availability — CI has neither the developer's `gh` credentials (stripped) nor their network conditions",
   "files git ignores — a `.env` or a stray build artefact present locally and absent in CI is carried over only if git can see it",

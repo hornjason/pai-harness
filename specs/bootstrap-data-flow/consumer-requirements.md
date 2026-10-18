@@ -187,7 +187,7 @@ The harness provides two workflow files that enforce gates in the CI pipeline. L
 | Field | Default | What it controls |
 |-------|---------|-----------------|
 | `ci.runner` | `"ubuntu-latest"` | GitHub Actions runner (e.g., `"self-hosted"`, `"ubuntu-24.04"`) |
-| `ci.bunVersion` | `"latest"` | Bun version in CI (pin for reproducibility) |
+| `ci.bunVersion` | `"latest"`, and the generated file RECORDS that nothing was declared (#622) | Bun version in CI. Pin it: `latest` agrees with itself in every file, so a tree with no pin reads as perfectly consistent while a green suite is a statement about whichever bun shipped this morning. Resolved by `lib/bun-version.ts`, which is also what `scripts/test-clean-env.ts` compares the running bun against |
 | `ci.branches` | `["main"]` | Which branches trigger push CI |
 
 All fields optional — defaults used when null.
