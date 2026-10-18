@@ -41,6 +41,10 @@ function sliceBlock(name: string): string {
 
 const RUN_REF_BLOCK = sliceBlock("RUN-REF");
 const DECOMPOSED_BLOCK = sliceBlock("DECOMPOSED-SHIP");
+// #611 put a free reference in the decomposed block. The real block text is
+// evaluated alongside it rather than stubbed — a stub would let this suite
+// and ship.js disagree about what a reported path is.
+const SHAPE_BLOCK = sliceBlock("FILES-CHANGED-SHAPE");
 
 type AgentCall = { label: string; prompt: string };
 
@@ -315,7 +319,7 @@ describe("#420 — the dispatch path", () => {
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
-      `${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
+      `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
 
     const runDecomposedShip = factory(
@@ -418,7 +422,7 @@ describe("#420 — the dispatch path", () => {
       "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
       "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
       "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
-      `${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
+      `${SHAPE_BLOCK}\n${DECOMPOSED_BLOCK}\nreturn runDecomposedShip;`,
     );
     const spawns: string[] = [];
     const run = factory(

@@ -227,7 +227,19 @@ describe("#524: the exits that carried no reason now carry a specific one", () =
     // The third bare exit. It is the most expensive one to be told nothing
     // about: everything up to here succeeded, the work exists in a worktree,
     // and the operator's next question is whether the commit agent ran.
-    const owned = (s: any) => ({ ...s, worktreePath: "/tmp/wt", worktreeRepo: "git@github.com:o/r.git" });
+    //
+    // `filesChanged` is overridden for the same reason the two identity
+    // fields are, and it is a property of the harness rather than of
+    // ship.js: `syntheticFromSchema` fills every string with
+    // `SYNTHETIC_TEXT`, which is a sentence, and #611's element-shape guard
+    // refuses a sentence at the implement result read. Without this the row
+    // stops at IMPLEMENT_FAILED and never reaches the exit it is about.
+    const owned = (s: any) => ({
+      ...s,
+      worktreePath: "/tmp/wt",
+      worktreeRepo: "git@github.com:o/r.git",
+      filesChanged: ["lib/a.ts"],
+    });
 
     const silent = resultOf(await run({ marcus: owned, commit: (() => undefined) as (s: any) => unknown }));
     expect(silent.status).toBe("COMMIT_FAILED");

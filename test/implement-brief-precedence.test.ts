@@ -340,6 +340,9 @@ function loadRunImplement(buildResult: unknown) {
   return new Function(
     "runCeremonyOnce", "briefedAgent", "log", "WORK_DIR", "testTimeout",
     "BUILD_RESULT_SCHEMA", "implementRefusal", "worktreeIdentity", "REPO", "taskSourceRefusal",
+    // #611's element-shape guard, from its own markers for the same reason
+    // as the three above.
+    "filesChangedShapeRefusal",
     `${slicedFunction("async function runImplement()")}\nreturn runImplement`,
   )(
     async () => ({ contextExcerpts: [], acContextFiles: [] }),
@@ -352,6 +355,7 @@ function loadRunImplement(buildResult: unknown) {
     guard("WORKTREE-IDENTITY", "worktreeIdentity"),
     "owner/project",
     guard("BRIEF-PRECEDENCE", "taskSourceRefusal"),
+    guard("FILES-CHANGED-SHAPE", "filesChangedShapeRefusal"),
   ) as () => Promise<unknown>;
 }
 
@@ -377,7 +381,10 @@ function loadRunDecomposedShip(
     // predicate comes from its own markers, for the reason the guards above
     // do: a stub would let the two copies disagree and nothing would notice.
     "establishRunRef", "integrateWave", "waveNeedsIntegration",
-    `${block}\nreturn runDecomposedShip;`,
+    // #611 added a free reference too; its block text is evaluated into the
+    // scope rather than injected, because ship.js declares it at module
+    // scope beside the decomposed block.
+    `${slice("// ──── FILES-CHANGED-SHAPE-START ────", "// ──── FILES-CHANGED-SHAPE-END ────")}\n${block}\nreturn runDecomposedShip;`,
   )(
     (m: string) => logs.push(String(m)),
     briefedAgent,
