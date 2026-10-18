@@ -57,10 +57,18 @@ import { join } from "path";
 
 import { isFixtureScId, scDeclarationPattern, scHeadingDeclarationPattern } from "./sc-ids";
 
-/** One place ids were looked for, and whether the look succeeded. */
+/**
+ * One place ids were looked for, and whether the look succeeded.
+ *
+ * `worktree` and `refs` are this module's own two sources. The other three
+ * are the legs `allocateScNumber` composes on top of them (#593) — the
+ * spec's own content, the spec registry, and the ids spelled in source. They
+ * live in the same shape because the question a reader asks is one question:
+ * which widths produced this number, and did any of them fail to run.
+ */
 export interface SourceReading {
   label: string;
-  kind: "worktree" | "refs";
+  kind: "worktree" | "refs" | "spec-content" | "registry" | "source-mentions";
   /** `read` means the ids below came from here; `skipped` means they did not. */
   status: "read" | "skipped";
   /** Why it was skipped. Absent on a successful read. */
@@ -280,12 +288,22 @@ export function readScNamespace(root: string): ScNamespaceReading {
   return { ids, sources, unmeasured };
 }
 
-/** A one-line account of what a reading covered, for a CLI to print. */
+/**
+ * A one-line account of what a reading covered, for a CLI to print.
+ *
+ * It NAMES the legs rather than counting them (#593). A count says how many
+ * sources answered; it cannot say which width went unasked, and a number
+ * allocated without consulting the spec registry printed the same
+ * "2 source(s)" as one that had. This is the single binding every caller
+ * prints through, so there is no second renderer to drift from it.
+ */
 export function describeReading(reading: ScNamespaceReading): string {
   const read = reading.sources.filter(s => s.status === "read");
   const skipped = reading.sources.filter(s => s.status === "skipped");
+  const legs = [...new Set(reading.sources.map(s => s.kind))];
   const parts = [
     `${reading.ids.size} ids across ${read.length} source(s)`,
+    `legs: ${legs.join(", ")}`,
     skipped.length > 0 ? `${skipped.length} skipped` : null,
     `${reading.unmeasured.length} unmeasured`,
   ].filter(Boolean);

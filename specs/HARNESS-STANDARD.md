@@ -9611,6 +9611,89 @@ running it rather than by reading it.
 - [x] SC-1911: test/sc-id-cross-tree.test.ts contains [the allocator does not re-issue a sibling's number] — driven with two different sibling values, since one cannot tell reading the namespace from adding a constant
 - [x] SC-1912: test/sc-id-cross-tree.test.ts contains [the allocator composes all three widths] — SC-1911 hands `nextSCNumber` ids the test assembled, so only this can witness a caller that reads the namespace and forgets to pass it
 
+## The composition function whose third width was optional (#593)
+
+`allocateScNumber` is the answer to "a caller must not assemble two of the
+three widths and believe it asked", and its third parameter — the spec
+registry, which is the width #392 was filed over — was `reg?: ScRegistry`.
+Omit it and `nextSCNumber` never reaches `reg.declaredById`: the number is
+assembled from the spec's own content, the source-spelled fixture ids and
+the cross-tree namespace, and comes back indistinguishable from one that
+consulted everything. The function's own docstring describes the failure it
+was shipped in.
+
+Two call sites omitted it, both in `test/sc-id-cross-tree.test.ts`'s
+synthetic trees. They were not wrong about those trees, which declare no
+specs — they were unable to say so. An omitted argument and
+`buildScRegistry([])` produce the same number and opposite claims, and only
+the second is checkable.
+
+### Why the two readings agreed for so long
+
+They differ exactly when a spec declares an id that no file under
+`test/`, `lib/`, `scripts/` or `gates/` spells. That is a narrow window on
+most days and it is wide on the day a spec block lands ahead of its tests:
+`test/sc-fixture-namespace.test.ts` records eight criteria declared with no
+source mention, the two readings diverging by eight, and a probe margin of
+seven landing one BELOW the registry answer in consequence. A check whose
+inputs usually coincide is #507's shape — the margin was set by something
+outside the fixture.
+
+### The reading had the same hole
+
+`readScNamespace` accounts for the worktrees and refs it read, and the
+returned reading carried only those. So a CLI printed the number beside a
+complete-looking account of its provenance while one of the legs behind it
+had never run. The three composed widths are now sources of their own, with
+the count each contributed, and `describeReading` NAMES the legs rather than
+counting them — `2 source(s)` is the same string whether or not the registry
+was asked. One binding, because every caller prints through it.
+
+### What was broken to prove it
+
+Three mutations over the 9 tests in `test/sc-id-cross-tree.test.ts`.
+Baseline 9 pass, 0 fail. None is left in the tree; all were run and the file
+restored from a copy taken first.
+
+| Mutation | Red | Prediction |
+|---|---|---|
+| `reg: ScRegistry` restored to `reg?: ScRegistry` | 2 of 9 | 2 |
+| the three legs dropped from the returned reading | 1 of 9 | 1 |
+| `allocateScNumber` passes `undefined` to `nextSCNumber` instead of `reg` | 1 of 9 | 1 |
+
+The distinguishing input for the first row, named before the row was
+believed, because a type-level mutation produces no runtime difference to
+read: the probe `allocateScNumber("/tmp", "")` compiles to **exit 0, no
+diagnostics** under the mutant and to `error TS2554: Expected 3 arguments,
+but got 2` under the real signature. The second probe,
+`allocateScNumber("/tmp", "", undefined)`, is `error TS2345` against the real
+signature and clean under the mutant — a different question (nullability,
+not arity) and the reason both rows are red rather than one. It exists
+because the cheapest repair for "a two-argument call must not compile" is to
+type `undefined` into every call site, which satisfies the arity and
+restores the defect.
+
+The distinguishing input for the third row is the fixture SC-2018 is about:
+a temp repository whose one spec declares a criterion, plus a registry
+declaring a HIGHER id that appears in no tree, no ref and no source file.
+The real allocator steps over the registry id; the mutant steps over the
+tree's. Without that id the two answers coincide on every fixture in the
+file and the row would have been 0 — the same 0 `.claude/rules/checks-must-
+be-able-to-fail.md` records for the CLI's own third argument in #399.
+
+The probe compiles against the PINNED compiler, resolved by walking up from
+the tree rather than by joining `node_modules/.bin/tsc` to it, because a git
+worktree has no `node_modules` of its own and the literal join misses the
+install one directory up. It still fails closed: a probe that could not be
+compiled throws rather than passing.
+
+### Success Criteria
+
+- [ ] SC-2016: test/sc-id-cross-tree.test.ts contains [the registry argument is required] — a two-argument probe is compiled by the pinned tsc and must be refused; a three-argument probe is compiled FIRST and must be clean, or an error from an unrelated cause reads exactly like the refusal
+- [ ] SC-2017: test/sc-id-cross-tree.test.ts contains [an explicit undefined registry is rejected too] — the cheapest repair for SC-2016 is to type `undefined` at every call site, which satisfies the arity and restores the defect
+- [ ] SC-2018: test/sc-id-cross-tree.test.ts contains [the registry leg changes the answer] — driven by an id only the registry knows, asserted as a relation against the no-registry answer rather than as a literal, so the case survives the tree moving
+- [ ] SC-2019: test/sc-id-cross-tree.test.ts contains [the reading names the legs consulted] — every composed width is a source with the count it contributed, and `describeReading` names them, because a caller cannot print the number without printing which widths produced it
+
 ## A containment decision taken on the half of the population it covered (#497)
 
 #439 decided that a `contextDocs` entry resolving outside the project root
