@@ -746,6 +746,69 @@ reading the code under test uses** — not from a narrower one that happened
 to agree. The narrower reading is the tempting one precisely because it is
 the cheap local call, and it agrees right up until it does not.
 
+#### …and a pair that varies two things at once measures neither (#585)
+
+The sections above are about one fixture. This is about two, and the trap is
+that a *pair* is the instrument people reach for when they want to isolate a
+dimension — so a pair that silently varies a second dimension reads as the
+isolation it is not.
+
+`scripts/validate-workflow.ts` matched a usage with
+`^\s+([A-Z_][A-Z_0-9]*)\s*=\s`. That is blind in two independent ways: it
+sees only WRITES, and only INDENTED ones. A fixture pair meant to show that
+column zero is now detected has to hold the write/read dimension fixed, and
+it has to be impossible for the two halves to differ in anything else. Two
+hand-written string literals are not impossible to diverge; they are two
+literals, and the next edit touches one of them.
+
+`test/validate-workflow-tdz.test.ts` writes ONE source string and derives
+the other from it by removing the leading whitespace of the usage line, then
+asserts the derivation: same line count, exactly one differing line, and the
+two differing lines equal after `trimStart()`. The pair cannot carry a second
+difference, because the second half is not written down.
+
+The usage in it is a READ, and that is the fifth shape above applied in
+advance rather than discovered afterwards:
+
+- **The cheapest wrong fix** for "a column-zero usage is missed" is one
+  character: widen `^\s+` to `^\s*` in the old assignment-only regex. It is
+  the 5pm repair, it makes the reported symptom go away, and it leaves the
+  detector blind to the read that actually crashed ship.js.
+- **Does the pair survive it? Yes — with a read.** The old regex never
+  matched a read at any column, so both halves stay red under `^\s*` and the
+  case keeps pointing at the real gap. **An assignment pair would NOT
+  survive it**: both halves go green on a detector that is still blind to the
+  crashing shape, which is a case certifying the regression it was written to
+  block.
+
+Measured over `test/validate-workflow-tdz.test.ts` alone (5 tests), on a
+`git archive` export of `0195e668` — the branch's widened detector — under
+`/tmp`, with the validator confirmed byte-identical afterwards. The counts
+are from that tree and not from the sub-issue's own worktree, whose base is
+one commit short of the widened detector; there, the file does not pass or
+fail quietly but ABORTS in `beforeAll` with *"the usage-reporting anchor
+appears 0 times"*, which is the loud-abort property the mutant builder exists
+for.
+
+| Row | Predicted | Measured |
+|---|---|---|
+| **baseline** — unmutated | 5 pass, 0 fail | **5 pass, 0 fail** |
+| the `^\s+` leading-whitespace requirement restored in `scripts/validate-workflow.ts` | 1 red | **1 of 5** — *"the same usage at column zero is refused"*, and only that one |
+| the test's own column-sensitive mutant builder neutered (`writeFileSync(COLUMN_MUTANT, source)`) | 1 red | **1 of 5** — the mutant-evidence case, which is what stops that case passing over a mutation that was never applied |
+
+Before believing the second row, the input on which mutant and original
+differ, named and run rather than assumed: a two-line file
+`console.log(EXEMPT_FLAG)\nconst EXEMPT_FLAG = true`. The real script prints
+`✗ TDZ: 'EXEMPT_FLAG' read at line 1 but declared at line 2` and exits 1; the
+mutant prints `✓ TDZ check: no temporal dead zone issues` and exits 0.
+
+The indented half staying GREEN in that row is the half that makes it a
+measurement of the column. A mutation that turned both halves red would mean
+the mutant had stopped working, not that the pair isolates indentation —
+which is why the in-tree case asserts the mutant still refuses the indented
+fixture before it asserts anything about the column-zero one. Neither
+mutation is left in the tree; both were run and reverted.
+
 ### When the guard is a spawn, not a comparison (#171)
 
 #169's refusal was correct and incomplete: it stopped a run whose branch had

@@ -1,4 +1,8 @@
-import { describe, test, expect } from "bun:test";
+import { afterAll, beforeAll, describe, test, expect } from "bun:test";
+import { spawnSync } from "child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join as joinPath } from "path";
 import {
   buildSafeGitAdd,
   validateFilePaths,
@@ -277,5 +281,215 @@ let MY_VAR = "hello"
     } finally {
       try { unlinkSync(fixture); } catch {}
     }
+  });
+});
+
+// ── 7. The TDZ detector sees reads, not only writes (#585) ───────────────
+
+/**
+ * Covers AC-1, AC-3a and AC-6 of #585 (Phase 1).
+ *
+ * `scripts/validate-workflow.ts` runs on `workflows/ship.js` in CI and passed
+ * it, after which ship.js died at runtime on
+ * `Cannot access 'SINGLE_WORKTREE_EXEMPT' before initialization`. The detector
+ * recognised a "usage" only when the line ASSIGNED to the name, and only when
+ * the line was indented, so a module-scope READ at column zero — the shape
+ * that actually crashed — matched nothing at all.
+ *
+ * Every refusal here runs TWICE: once against the real script, and once
+ * against a mutant copy whose single exit-code constant is set to 0. The
+ * second run is the evidence. "exit code != 0" cannot tell a refusal from a
+ * crash or a module-resolution failure, and
+ * .claude/rules/checks-must-be-able-to-fail.md counts five shipped bugs of
+ * exactly that shape in one day. The mutant must exit 0 AND still print the
+ * detector's own line, so a mutant that never ran is distinguishable from a
+ * mutation that was absorbed.
+ */
+describe("validate-workflow.ts — TDZ reads at any column (#585)", () => {
+  const REPO_ROOT = joinPath(import.meta.dir, "..");
+  const VALIDATOR = joinPath(REPO_ROOT, "scripts", "validate-workflow.ts");
+  const SHIP_JS = joinPath(REPO_ROOT, "workflows", "ship.js");
+  const source = readFileSync(VALIDATOR, "utf-8");
+
+  let WORK = "";
+  let MUTANT = "";
+
+  beforeAll(() => {
+    WORK = mkdtempSync(joinPath(tmpdir(), "tdz-detector-"));
+    const mutated = source.replace(/REFUSE_EXIT\s*=\s*1\b/, "REFUSE_EXIT = 0");
+    if (mutated === source) {
+      throw new Error(
+        "could not build the mutant: no `REFUSE_EXIT = 1` in scripts/validate-workflow.ts",
+      );
+    }
+    MUTANT = joinPath(WORK, "validate-workflow.ts");
+    writeFileSync(MUTANT, mutated);
+  });
+
+  afterAll(() => {
+    if (WORK) rmSync(WORK, { recursive: true, force: true });
+  });
+
+  function fixture(name: string, body: string): string {
+    const p = joinPath(WORK, name);
+    writeFileSync(p, body);
+    return p;
+  }
+
+  function run(script: string, target: string) {
+    const r = spawnSync("bun", [script, target], { encoding: "utf-8" });
+    return { code: r.status ?? -1, out: (r.stdout ?? "") + (r.stderr ?? "") };
+  }
+
+  /**
+   * The real script refuses and names the TDZ; the mutant, whose only change
+   * is `REFUSE_EXIT = 0`, exits 0 while printing the same finding. The second
+   * half is what makes the first half evidence rather than an exit code.
+   */
+  function expectRefused(target: string, name: string) {
+    const real = run(VALIDATOR, target);
+    expect(real.code, `expected a refusal for ${target}\n${real.out}`).not.toBe(0);
+    expect(real.out).toContain("TDZ");
+    expect(real.out).toContain(name);
+
+    const mutant = run(MUTANT, target);
+    expect(
+      mutant.out,
+      "the mutant printed no TDZ line — it never ran the detector, so its exit code says nothing",
+    ).toContain("TDZ");
+    expect(
+      mutant.code,
+      `the mutant (REFUSE_EXIT = 0) still exited ${mutant.code} for ${target} — ` +
+        `this case is not being caught by the refusal under test.\n${mutant.out}`,
+    ).toBe(0);
+  }
+
+  // ── The property the mutant protects ───────────────────────────────────
+
+  test("REFUSE_EXIT is declared exactly once", () => {
+    const decls = source.match(/REFUSE_EXIT\s*=\s*\d/g) || [];
+    expect(
+      decls.length,
+      "more than one assignment to REFUSE_EXIT — the mutant would only neutralise one of them",
+    ).toBe(1);
+  });
+
+  test("every refusal exits through REFUSE_EXIT", () => {
+    const exits = source.match(/process\.exit\(([^)]*)\)/g) || [];
+    expect(exits.length, "no process.exit at all — nothing can refuse").toBeGreaterThan(0);
+    const refusals = exits.filter((e) => e !== "process.exit(0)");
+    expect(refusals.length, "no non-zero exit at all — nothing can refuse").toBeGreaterThan(0);
+    for (const e of refusals) {
+      expect(
+        e,
+        `${e} bypasses REFUSE_EXIT, so the mutant cannot neutralise it and the ` +
+          `negative cases below would pass for the wrong reason`,
+      ).toBe("process.exit(REFUSE_EXIT)");
+    }
+  });
+
+  test("the script has no relative imports, so the mutant can run from /tmp", () => {
+    const rel = source.match(/from\s+["']\.{1,2}\//g) || [];
+    expect(rel, "a relative import would make every mutant run fail to resolve").toEqual([]);
+  });
+
+  // ── AC-1: a module-scope READ before the declaration ───────────────────
+
+  test("AC-1: a module-scope read before the const declaration is refused", () => {
+    // The shape that crashed ship.js, reduced: the read is at column zero and
+    // writes nothing, so the pre-#585 detector saw no usage at all.
+    expectRefused(
+      fixture(
+        "read-before-decl.js",
+        "console.log(EXEMPT_FLAG)\nconst EXEMPT_FLAG = true\n",
+      ),
+      "EXEMPT_FLAG",
+    );
+  });
+
+  test("AC-1: a module-scope read of a `let` before its declaration is refused", () => {
+    expectRefused(
+      fixture(
+        "read-before-let.js",
+        "const copy = EXEMPT_FLAG\nlet EXEMPT_FLAG = true\nconsole.log(copy)\n",
+      ),
+      "EXEMPT_FLAG",
+    );
+  });
+
+  // ── AC-3a: column zero, and not merely for one shape ───────────────────
+  //
+  // The pair below differs ONLY in the indentation of the usage line. The
+  // indented half was caught before #585; the column-zero half was not, and
+  // nothing but the leading-whitespace requirement separates them.
+
+  test("AC-3a: an indented assignment before the declaration is refused", () => {
+    expectRefused(
+      fixture("assign-indented.js", "  EXEMPT_FLAG = 1\nlet EXEMPT_FLAG = true\n"),
+      "EXEMPT_FLAG",
+    );
+  });
+
+  test("AC-3a: the same assignment at column zero is refused", () => {
+    expectRefused(
+      fixture("assign-column-zero.js", "EXEMPT_FLAG = 1\nlet EXEMPT_FLAG = true\n"),
+      "EXEMPT_FLAG",
+    );
+  });
+
+  test("AC-3a: the whitespace requirement is gone for reads too, not loosened for one shape", () => {
+    // A read at column zero in statement position — neither an assignment nor
+    // indented. A fix that only widened the assignment regex leaves this green.
+    expectRefused(
+      fixture("read-column-zero-statement.js", "EXEMPT_FLAG\nconst EXEMPT_FLAG = true\n"),
+      "EXEMPT_FLAG",
+    );
+  });
+
+  // ── AC-6: no false positive on a deferred forward reference ────────────
+
+  test("AC-6: a function body may reference a const declared below it, and real ship.js is clean", () => {
+    const deferred = fixture(
+      "forward-ref-in-function.js",
+      [
+        "function useLater() {",
+        "  return EXEMPT_FLAG",
+        "}",
+        "const EXEMPT_FLAG = true",
+        "console.log(useLater())",
+        "",
+      ].join("\n"),
+    );
+    const fixtureRun = run(VALIDATOR, deferred);
+    expect(
+      fixtureRun.out,
+      "a hoisted function reading a const declared below it is not a TDZ",
+    ).not.toContain("TDZ:");
+    expect(fixtureRun.code, fixtureRun.out).toBe(0);
+
+    // The same run, against the real file. #585's whole subject is a detector
+    // that is green on ship.js; widening it must not buy red on ship.js.
+    const ship = run(VALIDATOR, SHIP_JS);
+    expect(ship.out, "the widened detector reports a TDZ in real ship.js").not.toContain("TDZ:");
+    expect(ship.code, ship.out).toBe(0);
+    expect(ship.out).toContain("PASSED");
+
+    // …and the clean verdict has to be a verdict about something. ship.js has
+    // no textual forward reference at all, so "no TDZ in ship.js" is green
+    // even when every brace is misread as module scope — measured. The only
+    // part of this output that moves when the scan stops reading the file is
+    // its own coverage, so that is what is asserted.
+    const coverage = ship.out.match(
+      /TDZ check: no temporal dead zone issues — (\d+) tracked declaration\(s\), (\d+) reference\(s\) scanned/,
+    );
+    expect(coverage, `the TDZ check reported no coverage at all:\n${ship.out}`).not.toBeNull();
+    const declared = Number(coverage![1]);
+    const references = Number(coverage![2]);
+    expect(declared, "the scan tracked no declarations in ship.js").toBeGreaterThan(0);
+    expect(
+      references,
+      "every reference the scan found was a declaration — it read no uses, " +
+        "which is what a scan over blanked-out source also reports",
+    ).toBeGreaterThan(declared);
   });
 });

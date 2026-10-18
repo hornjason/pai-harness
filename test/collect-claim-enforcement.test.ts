@@ -1004,3 +1004,99 @@ describe("#229: claimKey normalises exactly what it claims to, and refuses the r
     expect(escapesWorktree(claimKey(WT, "/"))).toBe(true);
   });
 });
+
+// ── #585 / AC-5: the premise of the relocation mutant, EXECUTED ──────────
+
+/**
+ * #585 / AC-5: relocating the COLLECT-CLAIM block below its module-scope
+ * caller is a real fault, not a textual rearrangement.
+ *
+ * `test/workflow-security-integration.test.ts` asserts that
+ * `scripts/validate-workflow.ts` REFUSES a ship.js whose COLLECT-CLAIM block
+ * sits below the top-level `await runDecomposedShip(...)` call. That assertion
+ * is only worth anything if the arrangement it refuses is genuinely broken —
+ * otherwise the validator would be refusing a legal file and the test would be
+ * certifying a false positive.
+ *
+ * .claude/rules/checks-must-be-able-to-fail.md: "before recording a 0, name an
+ * input on which the mutant and the original differ." This file is where that
+ * input is NAMED AND RUN rather than argued, because this is the file that
+ * already evaluates the block. The two bodies below are byte-identical except
+ * for where the call sits relative to the block, so the ReferenceError cannot
+ * come from anything else.
+ *
+ * Why the fault is invisible to reading: every FUNCTION in COLLECT-CLAIM is a
+ * hoisted declaration, so moving the block leaves `auditWorktreeClaims`
+ * callable from anywhere in the file. Only `SINGLE_WORKTREE_EXEMPT` — a
+ * module-level `const`, and the first thing the function reads — is in its
+ * temporal dead zone, and a decomposed run reaches it during module
+ * evaluation. A relocated ship.js parses, resolves, and dies on the one run
+ * shape that exercises it.
+ */
+describe("#585 / AC-5: a relocated COLLECT-CLAIM block is a TDZ fault, executed", () => {
+  const TDZ_IDENTIFIER = "SINGLE_WORKTREE_EXEMPT";
+
+  /** One worktree reporting one unclaimed file — the #228 exemption path, so
+   *  `SINGLE_WORKTREE_EXEMPT` is read rather than short-circuited past. */
+  const results = [
+    { worktreePath: WT_A, filesChanged: ["lib/a.ts", "lib/b.ts"], claimedFiles: ["lib/a.ts"] },
+  ];
+
+  const CALL = "const out = auditWorktreeClaims(results)";
+
+  /**
+   * Evaluate the real blocks with the module-scope call placed either before
+   * or after COLLECT-CLAIM. Nothing is mutated — the same two extracted blocks
+   * and the same one-line call appear in both bodies, in two orders.
+   */
+  function evaluateWithCallAt(position: "before" | "after"): ClaimAudit {
+    const helpers = block("SECURITY-HELPERS");
+    const claim = block("COLLECT-CLAIM");
+    const body =
+      position === "before"
+        ? `${helpers}\n${CALL}\n${claim}\nreturn out`
+        : `${helpers}\n${claim}\n${CALL}\nreturn out`;
+    return new Function("PROJECT_ROOT", "log", "results", body)(
+      "/repo",
+      () => {},
+      results,
+    ) as ClaimAudit;
+  }
+
+  test("the block still declares the identifier as a module-level const — otherwise there is no TDZ", () => {
+    // A `var`, or a reassignment to a function declaration, would hoist and
+    // make the relocation harmless. The validator test downstream would then
+    // be demanding a refusal for a legal file.
+    const claim = block("COLLECT-CLAIM");
+    const decls = claim.match(new RegExp(`^const ${TDZ_IDENTIFIER} = `, "gm")) || [];
+    expect(
+      decls.length,
+      `${TDZ_IDENTIFIER} is no longer a module-level const in COLLECT-CLAIM — relocating the block would no longer be a fault`,
+    ).toBe(1);
+  });
+
+  test("declared first, the audit returns a verdict", () => {
+    // The control. Without it, "call-first throws" is indistinguishable from
+    // a loader that cannot evaluate the block in either order.
+    const audit = evaluateWithCallAt("after");
+    expect(audit.violations).toEqual([]);
+    expect(audit.candidates.map(c => c.worktreePath)).toEqual([WT_A]);
+  });
+
+  test("called first, the same two blocks throw a ReferenceError naming the identifier", () => {
+    let thrown: unknown;
+    try {
+      evaluateWithCallAt("before");
+    } catch (e) {
+      thrown = e;
+    }
+    expect(
+      thrown,
+      "the relocated order did NOT throw — the mutant the validator test refuses is not a fault",
+    ).toBeInstanceOf(ReferenceError);
+    // Named, not merely thrown: a body that failed to resolve `log` or
+    // `pathRefusal` is also a ReferenceError, and would read as this fault.
+    expect(String((thrown as Error).message)).toContain(TDZ_IDENTIFIER);
+    expect(String((thrown as Error).message)).toContain("before initialization");
+  });
+});
