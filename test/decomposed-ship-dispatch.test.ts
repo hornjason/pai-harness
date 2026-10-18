@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { stripComments } from "./helpers/strip-comments";
 
 /**
  * Regression coverage for issue #66 — SC-411.
@@ -102,6 +103,24 @@ function declarationAt(source: string, from: number): string {
  * at column zero, so `^const ` matches things like `s`, `path` and `files`
  * inside them, and a bare probe drags those in as declarations.
  */
+/**
+ * Whether `fragment` actually USES `name` — asked of code, never of prose.
+ *
+ * The caller strips comments first, and that is load-bearing rather than
+ * tidy. The SCREAMING_CASE arm below matches a BARE word, so for a module
+ * const it cannot tell a call from a sentence, and the block it is asked
+ * about is heavily commented — #627's own pairing docstring explains the
+ * defect by naming `SINGLE_WORKTREE_EXEMPT`, which is exactly the shape of
+ * "a comment explaining what must not happen reads like the thing
+ * happening". Unstripped, the resolver followed that sentence to module
+ * scope and prepended a `const` the block never references.
+ *
+ * Harmless on that name — it is not injected, so it shadowed no fake — but
+ * the general case is not: a comment mentioning any uninjected module-scope
+ * SCREAMING_CASE binding silently pulls the REAL definition into a scope
+ * built out of fakes, and the suite goes green having tested ship.js's
+ * values instead of its own.
+ */
 function reaches(fragment: string, name: string): boolean {
   if (new RegExp(`\\b${name}\\s*\\(`).test(fragment)) return true;
   return /^[A-Z][A-Z0-9_]*$/.test(name) && new RegExp(`\\b${name}\\b`).test(fragment);
@@ -134,8 +153,13 @@ function namesDeclaredIn(fragment: string): Set<string> {
 function resolveFreeReferences(block: string, provided: Set<string>): string[] {
   const declarations = topLevelDeclarations(shipSource);
   const resolved = new Map<string, { offset: number; source: string }>();
-  const satisfied = new Set([...provided, ...namesDeclaredIn(block)]);
-  let frontier = [block];
+  // Both questions are asked of CODE. `namesDeclaredIn` is stripped for the
+  // mirror of `reaches`'s reason: a comment quoting `const x =` would record
+  // a declaration the block does not make, and the binding would then be
+  // left unresolved rather than wrongly resolved — the same bug, failing the
+  // other way, and louder only by luck.
+  const satisfied = new Set([...provided, ...namesDeclaredIn(stripComments(block))]);
+  let frontier = [stripComments(block)];
 
   while (frontier.length > 0) {
     const next: string[] = [];
@@ -152,8 +176,11 @@ function resolveFreeReferences(block: string, provided: Set<string>): string[] {
               `and the slice for it does not parse: ${(e as Error).message}`,
           );
         }
+        // Stored RAW, because this text is prepended as real code and its
+        // comments are part of the file. Scanned STRIPPED, because the next
+        // hop is the same question `reaches` just answered.
         resolved.set(name, { offset, source });
-        next.push(source);
+        next.push(stripComments(source));
       }
     }
     frontier = next;
@@ -510,6 +537,28 @@ describe("AC-7a: the loader follows the pairing binding wherever it is declared 
       followed,
       "a module-scope binding was followed into the block — check it does not shadow an injected fake",
     ).toEqual([]);
+  });
+
+  test("a binding named only in a comment is not followed", () => {
+    // The regression this file shipped red with. #627's pairing docstring
+    // explains the defect by naming `SINGLE_WORKTREE_EXEMPT` in prose; the
+    // SCREAMING_CASE arm of `reaches` matches a bare word, so unstripped it
+    // followed a sentence and prepended a `const` the block never uses.
+    //
+    // Asserted as a PAIR derived from one source, so the two halves cannot
+    // drift: the same reference, once in a comment and once as code.
+    const decl = "const SINGLE_WORKTREE_EXEMPT";
+    expect(
+      shipSource.split(decl).length - 1,
+      "the fixture assumes ship.js declares this exactly once",
+    ).toBe(1);
+
+    const inProse = "/* a note about SINGLE_WORKTREE_EXEMPT and nothing else */";
+    const asCode = "const x = SINGLE_WORKTREE_EXEMPT";
+    expect(resolveFreeReferences(inProse, new Set())).toEqual([]);
+    // The control, and the reason the line above is a measurement rather than
+    // a resolver that stopped working: the identical name, in code, IS found.
+    expect(resolveFreeReferences(asCode, new Set()).join("\n")).toContain(decl);
   });
 
   test("control: the resolver is not a no-op — withholding one name finds it", () => {

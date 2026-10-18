@@ -82,45 +82,12 @@ const read = (rel: string): string => readFileSync(join(REPO_ROOT, rel), "utf-8"
 
 // ── Comment stripping ────────────────────────────────────────────────────
 
-/**
- * `source` with its comments blanked out, string and template literals left
- * intact.
- *
- * A comment explaining what must not happen reads exactly like the thing
- * happening, and this file is full of such comments. Blanking rather than
- * deleting keeps every offset where it was, so a reported match still points
- * at the right place.
- */
-export function stripComments(source: string): string {
-  const out = source.split("");
-  let i = 0;
-  const blank = (from: number, to: number) => {
-    for (let k = from; k < to && k < out.length; k++) if (out[k] !== "\n") out[k] = " ";
-  };
-  while (i < source.length) {
-    const c = source[i];
-    if (c === "/" && source[i + 1] === "/") {
-      const end = source.indexOf("\n", i);
-      blank(i, end === -1 ? source.length : end);
-      i = end === -1 ? source.length : end;
-    } else if (c === "/" && source[i + 1] === "*") {
-      const end = source.indexOf("*/", i + 2);
-      const stop = end === -1 ? source.length : end + 2;
-      blank(i, stop);
-      i = stop;
-    } else if (c === "'" || c === '"' || c === "`") {
-      i++;
-      while (i < source.length) {
-        if (source[i] === "\\") i += 2;
-        else if (source[i] === c) {
-          i++;
-          break;
-        } else i++;
-      }
-    } else i++;
-  }
-  return out.join("");
-}
+// Moved to test/helpers/strip-comments.ts in #627, which needed it in the
+// dispatch loader too. Re-exported because this file's own cases import it
+// by this name, and because an exported binding with two homes is the pair
+// .claude/rules/checks-must-be-able-to-fail.md warns about.
+export { stripComments } from "./helpers/strip-comments";
+import { stripComments } from "./helpers/strip-comments";
 
 // ── Execution-site extraction ────────────────────────────────────────────
 
