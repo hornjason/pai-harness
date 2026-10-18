@@ -108,6 +108,18 @@ export type ResolvedConfig = z.infer<typeof ResolvedConfigSchema>;
 export const DEFAULT_TEST_TIMEOUT = 120000;
 
 /**
+ * The config's path relative to a project root, in the directory layout.
+ *
+ * Exported because a reader sometimes has to NAME the file without reading
+ * it — `scripts/contract-parity.ts` compares what each position in a tree
+ * DECLARES, so it labels and plants the config by path. Writing that literal
+ * anywhere else is a CONFIG-1 violation and rightly so, and the fix for a
+ * label is the same as the fix for a read: get it from here, so there is one
+ * module that knows where the config lives.
+ */
+export const RUNGATE_CONFIG_RELATIVE_PATH = join(".claude", "rungate", "config.json");
+
+/**
  * The resolution (ADR-002 D2(a)). `absent` is TRUTHY and carries no `.test`,
  * so the four sites that wrote `config?.test?.command || fallback` cannot
  * silently absorb it — `null`, `0`, `{}` and `""` all could.

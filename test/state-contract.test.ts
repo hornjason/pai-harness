@@ -23,145 +23,37 @@ import { join } from "path";
  * (`proofOfFix`, `quinnJourneyPath`).
  */
 
+/**
+ * The three readings live in `scripts/contract-parity.ts` (#626).
+ *
+ * They were written here and moved there when `contract-parity`'s field
+ * reachability category came to need them. A script cannot import a file that
+ * calls `describe` at module scope, so the alternative was a second copy of
+ * the schema walk — a producer and a consumer that must agree with nothing
+ * comparing them, which is the defect #626 exists to find, committed by the
+ * check built to find it. One binding each, so there is one site to mutate,
+ * and the cases below are unchanged.
+ */
+import {
+  SOURCE_DIRS,
+  orphanDeclarationViolations,
+  readFields,
+  stateTouchingFiles,
+  undeclaredReadViolations,
+  undeclaredWriteViolations,
+  writtenFields,
+} from "../scripts/contract-parity";
+
+export {
+  orphanDeclarationViolations,
+  readFields,
+  stateTouchingFiles,
+  undeclaredReadViolations,
+  undeclaredWriteViolations,
+  writtenFields,
+};
+
 const ROOT = join(import.meta.dir, "..");
-const SOURCE_DIRS = ["gates", "lib", "scripts", "workflows"];
-
-function walk(dir: string, out: string[] = []): string[] {
-  for (const entry of readdirSync(dir)) {
-    // Dotted entries are caches and scratch trees, never harness source.
-    if (entry === "node_modules" || entry.startsWith(".")) continue;
-    const p = join(dir, entry);
-    if (statSync(p).isDirectory()) walk(p, out);
-    else if (/\.(ts|js)$/.test(p)) out.push(p);
-  }
-  return out;
-}
-
-/**
- * The files that touch the shared state, DERIVED rather than enumerated.
- *
- * A list would have to be edited by whoever adds the next writer, which is
- * precisely the person whose change this test exists to catch: a new producer
- * joins the harness by being left off the list, and the reconciliation reports
- * green over a field it never saw. Deriving the set means a new writer is in
- * scope the moment it mentions the file it writes.
- */
-function stateTouchingFiles(root = ROOT): string[] {
-  return SOURCE_DIRS.flatMap(d => walk(join(root, d))).filter(f => {
-    const src = readFileSync(f, "utf-8");
-    return src.includes("workflow-state.json") || src.includes("writeWorkflowState");
-  });
-}
-
-/** Top-level field names of `WorkflowStateSchema`. */
-function declaredFields(root = ROOT): Set<string> {
-  const schema = readFileSync(join(root, "gates", "schema.ts"), "utf-8");
-  const start = schema.indexOf("export const WorkflowStateSchema");
-  expect(start, "WorkflowStateSchema is not where this test expects it").toBeGreaterThan(-1);
-  const body = schema.slice(start);
-  const end = body.indexOf("\n})");
-  expect(end, "could not find the end of WorkflowStateSchema").toBeGreaterThan(-1);
-  const names = (body.slice(0, end).match(/^ {2}([a-zA-Z][a-zA-Z0-9]*):/gm) || [])
-    .map(m => m.trim().replace(":", ""));
-  // A zero-length reading is the vacuous case: every assertion below compares
-  // against this set, and an empty one makes all three pass over anything.
-  expect(names.length, "no fields parsed out of WorkflowStateSchema").toBeGreaterThan(10);
-  return new Set(names);
-}
-
-/** Every `sf("<field>")` the gate suites read, root segment only. */
-function readFields(root = ROOT): Map<string, string[]> {
-  const found = new Map<string, string[]>();
-  for (const f of stateTouchingFiles(root)) {
-    for (const m of readFileSync(f, "utf-8").matchAll(/sf\("([a-zA-Z][a-zA-Z0-9]*)/g)) {
-      if (!found.has(m[1])) found.set(m[1], []);
-      found.get(m[1])!.push(f.replace(`${root}/`, ""));
-    }
-  }
-  return found;
-}
-
-/**
- * Every `<ident>.<field> =` assignment onto a state object.
- *
- * Test files are excluded, and deliberately: a fixture planting a field is not
- * a producer. Counting one would let a dead schema term stay alive on the
- * strength of the fixture that mentions it — the self-reference trap, where
- * the evidence for a field being used is a file that exists only to exercise
- * it.
- */
-function writtenFields(root = ROOT): Map<string, string[]> {
-  const found = new Map<string, string[]>();
-  for (const f of stateTouchingFiles(root)) {
-    if (/\.test\.(ts|js)$/.test(f)) continue;
-    const src = readFileSync(f, "utf-8");
-    for (const m of src.matchAll(/\b(?:state|s|ws|st)\.([a-zA-Z][a-zA-Z0-9]*)\s*(?:=[^=]|\?\?=)/g)) {
-      if (!found.has(m[1])) found.set(m[1], []);
-      found.get(m[1])!.push(f.replace(`${root}/`, ""));
-    }
-  }
-  return found;
-}
-
-/**
- * Whether a field name appears at all in non-test harness source, outside the
- * schema that declares it and the guide that documents it.
- *
- * This is deliberately the weakest of the three readings, and it is weak on
- * purpose. Most of the state is built as an object literal at bootstrap —
- * `{ schemaVersion: 2, startTs, ... }` — which the assignment regex above
- * cannot see, so a stricter test here would report a dozen live fields as
- * dead. What it still catches is the case that matters and admits no
- * innocent reading: a field the contract declares whose NAME occurs nowhere
- * in the harness at all. Nothing can be producing it, so every reader of it
- * is reading `undefined` forever.
- *
- * An earlier draft of this used "appears as an object-literal key anywhere in
- * a state-touching file", which matched every `name:` in every unrelated
- * literal in those files and passed over both known-dead fields. A reading
- * that broad is not evidence; it is the vacuous assertion this file is about.
- */
-function mentionedInSource(field: string, root = ROOT): string[] {
-  const word = new RegExp(`\\b${field}\\b`);
-  return SOURCE_DIRS.flatMap(d => walk(join(root, d)))
-    .filter(f => !/\.test\.(ts|js)$/.test(f))
-    .filter(f => f !== join(root, "gates", "schema.ts"))
-    .filter(f => word.test(readFileSync(f, "utf-8")))
-    .map(f => f.replace(`${root}/`, ""));
-}
-
-// ── The three reconciliations ─────────────────────────────────────────
-//
-// Each is one exported function turning a reading into a list of violations,
-// which is the shape .claude/rules/checks-must-be-able-to-fail.md prescribes
-// for a guard with no exit code of its own: a single site to mutate, and a
-// `root` parameter so the whole reconciliation can be run against a planted
-// tree instead of the repo.
-
-/** A check reading a field the contract does not describe. */
-export function undeclaredReadViolations(root = ROOT): string[] {
-  const declared = declaredFields(root);
-  return [...readFields(root).entries()]
-    .filter(([field]) => !declared.has(field))
-    .map(([field, files]) => `${field} — read by ${[...new Set(files)].join(", ")}`);
-}
-
-/** A producer writing a field nothing promises to keep. */
-export function undeclaredWriteViolations(root = ROOT): string[] {
-  const declared = declaredFields(root);
-  return [...writtenFields(root).entries()]
-    .filter(([field]) => !declared.has(field))
-    .map(([field, files]) => `${field} — written by ${[...new Set(files)].join(", ")}`);
-}
-
-/** A contract term nothing in the harness honours. */
-export function orphanDeclarationViolations(root = ROOT): string[] {
-  const read = readFields(root);
-  const written = writtenFields(root);
-  return [...declaredFields(root)].filter(
-    f => !read.has(f) && !written.has(f) && mentionedInSource(f, root).length === 0,
-  );
-}
 
 describe("#317: the workflow-state contract is reconciled with its producers and consumers", () => {
   test("every field a gate READS is declared in the schema", () => {

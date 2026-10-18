@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync } from "fs";
 import { join, relative } from "path";
+import { probeExternalTool } from "./tool-probe";
 
 // ── Types ──────────────────────────────────────────────────
 
@@ -191,15 +192,14 @@ export function collectComplianceSurface(root: string, surface?: string[]): stri
 }
 
 // ── Tool Availability ──────────────────────────────────────
-
-function checkToolAvailable(command: string, args: string[]): boolean {
-  try {
-    const result = Bun.spawnSync([command, ...args], { timeout: 5_000 });
-    return result.exitCode === 0 || result.stdout.toString().length > 0;
-  } catch {
-    return false;
-  }
-}
+//
+// The probe lives in `lib/tool-probe.ts` and has THREE outcomes (#626 AC-10).
+// What was here returned `false` for "agnix is not installed", "npx ran and
+// failed" and "the registry timed out" alike, which is why #597's CI failures
+// could be re-run red to green on an identical SHA with nothing to read that
+// said why. `available` below is the same boolean these two call sites always
+// wanted — the difference is that it is now a projection of a reading that
+// still knows which of the three happened.
 
 // ── Layer 1: Template Compliance ───────────────────────────
 
@@ -214,8 +214,10 @@ export async function runTemplateCompliance(
 ): Promise<ComplianceReport> {
   const files = collectComplianceSurface(root, opts?.surface);
 
-  const agnixAvailable = checkToolAvailable("agnix", ["--version"]);
-  const reporailsAvailable = checkToolAvailable("npx", ["@reporails/cli", "version"]);
+  const agnixProbe = probeExternalTool("agnix", ["--version"]);
+  const reporailsProbe = probeExternalTool("npx", ["@reporails/cli", "version"]);
+  const agnixAvailable = agnixProbe.available;
+  const reporailsAvailable = reporailsProbe.available;
 
   // agnix: batch mode works fine for file attribution
   const agnixByFile = new Map<string, AgnixDiagnostic[]>();

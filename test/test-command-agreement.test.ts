@@ -44,11 +44,44 @@ import { dirname, join } from "path";
 
 export const REPO_ROOT = join(import.meta.dir, "..");
 
-/** The three files, by the repo-relative path each extractor is pointed at. */
-export const AGENTS_MD = "AGENTS.md";
-export const CONFIG_JSON = join(".claude", "rungate", "config.json");
-export const CI_YML = join(".github", "workflows", "ci.yml");
-export const AGREEMENT_FILES = [AGENTS_MD, CONFIG_JSON, CI_YML] as const;
+/**
+ * The comparison itself lives in `scripts/contract-parity.ts` (#626).
+ *
+ * It was written here and moved there when the contract-parity check came to
+ * need it: a script cannot import a file that calls `describe` at module
+ * scope, so the alternative was a second copy of the three extractors — a
+ * producer and a consumer that must agree with nothing comparing them, which
+ * is the exact defect #626 exists to find. One binding, re-exported here so
+ * the cases below and every existing reader keep their import path, and one
+ * site to mutate.
+ */
+import {
+  AGENTS_MD,
+  AGREEMENT_FILES,
+  CI_YML,
+  CONFIG_JSON,
+  NoTestCommandError,
+  testCommandAgreement,
+  testCommandsNamedByAgentsMd,
+  testCommandsNamedByCiWorkflow,
+  testCommandsNamedByConfig,
+  type NamedTestCommand,
+  type TestCommandAgreement,
+} from "../scripts/contract-parity";
+
+export {
+  AGENTS_MD,
+  AGREEMENT_FILES,
+  CI_YML,
+  CONFIG_JSON,
+  NoTestCommandError,
+  testCommandAgreement,
+  testCommandsNamedByAgentsMd,
+  testCommandsNamedByCiWorkflow,
+  testCommandsNamedByConfig,
+  type NamedTestCommand,
+  type TestCommandAgreement,
+};
 
 /**
  * The root the agreement case reads. A spawned mutant points it at a planted
@@ -56,145 +89,6 @@ export const AGREEMENT_FILES = [AGENTS_MD, CONFIG_JSON, CI_YML] as const;
  */
 const AGREEMENT_ROOT = process.env.TEST_COMMAND_AGREEMENT_ROOT ?? REPO_ROOT;
 const IS_MUTANT_RUN = process.env.TEST_COMMAND_AGREEMENT_ROOT !== undefined;
-
-/** One test command, and the position in the tree that names it. */
-export interface NamedTestCommand {
-  /** Repo-relative path. */
-  file: string;
-  /** Where inside the file — the row, the field, the step. */
-  where: string;
-  command: string;
-}
-
-/** Thrown when a file this check reads names no test command at all. */
-export class NoTestCommandError extends Error {}
-
-function refuse(file: string, why: string): never {
-  throw new NoTestCommandError(
-    `${file} names no test command: ${why}. ` +
-      `Three files naming nothing are not three files that agree — ` +
-      `see .claude/rules/checks-must-be-able-to-fail.md.`,
-  );
-}
-
-/**
- * The `| Test | \`…\` |` row of AGENTS.md's Commands table.
- *
- * The cell must be exactly `Test`: `Test as CI sees it` is a different
- * command on purpose, and matching it here would make the check compare a
- * row against itself.
- */
-export function testCommandsNamedByAgentsMd(text: string): NamedTestCommand[] {
-  const start = text.indexOf("\n## Commands");
-  if (start === -1) refuse(AGENTS_MD, "it has no `## Commands` section");
-  const rest = text.slice(start + 1);
-  const end = rest.indexOf("\n## ", 1);
-  const section = end === -1 ? rest : rest.slice(0, end);
-  if (section.trim() === "") refuse(AGENTS_MD, "its `## Commands` section is empty");
-
-  const row = /^\|\s*Test\s*\|\s*`([^`]+)`\s*\|/m.exec(section);
-  if (!row) refuse(AGENTS_MD, "its Commands table has no `| Test | \\`…\\` |` row");
-  return [{ file: AGENTS_MD, where: "the Commands table's Test row", command: row![1].trim() }];
-}
-
-/**
- * Every test command the rungate config declares.
- *
- * Both fields, because both are read: `test.command` is what the ship run
- * measures with (`workflows/ship.js`, which cannot import — #69) and
- * `dev.testCmd` is the top rung of `lib/test-command.ts`, which is what the
- * scaffold writes into AGENTS.md and CI. Two fields in one file naming two
- * commands is the same defect as two files doing it, so they are returned
- * separately and compared alongside everything else.
- */
-export function testCommandsNamedByConfig(text: string): NamedTestCommand[] {
-  // Deliberately not caught: a corrupt config is never a missing config
-  // (.claude/rules/config-access.md).
-  const config = JSON.parse(text) as { test?: { command?: unknown }; dev?: { testCmd?: unknown } };
-  const found: NamedTestCommand[] = [];
-  const declared = (where: string, value: unknown) => {
-    if (typeof value === "string" && value.trim() !== "") {
-      found.push({ file: CONFIG_JSON, where, command: value.trim() });
-    }
-  };
-  declared("test.command", config?.test?.command);
-  declared("dev.testCmd", config?.dev?.testCmd);
-  if (found.length === 0) refuse(CONFIG_JSON, "neither `test.command` nor `dev.testCmd` is set");
-  return found;
-}
-
-/**
- * Steps that are part of running CI but are not the project's test command.
- * Named rather than positional: "the second run step" is a proxy, and a
- * proxy is a thing a template edit can satisfy while the property breaks.
- */
-const NOT_THE_TEST_STEP = new Set(["bun install", "bun run typecheck"]);
-
-/** The test step of the generated `test` job in ci.yml. */
-export function testCommandsNamedByCiWorkflow(text: string): NamedTestCommand[] {
-  const start = text.indexOf("\n  test:");
-  if (start === -1) refuse(CI_YML, "it has no `test:` job");
-  const rest = text.slice(start + 1);
-  // The next job at the same indent ends this one. Jobs a consumer added are
-  // theirs (#216) and must not be read as this project's test command.
-  const end = /\n {2}[A-Za-z_][\w-]*:/.exec(rest.slice("  test:".length));
-  const job = end === null ? rest : rest.slice(0, "  test:".length + end.index);
-  if (job.trim() === "") refuse(CI_YML, "its `test:` job is empty");
-
-  const runs = job
-    .split("\n")
-    .map(line => /^\s+- run:\s*(\S.*)$/.exec(line))
-    .filter((m): m is RegExpExecArray => m !== null)
-    .map(m => m[1].trim())
-    // `run: |` opens a block scalar; the body is not a command on this line.
-    .filter(cmd => cmd !== "|" && !cmd.startsWith("|"))
-    .filter(cmd => !NOT_THE_TEST_STEP.has(cmd));
-
-  if (runs.length === 0) {
-    refuse(CI_YML, "its `test:` job runs nothing but setup and the type check");
-  }
-  return [{ file: CI_YML, where: "the test job's run step", command: runs[0] }];
-}
-
-const EXTRACTORS: Record<string, (text: string) => NamedTestCommand[]> = {
-  [AGENTS_MD]: testCommandsNamedByAgentsMd,
-  [CONFIG_JSON]: testCommandsNamedByConfig,
-  [CI_YML]: testCommandsNamedByCiWorkflow,
-};
-
-export interface TestCommandAgreement {
-  commands: NamedTestCommand[];
-  /** Empty when every position names the same string. */
-  violations: string[];
-}
-
-/**
- * The single binding. Reads all three files, extracts what each names, and
- * reports a violation when the set of distinct strings is larger than one.
- *
- * A missing file and a file that names nothing both THROW. Neither is a
- * clean reading, and both would otherwise arrive here as "no disagreement".
- */
-export function testCommandAgreement(root: string): TestCommandAgreement {
-  const commands: NamedTestCommand[] = [];
-  for (const file of AGREEMENT_FILES) {
-    const path = join(root, file);
-    if (!existsSync(path)) {
-      throw new NoTestCommandError(`${file} does not exist under ${root}, so it names no test command`);
-    }
-    commands.push(...EXTRACTORS[file](readFileSync(path, "utf-8")));
-  }
-
-  const distinct = [...new Set(commands.map(c => c.command))];
-  const violations =
-    distinct.length <= 1
-      ? []
-      : [
-          `the test command is spelled ${distinct.length} different ways: ` +
-            commands.map(c => `${c.file} (${c.where}) says \`${c.command}\``).join("; "),
-        ];
-  return { commands, violations };
-}
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
