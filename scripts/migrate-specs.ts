@@ -14,6 +14,7 @@
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { execFileSync } from "child_process";
 import { join } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 // ── Argument parsing ──────────────────────────────────────────
 
@@ -43,7 +44,7 @@ if (specFiles.length === 0) {
 // ── Frontmatter injection ─────────────────────────────────────
 
 function ensureFrontmatter(content: string): string {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
   if (!content.startsWith("---\n")) {
     const frontmatter = `---\ndoc-type: spec\nstatus: draft\nowner: TODO\ncreated: ${today}\nupdated: ${today}\ngoverns: TODO — describe what this spec governs\ntestable: false\n---\n\n`;
     return frontmatter + content;

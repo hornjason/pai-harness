@@ -456,15 +456,26 @@ describe("SC-1710: `create-success` seeds the structure and refuses to overwrite
       join(fakePkg, "scripts", "create-success.ts"),
       readFileSync(CREATE_SUCCESS, "utf-8"),
     );
-    // The script imports `../lib/success-doc`, so the fake package needs a
-    // resolvable one or it dies on module resolution — which exits non-zero
-    // and reads exactly like the refusal under test. Re-exported from the
-    // real module rather than stubbed, so this cannot pass by accident if
-    // the import list grows.
-    writeFileSync(
-      join(fakePkg, "lib", "success-doc.ts"),
-      `export * from ${JSON.stringify(join(ROOT, "lib", "success-doc.ts"))};\n`,
-    );
+    // The script imports from `../lib/`, so the fake package needs every one
+    // of those resolvable or it dies on module resolution — which exits
+    // non-zero and reads exactly like the refusal under test. Each is
+    // re-exported from the real module rather than stubbed, and the list is
+    // DERIVED from the source rather than written down, because a hardcoded
+    // list goes red the day an import is added (#600 added one) and the
+    // repair is then indistinguishable from fixing the thing under test.
+    const libImports = [
+      ...new Set(
+        [...readFileSync(CREATE_SUCCESS, "utf-8").matchAll(/from\s+["']\.\.\/lib\/([\w./-]+)["']/g)].map(m => m[1]),
+      ),
+    ];
+    expect(libImports.length, "the script no longer imports from ../lib — this stubbing is now vacuous")
+      .toBeGreaterThan(0);
+    for (const mod of libImports) {
+      writeFileSync(
+        join(fakePkg, "lib", `${mod.replace(/\.(ts|js)$/, "")}.ts`),
+        `export * from ${JSON.stringify(join(ROOT, "lib", `${mod.replace(/\.(ts|js)$/, "")}.ts`))};\n`,
+      );
+    }
     const root = project({});
     const r = spawnSync("bun", [join(fakePkg, "scripts", "create-success.ts"), "--project-root", root], {
       cwd: ROOT,

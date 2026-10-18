@@ -5,6 +5,7 @@
  * Takes scan data in, produces file content out. No file I/O.
  */
 import type { ProjectScan } from "./types";
+import { localCalendarDay } from "../local-calendar-day";
 
 /**
  * Generate CODE-MAP.md content from project scan data.
@@ -12,7 +13,7 @@ import type { ProjectScan } from "./types";
  * Returns the full markdown string. Does NOT write files.
  */
 export function generateCodeMap(scan: ProjectScan): string {
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
   const { name, dirs, deps, devDeps, modules, routes } = scan;
 
   let md = `---

@@ -28,6 +28,7 @@
 import { spawnSync } from "child_process";
 import { existsSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 const ROOT = join(import.meta.dir, "..");
 const BASELINE_FILE = join(ROOT, ".claude", "typecheck-baseline.json");
@@ -135,7 +136,7 @@ function readBaseline(): number {
 const baseline = readBaseline();
 
 if (process.argv.includes("--update-baseline")) {
-  writeFileSync(BASELINE_FILE, JSON.stringify({ errors: actual, updated: new Date().toISOString().split("T")[0] }, null, 2) + "\n");
+  writeFileSync(BASELINE_FILE, JSON.stringify({ errors: actual, updated: localCalendarDay() }, null, 2) + "\n");
   console.log(`typecheck: baseline set to ${actual}`);
   process.exit(0);
 }

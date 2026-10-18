@@ -20,7 +20,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync } from "fs";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 import { spawnSync } from "child_process";
 
 import {
@@ -360,11 +360,26 @@ describe("SC-1482: the ratchet runs the pinned compiler", () => {
     // refusal nothing reaches. The mutant copy runs from a directory with no
     // node_modules at all.
     const src = readFileSync(join(ROOT, "scripts", "typecheck.ts"), "utf-8");
+    // Relative specifiers are rewritten to absolute paths before the copy
+    // runs, the same way the mutant builders in this repo do it (#224,
+    // `.claude/rules/checks-must-be-able-to-fail.md`). Without it the copy
+    // dies on module resolution — which also exits non-zero, and so reads
+    // exactly like the refusal this case is trying to witness. #600 added
+    // the first relative import to this script and that is how it was found.
+    const rewritten = src.replace(
+      /(from\s+["'])(\.{1,2}\/[^"']+)(["'])/g,
+      (_m, open, spec, close) => `${open}${resolve(join(ROOT, "scripts"), spec)}${close}`,
+    );
+    expect(rewritten, "a relative import survived the rewrite").not.toMatch(/from\s+["']\.{1,2}\//);
     const copy = join(scratch, "typecheck-copy.ts");
-    writeFileSync(copy, src);
+    writeFileSync(copy, rewritten);
     const r = spawnSync("bun", [copy], { cwd: scratch, encoding: "utf-8" });
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+    expect(out, "the copy died on module resolution, not on the missing compiler").not.toContain(
+      "Cannot find module",
+    );
     expect(r.status, "a missing compiler produced a result instead of a refusal").not.toBe(0);
-    expect(`${r.stdout ?? ""}${r.stderr ?? ""}`).toContain("bun install");
+    expect(out).toContain("bun install");
   });
 
   test("package.json declares the typecheck script AGENTS.md documents", () => {

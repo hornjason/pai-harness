@@ -10,6 +10,7 @@
  */
 import { existsSync, readFileSync, readdirSync, writeFileSync, statSync } from "fs";
 import { join, basename } from "path";
+import { localCalendarDay } from "../lib/local-calendar-day";
 import {
   fallowAvailable,
   fallowNotInstalled,
@@ -25,7 +26,7 @@ if (!projectPath || !existsSync(projectPath)) {
 }
 
 const projectName = basename(projectPath);
-const today = new Date().toISOString().split("T")[0];
+const today = localCalendarDay();
 
 // ── Fallow analysis ──────────────────────────────────────────
 

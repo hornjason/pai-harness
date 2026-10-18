@@ -14,6 +14,7 @@ import { execSync } from "child_process";
 /** How many sessions the handoff shows. One site, so the count can be mutated. */
 const RENDERED_SESSIONS = 3;
 import { missingStateVerdict, projectStateViolations, selectRecentSessions } from "../lib/project-state-shape";
+import { localCalendarDay } from "../lib/local-calendar-day";
 
 /**
  * The one exit code every refusal here routes through, per
@@ -191,7 +192,10 @@ if (shapeProblems.length > 0) {
 }
 
 const state: ProjectState = parsed as ProjectState;
-state.updated = new Date().toISOString().split("T")[0];
+// #600. This was the UTC calendar day, so an evening EDT session stamped
+// tomorrow — and the hook that reads this field back only staged a diff on
+// the hours when the two disagreed, which is what made #599 intermittent.
+state.updated = localCalendarDay();
 
 // Sync SC status from spec files (promote-only: specs can mark done, never undo)
 const specStatus = scanSpecSCStatus();

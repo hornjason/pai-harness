@@ -6,6 +6,7 @@
  */
 import { existsSync, readFileSync, writeFileSync, readdirSync } from "fs";
 import { join } from "path";
+import { localCalendarDay } from "../local-calendar-day";
 
 /**
  * SC-278: Detect specs that exceed 500 lines and suggest splitting.
@@ -54,7 +55,7 @@ export function checkGovernsAlignment(specsDir: string, actions: string[]): void
 export function addFrontmatterToSpecs(specsDir: string, actions: string[]): void {
   if (!existsSync(specsDir)) return;
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
 
   for (const file of readdirSync(specsDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(specsDir, file);
@@ -133,7 +134,7 @@ export function detectUnconvertedSpecs(specsDir: string, actions: string[]): voi
 export function addFrontmatterToAdrs(adrDir: string, actions: string[]): void {
   if (!existsSync(adrDir)) return;
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
 
   for (const file of readdirSync(adrDir).filter(f => f.endsWith(".md"))) {
     const filePath = join(adrDir, file);

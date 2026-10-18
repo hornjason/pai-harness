@@ -28,6 +28,7 @@ import { organizeProjectReport } from "../organize";
 import type { ProjectScan, ProjectType, SpecEntry, TestFile, RefFile, DocRoute, Category } from "../generators/types";
 import { tier1Ere } from "../secret-patterns";
 import { healthPathIn } from "../liveness-contradiction";
+import { localCalendarDay } from "../local-calendar-day";
 import { decideRuleWrite } from "../rule-provenance";
 import { DEFAULT_PROFILE, isRuleIncluded, type ScaffoldProfile } from "./profiles";
 import { referencedPaths } from "../agents-md-refs";
@@ -1804,7 +1805,7 @@ export function generateProjectState(root: string, actions: string[]): void {
     return;
   }
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = localCalendarDay();
 
   interface SC { id: string; what: string; done: boolean; }
   const scs: SC[] = [];
@@ -1929,7 +1930,7 @@ export function seedSuccessDoc(root: string, actions: string[]): void {
     return;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localCalendarDay();
   const owner = process.env.USER || "TODO-OWNER";
   // The SHARED substitution. Writing the template raw here while
   // `create-success` substituted meant one seed with two possible byte
