@@ -1,6 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import { execFileSync } from "child_process";
-import { readFileSync } from "fs";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { execFileSync, spawnSync } from "child_process";
+import { createHash } from "crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 import { stripStringsAndComments, strippingPreservesSyntax } from "../lib/js-top-level-code";
@@ -586,5 +588,191 @@ describe("ship.js still validates as a workflow script", () => {
     );
     expect(out).toContain("PASSED");
     expect(out).toContain("no dangerous inline construction");
+  });
+});
+
+// ── #585 / AC-5: the validator refuses a relocated COLLECT-CLAIM block ───
+
+const COLLECT_START = "// ──── COLLECT-CLAIM-START ────";
+const COLLECT_END = "// ──── COLLECT-CLAIM-END ────";
+/** The next module-scope statement region after the decomposed-ship call. */
+const RELOCATE_BEFORE = "// ──── COLLECT-IDENTITY-START ────";
+/** The module-scope call that reaches `auditWorktreeClaims` during evaluation. */
+const DECOMPOSED_CALL = "implementResult = await runDecomposedShip(";
+/** The one identifier whose temporal dead zone the relocation opens. */
+const TDZ_IDENTIFIER = "SINGLE_WORKTREE_EXEMPT";
+
+/** Index of `needle`, refusing both absence and duplication. */
+function soleIndex(src: string, needle: string, what: string): number {
+  const first = src.indexOf(needle);
+  if (first === -1) {
+    throw new Error(`could not build the mutant: ${what} appears 0 times in ship.js`);
+  }
+  if (src.indexOf(needle, first + needle.length) !== -1) {
+    throw new Error(`could not build the mutant: ${what} appears more than once in ship.js`);
+  }
+  return first;
+}
+
+/**
+ * A copy of ship.js with the COLLECT-CLAIM block cut out and re-inserted below
+ * the module-scope `await runDecomposedShip(...)` call — the pre-#585 defect,
+ * rebuilt. Nothing is edited: the block's bytes are moved, so the mutant is a
+ * permutation of the real file's lines and the only difference the validator
+ * can see is the position of the declaration.
+ */
+function buildRelocatedCollectClaimMutant(src: string = shipSource): string {
+  const start = soleIndex(src, COLLECT_START, "the COLLECT-CLAIM-START marker");
+  const end = soleIndex(src, COLLECT_END, "the COLLECT-CLAIM-END marker");
+  const call = soleIndex(src, DECOMPOSED_CALL, "the module-scope runDecomposedShip call");
+  const anchor = soleIndex(src, RELOCATE_BEFORE, "the COLLECT-IDENTITY-START marker");
+
+  if (start > end) {
+    throw new Error("could not build the mutant: the COLLECT-CLAIM markers are inverted");
+  }
+  if (end > call) {
+    throw new Error(
+      "could not build the mutant: the COLLECT-CLAIM block already sits below the runDecomposedShip call",
+    );
+  }
+  if (anchor < call) {
+    throw new Error(
+      "could not build the mutant: the COLLECT-IDENTITY-START marker no longer follows the runDecomposedShip call",
+    );
+  }
+  if (!src.slice(start, end).includes(`const ${TDZ_IDENTIFIER} = `)) {
+    throw new Error(
+      `could not build the mutant: the COLLECT-CLAIM block no longer declares \`const ${TDZ_IDENTIFIER}\``,
+    );
+  }
+
+  const blockEnd = end + COLLECT_END.length + 1; // through the marker's newline
+  const blockText = src.slice(start, blockEnd);
+  const rest = src.slice(0, start) + src.slice(blockEnd);
+  const reAnchor = rest.indexOf(RELOCATE_BEFORE);
+  return rest.slice(0, reAnchor) + blockText + rest.slice(reAnchor);
+}
+
+function runValidator(target: string): { status: number; output: string } {
+  const r = spawnSync(
+    "bun",
+    [join(REPO_ROOT, "scripts", "validate-workflow.ts"), target],
+    { encoding: "utf-8", cwd: REPO_ROOT },
+  );
+  return { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+}
+
+/**
+ * #585 / AC-5: a relocated COLLECT-CLAIM block is refused, and the real file
+ * is not.
+ *
+ * The defect this reconstructs shipped once: `SINGLE_WORKTREE_EXEMPT` is a
+ * module-level `const` read by `auditWorktreeClaims`, which a decomposed run
+ * reaches during module evaluation from the top-level
+ * `await runDecomposedShip(...)`. Every function in the block is hoisted, so
+ * moving it leaves a file that parses and resolves — and dies with a
+ * ReferenceError on the only run shape that exercises it.
+ * `test/collect-claim-enforcement.test.ts` EXECUTES both orders and watches
+ * exactly that throw; this file asserts the validator can see it statically.
+ *
+ * Both halves run in one test on purpose. "The mutant was refused" is
+ * satisfied by a validator that refuses everything, and the only thing that
+ * separates the two is the real file passing in the same run.
+ */
+describe("#585 / AC-5: validate-workflow refuses a relocated COLLECT-CLAIM block", () => {
+  const SHIP_SHA_BEFORE = createHash("sha256").update(readFileSync(SHIP_PATH)).digest("hex");
+  let tmp = "";
+
+  beforeAll(() => {
+    tmp = mkdtempSync(join(tmpdir(), "ship-tdz-mutant-"));
+  });
+
+  afterAll(() => {
+    rmSync(tmp, { recursive: true, force: true });
+    // The real file is COPIED, never modified. Asserted after the mutants have
+    // been built and run, because an in-place edit is the failure mode a
+    // "mutant" built by `replace`-then-`writeFileSync` has.
+    expect(
+      createHash("sha256").update(readFileSync(SHIP_PATH)).digest("hex"),
+      "workflows/ship.js changed during this run — the mutant was not a copy",
+    ).toBe(SHIP_SHA_BEFORE);
+  });
+
+  test("the mutant is a permutation of ship.js with the block below the call", () => {
+    const mutant = buildRelocatedCollectClaimMutant();
+    expect(mutant).not.toBe(shipSource);
+    // Same bytes, reordered — so a refusal downstream is about position and
+    // not about something the builder rewrote on the way past.
+    expect(mutant.length, "the builder changed the file's size").toBe(shipSource.length);
+    expect(mutant.split("\n").sort().join("\n")).toBe(shipSource.split("\n").sort().join("\n"));
+
+    expect(shipSource.indexOf(COLLECT_START)).toBeLessThan(shipSource.indexOf(DECOMPOSED_CALL));
+    expect(
+      mutant.indexOf(COLLECT_START),
+      "the block did not move below the runDecomposedShip call",
+    ).toBeGreaterThan(mutant.indexOf(DECOMPOSED_CALL));
+  });
+
+  test("the builder throws when a marker is duplicated or moves", () => {
+    // A mutation harness that silently no-ops when its target moves is the
+    // decorative check .claude/rules/checks-must-be-able-to-fail.md is about.
+    expect(() =>
+      buildRelocatedCollectClaimMutant(shipSource.replace(COLLECT_START, "// ──── MOVED ────")),
+    ).toThrow(/could not build the mutant: the COLLECT-CLAIM-START marker appears 0 times/);
+
+    expect(() =>
+      buildRelocatedCollectClaimMutant(shipSource.replace(COLLECT_END, "// ──── MOVED ────")),
+    ).toThrow(/could not build the mutant: the COLLECT-CLAIM-END marker appears 0 times/);
+
+    expect(() =>
+      buildRelocatedCollectClaimMutant(`${shipSource}\n${COLLECT_START}\n`),
+    ).toThrow(/could not build the mutant: the COLLECT-CLAIM-START marker appears more than once/);
+
+    expect(() =>
+      buildRelocatedCollectClaimMutant(`${shipSource}\n${COLLECT_END}\n`),
+    ).toThrow(/could not build the mutant: the COLLECT-CLAIM-END marker appears more than once/);
+
+    // The call site and the re-insertion anchor are located the same way, so
+    // a reorganisation that leaves the markers alone still aborts rather than
+    // producing a mutant that is not the arrangement this case is named after.
+    expect(() =>
+      buildRelocatedCollectClaimMutant(shipSource.replace(DECOMPOSED_CALL, "implementResult = await runDecomposed(")),
+    ).toThrow(/could not build the mutant: the module-scope runDecomposedShip call appears 0 times/);
+
+    // And the declaration itself: without this, a block that no longer holds a
+    // module-level const would still be relocated and the refusal below would
+    // be demanding a failure for a legal file.
+    expect(() =>
+      buildRelocatedCollectClaimMutant(shipSource.replace(`const ${TDZ_IDENTIFIER} = `, `var ${TDZ_IDENTIFIER} = `)),
+    ).toThrow(new RegExp(`could not build the mutant: the COLLECT-CLAIM block no longer declares`));
+  });
+
+  test("the mutant is refused naming SINGLE_WORKTREE_EXEMPT while the real ship.js exits 0", () => {
+    const mutantPath = join(tmp, "ship-relocated.js");
+    writeFileSync(mutantPath, buildRelocatedCollectClaimMutant());
+
+    const mutant = runValidator(mutantPath);
+    const real = runValidator(SHIP_PATH);
+
+    // The real file first: a validator that refuses everything would satisfy
+    // the mutant assertion on its own.
+    expect(real.status, `the real ship.js was refused:\n${real.output}`).toBe(0);
+    expect(real.output).toContain("PASSED");
+    expect(real.output).not.toContain(TDZ_IDENTIFIER);
+
+    // The mutant has to die on the TDZ check, not on the way to it. A copy
+    // that failed to parse, or a validator that could not resolve its own
+    // imports, also exits non-zero — and would read as a refusal on the merits.
+    expect(
+      mutant.output,
+      `the mutant did not parse, so its non-zero exit says nothing:\n${mutant.output}`,
+    ).toContain("✓ Syntax: valid JavaScript");
+    expect(mutant.status, `the mutant was accepted:\n${mutant.output}`).toBe(1);
+    expect(mutant.output).toContain("TDZ");
+    expect(
+      mutant.output,
+      "the refusal does not name the identifier whose dead zone the relocation opens",
+    ).toContain(TDZ_IDENTIFIER);
+    expect(mutant.output).toContain("FAILED");
   });
 });
