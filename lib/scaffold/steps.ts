@@ -2712,17 +2712,50 @@ fi
 # linked worktree. An unmeasured guard is indistinguishable from an absent
 # one, so it is absent. git hooks run from the toplevel, and both calls share
 # a cwd, so there was never a case that needed it.
+#
+# The primary arm had three fail-opens in two lines (#599), and the shape is
+# this file's recurring one: a check that passed because of what it never
+# looked at. The path was the CONSUMER layout, so in the harness's own
+# checkout — which has scripts/update-project-state.ts and no
+# node_modules/rungate at all — bun exited non-zero on a file that is not
+# there. 2>/dev/null threw the ENOENT away, || true threw the status away, and
+# the git add below then staged whatever happened to be on disk. A commit that
+# regenerated nothing was byte-indistinguishable from one that regenerated
+# everything, and the only reason anyone noticed is that the stamp is UTC, so
+# the stale copy differs from the fresh one for four hours an evening.
+#
+# Every message is on STDERR: stdout is what a caller captures as the
+# command's answer, and a decline, a reading and an updater's progress are all
+# diagnosis rather than output.
 if [ -f "project-state.json" ]; then
   gitdir=$(git rev-parse --git-dir)
   commondir=$(git rev-parse --git-common-dir)
   if [ -n "$gitdir" ] && [ "$gitdir" = "$commondir" ]; then
-    bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
-    git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+    # The order is deliberate. A checkout carrying its own scripts/ copy IS
+    # the harness, and the harness must not regenerate its state with a stale
+    # vendored duplicate of its own updater.
+    updater=""
+    if [ -f "scripts/update-project-state.ts" ]; then
+      updater="scripts/update-project-state.ts"
+    elif [ -f "node_modules/rungate/scripts/update-project-state.ts" ]; then
+      updater="node_modules/rungate/scripts/update-project-state.ts"
+    fi
+    if [ -z "$updater" ]; then
+      echo "project-state: UNMEASURED — project-state.json is here, but no update-project-state.ts was found at scripts/update-project-state.ts or node_modules/rungate/scripts/update-project-state.ts. Nothing was regenerated and nothing was staged." >&2
+    elif bun "$updater" --skip-tests >&2; then
+      # Staged only after the updater SUCCEEDED. Staging regardless is the
+      # fail-open the readings above exist to replace: it puts yesterday's
+      # PROJECT-STATE.md in today's commit, and the commit then looks exactly
+      # like one that updated it.
+      git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+    else
+      echo "project-state: UNMEASURED — $updater exited non-zero, so PROJECT-STATE.md and project-state.json were NOT staged. Run it by hand to see why." >&2
+    fi
   else
     # Announced, not silent. A developer who expected the state files to move
     # would otherwise be left guessing, and SKIP that says nothing is
     # indistinguishable from the update having happened.
-    echo "project-state: SKIPPED — linked worktree. project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned (#296); update them from the primary checkout."
+    echo "project-state: SKIPPED — linked worktree. project-state.json, PROJECT-STATE.md and SUCCESS.md are DA-owned (#296); update them from the primary checkout." >&2
   fi
 fi
 

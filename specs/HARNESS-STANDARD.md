@@ -2473,6 +2473,92 @@ its own reason. It now compares the written hook BYTE FOR BYTE against a
 freshly generated one, with a positive control that the fresh copy differs
 from the stale one, and the behaviour is left to the cases that execute it.
 
+### The other arm of the same hook, and the copy that actually runs (#599)
+
+#450 above stopped the generated pre-commit staging DA-owned state from a
+linked worktree. It left the PRIMARY arm exactly as it found it:
+
+```sh
+bun node_modules/rungate/scripts/update-project-state.ts --skip-tests 2>/dev/null || true
+git add PROJECT-STATE.md project-state.json 2>/dev/null || true
+```
+
+Three fail-opens in two lines. The path is the CONSUMER layout, so in the
+harness's own checkout — which has `scripts/update-project-state.ts` and no
+`node_modules/rungate` at all — bun exited non-zero on a file that is not
+there. `2>/dev/null` discarded the ENOENT, `|| true` discarded the status, and
+the `git add` below then staged whatever happened to be on disk. **A commit
+that regenerated nothing was byte-indistinguishable from one that regenerated
+everything**, and the only reason anyone saw it is that the stamp is UTC (#600),
+so the stale copy and the fresh one differ for about four hours an evening.
+
+Every reading now goes to **stderr**, and the cases read the two streams APART.
+A concatenated reading cannot tell which stream carried a message, so an
+assertion over it holds whichever stream the text was on — the stream is the
+claim, so the stream is what has to be observed.
+
+**And the half the issue is really about: the installed hook is untracked.**
+Nothing in the repository can see `.git/hooks/pre-commit`, no CI job installs
+it, and `createGitHooks` runs only on a re-scaffold. "The generator is fixed"
+and "my commits are fixed" are two claims and only the first has ever carried
+evidence here — #450 landed on 2026-10-17 and this repository went on
+committing through the pre-#450 hook afterwards, which is the only reason #599
+was observable at all. `scripts/check-installed-hook-currency.ts` reads the
+hook at the **shared git common dir** — `--git-dir` in a linked worktree is
+`.git/worktrees/<name>`, which has no `hooks/` and never will — and compares
+it BYTE-EXACT against what the generator produces today. The named guards in
+`GUARD_PROPERTIES` are diagnosis, not the test: a check that asked only "does
+it contain the worktree guard" is satisfiable by pasting the string into a
+hook that does nothing with it, which is the proxy trap
+`.claude/rules/checks-must-be-able-to-fail.md` records against #492.
+
+- [x] SC-2038: test/unit/git-hooks-generator.test.ts contains [resolves the harness layout and stages after the updater succeeded] — the primary arm resolves scripts/update-project-state.ts before the vendored node_modules copy and both layouts are executed, with the proof that the updater ran being the CONTENT it wrote rather than the file being staged because staging is what the broken version did too
+- [x] SC-2039: test/unit/git-hooks-generator.test.ts contains [an absent updater is reported UNMEASURED and nothing is staged] — an absent updater and one that exits non-zero are both reported and neither is followed by a stage, so yesterday's PROJECT-STATE.md cannot enter today's commit looking like a regenerated one
+- [x] SC-2040: test/unit/git-hooks-generator.test.ts contains [every project-state message is on stderr and none of it is on stdout] — the decline, both UNMEASURED readings and the updater's own output are on stderr and the case reads stdout and stderr as separate streams so the stream itself is asserted rather than their concatenation
+- [x] SC-2041: test/unit/git-hooks-worktree-mutation.test.ts contains [the always-primary mutant turns exactly the two worktree observations red] — the worktree comparison is rewritten to compare a value with itself and the same four observations run against the real hook and the mutant, with the red count asserted and the green ones named because two of four is satisfied by any two
+- [x] SC-2042: test/unit/git-hooks-worktree-mutation.test.ts contains [mutant and original differ on a named input] — the input on which the two scripts behave differently is run rather than argued before any count is believed, and the builder aborts when the comparison it mutates appears zero or two times
+- [x] SC-2043: test/unit/installed-hook-currency.test.ts contains [a hook that predates the worktree guard is refused, and the refusal names it] — an absent hook, a hand-written one, one predating #450, one predating the updater resolution and one carrying every guard but differing in bytes are all refused, each case run twice against a mutant copy whose exit-code constant is zero
+- [x] SC-2044: test/unit/installed-hook-currency.test.ts contains [run from a linked worktree it reads the PRIMARY hook, not the worktree gitdir] — the read is at the shared git common dir because a check joining project/.git/hooks would report not-installed from every worktree in the repository, and the live-tree case asserts the script's verdict agrees with an independent reading rather than asserting a verdict CI cannot have
+- [x] SC-2045: scripts/check-installed-hook-currency.ts contains [export const REFUSE_EXIT] — every refusal travels through one exported exit-code constant and the script has no relative imports static or dynamic, so the mutant copy runs from a temp directory and --install is the remedy the refusal names rather than a paragraph
+
+#### What was broken to prove it (SC-2038..2045)
+
+Run and counted rather than asserted, over `test/unit/git-hooks-generator.test.ts`
++ `test/unit/git-hooks-worktree-mutation.test.ts` (32 tests) and
+`test/unit/installed-hook-currency.test.ts` (14 tests). Every count was
+predicted before the run.
+
+| Mutation | Red | Predicted |
+|---|---|---|
+| the pre-#599 primary arm restored — hardcoded `node_modules` path, `2>/dev/null \|\| true`, unconditional `git add` | **9 of 32** | 9 |
+| the decline's `>&2` dropped, so it goes back to stdout | **3 of 32** | 3 |
+| the worktree comparison rewritten to compare `$gitdir` with itself | **2 of 4 observations**, by name, inside the battery the file ships | 2 |
+| `currencyRefusal` short-circuited to `return null` | **7 of 14** | 7 |
+| `GUARD_PROPERTIES` emptied, so the refusal can no longer name a fix | **2 of 14** | 2 |
+| `installedHookPath` reading `--git-dir` instead of `--git-common-dir` | **2 of 14** | 1 |
+
+None is left in the tree; `lib/scaffold/steps.ts` and
+`scripts/check-installed-hook-currency.ts` were confirmed byte-identical
+afterwards.
+
+**Two rows are worth reading rather than counting.**
+
+The first row's nine include SC-2038's *vendored* case staying GREEN, and that
+is the point of splitting the two layouts: the pre-#599 hook invokes the
+`node_modules` path directly, so a consumer fixture cannot witness this fix at
+all. A battery that only tested the layout the issue was reported in would
+have measured a hook that is still broken for the harness.
+
+The last row came back **2 where 1 was predicted**, and per
+`.claude/rules/checks-must-be-able-to-fail.md` the extra red was read before
+anything was concluded. It is the live-tree case, and it is *about* the
+mutated behaviour: this work was done in a linked worktree, so `--git-dir`
+resolves to `.git/worktrees/<name>`, the script reports "not installed", and
+the independent reading the case takes from the common dir reports current.
+The two disagree, which is exactly what that case exists to detect. The
+prediction was wrong, not the mutant — the binding reaches further than the
+one fixture that was counted for it.
+
 ### A criterion forbidding a call, ticked over that call (#395)
 
 `gates/workflow.test.ts` read an issue's labels by shelling out to the
