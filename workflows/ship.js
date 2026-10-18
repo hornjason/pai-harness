@@ -4186,6 +4186,11 @@ async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
     }
   }
 
+  // These rows carry `claimedFiles`, because the caller paired each result
+  // with its sub-issue's claim through `claimedWork` before handing the wave
+  // over (#627). Without it `auditWorktreeClaims` sees a wave in which nobody
+  // claimed anything, and refuses every file in it the moment a second
+  // worktree is present — which is every wave worth parallelising.
   const collected = await collectAgentWork(
     results, PROJECT_ROOT, 'Implement', `collect-wave-${waveIndex + 1}`,
   )
@@ -4641,6 +4646,47 @@ function wavePlanSummary(plan, total) {
 }
 // ──── WAVE-DISPATCH-END ────
 
+/**
+ * One sub-issue's result, paired with the claim that sub-issue was issued —
+ * the row shape every staging path hands `collectAgentWork` (#627, #178,
+ * SC-413).
+ *
+ * ONE binding, called by BOTH staging paths, because there are two and they
+ * were written three months apart. #178 gave the end-of-run path a claim:
+ * `claimedFiles` travelling back beside `filesChanged`, so
+ * `auditWorktreeClaims` can refuse a worktree that reported a file no
+ * sub-issue claimed. #420 then added a SECOND path — `integrateWave` stages
+ * and commits a wave's output so the next wave's worktrees contain it — and
+ * it handed the collector the bare `buildResult`s. Those carry no claim, so
+ * in any wave with two worktrees every file was claimed by nobody and the
+ * whole wave was refused: correct, non-overlapping work, refused at the
+ * barrier, with the run dead and the output loose in the worktrees.
+ *
+ * A second inline copy of the pairing is what made that possible and is the
+ * thing to avoid reintroducing. Two sites building the same row are
+ * behaviourally one until they diverge, and nothing can see the divergence
+ * until a wave dies of it — so the pairing is written here, once, and
+ * `test/wave-claim-propagation.test.ts` asserts the expression appears
+ * nowhere else.
+ *
+ * The claim is read off the SUB-ISSUE, never off the agent's reply. Sent to
+ * the agent as prose it is advice; taken from the plan and carried back
+ * alongside what the agent actually changed, it is checkable.
+ */
+function claimedWork(result) {
+  const built = (result && result.buildResult) || {}
+  const sub = (result && result.subIssue) || {}
+  return {
+    worktreePath: built.worktreePath || '',
+    // The remote travels with the worktree it is a property of (#218), so
+    // every collection boundary reads the same reading the spawn was judged
+    // on.
+    worktreeRepo: built.worktreeRepo || '',
+    filesChanged: built.filesChanged || [],
+    claimedFiles: sub.filesToModify || [],
+  }
+}
+
 async function runDecomposedShip(subIssues) {
   log(`DECOMPOSED SHIP: ${subIssues.length} sub-issues from to-issues decomposition`)
 
@@ -4830,7 +4876,16 @@ directory (#218) — not the repo named in your brief, the one your checkout has
       // whole of "visible in its worktree". A wave with no successor hands it
       // to nobody and is left for the end-of-run collect.
       if (!waveNeedsIntegration(w, plan.waves.length)) continue
-      const integrated = await integrateWave(waveResults, w, plan.waves.length, runRef)
+      // Each result paired with ITS OWN sub-issue's claim before the wave is
+      // staged (#627). `integrateWave` commits, so it is a collection
+      // boundary, and SC-413 refuses a row whose worktree claimed nothing
+      // whenever a second worktree is in the run — which is every wave worth
+      // parallelising. Same binding as the end-of-run path below; a second
+      // inline copy here is what this run's own decomposition would die of.
+      const integrated = await integrateWave(
+        waveResults.map(r => (r && r.buildResult ? { ...r, buildResult: claimedWork(r) } : r)),
+        w, plan.waves.length, runRef,
+      )
       if (!integrated.ok) {
         waveFailed = true
         log(`Wave ${w + 1} could not be integrated: ${integrated.detail} — ` +
@@ -4874,18 +4929,9 @@ directory (#218) — not the repo named in your brief, the one your checkout has
           // is flattened across all of them and worktreePath is only the last
           // one, so the commit phase could never relativize the other N-1
           // agents' paths — 37 minutes of valid work that would not commit (#81).
-          agentResults: completed.map(r => ({
-            worktreePath: r.buildResult?.worktreePath || '',
-            // The remote travels with the worktree it is a property of
-            // (#218), so the batch check at the collection boundary reads the
-            // same reading this spawn was already judged on.
-            worktreeRepo: r.buildResult?.worktreeRepo || '',
-            filesChanged: r.buildResult?.filesChanged || [],
-            // The claim travels with the result (#178, SC-413). Sent to the
-            // agent as prose it is advice; carried back alongside what the
-            // agent actually changed, it is checkable.
-            claimedFiles: r.subIssue?.filesToModify || [],
-          })),
+          // One binding, shared with the wave staging path above (#627), so
+          // the two cannot disagree about what a claim is.
+          agentResults: completed.map(claimedWork),
         }
       }
     }
@@ -4899,14 +4945,10 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         success: true,
         filesChanged: allFilesChanged,
         worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
-        // See the failure branch above — the pairing is what #81 lost, and
-        // the claim is what #178 lost.
-        agentResults: completed.map(r => ({
-          worktreePath: r.buildResult?.worktreePath || '',
-          worktreeRepo: r.buildResult?.worktreeRepo || '',
-          filesChanged: r.buildResult?.filesChanged || [],
-          claimedFiles: r.subIssue?.filesToModify || [],
-        })),
+        // See the failure branch above — the pairing is what #81 lost, the
+        // claim is what #178 lost, and the wave staging path is where #627
+        // found the claim missing again.
+        agentResults: completed.map(claimedWork),
       }
     }
   } else {

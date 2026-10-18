@@ -1100,3 +1100,114 @@ describe("#585 / AC-5: a relocated COLLECT-CLAIM block is a TDZ fault, executed"
     expect(String((thrown as Error).message)).toContain("before initialization");
   });
 });
+
+// ── #627 ─────────────────────────────────────────────────────
+//
+// covers #627 AC-4 at the collector, the half `test/wave-integration.test.ts`
+// drives the wave path into.
+//
+// `integrateWave` handed this function rows built from `buildResult` alone.
+// The claim is a SIBLING of the build result, so every row arrived with
+// `claimedFiles` undefined and the audit read a wave in which nobody had
+// claimed anything. Three worktrees, each reporting only files inside its own
+// claim, and all nine files were refused as unclaimed.
+//
+// Three worktrees is the smallest shape that measures anything: with one,
+// `SINGLE_WORKTREE_EXEMPT` keeps every file whether a claim travelled or not,
+// so a two-row fixture is the floor and a third row is what makes the rows
+// resemble the run. The paths are the fixture's own and name nothing in this
+// repository, so the case keeps witnessing after the run's files move.
+
+describe("#627: the rows the wave staging path hands this collector", () => {
+  const WT = [
+    `${PROJECT}/.claude/worktrees/wf_wave-a`,
+    `${PROJECT}/.claude/worktrees/wf_wave-b`,
+    `${PROJECT}/.claude/worktrees/wf_wave-c`,
+  ];
+  const CLAIMS: Record<string, string[]> = {
+    [WT[0]!]: ["fixture/a/reader.ts", "fixture/a/reader.probe.ts"],
+    [WT[1]!]: ["fixture/b/counter.ts"],
+    [WT[2]!]: ["fixture/c/config.ts"],
+  };
+  const TOTAL = Object.values(CLAIMS).reduce((n, f) => n + f.length, 0);
+
+  /** What the wave built: every worktree reported exactly what it claimed. */
+  const paired: AgentResult[] = WT.map(wt => ({
+    worktreePath: wt,
+    filesChanged: CLAIMS[wt]!,
+    claimedFiles: CLAIMS[wt]!,
+  }));
+
+  /** The same work, after `.map(r => r.buildResult)` dropped the other half. */
+  const stripped: AgentResult[] = WT.map(wt => ({
+    worktreePath: wt,
+    filesChanged: CLAIMS[wt]!,
+  }));
+
+  test("paired with their claims, three worktrees of disjoint work collect", async () => {
+    // The positive control. Without it `return { ok: false }` satisfies every
+    // refusal assertion below and the collector is simply broken.
+    const { collectAgentWork, calls } = loadCollectAgentWork({ ok: true, collected: TOTAL });
+    const out = await collectAgentWork(paired, PROJECT, "Implement", "collect-wave-1");
+
+    expect(out.ok, out.detail).toBe(true);
+    expect(out.collected).toBe(TOTAL);
+    expect(calls).toHaveLength(1);
+    const payload = calls[0]!.prompt.match(/<<'RUNGATE_GROUPS_EOF'\n([\s\S]*?)\nRUNGATE_GROUPS_EOF/);
+    expect(payload, "the groups heredoc was not found in the prompt").not.toBeNull();
+    const groups = JSON.parse(payload![1]!) as Array<{ worktreePath: string; filesChanged: string[] }>;
+    expect(groups.reduce((n, g) => n + g.filesChanged.length, 0)).toBe(TOTAL);
+  });
+
+  test("with the claim dropped in transit, the identical work is refused file by file", async () => {
+    const { collectAgentWork, calls } = loadCollectAgentWork((prompt: string) =>
+      prompt.includes("preserve-worktree-work.ts") ? { entries: [] } : { ok: true, collected: TOTAL });
+    const out = await collectAgentWork(stripped, PROJECT, "Implement", "collect-wave-1");
+
+    expect(out.ok).toBe(false);
+    expect(out.staged).toBe(false);
+    expect(out.detail).toContain(`${TOTAL} unclaimed file modification(s)`);
+    for (const wt of WT) {
+      for (const f of CLAIMS[wt]!) {
+        expect(out.detail).toContain(`${wt} reported ${f}, which it did not claim`);
+      }
+    }
+    // Nothing was collected — the collect script is never reached. The one
+    // call that goes out is the preserve step, which is the only reason the
+    // work survives a run that dies here (#228).
+    expect(calls.filter(c => c.prompt.includes("collect-worktree-files.ts"))).toHaveLength(0);
+    expect(calls.filter(c => c.prompt.includes("preserve-worktree-work.ts"))).toHaveLength(1);
+  });
+
+  test("the refusal cannot say whether a claim was issued and lost, or never issued", async () => {
+    // Not a defect in the audit: it is handed identical input in both cases
+    // and there is nothing in the rows to tell them apart. Written down
+    // because it is what makes this failure mode cost a whole run to
+    // diagnose, and it is the distinction #629 carries. If a later change
+    // makes the two refusals differ, this case is the one that should be
+    // rewritten rather than deleted.
+    const refusalFor = async (rows: AgentResult[]) => {
+      const { collectAgentWork } = loadCollectAgentWork((prompt: string) =>
+        prompt.includes("preserve-worktree-work.ts") ? { entries: [] } : { ok: true, collected: 1 });
+      return (await collectAgentWork(rows, PROJECT, "Implement", "collect-wave-1")).detail;
+    };
+
+    // A decomposition that issued no claims at all — the honest version of
+    // the same rows, and the one that SHOULD refuse.
+    const neverIssued: AgentResult[] = WT.map(wt => ({
+      worktreePath: wt,
+      filesChanged: CLAIMS[wt]!,
+      claimedFiles: null,
+    }));
+
+    const lost = await refusalFor(stripped);
+    const never = await refusalFor(neverIssued);
+    // Both have to BE refusals first. Two collections that succeeded return
+    // no detail at all, and `undefined === undefined` is an agreement about
+    // nothing — which is what this case would report if the audit ever
+    // stopped refusing an absent claim.
+    expect(lost).toContain("unclaimed file modification(s)");
+    expect(never).toContain("unclaimed file modification(s)");
+    expect(lost).toBe(never);
+  });
+});

@@ -41,6 +41,17 @@
  *
  * SC-5 pins the out-of-scope wording to what #296 SC-3 shipped, so rows 5 and
  * 6 may only be proven different from the others — never reworded.
+ *
+ * ## AC-7b (#627)
+ *
+ * #627 moves the claim/result pairing into one named binding the wave path
+ * calls too, which changes WHAT reaches `auditWorktreeClaims` and not the
+ * block below. The hazard is that "the suite is green" would be the only
+ * evidence of that, and a suite is green for many reasons. So the AC-7b
+ * describe at the bottom drives the three situations the pairing decides
+ * between — an absent claim, an unclaimed file, and a claimed file that never
+ * changed — through the real block over ONE set of paths, and compares what
+ * came back. One executed run, three outcomes, pairwise distinct.
  */
 
 // SPEC-REF: PARALLEL-AGENT-COORDINATION-SPEC.md § Success Criteria (SC-413)
@@ -464,5 +475,178 @@ describe("SC-1435: MUTANT — two kinds collapsed into one message", () => {
       const mut = mutant(row.results).violations.map(v => v.path).sort();
       expect(mut, `${row.kind}: the mutant changed WHAT is refused, not just how it reads`).toEqual(real);
     }
+  });
+});
+
+// ── AC-7b (#627): the three claim situations stay told apart ──
+
+/**
+ * One set of paths, three claim situations.
+ *
+ * Shared paths on purpose. The KINDS table above compares MESSAGES, and can
+ * do that across fixtures because `shape()` blanks the substitutions. These
+ * three are told apart by what the audit DOES — which paths it refuses and
+ * which it lets through to the collector — and an outcome comparison is only
+ * meaningful between fixtures whose paths are the same. Fixtures that varied
+ * the paths too would differ no matter what the block decided.
+ */
+const AC7B_PATHS = { a: "lib/a.ts", x: "lib/x.ts", b: "lib/b.ts", never: "lib/never.ts" };
+
+const AC7B_SITUATIONS: Array<{ kind: string; results: unknown[] }> = [
+  {
+    // The #627 failure itself: `integrateWave` handed `collectAgentWork` rows
+    // whose `claimedFiles` was undefined, because it reached for `buildResult`
+    // and left the plan behind. No claim was issued ANYWHERE in the run.
+    kind: "absent claim",
+    results: [
+      { worktreePath: WT_A, filesChanged: [AC7B_PATHS.a, AC7B_PATHS.x] },
+      { worktreePath: WT_B, filesChanged: [AC7B_PATHS.b] },
+    ],
+  },
+  {
+    // Claims issued and carried. One reported file is outside them — the
+    // scope creep SC-413 exists for, and the case that MUST keep refusing.
+    kind: "unclaimed file",
+    results: [
+      { worktreePath: WT_A, filesChanged: [AC7B_PATHS.a, AC7B_PATHS.x], claimedFiles: [AC7B_PATHS.a] },
+      { worktreePath: WT_B, filesChanged: [AC7B_PATHS.b], claimedFiles: [AC7B_PATHS.b] },
+    ],
+  },
+  {
+    // A plan claims more than the work touched, which is ordinary: a
+    // sub-issue lists four files and changes three. Not a refusal, and the
+    // untouched claim must not become a collection candidate either.
+    kind: "claimed file that never changed",
+    results: [
+      {
+        worktreePath: WT_A,
+        filesChanged: [AC7B_PATHS.a, AC7B_PATHS.x],
+        claimedFiles: [AC7B_PATHS.a, AC7B_PATHS.x, AC7B_PATHS.never],
+      },
+      { worktreePath: WT_B, filesChanged: [AC7B_PATHS.b], claimedFiles: [AC7B_PATHS.b] },
+    ],
+  },
+];
+
+/** What the audit DID, as one comparable string per situation. */
+function outcome(results: unknown[], audit: Audit = auditWorktreeClaims): string {
+  const got = audit(results);
+  const refused = got.violations.map(v => v.path).sort();
+  const collected = got.candidates.flatMap(c => c.filesChanged).sort();
+  return `refused=[${refused.join(",")}] collected=[${collected.join(",")}]`;
+}
+
+describe("AC-7b: absent, unclaimed and never-changed stay three different answers", () => {
+  test("each situation's outcome is the one it is named for", () => {
+    // Pinned by value rather than only by pairwise difference: three outcomes
+    // can be pairwise distinct and all three wrong, which a distinctness
+    // comparison alone cannot see.
+    const by = (kind: string) => outcome(AC7B_SITUATIONS.find(s => s.kind === kind)!.results);
+
+    // Nothing claimed anything, so nothing may be collected (#296 AC-5).
+    expect(by("absent claim")).toBe(
+      `refused=[${AC7B_PATHS.a},${AC7B_PATHS.b},${AC7B_PATHS.x}] collected=[]`,
+    );
+    // Exactly the file outside the claims, and only it.
+    expect(by("unclaimed file")).toBe(
+      `refused=[${AC7B_PATHS.x}] collected=[${AC7B_PATHS.a},${AC7B_PATHS.b}]`,
+    );
+    // Nothing refused — and `lib/never.ts` is in neither list, because a
+    // claim is permission to change a file, not a report that one changed.
+    expect(by("claimed file that never changed")).toBe(
+      `refused=[] collected=[${AC7B_PATHS.a},${AC7B_PATHS.b},${AC7B_PATHS.x}]`,
+    );
+  });
+
+  test("no two situations produce the same outcome", () => {
+    const seen = AC7B_SITUATIONS.map(s => [s.kind, outcome(s.results)] as const);
+    for (let i = 0; i < seen.length; i++) {
+      for (let j = i + 1; j < seen.length; j++) {
+        expect(
+          seen[i]![1],
+          `${seen[i]![0]} and ${seen[j]![0]} are the same answer — the guard cannot tell a lost claim from a legitimate one`,
+        ).not.toBe(seen[j]![1]);
+      }
+    }
+  });
+
+  test("the absent-claim run is the only one that collects nothing", () => {
+    // The property the #627 refusal rests on, stated on its own: a run that
+    // issued no claim has no collectable work, so a wave fix that merely
+    // silences the refusal without restoring the claim is still broken.
+    const collecting = AC7B_SITUATIONS.filter(
+      s => !outcome(s.results).endsWith("collected=[]"),
+    ).map(s => s.kind);
+    expect(collecting).toEqual(["unclaimed file", "claimed file that never changed"]);
+  });
+
+  test("the two refusing situations still say 'did not claim'", () => {
+    // The wording #296 SC-3 pinned, re-read here because AC-7b is about these
+    // two staying refusals at all. Executed, not grepped.
+    for (const kind of ["absent claim", "unclaimed file"]) {
+      const got = auditWorktreeClaims(AC7B_SITUATIONS.find(s => s.kind === kind)!.results);
+      expect(got.violations.length, kind).toBeGreaterThan(0);
+      for (const v of got.violations) expect(v.detail, kind).toContain("did not claim");
+    }
+    // NOT asserted: that those two read DIFFERENTLY. Measured on this tree
+    // they do not — both end "no worktree claimed that file", so an absent
+    // claim and a lost one are one sentence. That is the split #629 carries,
+    // and writing an equality here would make #629 edit this file to do it.
+  });
+});
+
+describe("AC-7b: MUTANT — the absent-claim fallthrough restored and observed", () => {
+  /**
+   * The claim-permission expression, mutated by text. Same single site
+   * `test/collect-claim-ownership.test.ts` mutates, widened differently: there
+   * it is restored to the historical `claimant === null || claimant === wt`,
+   * here to `true`, which is the cheapest repair for "#627's wave path hands
+   * the audit rows with no claim" — let absent claims through and the wave
+   * integrates. It also switches SC-413 off for every run.
+   */
+  const SIGNATURE = "return Array.isArray(claims) ? claims.includes(key) : claimant === wt";
+  const WIDENED = "return Array.isArray(claims) ? claims.includes(key) : true";
+
+  function loadWidened(): Audit {
+    const hits = claimSource.split(SIGNATURE).length - 1;
+    if (hits !== 1) {
+      throw new Error(
+        `could not build the mutant: the claim-permission signature appears ${hits} times`,
+      );
+    }
+    return loadAudit(claimSource.replace(SIGNATURE, WIDENED));
+  }
+
+  test("the permission decision has exactly one site, so the mutation is total", () => {
+    expect(claimSource.split(SIGNATURE).length - 1).toBe(1);
+    expect(
+      claimSource.includes(WIDENED),
+      "the widened form is already the only one in the source — nothing constrains an absent claim",
+    ).toBe(false);
+  });
+
+  test("the mutant collapses the absent-claim run into the never-changed one", () => {
+    const mutant = loadWidened();
+    const absent = AC7B_SITUATIONS.find(s => s.kind === "absent claim")!;
+    const neverChanged = AC7B_SITUATIONS.find(s => s.kind === "claimed file that never changed")!;
+    expect(
+      outcome(absent.results, mutant),
+      "the guard was widened and the two still differ — the case above is reading something else",
+    ).toBe(outcome(neverChanged.results, mutant));
+    // And on the real block they differ, so the collapse is the mutation's.
+    expect(outcome(absent.results)).not.toBe(outcome(neverChanged.results));
+  });
+
+  test("control: the mutant still refuses a DA-owned write", () => {
+    // Without this, "the mutant collapsed the outcomes" would be satisfied by
+    // a mutant that refuses nothing for any reason, and the comparison above
+    // would prove nothing about the claim guard in particular.
+    const daOwned = [
+      { worktreePath: WT_A, filesChanged: [AC7B_PATHS.a, "PROJECT-STATE.md"], claimedFiles: [AC7B_PATHS.a] },
+      { worktreePath: WT_B, filesChanged: [AC7B_PATHS.b], claimedFiles: [AC7B_PATHS.b] },
+    ];
+    const mutant = loadWidened();
+    expect(mutant(daOwned).violations.map(v => v.path)).toEqual(["PROJECT-STATE.md"]);
+    expect(mutant(daOwned).violations[0]!.detail).toContain("DA-owned");
   });
 });
