@@ -9,8 +9,8 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 
 import type { ScRegistry } from "./sc-ids";
-import { isFixtureScId, scIdsSpelledInSource } from "./sc-ids";
-import type { ScNamespaceReading } from "./sc-id-cross-tree";
+import { isFixtureScId, scIdsSpelledInSource, SC_SOURCE_DIRS } from "./sc-ids";
+import type { ScNamespaceReading, SourceReading } from "./sc-id-cross-tree";
 import { readScNamespace } from "./sc-id-cross-tree";
 import { tryLoadRungateConfig } from "./config-loader";
 
@@ -228,24 +228,6 @@ export function listPatterns(): string {
 }
 
 /**
- * Every SC number a piece of text spells.
- *
- * One parse, used by the allocation and by the leg count the reading
- * reports. Two copies would be two deciders that agree — the fourth shape in
- * `.claude/rules/checks-must-be-able-to-fail.md` — and the symptom would be
- * a reading that says it consulted five ids while the number was computed
- * from four.
- */
-function scNumbersInText(text: string): number[] {
-  const out: number[] = [];
-  for (const m of text.matchAll(/SC-(\d+)/g)) {
-    const n = Number(m[1]);
-    if (Number.isFinite(n)) out.push(n);
-  }
-  return out;
-}
-
-/**
  * The next free SC number.
  *
  * `SC-<n>` is a GLOBAL id — `lib/sc-ids.ts` says so, and
@@ -287,6 +269,18 @@ function scNumbersInText(text: string): number[] {
  * collision this function exists to prevent. The reservation is enforced
  * against specs by SC-1524, not by making the allocator pretend.
  */
+/**
+ * The ids a spec's own text spells, as one binding.
+ *
+ * The allocator counts them and the reading reports how many it counted; two
+ * scans of the same string would be two deciders that agree, and a reading
+ * whose numbers come from a different pattern than the allocation used is a
+ * reading of something else.
+ */
+function idsInSpecContent(specContent: string): string[] {
+  return [...specContent.matchAll(/SC-(\d+)/g)].map(m => m[0]);
+}
+
 export function nextSCNumber(
   specContent: string,
   reg?: ScRegistry,
@@ -297,7 +291,7 @@ export function nextSCNumber(
     const n = Number(raw.replace(/^SC-[A-Z]?/, ""));
     if (Number.isFinite(n)) ids.push(n);
   };
-  for (const n of scNumbersInText(specContent)) ids.push(n);
+  for (const raw of idsInSpecContent(specContent)) take(raw);
   for (const id of reg?.declaredById.keys() ?? []) take(id);
   for (const id of spelledInSource ?? []) if (!isFixtureScId(id)) take(id);
   if (ids.length === 0) return 1;
@@ -320,26 +314,30 @@ export function nextSCNumber(
  * a caller that printed only the number would be claiming a guarantee the
  * reading explicitly does not give.
  *
- * ## `reg` is REQUIRED, and was not (#593)
+ * ## `reg` is REQUIRED, and was optional for two issues (#593)
  *
- * It was optional, which made the composition a suggestion. Omitting it is a
- * legal call that reads source mentions and the cross-tree namespace, skips
- * `reg?.declaredById` entirely, and hands back a number with a reading beside
- * it as though it had asked everything — the exact failure the paragraph
- * above says this function exists to prevent, permitted by the character at
- * the end of its own signature.
+ * Omit it and `nextSCNumber` skips `reg.declaredById` entirely: the answer is
+ * assembled from the spec's own content, source-spelled fixtures and the
+ * cross-tree namespace, and the spec registry — the width #392 was filed
+ * over — is not consulted at all. The number comes back looking exactly like
+ * one that had asked everything, which is the composition failure the
+ * paragraph above says this function exists to make impossible. A caller
+ * with no registry to hand has `buildScRegistry([])`, which states "this
+ * tree declares nothing" instead of defaulting to it.
  *
- * Two of the three call sites in the tree omitted it, and both were in
- * synthetic trees where no spec declares anything. So the defaulted answer
- * and the stated answer agreed on every input the suite had, which is why
- * nothing went red for as long as it did. A caller with genuinely nothing to
- * declare says so with `buildScRegistry([])`; the empty registry is a value,
- * not an absence.
+ * The two readings agree whenever every spec-declared id is also spelled in
+ * a source file, which is most of the time and is why nothing noticed. They
+ * diverged the day a spec declared eight criteria no test mentioned yet.
  *
- * The reading that comes back names every leg, including the three this
- * function supplies rather than `readScNamespace`. A scan that reports a
- * verdict should report its own coverage, and `118 source(s)` says nothing
- * about whether the spec registry was one of them.
+ * ## The reading names every leg, not just the cross-tree ones
+ *
+ * `readScNamespace` accounts for the worktrees and refs it read. The other
+ * three widths were invisible in the returned reading, so a CLI could print
+ * the number and a complete-looking account of where it came from while one
+ * of the legs behind it had never run. They are appended as sources of their
+ * own, with the count each contributed — `0` from a leg that was consulted
+ * and `0` from a leg that was skipped are the same number and opposite
+ * facts (`.claude/rules/config-access.md`).
  */
 export function allocateScNumber(
   root: string,
@@ -347,36 +345,31 @@ export function allocateScNumber(
   reg: ScRegistry,
 ): { number: number; namespace: ScNamespaceReading } {
   const namespace = readScNamespace(root);
-  const spelled = scIdsSpelledInSource(root);
-  const number = nextSCNumber(specContent, reg, [
-    ...spelled.keys(),
-    ...namespace.ids.keys(),
-  ]);
+  const spelled = [...scIdsSpelledInSource(root).keys()];
+  const number = nextSCNumber(specContent, reg, [...spelled, ...namespace.ids.keys()]);
 
-  // Ahead of the worktrees and refs, so the printed account reads in the
-  // order the widths were added to this function across #392, #399 and #503.
-  namespace.sources.unshift(
+  const legs: SourceReading[] = [
     {
-      label: "the spec content handed in",
+      label: "the spec's own content",
       kind: "spec-content",
       status: "read",
-      found: new Set(scNumbersInText(specContent)).size,
+      found: new Set(idsInSpecContent(specContent)).size,
     },
     {
-      label: "the spec registry",
+      label: "spec registry (every declared id, checkbox and heading)",
       kind: "registry",
       status: "read",
       found: reg.declaredById.size,
     },
     {
-      label: "SC ids spelled in source files",
-      kind: "source",
+      label: `SC ids spelled under ${SC_SOURCE_DIRS.join(", ")}`,
+      kind: "source-mentions",
       status: "read",
-      found: spelled.size,
+      found: new Set(spelled).size,
     },
-  );
+  ];
 
-  return { number, namespace };
+  return { number, namespace: { ...namespace, sources: [...legs, ...namespace.sources] } };
 }
 
 /**
