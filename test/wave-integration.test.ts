@@ -18,37 +18,25 @@
  * never arrives on a default branch.
  */
 
-import { afterAll, beforeAll, describe, test, expect } from "bun:test";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readdirSync,
-  realpathSync,
-  writeFileSync,
-  existsSync,
-  rmSync,
-  readFileSync,
-} from "fs";
+import { describe, test, expect } from "bun:test";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readFileSync } from "fs";
 import { tmpdir } from "os";
-import { dirname, join } from "path";
+import { join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const RUN_REPO = "owner/project";
 const shipSource = readFileSync(join(REPO_ROOT, "workflows", "ship.js"), "utf-8");
 
-// `source` defaults to the real ship.js. It is a parameter because #627's
-// cases below slice the same blocks out of MUTANTS of that text, and a second
-// slicer would let the two disagree about where a block begins.
-function sliceBlock(name: string, source: string = shipSource): string {
-  const a = source.indexOf(`// ──── ${name}-START ────`);
-  const b = source.indexOf(`// ──── ${name}-END ────`);
+function sliceBlock(name: string): string {
+  const a = shipSource.indexOf(`// ──── ${name}-START ────`);
+  const b = shipSource.indexOf(`// ──── ${name}-END ────`);
   expect(a, `ship.js is missing the ${name}-START marker`).toBeGreaterThan(-1);
   expect(b, `ship.js is missing the ${name}-END marker`).toBeGreaterThan(a);
   // Exactly once each: a second copy would survive any mutation of the first
   // and the guard would go green for the wrong reason.
-  expect(source.indexOf(`// ──── ${name}-START ────`, a + 1)).toBe(-1);
-  expect(source.indexOf(`// ──── ${name}-END ────`, b + 1)).toBe(-1);
-  return source.slice(a, b);
+  expect(shipSource.indexOf(`// ──── ${name}-START ────`, a + 1)).toBe(-1);
+  expect(shipSource.indexOf(`// ──── ${name}-END ────`, b + 1)).toBe(-1);
+  return shipSource.slice(a, b);
 }
 
 const RUN_REF_BLOCK = sliceBlock("RUN-REF");
@@ -57,6 +45,13 @@ const DECOMPOSED_BLOCK = sliceBlock("DECOMPOSED-SHIP");
 // evaluated alongside it rather than stubbed — a stub would let this suite
 // and ship.js disagree about what a reported path is.
 const SHAPE_BLOCK = sliceBlock("FILES-CHANGED-SHAPE");
+// #627 put a third free reference in the RUN-REF block: the wave path pairs
+// each settled sub-issue with the claim the plan issued for it, through the
+// same binding the end-of-run collect uses. Evaluated from its own markers
+// rather than stubbed, for the reason above — a stub would let this suite and
+// ship.js disagree about what the collector is handed, which is precisely the
+// disagreement #627 is.
+const CLAIM_PAIRING_BLOCK = sliceBlock("CLAIM-PAIRING");
 
 type AgentCall = { label: string; prompt: string };
 
@@ -76,7 +71,8 @@ function loadRunRef(opts: {
   const factory = new Function(
     "timedAgent", "collectAgentWork", "shellQuote", "log", "PROJECT_ROOT", "ISSUE",
     "worktreeIdentityViolations", "REPO",
-    `${RUN_REF_BLOCK}
+    `${CLAIM_PAIRING_BLOCK}
+     ${RUN_REF_BLOCK}
      return { runRefName, runRefRefusal, waveNeedsIntegration, establishRunRef, integrateWave };`,
   );
   return {
@@ -461,397 +457,5 @@ describe("#420 — the dispatch path", () => {
     expect(result.refusal).toMatch(/main/);
     // SC-3: nothing ran, so nothing could have committed anywhere.
     expect(spawns).toEqual([]);
-  });
-});
-
-// ── #627 ─────────────────────────────────────────────────────
-//
-// covers #627 AC-4, AC-5, AC-6.
-//
-// #420 added `integrateWave` and handed `collectAgentWork` the bare
-// `buildResult`s. #178's claim is a SIBLING of the build result, not a field
-// inside it, so every row arrived with `claimedFiles` undefined and SC-413
-// read a wave in which nobody had claimed anything. On the run this
-// reproduces, three worktrees built correct, non-overlapping work — every
-// reported file inside its own claim — and the wave was refused with "no
-// worktree claimed that file" for every file in it.
-//
-// Three properties make this a witness rather than a description, and each
-// one is a thing the earlier draft of this case did not have:
-//
-//   THREE worktrees, driven through the WAVE path. With one worktree
-//   `SINGLE_WORKTREE_EXEMPT` keeps every file whether a claim travelled or
-//   not, so the case would reach its assertion without the feature; and the
-//   end-of-run path has carried the claim since #178, so a case driven
-//   through it is green over the defect.
-//
-//   The REAL `collectAgentWork`, not a stand-in that re-runs the audit. The
-//   question is what the collector is HANDED, and only the collector can
-//   answer it. The rows it receives are recorded before it runs.
-//
-//   Its own worktree tree, in a temp directory, under paths that exist
-//   nowhere in this repository (AC-6). The nine paths the run refused are
-//   ordinary source files that will move; a case keyed to them stops
-//   witnessing the moment they do.
-
-/** The one expression that pairs each wave result with its sub-issue's claim. */
-const WAVE_PAIRING =
-  "waveResults.map(r => (r && r.buildResult ? { ...r, buildResult: claimedWork(r) } : r))";
-
-/**
- * The claim guard, and the widening that is the cheapest wrong fix for the
- * symptom this reproduces.
- *
- * An operator watching a wave die of "no worktree claimed that file" has a
- * one-word repair available: make an absent claim permit everything. It makes
- * the refusal go away, it leaves the claim exactly as absent as it was, and it
- * reinstates the #296 fail-open for every run. So the case must not be
- * satisfied by it — see `.claude/rules/checks-must-be-able-to-fail.md`, "a
- * case that goes green under the WRONG fix".
- */
-const CLAIM_GUARD = "return Array.isArray(claims) ? claims.includes(key) : claimant === wt";
-const CLAIM_GUARD_WIDENED = "return Array.isArray(claims) ? claims.includes(key) : true";
-
-function mutate(source: string, from: string, to: string, what: string): string {
-  const seen = source.split(from).length - 1;
-  // Loud, not quiet: a mutation that was never applied measures nothing, and
-  // reads exactly like a mutation nothing caught (#485, #297).
-  expect(seen, `could not build the mutant: ${what} appears ${seen} times in ship.js`).toBe(1);
-  return source.replace(from, to);
-}
-
-interface ClaimRow {
-  worktreePath?: string;
-  worktreeRepo?: string;
-  filesChanged?: string[];
-  claimedFiles?: string[];
-}
-
-describe("#627 — three worktrees through wave integration", () => {
-  // Built once, in a temp directory, and named after nothing in this
-  // repository. `FIXTURE_FILES` is asserted to exist nowhere in REPO_ROOT
-  // below, which is what keeps the case witnessing after the run's own nine
-  // paths move.
-  const WAVE_1 = ["alpha", "beta", "delta"] as const;
-  const FIXTURE_FILES: Record<string, string[]> = {
-    alpha: ["fixture/alpha/reader.ts", "fixture/alpha/reader.probe.ts"],
-    beta: ["fixture/beta/counter.ts", "fixture/beta/counter.probe.ts"],
-    delta: ["fixture/delta/config.ts", "fixture/delta/config.probe.ts"],
-    omega: ["fixture/omega/consumer.ts"],
-  };
-  const CLAIMED_TOTAL = WAVE_1.reduce((n, t) => n + FIXTURE_FILES[t]!.length, 0);
-
-  let root: string;
-  let project: string;
-  let worktrees: string;
-
-  const worktreeFor = (title: string) => join(worktrees, `wf_fixture-${title}`);
-
-  /** Every file under a worktree, worktree-relative — what the agent changed. */
-  function filesIn(dir: string, prefix = ""): string[] {
-    return readdirSync(dir, { withFileTypes: true }).flatMap(e =>
-      e.isDirectory()
-        ? filesIn(join(dir, e.name), `${prefix}${e.name}/`)
-        : [`${prefix}${e.name}`]);
-  }
-
-  beforeAll(() => {
-    root = realpathSync(mkdtempSync(join(tmpdir(), "rg-627-wave-")));
-    project = join(root, "project");
-    worktrees = join(project, ".claude", "worktrees");
-    mkdirSync(worktrees, { recursive: true });
-    for (const [title, files] of Object.entries(FIXTURE_FILES)) {
-      for (const rel of files) {
-        const at = join(worktreeFor(title), rel);
-        mkdirSync(dirname(at), { recursive: true });
-        writeFileSync(at, `// ${title} wrote this\n`);
-      }
-    }
-  });
-
-  afterAll(() => {
-    if (root) rmSync(root, { recursive: true, force: true });
-  });
-
-  const SUBS = [
-    { title: "alpha", acs: ["a"], filesToModify: FIXTURE_FILES.alpha!, size: "S" },
-    { title: "beta", acs: ["b"], filesToModify: FIXTURE_FILES.beta!, size: "S" },
-    { title: "delta", acs: ["d"], filesToModify: FIXTURE_FILES.delta!, size: "S" },
-    {
-      title: "omega", acs: ["o"], filesToModify: FIXTURE_FILES.omega!, size: "S",
-      dependsOn: ["alpha", "beta", "delta"],
-    },
-  ];
-
-  /**
-   * `runDecomposedShip` over the REAL `integrateWave` and the REAL
-   * `collectAgentWork`, with `source` as the ship.js text — the live file, or
-   * a mutant of it.
-   *
-   * Only the agents are faked. The collect step's reply is derived from the
-   * groups payload ship.js actually built, so a collection that was handed
-   * nothing cannot report having collected something.
-   */
-  function loadWaveRun(source: string) {
-    const collectRows: ClaimRow[][] = [];
-    const groupsSeen: Array<Array<{ worktreePath: string; filesChanged: string[] }>> = [];
-    const labels: string[] = [];
-    const logs: string[] = [];
-
-    const collectAgentWork = new Function(
-      "log", "timedAgent", "WORK_DIR", "PROJECT_ROOT", "HARNESS_ROOT",
-      `${[
-        sliceBlock("SECURITY-HELPERS", source),
-        sliceBlock("COLLECT-DESTINATION", source),
-        sliceBlock("COLLECT-CLAIM", source),
-        sliceBlock("PRESERVE-REFUSED", source),
-        sliceBlock("COLLECT-AGENT-WORK", source),
-      ].join("\n")}\nreturn collectAgentWork`,
-    )(
-      (m: string) => logs.push(String(m)),
-      async (prompt: string, o: { label: string }) => {
-        labels.push(o.label);
-        const payload = prompt.match(/<<'RUNGATE_GROUPS_EOF'\n([\s\S]*?)\nRUNGATE_GROUPS_EOF/);
-        if (!payload) return { entries: [] }; // the preserve step (#228)
-        const groups = JSON.parse(payload[1]!);
-        groupsSeen.push(groups);
-        return {
-          ok: true,
-          collected: groups.reduce((n: number, g: { filesChanged: string[] }) => n + g.filesChanged.length, 0),
-        };
-      },
-      join(root, "work"),
-      project,
-      project,
-    ) as (results: unknown, intoDir: string, phase: string, label: string) => Promise<{
-      ok: boolean; collected: number; staged: boolean; detail?: string;
-    }>;
-
-    // The rows are recorded BEFORE the collector runs, because what the wave
-    // hands over is the question. A spy that read them afterwards would be
-    // reading whatever the collector left behind.
-    const spyCollect = async (results: unknown, intoDir: string, phase: string, label: string) => {
-      collectRows.push(JSON.parse(JSON.stringify(results ?? null)));
-      return collectAgentWork(results, intoDir, phase, label);
-    };
-
-    const identity = new Function(
-      `${sliceBlock("WORKTREE-IDENTITY", source)}\nreturn { worktreeIdentity, worktreeIdentityViolations }`,
-    )() as {
-      worktreeIdentity: (p: string, repo: string, reported?: string) => { refusal: string | null };
-      worktreeIdentityViolations: (rows: unknown[], repo: string, opts?: unknown) => string[];
-    };
-
-    const runRef = new Function(
-      "timedAgent", "collectAgentWork", "shellQuote", "log", "PROJECT_ROOT", "ISSUE",
-      "worktreeIdentityViolations", "REPO",
-      `${sliceBlock("RUN-REF", source)}\nreturn { integrateWave, waveNeedsIntegration }`,
-    )(
-      async (_prompt: string, o: { label: string }) => {
-        labels.push(o.label);
-        return { committed: true, sha: "c0ffee1", branch: "rungate/run-627" };
-      },
-      spyCollect,
-      (s: string) => `'${String(s).replace(/'/g, "'\\''")}'`,
-      (m: string) => logs.push(String(m)),
-      project,
-      627,
-      identity.worktreeIdentityViolations,
-      RUN_REPO,
-    ) as {
-      integrateWave: (a: unknown[], w: number, t: number, ref: string) => Promise<unknown>;
-      waveNeedsIntegration: (w: number, t: number) => boolean;
-    };
-
-    const runDecomposedShip = new Function(
-      "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
-      "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
-      "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
-      `${sliceBlock("FILES-CHANGED-SHAPE", source)}\n${sliceBlock("DECOMPOSED-SHIP", source)}\nreturn runDecomposedShip`,
-    )(
-      (m: string) => logs.push(String(m)),
-      async (prompt: string, o: { label: string }) => {
-        labels.push(o.label);
-        const title = /## Sub-issue: (.+)/.exec(prompt)?.[1]?.trim() ?? "";
-        const wt = worktreeFor(title);
-        return {
-          success: true,
-          // Read off the TREE, not off the prompt: what a worktree contributes
-          // is what is in it, and a reply echoing the claim back could not
-          // tell a compliant agent from an empty directory.
-          filesChanged: filesIn(wt),
-          worktreePath: wt,
-          worktreeRepo: `git@github.com:${RUN_REPO}.git`,
-          testOutput: "ok",
-          taskSource: "brief",
-        };
-      },
-      (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
-      join(root, "work"),
-      627,
-      project,
-      {},
-      async () => ({ success: true, buildResult: {} }),
-      () => null,
-      identity.worktreeIdentity,
-      RUN_REPO,
-      () => null,
-      async () => ({ branch: "rungate/run-627", refusal: null }),
-      runRef.integrateWave,
-      runRef.waveNeedsIntegration,
-    ) as (subIssues: unknown[]) => Promise<{
-      success: boolean;
-      failed: Array<{ title: string; buildResult: { findings?: string[] } | null }>;
-      buildResult: { agentResults?: ClaimRow[] };
-    }>;
-
-    return { runDecomposedShip, collectRows, groupsSeen, labels, logs };
-  }
-
-  /**
-   * The regression property, in one place: did each worktree's own claim
-   * reach `collectAgentWork`?
-   *
-   * One definition, used by the live case and by both mutants, so the three
-   * cannot drift apart. It deliberately does NOT read the wave's verdict —
-   * that is the assertion the cheapest wrong fix satisfies, and a case built
-   * on it would certify the regression it exists to block.
-   */
-  function claimReachedCollector(collectRows: ClaimRow[][]): { reached: boolean; why: string } {
-    if (collectRows.length !== 1) {
-      return { reached: false, why: `${collectRows.length} collections, expected exactly 1` };
-    }
-    const rows = collectRows[0]!;
-    if (rows.length !== WAVE_1.length) {
-      return { reached: false, why: `${rows.length} rows, expected ${WAVE_1.length}` };
-    }
-    for (const title of WAVE_1) {
-      const row = rows.find(r => r.worktreePath === worktreeFor(title));
-      if (!row) return { reached: false, why: `no row for ${title}` };
-      if (!Array.isArray(row.claimedFiles)) {
-        return { reached: false, why: `${title} arrived with no claim at all (claimedFiles is ${typeof row.claimedFiles})` };
-      }
-      const want = [...FIXTURE_FILES[title]!].sort().join(",");
-      const got = [...row.claimedFiles].sort().join(",");
-      if (want !== got) return { reached: false, why: `${title} claimed ${got || "nothing"}, expected ${want}` };
-    }
-    return { reached: true, why: "" };
-  }
-
-  test("#627 / AC-6: the fixture is its own tree, and names nothing in this repository", () => {
-    // The temp tree really is three worktrees with files in them — otherwise
-    // the agents below report an empty `filesChanged` and the collection is
-    // refused for a reason that has nothing to do with the claim.
-    for (const title of WAVE_1) {
-      expect(worktreeFor(title).startsWith(realpathSync(tmpdir()))).toBe(true);
-      expect(filesIn(worktreeFor(title)).sort()).toEqual([...FIXTURE_FILES[title]!].sort());
-    }
-    // AC-6, stated as the property rather than as a list of the nine paths:
-    // writing those down here is what would make this case go stale when they
-    // move, and it is the thing this asserts the absence of.
-    for (const files of Object.values(FIXTURE_FILES)) {
-      for (const rel of files) {
-        expect(existsSync(join(REPO_ROOT, rel)), `${rel} is a real path in this repo`).toBe(false);
-      }
-    }
-  });
-
-  test("#627 / AC-4: the wave integrates, and the collector is handed each worktree's own claim", async () => {
-    const run = loadWaveRun(shipSource);
-    const result = await run.runDecomposedShip(SUBS);
-
-    // Observed running before any verdict: a collection that never happened
-    // reports no violation either, and that is indistinguishable from a clean
-    // one. Exactly one — wave 2 has no successor and is left to the
-    // end-of-run collect.
-    expect(
-      run.collectRows.length,
-      `logs: ${run.logs.join(" | ")}`,
-    ).toBe(1);
-
-    const verdict = claimReachedCollector(run.collectRows);
-    expect(verdict.reached, verdict.why).toBe(true);
-
-    // And the work was actually staged: six claimed files across three
-    // worktrees reached the collect script's groups payload.
-    expect(run.groupsSeen).toHaveLength(1);
-    expect(run.groupsSeen[0]!.reduce((n, g) => n + g.filesChanged.length, 0)).toBe(CLAIMED_TOTAL);
-
-    expect(result.success, JSON.stringify(result.failed)).toBe(true);
-    expect(run.logs.join("\n")).toContain("Wave 1 integrated onto rungate/run-627");
-    // Wave 2 ran, which is what the defect cost: four sub-issue agents, not
-    // three and a dead run.
-    expect(run.labels.filter(l => l.startsWith("marcus-sub-"))).toHaveLength(SUBS.length);
-  });
-
-  test("#627 / AC-5: with the pairing removed the same wave is refused, every file unclaimed", async () => {
-    // Mutant one: the pre-#627 wave path, restored. `integrateWave`'s own
-    // `accepted.map(r => r && r.buildResult)` then strips the claim on the way
-    // in, which is the whole defect.
-    const mutant = mutate(shipSource, WAVE_PAIRING, "waveResults", "the wave pairing expression");
-    const run = loadWaveRun(mutant);
-    const result = await run.runDecomposedShip(SUBS);
-
-    // It still RAN. A mutant that threw before reaching the collector is also
-    // "not success", and that is not what this measures.
-    expect(run.collectRows.length).toBe(1);
-
-    const verdict = claimReachedCollector(run.collectRows);
-    expect(verdict.reached).toBe(false);
-    expect(verdict.why).toContain("no claim at all");
-
-    expect(result.success).toBe(false);
-    const said = JSON.stringify(result.failed);
-    expect(said).toContain("could not be integrated");
-    expect(said).toContain("did not claim");
-    expect(said).toContain("no worktree claimed that file");
-    // Nothing was staged and wave 2 never started — the run dies at the
-    // barrier with three worktrees of correct work loose behind it.
-    expect(run.groupsSeen).toHaveLength(0);
-    expect(run.labels.filter(l => l.startsWith("marcus-sub-"))).toHaveLength(WAVE_1.length);
-  });
-
-  test("#627 / AC-5: widening the claim guard silences the refusal and does NOT satisfy this case", async () => {
-    // Mutant two: mutant one plus the cheapest repair for the symptom it
-    // produces. An absent claim is let through, the wave stops refusing, and
-    // nothing about the claim has changed.
-    const stripped = mutate(shipSource, WAVE_PAIRING, "waveResults", "the wave pairing expression");
-    const widened = mutate(stripped, CLAIM_GUARD, CLAIM_GUARD_WIDENED, "the claim guard");
-
-    // The input on which this mutant and the original differ, named and run
-    // rather than assumed (#485): the claim-less rows the stripped wave path
-    // produces. The real audit refuses all six; the widened one keeps them.
-    const auditOf = (src: string) =>
-      new Function(
-        "PROJECT_ROOT", "log",
-        `${sliceBlock("SECURITY-HELPERS", src)}\n${sliceBlock("COLLECT-CLAIM", src)}\nreturn auditWorktreeClaims`,
-      )(project, () => {}) as (rows: ClaimRow[]) => {
-        violations: Array<{ detail: string }>;
-        candidates: Array<{ filesChanged: string[] }>;
-      };
-    const claimless: ClaimRow[] = WAVE_1.map(t => ({
-      worktreePath: worktreeFor(t),
-      worktreeRepo: `git@github.com:${RUN_REPO}.git`,
-      filesChanged: FIXTURE_FILES[t]!,
-    }));
-    expect(auditOf(shipSource)(claimless).violations).toHaveLength(CLAIMED_TOTAL);
-    expect(auditOf(widened)(claimless).violations).toHaveLength(0);
-
-    const run = loadWaveRun(widened);
-    const result = await run.runDecomposedShip(SUBS);
-
-    // The repair works, on its own terms. A case that asserted only "the wave
-    // was not refused" is GREEN right here, over a wave whose claim is as
-    // absent as it was before — and would certify the regression at the
-    // moment it arrived.
-    expect(result.success, JSON.stringify(result.failed)).toBe(true);
-    expect(run.logs.join("\n")).toContain("Wave 1 integrated onto rungate/run-627");
-    expect(run.labels.filter(l => l.startsWith("marcus-sub-"))).toHaveLength(SUBS.length);
-
-    // This case is not green here, because the property it asserts is where
-    // the claim went, not whether anybody complained about its absence.
-    const verdict = claimReachedCollector(run.collectRows);
-    expect(verdict.reached).toBe(false);
-    expect(verdict.why).toContain("no claim at all");
   });
 });

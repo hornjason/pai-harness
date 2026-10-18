@@ -3,7 +3,7 @@ doc-type: spec
 status: draft
 owner: jason
 created: 2026-09-22
-updated: 2026-10-18
+updated: 2026-10-14
 governs: Parallel agent coordination — file-claim manifests and module-boundary decomposition to prevent merge conflicts in multi-agent AFK work
 testable: true
 compliance: strict
@@ -50,7 +50,7 @@ Post-wave, an integration check verifies no unclaimed file modifications slipped
 | SC-410 | Not started | — |
 | SC-411 | Partial — holds within a single issue's sub-issue decomposition, not yet across a wave of issues | `workflows/ship.js` `runDecomposedShip()`; `test/decomposed-ship-dispatch.test.ts` |
 | SC-412 | Partial — sub-issue agents receive an explicit "modify ONLY these" file list | `workflows/ship.js` `runDecomposedShip()` |
-| SC-413 | Done — the claim travels back with each agent's result on BOTH staging paths (the end-of-run collection and the between-waves one), paired to its result by the single `claimedWork()` binding, the collection is refused when a worktree reports a file it did not claim, and the six refusals it can emit are pairwise distinguishable | `workflows/ship.js` `claimedWork()`, `auditWorktreeClaims()` (COLLECT-CLAIM block), `collectAgentWork()`; `test/collect-claim-enforcement.test.ts`, `test/collect-claim-ownership.test.ts`, `test/claim-refusal-kinds.test.ts`, `test/wave-claim-propagation.test.ts` |
+| SC-413 | Done — the claim travels back with each agent's result and the collection is refused when a worktree reports a file it did not claim, and the six refusals it can emit are pairwise distinguishable. Both staging paths pair the claim through one binding (#627) | `workflows/ship.js` `auditWorktreeClaims()` (COLLECT-CLAIM block), `claimedWorktreeRow()` (CLAIM-PAIRING block), `collectAgentWork()`; `test/collect-claim-enforcement.test.ts`, `test/collect-claim-ownership.test.ts`, `test/claim-refusal-kinds.test.ts`, `test/wave-claim-propagation.test.ts` |
 | SC-414 | Not started | — |
 | SC-415 | Not started | — |
 
@@ -245,75 +245,86 @@ the model predicted 2, and the gap was chased rather than written down. The
 guard added for it is a source property, because a behavioural one cannot
 exist: two deciders that agree are behaviourally one.
 
-## SC-413's claim never reached the wave staging path (#627, 2026-10-18)
+## One staging path paired the claim and the other stripped it (#627, 2026-10-18)
 
-There are TWO places a decomposition stages agent output, and they were
-written three months apart.
+#420 gave a decomposed run a SECOND place that stages agent output: the mid-run
+wave commit, so wave N+1's worktrees branch from a checkout containing wave N.
+Both it and the end-of-run collect go through `collectAgentWork`, and therefore
+through `auditWorktreeClaims`. They did not hand it the same rows.
 
-| | when | what it hands `collectAgentWork()` |
-|---|---|---|
-| end-of-run | after every wave, before the commit | `agentResults` — one row per completed sub-issue |
-| between waves | `integrateWave()`, so wave N+1's worktrees contain wave N | one row per accepted result in the wave |
+The audit compares what an agent REPORTED against what the plan CLAIMED, and
+the claim is not on the `buildResult` — the agent was never asked to report it
+back. It lives on the other half of the settled row, `subIssue.filesToModify`,
+and only the pairing on the way back makes SC-412's prose manifest checkable.
+The end-of-run path wrote that pairing out inline, twice. `integrateWave` wrote
 
-#178 closed SC-413 on the first of them. #420 added the second and handed it
-the bare `buildResult`s, which carry `worktreePath`, `worktreeRepo` and
-`filesChanged` and no claim at all. `auditWorktreeClaims()` reads a missing
-`claimedFiles` as "no claim was issued", which is unconstrained only while
-there is ONE participating worktree (#228). A wave worth parallelising has
-two or more — so every file in it was claimed by nobody, every row was
-refused, and the run died at the barrier with correct, non-overlapping work
-loose in the worktrees it could no longer collect from.
+    accepted.map(r => r && r.buildResult)
 
-The fix is **one binding, called by both paths**: `claimedWork()` in the
-DECOMPOSED-SHIP block of `workflows/ship.js` pairs a sub-issue result's
-`buildResult` with its own `subIssue.filesToModify` and returns the row shape
-the collection boundary reads. The wave loop maps each accepted result
-through it before calling `integrateWave()`, and both end-of-run branches —
-the all-succeeded one and the partial-completion one — are
-`completed.map(claimedWork)`.
+which drops `subIssue` on the floor. Every row then reached the audit with no
+`claimedFiles`; a wave has more than one participating worktree by definition,
+so `SINGLE_WORKTREE_EXEMPT` does not apply, and the fallthrough #296 removed is
+gone. The audit's answer is *"no worktree claimed that file"* — for every file
+in every worktree. **Every decomposition with a dependency barrier failed
+collection, regardless of the work**, with correct and disjoint claims.
 
-**Do not add a second inline pairing.** That is what this issue is: two sites
-building the same row are behaviourally one until they diverge, and nothing
-can see the divergence until a wave dies of it. `test/wave-claim-propagation.test.ts`
-asserts the binding is declared exactly once in `workflows/ship.js` and that
-the inline expression appears nowhere — if a new staging path needs a claimed
-row, call `claimedWork()` from it.
+Three things this had to get right:
 
-The fixture that proves it is a THREE sub-issue, two-wave decomposition
-(`alpha` and `beta` in wave 1, `gamma` depending on both in wave 2) with
-correct, disjoint claims. Two worktrees in wave 1 is the smallest shape in
-which the claim is load-bearing: with one, `SINGLE_WORKTREE_EXEMPT` keeps
-every file whether a claim travelled or not, and the case would reach its
-assertion without the feature.
+- **One binding, not two agreeing sites.** `claimedWorktreeRow` is declared
+  once, in the CLAIM-PAIRING block, and both staging paths call it. Two sites
+  that agree are behaviourally one decider
+  (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape): a
+  mutation of either leaves the other holding every case up, and a third
+  staging path added later gets written from whichever copy its author read —
+  which is exactly how the wave path came to carry a strip instead.
+- **The assertion is the CLAIM, not the verdict.** A refused collection can be
+  made to succeed without propagating anything, by widening the audit until an
+  absent claim permits everything. So every case reads the row list
+  `collectAgentWork` was actually handed, and the battery below builds that
+  cheap repair and watches the cases stay red under it (the fifth shape, named
+  in advance rather than discovered).
+- **The fixture is this run's own.** It mints a worktree tree under the OS temp
+  directory and names no path from the run that found the bug. A fixture keyed
+  on another run's filenames stops witnessing the moment those files move, and
+  what is under test is the shape of the handover, not any file in it.
 
-### What was broken to prove it
+- [x] SC-2058: test/wave-claim-propagation.test.ts contains [the claim reaches the collector through wave integration] — a two-wave plan driven through the real dispatch loop, the real `integrateWave` and the real `collectAgentWork`, asserting the row list the collector was handed carries the plan's claim; the premise that a barrier actually formed is asserted first, so a single-wave plan cannot satisfy it by never integrating
+- [x] SC-2059: test/wave-claim-propagation.test.ts contains [one binding pairs a result with its claim, and both staging paths call it] — declared exactly once, called once from the RUN-REF slice and twice from the DECOMPOSED-SHIP slice, with the inline pairing and the strip both counted at zero over the source with comments removed, because this issue's own docblock quotes the expression it replaced
+- [x] SC-2060: test/wave-claim-propagation.test.ts contains [three worktrees integrate through a wave rather than the end-of-run collect] — three worktrees with correct, non-overlapping claims, integrated mid-run rather than at the end, asserted on both the rows handed to the collector and the pruned candidates read back off the collect prompt; the paired control is a worktree that exceeds its claim in the same shape, which must still be refused
+- [x] SC-2061: test/wave-claim-propagation.test.ts contains [the claim-stripping mutant turns the regression red] — the defect restored verbatim in a copy of ship.js, the suite re-spawned against it, and the reds compared BY NAME; the baseline row is read first, because an empty baseline is an instrument that stopped reporting rather than a clean tree
+- [x] SC-2062: test/wave-claim-propagation.test.ts contains [the widened claim guard does not buy the regression green] — the cheapest wrong fix, named before it was built: the claim strip plus a `claimPermits` widened to let an absent claim through. The symptom goes away and the cases stay red, which is the only thing that stops this file certifying the regression it exists to block
+- [x] SC-2063: test/wave-claim-propagation.test.ts contains [the fixture is built in a temp tree and names no run's files] — the run id is assembled from parts so the assertion is not itself the occurrence it forbids
 
-Run and counted over `test/wave-claim-propagation.test.ts`,
-`test/wave-integration.test.ts`, `test/decomposed-ship-dispatch.test.ts`,
-`test/collect-claim-enforcement.test.ts` and
-`test/collect-claim-ownership.test.ts`. Baseline before any mutation:
-**105 pass, 0 fail.** None is left in the tree; all were applied and
-reverted, `workflows/ship.js` was confirmed byte-identical afterwards, and
-the mutation the suite itself builds asserts its target appears exactly once
-before writing.
+### What was broken to prove it (SC-2058..2063)
+
+Run and counted over `test/wave-claim-propagation.test.ts`. The three cases
+that spawn the battery skip inside a mutant child, so every row below is out
+of 7. None of the mutations is left in the tree; both were applied to copies
+under the OS temp directory and `workflows/ship.js` was never modified.
+
+**Baseline, read before any mutation row: 7 pass, 0 fail, 3 skip.**
 
 | Mutation | Predicted | Red |
 |---|---|---|
-| the pairing line removed from `claimedWork()` — no claim on either path | 2 | **3 of 105** |
-| the wave path reverted to `integrateWave(waveResults, …)` — the #420 defect verbatim | 2 | **2 of 105** |
-| `claimedWork` renamed throughout | 3 | **3 of 105** |
-| one end-of-run branch given back its inline pairing, the binding left in place | 2 | **2 of 105** |
+| `claimedWorktreeRow` removed from the wave path — `accepted.map(r => r && r.buildResult)` restored | 2 | **3 of 7** |
+| the same, plus `claimPermits` widened to `!Array.isArray(claims) \|\| claims.includes(key)` — the cheapest wrong fix | 2 | **4 of 7** |
 
-The first row came back HIGH, and the extra red is about the mutated
-behaviour rather than a broken mutant: "the inline pairing expression appears
-nowhere" counts the `claimedFiles:` assignments and expects exactly ONE,
-because zero means the binding has stopped pairing anything. The other three
-rows are the three ways this defect can come back — the call site reverts,
-the binding is renamed out from under a caller, or somebody adds a second
-copy — and each is red in a different case.
+The input on which mutant and original differ, named before either count was
+believed (#485): a three-worktree wave carrying correct, disjoint claims. The
+original hands the collector rows carrying `claimedFiles` and the wave
+integrates; the first mutant hands it rows that have none, the audit reports
+every file in every worktree unclaimed, and the collection is refused.
 
-The input on which mutant and original differ, named and run rather than
-assumed: the two-wave fixture above. The original integrates wave 1 and the
-run succeeds; every mutant that drops the claim refuses the wave with
-*"`…/wt-alpha` reported lib/alpha.ts, which it did not claim — no worktree
-claimed that file"*, and wave 2 never spawns.
+**Both rows came back HIGH, and in both cases the extra red is the real kind.**
+
+The first row's third red is SC-2059, the source assertion — the mutant
+reinstates the text that case counts at zero. It is about the mutated
+behaviour, the file still parses, and the other four cases pass, so this is not
+a crashing mutant; it is the source check and the behavioural check turning red
+on one change, which is what a binding asserted two ways looks like.
+
+The second row's fourth red is the one worth reading, because it is the whole
+argument for writing the cheap fix down. Widening `claimPermits` does silence
+the refusal — the collection succeeds again — and the case it breaks is
+*"a worktree that exceeds its claim in a wave is still refused"*. So the 5pm
+repair for this issue is measurably a disabling of SC-413 for every decomposed
+run, and the cost of reaching for it is one MORE red test, not a green suite.

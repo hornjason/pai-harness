@@ -4153,8 +4153,17 @@ async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
   // `waveNeedsIntegration` — not asked again here. A second copy of it would
   // make the loop's copy unreachable, and an unreachable guard measures as
   // load-bearing while nothing depends on it (#415).
-  const results = accepted.map(r => r && r.buildResult).filter(Boolean)
-  if (results.length === 0) {
+  //
+  // `claimedWorktreeRow`, not `.buildResult` (#627). The collector audits
+  // every row against the claim the plan issued for it, and that claim lives
+  // on the OTHER half of the settled row — mapping to `buildResult` alone
+  // handed the audit a wave in which nothing was claimed, so every file in
+  // every worktree came back unclaimed and the whole wave was refused. The
+  // same binding the end-of-run collect uses, for the reason its docblock
+  // gives: a second copy of the pairing would survive any mutation of the
+  // first.
+  const rows = accepted.filter(r => r && r.buildResult).map(claimedWorktreeRow)
+  if (rows.length === 0) {
     return { ok: true, integrated: 0, reason: 'no accepted output in this wave' }
   }
 
@@ -4169,15 +4178,7 @@ async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
   // `requirePath: true` for the reason it gives there: every row is about to
   // be committed from, so a row with no path is not "nothing to check", it is
   // a row claiming files with no checkable origin.
-  const identity = worktreeIdentityViolations(
-    results.map(r => ({
-      worktreePath: r.worktreePath || '',
-      worktreeRepo: r.worktreeRepo || '',
-      filesChanged: r.filesChanged || [],
-    })),
-    REPO,
-    { requirePath: true },
-  )
+  const identity = worktreeIdentityViolations(rows, REPO, { requirePath: true })
   if (identity.length > 0) {
     return {
       ok: false,
@@ -4186,13 +4187,8 @@ async function integrateWave(accepted, waveIndex, totalWaves, runRef) {
     }
   }
 
-  // These rows carry `claimedFiles`, because the caller paired each result
-  // with its sub-issue's claim through `claimedWork` before handing the wave
-  // over (#627). Without it `auditWorktreeClaims` sees a wave in which nobody
-  // claimed anything, and refuses every file in it the moment a second
-  // worktree is present — which is every wave worth parallelising.
   const collected = await collectAgentWork(
-    results, PROJECT_ROOT, 'Implement', `collect-wave-${waveIndex + 1}`,
+    rows, PROJECT_ROOT, 'Implement', `collect-wave-${waveIndex + 1}`,
   )
   if (!collected.ok) {
     return { ok: false, integrated: 0, detail: collected.detail || 'collect failed' }
@@ -4571,6 +4567,58 @@ function auditWorktreeClaims(results) {
 
 // ──── DECOMPOSED-SHIP-START ────
 // ── M-size sub-issue shipping: disjoint sub-issues run concurrently, overlapping ones serialize ──
+// ──── CLAIM-PAIRING-START ────
+/**
+ * One settled sub-issue, as a row the collection boundary can judge (#627).
+ *
+ * TWO paths stage a decomposed run's output and both go through
+ * `collectAgentWork`: the end-of-run collect, and — since #420 — the mid-run
+ * wave commit. `auditWorktreeClaims` compares what an agent REPORTED against
+ * what the plan CLAIMED for it (#178, SC-413), and the claim only exists on
+ * the other half of the settled row: `subIssue.filesToModify`. The
+ * `buildResult` alone does not carry it, because the agent was never told to
+ * report it back — the manifest reaches the agent as prose, and the pairing on
+ * the way back is the whole of what makes it checkable.
+ *
+ * The wave path did `accepted.map(r => r && r.buildResult)`, which drops
+ * `subIssue` on the floor. Every row then reached the audit with no
+ * `claimedFiles`, and a wave has more than one participating worktree by
+ * definition, so `SINGLE_WORKTREE_EXEMPT` does not apply and the fallthrough
+ * #296 removed is gone: the audit's answer is "no worktree claimed that file",
+ * for every file in every worktree. The whole wave is refused, so EVERY
+ * decomposition with a dependency barrier failed collection regardless of the
+ * work — correct, disjoint claims included.
+ *
+ * ONE binding, called by both paths, rather than the pairing expression
+ * written out at each staging site. Two sites that agree are behaviourally one
+ * decider (`.claude/rules/checks-must-be-able-to-fail.md`, the fourth shape):
+ * a mutation of either would leave the other holding every case up, and a
+ * third staging path added later would be written from whichever copy its
+ * author happened to read — which is exactly how the wave path came to carry a
+ * strip instead of a pairing.
+ *
+ * Absent fields become empty, never undefined. A row with no path is NOT
+ * "nothing to check" at a staging boundary — `worktreeIdentityViolations`'s
+ * `requirePath` refuses it — and a row with an empty `claimedFiles` is a claim
+ * that names nothing, which is a different fact from a claim that was never
+ * issued. The failure branch of the dispatch loop builds results with neither.
+ */
+function claimedWorktreeRow(settled) {
+  const built = (settled && settled.buildResult) || {}
+  return {
+    worktreePath: built.worktreePath || '',
+    // The remote travels with the worktree it is a property of (#218), so the
+    // identity check at either staging boundary reads the same reading the
+    // spawn was already judged on.
+    worktreeRepo: built.worktreeRepo || '',
+    filesChanged: built.filesChanged || [],
+    // The claim travels with the result (#178, SC-413). Sent to the agent as
+    // prose it is advice; carried back alongside what the agent actually
+    // changed, it is checkable.
+    claimedFiles: (settled && settled.subIssue && settled.subIssue.filesToModify) || [],
+  }
+}
+// ──── CLAIM-PAIRING-END ────
 // ──── WAVE-DISPATCH-START ────
 // #189 — the topological schedule, inlined because this file runs in a
 // Workflow sandbox with no module loading (#69). `lib/decomposition-waves.ts`
@@ -4645,47 +4693,6 @@ function wavePlanSummary(plan, total) {
   return `${total} sub-issues in ${plan.waves.length} dependency waves (${plan.waves.map(w => w.length).join(' then ')}) — this run is serialised by ${plan.waves.length - 1} barrier(s) and will take correspondingly longer`
 }
 // ──── WAVE-DISPATCH-END ────
-
-/**
- * One sub-issue's result, paired with the claim that sub-issue was issued —
- * the row shape every staging path hands `collectAgentWork` (#627, #178,
- * SC-413).
- *
- * ONE binding, called by BOTH staging paths, because there are two and they
- * were written three months apart. #178 gave the end-of-run path a claim:
- * `claimedFiles` travelling back beside `filesChanged`, so
- * `auditWorktreeClaims` can refuse a worktree that reported a file no
- * sub-issue claimed. #420 then added a SECOND path — `integrateWave` stages
- * and commits a wave's output so the next wave's worktrees contain it — and
- * it handed the collector the bare `buildResult`s. Those carry no claim, so
- * in any wave with two worktrees every file was claimed by nobody and the
- * whole wave was refused: correct, non-overlapping work, refused at the
- * barrier, with the run dead and the output loose in the worktrees.
- *
- * A second inline copy of the pairing is what made that possible and is the
- * thing to avoid reintroducing. Two sites building the same row are
- * behaviourally one until they diverge, and nothing can see the divergence
- * until a wave dies of it — so the pairing is written here, once, and
- * `test/wave-claim-propagation.test.ts` asserts the expression appears
- * nowhere else.
- *
- * The claim is read off the SUB-ISSUE, never off the agent's reply. Sent to
- * the agent as prose it is advice; taken from the plan and carried back
- * alongside what the agent actually changed, it is checkable.
- */
-function claimedWork(result) {
-  const built = (result && result.buildResult) || {}
-  const sub = (result && result.subIssue) || {}
-  return {
-    worktreePath: built.worktreePath || '',
-    // The remote travels with the worktree it is a property of (#218), so
-    // every collection boundary reads the same reading the spawn was judged
-    // on.
-    worktreeRepo: built.worktreeRepo || '',
-    filesChanged: built.filesChanged || [],
-    claimedFiles: sub.filesToModify || [],
-  }
-}
 
 async function runDecomposedShip(subIssues) {
   log(`DECOMPOSED SHIP: ${subIssues.length} sub-issues from to-issues decomposition`)
@@ -4876,16 +4883,7 @@ directory (#218) — not the repo named in your brief, the one your checkout has
       // whole of "visible in its worktree". A wave with no successor hands it
       // to nobody and is left for the end-of-run collect.
       if (!waveNeedsIntegration(w, plan.waves.length)) continue
-      // Each result paired with ITS OWN sub-issue's claim before the wave is
-      // staged (#627). `integrateWave` commits, so it is a collection
-      // boundary, and SC-413 refuses a row whose worktree claimed nothing
-      // whenever a second worktree is in the run — which is every wave worth
-      // parallelising. Same binding as the end-of-run path below; a second
-      // inline copy here is what this run's own decomposition would die of.
-      const integrated = await integrateWave(
-        waveResults.map(r => (r && r.buildResult ? { ...r, buildResult: claimedWork(r) } : r)),
-        w, plan.waves.length, runRef,
-      )
+      const integrated = await integrateWave(waveResults, w, plan.waves.length, runRef)
       if (!integrated.ok) {
         waveFailed = true
         log(`Wave ${w + 1} could not be integrated: ${integrated.detail} — ` +
@@ -4929,9 +4927,10 @@ directory (#218) — not the repo named in your brief, the one your checkout has
           // is flattened across all of them and worktreePath is only the last
           // one, so the commit phase could never relativize the other N-1
           // agents' paths — 37 minutes of valid work that would not commit (#81).
-          // One binding, shared with the wave staging path above (#627), so
-          // the two cannot disagree about what a claim is.
-          agentResults: completed.map(claimedWork),
+          // The pairing itself is `claimedWorktreeRow` (#627) — the same
+          // binding the mid-run wave commit stages through, because two copies
+          // of it is how the wave path came to carry a strip instead.
+          agentResults: completed.map(claimedWorktreeRow),
         }
       }
     }
@@ -4945,10 +4944,9 @@ directory (#218) — not the repo named in your brief, the one your checkout has
         success: true,
         filesChanged: allFilesChanged,
         worktreePath: completed[completed.length - 1]?.buildResult?.worktreePath || PROJECT_ROOT,
-        // See the failure branch above — the pairing is what #81 lost, the
-        // claim is what #178 lost, and the wave staging path is where #627
-        // found the claim missing again.
-        agentResults: completed.map(claimedWork),
+        // See the failure branch above — the pairing is what #81 lost, and
+        // the claim is what #178 lost.
+        agentResults: completed.map(claimedWorktreeRow),
       }
     }
   } else {

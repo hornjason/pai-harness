@@ -1,331 +1,683 @@
 /**
- * Covers #627 AC-1..AC-3 — SC-413 (PARALLEL-AGENT-COORDINATION-SPEC.md) on the
- * WAVE staging path.
+ * Covers SC-2058..SC-2063 (PARALLEL-AGENT-COORDINATION-SPEC.md), #627.
  *
- * #420 gave a decomposition a second place that stages and commits agent
- * output: `integrateWave`, which runs between waves so wave N+1's worktrees
- * contain what wave N built. #178 gave the end-of-run path a claim —
- * `claimedFiles` travelling back beside `filesChanged`, so
- * `auditWorktreeClaims` can refuse a worktree that reported a file no
- * sub-issue claimed. The two were never joined: `integrateWave` handed
- * `collectAgentWork` the bare `buildResult`s, which carry no claim, so in any
- * wave with two worktrees every file was "claimed by nobody" and the whole
- * wave was refused — correct work, refused, and the run dead at the barrier.
+ * #420 made wave N's output visible to wave N+1 by committing it mid-run, and
+ * it stages that output through the SAME collector the end-of-run path uses.
+ * The two paths did not hand it the same rows.
  *
- * The fixture is a THREE sub-issue, two-wave decomposition on purpose. With a
- * single sub-issue in wave 1 the audit takes `SINGLE_WORKTREE_EXEMPT` and
- * keeps every file whether a claim travelled or not, so the case would reach
- * its assertion without the feature (.claude/rules/checks-must-be-able-to-fail.md,
- * "a fixture that reached the assertion without the feature"). Two worktrees
- * in wave 1 is the smallest shape in which the claim is load-bearing, and the
- * mutation case below measures that it is.
+ * The end-of-run path pairs each sub-issue's `buildResult` with the claim the
+ * plan issued for it (`subIssue.filesToModify`) — which is the whole of #178 /
+ * SC-413: the manifest reaches the agent as prose, and only the pairing on the
+ * way back makes it checkable. `integrateWave` did
+ *
+ *     accepted.map(r => r && r.buildResult)
+ *
+ * which drops `subIssue` on the floor. Every row then reaches
+ * `auditWorktreeClaims` with no `claimedFiles`, and in a multi-worktree wave
+ * that is not "unconstrained" — it is "no worktree claimed that file", for
+ * every file in every worktree. So the collection is refused, the wave cannot
+ * be integrated, and the run fails. ANY decomposition with more than one wave
+ * died there, regardless of how good the work was.
+ *
+ * Two deciders cannot both own that pairing (`checks-must-be-able-to-fail.md`,
+ * the fourth shape), so there is one binding — `claimedWorktreeRow` — and both
+ * staging paths call it.
+ *
+ * What is asserted here is NOT "the collection succeeded". A collection can be
+ * made to succeed by widening the audit until it permits an absent claim, and
+ * that is the cheapest repair available to anyone who sees this test red (the
+ * fifth shape). So every case asserts the CLAIM ITSELF arrived at
+ * `collectAgentWork`, and the mutation battery below builds that cheap repair
+ * and watches the case stay red under it.
  */
 
 // SPEC-REF: PARALLEL-AGENT-COORDINATION-SPEC.md § Success Criteria (SC-413)
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
+import { spawnSync } from "child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import { join } from "path";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const SHIP_PATH = join(REPO_ROOT, "workflows", "ship.js");
-const SPEC_PATH = join(REPO_ROOT, "specs", "PARALLEL-AGENT-COORDINATION-SPEC.md");
-const shipSource = readFileSync(SHIP_PATH, "utf-8");
+const REAL_SHIP = join(REPO_ROOT, "workflows", "ship.js");
+const SELF = join(REPO_ROOT, "test", "wave-claim-propagation.test.ts");
+
+/**
+ * The tree under test. A mutant run re-executes THIS file with the variable
+ * pointing at a mutated copy of ship.js, so the cases below are the same cases
+ * in both colours — a separate "mutant assertion" would measure a second test,
+ * not this one.
+ */
+const SHIP_UNDER_TEST = process.env.WAVE_CLAIM_SHIP_UNDER_TEST || REAL_SHIP;
+const IS_MUTANT_CHILD = Boolean(process.env.WAVE_CLAIM_SHIP_UNDER_TEST);
+const shipSource = readFileSync(SHIP_UNDER_TEST, "utf-8");
+
 const RUN_REPO = "owner/project";
-const PROJECT_ROOT = "/tmp/project";
+const REMOTE = `git@github.com:${RUN_REPO}.git`;
+const RUN_REF = "rungate/run-627";
+const ISSUE = 627;
 
-/** The one line that pairs a result with its sub-issue's claim. */
-const PAIRING_LINE = "    claimedFiles: sub.filesToModify || [],\n";
-
-function sliceBlock(source: string, name: string): string {
+/** Slice a marked block, refusing a name that is declared twice. */
+function block(name: string, source: string = shipSource): string {
   const a = source.indexOf(`// ──── ${name}-START ────`);
   const b = source.indexOf(`// ──── ${name}-END ────`);
-  expect(a, `ship.js is missing the ${name}-START marker`).toBeGreaterThan(-1);
-  expect(b, `ship.js is missing the ${name}-END marker`).toBeGreaterThan(a);
-  // Exactly once each: a second copy would survive any mutation of the first.
-  expect(source.indexOf(`// ──── ${name}-START ────`, a + 1)).toBe(-1);
-  expect(source.indexOf(`// ──── ${name}-END ────`, b + 1)).toBe(-1);
+  if (a < 0) throw new Error(`ship.js is missing the ${name}-START marker`);
+  if (b < a) throw new Error(`ship.js is missing the ${name}-END marker`);
+  if (source.indexOf(`// ──── ${name}-START ────`, a + 1) >= 0) {
+    throw new Error(`${name} is declared twice — a mutation of one copy would leave the other`);
+  }
   return source.slice(a, b);
 }
 
-interface Row {
-  worktreePath?: string;
-  worktreeRepo?: string;
-  filesChanged?: string[];
-  claimedFiles?: string[];
+/**
+ * The source with whole-line comments removed.
+ *
+ * "The inline pairing appears nowhere" is a claim about CODE, and this file's
+ * subject is a defect whose docblock quotes the expression it replaced. A
+ * whole-document search would be satisfied by the prose explaining the fix —
+ * `.claude/rules/checks-must-be-able-to-fail.md`'s "search the slice, not the
+ * document", arriving as a claim scoped to a syntactic class rather than to a
+ * region. Whole-line only: ship.js's comments are line or block style at the
+ * start of a line, and a cleverer stripper is a second parser to get wrong.
+ */
+function codeOf(source: string): string {
+  return source
+    .split("\n")
+    .filter(line => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .join("\n");
 }
 
-interface SubIssue {
+interface SubFixture {
   title: string;
-  acs: string[];
-  filesToModify: string[];
-  size: string;
+  files: string[];
   dependsOn?: string[];
 }
 
-/**
- * `runDecomposedShip`, driven over the REAL `integrateWave` and the REAL claim
- * audit. Only the agents are faked.
- *
- * `collectAgentWork` is the one collaborator that is a stand-in, and it is a
- * stand-in that runs `auditWorktreeClaims` on exactly the rows it was handed —
- * which is the whole question this file asks. A fake that merely returned
- * `{ok: true}` would be green over a wave carrying no claim at all.
- */
-function loadRun(source: string) {
-  const auditWorktreeClaims = new Function(
-    "PROJECT_ROOT",
-    "log",
-    `${sliceBlock(source, "SECURITY-HELPERS")}\n${sliceBlock(source, "COLLECT-CLAIM")}\nreturn auditWorktreeClaims`,
-  )(PROJECT_ROOT, () => {}) as (results: Row[]) => {
-    violations: Array<{ detail: string }>;
-    candidates: Array<{ worktreePath: string; filesChanged: string[] }>;
-  };
-
-  const identity = new Function(
-    `${sliceBlock(source, "WORKTREE-IDENTITY")}\nreturn { worktreeIdentity, worktreeIdentityViolations }`,
-  )() as {
-    worktreeIdentity: (p: string, repo: string, reported?: string) => { refusal: string | null };
-    worktreeIdentityViolations: (rows: unknown[], repo: string, opts?: unknown) => string[];
-  };
-
-  const collectCalls: Row[][] = [];
-  const logs: string[] = [];
-  const agentLabels: string[] = [];
-
-  const collectAgentWork = async (results: Row[]) => {
-    collectCalls.push(JSON.parse(JSON.stringify(results)));
-    const audit = auditWorktreeClaims(results);
-    if (audit.violations.length > 0) {
-      return {
-        ok: false,
-        collected: 0,
-        staged: false,
-        detail:
-          `refusing to collect: ${audit.violations.length} unclaimed file modification(s) ` +
-          `(#178, SC-413) — ${audit.violations.map(v => v.detail).join("; ")}`,
-      };
-    }
-    return {
-      ok: true,
-      collected: audit.candidates.reduce((n, c) => n + c.filesChanged.length, 0),
-      staged: true,
-    };
-  };
-
-  const runRef = new Function(
-    "timedAgent", "collectAgentWork", "shellQuote", "log", "PROJECT_ROOT", "ISSUE",
-    "worktreeIdentityViolations", "REPO",
-    `${sliceBlock(source, "RUN-REF")}\nreturn { integrateWave, waveNeedsIntegration, runRefRefusal }`,
-  )(
-    async (_prompt: string, o: { label: string }) => {
-      agentLabels.push(o.label);
-      return { committed: true, sha: "c0ffee1", branch: "rungate/run-627" };
-    },
-    collectAgentWork,
-    (s: string) => `'${String(s).replace(/'/g, "'\\''")}'`,
-    (m: string) => logs.push(String(m)),
-    PROJECT_ROOT,
-    627,
-    identity.worktreeIdentityViolations,
-    RUN_REPO,
-  ) as {
-    integrateWave: (accepted: unknown[], w: number, total: number, ref: string) => Promise<{ ok: boolean; integrated: number; detail?: string }>;
-    waveNeedsIntegration: (w: number, total: number) => boolean;
-  };
-
-  const runDecomposedShip = new Function(
-    "log", "briefedAgent", "parallel", "WORK_DIR", "ISSUE", "PROJECT_ROOT",
-    "BUILD_RESULT_SCHEMA", "runImplement", "implementRefusal", "worktreeIdentity", "REPO",
-    "taskSourceRefusal", "establishRunRef", "integrateWave", "waveNeedsIntegration",
-    `${sliceBlock(source, "FILES-CHANGED-SHAPE")}\n${sliceBlock(source, "DECOMPOSED-SHIP")}\nreturn runDecomposedShip`,
-  )(
-    (m: string) => logs.push(String(m)),
-    async (prompt: string, o: { label: string }) => {
-      agentLabels.push(o.label);
-      const title = /## Sub-issue: (.+)/.exec(prompt)?.[1]?.trim() ?? "";
-      // What the agent CHANGED is read back out of the prompt's own claim, so
-      // a compliant agent is modelled: it touched exactly what it was told to.
-      // The claim under test is the one ship.js carries alongside this reply,
-      // not this reply's contents.
-      const claimed = [...prompt.matchAll(/^- (\S+\.ts)$/gm)].map(m2 => m2[1]);
-      return {
-        success: true,
-        filesChanged: [...new Set(claimed)],
-        worktreePath: `${PROJECT_ROOT}/.claude/worktrees/wt-${title}`,
-        worktreeRepo: `git@github.com:${RUN_REPO}.git`,
-        testOutput: "ok",
-        taskSource: "brief",
-      };
-    },
-    (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
-    "/tmp/work",
-    627,
-    PROJECT_ROOT,
-    {},
-    async () => ({ success: true, buildResult: {} }),
-    () => null,
-    identity.worktreeIdentity,
-    RUN_REPO,
-    () => null,
-    async () => ({ branch: "rungate/run-627", refusal: null }),
-    runRef.integrateWave,
-    runRef.waveNeedsIntegration,
-  ) as (subIssues: SubIssue[]) => Promise<{
-    success: boolean;
-    failed: Array<{ title: string; buildResult: { findings?: string[] } | null }>;
-    buildResult: { agentResults?: Row[] };
+interface CollectCall {
+  label: string;
+  intoDir: string;
+  rows: Array<{
+    worktreePath?: string;
+    worktreeRepo?: string;
+    filesChanged?: string[];
+    claimedFiles?: string[];
   }>;
-
-  return { runDecomposedShip, collectCalls, logs, agentLabels };
 }
 
 /**
- * Two waves. Wave 1 is `alpha` and `beta` — two worktrees, disjoint claims,
- * each agent touching exactly what it claimed. Wave 2 is `gamma`, which
- * depends on both and therefore forces the barrier that makes wave 1 stage.
+ * The real dispatch loop, the real `integrateWave`, and the real
+ * `collectAgentWork` — only the agents are fakes.
+ *
+ * Nothing between the plan and the audit is stubbed, because the defect lives
+ * precisely in the handover between two of those three: a stub for
+ * `integrateWave` (which is what every other suite injects) is exactly what
+ * let this ship.
  */
-const LAYERED: SubIssue[] = [
-  { title: "alpha", acs: ["a"], filesToModify: ["lib/alpha.ts"], size: "S" },
-  { title: "beta", acs: ["b"], filesToModify: ["lib/beta.ts"], size: "S" },
-  {
-    title: "gamma", acs: ["c"], filesToModify: ["lib/gamma.ts"], size: "S",
-    dependsOn: ["alpha", "beta"],
-  },
+function buildPipeline(root: string, subs: SubFixture[], source: string = shipSource) {
+  const logs: string[] = [];
+  const log = (m: unknown) => void logs.push(String(m));
+  const collectCalls: CollectCall[] = [];
+  /** The pruned candidate groups the collector was actually handed. */
+  const groupsSeen: Array<Array<{ worktreePath: string; filesChanged: string[] }>> = [];
+  const agentCalls: Array<{ label: string; prompt: string }> = [];
+
+  const worktreeOf = (title: string) => join(root, ".claude", "worktrees", `wf_${title}`);
+
+  // The real quoting, sliced rather than re-implemented: a local copy would
+  // let this suite and ship.js disagree about what reaches a shell.
+  const shellQuote = new Function(
+    `${block("SECURITY-HELPERS", source)}\nreturn shellQuote;`,
+  )() as (s: string) => string;
+
+  const timedAgent = async (prompt: string, opts: { label: string }) => {
+    agentCalls.push({ label: opts.label, prompt });
+    if (prompt.includes("preserve-worktree-work.ts")) return { entries: [] };
+    if (opts.label.startsWith("collect-")) {
+      const m = /RUNGATE_GROUPS_EOF'\n([\s\S]*?)\nRUNGATE_GROUPS_EOF/.exec(prompt);
+      const groups = m ? JSON.parse(m[1]!) : [];
+      groupsSeen.push(groups);
+      const collected = groups.reduce(
+        (n: number, g: { filesChanged: string[] }) => n + g.filesChanged.length,
+        0,
+      );
+      return { ok: true, collected };
+    }
+    if (opts.label.startsWith("commit-wave-")) {
+      return { committed: true, sha: "abc1234", branch: RUN_REF };
+    }
+    return {};
+  };
+
+  const realCollect = new Function(
+    "log",
+    "timedAgent",
+    "WORK_DIR",
+    "PROJECT_ROOT",
+    "HARNESS_ROOT",
+    `${[
+      block("SECURITY-HELPERS", source),
+      block("COLLECT-DESTINATION", source),
+      block("COLLECT-CLAIM", source),
+      block("PRESERVE-REFUSED", source),
+      block("COLLECT-AGENT-WORK", source),
+    ].join("\n")}\nreturn collectAgentWork;`,
+  )(log, timedAgent, join(root, "work"), root, root) as (
+    results: unknown,
+    intoDir: string,
+    phaseName: string,
+    label: string,
+  ) => Promise<{ ok: boolean; collected: number; staged: boolean; detail?: string }>;
+
+  // The spy records what the WAVE PATH hands the collector. That list is the
+  // subject of this file: a run can be green with the claim missing from it
+  // (widen the audit) and red with the claim present (break something else),
+  // so the list is read directly rather than inferred from the verdict.
+  const collectAgentWork = async (
+    results: CollectCall["rows"],
+    intoDir: string,
+    phaseName: string,
+    label: string,
+  ) => {
+    collectCalls.push({
+      label,
+      intoDir,
+      rows: JSON.parse(JSON.stringify(Array.isArray(results) ? results : [])),
+    });
+    return realCollect(results, intoDir, phaseName, label);
+  };
+
+  const worktreeIdentityFns = new Function(
+    `${block("WORKTREE-IDENTITY", source)}\nreturn { worktreeIdentity, worktreeIdentityViolations };`,
+  )() as {
+    worktreeIdentity: (p: string, repo: string, reported: unknown) => { refusal: string | null };
+    worktreeIdentityViolations: (rows: unknown, repo: string, opts?: unknown) => string[];
+  };
+
+  const runRef = new Function(
+    "timedAgent",
+    "collectAgentWork",
+    "shellQuote",
+    "log",
+    "PROJECT_ROOT",
+    "ISSUE",
+    "worktreeIdentityViolations",
+    "REPO",
+    `${block("CLAIM-PAIRING", source)}\n${block("RUN-REF", source)}\n` +
+      `return { integrateWave, waveNeedsIntegration, claimedWorktreeRow };`,
+  )(
+    timedAgent,
+    collectAgentWork,
+    shellQuote,
+    log,
+    root,
+    ISSUE,
+    worktreeIdentityFns.worktreeIdentityViolations,
+    RUN_REPO,
+  ) as {
+    integrateWave: (
+      accepted: unknown,
+      waveIndex: number,
+      total: number,
+      runRef: string,
+    ) => Promise<{ ok: boolean; integrated: number; detail?: string }>;
+    waveNeedsIntegration: (i: number, total: number) => boolean;
+    claimedWorktreeRow: (settled: unknown) => Record<string, unknown>;
+  };
+
+  const implementRefusal = new Function(
+    `${block("IMPLEMENT-RESULT", source)}\nreturn implementRefusal;`,
+  )();
+  const taskSourceRefusal = new Function(
+    `${block("BRIEF-PRECEDENCE", source)}\nreturn taskSourceRefusal;`,
+  )();
+
+  const briefedAgent = async (prompt: string, _opts: { label: string }) => {
+    const title = /## Sub-issue: (.+)/.exec(prompt)?.[1]?.trim() ?? "";
+    const sub = subs.find(s => s.title === title);
+    if (!sub) throw new Error(`no fixture for sub-issue ${JSON.stringify(title)}`);
+    return {
+      success: true,
+      filesChanged: [...sub.files],
+      worktreePath: worktreeOf(sub.title),
+      worktreeRepo: REMOTE,
+      taskSource: "brief",
+    };
+  };
+
+  const runDecomposedShip = new Function(
+    "log",
+    "briefedAgent",
+    "parallel",
+    "WORK_DIR",
+    "ISSUE",
+    "PROJECT_ROOT",
+    "BUILD_RESULT_SCHEMA",
+    "runImplement",
+    "implementRefusal",
+    "worktreeIdentity",
+    "REPO",
+    "taskSourceRefusal",
+    "establishRunRef",
+    "integrateWave",
+    "waveNeedsIntegration",
+    `${block("FILES-CHANGED-SHAPE", source)}\n${block("DECOMPOSED-SHIP", source)}\n` +
+      `return runDecomposedShip;`,
+  )(
+    log,
+    briefedAgent,
+    (thunks: Array<() => Promise<unknown>>) => Promise.all(thunks.map(t => t())),
+    join(root, "work"),
+    ISSUE,
+    root,
+    {},
+    async () => ({ success: true, buildResult: {} }),
+    implementRefusal,
+    worktreeIdentityFns.worktreeIdentity,
+    RUN_REPO,
+    taskSourceRefusal,
+    async () => ({ branch: RUN_REF, refusal: null }),
+    runRef.integrateWave,
+    runRef.waveNeedsIntegration,
+  ) as (subIssues: unknown) => Promise<{ success: boolean; refusal?: string }>;
+
+  const plan = subs.map(s => ({
+    title: s.title,
+    acs: [`${s.title}-ac`],
+    filesToModify: [...s.files],
+    size: "S",
+    ...(s.dependsOn ? { dependsOn: [...s.dependsOn] } : {}),
+  }));
+
+  return { runDecomposedShip, plan, logs, collectCalls, groupsSeen, agentCalls, worktreeOf, runRef };
+}
+
+/**
+ * A worktree tree of this run's own making (AC-6).
+ *
+ * Nothing here names a path from the run that found the bug. A fixture keyed
+ * on another run's filenames stops witnessing the moment those files move, and
+ * the thing under test is the SHAPE of the handover, not any file in it.
+ */
+function makeTree(subs: SubFixture[]): string {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "wave-claim-")));
+  for (const sub of subs) {
+    const wt = join(root, ".claude", "worktrees", `wf_${sub.title}`);
+    for (const f of sub.files) {
+      mkdirSync(join(wt, f.split("/").slice(0, -1).join("/")), { recursive: true });
+      writeFileSync(join(wt, f), `// ${sub.title}\n`);
+    }
+  }
+  return root;
+}
+
+/** Every row the collector was handed for one label, as claim pairs. */
+function claimsAt(calls: CollectCall[], label: string): Record<string, string[] | undefined> {
+  const call = calls.find(c => c.label === label);
+  if (!call) return {};
+  const out: Record<string, string[] | undefined> = {};
+  for (const row of call.rows) out[String(row.worktreePath)] = row.claimedFiles;
+  return out;
+}
+
+// ── AC-1 / SC-2058 ───────────────────────────────────────────
+
+const TWO_WAVE: SubFixture[] = [
+  { title: "foundation", files: ["lib/foundation.ts"] },
+  { title: "consumer", files: ["lib/consumer.ts"], dependsOn: ["foundation"] },
 ];
 
-describe("#627 AC-1 — the wave staging path carries the claim", () => {
-  test("a two-wave decomposition with correct, disjoint claims integrates rather than refusing", async () => {
-    const run = loadRun(shipSource);
-    const result = await run.runDecomposedShip(LAYERED);
+describe("AC-1: the claim survives the handover into wave integration", () => {
+  test("SC-2058: the claim reaches the collector through wave integration", async () => {
+    const root = makeTree(TWO_WAVE);
+    try {
+      const p = buildPipeline(root, TWO_WAVE);
+      const out = await p.runDecomposedShip(p.plan);
 
-    // Observed running BEFORE any verdict: a collection that never happened
-    // reports no violations either, which is indistinguishable from a clean
-    // one. Exactly one wave is staged — wave 2 has no successor.
-    expect(
-      run.collectCalls.length,
-      `collect calls: ${JSON.stringify(run.collectCalls)} / logs: ${run.logs.join(" | ")}`,
-    ).toBe(1);
+      // The premise: this fixture really did produce two waves, so wave 1 was
+      // integrated rather than left to the end-of-run collect. Without this a
+      // single-wave plan would satisfy every assertion below by never
+      // integrating anything.
+      expect(p.logs.join("\n"), "the fixture did not produce a dependency barrier")
+        .toContain("dependency waves");
+      const wave1 = p.collectCalls.find(c => c.label === "collect-wave-1");
+      expect(wave1, `collector labels seen: ${p.collectCalls.map(c => c.label).join(",") || "none"}`)
+        .toBeTruthy();
 
-    const rows = run.collectCalls[0];
-    expect(rows.length).toBe(2);
-    const byPath = Object.fromEntries(rows.map(r => [String(r.worktreePath), r]));
-    expect(Object.keys(byPath).sort()).toEqual([
-      `${PROJECT_ROOT}/.claude/worktrees/wt-alpha`,
-      `${PROJECT_ROOT}/.claude/worktrees/wt-beta`,
-    ]);
-    // The claim the wave hands the collector is the sub-issue's own
-    // filesToModify — the same thing the end-of-run path hands it.
-    expect(byPath[`${PROJECT_ROOT}/.claude/worktrees/wt-alpha`].claimedFiles).toEqual(["lib/alpha.ts"]);
-    expect(byPath[`${PROJECT_ROOT}/.claude/worktrees/wt-beta`].claimedFiles).toEqual(["lib/beta.ts"]);
-    // And the identity reading travels with it, because the wave stages and
-    // the staging boundary refuses a row with no checkable origin (#218).
-    expect(byPath[`${PROJECT_ROOT}/.claude/worktrees/wt-alpha`].worktreeRepo)
-      .toBe(`git@github.com:${RUN_REPO}.git`);
+      // The property, not the verdict: the row the collector was handed
+      // carries the claim the plan issued. A widened audit cannot satisfy it.
+      expect(claimsAt(p.collectCalls, "collect-wave-1")).toEqual({
+        [p.worktreeOf("foundation")]: ["lib/foundation.ts"],
+      });
 
-    expect(result.success, JSON.stringify(result.failed)).toBe(true);
-    expect(run.logs.join("\n")).toContain("Wave 1 integrated onto rungate/run-627");
-
-    // The end-of-run path is handed the same pairing, for all three.
-    const agentResults = result.buildResult.agentResults || [];
-    expect(agentResults.map(r => r.claimedFiles)).toEqual([
-      ["lib/alpha.ts"], ["lib/beta.ts"], ["lib/gamma.ts"],
-    ]);
+      // And the consequence, which is what the run actually needed: the wave
+      // integrates rather than being refused, and the whole run succeeds.
+      expect(out.success, JSON.stringify(out)).toBe(true);
+      expect(p.logs.join("\n")).toContain(`integrated onto ${RUN_REF}`);
+      expect(p.logs.join("\n")).not.toContain("refusing to collect");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  test("the claim is what makes it integrate — removing it refuses the same wave", async () => {
-    // The mutation, performed rather than asserted: the single line that
-    // pairs a result with its sub-issue's claim is removed, which is exactly
-    // the pre-#627 wave path. `.claude/rules/checks-must-be-able-to-fail.md`
-    // asks for an input on which mutant and original differ; it is the
-    // fixture above, and the two assertions here are the two answers.
-    const occurrences = shipSource.split(PAIRING_LINE).length - 1;
-    expect(
-      occurrences,
-      `could not build the mutant: the pairing line appears ${occurrences} times in ship.js`,
-    ).toBe(1);
-    const mutant = shipSource.replace(PAIRING_LINE, "");
-
-    const run = loadRun(mutant);
-    const result = await run.runDecomposedShip(LAYERED);
-
-    // It still RAN — the wave was staged and the collector was asked. A
-    // mutant that threw before reaching the audit would also be "not
-    // success", and that is not what this measures.
-    expect(run.collectCalls.length).toBe(1);
-    expect(run.collectCalls[0].every(r => r.claimedFiles === undefined)).toBe(true);
-
-    expect(result.success).toBe(false);
-    const said = JSON.stringify(result.failed);
-    expect(said).toContain("could not be integrated");
-    expect(said).toContain("did not claim");
-    // Wave 2 never starts, which is the cost the defect imposed on a run
-    // whose work was correct.
-    expect(run.agentLabels.filter(l => l.startsWith("marcus-sub-")).length).toBe(2);
+  test("SC-2058: the end-of-run path still carries the same claim", async () => {
+    // The control for the shared binding: the path that was always correct
+    // must stay correct. A "fix" that moved the pairing into the wave path
+    // only would pass the case above and silently break SC-413 everywhere
+    // else, and nothing in the wave path could see it.
+    const singleWave: SubFixture[] = [
+      { title: "alpha", files: ["lib/alpha.ts"] },
+      { title: "beta", files: ["lib/beta.ts"] },
+    ];
+    const root = makeTree(singleWave);
+    try {
+      const p = buildPipeline(root, singleWave);
+      const out = (await p.runDecomposedShip(p.plan)) as unknown as {
+        success: boolean;
+        buildResult: { agentResults: Array<{ worktreePath: string; claimedFiles: string[] }> };
+      };
+      expect(out.success).toBe(true);
+      // One wave, so nothing was integrated mid-run — the claim travels on the
+      // returned agentResults instead.
+      expect(p.collectCalls).toEqual([]);
+      expect(
+        Object.fromEntries(out.buildResult.agentResults.map(r => [r.worktreePath, r.claimedFiles])),
+      ).toEqual({
+        [p.worktreeOf("alpha")]: ["lib/alpha.ts"],
+        [p.worktreeOf("beta")]: ["lib/beta.ts"],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
-describe("#627 AC-2 — one binding, called by both staging paths", () => {
-  const decomposed = sliceBlock(shipSource, "DECOMPOSED-SHIP");
+// ── AC-2 / SC-2059 ───────────────────────────────────────────
 
-  test("claimedWork is defined exactly once", () => {
-    const defined = shipSource.match(/^function claimedWork\(/gm) || [];
-    expect(defined.length).toBe(1);
-    // Any other declaration form is a second binding wearing a different
-    // syntax, and a second one would survive any mutation of the first.
-    expect(shipSource.match(/\bclaimedWork\s*=/g) || []).toEqual([]);
+describe("AC-2: one binding pairs a result with its claim", () => {
+  test("SC-2059: one binding pairs a result with its claim, and both staging paths call it", () => {
+    const code = codeOf(shipSource);
+    // The stripper is not vacuous: it removed something and left the code.
+    expect(code.length).toBeLessThan(shipSource.length);
+    expect(code, "the comment stripper ate the block this case is about")
+      .toContain("function claimedWorktreeRow(");
+
+    const decls = code.match(/function\s+claimedWorktreeRow\s*\(/g) || [];
+    expect(decls.length, "two deciders that agree are behaviourally one (#415)").toBe(1);
+
+    // The inline pairing appears nowhere. Both halves: the expression the
+    // end-of-run path used, and the strip the wave path used.
+    expect(
+      (code.match(/claimedFiles:\s*r\.subIssue/g) || []).length,
+      "an inline pairing survives any mutation of the binding",
+    ).toBe(0);
+    expect(
+      (code.match(/accepted\.map\(r\s*=>\s*r\s*&&\s*r\.buildResult\)/g) || []).length,
+      "the claim-stripping map is still in the wave path",
+    ).toBe(0);
+
+    // Searched in the SLICES, not the document: a mention anywhere in a
+    // 7,000-line file would satisfy a whole-file search while the call sat in
+    // some third place.
+    const run = codeOf(block("RUN-REF"));
+    const decomposed = codeOf(block("DECOMPOSED-SHIP"));
+    expect(run.length).toBeGreaterThan(0);
+    expect(decomposed.length).toBeGreaterThan(0);
+    expect(
+      (run.match(/\.map\(claimedWorktreeRow\)/g) || []).length,
+      "the wave path does not call the shared binding",
+    ).toBe(1);
+    expect(
+      (decomposed.match(/\.map\(claimedWorktreeRow\)/g) || []).length,
+      "the end-of-run path has two return branches and both must pair",
+    ).toBe(2);
   });
 
-  test("the inline pairing expression appears nowhere", () => {
-    // The property is written in exactly one place: inside the binding.
-    const assignments = shipSource.match(/^\s*claimedFiles:/gm) || [];
-    expect(assignments.length).toBe(1);
-
-    const at = shipSource.indexOf("function claimedWork(");
-    const body = shipSource.slice(at, shipSource.indexOf("\n}\n", at));
-    expect(body, "the one claimedFiles assignment is not inside the binding")
-      .toContain("claimedFiles:");
-    // The shape the two call sites used to carry, in either spelling.
-    expect(shipSource.match(/claimedFiles:[^\n]*subIssue/g) || []).toEqual([]);
-  });
-
-  test("both the wave path and the end-of-run path call it", () => {
-    // The wave path: the results handed to integrateWave go through the
-    // binding on the way.
-    const waveCall = /integrateWave\(\s*\n?[^)]*claimedWork\(/.test(decomposed);
-    expect(waveCall, `the integrateWave call site does not pair the claim:\n${
-      decomposed.slice(decomposed.indexOf("integrateWave("), decomposed.indexOf("integrateWave(") + 240)
-    }`).toBe(true);
-
-    // The end-of-run path: both the failure branch and the success branch,
-    // because a run that reports partial completion stages too.
-    const endOfRun = decomposed.match(/agentResults:\s*completed\.map\(claimedWork\)/g) || [];
-    expect(endOfRun.length).toBe(2);
+  test("SC-2059: the binding is executed, not merely present", () => {
+    const root = makeTree([]);
+    try {
+      const p = buildPipeline(root, []);
+      expect(
+        p.runRef.claimedWorktreeRow({
+          subIssue: { filesToModify: ["lib/claimed.ts"] },
+          buildResult: {
+            worktreePath: "/tmp/wt",
+            worktreeRepo: REMOTE,
+            filesChanged: ["lib/claimed.ts"],
+          },
+        }),
+      ).toEqual({
+        worktreePath: "/tmp/wt",
+        worktreeRepo: REMOTE,
+        filesChanged: ["lib/claimed.ts"],
+        claimedFiles: ["lib/claimed.ts"],
+      });
+      // A row with nothing in it is four empty fields, not a throw: the
+      // failure branch of the dispatch loop builds results with no subIssue
+      // fields at all.
+      expect(p.runRef.claimedWorktreeRow({})).toEqual({
+        worktreePath: "",
+        worktreeRepo: "",
+        filesChanged: [],
+        claimedFiles: [],
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
-describe("#627 AC-3 — the spec records which path the claim travels", () => {
-  test("the spec names the single binding and both staging paths", () => {
-    const spec = readFileSync(SPEC_PATH, "utf-8");
-    // Search the slice, not the document: a mention anywhere in a 250-line
-    // spec would be satisfied by the SC line itself.
-    const at = spec.indexOf("#627");
-    expect(at, "the spec does not record #627 at all").toBeGreaterThan(-1);
-    const nextHeading = spec.indexOf("\n## ", at);
-    const section = spec.slice(spec.lastIndexOf("\n## ", at), nextHeading < 0 ? spec.length : nextHeading);
-    expect(section.length, "the #627 section sliced empty").toBeGreaterThan(200);
+// ── AC-4 / SC-2060 ───────────────────────────────────────────
 
-    expect(section).toContain("claimedWork");
-    expect(section).toContain("integrateWave");
-    expect(section).toContain("SC-413");
-    // The reason the next reader must not add a second inline pairing.
-    expect(section.toLowerCase()).toContain("one binding");
+const THREE_WORKTREES: SubFixture[] = [
+  { title: "alpha", files: ["lib/alpha.ts"] },
+  { title: "beta", files: ["lib/beta.ts", "lib/beta-helper.ts"] },
+  { title: "gamma", files: ["lib/gamma.ts"] },
+  { title: "delta", files: ["lib/delta.ts"], dependsOn: ["alpha", "beta", "gamma"] },
+];
+
+describe("AC-4: the run that found this, rebuilt", () => {
+  test("SC-2060: three worktrees integrate through a wave rather than the end-of-run collect", async () => {
+    const root = makeTree(THREE_WORKTREES);
+    try {
+      const p = buildPipeline(root, THREE_WORKTREES);
+      const out = await p.runDecomposedShip(p.plan);
+
+      const wave1 = p.collectCalls.find(c => c.label === "collect-wave-1");
+      expect(wave1, "wave 1 never reached the collector").toBeTruthy();
+      expect(wave1!.rows.length, "the wave did not carry three worktrees").toBe(3);
+      expect(wave1!.intoDir).toBe(root);
+
+      // Correct, non-overlapping claims — which is the point. SC-411 had
+      // nothing to catch here and SC-413 refused the run anyway.
+      expect(claimsAt(p.collectCalls, "collect-wave-1")).toEqual({
+        [p.worktreeOf("alpha")]: ["lib/alpha.ts"],
+        [p.worktreeOf("beta")]: ["lib/beta.ts", "lib/beta-helper.ts"],
+        [p.worktreeOf("gamma")]: ["lib/gamma.ts"],
+      });
+
+      // The audit kept every file: pruned candidates, read off the prompt the
+      // collector was actually given, so a claim that arrived and was then
+      // discarded by the audit is a different failure from one that never
+      // arrived.
+      expect(p.groupsSeen.length).toBe(1);
+      expect(
+        Object.fromEntries(p.groupsSeen[0]!.map(g => [g.worktreePath, g.filesChanged.sort()])),
+      ).toEqual({
+        [p.worktreeOf("alpha")]: ["lib/alpha.ts"],
+        [p.worktreeOf("beta")]: ["lib/beta-helper.ts", "lib/beta.ts"],
+        [p.worktreeOf("gamma")]: ["lib/gamma.ts"],
+      });
+
+      expect(out.success, JSON.stringify(out)).toBe(true);
+      expect(p.logs.join("\n")).not.toContain("unclaimed file modification");
+      // The fourth sub-issue is the barrier's other side. Without it the plan
+      // is one wave and this case measures the end-of-run path by accident.
+      expect(p.agentCalls.some(c => c.label === "commit-wave-1")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
-  test("the SC-413 status row says the claim travels the wave path too", () => {
-    const spec = readFileSync(SPEC_PATH, "utf-8");
-    const row = spec.split("\n").find(l => l.startsWith("| SC-413 |")) || "";
-    expect(row, "no SC-413 row in the implementation status table").not.toBe("");
-    expect(row).toContain("claimedWork");
+  test("SC-2060: a worktree that exceeds its claim in a wave is still refused", async () => {
+    // The control, and SC-413 itself: the fix must not be "stop checking".
+    // Without this case, every assertion above is satisfied by an audit that
+    // permits everything — which is exactly the cheap repair SC-2062 measures.
+    const root = makeTree(THREE_WORKTREES);
+    try {
+      const creep = THREE_WORKTREES.map(s =>
+        s.title === "gamma" ? { ...s, files: [...s.files, "lib/alpha.ts"] } : s,
+      );
+      const p = buildPipeline(root, THREE_WORKTREES);
+      // The agents report more than the plan claimed: the plan is the honest
+      // one, the reports are not.
+      const pCreep = buildPipeline(root, creep);
+      const out = await pCreep.runDecomposedShip(p.plan);
+      expect(out.success).toBe(false);
+      expect(pCreep.logs.join("\n")).toContain("unclaimed file modification");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── AC-5 / SC-2061, SC-2062 ──────────────────────────────────
+
+/** One textual substitution, refusing unless its anchor appears exactly once. */
+function mutate(source: string, anchor: string, replacement: string): string {
+  const count = source.split(anchor).length - 1;
+  if (count !== 1) {
+    throw new Error(`could not build the mutant: the anchor appears ${count} times — ${anchor}`);
+  }
+  return source.replace(anchor, replacement);
+}
+
+/** The pairing removed from the wave path — the defect, restored verbatim. */
+const STRIP_ANCHOR = "const rows = accepted.filter(r => r && r.buildResult).map(claimedWorktreeRow)";
+const STRIP_MUTANT = "const rows = accepted.map(r => r && r.buildResult).filter(Boolean)";
+
+/**
+ * The cheapest wrong fix, named in advance.
+ *
+ * Someone who sees the regression red at 5pm can make the symptom go away
+ * without ever propagating the claim: widen `claimPermits` so an absent
+ * `claimedFiles` permits everything. That is the exact fail-open #296 removed,
+ * and it would disable SC-413 for every decomposed run. The cases above must
+ * NOT go green under it.
+ */
+const GUARD_ANCHOR = "return Array.isArray(claims) ? claims.includes(key) : claimant === wt";
+const GUARD_MUTANT = "return !Array.isArray(claims) || claims.includes(key)";
+
+interface SpawnReading {
+  ran: number;
+  pass: number;
+  fail: number;
+  failed: string[];
+  output: string;
+}
+
+function runSuite(shipPath: string): SpawnReading {
+  const res = spawnSync("bun", ["test", SELF], {
+    cwd: REPO_ROOT,
+    encoding: "utf-8",
+    timeout: 300_000,
+    env: {
+      ...process.env,
+      ...(shipPath === REAL_SHIP ? {} : { WAVE_CLAIM_SHIP_UNDER_TEST: shipPath }),
+      // The control spawn must not recurse: it would re-spawn itself forever.
+      WAVE_CLAIM_NO_SPAWN: "1",
+    },
+  });
+  const output = `${res.stdout || ""}\n${res.stderr || ""}`;
+  const num = (label: string) => {
+    const m = new RegExp(`^\\s*(\\d+)\\s+${label}`, "m").exec(output);
+    return m ? Number(m[1]) : -1;
+  };
+  const pass = num("pass");
+  const fail = num("fail");
+  const failed = [...output.matchAll(/\(fail\)\s+(.+?)(?:\s+\[[\d.]+m?s\])?$/gm)].map(m =>
+    m[1]!.trim(),
+  );
+  return { ran: pass + fail, pass, fail, failed, output };
+}
+
+const MEASURES = !IS_MUTANT_CHILD && !process.env.WAVE_CLAIM_NO_SPAWN;
+
+describe.skipIf(!MEASURES)("AC-5: what was broken to prove it", () => {
+  // Read the baseline row before any mutation row: a baseline that is empty,
+  // absent, or not the number this suite reports means the instrument stopped
+  // reporting and every row below it is noise (#60).
+  let baseline: SpawnReading;
+
+  test("SC-2061: the baseline is green and the instrument reports", () => {
+    baseline = runSuite(REAL_SHIP);
+    expect(baseline.pass, `no pass count in:\n${baseline.output.slice(-2000)}`).toBeGreaterThan(0);
+    expect(baseline.fail, baseline.failed.join("\n")).toBe(0);
+  });
+
+  test("SC-2061: the claim-stripping mutant turns the regression red", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-claim-mutant-"));
+    try {
+      const mutantPath = join(dir, "ship.js");
+      writeFileSync(
+        mutantPath,
+        mutate(readFileSync(REAL_SHIP, "utf-8"), STRIP_ANCHOR, STRIP_MUTANT),
+      );
+
+      // The input on which mutant and original differ, named before the count
+      // is believed (#485): a three-worktree wave with correct, disjoint
+      // claims. The original hands the collector rows carrying `claimedFiles`;
+      // the mutant hands it rows that have none, and the audit refuses all of
+      // them. Both run the same code otherwise.
+      const got = runSuite(mutantPath);
+      expect(got.ran, `the mutant suite never ran:\n${got.output.slice(-2000)}`).toBeGreaterThan(0);
+      expect(got.fail, got.output.slice(-2000)).toBeGreaterThanOrEqual(2);
+      // By NAME, not by count: "2 red" is satisfied by any two.
+      expect(got.failed.join("\n")).toContain("SC-2058");
+      expect(got.failed.join("\n")).toContain("SC-2060");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("SC-2062: the widened claim guard does not buy the regression green", () => {
+    const dir = mkdtempSync(join(tmpdir(), "wave-claim-cheapfix-"));
+    try {
+      const mutantPath = join(dir, "ship.js");
+      // The claim-stripping defect AND the cheap repair somebody reaches for
+      // to silence it. The collection succeeds again under this pair — the
+      // audit permits an unclaimed file — and the claim still never reached
+      // the collector, which is what these cases assert.
+      const both = mutate(
+        mutate(readFileSync(REAL_SHIP, "utf-8"), STRIP_ANCHOR, STRIP_MUTANT),
+        GUARD_ANCHOR,
+        GUARD_MUTANT,
+      );
+      writeFileSync(mutantPath, both);
+
+      const got = runSuite(mutantPath);
+      expect(got.ran, `the mutant suite never ran:\n${got.output.slice(-2000)}`).toBeGreaterThan(0);
+      expect(got.fail, "the cheapest wrong fix bought the regression green").toBeGreaterThanOrEqual(
+        2,
+      );
+      expect(got.failed.join("\n")).toContain("SC-2058");
+      expect(got.failed.join("\n")).toContain("SC-2060");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── AC-6 / SC-2063 ───────────────────────────────────────────
+
+describe("AC-6: the fixture outlives the run that found the bug", () => {
+  test("SC-2063: the fixture is built in a temp tree and names no run's files", () => {
+    // Assembled from parts so this assertion is not itself the occurrence it
+    // forbids — the self-reference trap `claiming-sc-coverage.md` describes.
+    const runId = ["wf_", "9e60257d"].join("");
+    const self = readFileSync(SELF, "utf-8");
+    expect(self.includes(runId), "the fixture is keyed on a run id and will go stale").toBe(false);
+    // Every worktree path this file uses is minted under the OS temp dir.
+    expect(self).toContain("mkdtempSync(join(tmpdir()");
   });
 });
