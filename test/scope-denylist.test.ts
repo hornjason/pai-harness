@@ -504,10 +504,15 @@ describe("#306: the workflow actually consults the deny-list", () => {
     // discovery.acs into workflow-state.json, which is the copy every gate
     // reads. A filter after that point cleaned the in-memory object and left
     // the persisted one carrying denied contextFiles.
+    //
+    // #614 moved the serialisation: the payload no longer sits inline in the
+    // `writeACs` call, it is built by `acPayloadShellArgument(discovery.acs)`
+    // and handed to the program as an argument. That builder IS the moment
+    // discovery.acs becomes bytes, so it is what this orders against.
     const apply = shipSource.indexOf("applyScopeDenylist(discovery, log, goalData?.issueGoal)");
-    const persist = shipSource.indexOf("writeACs(sf, ${JSON.stringify(discovery.acs");
+    const persist = shipSource.indexOf("${acPayloadShellArgument(discovery.acs)}");
     expect(apply, "nothing applies the deny-list").toBeGreaterThan(-1);
-    expect(persist, "the writeACs call this orders against is gone").toBeGreaterThan(-1);
+    expect(persist, "the AC serialisation this orders against is gone").toBeGreaterThan(-1);
     expect(apply, "the deny-list runs after workflow-state.json is written")
       .toBeLessThan(persist);
   });

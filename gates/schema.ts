@@ -32,9 +32,50 @@ export const ThresholdSchema = z.object({
   unit: z.string().optional(),
 });
 
+/** One recorded change to an evidence command (#614). */
+export const EvidenceRewriteSchema = z.object({
+  /** The site that made the change, named so a reader can go and read it. */
+  by: z.string(),
+  from: z.string(),
+  to: z.string(),
+});
+
 export const EvidenceMethodSchema = z.object({
   type: z.enum(EVIDENCE_METHOD_TYPES),
   command: z.string().optional(),
+  /**
+   * The command as the discovery agent wrote it, present once anything has
+   * rewritten it (#614).
+   *
+   * Three sites legitimately rewrite an evidence command — discovery's path
+   * normaliser, its evidence-type-ratio upgrade, and the git-ref
+   * qualification at the execution boundary (#118) — and each used to
+   * overwrite `command` in place. A reader of a broken command then had no
+   * way to tell a repair from a corruption, which is the question run
+   * `wf_c92dd0a7-fe6` cost a post-mortem to answer.
+   *
+   * Declared rather than left to `passthrough()`: an undeclared key
+   * round-trips through the writer and reads back exactly like a declared
+   * one, so the state file cannot witness that this field has a producer
+   * (#530).
+   */
+  authoredCommand: z.string().optional(),
+  /** Every change made to `command`, oldest first. */
+  rewrites: z.array(EvidenceRewriteSchema).optional(),
+}).superRefine((em, ctx) => {
+  // A rewrite list with no authored form beside it is the same fail-open the
+  // pre-validator's `autoFixed`/`originalCommand` pairing closes: there is
+  // nothing to compare the current command to, so a repaired command is
+  // indistinguishable from one that was always written that way.
+  if (em.rewrites && em.rewrites.length > 0 && em.authoredCommand === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        "evidenceMethod records rewrites without authoredCommand — a rewrite that reports only " +
+        "its replacement cannot be reviewed",
+      path: ["authoredCommand"],
+    });
+  }
 });
 
 export const EvidenceSchema = z.object({
